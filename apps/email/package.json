@@ -1,0 +1,26 @@
+{
+  "name": "email",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "email build --dir ../../packages/email/templates",
+    "dev": "email dev --port 3003 --dir ../../packages/email/templates",
+    "export": "email export --dir ../../packages/email/templates",
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+  },
+  "dependencies": {
+    "@react-email/components": "1.0.1",
+    "@react-email/preview-server": "^5.0.5",
+    "@repo/email": "workspace:*",
+    "react": "19.2.1",
+    "react-email": "5.0.5"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.7",
+    "next": "16.0.10",
+    "typescript": "^5.9.3"
+  }
+}
