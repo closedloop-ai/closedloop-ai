@@ -33,7 +33,7 @@ const App = async () => {
   return (
     <>
       <Header page="Data Fetching" pages={["Building Your Application"]}>
-        {env.LIVEBLOCKS_SECRET && (
+        {!!env.LIVEBLOCKS_SECRET && (
           <CollaborationProvider orgId={orgId}>
             <AvatarStack />
             <Cursors />

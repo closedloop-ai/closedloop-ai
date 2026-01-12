@@ -28,7 +28,7 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
     <NotificationsProvider userId={user.id}>
       <SidebarProvider>
         <GlobalSidebar>
-          {betaFeature && (
+          {!!betaFeature && (
             <div className="m-4 rounded-full bg-blue-500 p-1.5 text-center text-sm text-white">
               Beta feature now available
             </div>
