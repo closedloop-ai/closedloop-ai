@@ -54,4 +54,4 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the drawer.
  */
-export const Default: Story = {};
+export const Default: Story = { args: {} as never };

@@ -31,6 +31,10 @@ export const contact = async (
       }
     }
 
+    if (!env.RESEND_FROM) {
+      throw new Error("RESEND_FROM is not configured");
+    }
+
     await resend.emails.send({
       from: env.RESEND_FROM,
       to: env.RESEND_FROM,
