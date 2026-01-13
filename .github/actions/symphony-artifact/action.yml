@@ -1,0 +1,139 @@
+name: 'Symphony Artifact'
+description: 'Download or upload Symphony run artifacts'
+inputs:
+  mode:
+    description: 'Operation mode: download or upload'
+    required: true
+  issue_number:
+    description: 'GitHub issue number (used in artifact name)'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  github_token:
+    description: 'GitHub token for API calls'
+    required: true
+  retention_days:
+    description: 'Artifact retention days (upload mode only)'
+    required: false
+    default: '30'
+  overwrite:
+    description: 'Overwrite existing artifact (upload mode only)'
+    required: false
+    default: 'true'
+outputs:
+  run_dir:
+    description: 'Path to the run directory (download mode only)'
+    value: ${{ steps.download.outputs.run_dir }}
+  artifact_url:
+    description: 'URL of the uploaded/downloaded artifact'
+    value: ${{ steps.upload.outputs.artifact-url || steps.download.outputs.artifact_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Download mode
+    - name: Download Run Artifact
+      id: download
+      if: inputs.mode == 'download'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        ARTIFACT_NAME="symphony-run-${{ inputs.issue_number }}"
+        echo "Looking for artifact: $ARTIFACT_NAME"
+
+        # Search for artifact by name with pagination (repo has thousands of artifacts)
+        # Use --paginate to search through all pages until we find a match
+        echo "Searching for artifact (this may take a moment)..."
+        ARTIFACT_INFO=$(gh api "repos/${{ inputs.repository }}/actions/artifacts?per_page=100&name=$ARTIFACT_NAME" \
+          --jq '[.artifacts[] | select(.name == "'"$ARTIFACT_NAME"'" and .expired == false)] | sort_by(.created_at) | last | {id: .id, url: .archive_download_url}')
+
+        ARTIFACT_ID=$(echo "$ARTIFACT_INFO" | jq -r '.id // empty')
+
+        # Check if artifact ID is null or empty (no matching artifact found)
+        if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+          echo "::error::No artifact found with name: $ARTIFACT_NAME. Run @symphony-cl plan first."
+          exit 1
+        fi
+
+        ARTIFACT_URL=$(echo "$ARTIFACT_INFO" | jq -r '.url')
+
+        echo "Found artifact ID: $ARTIFACT_ID"
+        echo "artifact_url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+
+        # Download the artifact
+        gh api repos/${{ inputs.repository }}/actions/artifacts/$ARTIFACT_ID/zip > artifact.zip
+        unzip -o artifact.zip -d .
+        echo "Downloaded and extracted artifact"
+
+        # Unzip the run directory
+        if [ ! -f symphony-run.zip ]; then
+          echo "::error::symphony-run.zip not found in artifact"
+          exit 1
+        fi
+
+        mkdir -p .claude
+        unzip -o symphony-run.zip -d .claude/
+
+        if [ ! -d ".claude/runs" ]; then
+          echo "::error::No runs directory found after unzip"
+          exit 1
+        fi
+
+        # Capture the run directory path
+        RUN_DIR=$(ls -d .claude/runs/*/ | head -1)
+        RUN_DIR="${RUN_DIR%/}"
+        echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
+        echo "Run directory: $RUN_DIR"
+
+        # Clean up zip files to prevent accidental commits
+        rm -f artifact.zip symphony-run.zip
+
+    # Upload mode
+    - name: Zip Run Directory
+      if: inputs.mode == 'upload'
+      shell: bash
+      run: |
+        if [ -d ".claude/runs" ]; then
+          cd .claude && zip -r ../symphony-run.zip runs/
+        else
+          echo "No runs directory found, skipping zip"
+        fi
+
+    - name: Upload Run Directory
+      id: upload
+      if: inputs.mode == 'upload'
+      uses: actions/upload-artifact@v4
+      with:
+        name: symphony-run-${{ inputs.issue_number }}
+        path: symphony-run.zip
+        if-no-files-found: ignore
+        retention-days: ${{ inputs.retention_days }}
+        overwrite: ${{ inputs.overwrite }}
+
+    - name: Cleanup Old Artifacts
+      if: inputs.mode == 'upload' && steps.upload.outputs.artifact-id
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        ARTIFACT_NAME="symphony-run-${{ inputs.issue_number }}"
+        NEW_ARTIFACT_ID="${{ steps.upload.outputs.artifact-id }}"
+
+        echo "New artifact ID: $NEW_ARTIFACT_ID"
+        echo "Cleaning up old artifacts with name: $ARTIFACT_NAME"
+
+        # Get all artifact IDs with the same name
+        ALL_IDS=$(gh api "repos/${{ inputs.repository }}/actions/artifacts?per_page=100&name=$ARTIFACT_NAME" \
+          --jq '.artifacts[].id')
+
+        # Delete all except the new one
+        for ID in $ALL_IDS; do
+          if [ "$ID" != "$NEW_ARTIFACT_ID" ]; then
+            echo "Deleting old artifact: $ID"
+            gh api -X DELETE "repos/${{ inputs.repository }}/actions/artifacts/$ID" || true
+          fi
+        done
+
+        echo "Cleanup complete"
