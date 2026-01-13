@@ -42,6 +42,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.command == 'plan'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     concurrency:
       group: symphony-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -66,7 +67,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
           token: ${{ steps.token.outputs.token }}
@@ -193,7 +194,7 @@ jobs:
 
       - name: Upload Claude Execution Log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: claude-execution-log-${{ github.event.issue.number }}
           path: /home/runner/work/_temp/claude-execution-output.json
@@ -242,6 +243,7 @@ jobs:
 
       - name: Notify Slack
         if: success()
+        continue-on-error: true
         uses: ./.github/actions/symphony-slack-notify
         with:
           webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
@@ -258,6 +260,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.command == 'answer'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     concurrency:
       group: symphony-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -280,7 +283,7 @@ jobs:
           permission-issues: write
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
           token: ${{ steps.token.outputs.token }}
@@ -413,6 +416,7 @@ jobs:
 
       - name: Notify Slack
         if: success()
+        continue-on-error: true
         uses: ./.github/actions/symphony-slack-notify
         with:
           webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
@@ -429,6 +433,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.command == 'execute'
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     concurrency:
       group: symphony-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -454,7 +459,7 @@ jobs:
           permission-workflows: write
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
@@ -668,6 +673,7 @@ jobs:
 
       - name: Notify Slack
         if: success()
+        continue-on-error: true
         uses: ./.github/actions/symphony-slack-notify
         with:
           webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
@@ -684,6 +690,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.command == 'chat'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     concurrency:
       group: symphony-${{ github.event.issue.number }}
       cancel-in-progress: false
@@ -706,7 +713,7 @@ jobs:
           permission-issues: write
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
           token: ${{ steps.token.outputs.token }}

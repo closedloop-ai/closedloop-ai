@@ -67,8 +67,9 @@ runs:
 
             echo "Downloading: $URL -> $OUTPUT_PATH"
 
-            # Download the attachment
-            if curl -sL -H "Authorization: token $GH_TOKEN" -o "$OUTPUT_PATH" "$URL"; then
+            # Download the attachment with retry logic for rate limiting
+            if curl -sL --retry 3 --retry-delay 2 --retry-all-errors \
+                   -H "Authorization: token $GH_TOKEN" -o "$OUTPUT_PATH" "$URL"; then
               # Check if file was actually downloaded
               if [ -s "$OUTPUT_PATH" ]; then
                 ATTACHMENT_ARGS="${ATTACHMENT_ARGS} --attachment ${OUTPUT_PATH}"

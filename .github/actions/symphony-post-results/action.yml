@@ -71,33 +71,19 @@ runs:
         # Read the content
         CONTENT=$(cat "$RESULT_FILE")
 
-        # Build the comment body with collapsible details
-        BODY="<details>
-        <summary><strong>${EMOJI} ${TITLE}</strong></summary>
-
-        ${CONTENT}
-
-        </details>"
+        # Build the comment body with collapsible details using printf for proper formatting
+        BODY=$(printf '<details>\n<summary><strong>%s %s</strong></summary>\n\n%s\n\n</details>' "$EMOJI" "$TITLE" "$CONTENT")
 
         # Add artifact link if provided
         if [ -n "${{ inputs.artifact_url }}" ]; then
-          BODY="${BODY}
-
-        ---
-        📦 [View Symphony Artifact](${{ inputs.artifact_url }})"
+          BODY=$(printf '%s\n\n---\n📦 [View Symphony Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
         fi
 
         # Add instructions based on result type
         if [ "$RESULT_TYPE" = "questions" ]; then
-          BODY="${BODY}
-
-        ---
-        **Next steps:** Answer the questions above, then comment \`@symphony-cl answer\` followed by your answers."
+          BODY=$(printf '%s\n\n---\n**Next steps:** Answer the questions above, then comment `@symphony-cl answer` followed by your answers.' "$BODY")
         else
-          BODY="${BODY}
-
-        ---
-        **Next steps:** Review the plan above. When ready, comment \`@symphony-cl execute\` to implement it."
+          BODY=$(printf '%s\n\n---\n**Next steps:** Review the plan above. When ready, comment `@symphony-cl execute` to implement it.' "$BODY")
         fi
 
         # Delete old comment if requested
@@ -109,13 +95,19 @@ runs:
           fi
         fi
 
-        # Post the result as a new comment
+        # Write body to temp file to handle special characters safely
+        echo "$BODY" > /tmp/comment-body.txt
+
+        # Post the result as a new comment using --input for safe content handling
         RESPONSE=$(gh api "repos/${{ inputs.repository }}/issues/${{ inputs.issue_number }}/comments" \
-          -f body="$BODY")
+          --input <(jq -n --rawfile body /tmp/comment-body.txt '{"body": $body}'))
 
         COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
         echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
         echo "Posted results: $COMMENT_URL"
+
+        # Cleanup
+        rm -f /tmp/comment-body.txt
 
         # Update the status comment if provided and not deleting
         if [ "${{ inputs.delete_old_comment }}" != "true" ] && [ -n "${{ inputs.comment_url }}" ]; then

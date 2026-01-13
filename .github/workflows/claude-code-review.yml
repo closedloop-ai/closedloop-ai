@@ -40,7 +40,7 @@ jobs:
           permission-actions: read
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           fetch-depth: ${{ (startsWith(github.event.pull_request.head.ref, 'dependabot/npm_and_yarn/') || startsWith(github.head_ref, 'dependabot/npm_and_yarn/') || startsWith(github.ref_name, 'dependabot/npm_and_yarn/')) && '0' || '1' }}

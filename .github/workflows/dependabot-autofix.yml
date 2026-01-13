@@ -5,8 +5,10 @@ name: Dependabot Auto-Fix
 
 on:
   workflow_run:
-    # Trigger when EITHER workflow completes - we check that BOTH have completed in the job
-    workflows: ["Pull Request Validation", "Claude Code Review"]
+    # Trigger when Claude Code Review completes
+    # NOTE: If you add a CI workflow (e.g., "Pull Request Validation"), add it here
+    # and uncomment the testsRun check in the prerequisites job
+    workflows: ["Claude Code Review"]
     types:
       - completed
     # Only trigger for Dependabot npm dependency branches
@@ -49,7 +51,7 @@ jobs:
     steps:
       - name: Get PR info and check workflow status
         id: check
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
         with:
@@ -138,7 +140,9 @@ jobs:
 
             // Find completed runs
             const reviewRun = runs.workflow_runs.find(r => r.name === 'Claude Code Review' && r.conclusion === 'success');
-            const testsRun = runs.workflow_runs.find(r => r.name === 'Pull Request Validation' && (r.conclusion === 'success' || r.conclusion === 'failure'));
+
+            // NOTE: Uncomment this if you add a CI workflow (e.g., "Pull Request Validation")
+            // const testsRun = runs.workflow_runs.find(r => r.name === 'Pull Request Validation' && (r.conclusion === 'success' || r.conclusion === 'failure'));
 
             // Check Claude Code Review completed successfully
             if (!reviewRun) {
@@ -147,21 +151,21 @@ jobs:
               return;
             }
 
-            // Check Pull Request Validation completed (pass or fail - we'll try to fix failures)
-            if (!testsRun) {
-              core.setOutput('should_continue', 'false');
-              core.info('Pull Request Validation workflow has not completed yet');
-              return;
-            }
+            // NOTE: Uncomment this if you add a CI workflow
+            // if (!testsRun) {
+            //   core.setOutput('should_continue', 'false');
+            //   core.info('Pull Request Validation workflow has not completed yet');
+            //   return;
+            // }
+            // testsConclusion = testsRun.conclusion;
 
-            testsConclusion = testsRun.conclusion;
+            testsConclusion = 'success'; // Default to success when no CI workflow
             core.info(`Tests conclusion: ${testsConclusion}`);
-            core.info(`Tests run ID: ${testsRun.id}`);
 
             core.setOutput('should_continue', 'true');
             core.setOutput('pr_number', prNumber.toString());
             core.setOutput('tests_conclusion', testsConclusion);
-            core.setOutput('tests_run_id', testsRun.id.toString());
+            core.setOutput('tests_run_id', ''); // No CI workflow configured
             core.setOutput('head_branch', headBranch);
             core.info(`Prerequisites met: PR #${prNumber}, tests: ${testsConclusion}`);
 
@@ -199,7 +203,7 @@ jobs:
           permission-issues: write
 
       - name: Checkout PR branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.HEAD_BRANCH }}
           fetch-depth: 0
