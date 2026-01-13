@@ -10,8 +10,9 @@
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
-    "check": "npx ultracite@latest check",
-    "fix": "npx ultracite@latest fix",
+    "typecheck": "turbo typecheck",
+    "lint": "npx ultracite@latest check",
+    "lint:fix": "npx ultracite@latest fix",
     "test": "turbo test",
     "analyze": "turbo analyze",
     "translate": "turbo translate",
