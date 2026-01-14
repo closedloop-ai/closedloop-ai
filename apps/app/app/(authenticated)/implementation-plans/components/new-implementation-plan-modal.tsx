@@ -63,6 +63,8 @@ export function NewImplementationPlanModal({
   const [planType, setPlanType] = useState("Standard");
   const [targetRelease, setTargetRelease] = useState("");
   const [engineeringTeam, setEngineeringTeam] = useState("");
+  const [createdBy, setCreatedBy] = useState("");
+  const [approver, setApprover] = useState("");
   const [includeRisks, setIncludeRisks] = useState(true);
   const [includeDependencies, setIncludeDependencies] = useState(true);
   const [includeTestPlan, setIncludeTestPlan] = useState(true);
@@ -96,6 +98,8 @@ export function NewImplementationPlanModal({
     setPlanType("Standard");
     setTargetRelease("");
     setEngineeringTeam("");
+    setCreatedBy("");
+    setApprover("");
     setIncludeRisks(true);
     setIncludeDependencies(true);
     setIncludeTestPlan(true);
@@ -110,6 +114,11 @@ export function NewImplementationPlanModal({
       return;
     }
 
+    if (!createdBy.trim()) {
+      setError("Please enter who is creating this plan");
+      return;
+    }
+
     startTransition(async () => {
       try {
         const result = await createImplementationPlan({
@@ -117,6 +126,8 @@ export function NewImplementationPlanModal({
           planType,
           targetRelease: targetRelease.trim() || undefined,
           engineeringTeam: engineeringTeam.trim() || undefined,
+          createdBy: createdBy.trim(),
+          approver: approver.trim() || undefined,
         });
 
         if (result.error) {
@@ -217,6 +228,30 @@ export function NewImplementationPlanModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
+              <Label htmlFor="created-by">
+                Created By<span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="created-by"
+                value={createdBy}
+                onChange={(e) => setCreatedBy(e.target.value)}
+                placeholder="Your name or agent name"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="approver">Approver</Label>
+              <Input
+                id="approver"
+                value={approver}
+                onChange={(e) => setApprover(e.target.value)}
+                placeholder="Approver name"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
               <Label htmlFor="target-release">Target Release</Label>
               <Input
                 id="target-release"
@@ -289,7 +324,7 @@ export function NewImplementationPlanModal({
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={isPending || !sourcePrdId}
+            disabled={isPending || !sourcePrdId || !createdBy.trim()}
           >
             {isPending ? (
               <>

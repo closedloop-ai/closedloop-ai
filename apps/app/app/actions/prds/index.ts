@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 export type CreatePRDInput = {
   title: string;
   fileName: string;
-  owner: string;
+  approver: string;
   status: string;
   tags: string[];
   template: string;
@@ -17,7 +17,7 @@ export type UpdatePRDInput = {
   id: string;
   title?: string;
   fileName?: string;
-  owner?: string;
+  approver?: string;
   status?: string;
   tags?: string[];
   template?: string;
@@ -57,7 +57,7 @@ export async function createPRD(input: CreatePRDInput) {
       data: {
         title: input.title,
         fileName: input.fileName,
-        owner: input.owner,
+        approver: input.approver,
         status: input.status,
         tags: input.tags,
         template: input.template,
@@ -115,7 +115,7 @@ export async function duplicatePRD(id: string) {
       data: {
         title: `${original.title} (Copy)`,
         fileName: `${original.fileName.replace(".md", "")}-copy.md`,
-        owner: original.owner,
+        approver: original.approver,
         status: "Draft",
         tags: original.tags,
         template: original.template,

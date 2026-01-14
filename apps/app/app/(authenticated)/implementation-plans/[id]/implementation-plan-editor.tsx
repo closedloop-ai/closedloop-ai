@@ -19,6 +19,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repo/design-system/components/ui/select";
+import { Input } from "@repo/design-system/components/ui/input";
+import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@repo/design-system/components/ui/tabs";
 import {
@@ -31,6 +40,7 @@ import {
   CodeIcon,
   CheckIcon,
   PencilIcon,
+  SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -39,6 +49,9 @@ import {
 } from "@/app/actions/implementation-plans";
 import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
 import { ImplementationPlanStatusBadge } from "../components/implementation-plan-status-badge";
+
+const STATUS_OPTIONS = ["Draft", "Ready", "In Progress", "Generating", "Failed", "Archived"];
+const PLAN_TYPE_OPTIONS = ["Standard", "Quick", "Detailed", "Technical"];
 
 type ImplementationPlanWithPRD = ImplementationPlan & {
   sourcePrd: Pick<PRD, "id" | "title">;
@@ -54,10 +67,17 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [content, setContent] = useState(plan.content);
-  const [status, setStatus] = useState(plan.status);
   const [lastSaved, setLastSaved] = useState<Date>(plan.updatedAt);
   const [isSaving, setIsSaving] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
+
+  // Editable metadata state
+  const [status, setStatus] = useState(plan.status);
+  const [approver, setApprover] = useState(plan.approver || "");
+  const [planType, setPlanType] = useState(plan.planType);
+  const [targetRelease, setTargetRelease] = useState(plan.targetRelease || "");
+  const [engineeringTeam, setEngineeringTeam] = useState(plan.engineeringTeam || "");
+  const [showMetadataPanel, setShowMetadataPanel] = useState(false);
 
   // Dialogs
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -77,6 +97,58 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
       setIsSaving(false);
     });
   }, [plan.id, content]);
+
+  const handleMetadataUpdate = useCallback((updates: Partial<{ status: string; approver: string; planType: string; targetRelease: string; engineeringTeam: string }>) => {
+    startTransition(async () => {
+      const result = await updateImplementationPlan({ id: plan.id, ...updates });
+      if (result.data) {
+        setLastSaved(new Date());
+        toast.success("Changes saved");
+      } else if (result.error) {
+        toast.error("Failed to save changes");
+      }
+    });
+  }, [plan.id]);
+
+  const handleStatusChange = (newStatus: string) => {
+    setStatus(newStatus);
+    handleMetadataUpdate({ status: newStatus });
+  };
+
+  const handleApproverChange = (newApprover: string) => {
+    setApprover(newApprover);
+  };
+
+  const handleApproverBlur = () => {
+    if (approver !== (plan.approver || "")) {
+      handleMetadataUpdate({ approver: approver || undefined });
+    }
+  };
+
+  const handlePlanTypeChange = (newPlanType: string) => {
+    setPlanType(newPlanType);
+    handleMetadataUpdate({ planType: newPlanType });
+  };
+
+  const handleTargetReleaseChange = (newTargetRelease: string) => {
+    setTargetRelease(newTargetRelease);
+  };
+
+  const handleTargetReleaseBlur = () => {
+    if (targetRelease !== (plan.targetRelease || "")) {
+      handleMetadataUpdate({ targetRelease: targetRelease || undefined });
+    }
+  };
+
+  const handleEngineeringTeamChange = (newEngineeringTeam: string) => {
+    setEngineeringTeam(newEngineeringTeam);
+  };
+
+  const handleEngineeringTeamBlur = () => {
+    if (engineeringTeam !== (plan.engineeringTeam || "")) {
+      handleMetadataUpdate({ engineeringTeam: engineeringTeam || undefined });
+    }
+  };
 
   const handleApprove = () => {
     startTransition(async () => {
@@ -182,6 +254,15 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
             </TabsList>
           </Tabs>
 
+          <Button
+            onClick={() => setShowMetadataPanel(!showMetadataPanel)}
+            variant={showMetadataPanel ? "secondary" : "outline"}
+            size="sm"
+          >
+            <SettingsIcon className="mr-2 h-4 w-4" />
+            Details
+          </Button>
+
           {/* Modify button (replaces Regenerate) */}
           <Button onClick={handleModify} variant="outline" size="sm">
             <PencilIcon className="mr-2 h-4 w-4" />
@@ -237,22 +318,106 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
         </div>
       </div>
 
-      {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-auto">
-        <div className="max-w-4xl mx-auto p-4">
-          {viewMode === "rendered" ? (
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <MarkdownPreview content={content} />
-            </div>
-          ) : (
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Implementation plan content..."
-              className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
-            />
-          )}
+      {/* Content Area with Optional Metadata Panel */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-auto">
+          <div className="max-w-4xl mx-auto p-4">
+            {viewMode === "rendered" ? (
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <MarkdownPreview content={content} />
+              </div>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Implementation plan content..."
+                className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
+              />
+            )}
+          </div>
         </div>
+
+        {/* Metadata Panel */}
+        {showMetadataPanel && (
+          <div className="w-80 border-l bg-muted/30 p-4 overflow-auto">
+            <h3 className="font-semibold mb-4">Plan Details</h3>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Status</Label>
+                <Select value={status} onValueChange={handleStatusChange}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATUS_OPTIONS.map((opt) => (
+                      <SelectItem key={opt} value={opt}>
+                        {opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Approver</Label>
+                <Input
+                  value={approver}
+                  onChange={(e) => handleApproverChange(e.target.value)}
+                  onBlur={handleApproverBlur}
+                  placeholder="Approver name"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Plan Type</Label>
+                <Select value={planType} onValueChange={handlePlanTypeChange}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PLAN_TYPE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt} value={opt}>
+                        {opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Target Release</Label>
+                <Input
+                  value={targetRelease}
+                  onChange={(e) => handleTargetReleaseChange(e.target.value)}
+                  onBlur={handleTargetReleaseBlur}
+                  placeholder="e.g., v2.0"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Engineering Team</Label>
+                <Input
+                  value={engineeringTeam}
+                  onChange={(e) => handleEngineeringTeamChange(e.target.value)}
+                  onBlur={handleEngineeringTeamBlur}
+                  placeholder="e.g., Platform"
+                />
+              </div>
+
+              <div className="pt-4 border-t">
+                <div className="text-sm text-muted-foreground space-y-1">
+                  <p>Created by: {plan.createdBy}</p>
+                  <p>Source PRD: {plan.sourcePrd.title}</p>
+                  <p>Version: v{plan.version}</p>
+                  <p>Created: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(plan.createdAt))}</p>
+                  <p>Updated: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(plan.updatedAt))}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}

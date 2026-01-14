@@ -36,7 +36,7 @@ export function NewPRDModal() {
 
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
-  const [owner, setOwner] = useState("");
+  const [approver, setApprover] = useState("");
   const [status, setStatus] = useState("Draft");
   const [template, setTemplate] = useState("Standard PRD");
   const [tags, setTags] = useState<string[]>([]);
@@ -77,7 +77,7 @@ export function NewPRDModal() {
   const resetForm = () => {
     setTitle("");
     setFileName("");
-    setOwner("");
+    setApprover("");
     setStatus("Draft");
     setTemplate("Standard PRD");
     setTags([]);
@@ -89,7 +89,7 @@ export function NewPRDModal() {
   const handleSubmit = () => {
     setError(null);
 
-    if (!title.trim() || !fileName.trim() || !owner.trim()) {
+    if (!title.trim() || !fileName.trim() || !approver.trim()) {
       setError("Please fill in all required fields");
       return;
     }
@@ -99,7 +99,7 @@ export function NewPRDModal() {
         const result = await createPRD({
           title: title.trim(),
           fileName: fileName.trim(),
-          owner: owner.trim(),
+          approver: approver.trim(),
           status,
           template,
           tags,
@@ -173,14 +173,14 @@ export function NewPRDModal() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="new-owner">
-              Owner<span className="text-destructive">*</span>
+            <Label htmlFor="new-approver">
+              Approver<span className="text-destructive">*</span>
             </Label>
             <Input
-              id="new-owner"
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-              placeholder="Your name"
+              id="new-approver"
+              value={approver}
+              onChange={(e) => setApprover(e.target.value)}
+              placeholder="Approver name"
             />
           </div>
 
@@ -270,7 +270,7 @@ export function NewPRDModal() {
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={isPending || !title.trim() || !fileName.trim() || !owner.trim()}
+            disabled={isPending || !title.trim() || !fileName.trim() || !approver.trim()}
           >
             {isPending ? (
               <>

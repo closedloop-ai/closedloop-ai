@@ -19,13 +19,18 @@ const columns: Column<PRD>[] = [
     ),
   },
   {
+    key: "version",
+    header: "Version",
+    render: (prd) => <span className="font-mono text-sm">v{prd.version}</span>,
+  },
+  {
     key: "status",
     header: "Status",
     render: (prd) => <PRDStatusBadge status={prd.status} />,
   },
   {
-    key: "owner",
-    header: "Owner",
+    key: "approver",
+    header: "Approver",
   },
   {
     key: "updatedAt",
@@ -39,6 +44,8 @@ const sortOptions: SortOption[] = [
   { label: "Oldest First", value: "updatedAt:asc" },
   { label: "Title A-Z", value: "title:asc" },
   { label: "Title Z-A", value: "title:desc" },
+  { label: "Version (High to Low)", value: "version:desc" },
+  { label: "Version (Low to High)", value: "version:asc" },
 ];
 
 const filterOptions: FilterOption[] = [

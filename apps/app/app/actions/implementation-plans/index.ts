@@ -8,6 +8,8 @@ export type CreateImplementationPlanInput = {
   planType: string;
   targetRelease?: string;
   engineeringTeam?: string;
+  createdBy: string;
+  approver?: string;
 };
 
 export type UpdateImplementationPlanInput = {
@@ -15,6 +17,10 @@ export type UpdateImplementationPlanInput = {
   title?: string;
   status?: string;
   content?: string;
+  approver?: string;
+  planType?: string;
+  targetRelease?: string;
+  engineeringTeam?: string;
 };
 
 export async function getImplementationPlans() {
@@ -62,7 +68,7 @@ export async function getImplementationPlanById(id: string) {
 
 export async function createImplementationPlan(input: CreateImplementationPlanInput) {
   try {
-    // Get the source PRD to generate the title
+    // Get the source PRD to generate the title and inherit approver
     const sourcePrd = await database.pRD.findUnique({
       where: { id: input.sourcePrdId },
     });
@@ -79,6 +85,9 @@ export async function createImplementationPlan(input: CreateImplementationPlanIn
     const version = existingPlansCount + 1;
     const title = `${sourcePrd.title} - Impl Plan`;
 
+    // Use provided approver or inherit from PRD
+    const approver = input.approver || sourcePrd.approver;
+
     const plan = await database.implementationPlan.create({
       data: {
         title,
@@ -87,7 +96,8 @@ export async function createImplementationPlan(input: CreateImplementationPlanIn
         planType: input.planType,
         targetRelease: input.targetRelease,
         engineeringTeam: input.engineeringTeam,
-        generatedBy: "System",
+        createdBy: input.createdBy,
+        approver,
         status: "Draft",
         content: getDefaultContent(sourcePrd.title, version),
       },

@@ -22,7 +22,8 @@ model PRD {
   id                  String               @id @default(cuid())
   title               String
   fileName            String
-  owner               String
+  approver            String
+  version             Int                  @default(1)
   status              String               @default("Draft")
   tags                String[]             @default([])
   template            String               @default("Standard PRD")
@@ -38,8 +39,9 @@ model ImplementationPlan {
   sourcePrdId     String
   sourcePrd       PRD      @relation(fields: [sourcePrdId], references: [id], onDelete: Cascade)
   version         Int      @default(1)
-  generatedBy     String   @default("System")
-  status          String   @default("Ready")
+  createdBy       String
+  approver        String?
+  status          String   @default("Draft")
   planType        String   @default("Standard")
   targetRelease   String?
   engineeringTeam String?
