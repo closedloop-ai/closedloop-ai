@@ -62,29 +62,30 @@ export const blog = {
     },
   }),
 
-  latestPostQuery: {
+  latestPostQuery: fragmentOn("Query", {
     blog: {
       posts: {
         __args: {
-          orderBy: "_sys_createdAt__DESC" as const,
-        },
-        item: postFragment,
-      },
-    },
-  } as const,
-
-  postQuery: (slug: string) => ({
-    blog: {
-      posts: {
-        __args: {
-          filter: {
-            _sys_slug: { eq: slug },
-          },
+          orderBy: "_sys_createdAt__DESC",
         },
         item: postFragment,
       },
     },
   }),
+
+  postQuery: (slug: string) =>
+    fragmentOn("Query", {
+      blog: {
+        posts: {
+          __args: {
+            filter: {
+              _sys_slug: { eq: slug },
+            },
+          },
+          item: postFragment,
+        },
+      },
+    }),
 
   getPosts: async (): Promise<PostMeta[]> => {
     const data = await basehub.query(blog.postsQuery);
