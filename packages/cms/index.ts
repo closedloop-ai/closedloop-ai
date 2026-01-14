@@ -62,16 +62,16 @@ export const blog = {
     },
   }),
 
-  latestPostQuery: fragmentOn("Query", {
+  latestPostQuery: {
     blog: {
       posts: {
         __args: {
-          orderBy: "_sys_createdAt__DESC",
+          orderBy: "_sys_createdAt__DESC" as const,
         },
         item: postFragment,
       },
     },
-  }),
+  } as const,
 
   postQuery: (slug: string) => ({
     blog: {
