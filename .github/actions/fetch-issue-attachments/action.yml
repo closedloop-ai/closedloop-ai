@@ -1,0 +1,97 @@
+name: 'Fetch Issue Attachments'
+description: 'Extract and download attachments from GitHub issue body'
+inputs:
+  issue_body:
+    description: 'The issue body text to parse for attachments'
+    required: true
+  github_token:
+    description: 'GitHub token for downloading attachments'
+    required: true
+  repo:
+    description: 'Repository in owner/repo format'
+    required: true
+  output_dir:
+    description: 'Directory to save attachments'
+    required: false
+    default: '.claude/attachments'
+outputs:
+  attachment_args:
+    description: 'CLI arguments for attachments (e.g., --attachment file1.png --attachment file2.pdf)'
+    value: ${{ steps.fetch.outputs.attachment_args }}
+  attachment_count:
+    description: 'Number of attachments found'
+    value: ${{ steps.fetch.outputs.attachment_count }}
+  attachment_paths:
+    description: 'Space-separated list of attachment file paths'
+    value: ${{ steps.fetch.outputs.attachment_paths }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Fetch Attachments
+      id: fetch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        ISSUE_BODY: ${{ inputs.issue_body }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+      run: |
+        mkdir -p "$OUTPUT_DIR"
+
+        # Extract GitHub user attachment URLs from issue body
+        # Format: https://github.com/user-attachments/assets/...
+        # Also handles: https://user-images.githubusercontent.com/...
+        URLS=$(echo "$ISSUE_BODY" | grep -oE 'https://(github\.com/user-attachments/assets|user-images\.githubusercontent\.com)/[^)\s"]+' || true)
+
+        if [ -z "$URLS" ]; then
+          echo "No attachments found in issue body"
+          echo "attachment_args=" >> "$GITHUB_OUTPUT"
+          echo "attachment_count=0" >> "$GITHUB_OUTPUT"
+          echo "attachment_paths=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        ATTACHMENT_ARGS=""
+        ATTACHMENT_PATHS=""
+        COUNT=0
+
+        while IFS= read -r URL; do
+          if [ -n "$URL" ]; then
+            # Extract filename from URL or generate one
+            FILENAME=$(basename "$URL" | sed 's/?.*//')
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+              FILENAME="attachment_${COUNT}"
+            fi
+
+            OUTPUT_PATH="${OUTPUT_DIR}/${FILENAME}"
+
+            echo "Downloading: $URL -> $OUTPUT_PATH"
+
+            # Download the attachment with retry logic for rate limiting
+            if curl -sL --retry 3 --retry-delay 2 --retry-all-errors \
+                   -H "Authorization: token $GH_TOKEN" -o "$OUTPUT_PATH" "$URL"; then
+              # Check if file was actually downloaded
+              if [ -s "$OUTPUT_PATH" ]; then
+                ATTACHMENT_ARGS="${ATTACHMENT_ARGS} --attachment ${OUTPUT_PATH}"
+                ATTACHMENT_PATHS="${ATTACHMENT_PATHS} ${OUTPUT_PATH}"
+                COUNT=$((COUNT + 1))
+                echo "Successfully downloaded: $FILENAME"
+              else
+                echo "::warning::Downloaded file is empty: $FILENAME"
+                rm -f "$OUTPUT_PATH"
+              fi
+            else
+              echo "::warning::Failed to download: $URL"
+            fi
+          fi
+        done <<< "$URLS"
+
+        # Trim leading/trailing spaces
+        ATTACHMENT_ARGS=$(echo "$ATTACHMENT_ARGS" | xargs)
+        ATTACHMENT_PATHS=$(echo "$ATTACHMENT_PATHS" | xargs)
+
+        echo "attachment_args=$ATTACHMENT_ARGS" >> "$GITHUB_OUTPUT"
+        echo "attachment_count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "attachment_paths=$ATTACHMENT_PATHS" >> "$GITHUB_OUTPUT"
+
+        echo "Found $COUNT attachments"

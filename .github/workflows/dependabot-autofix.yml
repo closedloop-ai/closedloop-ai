@@ -1,0 +1,344 @@
+name: Dependabot Auto-Fix
+
+# This workflow runs after BOTH Claude Code Review and Pull Request Validation complete
+# for Dependabot npm dependency PRs. It updates pnpm-lock.yaml and applies safe code fixes.
+
+on:
+  workflow_run:
+    # Trigger when Claude Code Review completes
+    # NOTE: If you add a CI workflow (e.g., "Pull Request Validation"), add it here
+    # and uncomment the testsRun check in the prerequisites job
+    workflows: ["Claude Code Review"]
+    types:
+      - completed
+    # Only trigger for Dependabot npm dependency branches
+    branches:
+      - 'dependabot/npm_and_yarn/**'
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to process'
+        required: true
+        type: string
+
+# Prevent duplicate runs when both workflows complete at nearly the same time
+concurrency:
+  group: dependabot-autofix-${{ github.event.workflow_run.head_branch || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  check-prerequisites:
+    name: Check Prerequisites
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    # Only run for Dependabot npm PRs when tests complete
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_branch != null &&
+       startsWith(github.event.workflow_run.head_branch, 'dependabot/npm_and_yarn/'))
+    outputs:
+      should_continue: ${{ steps.check.outputs.should_continue }}
+      pr_number: ${{ steps.check.outputs.pr_number }}
+      tests_conclusion: ${{ steps.check.outputs.tests_conclusion }}
+      tests_run_id: ${{ steps.check.outputs.tests_run_id }}
+      head_branch: ${{ steps.check.outputs.head_branch }}
+
+    steps:
+      - name: Get PR info and check workflow status
+        id: check
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER_INPUT: ${{ github.event.inputs.pr_number }}
+        with:
+          script: |
+            let prNumber, headBranch, testsConclusion;
+
+            if (context.eventName === 'workflow_dispatch') {
+              // Manual trigger - validate input to prevent injection
+              const rawInput = process.env.PR_NUMBER_INPUT;
+              if (!/^\d+$/.test(rawInput)) {
+                core.setFailed('Invalid PR number format - must be numeric');
+                return;
+              }
+              prNumber = parseInt(rawInput, 10);
+
+              // Get PR details
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+
+              headBranch = pr.head.ref;
+
+              if (!headBranch.startsWith('dependabot/npm_and_yarn/')) {
+                core.setOutput('should_continue', 'false');
+                core.info('Not a Dependabot npm PR, skipping');
+                return;
+              }
+
+              // Assume tests passed for manual trigger
+              testsConclusion = 'success';
+            } else {
+              // workflow_run trigger
+              headBranch = context.payload.workflow_run.head_branch;
+              testsConclusion = context.payload.workflow_run.conclusion;
+
+              // Find the PR for this branch
+              const { data: prs } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head: `${context.repo.owner}:${headBranch}`,
+                state: 'open'
+              });
+
+              if (prs.length === 0) {
+                core.setOutput('should_continue', 'false');
+                core.info('No open PR found for branch: ' + headBranch);
+                return;
+              }
+
+              prNumber = prs[0].number;
+            }
+
+            // Check if BOTH workflows have completed for this PR
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const headSha = pr.head.sha;
+
+            // Check if latest commit was already made by auto-fix (prevent loops)
+            const { data: latestCommit } = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: headSha
+            });
+
+            const commitMessage = latestCommit.commit.message;
+
+            // Check for our specific commit message format
+            if (commitMessage.includes('auto-fix for Dependabot PR')) {
+              core.setOutput('should_continue', 'false');
+              core.info('Latest commit is already an auto-fix commit, skipping to prevent loop');
+              return;
+            }
+
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: headSha,
+              status: 'completed'
+            });
+
+            // Find completed runs
+            const reviewRun = runs.workflow_runs.find(r => r.name === 'Claude Code Review' && r.conclusion === 'success');
+
+            // NOTE: Uncomment this if you add a CI workflow (e.g., "Pull Request Validation")
+            // const testsRun = runs.workflow_runs.find(r => r.name === 'Pull Request Validation' && (r.conclusion === 'success' || r.conclusion === 'failure'));
+
+            // Check Claude Code Review completed successfully
+            if (!reviewRun) {
+              core.setOutput('should_continue', 'false');
+              core.info('Claude Code Review workflow has not completed successfully yet');
+              return;
+            }
+
+            // NOTE: Uncomment this if you add a CI workflow
+            // if (!testsRun) {
+            //   core.setOutput('should_continue', 'false');
+            //   core.info('Pull Request Validation workflow has not completed yet');
+            //   return;
+            // }
+            // testsConclusion = testsRun.conclusion;
+
+            testsConclusion = 'success'; // Default to success when no CI workflow
+            core.info(`Tests conclusion: ${testsConclusion}`);
+
+            core.setOutput('should_continue', 'true');
+            core.setOutput('pr_number', prNumber.toString());
+            core.setOutput('tests_conclusion', testsConclusion);
+            core.setOutput('tests_run_id', ''); // No CI workflow configured
+            core.setOutput('head_branch', headBranch);
+            core.info(`Prerequisites met: PR #${prNumber}, tests: ${testsConclusion}`);
+
+  autofix:
+    name: Auto-Fix Dependabot PR
+    runs-on: ubuntu-latest
+    needs: check-prerequisites
+    if: needs.check-prerequisites.outputs.should_continue == 'true'
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      actions: read
+      id-token: write
+
+    env:
+      NODE_VERSION: "20"
+      PR_NUMBER: ${{ needs.check-prerequisites.outputs.pr_number }}
+      TESTS_CONCLUSION: ${{ needs.check-prerequisites.outputs.tests_conclusion }}
+      TESTS_RUN_ID: ${{ needs.check-prerequisites.outputs.tests_run_id }}
+      HEAD_BRANCH: ${{ needs.check-prerequisites.outputs.head_branch }}
+
+    steps:
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_BRANCH }}
+          fetch-depth: 0
+          token: ${{ steps.generate_token.outputs.token }}
+
+      - name: Configure Git for Private Marketplace
+        run: |
+          git config --global url."https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Configure Git user for commits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Run Dependabot Auto-Fix
+        id: autofix
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.generate_token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          allowed_bots: "dependabot"
+          prompt: |
+            This is an automated Dependabot PR auto-fix workflow.
+
+            PR Number: ${{ env.PR_NUMBER }}
+            Tests Conclusion: ${{ env.TESTS_CONCLUSION }}
+            Tests Run ID: ${{ env.TESTS_RUN_ID }}
+
+            Your task:
+            1. If tests failed, analyze the test failures from the workflow run
+            2. Apply ONLY safe fixes related to the dependency upgrade:
+               - Import statement updates (if module paths changed)
+               - Type annotation fixes (if signatures changed)
+               - Deprecation fixes (if APIs were removed)
+               - Test fixes directly related to the upgrade
+            3. Do NOT apply:
+               - Unrelated code changes
+               - Pre-existing bugs
+               - Complex API migrations that require human review
+
+            After making changes, the workflow will commit and push them.
+          claude_args: |
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(pnpm:*),Bash(pnpm install:*),Bash(pnpm run:*),Bash(npx:*),Bash(gh:*),Bash(gh api:*),Bash(gh pr:*),Bash(gh run:*),Bash(git diff:*),Bash(git status:*),Bash(grep:*),Bash(ls:*),Bash(cat:*),Bash(env:*),Bash(head:*),Bash(tail:*),Bash(node:*),Bash(tsc:*)"
+
+      - name: Debug workspace state after Claude
+        run: |
+          echo "=== Current working directory ==="
+          pwd
+          echo ""
+          echo "=== Git status ==="
+          git status
+          echo ""
+          echo "=== All changed files (unstaged) ==="
+          git diff --name-only || echo "No unstaged changes"
+          echo ""
+          echo "=== pnpm-lock.yaml exists? ==="
+          ls -la pnpm-lock.yaml 2>/dev/null || echo "pnpm-lock.yaml not found"
+          echo ""
+          echo "=== pnpm-lock.yaml diff (first 100 lines) ==="
+          git diff pnpm-lock.yaml | head -100 || echo "No pnpm-lock.yaml changes or file not found"
+          echo ""
+          echo "=== package.json diff ==="
+          git diff package.json | head -50 || echo "No package.json changes"
+
+      - name: Stage allowed changes
+        id: stage
+        run: |
+          echo "=== Running git add ==="
+          git add -v pnpm-lock.yaml 2>&1 || echo "git add pnpm-lock.yaml failed"
+          git add -v package.json 2>&1 || echo "git add package.json failed"
+          git add -v "apps/" 2>&1 || echo "git add apps/ failed"
+          git add -v "packages/" 2>&1 || echo "git add packages/ failed"
+
+          echo ""
+          echo "=== Git status after add ==="
+          git status --short
+          echo ""
+          echo "Staged files:"
+          git diff --staged --name-only || echo "No staged files"
+
+          # Check if there's anything staged
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No relevant changes to commit"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Changes staged for commit:"
+            git diff --staged --name-only
+          fi
+
+      - name: Commit and push changes
+        id: commit
+        if: steps.stage.outputs.has_changes == 'true'
+        env:
+          COMMIT_PR_NUMBER: ${{ env.PR_NUMBER }}
+        run: |
+          # Build commit message
+          cat > /tmp/commit_msg.txt << COMMIT_EOF
+          chore: auto-fix for Dependabot PR #${COMMIT_PR_NUMBER}
+
+          Automated fixes applied by Dependabot Auto-Fix workflow:
+          - Updated pnpm-lock.yaml with new dependency resolution
+          - Applied safe code fixes related to the upgrade
+
+          Generated by [Claude Code](https://claude.com/claude-code)
+
+          Co-Authored-By: Claude <noreply@anthropic.com>
+          COMMIT_EOF
+          # Strip leading whitespace from each line
+          sed -i 's/^          //' /tmp/commit_msg.txt
+          git commit -F /tmp/commit_msg.txt
+
+          # Push with error handling
+          if git push 2>&1; then
+            echo "push_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "push_status=failed" >> $GITHUB_OUTPUT
+            echo "::warning::Push failed - will report in PR comment"
+          fi

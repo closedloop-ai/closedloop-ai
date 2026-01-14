@@ -1,0 +1,87 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  claude-review:
+    # Filter by PR author or allow bot actors like Dependabot
+    if: >
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request_target' && github.actor == 'dependabot[bot]') ||
+      (github.event_name == 'pull_request' && github.actor != 'dependabot[bot]')
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+          permission-actions: read
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: ${{ (startsWith(github.event.pull_request.head.ref, 'dependabot/npm_and_yarn/') || startsWith(github.head_ref, 'dependabot/npm_and_yarn/') || startsWith(github.ref_name, 'dependabot/npm_and_yarn/')) && '0' || '1' }}
+
+      - name: Configure Git for Private Marketplace
+        shell: bash
+        run: |
+          git config --global url."https://x-access-token:${{ steps.generate_token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Determine review command
+        id: determine-command
+        run: |
+          BRANCH_NAME="${{ github.event.pull_request.head.ref || github.head_ref || github.ref_name }}"
+          if [[ "$BRANCH_NAME" == "dependabot/npm_and_yarn/"* ]]; then
+            echo "command=/gh-code-review --detailed" >> $GITHUB_OUTPUT
+          else
+            echo "command=/gh-code-review --detailed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.generate_token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+
+          # Allow bot actors like Dependabot to trigger Claude code review
+          allowed_bots: "dependabot"
+
+          # Direct prompt for automated review
+          prompt: "${{ steps.determine-command.outputs.command }}"
+
+          claude_args: |
+            --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
+            --allowedTools "Read,Task,TodoWrite,Skill,Grep,Glob,mcp__github_inline_comment__create_inline_comment,mcp__context7__resolve-library-id,mcp__context7__get-library-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*)"
+
+          # Use sticky comments to make Claude reuse the same comment on subsequent pushes
+          use_sticky_comment: true

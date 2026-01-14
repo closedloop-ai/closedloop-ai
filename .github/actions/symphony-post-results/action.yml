@@ -1,0 +1,124 @@
+name: 'Symphony Post Results'
+description: 'Post Symphony results (plan or questions) to a GitHub issue'
+inputs:
+  issue_number:
+    description: 'GitHub issue number'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  github_token:
+    description: 'GitHub token for API calls'
+    required: true
+  comment_url:
+    description: 'URL of status comment to update'
+    required: false
+    default: ''
+  artifact_url:
+    description: 'URL of the Symphony artifact (optional)'
+    required: false
+    default: ''
+  delete_old_comment:
+    description: 'Whether to delete the old status comment'
+    required: false
+    default: 'false'
+outputs:
+  result_type:
+    description: 'Type of result posted: plan or questions'
+    value: ${{ steps.post.outputs.result_type }}
+  comment_url:
+    description: 'URL of the posted comment'
+    value: ${{ steps.post.outputs.comment_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Post Results
+      id: post
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Find the latest run directory
+        LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
+
+        if [ -z "$LATEST_RUN" ]; then
+          echo "::error::No runs directory found"
+          exit 1
+        fi
+
+        echo "Found run directory: $LATEST_RUN"
+
+        # Check what type of result we have
+        if [ -f "${LATEST_RUN}implementation-plan.md" ]; then
+          RESULT_TYPE="plan"
+          RESULT_FILE="${LATEST_RUN}implementation-plan.md"
+          TITLE="Implementation Plan"
+          EMOJI="📋"
+        elif [ -f "${LATEST_RUN}investigation-questions.md" ]; then
+          RESULT_TYPE="questions"
+          RESULT_FILE="${LATEST_RUN}investigation-questions.md"
+          TITLE="Open Questions"
+          EMOJI="❓"
+        else
+          echo "::error::No implementation plan or questions found in run directory"
+          ls -la "$LATEST_RUN"
+          exit 1
+        fi
+
+        echo "result_type=$RESULT_TYPE" >> "$GITHUB_OUTPUT"
+
+        # Read the content
+        CONTENT=$(cat "$RESULT_FILE")
+
+        # Build the comment body with collapsible details using printf for proper formatting
+        BODY=$(printf '<details>\n<summary><strong>%s %s</strong></summary>\n\n%s\n\n</details>' "$EMOJI" "$TITLE" "$CONTENT")
+
+        # Add artifact link if provided
+        if [ -n "${{ inputs.artifact_url }}" ]; then
+          BODY=$(printf '%s\n\n---\n📦 [View Symphony Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
+        fi
+
+        # Add instructions based on result type
+        if [ "$RESULT_TYPE" = "questions" ]; then
+          BODY=$(printf '%s\n\n---\n**Next steps:** Answer the questions above, then comment `@symphony-cl answer` followed by your answers.' "$BODY")
+        else
+          BODY=$(printf '%s\n\n---\n**Next steps:** Review the plan above. When ready, comment `@symphony-cl execute` to implement it.' "$BODY")
+        fi
+
+        # Delete old comment if requested
+        if [ "${{ inputs.delete_old_comment }}" = "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
+          OLD_COMMENT_ID=$(echo "${{ inputs.comment_url }}" | grep -oE '[0-9]+$')
+          if [ -n "$OLD_COMMENT_ID" ]; then
+            gh api -X DELETE "repos/${{ inputs.repository }}/issues/comments/$OLD_COMMENT_ID" || true
+            echo "Deleted old status comment"
+          fi
+        fi
+
+        # Write body to temp file to handle special characters safely
+        echo "$BODY" > /tmp/comment-body.txt
+
+        # Post the result as a new comment using --input for safe content handling
+        RESPONSE=$(gh api "repos/${{ inputs.repository }}/issues/${{ inputs.issue_number }}/comments" \
+          --input <(jq -n --rawfile body /tmp/comment-body.txt '{"body": $body}'))
+
+        COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+        echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+        echo "Posted results: $COMMENT_URL"
+
+        # Cleanup
+        rm -f /tmp/comment-body.txt
+
+        # Update the status comment if provided and not deleting
+        if [ "${{ inputs.delete_old_comment }}" != "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
+          STATUS_COMMENT_ID=$(echo "${{ inputs.comment_url }}" | grep -oE '[0-9]+$')
+          if [ -n "$STATUS_COMMENT_ID" ]; then
+            if [ "$RESULT_TYPE" = "questions" ]; then
+              STATUS_MSG="✅ Symphony has identified some open questions that need answers before planning can continue. See below."
+            else
+              STATUS_MSG="✅ Symphony has generated an implementation plan. See below."
+            fi
+            gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$STATUS_COMMENT_ID" \
+              -f body="$STATUS_MSG" || true
+          fi
+        fi

@@ -1,0 +1,983 @@
+name: Symphony
+
+on:
+  issue_comment:
+    types: [created]
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  # Fast job to detect command type and skip irrelevant triggers
+  detect:
+    if: |
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '@symphony-cl')
+    runs-on: ubuntu-latest
+    outputs:
+      command: ${{ steps.detect.outputs.command }}
+    steps:
+      - name: Detect Symphony Command
+        id: detect
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [[ "$COMMENT_BODY" == *"@symphony-cl plan"* ]]; then
+            echo "command=plan" >> "$GITHUB_OUTPUT"
+          elif [[ "$COMMENT_BODY" == *"@symphony-cl answer"* ]]; then
+            echo "command=answer" >> "$GITHUB_OUTPUT"
+          elif [[ "$COMMENT_BODY" == *"@symphony-cl execute"* ]]; then
+            echo "command=execute" >> "$GITHUB_OUTPUT"
+          else
+            # Fallback: any @symphony-cl mention without recognized command
+            echo "command=chat" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ============================================================================
+  # PLAN: Generate implementation plan from GitHub issue
+  # Triggered by: @symphony-cl plan
+  # Output: Open questions OR implementation plan
+  # ============================================================================
+  plan:
+    needs: detect
+    if: needs.detect.outputs.command == 'plan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: symphony-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Check for Existing Plan
+        id: check_existing
+        continue-on-error: true
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: download
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+
+      - name: Check if Plan Already Exists
+        id: check_plan
+        run: |
+          RUN_DIR="${{ steps.check_existing.outputs.run_dir }}"
+          if [ -n "$RUN_DIR" ] && [ -f "${RUN_DIR}/implementation-plan.md" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post Warning if Plan Exists
+        if: steps.check_plan.outputs.exists == 'true'
+        uses: ./.github/actions/post-status-comment
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          message: "⚠️ **A plan already exists for this issue.** Use `@symphony-cl execute` to implement it, or `@symphony-cl <request>` to amend it."
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Fail if Plan Already Exists
+        if: steps.check_plan.outputs.exists == 'true'
+        run: exit 1
+
+      - name: Symphony Setup
+        id: setup
+        uses: ./.github/actions/symphony-setup
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          node_version: ${{ env.NODE_VERSION }}
+
+      - name: Post Status Comment
+        id: status_comment
+        uses: ./.github/actions/post-status-comment
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          message: 'Generating plan...'
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Prepare Issue Content
+        id: issue_content
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          BODY=$(echo "$ISSUE_BODY" | tr '\n\r' '  ' | sed 's/  */ /g')
+          CONTENT="${ISSUE_TITLE}: ${BODY}"
+          echo "content<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CONTENT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch Issue Attachments
+        id: attachments
+        uses: ./.github/actions/fetch-issue-attachments
+        with:
+          issue_body: ${{ github.event.issue.body }}
+          github_token: ${{ steps.token.outputs.token }}
+          repo: ${{ github.repository }}
+
+      - name: Run Symphony Quick Plan
+        id: symphony
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          prompt: |
+            /symphony-core:plan ${{ steps.issue_content.outputs.content }} --stop-on-questions ${{ steps.attachments.outputs.attachment_args }}
+          claude_args: |
+            --max-turns 200
+            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+
+      - name: Post Results
+        id: post_results
+        uses: ./.github/actions/symphony-post-results
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+
+      - name: Update Status Comment on Failure
+        if: failure()
+        run: |
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="❌ Symphony failed to generate plan. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Upload Artifact
+        if: always()
+        id: upload
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: upload
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Upload Claude Execution Log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: claude-execution-log-${{ github.event.issue.number }}
+          path: /home/runner/work/_temp/claude-execution-output.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Verify Symphony Completion
+        run: |
+          if [ ! -d ".claude/runs" ]; then
+            echo "::error::Symphony failed - no runs directory created"
+            exit 1
+          fi
+          LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
+          if [ -z "$LATEST_RUN" ]; then
+            echo "::error::Symphony failed - no run directory found"
+            exit 1
+          fi
+          echo "Symphony completed successfully"
+          ls -la "$LATEST_RUN"
+
+      - name: Build Slack Message
+        if: success()
+        id: slack_message
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          ISSUE_URL="${{ github.server_url }}/${{ github.repository }}/issues/${{ github.event.issue.number }}"
+          RESULT_TYPE="${{ steps.post_results.outputs.result_type }}"
+          COMMENT_URL="${{ steps.post_results.outputs.comment_url }}"
+          ARTIFACT_URL="${{ steps.upload.outputs.artifact_url }}"
+
+          if [ "$RESULT_TYPE" = "questions" ]; then
+            STATUS="Pending Answers"
+            STATUS_LINE="Open questions: ${COMMENT_URL}"
+          else
+            STATUS="Plan ready for review"
+            STATUS_LINE="Implementation plan: ${COMMENT_URL}"
+          fi
+
+          MSG=$(printf "<%s|#%s: %s>\nAssignees: {assignees}\nStatus: %s\n%s\nRun artifact: %s" \
+            "$ISSUE_URL" "${{ github.event.issue.number }}" "$ISSUE_TITLE" "$STATUS" "$STATUS_LINE" "${ARTIFACT_URL:-N/A}")
+
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Notify Slack
+        if: success()
+        continue-on-error: true
+        uses: ./.github/actions/symphony-slack-notify
+        with:
+          webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
+          message: ${{ steps.slack_message.outputs.message }}
+          assignees_json: ${{ toJson(github.event.issue.assignees) }}
+
+  # ============================================================================
+  # ANSWER: Process user answers and generate final implementation plan
+  # Triggered by: @symphony-cl answer
+  # Requires: Previous @symphony-cl plan run with questions
+  # Output: Implementation plan
+  # ============================================================================
+  answer:
+    needs: detect
+    if: needs.detect.outputs.command == 'answer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: symphony-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: read
+          permission-issues: write
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Symphony Setup
+        id: setup
+        uses: ./.github/actions/symphony-setup
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          node_version: ${{ env.NODE_VERSION }}
+
+      - name: Post Status Comment
+        id: status_comment
+        uses: ./.github/actions/post-status-comment
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          message: 'Processing user answers...'
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Download Previous Run Artifact
+        id: download
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: download
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+
+      - name: Parse Answers
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          prompt: |
+            Parse the user's answers and create answers.txt in the run directory.
+
+            User's Comment (contains @symphony-cl answer mention and answers):
+            ${{ github.event.comment.body }}
+
+            Run Directory: ${{ steps.download.outputs.run_dir }}
+
+            Steps:
+            1. Read ${{ steps.download.outputs.run_dir }}/investigation-questions.md to see the original questions (format: ## Q-###: title)
+            2. Extract the user's answers from the comment. They may provide answers in any format:
+               - Freeform natural language
+               - Numbered list matching question order
+               - Quote-reply format with questions quoted
+               - Already in Q-### format
+            3. Convert the answers to the required format:
+               Q-001: <answer text>
+               Q-002: <answer text>
+               (one line per answer, matching the Q-### IDs from investigation-questions.md)
+            4. Write the formatted answers to ${{ steps.download.outputs.run_dir }}/answers.txt
+
+            Do NOT run any symphony commands. Only parse and create the answers file.
+          claude_args: |
+            --allowedTools "Bash(find:*),Bash(ls:*),Glob,Read,Write,TodoWrite"
+
+      - name: Run Symphony Quick Plan with Answers
+        id: symphony
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          prompt: |
+            /symphony-core:plan --existing-run ${{ steps.download.outputs.run_dir }}
+          claude_args: |
+            --max-turns 200
+            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+
+      - name: Post Results
+        id: post_results
+        uses: ./.github/actions/symphony-post-results
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          delete_old_comment: 'true'
+
+      - name: Update Status Comment on Failure
+        if: failure()
+        run: |
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="❌ Symphony failed to process answers. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Upload Updated Artifact
+        if: always()
+        id: upload
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: upload
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          overwrite: 'true'
+
+      - name: Build Slack Message
+        if: success()
+        id: slack_message
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          ISSUE_URL="${{ github.server_url }}/${{ github.repository }}/issues/${{ github.event.issue.number }}"
+          COMMENT_URL="${{ steps.post_results.outputs.comment_url }}"
+          ARTIFACT_URL="${{ steps.upload.outputs.artifact_url }}"
+
+          MSG=$(printf "<%s|#%s: %s>\nAssignees: {assignees}\nStatus: Plan ready for review\nImplementation plan: %s\nRun artifact: %s" \
+            "$ISSUE_URL" "${{ github.event.issue.number }}" "$ISSUE_TITLE" "$COMMENT_URL" "${ARTIFACT_URL:-N/A}")
+
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Notify Slack
+        if: success()
+        continue-on-error: true
+        uses: ./.github/actions/symphony-slack-notify
+        with:
+          webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
+          message: ${{ steps.slack_message.outputs.message }}
+          assignees_json: ${{ toJson(github.event.issue.assignees) }}
+
+  # ============================================================================
+  # EXECUTE: Implement the plan and create a PR
+  # Triggered by: @symphony-cl execute
+  # Requires: Previous @symphony-cl plan (or answer) run with implementation plan
+  # Output: Pull request
+  # ============================================================================
+  execute:
+    needs: detect
+    if: needs.detect.outputs.command == 'execute'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    concurrency:
+      group: symphony-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Symphony Setup
+        id: setup
+        uses: ./.github/actions/symphony-setup
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          node_version: ${{ env.NODE_VERSION }}
+
+      - name: Post Status Comment
+        id: status_comment
+        uses: ./.github/actions/post-status-comment
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          message: 'Symphony is orchestrating agents to implement the plan...'
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Download Run Artifact
+        id: download
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: download
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+
+      - name: Verify Implementation Plan
+        id: verify_plan
+        run: |
+          LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
+          if [ -z "$LATEST_RUN" ] || [ ! -f "${LATEST_RUN}implementation-plan.md" ]; then
+            echo "::error::No implementation plan found. Run @symphony-cl plan first."
+            exit 1
+          fi
+          PLAN_PATH="${LATEST_RUN}implementation-plan.md"
+          echo "Found implementation plan: $PLAN_PATH"
+          echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create Branch
+        run: |
+          git config user.name "symphony[bot]"
+          git config user.email "symphony[bot]@users.noreply.github.com"
+          git checkout -b issue-${{ github.event.issue.number }}
+          git push -u origin issue-${{ github.event.issue.number }}
+
+      - name: Prepare Issue Content
+        id: issue_content
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          BODY=$(echo "$ISSUE_BODY" | tr '\n\r' '  ' | sed 's/  */ /g')
+          echo "title<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ISSUE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$BODY" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run Symphony Implementation
+        id: symphony
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          prompt: |
+            /symphony-core:execute ${{ steps.verify_plan.outputs.plan_path }}
+          claude_args: |
+            --max-turns 200
+            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+
+      - name: Commit and Push Changes
+        id: commit_push
+        run: |
+          # Check if there are changes to commit
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to commit"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Stage all changes
+          git add -A
+
+          # Create commit message
+          COMMIT_MSG="Implement #${{ github.event.issue.number }}: ${{ steps.issue_content.outputs.title }}
+
+          Closes #${{ github.event.issue.number }}
+
+          Generated with Symphony"
+
+          git commit -m "$COMMIT_MSG"
+          git push origin issue-${{ github.event.issue.number }}
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Create Pull Request
+        id: create_pr
+        if: steps.commit_push.outputs.has_changes == 'true'
+        run: |
+          PR_BODY="## Summary
+
+          Implementation of #${{ github.event.issue.number }}: ${{ steps.issue_content.outputs.title }}
+
+          Closes #${{ github.event.issue.number }}
+
+          ## Implementation
+
+          See the implementation plan and code changes for details.
+
+          ---
+          Generated with Symphony"
+
+          PR_URL=$(gh pr create \
+            --title "Implement #${{ github.event.issue.number }}: ${{ steps.issue_content.outputs.title }}" \
+            --body "$PR_BODY" \
+            --label symphony \
+            --head issue-${{ github.event.issue.number }} \
+            --base main)
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Get PR URL
+        id: get_pr
+        run: |
+          # Use PR URL from create_pr step if available, otherwise query
+          PR_URL="${{ steps.create_pr.outputs.pr_url }}"
+          if [ -z "$PR_URL" ]; then
+            PR_URL=$(gh pr list --head "issue-${{ github.event.issue.number }}" --state open --json url --jq '.[0].url')
+          fi
+          if [ -n "$PR_URL" ]; then
+            echo "Found PR: $PR_URL"
+          fi
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Update Status Comment with PR Link
+        if: success()
+        run: |
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          PR_URL="${{ steps.get_pr.outputs.pr_url }}"
+
+          if [ -n "$COMMENT_URL" ] && [ -n "$PR_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="✅ Implementation complete!
+
+          🚀 **Pull request created:** $PR_URL
+
+          The implementation has been reviewed and tested. Please review the PR for final approval." || true
+            fi
+          elif [ -z "$PR_URL" ]; then
+            # No PR was created (no changes), update comment accordingly
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="✅ Symphony completed, but no code changes were made. The implementation plan may have already been applied or no changes were needed." || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Update Status Comment on Failure
+        if: failure()
+        run: |
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="❌ Symphony failed to implement the plan. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Build Slack Message
+        if: success()
+        id: slack_message
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          ISSUE_URL="${{ github.server_url }}/${{ github.repository }}/issues/${{ github.event.issue.number }}"
+          PR_URL="${{ steps.get_pr.outputs.pr_url }}"
+          ARTIFACT_URL="${{ steps.download.outputs.artifact_url }}"
+
+          MSG=$(printf "Github issue: <%s|#%s: %s>\nAssignees: {assignees}\nStatus: Implementation complete" "$ISSUE_URL" "${{ github.event.issue.number }}" "$ISSUE_TITLE")
+          if [ -n "$PR_URL" ]; then
+            MSG=$(printf "%s\nPR created: %s" "$MSG" "$PR_URL")
+          fi
+          MSG=$(printf "%s\nRun artifact: %s" "$MSG" "${ARTIFACT_URL:-N/A}")
+
+          echo "message<<EOF" >> $GITHUB_OUTPUT
+          echo "$MSG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Notify Slack
+        if: success()
+        continue-on-error: true
+        uses: ./.github/actions/symphony-slack-notify
+        with:
+          webhook_url: ${{ secrets.SLACK_SYMPHONY_WEBHOOK_URL }}
+          message: ${{ steps.slack_message.outputs.message }}
+          assignees_json: ${{ toJson(github.event.issue.assignees) }}
+
+  # ============================================================================
+  # CHAT: Fallback for any @symphony-cl mention without a recognized command
+  # Triggered by: @symphony-cl <anything not plan/answer/execute>
+  # If implementation-plan.md exists: Uses /symphony-core:amend-plan for plan amendments
+  # Otherwise: Attempts to respond to freeform questions
+  # ============================================================================
+  chat:
+    needs: detect
+    if: needs.detect.outputs.command == 'chat'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: symphony-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      actions: read
+      id-token: write
+
+    steps:
+      - name: Generate GitHub App Token
+        id: token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYMPHONY_APP_ID }}
+          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},claude_code
+          permission-contents: write
+          permission-issues: write
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Symphony Setup
+        id: setup
+        uses: ./.github/actions/symphony-setup
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          node_version: ${{ env.NODE_VERSION }}
+
+      - name: Post Status Comment
+        id: status_comment
+        uses: ./.github/actions/post-status-comment
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          message: 'Symphony is processing your request...'
+          github_token: ${{ steps.token.outputs.token }}
+
+      - name: Try Download Previous Run Artifact
+        id: download
+        continue-on-error: true
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: download
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ github.token }}
+
+      - name: Prepare Context
+        id: context
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          USER_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          # Check if we have a run directory with context
+          RUN_DIR="${{ steps.download.outputs.run_dir }}"
+          if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
+            echo "has_context=true" >> "$GITHUB_OUTPUT"
+            echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
+
+            # Check if implementation-plan.md exists (indicates plan is finalized)
+            if [ -f "${RUN_DIR}/implementation-plan.md" ]; then
+              echo "has_plan=true" >> "$GITHUB_OUTPUT"
+              echo "plan_file=${RUN_DIR}/implementation-plan.md" >> "$GITHUB_OUTPUT"
+              echo "Found implementation-plan.md - will use amend workflow"
+            else
+              echo "has_plan=false" >> "$GITHUB_OUTPUT"
+              echo "No implementation-plan.md found - will use chat workflow"
+            fi
+          else
+            echo "has_context=false" >> "$GITHUB_OUTPUT"
+            echo "has_plan=false" >> "$GITHUB_OUTPUT"
+            echo "run_dir=" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Pass issue info
+          echo "title<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ISSUE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          BODY=$(echo "$ISSUE_BODY" | tr '\n\r' '  ' | sed 's/  */ /g')
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$BODY" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # Remove newlines and escape double quotes to prevent breaking --message "..." argument parsing
+          COMMENT=$(echo "$USER_COMMENT" | tr '\n\r' '  ' | sed 's/  */ /g')
+          COMMENT="${COMMENT//\"/\\\"}"
+          echo "comment<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$COMMENT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Run Symphony Plan Amend
+        id: symphony_amend
+        if: steps.context.outputs.has_plan == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          prompt: /symphony-core:amend-plan --run-dir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
+          claude_args: |
+            --max-turns 200
+            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+
+      - name: Prepare Amend Response
+        id: prepare_amend_response
+        if: steps.context.outputs.has_plan == 'true' && success()
+        run: |
+          RUN_DIR="${{ steps.context.outputs.run_dir }}"
+          AMEND_STATE="$RUN_DIR/amend-session.json"
+          RUN_STATE="$RUN_DIR/state.json"
+
+          # Extract the conversation JSON for Claude to summarize
+          # If amend-session.json exists, the conversation is still active
+          # If it was deleted (apply was called), check state.json for amended.conversation
+          if [ -f "$AMEND_STATE" ]; then
+            CONVERSATION=$(jq -c '.conversation' "$AMEND_STATE")
+          elif [ -f "$RUN_STATE" ]; then
+            CONVERSATION=$(jq -c '.amended.conversation' "$RUN_STATE")
+          fi
+
+          if [ -n "$CONVERSATION" ] && [ "$CONVERSATION" != "null" ]; then
+            echo "$CONVERSATION" > "${{ runner.temp }}/amend-conversation.json"
+            echo "has_conversation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Warning: No conversation found in state files"
+            echo "has_conversation=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Format Amend Response
+        id: format_amend_response
+        if: steps.context.outputs.has_plan == 'true' && success() && steps.prepare_amend_response.outputs.has_conversation == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          prompt: |
+              Read the conversation JSON at ${{ runner.temp }}/amend-conversation.json and write a human-readable summary of what was accomplished to ${{ runner.temp }}/amend-response.md.
+
+              The summary should:
+              - Be concise and suitable for a GitHub issue comment
+              - Highlight the key changes or actions taken
+              - Use markdown formatting
+              - NOT include raw JSON or technical details about tool calls
+              - Be written from the perspective of reporting what Symphony did
+
+              Write ONLY the summary file, no other output.
+          claude_args: |
+              --max-turns 100
+              --allowedTools "Read,Write"
+
+      - name: Upload Updated Artifact (Amend)
+        id: upload_amend
+        if: steps.context.outputs.has_plan == 'true' && success()
+        uses: ./.github/actions/symphony-artifact
+        with:
+          mode: upload
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          overwrite: 'true'
+
+      - name: Mark Old Plan Comments
+        if: steps.context.outputs.has_plan == 'true' && success()
+        run: |
+          # Get comment IDs from symphony-cl[bot] that have current Implementation Plan (not already marked old)
+          COMMENT_IDS=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --paginate \
+            --jq '[.[] | select(.user.login == "symphony-cl[bot]") | select(.body | contains("<summary><strong>📋 Implementation Plan</strong>")) | select(.body | contains("Old Implementation Plan") | not) | .id] | .[]')
+
+          for COMMENT_ID in $COMMENT_IDS; do
+            echo "Marking comment $COMMENT_ID as old plan..."
+
+            # Fetch the full comment body
+            COMMENT_BODY=$(gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" --jq '.body')
+
+            # Replace "Implementation Plan" with "Old Implementation Plan" in the summary
+            UPDATED_BODY=$(echo "$COMMENT_BODY" | sed 's/<summary><strong>📋 Implementation Plan<\/strong>/<summary><strong>📋 Old Implementation Plan<\/strong>/g')
+
+            # Update the comment using a temp file to handle multiline content
+            echo "$UPDATED_BODY" > /tmp/updated-comment.md
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+              --input <(jq -n --rawfile body /tmp/updated-comment.md '{"body": $body}') || true
+          done
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Post Amend Results
+        if: steps.context.outputs.has_plan == 'true' && success()
+        uses: ./.github/actions/symphony-post-results
+        with:
+          issue_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          artifact_url: ${{ steps.upload_amend.outputs.artifact_url }}
+
+      - name: Update Status Comment on Amend Failure
+        if: steps.context.outputs.has_plan == 'true' && failure()
+        run: |
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="❌ Symphony failed to process amendment. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+
+      - name: Run Symphony Chat
+        id: symphony
+        if: steps.context.outputs.has_plan != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.token.outputs.token }}
+          show_full_output: true
+          plugin_marketplaces: |
+            https://github.com/closedloop-ai/claude_code.git
+          plugins: |
+            symphony-core@closedloop
+            symphony-fe@closedloop
+          prompt: |
+              You are Symphony, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
+
+              Issue Title: ${{ steps.context.outputs.title }}
+              Issue Body: ${{ steps.context.outputs.body }}
+
+              User's message: ${{ steps.context.outputs.comment }}
+
+              ${{ steps.context.outputs.has_context == 'true' && format('Previous planning context is available at: {0}', steps.context.outputs.run_dir) || 'No previous planning context exists for this issue.' }}
+
+              Instructions:
+              1. If previous context exists, read the relevant files (implementation-plan.md, investigation-questions.md, investigation-log.md) to understand the current state
+              2. Respond helpfully to the user's message/question
+              3. Write your response to a file at .claude/chat-response.md
+              4. Keep your response focused and actionable
+
+              Available commands the user can use:
+              - @symphony-cl plan - Generate an implementation plan from the issue
+              - @symphony-cl answer - Provide answers to open questions
+              - @symphony-cl execute - Implement the plan and create a PR
+
+              If the user seems to want one of these actions, suggest the appropriate command.
+          claude_args: |
+              --max-turns 200
+              --allowedTools "Bash(find:*),Bash(ls:*),Glob,Grep,Read,Write,TodoWrite"
+
+      - name: Post Response
+        id: post_response
+        if: steps.context.outputs.has_plan != 'true'
+        run: |
+          RESPONSE_FILE=".claude/chat-response.md"
+
+          if [ -f "$RESPONSE_FILE" ]; then
+            BODY=$(cat "$RESPONSE_FILE")
+          else
+            # Fallback message if no response file was created
+            BODY="I couldn't process that request. Try one of these commands:
+          - \`@symphony-cl plan\` - Generate an implementation plan
+          - \`@symphony-cl answer\` - Provide answers to open questions
+          - \`@symphony-cl execute\` - Implement the plan and create a PR"
+          fi
+
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="$BODY" || true
+            fi
+          fi
+          echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
