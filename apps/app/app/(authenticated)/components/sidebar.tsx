@@ -83,7 +83,7 @@ const data = {
     //   ],
     // },
     {
-      title: "PRDs",
+      title: "PRD Library",
       url: "/prds",
       icon: ClipboardListIcon,
     },
@@ -186,11 +186,12 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
           <SidebarGroup>
             <SidebarGroupLabel>Platform</SidebarGroupLabel>
             <SidebarMenu>
-              {data.navMain.map((item) => (
+              {data.navMain.map((item, index) => (
                 <Collapsible
                   asChild
                   defaultOpen={(item as { isActive?: boolean }).isActive ?? false}
                   key={item.title}
+                  id={`nav-collapsible-${index}`}
                 >
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild tooltip={item.title}>

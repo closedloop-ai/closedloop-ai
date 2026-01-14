@@ -17,3 +17,16 @@ model Page {
   id   Int    @id @default(autoincrement())
   name String
 }
+
+model PRD {
+  id        String   @id @default(cuid())
+  title     String
+  fileName  String
+  owner     String
+  status    String   @default("Draft")
+  tags      String[] @default([])
+  template  String   @default("Standard PRD")
+  content   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
