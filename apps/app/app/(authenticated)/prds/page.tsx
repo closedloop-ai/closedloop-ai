@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { Header } from "../components/header";
 import { getPRDs } from "@/app/actions/prds";
-import { PRDTable } from "./components/prd-table";
+import { Header } from "../components/header";
 import { NewPRDModal } from "./components/new-prd-modal";
+import { PRDTable } from "./components/prd-table";
 
 export const metadata: Metadata = {
   title: "PRD Library",

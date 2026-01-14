@@ -9,13 +9,6 @@ import {
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -189,9 +182,11 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
               {data.navMain.map((item, index) => (
                 <Collapsible
                   asChild
-                  defaultOpen={(item as { isActive?: boolean }).isActive ?? false}
-                  key={item.title}
+                  defaultOpen={
+                    (item as { isActive?: boolean }).isActive ?? false
+                  }
                   id={`nav-collapsible-${index}`}
+                  key={item.title}
                 >
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild tooltip={item.title}>

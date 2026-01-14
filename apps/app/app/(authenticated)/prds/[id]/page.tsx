@@ -1,5 +1,5 @@
-import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { getPRDById } from "@/app/actions/prds";
 import { PRDEditor } from "./prd-editor";
 
@@ -7,7 +7,9 @@ type PRDPageProps = {
   params: Promise<{ id: string }>;
 };
 
-export async function generateMetadata({ params }: PRDPageProps): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: PRDPageProps): Promise<Metadata> {
   const { id } = await params;
   const result = await getPRDById(id);
 

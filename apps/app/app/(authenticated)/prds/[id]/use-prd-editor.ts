@@ -1,12 +1,17 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "@repo/design-system/components/ui/sonner";
-import { updatePRD, deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
-import { downloadAsMarkdown, copyToClipboard } from "@/lib/utils";
-import type { PRDStatus, PRDTemplate } from "@/lib/types";
 import type { PRD } from "@repo/database/generated/client";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useRouter } from "next/navigation";
+import { useCallback, useState, useTransition } from "react";
+import {
+  deletePRD,
+  duplicatePRD,
+  renamePRD,
+  updatePRD,
+} from "@/app/actions/prds";
+import type { PRDStatus, PRDTemplate } from "@/lib/types";
+import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
 
 export function usePRDEditor(prd: PRD) {
   const router = useRouter();
@@ -30,10 +35,6 @@ export function usePRDEditor(prd: PRD) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
 
-  // Rename state
-  const [newTitle, setNewTitle] = useState(prd.title);
-  const [newFileName, setNewFileName] = useState(prd.fileName);
-
   // Handlers
   const handleSave = useCallback(() => {
     setIsSaving(true);
@@ -50,7 +51,14 @@ export function usePRDEditor(prd: PRD) {
   }, [prd.id, content]);
 
   const handleMetadataUpdate = useCallback(
-    (updates: Partial<{ status: PRDStatus; approver: string; tags: string[]; template: PRDTemplate }>) => {
+    (
+      updates: Partial<{
+        status: PRDStatus;
+        approver: string;
+        tags: string[];
+        template: PRDTemplate;
+      }>
+    ) => {
       startTransition(async () => {
         const result = await updatePRD({ id: prd.id, ...updates });
         if (result.success) {
@@ -118,12 +126,15 @@ export function usePRDEditor(prd: PRD) {
     [handleAddTag]
   );
 
-  const handleRename = useCallback(() => {
-    startTransition(async () => {
-      await renamePRD(prd.id, newTitle, newFileName);
-      setShowRenameDialog(false);
-    });
-  }, [prd.id, newTitle, newFileName]);
+  const handleRename = useCallback(
+    (title: string, fileName: string) => {
+      startTransition(async () => {
+        await renamePRD(prd.id, title, fileName);
+        setShowRenameDialog(false);
+      });
+    },
+    [prd.id]
+  );
 
   const handleDuplicate = useCallback(() => {
     startTransition(async () => {
@@ -175,10 +186,6 @@ export function usePRDEditor(prd: PRD) {
     setShowDeleteDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
-    newTitle,
-    setNewTitle,
-    newFileName,
-    setNewFileName,
 
     // Handlers
     handleSave,

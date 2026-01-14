@@ -1,19 +1,18 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
-import { useRouter } from "next/navigation";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { useRouter } from "next/navigation";
+import { useCallback, useState, useTransition } from "react";
 import {
-  updateImplementationPlan,
   deleteImplementationPlan,
+  updateImplementationPlan,
 } from "@/app/actions/implementation-plans";
-import { downloadAsMarkdown, copyToClipboard } from "@/lib/utils";
-import type { ImplPlanStatus, ImplPlanType } from "@/lib/types";
-import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
-
-type ImplementationPlanWithPRD = ImplementationPlan & {
-  sourcePrd: Pick<PRD, "id" | "title">;
-};
+import type {
+  ImplementationPlanWithPRD,
+  ImplPlanStatus,
+  ImplPlanType,
+} from "@/lib/types";
+import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
 
 export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
   const router = useRouter();
@@ -29,7 +28,9 @@ export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
   const [approver, setApprover] = useState(plan.approver || "");
   const [planType, setPlanType] = useState(plan.planType);
   const [targetRelease, setTargetRelease] = useState(plan.targetRelease || "");
-  const [engineeringTeam, setEngineeringTeam] = useState(plan.engineeringTeam || "");
+  const [engineeringTeam, setEngineeringTeam] = useState(
+    plan.engineeringTeam || ""
+  );
 
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
@@ -53,9 +54,20 @@ export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
   }, [plan.id, content]);
 
   const handleMetadataUpdate = useCallback(
-    (updates: Partial<{ status: ImplPlanStatus; approver: string; planType: ImplPlanType; targetRelease: string; engineeringTeam: string }>) => {
+    (
+      updates: Partial<{
+        status: ImplPlanStatus;
+        approver: string;
+        planType: ImplPlanType;
+        targetRelease: string;
+        engineeringTeam: string;
+      }>
+    ) => {
       startTransition(async () => {
-        const result = await updateImplementationPlan({ id: plan.id, ...updates });
+        const result = await updateImplementationPlan({
+          id: plan.id,
+          ...updates,
+        });
         if (result.success) {
           setLastSaved(new Date());
           toast.success("Changes saved");
@@ -103,9 +115,12 @@ export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
     }
   }, [targetRelease, plan.targetRelease, handleMetadataUpdate]);
 
-  const handleEngineeringTeamChange = useCallback((newEngineeringTeam: string) => {
-    setEngineeringTeam(newEngineeringTeam);
-  }, []);
+  const handleEngineeringTeamChange = useCallback(
+    (newEngineeringTeam: string) => {
+      setEngineeringTeam(newEngineeringTeam);
+    },
+    []
+  );
 
   const handleEngineeringTeamBlur = useCallback(() => {
     if (engineeringTeam !== (plan.engineeringTeam || "")) {
@@ -115,7 +130,10 @@ export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
 
   const handleApprove = useCallback(() => {
     startTransition(async () => {
-      const result = await updateImplementationPlan({ id: plan.id, status: "Ready" });
+      const result = await updateImplementationPlan({
+        id: plan.id,
+        status: "Ready",
+      });
       if (result.success) {
         setStatus("Ready");
         setLastSaved(new Date());
@@ -127,7 +145,10 @@ export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
   }, [plan.id]);
 
   const handleExport = useCallback(() => {
-    downloadAsMarkdown(content, `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`);
+    downloadAsMarkdown(
+      content,
+      `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
+    );
   }, [content, plan.title]);
 
   const handleCopyMarkdown = useCallback(async () => {

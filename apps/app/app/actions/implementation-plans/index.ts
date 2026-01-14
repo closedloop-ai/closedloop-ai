@@ -1,14 +1,14 @@
 "use server";
 
 import { database } from "@repo/database";
-import { revalidatePath } from "next/cache";
 import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
+import { revalidatePath } from "next/cache";
 import {
   type ActionResult,
-  success,
   failure,
   type ImplPlanStatus,
   type ImplPlanType,
+  success,
 } from "@/lib/types";
 
 type ImplementationPlanWithPRD = ImplementationPlan & {
@@ -35,7 +35,9 @@ export type UpdateImplementationPlanInput = {
   engineeringTeam?: string;
 };
 
-export async function getImplementationPlans(): Promise<ActionResult<ImplementationPlanWithPRD[]>> {
+export async function getImplementationPlans(): Promise<
+  ActionResult<ImplementationPlanWithPRD[]>
+> {
   try {
     const plans = await database.implementationPlan.findMany({
       orderBy: { createdAt: "desc" },
@@ -55,7 +57,9 @@ export async function getImplementationPlans(): Promise<ActionResult<Implementat
   }
 }
 
-export async function getImplementationPlanById(id: string): Promise<ActionResult<ImplementationPlanWithPRD>> {
+export async function getImplementationPlanById(
+  id: string
+): Promise<ActionResult<ImplementationPlanWithPRD>> {
   try {
     const plan = await database.implementationPlan.findUnique({
       where: { id },
@@ -78,7 +82,9 @@ export async function getImplementationPlanById(id: string): Promise<ActionResul
   }
 }
 
-export async function createImplementationPlan(input: CreateImplementationPlanInput): Promise<ActionResult<ImplementationPlan>> {
+export async function createImplementationPlan(
+  input: CreateImplementationPlanInput
+): Promise<ActionResult<ImplementationPlan>> {
   try {
     // Get the source PRD to generate the title and inherit approver
     const sourcePrd = await database.pRD.findUnique({
@@ -123,7 +129,9 @@ export async function createImplementationPlan(input: CreateImplementationPlanIn
   }
 }
 
-export async function updateImplementationPlan(input: UpdateImplementationPlanInput): Promise<ActionResult<ImplementationPlan>> {
+export async function updateImplementationPlan(
+  input: UpdateImplementationPlanInput
+): Promise<ActionResult<ImplementationPlan>> {
   try {
     const { id, ...data } = input;
     const plan = await database.implementationPlan.update({
@@ -139,7 +147,9 @@ export async function updateImplementationPlan(input: UpdateImplementationPlanIn
   }
 }
 
-export async function deleteImplementationPlan(id: string): Promise<ActionResult<{ deleted: true }>> {
+export async function deleteImplementationPlan(
+  id: string
+): Promise<ActionResult<{ deleted: true }>> {
   try {
     await database.implementationPlan.delete({
       where: { id },
@@ -152,7 +162,9 @@ export async function deleteImplementationPlan(id: string): Promise<ActionResult
   }
 }
 
-export async function regenerateImplementationPlan(id: string): Promise<ActionResult<ImplementationPlan>> {
+export async function regenerateImplementationPlan(
+  id: string
+): Promise<ActionResult<ImplementationPlan>> {
   try {
     const plan = await database.implementationPlan.findUnique({
       where: { id },

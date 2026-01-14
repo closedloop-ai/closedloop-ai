@@ -8,34 +8,30 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
-import {
+  CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   TrashIcon,
-  CopyIcon,
 } from "lucide-react";
 import { useState, useTransition } from "react";
-import { deleteImplementationPlan, regenerateImplementationPlan } from "@/app/actions/implementation-plans";
-import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
-
-type ImplementationPlanWithPRD = ImplementationPlan & {
-  sourcePrd: Pick<PRD, "id" | "title">;
-};
+import {
+  deleteImplementationPlan,
+  regenerateImplementationPlan,
+} from "@/app/actions/implementation-plans";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import type { ImplementationPlanWithPRD } from "@/lib/types";
+import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
 
 type ImplementationPlanRowActionsProps = {
   plan: ImplementationPlanWithPRD;
 };
 
-export function ImplementationPlanRowActions({ plan }: ImplementationPlanRowActionsProps) {
+export function ImplementationPlanRowActions({
+  plan,
+}: ImplementationPlanRowActionsProps) {
   const [isPending, startTransition] = useTransition();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
@@ -46,22 +42,18 @@ export function ImplementationPlanRowActions({ plan }: ImplementationPlanRowActi
   };
 
   const handleExport = () => {
-    const blob = new Blob([plan.content], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadAsMarkdown(
+      plan.content,
+      `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
+    );
   };
 
   const handleCopyMarkdown = async () => {
-    try {
-      await navigator.clipboard.writeText(plan.content);
-    } catch (err) {
-      console.error("Failed to copy to clipboard:", err);
+    const success = await copyToClipboard(plan.content);
+    if (success) {
+      toast.success("Copied to clipboard");
+    } else {
+      toast.error("Failed to copy to clipboard");
     }
   };
 
@@ -76,13 +68,13 @@ export function ImplementationPlanRowActions({ plan }: ImplementationPlanRowActi
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+          <Button className="h-8 w-8 p-0" size="sm" variant="ghost">
             <MoreHorizontalIcon className="h-4 w-4" />
             <span className="sr-only">Open menu</span>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[160px]">
-          <DropdownMenuItem onClick={handleRegenerate} disabled={isPending}>
+          <DropdownMenuItem disabled={isPending} onClick={handleRegenerate}>
             <RefreshCwIcon className="mr-2 h-4 w-4" />
             Regenerate
           </DropdownMenuItem>
@@ -96,8 +88,8 @@ export function ImplementationPlanRowActions({ plan }: ImplementationPlanRowActi
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onClick={() => setShowDeleteDialog(true)}
             className="text-destructive focus:text-destructive"
+            onClick={() => setShowDeleteDialog(true)}
           >
             <TrashIcon className="mr-2 h-4 w-4" />
             Delete
@@ -105,26 +97,14 @@ export function ImplementationPlanRowActions({ plan }: ImplementationPlanRowActi
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Implementation Plan</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{plan.title}"? This action cannot be
-              undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isPending}>
-              {isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteConfirmationDialog
+        isPending={isPending}
+        itemName={plan.title}
+        onConfirm={handleDelete}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
+        title="Implementation Plan"
+      />
     </>
   );
 }

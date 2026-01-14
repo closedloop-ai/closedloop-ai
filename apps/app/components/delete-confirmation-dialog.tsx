@@ -28,19 +28,24 @@ export function DeleteConfirmationDialog({
   isPending = false,
 }: DeleteConfirmationDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Delete {title}</DialogTitle>
           <DialogDescription>
-            Are you sure you want to delete "{itemName}"? This action cannot be undone.
+            Are you sure you want to delete "{itemName}"? This action cannot be
+            undone.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button onClick={() => onOpenChange(false)} variant="outline">
             Cancel
           </Button>
-          <Button variant="destructive" onClick={onConfirm} disabled={isPending}>
+          <Button
+            disabled={isPending}
+            onClick={onConfirm}
+            variant="destructive"
+          >
             {isPending ? "Deleting..." : "Delete"}
           </Button>
         </DialogFooter>

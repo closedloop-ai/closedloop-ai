@@ -1,9 +1,15 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { DataTable, type Column, type SortOption, type FilterOption } from "@repo/design-system/components/ui/data-table";
 import type { PRD } from "@repo/database/generated/client";
-import { PRDStatusBadge } from "./prd-status-badge";
+import {
+  type Column,
+  DataTable,
+  type FilterOption,
+  type SortOption,
+} from "@repo/design-system/components/ui/data-table";
+import { useRouter } from "next/navigation";
+import { PRDStatusBadge } from "@/components/status-badge";
+import { formatDate } from "@/lib/utils";
 import { PRDRowActions } from "./prd-row-actions";
 
 type PRDTableProps = {
@@ -14,9 +20,7 @@ const columns: Column<PRD>[] = [
   {
     key: "title",
     header: "Name / Title",
-    render: (prd) => (
-      <span className="font-medium">{prd.title}</span>
-    ),
+    render: (prd) => <span className="font-medium">{prd.title}</span>,
   },
   {
     key: "version",
@@ -55,14 +59,6 @@ const filterOptions: FilterOption[] = [
   { label: "Archived", value: "Archived" },
 ];
 
-function formatDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(date));
-}
-
 export function PRDTable({ prds }: PRDTableProps) {
   const router = useRouter();
 
@@ -72,16 +68,16 @@ export function PRDTable({ prds }: PRDTableProps) {
 
   return (
     <DataTable
-      data={prds}
       columns={columns}
-      searchPlaceholder="Search .md files"
-      searchKey="title"
-      sortOptions={sortOptions}
-      filterOptions={filterOptions}
+      data={prds}
+      emptyMessage="No PRDs found. Create your first PRD to get started."
       filterKey="status"
+      filterOptions={filterOptions}
       onRowClick={handleRowClick}
       renderRowActions={(prd) => <PRDRowActions prd={prd} />}
-      emptyMessage="No PRDs found. Create your first PRD to get started."
+      searchKey="title"
+      searchPlaceholder="Search .md files"
+      sortOptions={sortOptions}
     />
   );
 }

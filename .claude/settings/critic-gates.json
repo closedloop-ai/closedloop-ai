@@ -10,7 +10,14 @@
       "critics": ["security-privacy", "auth-security-expert"]
     },
     {
-      "patterns": ["navigation", "routing", "link", "redirect", "pages", "app/"],
+      "patterns": [
+        "navigation",
+        "routing",
+        "link",
+        "redirect",
+        "pages",
+        "app/"
+      ],
       "critics": ["navigation-expert", "web-platform-expert"]
     },
     {
@@ -18,7 +25,15 @@
       "critics": ["web-platform-expert", "web-build-expert"]
     },
     {
-      "patterns": ["api", "rest", "graphql", "tanstack", "query", "mutation", "fetch"],
+      "patterns": [
+        "api",
+        "rest",
+        "graphql",
+        "tanstack",
+        "query",
+        "mutation",
+        "fetch"
+      ],
       "critics": ["api-architect", "caching-strategist"]
     },
     {
@@ -26,7 +41,14 @@
       "critics": ["state-management-architect", "react-component-architect"]
     },
     {
-      "patterns": ["component", "ui", "design-system", "theme", "tailwind", "shadcn"],
+      "patterns": [
+        "component",
+        "ui",
+        "design-system",
+        "theme",
+        "tailwind",
+        "shadcn"
+      ],
       "critics": ["design-system-expert", "react-component-architect"]
     },
     {
@@ -42,7 +64,14 @@
       "critics": ["test-strategist"]
     },
     {
-      "patterns": ["ci", "cd", "github-actions", "deployment", "build", "turbo"],
+      "patterns": [
+        "ci",
+        "cd",
+        "github-actions",
+        "deployment",
+        "build",
+        "turbo"
+      ],
       "critics": ["ci-cd-architect", "web-build-expert"]
     },
     {

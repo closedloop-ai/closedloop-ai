@@ -1,5 +1,6 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,6 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
-import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -19,12 +19,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, XIcon } from "lucide-react";
-import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
 import { createPRD } from "@/app/actions/prds";
-import { PRD_STATUS_OPTIONS, PRD_TEMPLATE_OPTIONS, type PRDStatus, type PRDTemplate } from "@/lib/types";
+import {
+  PRD_STATUS_OPTIONS,
+  PRD_TEMPLATE_OPTIONS,
+  type PRDStatus,
+  type PRDTemplate,
+} from "@/lib/types";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -87,7 +92,7 @@ export function NewPRDModal() {
   const handleSubmit = () => {
     setError(null);
 
-    if (!title.trim() || !fileName.trim() || !approver.trim()) {
+    if (!(title.trim() && fileName.trim() && approver.trim())) {
       setError("Please fill in all required fields");
       return;
     }
@@ -120,26 +125,29 @@ export function NewPRDModal() {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(newOpen) => {
-      setOpen(newOpen);
-      if (!newOpen) {
-        resetForm();
-      }
-    }}>
+    <Dialog
+      onOpenChange={(newOpen) => {
+        setOpen(newOpen);
+        if (!newOpen) {
+          resetForm();
+        }
+      }}
+      open={open}
+    >
       <DialogTrigger asChild>
         <Button>
           <PlusIcon className="mr-2 h-4 w-4" />
           New PRD
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>Create New PRD</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
           {error && (
-            <div className="p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
             </div>
           )}
@@ -150,9 +158,9 @@ export function NewPRDModal() {
             </Label>
             <Input
               id="new-title"
-              value={title}
               onChange={(e) => handleTitleChange(e.target.value)}
               placeholder="Checkout Revamp"
+              value={title}
             />
           </div>
 
@@ -162,9 +170,9 @@ export function NewPRDModal() {
             </Label>
             <Input
               id="new-filename"
-              value={fileName}
               onChange={(e) => setFileName(e.target.value)}
               placeholder="checkout-revamp.md"
+              value={fileName}
             />
           </div>
 
@@ -174,16 +182,19 @@ export function NewPRDModal() {
             </Label>
             <Input
               id="new-approver"
-              value={approver}
               onChange={(e) => setApprover(e.target.value)}
               placeholder="Approver name"
+              value={approver}
             />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Status</Label>
-              <Select value={status} onValueChange={(v) => setStatus(v as PRDStatus)}>
+              <Select
+                onValueChange={(v) => setStatus(v as PRDStatus)}
+                value={status}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -199,7 +210,10 @@ export function NewPRDModal() {
 
             <div className="space-y-2">
               <Label>Template</Label>
-              <Select value={template} onValueChange={(v) => setTemplate(v as PRDTemplate)}>
+              <Select
+                onValueChange={(v) => setTemplate(v as PRDTemplate)}
+                value={template}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -218,25 +232,25 @@ export function NewPRDModal() {
             <Label>Tags</Label>
             <div className="flex gap-2">
               <Input
-                value={newTag}
+                className="flex-1"
                 onChange={(e) => setNewTag(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Add tag"
-                className="flex-1"
+                value={newTag}
               />
-              <Button type="button" variant="outline" onClick={handleAddTag}>
+              <Button onClick={handleAddTag} type="button" variant="outline">
                 Add
               </Button>
             </div>
             {tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">
+              <div className="mt-2 flex flex-wrap gap-1">
                 {tags.map((tag) => (
-                  <Badge key={tag} variant="secondary" className="gap-1">
+                  <Badge className="gap-1" key={tag} variant="secondary">
                     {tag}
                     <button
-                      type="button"
-                      onClick={() => handleRemoveTag(tag)}
                       className="ml-1 hover:text-destructive"
+                      onClick={() => handleRemoveTag(tag)}
+                      type="button"
                     >
                       <XIcon className="h-3 w-3" />
                     </button>
@@ -248,25 +262,30 @@ export function NewPRDModal() {
 
           <div className="space-y-2">
             <Label htmlFor="new-content">
-              Initial Content <span className="text-muted-foreground text-xs">(optional - paste markdown here)</span>
+              Initial Content{" "}
+              <span className="text-muted-foreground text-xs">
+                (optional - paste markdown here)
+              </span>
             </Label>
             <Textarea
+              className="min-h-[150px] font-mono text-sm"
               id="new-content"
-              value={content}
               onChange={(e) => setContent(e.target.value)}
               placeholder="# My PRD&#10;&#10;## Problem&#10;&#10;Describe the problem..."
-              className="min-h-[150px] font-mono text-sm"
+              value={content}
             />
           </div>
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
+          <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
           <Button
+            disabled={
+              isPending || !title.trim() || !fileName.trim() || !approver.trim()
+            }
             onClick={handleSubmit}
-            disabled={isPending || !title.trim() || !fileName.trim() || !approver.trim()}
           >
             {isPending ? (
               <>

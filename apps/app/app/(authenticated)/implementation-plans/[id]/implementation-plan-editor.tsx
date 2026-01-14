@@ -8,6 +8,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { Input } from "@repo/design-system/components/ui/input";
+import { Label } from "@repo/design-system/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -15,35 +17,36 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   ArrowLeftIcon,
+  CheckIcon,
   CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
-  TrashIcon,
-  CheckIcon,
   SettingsIcon,
+  TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
-import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
-import { ImplementationPlanStatusBadge } from "../components/implementation-plan-status-badge";
-import { formatRelativeTime } from "@/lib/utils";
-import { IMPL_PLAN_STATUS_OPTIONS, IMPL_PLAN_TYPE_OPTIONS, type ImplPlanStatus, type ImplPlanType } from "@/lib/types";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { ImplementationPlanStatusBadge } from "@/components/status-badge";
+import {
+  IMPL_PLAN_STATUS_OPTIONS,
+  IMPL_PLAN_TYPE_OPTIONS,
+  type ImplementationPlanWithPRD,
+  type ImplPlanStatus,
+  type ImplPlanType,
+} from "@/lib/types";
+import { formatRelativeTime } from "@/lib/utils";
 import { useImplementationPlanEditor } from "./use-implementation-plan-editor";
-
-type ImplementationPlanWithPRD = ImplementationPlan & {
-  sourcePrd: Pick<PRD, "id" | "title">;
-};
 
 type ImplementationPlanEditorProps = {
   plan: ImplementationPlanWithPRD;
 };
 
-export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps) {
+export function ImplementationPlanEditor({
+  plan,
+}: ImplementationPlanEditorProps) {
   const {
     isPending,
     content,
@@ -76,12 +79,12 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
   } = useImplementationPlanEditor(plan);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Sticky Header */}
-      <div className="sticky top-0 z-10 bg-background flex items-center justify-between border-b px-4 py-3">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-4 py-3">
         <div className="flex items-center gap-4">
           <Link href="/implementation-plans">
-            <Button variant="ghost" size="sm">
+            <Button size="sm" variant="ghost">
               <ArrowLeftIcon className="mr-2 h-4 w-4" />
               Back to Plans
             </Button>
@@ -89,20 +92,24 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
 
           <div className="flex items-center gap-2">
             <span className="font-medium">{plan.title}</span>
-            <span className="text-sm text-muted-foreground font-mono">v{plan.version}</span>
+            <span className="font-mono text-muted-foreground text-sm">
+              v{plan.version}
+            </span>
             <ImplementationPlanStatusBadge status={status} />
           </div>
 
-          <span className="text-sm text-muted-foreground">
-            {isSaving ? "Saving..." : `Last saved: ${formatRelativeTime(lastSaved)}`}
+          <span className="text-muted-foreground text-sm">
+            {isSaving
+              ? "Saving..."
+              : `Last saved: ${formatRelativeTime(lastSaved)}`}
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
             onClick={() => setShowMetadataPanel(!showMetadataPanel)}
-            variant={showMetadataPanel ? "secondary" : "outline"}
             size="sm"
+            variant={showMetadataPanel ? "secondary" : "outline"}
           >
             <SettingsIcon className="mr-2 h-4 w-4" />
             Details
@@ -110,42 +117,45 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
 
           {/* Approve button - only shown for Draft plans */}
           {isDraft && (
-            <Button onClick={handleApprove} variant="outline" size="sm" disabled={isPending}>
+            <Button
+              disabled={isPending}
+              onClick={handleApprove}
+              size="sm"
+              variant="outline"
+            >
               <CheckIcon className="mr-2 h-4 w-4" />
               Approve
             </Button>
           )}
 
-          <Button onClick={handleExport} variant="outline" size="sm">
+          <Button onClick={handleExport} size="sm" variant="outline">
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export
           </Button>
 
-          <Button onClick={handleCopyMarkdown} variant="outline" size="sm">
+          <Button onClick={handleCopyMarkdown} size="sm" variant="outline">
             <CopyIcon className="mr-2 h-4 w-4" />
             Copy MD
           </Button>
 
-          <Button onClick={handleSave} disabled={isPending}>
+          <Button disabled={isPending} onClick={handleSave}>
             {isSaving ? "Saving..." : "Save"}
           </Button>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
+              <Button size="icon" variant="ghost">
                 <MoreHorizontalIcon className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-[180px]">
               <DropdownMenuItem asChild>
-                <Link href={`/prds/${plan.sourcePrd.id}`}>
-                  View Source PRD
-                </Link>
+                <Link href={`/prds/${plan.sourcePrd.id}`}>View Source PRD</Link>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => setShowDeleteDialog(true)}
                 className="text-destructive focus:text-destructive"
+                onClick={() => setShowDeleteDialog(true)}
               >
                 <TrashIcon className="mr-2 h-4 w-4" />
                 Delete Plan
@@ -156,28 +166,31 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
       </div>
 
       {/* Content Area with Optional Metadata Panel */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
         {/* Scrollable Editor */}
         <div className="flex-1 overflow-auto">
-          <div className="max-w-4xl mx-auto p-4">
+          <div className="mx-auto max-w-4xl p-4">
             <Textarea
-              value={content}
+              className="min-h-[calc(100vh-200px)] resize-none border-0 p-0 font-mono text-sm shadow-none focus-visible:ring-0"
               onChange={(e) => setContent(e.target.value)}
               placeholder="Start writing your implementation plan..."
-              className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
+              value={content}
             />
           </div>
         </div>
 
         {/* Metadata Panel */}
         {showMetadataPanel && (
-          <div className="w-80 border-l bg-muted/30 p-4 overflow-auto">
-            <h3 className="font-semibold mb-4">Plan Details</h3>
+          <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
+            <h3 className="mb-4 font-semibold">Plan Details</h3>
 
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Status</Label>
-                <Select value={status} onValueChange={(v) => handleStatusChange(v as ImplPlanStatus)}>
+                <Select
+                  onValueChange={(v) => handleStatusChange(v as ImplPlanStatus)}
+                  value={status}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -194,16 +207,19 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
               <div className="space-y-2">
                 <Label>Approver</Label>
                 <Input
-                  value={approver}
-                  onChange={(e) => handleApproverChange(e.target.value)}
                   onBlur={handleApproverBlur}
+                  onChange={(e) => handleApproverChange(e.target.value)}
                   placeholder="Approver name"
+                  value={approver}
                 />
               </div>
 
               <div className="space-y-2">
                 <Label>Plan Type</Label>
-                <Select value={planType} onValueChange={(v) => handlePlanTypeChange(v as ImplPlanType)}>
+                <Select
+                  onValueChange={(v) => handlePlanTypeChange(v as ImplPlanType)}
+                  value={planType}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -220,30 +236,40 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
               <div className="space-y-2">
                 <Label>Target Release</Label>
                 <Input
-                  value={targetRelease}
-                  onChange={(e) => handleTargetReleaseChange(e.target.value)}
                   onBlur={handleTargetReleaseBlur}
+                  onChange={(e) => handleTargetReleaseChange(e.target.value)}
                   placeholder="e.g., v2.0"
+                  value={targetRelease}
                 />
               </div>
 
               <div className="space-y-2">
                 <Label>Engineering Team</Label>
                 <Input
-                  value={engineeringTeam}
-                  onChange={(e) => handleEngineeringTeamChange(e.target.value)}
                   onBlur={handleEngineeringTeamBlur}
+                  onChange={(e) => handleEngineeringTeamChange(e.target.value)}
                   placeholder="e.g., Platform"
+                  value={engineeringTeam}
                 />
               </div>
 
-              <div className="pt-4 border-t">
-                <div className="text-sm text-muted-foreground space-y-1">
+              <div className="border-t pt-4">
+                <div className="space-y-1 text-muted-foreground text-sm">
                   <p>Created by: {plan.createdBy}</p>
                   <p>Source PRD: {plan.sourcePrd.title}</p>
                   <p>Version: v{plan.version}</p>
-                  <p>Created: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(plan.createdAt))}</p>
-                  <p>Updated: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(plan.updatedAt))}</p>
+                  <p>
+                    Created:{" "}
+                    {new Intl.DateTimeFormat("en-US", {
+                      dateStyle: "medium",
+                    }).format(new Date(plan.createdAt))}
+                  </p>
+                  <p>
+                    Updated:{" "}
+                    {new Intl.DateTimeFormat("en-US", {
+                      dateStyle: "medium",
+                    }).format(new Date(plan.updatedAt))}
+                  </p>
                 </div>
               </div>
             </div>
@@ -253,12 +279,12 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
-        open={showDeleteDialog}
-        onOpenChange={setShowDeleteDialog}
-        title="Implementation Plan"
+        isPending={isPending}
         itemName={plan.title}
         onConfirm={handleDelete}
-        isPending={isPending}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
+        title="Implementation Plan"
       />
     </div>
   );

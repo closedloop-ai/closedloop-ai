@@ -34,19 +34,22 @@ const App = async () => {
         </Header>
         <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
           <div className="rounded-xl border bg-card p-6">
-            <h1 className="text-2xl font-bold mb-2">Welcome to Symphony</h1>
-            <p className="text-muted-foreground mb-4">
+            <h1 className="mb-2 font-bold text-2xl">Welcome to Symphony</h1>
+            <p className="mb-4 text-muted-foreground">
               Your app is up and running. Start building something great!
             </p>
-            <div className="grid auto-rows-min gap-4 md:grid-cols-3 mt-6">
+            <div className="mt-6 grid auto-rows-min gap-4 md:grid-cols-3">
               {pages.length > 0 ? (
                 pages.map((page) => (
-                  <div className="aspect-video rounded-xl bg-muted/50 flex items-center justify-center" key={page.id}>
+                  <div
+                    className="flex aspect-video items-center justify-center rounded-xl bg-muted/50"
+                    key={page.id}
+                  >
                     {page.name}
                   </div>
                 ))
               ) : (
-                <div className="col-span-3 text-center text-muted-foreground py-8">
+                <div className="col-span-3 py-8 text-center text-muted-foreground">
                   No pages yet. Add some data to get started.
                 </div>
               )}

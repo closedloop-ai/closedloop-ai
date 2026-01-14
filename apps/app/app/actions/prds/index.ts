@@ -1,14 +1,14 @@
 "use server";
 
 import { database } from "@repo/database";
-import { revalidatePath } from "next/cache";
 import type { PRD } from "@repo/database/generated/client";
+import { revalidatePath } from "next/cache";
 import {
   type ActionResult,
-  success,
   failure,
   type PRDStatus,
   type PRDTemplate,
+  success,
 } from "@/lib/types";
 
 export type CreatePRDInput = {
@@ -59,7 +59,9 @@ export async function getPRDById(id: string): Promise<ActionResult<PRD>> {
   }
 }
 
-export async function createPRD(input: CreatePRDInput): Promise<ActionResult<PRD>> {
+export async function createPRD(
+  input: CreatePRDInput
+): Promise<ActionResult<PRD>> {
   try {
     const prd = await database.pRD.create({
       data: {
@@ -69,7 +71,8 @@ export async function createPRD(input: CreatePRDInput): Promise<ActionResult<PRD
         status: input.status,
         tags: input.tags,
         template: input.template,
-        content: input.content ?? getDefaultContent(input.title, input.template),
+        content:
+          input.content ?? getDefaultContent(input.title, input.template),
       },
     });
     revalidatePath("/prds");
@@ -80,7 +83,9 @@ export async function createPRD(input: CreatePRDInput): Promise<ActionResult<PRD
   }
 }
 
-export async function updatePRD(input: UpdatePRDInput): Promise<ActionResult<PRD>> {
+export async function updatePRD(
+  input: UpdatePRDInput
+): Promise<ActionResult<PRD>> {
   try {
     const { id, ...data } = input;
     const prd = await database.pRD.update({
@@ -96,7 +101,9 @@ export async function updatePRD(input: UpdatePRDInput): Promise<ActionResult<PRD
   }
 }
 
-export async function deletePRD(id: string): Promise<ActionResult<{ deleted: true }>> {
+export async function deletePRD(
+  id: string
+): Promise<ActionResult<{ deleted: true }>> {
   try {
     await database.pRD.delete({
       where: { id },
@@ -139,7 +146,11 @@ export async function duplicatePRD(id: string): Promise<ActionResult<PRD>> {
   }
 }
 
-export async function renamePRD(id: string, title: string, fileName: string): Promise<ActionResult<PRD>> {
+export async function renamePRD(
+  id: string,
+  title: string,
+  fileName: string
+): Promise<ActionResult<PRD>> {
   try {
     const prd = await database.pRD.update({
       where: { id },

@@ -4,7 +4,7 @@
 export function formatRelativeTime(date: Date): string {
   const now = new Date();
   const diff = now.getTime() - new Date(date).getTime();
-  const minutes = Math.floor(diff / 60000);
+  const minutes = Math.floor(diff / 60_000);
 
   if (minutes < 1) return "Just now";
   if (minutes === 1) return "1 min ago";
@@ -50,4 +50,15 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Format a date as a short date string (e.g., "Jan 14, 2026")
+ */
+export function formatDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(date));
 }

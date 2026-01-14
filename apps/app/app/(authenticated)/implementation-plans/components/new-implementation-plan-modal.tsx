@@ -1,6 +1,8 @@
 "use client";
 
+import type { PRD } from "@repo/database/generated/client";
 import { Button } from "@repo/design-system/components/ui/button";
+import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -18,13 +20,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { LoaderIcon, SparklesIcon } from "lucide-react";
-import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
 import { createImplementationPlan } from "@/app/actions/implementation-plans";
 import { getPRDs } from "@/app/actions/prds";
-import type { PRD } from "@repo/database/generated/client";
 import { IMPL_PLAN_TYPE_OPTIONS, type ImplPlanType } from "@/lib/types";
 
 const PLAN_TYPE_LABELS: Record<ImplPlanType, string> = {
@@ -155,12 +155,15 @@ export function NewImplementationPlanModal({
   );
 
   return (
-    <Dialog open={open} onOpenChange={(newOpen) => {
-      setOpen(newOpen);
-      if (!newOpen) {
-        resetForm();
-      }
-    }}>
+    <Dialog
+      onOpenChange={(newOpen) => {
+        setOpen(newOpen);
+        if (!newOpen) {
+          resetForm();
+        }
+      }}
+      open={open}
+    >
       {trigger !== undefined ? (
         trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>
       ) : (
@@ -173,7 +176,7 @@ export function NewImplementationPlanModal({
 
         <div className="space-y-4 py-4">
           {error && (
-            <div className="p-3 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md">
+            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
             </div>
           )}
@@ -188,13 +191,17 @@ export function NewImplementationPlanModal({
                 {defaultPrdTitle}
               </div>
             ) : (
-              <Select value={sourcePrdId} onValueChange={setSourcePrdId}>
+              <Select onValueChange={setSourcePrdId} value={sourcePrdId}>
                 <SelectTrigger id="source-prd">
-                  <SelectValue placeholder={loadingPrds ? "Loading PRDs..." : "Select a PRD"} />
+                  <SelectValue
+                    placeholder={
+                      loadingPrds ? "Loading PRDs..." : "Select a PRD"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
                   {prds.length === 0 && !loadingPrds ? (
-                    <div className="p-2 text-sm text-muted-foreground text-center">
+                    <div className="p-2 text-center text-muted-foreground text-sm">
                       No PRDs available. Create a PRD first.
                     </div>
                   ) : (
@@ -211,7 +218,10 @@ export function NewImplementationPlanModal({
 
           <div className="space-y-2">
             <Label htmlFor="plan-type">Plan Type</Label>
-            <Select value={planType} onValueChange={(v) => setPlanType(v as ImplPlanType)}>
+            <Select
+              onValueChange={(v) => setPlanType(v as ImplPlanType)}
+              value={planType}
+            >
               <SelectTrigger id="plan-type">
                 <SelectValue />
               </SelectTrigger>
@@ -232,9 +242,9 @@ export function NewImplementationPlanModal({
               </Label>
               <Input
                 id="created-by"
-                value={createdBy}
                 onChange={(e) => setCreatedBy(e.target.value)}
                 placeholder="Your name or agent name"
+                value={createdBy}
               />
             </div>
 
@@ -242,9 +252,9 @@ export function NewImplementationPlanModal({
               <Label htmlFor="approver">Approver</Label>
               <Input
                 id="approver"
-                value={approver}
                 onChange={(e) => setApprover(e.target.value)}
                 placeholder="Approver name"
+                value={approver}
               />
             </div>
           </div>
@@ -254,9 +264,9 @@ export function NewImplementationPlanModal({
               <Label htmlFor="target-release">Target Release</Label>
               <Input
                 id="target-release"
-                value={targetRelease}
                 onChange={(e) => setTargetRelease(e.target.value)}
                 placeholder="e.g., v2.0"
+                value={targetRelease}
               />
             </div>
 
@@ -264,9 +274,9 @@ export function NewImplementationPlanModal({
               <Label htmlFor="engineering-team">Engineering Team</Label>
               <Input
                 id="engineering-team"
-                value={engineeringTeam}
                 onChange={(e) => setEngineeringTeam(e.target.value)}
                 placeholder="e.g., Platform"
+                value={engineeringTeam}
               />
             </div>
           </div>
@@ -276,39 +286,45 @@ export function NewImplementationPlanModal({
             <div className="space-y-2">
               <div className="flex items-center space-x-2">
                 <Checkbox
-                  id="include-risks"
                   checked={includeRisks}
-                  onCheckedChange={(checked) => setIncludeRisks(checked === true)}
+                  id="include-risks"
+                  onCheckedChange={(checked) =>
+                    setIncludeRisks(checked === true)
+                  }
                 />
                 <label
+                  className="font-medium text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   htmlFor="include-risks"
-                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                 >
                   Risks & Mitigations
                 </label>
               </div>
               <div className="flex items-center space-x-2">
                 <Checkbox
-                  id="include-dependencies"
                   checked={includeDependencies}
-                  onCheckedChange={(checked) => setIncludeDependencies(checked === true)}
+                  id="include-dependencies"
+                  onCheckedChange={(checked) =>
+                    setIncludeDependencies(checked === true)
+                  }
                 />
                 <label
+                  className="font-medium text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   htmlFor="include-dependencies"
-                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                 >
                   Dependencies
                 </label>
               </div>
               <div className="flex items-center space-x-2">
                 <Checkbox
-                  id="include-test-plan"
                   checked={includeTestPlan}
-                  onCheckedChange={(checked) => setIncludeTestPlan(checked === true)}
+                  id="include-test-plan"
+                  onCheckedChange={(checked) =>
+                    setIncludeTestPlan(checked === true)
+                  }
                 />
                 <label
+                  className="font-medium text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   htmlFor="include-test-plan"
-                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                 >
                   Test Plan
                 </label>
@@ -318,12 +334,12 @@ export function NewImplementationPlanModal({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
+          <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
           <Button
-            onClick={handleSubmit}
             disabled={isPending || !sourcePrdId || !createdBy.trim()}
+            onClick={handleSubmit}
           >
             {isPending ? (
               <>

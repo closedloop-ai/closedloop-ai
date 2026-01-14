@@ -1,14 +1,16 @@
 "use client";
 
+import {
+  type Column,
+  DataTable,
+  type FilterOption,
+  type SortOption,
+} from "@repo/design-system/components/ui/data-table";
 import { useRouter } from "next/navigation";
-import { DataTable, type Column, type SortOption, type FilterOption } from "@repo/design-system/components/ui/data-table";
-import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
-import { ImplementationPlanStatusBadge } from "./implementation-plan-status-badge";
+import { ImplementationPlanStatusBadge } from "@/components/status-badge";
+import type { ImplementationPlanWithPRD } from "@/lib/types";
+import { formatDate } from "@/lib/utils";
 import { ImplementationPlanRowActions } from "./implementation-plan-row-actions";
-
-type ImplementationPlanWithPRD = ImplementationPlan & {
-  sourcePrd: Pick<PRD, "id" | "title">;
-};
 
 type ImplementationPlanTableProps = {
   plans: ImplementationPlanWithPRD[];
@@ -21,14 +23,18 @@ const columns: Column<ImplementationPlanWithPRD>[] = [
     render: (plan) => (
       <div className="flex flex-col">
         <span className="font-medium">{plan.title}</span>
-        <span className="text-sm text-muted-foreground">{plan.sourcePrd.title}</span>
+        <span className="text-muted-foreground text-sm">
+          {plan.sourcePrd.title}
+        </span>
       </div>
     ),
   },
   {
     key: "version",
     header: "Version",
-    render: (plan) => <span className="font-mono text-sm">v{plan.version}</span>,
+    render: (plan) => (
+      <span className="font-mono text-sm">v{plan.version}</span>
+    ),
   },
   {
     key: "createdBy",
@@ -64,15 +70,9 @@ const filterOptions: FilterOption[] = [
   { label: "Archived", value: "Archived" },
 ];
 
-function formatDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(date));
-}
-
-export function ImplementationPlanTable({ plans }: ImplementationPlanTableProps) {
+export function ImplementationPlanTable({
+  plans,
+}: ImplementationPlanTableProps) {
   const router = useRouter();
 
   const handleRowClick = (plan: ImplementationPlanWithPRD) => {
@@ -81,16 +81,16 @@ export function ImplementationPlanTable({ plans }: ImplementationPlanTableProps)
 
   return (
     <DataTable
-      data={plans}
       columns={columns}
-      searchPlaceholder="Search implementation plans"
-      searchKey="title"
-      sortOptions={sortOptions}
-      filterOptions={filterOptions}
+      data={plans}
+      emptyMessage="No implementation plans found. Generate your first plan from a PRD to get started."
       filterKey="status"
+      filterOptions={filterOptions}
       onRowClick={handleRowClick}
       renderRowActions={(plan) => <ImplementationPlanRowActions plan={plan} />}
-      emptyMessage="No implementation plans found. Generate your first plan from a PRD to get started."
+      searchKey="title"
+      searchPlaceholder="Search implementation plans"
+      sortOptions={sortOptions}
     />
   );
 }

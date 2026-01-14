@@ -1,5 +1,6 @@
 "use client";
 
+import type { PRD } from "@repo/database/generated/client";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -9,16 +10,6 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
-import {
   CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
@@ -27,7 +18,9 @@ import {
 } from "lucide-react";
 import { useState, useTransition } from "react";
 import { deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
-import type { PRD } from "@repo/database/generated/client";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { RenameDialog } from "@/components/rename-dialog";
+import { downloadAsMarkdown } from "@/lib/utils";
 
 type PRDRowActionsProps = {
   prd: PRD;
@@ -37,10 +30,8 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
   const [isPending, startTransition] = useTransition();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [newTitle, setNewTitle] = useState(prd.title);
-  const [newFileName, setNewFileName] = useState(prd.fileName);
 
-  const handleRename = () => {
+  const handleRename = (newTitle: string, newFileName: string) => {
     startTransition(async () => {
       await renamePRD(prd.id, newTitle, newFileName);
       setShowRenameDialog(false);
@@ -54,15 +45,7 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
   };
 
   const handleExport = () => {
-    const blob = new Blob([prd.content], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = prd.fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadAsMarkdown(prd.content, prd.fileName);
   };
 
   const handleDelete = () => {
@@ -76,7 +59,7 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+          <Button className="h-8 w-8 p-0" size="sm" variant="ghost">
             <MoreHorizontalIcon className="h-4 w-4" />
             <span className="sr-only">Open menu</span>
           </Button>
@@ -86,7 +69,7 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
             <PencilIcon className="mr-2 h-4 w-4" />
             Rename
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleDuplicate} disabled={isPending}>
+          <DropdownMenuItem disabled={isPending} onClick={handleDuplicate}>
             <CopyIcon className="mr-2 h-4 w-4" />
             Duplicate
           </DropdownMenuItem>
@@ -96,8 +79,8 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onClick={() => setShowDeleteDialog(true)}
             className="text-destructive focus:text-destructive"
+            onClick={() => setShowDeleteDialog(true)}
           >
             <TrashIcon className="mr-2 h-4 w-4" />
             Delete
@@ -105,64 +88,25 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Rename Dialog */}
-      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename PRD</DialogTitle>
-            <DialogDescription>
-              Update the title and file name for this PRD.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="title">Title</Label>
-              <Input
-                id="title"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="fileName">File name</Label>
-              <Input
-                id="fileName"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRenameDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleRename} disabled={isPending}>
-              {isPending ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <RenameDialog
+        currentFileName={prd.fileName}
+        currentTitle={prd.title}
+        description="Update the title and file name for this PRD."
+        isPending={isPending}
+        onOpenChange={setShowRenameDialog}
+        onRename={handleRename}
+        open={showRenameDialog}
+        title="Rename PRD"
+      />
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete PRD</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{prd.title}"? This action cannot be
-              undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isPending}>
-              {isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteConfirmationDialog
+        isPending={isPending}
+        itemName={prd.title}
+        onConfirm={handleDelete}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
+        title="PRD"
+      />
     </>
   );
 }

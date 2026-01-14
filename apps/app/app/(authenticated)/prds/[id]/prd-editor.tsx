@@ -1,5 +1,7 @@
 "use client";
 
+import type { PRD } from "@repo/database/generated/client";
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -8,14 +10,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
+import { Input } from "@repo/design-system/components/ui/input";
+import { Label } from "@repo/design-system/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -23,10 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   ArrowLeftIcon,
   CopyIcon,
@@ -34,18 +27,23 @@ import {
   FileTextIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  SettingsIcon,
   SparklesIcon,
   TrashIcon,
   XIcon,
-  SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { NewImplementationPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-implementation-plan-modal";
-import type { PRD } from "@repo/database/generated/client";
-import { PRDStatusBadge } from "../components/prd-status-badge";
-import { formatRelativeTime } from "@/lib/utils";
-import { PRD_STATUS_OPTIONS, PRD_TEMPLATE_OPTIONS, type PRDStatus, type PRDTemplate } from "@/lib/types";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { RenameDialog } from "@/components/rename-dialog";
+import { PRDStatusBadge } from "@/components/status-badge";
+import {
+  PRD_STATUS_OPTIONS,
+  PRD_TEMPLATE_OPTIONS,
+  type PRDStatus,
+  type PRDTemplate,
+} from "@/lib/types";
+import { formatRelativeTime } from "@/lib/utils";
 import { usePRDEditor } from "./use-prd-editor";
 
 type PRDEditorProps = {
@@ -73,10 +71,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     setShowDeleteDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
-    newTitle,
-    setNewTitle,
-    newFileName,
-    setNewFileName,
     handleSave,
     handleStatusChange,
     handleApproverChange,
@@ -93,18 +87,18 @@ export function PRDEditor({ prd }: PRDEditorProps) {
   } = usePRDEditor(prd);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Sticky Header */}
-      <div className="sticky top-0 z-10 bg-background flex items-center justify-between border-b px-4 py-3">
+      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-4 py-3">
         <div className="flex items-center gap-4">
           <Link href="/prds">
-            <Button variant="ghost" size="sm">
+            <Button size="sm" variant="ghost">
               <ArrowLeftIcon className="mr-2 h-4 w-4" />
               Back to Library
             </Button>
           </Link>
 
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <FileTextIcon className="h-4 w-4" />
             <span>{prd.fileName}</span>
             <span className="font-mono">v{prd.version}</span>
@@ -112,33 +106,38 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
           <PRDStatusBadge status={status} />
 
-          <span className="text-sm text-muted-foreground">
-            {isSaving ? "Saving..." : `Last saved: ${formatRelativeTime(lastSaved)}`}
+          <span className="text-muted-foreground text-sm">
+            {isSaving
+              ? "Saving..."
+              : `Last saved: ${formatRelativeTime(lastSaved)}`}
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           <Button
             onClick={() => setShowMetadataPanel(!showMetadataPanel)}
-            variant={showMetadataPanel ? "secondary" : "outline"}
             size="sm"
+            variant={showMetadataPanel ? "secondary" : "outline"}
           >
             <SettingsIcon className="mr-2 h-4 w-4" />
             Details
           </Button>
 
-          <Button onClick={() => setShowGeneratePlanModal(true)} variant="outline">
+          <Button
+            onClick={() => setShowGeneratePlanModal(true)}
+            variant="outline"
+          >
             <SparklesIcon className="mr-2 h-4 w-4" />
             Generate Implementation Plan
           </Button>
 
-          <Button onClick={handleSave} disabled={isPending}>
+          <Button disabled={isPending} onClick={handleSave}>
             {isSaving ? "Saving..." : "Save"}
           </Button>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
+              <Button size="icon" variant="ghost">
                 <MoreHorizontalIcon className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -147,7 +146,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                 <PencilIcon className="mr-2 h-4 w-4" />
                 Rename
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleDuplicate} disabled={isPending}>
+              <DropdownMenuItem disabled={isPending} onClick={handleDuplicate}>
                 <CopyIcon className="mr-2 h-4 w-4" />
                 Duplicate
               </DropdownMenuItem>
@@ -157,8 +156,8 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => setShowDeleteDialog(true)}
                 className="text-destructive focus:text-destructive"
+                onClick={() => setShowDeleteDialog(true)}
               >
                 <TrashIcon className="mr-2 h-4 w-4" />
                 Delete
@@ -169,28 +168,31 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       </div>
 
       {/* Content Area with Optional Metadata Panel */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex flex-1 overflow-hidden">
         {/* Scrollable Editor */}
         <div className="flex-1 overflow-auto">
-          <div className="max-w-4xl mx-auto p-4">
+          <div className="mx-auto max-w-4xl p-4">
             <Textarea
-              value={content}
+              className="min-h-[calc(100vh-200px)] resize-none border-0 p-0 font-mono text-sm shadow-none focus-visible:ring-0"
               onChange={(e) => setContent(e.target.value)}
               placeholder="Start writing your PRD..."
-              className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
+              value={content}
             />
           </div>
         </div>
 
         {/* Metadata Panel */}
         {showMetadataPanel && (
-          <div className="w-80 border-l bg-muted/30 p-4 overflow-auto">
-            <h3 className="font-semibold mb-4">PRD Details</h3>
+          <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
+            <h3 className="mb-4 font-semibold">PRD Details</h3>
 
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Status</Label>
-                <Select value={status} onValueChange={(v) => handleStatusChange(v as PRDStatus)}>
+                <Select
+                  onValueChange={(v) => handleStatusChange(v as PRDStatus)}
+                  value={status}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -207,16 +209,19 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               <div className="space-y-2">
                 <Label>Approver</Label>
                 <Input
-                  value={approver}
-                  onChange={(e) => handleApproverChange(e.target.value)}
                   onBlur={handleApproverBlur}
+                  onChange={(e) => handleApproverChange(e.target.value)}
                   placeholder="Approver name"
+                  value={approver}
                 />
               </div>
 
               <div className="space-y-2">
                 <Label>Template</Label>
-                <Select value={template} onValueChange={(v) => handleTemplateChange(v as PRDTemplate)}>
+                <Select
+                  onValueChange={(v) => handleTemplateChange(v as PRDTemplate)}
+                  value={template}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -234,25 +239,30 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                 <Label>Tags</Label>
                 <div className="flex gap-2">
                   <Input
-                    value={newTag}
+                    className="flex-1"
                     onChange={(e) => setNewTag(e.target.value)}
                     onKeyDown={handleTagKeyDown}
                     placeholder="Add tag"
-                    className="flex-1"
+                    value={newTag}
                   />
-                  <Button type="button" variant="outline" size="sm" onClick={handleAddTag}>
+                  <Button
+                    onClick={handleAddTag}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
                     Add
                   </Button>
                 </div>
                 {tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-2">
+                  <div className="mt-2 flex flex-wrap gap-1">
                     {tags.map((tag) => (
-                      <Badge key={tag} variant="secondary" className="gap-1">
+                      <Badge className="gap-1" key={tag} variant="secondary">
                         {tag}
                         <button
-                          type="button"
-                          onClick={() => handleRemoveTag(tag)}
                           className="ml-1 hover:text-destructive"
+                          onClick={() => handleRemoveTag(tag)}
+                          type="button"
                         >
                           <XIcon className="h-3 w-3" />
                         </button>
@@ -262,11 +272,21 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                 )}
               </div>
 
-              <div className="pt-4 border-t">
-                <div className="text-sm text-muted-foreground space-y-1">
+              <div className="border-t pt-4">
+                <div className="space-y-1 text-muted-foreground text-sm">
                   <p>Version: v{prd.version}</p>
-                  <p>Created: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(prd.createdAt))}</p>
-                  <p>Updated: {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(prd.updatedAt))}</p>
+                  <p>
+                    Created:{" "}
+                    {new Intl.DateTimeFormat("en-US", {
+                      dateStyle: "medium",
+                    }).format(new Date(prd.createdAt))}
+                  </p>
+                  <p>
+                    Updated:{" "}
+                    {new Intl.DateTimeFormat("en-US", {
+                      dateStyle: "medium",
+                    }).format(new Date(prd.updatedAt))}
+                  </p>
                 </div>
               </div>
             </div>
@@ -275,59 +295,33 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       </div>
 
       {/* Rename Dialog */}
-      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename PRD</DialogTitle>
-            <DialogDescription>
-              Update the title and file name for this PRD.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="rename-title">Title</Label>
-              <Input
-                id="rename-title"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="rename-filename">File name</Label>
-              <Input
-                id="rename-filename"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRenameDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleRename} disabled={isPending}>
-              {isPending ? "Saving..." : "Save"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <RenameDialog
+        currentFileName={prd.fileName}
+        currentTitle={prd.title}
+        description="Update the title and file name for this PRD."
+        isPending={isPending}
+        onOpenChange={setShowRenameDialog}
+        onRename={handleRename}
+        open={showRenameDialog}
+        title="Rename PRD"
+      />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
-        open={showDeleteDialog}
-        onOpenChange={setShowDeleteDialog}
-        title="PRD"
+        isPending={isPending}
         itemName={prd.title}
         onConfirm={handleDelete}
-        isPending={isPending}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
+        title="PRD"
       />
 
       {/* Generate Implementation Plan Modal */}
       <NewImplementationPlanModal
         defaultPrdId={prd.id}
         defaultPrdTitle={prd.title}
-        open={showGeneratePlanModal}
         onOpenChange={setShowGeneratePlanModal}
+        open={showGeneratePlanModal}
         trigger={null}
       />
     </div>

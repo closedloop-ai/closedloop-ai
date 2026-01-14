@@ -1,5 +1,5 @@
-import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { getImplementationPlanById } from "@/app/actions/implementation-plans";
 import { ImplementationPlanEditor } from "./implementation-plan-editor";
 
@@ -7,7 +7,9 @@ type ImplementationPlanPageProps = {
   params: Promise<{ id: string }>;
 };
 
-export async function generateMetadata({ params }: ImplementationPlanPageProps): Promise<Metadata> {
+export async function generateMetadata({
+  params,
+}: ImplementationPlanPageProps): Promise<Metadata> {
   const { id } = await params;
   const result = await getImplementationPlanById(id);
 
@@ -21,7 +23,9 @@ export async function generateMetadata({ params }: ImplementationPlanPageProps):
   };
 }
 
-export default async function ImplementationPlanPage({ params }: ImplementationPlanPageProps) {
+export default async function ImplementationPlanPage({
+  params,
+}: ImplementationPlanPageProps) {
   const { id } = await params;
   const result = await getImplementationPlanById(id);
 
