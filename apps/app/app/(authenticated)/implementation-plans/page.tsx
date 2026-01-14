@@ -1,28 +1,26 @@
 import type { Metadata } from "next";
 import { Header } from "../components/header";
+import { getImplementationPlans } from "@/app/actions/implementation-plans";
+import { ImplementationPlanTable } from "./components/implementation-plan-table";
+import { NewImplementationPlanModal } from "./components/new-implementation-plan-modal";
 
 export const metadata: Metadata = {
   title: "Implementation Plans",
-  description: "Track implementation plans and progress",
+  description: "Implementation Plans generated from PRDs",
 };
 
-const ImplementationPlansPage = () => {
+export default async function ImplementationPlansPage() {
+  const result = await getImplementationPlans();
+  const plans = result.data ?? [];
+
   return (
     <>
-      <Header page="Implementation Plans" pages={["Planning"]} />
+      <Header page="Implementation Plans" pages={["Generated Plans from PRDs"]}>
+        <NewImplementationPlanModal />
+      </Header>
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-        <div className="rounded-xl border bg-card p-6">
-          <h1 className="text-2xl font-bold mb-2">Implementation Plans</h1>
-          <p className="text-muted-foreground mb-4">
-            Track and manage your implementation plans and development progress.
-          </p>
-          <div className="text-center text-muted-foreground py-8 border border-dashed rounded-lg">
-            No implementation plans yet. Create your first plan to get started.
-          </div>
-        </div>
+        <ImplementationPlanTable plans={plans} />
       </div>
     </>
   );
-};
-
-export default ImplementationPlansPage;
+}

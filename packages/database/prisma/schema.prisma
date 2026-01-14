@@ -19,14 +19,33 @@ model Page {
 }
 
 model PRD {
-  id        String   @id @default(cuid())
-  title     String
-  fileName  String
-  owner     String
-  status    String   @default("Draft")
-  tags      String[] @default([])
-  template  String   @default("Standard PRD")
-  content   String   @default("")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String               @id @default(cuid())
+  title               String
+  fileName            String
+  owner               String
+  status              String               @default("Draft")
+  tags                String[]             @default([])
+  template            String               @default("Standard PRD")
+  content             String               @default("")
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  implementationPlans ImplementationPlan[]
+}
+
+model ImplementationPlan {
+  id              String   @id @default(cuid())
+  title           String
+  sourcePrdId     String
+  sourcePrd       PRD      @relation(fields: [sourcePrdId], references: [id], onDelete: Cascade)
+  version         Int      @default(1)
+  generatedBy     String   @default("System")
+  status          String   @default("Ready")
+  planType        String   @default("Standard")
+  targetRelease   String?
+  engineeringTeam String?
+  content         String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([sourcePrdId])
 }

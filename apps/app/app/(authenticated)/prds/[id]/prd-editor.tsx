@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -33,6 +34,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { updatePRD, deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
+import { NewImplementationPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-implementation-plan-modal";
 import type { PRD } from "@repo/database/generated/client";
 
 type PRDEditorProps = {
@@ -49,6 +51,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
   // Dialogs
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
   const [newTitle, setNewTitle] = useState(prd.title);
   const [newFileName, setNewFileName] = useState(prd.fileName);
 
@@ -58,6 +61,9 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       const result = await updatePRD({ id: prd.id, content });
       if (result.data) {
         setLastSaved(new Date());
+        toast.success("Changes saved");
+      } else if (result.error) {
+        toast.error("Failed to save changes");
       }
       setIsSaving(false);
     });
@@ -99,8 +105,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
   };
 
   const handleGenerateImplementationPlan = () => {
-    // TODO: Implement generation logic
-    console.log("Generate implementation plan for PRD:", prd.id);
+    setShowGeneratePlanModal(true);
   };
 
   const formatLastSaved = (date: Date) => {
@@ -125,8 +130,8 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b px-4 py-3">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-10 bg-background flex items-center justify-between border-b px-4 py-3">
         <div className="flex items-center gap-4">
           <Link href="/prds">
             <Button variant="ghost" size="sm">
@@ -187,9 +192,9 @@ export function PRDEditor({ prd }: PRDEditorProps) {
         </div>
       </div>
 
-      {/* Editor */}
-      <div className="flex-1 p-4 overflow-auto">
-        <div className="max-w-4xl mx-auto">
+      {/* Scrollable Editor */}
+      <div className="flex-1 overflow-auto">
+        <div className="max-w-4xl mx-auto p-4">
           <Textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
@@ -257,6 +262,15 @@ export function PRDEditor({ prd }: PRDEditorProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Generate Implementation Plan Modal */}
+      <NewImplementationPlanModal
+        defaultPrdId={prd.id}
+        defaultPrdTitle={prd.title}
+        open={showGeneratePlanModal}
+        onOpenChange={setShowGeneratePlanModal}
+        trigger={null}
+      />
     </div>
   );
 }
