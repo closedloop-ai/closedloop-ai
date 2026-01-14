@@ -2,14 +2,22 @@
 
 import { database } from "@repo/database";
 import { revalidatePath } from "next/cache";
+import type { PRD } from "@repo/database/generated/client";
+import {
+  type ActionResult,
+  success,
+  failure,
+  type PRDStatus,
+  type PRDTemplate,
+} from "@/lib/types";
 
 export type CreatePRDInput = {
   title: string;
   fileName: string;
   approver: string;
-  status: string;
+  status: PRDStatus;
   tags: string[];
-  template: string;
+  template: PRDTemplate;
   content?: string;
 };
 
@@ -18,40 +26,40 @@ export type UpdatePRDInput = {
   title?: string;
   fileName?: string;
   approver?: string;
-  status?: string;
+  status?: PRDStatus;
   tags?: string[];
-  template?: string;
+  template?: PRDTemplate;
   content?: string;
 };
 
-export async function getPRDs() {
+export async function getPRDs(): Promise<ActionResult<PRD[]>> {
   try {
     const prds = await database.pRD.findMany({
       orderBy: { updatedAt: "desc" },
     });
-    return { data: prds };
+    return success(prds);
   } catch (error) {
     console.error("Failed to fetch PRDs:", error);
-    return { error: "Failed to fetch PRDs" };
+    return failure("Failed to fetch PRDs");
   }
 }
 
-export async function getPRDById(id: string) {
+export async function getPRDById(id: string): Promise<ActionResult<PRD>> {
   try {
     const prd = await database.pRD.findUnique({
       where: { id },
     });
     if (!prd) {
-      return { error: "PRD not found" };
+      return failure("PRD not found");
     }
-    return { data: prd };
+    return success(prd);
   } catch (error) {
     console.error("Failed to fetch PRD:", error);
-    return { error: "Failed to fetch PRD" };
+    return failure("Failed to fetch PRD");
   }
 }
 
-export async function createPRD(input: CreatePRDInput) {
+export async function createPRD(input: CreatePRDInput): Promise<ActionResult<PRD>> {
   try {
     const prd = await database.pRD.create({
       data: {
@@ -65,14 +73,14 @@ export async function createPRD(input: CreatePRDInput) {
       },
     });
     revalidatePath("/prds");
-    return { data: prd };
+    return success(prd);
   } catch (error) {
     console.error("Failed to create PRD:", error);
-    return { error: "Failed to create PRD" };
+    return failure("Failed to create PRD");
   }
 }
 
-export async function updatePRD(input: UpdatePRDInput) {
+export async function updatePRD(input: UpdatePRDInput): Promise<ActionResult<PRD>> {
   try {
     const { id, ...data } = input;
     const prd = await database.pRD.update({
@@ -81,34 +89,34 @@ export async function updatePRD(input: UpdatePRDInput) {
     });
     revalidatePath("/prds");
     revalidatePath(`/prds/${id}`);
-    return { data: prd };
+    return success(prd);
   } catch (error) {
     console.error("Failed to update PRD:", error);
-    return { error: "Failed to update PRD" };
+    return failure("Failed to update PRD");
   }
 }
 
-export async function deletePRD(id: string) {
+export async function deletePRD(id: string): Promise<ActionResult<{ deleted: true }>> {
   try {
     await database.pRD.delete({
       where: { id },
     });
     revalidatePath("/prds");
-    return { success: true };
+    return success({ deleted: true });
   } catch (error) {
     console.error("Failed to delete PRD:", error);
-    return { error: "Failed to delete PRD" };
+    return failure("Failed to delete PRD");
   }
 }
 
-export async function duplicatePRD(id: string) {
+export async function duplicatePRD(id: string): Promise<ActionResult<PRD>> {
   try {
     const original = await database.pRD.findUnique({
       where: { id },
     });
 
     if (!original) {
-      return { error: "PRD not found" };
+      return failure("PRD not found");
     }
 
     const prd = await database.pRD.create({
@@ -124,14 +132,14 @@ export async function duplicatePRD(id: string) {
     });
 
     revalidatePath("/prds");
-    return { data: prd };
+    return success(prd);
   } catch (error) {
     console.error("Failed to duplicate PRD:", error);
-    return { error: "Failed to duplicate PRD" };
+    return failure("Failed to duplicate PRD");
   }
 }
 
-export async function renamePRD(id: string, title: string, fileName: string) {
+export async function renamePRD(id: string, title: string, fileName: string): Promise<ActionResult<PRD>> {
   try {
     const prd = await database.pRD.update({
       where: { id },
@@ -139,10 +147,10 @@ export async function renamePRD(id: string, title: string, fileName: string) {
     });
     revalidatePath("/prds");
     revalidatePath(`/prds/${id}`);
-    return { data: prd };
+    return success(prd);
   } catch (error) {
     console.error("Failed to rename PRD:", error);
-    return { error: "Failed to rename PRD" };
+    return failure("Failed to rename PRD");
   }
 }
 

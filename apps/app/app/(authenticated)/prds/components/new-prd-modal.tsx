@@ -24,9 +24,7 @@ import { LoaderIcon, PlusIcon, XIcon } from "lucide-react";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createPRD } from "@/app/actions/prds";
-
-const STATUS_OPTIONS = ["Draft", "Review", "Approved", "Archived"];
-const TEMPLATE_OPTIONS = ["Standard PRD", "Feature Brief", "Bug Fix", "Technical Spec"];
+import { PRD_STATUS_OPTIONS, PRD_TEMPLATE_OPTIONS, type PRDStatus, type PRDTemplate } from "@/lib/types";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -37,8 +35,8 @@ export function NewPRDModal() {
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
   const [approver, setApprover] = useState("");
-  const [status, setStatus] = useState("Draft");
-  const [template, setTemplate] = useState("Standard PRD");
+  const [status, setStatus] = useState<PRDStatus>("Draft");
+  const [template, setTemplate] = useState<PRDTemplate>("Standard PRD");
   const [tags, setTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
   const [content, setContent] = useState("");
@@ -78,8 +76,8 @@ export function NewPRDModal() {
     setTitle("");
     setFileName("");
     setApprover("");
-    setStatus("Draft");
-    setTemplate("Standard PRD");
+    setStatus("Draft" as PRDStatus);
+    setTemplate("Standard PRD" as PRDTemplate);
     setTags([]);
     setNewTag("");
     setContent("");
@@ -106,16 +104,14 @@ export function NewPRDModal() {
           content: content.trim() || undefined,
         });
 
-        if (result.error) {
+        if (!result.success) {
           setError(result.error);
           return;
         }
 
-        if (result.data) {
-          setOpen(false);
-          resetForm();
-          router.push(`/prds/${result.data.id}`);
-        }
+        setOpen(false);
+        resetForm();
+        router.push(`/prds/${result.data.id}`);
       } catch (err) {
         console.error("Failed to create PRD:", err);
         setError("An unexpected error occurred");
@@ -187,12 +183,12 @@ export function NewPRDModal() {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Status</Label>
-              <Select value={status} onValueChange={setStatus}>
+              <Select value={status} onValueChange={(v) => setStatus(v as PRDStatus)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {STATUS_OPTIONS.map((opt) => (
+                  {PRD_STATUS_OPTIONS.map((opt) => (
                     <SelectItem key={opt} value={opt}>
                       {opt}
                     </SelectItem>
@@ -203,12 +199,12 @@ export function NewPRDModal() {
 
             <div className="space-y-2">
               <Label>Template</Label>
-              <Select value={template} onValueChange={setTemplate}>
+              <Select value={template} onValueChange={(v) => setTemplate(v as PRDTemplate)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TEMPLATE_OPTIONS.map((opt) => (
+                  {PRD_TEMPLATE_OPTIONS.map((opt) => (
                     <SelectItem key={opt} value={opt}>
                       {opt}
                     </SelectItem>

@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 
 export default async function PRDsPage() {
   const result = await getPRDs();
-  const prds = result.data ?? [];
+  const prds = result.success ? result.data : [];
 
   return (
     <>

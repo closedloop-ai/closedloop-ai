@@ -1,8 +1,5 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -11,14 +8,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -39,15 +28,12 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
-import {
-  updateImplementationPlan,
-  deleteImplementationPlan,
-} from "@/app/actions/implementation-plans";
 import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
 import { ImplementationPlanStatusBadge } from "../components/implementation-plan-status-badge";
-
-const STATUS_OPTIONS = ["Draft", "Ready", "In Progress", "Generating", "Failed", "Archived"];
-const PLAN_TYPE_OPTIONS = ["Standard", "Quick", "Detailed", "Technical"];
+import { formatRelativeTime } from "@/lib/utils";
+import { IMPL_PLAN_STATUS_OPTIONS, IMPL_PLAN_TYPE_OPTIONS, type ImplPlanStatus, type ImplPlanType } from "@/lib/types";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { useImplementationPlanEditor } from "./use-implementation-plan-editor";
 
 type ImplementationPlanWithPRD = ImplementationPlan & {
   sourcePrd: Pick<PRD, "id" | "title">;
@@ -58,150 +44,36 @@ type ImplementationPlanEditorProps = {
 };
 
 export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
-  const [content, setContent] = useState(plan.content);
-  const [lastSaved, setLastSaved] = useState<Date>(plan.updatedAt);
-  const [isSaving, setIsSaving] = useState(false);
-
-  // Editable metadata state
-  const [status, setStatus] = useState(plan.status);
-  const [approver, setApprover] = useState(plan.approver || "");
-  const [planType, setPlanType] = useState(plan.planType);
-  const [targetRelease, setTargetRelease] = useState(plan.targetRelease || "");
-  const [engineeringTeam, setEngineeringTeam] = useState(plan.engineeringTeam || "");
-  const [showMetadataPanel, setShowMetadataPanel] = useState(false);
-
-  // Dialogs
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-
-  const isDraft = status === "Draft";
-
-  const handleSave = useCallback(() => {
-    setIsSaving(true);
-    startTransition(async () => {
-      const result = await updateImplementationPlan({ id: plan.id, content });
-      if (result.data) {
-        setLastSaved(new Date());
-        toast.success("Changes saved");
-      } else if (result.error) {
-        toast.error("Failed to save changes");
-      }
-      setIsSaving(false);
-    });
-  }, [plan.id, content]);
-
-  const handleMetadataUpdate = useCallback((updates: Partial<{ status: string; approver: string; planType: string; targetRelease: string; engineeringTeam: string }>) => {
-    startTransition(async () => {
-      const result = await updateImplementationPlan({ id: plan.id, ...updates });
-      if (result.data) {
-        setLastSaved(new Date());
-        toast.success("Changes saved");
-      } else if (result.error) {
-        toast.error("Failed to save changes");
-      }
-    });
-  }, [plan.id]);
-
-  const handleStatusChange = (newStatus: string) => {
-    setStatus(newStatus);
-    handleMetadataUpdate({ status: newStatus });
-  };
-
-  const handleApproverChange = (newApprover: string) => {
-    setApprover(newApprover);
-  };
-
-  const handleApproverBlur = () => {
-    if (approver !== (plan.approver || "")) {
-      handleMetadataUpdate({ approver: approver || undefined });
-    }
-  };
-
-  const handlePlanTypeChange = (newPlanType: string) => {
-    setPlanType(newPlanType);
-    handleMetadataUpdate({ planType: newPlanType });
-  };
-
-  const handleTargetReleaseChange = (newTargetRelease: string) => {
-    setTargetRelease(newTargetRelease);
-  };
-
-  const handleTargetReleaseBlur = () => {
-    if (targetRelease !== (plan.targetRelease || "")) {
-      handleMetadataUpdate({ targetRelease: targetRelease || undefined });
-    }
-  };
-
-  const handleEngineeringTeamChange = (newEngineeringTeam: string) => {
-    setEngineeringTeam(newEngineeringTeam);
-  };
-
-  const handleEngineeringTeamBlur = () => {
-    if (engineeringTeam !== (plan.engineeringTeam || "")) {
-      handleMetadataUpdate({ engineeringTeam: engineeringTeam || undefined });
-    }
-  };
-
-  const handleApprove = () => {
-    startTransition(async () => {
-      const result = await updateImplementationPlan({ id: plan.id, status: "Ready" });
-      if (result.data) {
-        setStatus("Ready");
-        setLastSaved(new Date());
-        toast.success("Plan approved");
-      } else if (result.error) {
-        toast.error("Failed to approve plan");
-      }
-    });
-  };
-
-  const handleExport = () => {
-    const blob = new Blob([content], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleCopyMarkdown = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
-    } catch (err) {
-      console.error("Failed to copy to clipboard:", err);
-    }
-  };
-
-  const handleDelete = () => {
-    startTransition(async () => {
-      await deleteImplementationPlan(plan.id);
-      router.push("/implementation-plans");
-    });
-  };
-
-  const formatLastSaved = (date: Date) => {
-    const now = new Date();
-    const diff = now.getTime() - new Date(date).getTime();
-    const minutes = Math.floor(diff / 60000);
-
-    if (minutes < 1) return "Just now";
-    if (minutes === 1) return "1 min ago";
-    if (minutes < 60) return `${minutes} min ago`;
-
-    const hours = Math.floor(minutes / 60);
-    if (hours === 1) return "1 hour ago";
-    if (hours < 24) return `${hours} hours ago`;
-
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }).format(new Date(date));
-  };
+  const {
+    isPending,
+    content,
+    setContent,
+    lastSaved,
+    isSaving,
+    status,
+    approver,
+    planType,
+    targetRelease,
+    engineeringTeam,
+    showMetadataPanel,
+    setShowMetadataPanel,
+    showDeleteDialog,
+    setShowDeleteDialog,
+    isDraft,
+    handleSave,
+    handleStatusChange,
+    handleApproverChange,
+    handleApproverBlur,
+    handlePlanTypeChange,
+    handleTargetReleaseChange,
+    handleTargetReleaseBlur,
+    handleEngineeringTeamChange,
+    handleEngineeringTeamBlur,
+    handleApprove,
+    handleExport,
+    handleCopyMarkdown,
+    handleDelete,
+  } = useImplementationPlanEditor(plan);
 
   return (
     <div className="flex flex-col h-full">
@@ -222,7 +94,7 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
           </div>
 
           <span className="text-sm text-muted-foreground">
-            {isSaving ? "Saving..." : `Last saved: ${formatLastSaved(lastSaved)}`}
+            {isSaving ? "Saving..." : `Last saved: ${formatRelativeTime(lastSaved)}`}
           </span>
         </div>
 
@@ -305,12 +177,12 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Status</Label>
-                <Select value={status} onValueChange={handleStatusChange}>
+                <Select value={status} onValueChange={(v) => handleStatusChange(v as ImplPlanStatus)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {STATUS_OPTIONS.map((opt) => (
+                    {IMPL_PLAN_STATUS_OPTIONS.map((opt) => (
                       <SelectItem key={opt} value={opt}>
                         {opt}
                       </SelectItem>
@@ -331,12 +203,12 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
 
               <div className="space-y-2">
                 <Label>Plan Type</Label>
-                <Select value={planType} onValueChange={handlePlanTypeChange}>
+                <Select value={planType} onValueChange={(v) => handlePlanTypeChange(v as ImplPlanType)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {PLAN_TYPE_OPTIONS.map((opt) => (
+                    {IMPL_PLAN_TYPE_OPTIONS.map((opt) => (
                       <SelectItem key={opt} value={opt}>
                         {opt}
                       </SelectItem>
@@ -380,25 +252,14 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
       </div>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Implementation Plan</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{plan.title}"? This action cannot be
-              undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isPending}>
-              {isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteConfirmationDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        title="Implementation Plan"
+        itemName={plan.title}
+        onConfirm={handleDelete}
+        isPending={isPending}
+      />
     </div>
   );
 }

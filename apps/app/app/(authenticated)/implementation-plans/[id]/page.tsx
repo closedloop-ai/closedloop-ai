@@ -11,7 +11,7 @@ export async function generateMetadata({ params }: ImplementationPlanPageProps):
   const { id } = await params;
   const result = await getImplementationPlanById(id);
 
-  if (result.error || !result.data) {
+  if (!result.success) {
     return { title: "Plan Not Found" };
   }
 
@@ -25,7 +25,7 @@ export default async function ImplementationPlanPage({ params }: ImplementationP
   const { id } = await params;
   const result = await getImplementationPlanById(id);
 
-  if (result.error || !result.data) {
+  if (!result.success) {
     notFound();
   }
 

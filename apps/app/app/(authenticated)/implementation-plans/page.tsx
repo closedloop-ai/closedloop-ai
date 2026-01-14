@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 
 export default async function ImplementationPlansPage() {
   const result = await getImplementationPlans();
-  const plans = result.data ?? [];
+  const plans = result.success ? result.data : [];
 
   return (
     <>

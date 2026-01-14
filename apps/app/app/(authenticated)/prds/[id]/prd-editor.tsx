@@ -1,8 +1,5 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -43,166 +40,57 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { updatePRD, deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
 import { NewImplementationPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-implementation-plan-modal";
 import type { PRD } from "@repo/database/generated/client";
 import { PRDStatusBadge } from "../components/prd-status-badge";
-
-const STATUS_OPTIONS = ["Draft", "Review", "Approved", "Archived"];
-const TEMPLATE_OPTIONS = ["Standard PRD", "Feature Brief", "Bug Fix", "Technical Spec"];
+import { formatRelativeTime } from "@/lib/utils";
+import { PRD_STATUS_OPTIONS, PRD_TEMPLATE_OPTIONS, type PRDStatus, type PRDTemplate } from "@/lib/types";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { usePRDEditor } from "./use-prd-editor";
 
 type PRDEditorProps = {
   prd: PRD;
 };
 
 export function PRDEditor({ prd }: PRDEditorProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
-  const [content, setContent] = useState(prd.content);
-  const [lastSaved, setLastSaved] = useState<Date>(prd.updatedAt);
-  const [isSaving, setIsSaving] = useState(false);
-
-  // Editable metadata state
-  const [status, setStatus] = useState(prd.status);
-  const [approver, setApprover] = useState(prd.approver);
-  const [tags, setTags] = useState<string[]>(prd.tags ?? []);
-  const [template, setTemplate] = useState(prd.template);
-  const [newTag, setNewTag] = useState("");
-  const [showMetadataPanel, setShowMetadataPanel] = useState(false);
-
-  // Dialogs
-  const [showRenameDialog, setShowRenameDialog] = useState(false);
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
-  const [newTitle, setNewTitle] = useState(prd.title);
-  const [newFileName, setNewFileName] = useState(prd.fileName);
-
-  const handleSave = useCallback(() => {
-    setIsSaving(true);
-    startTransition(async () => {
-      const result = await updatePRD({ id: prd.id, content });
-      if (result.data) {
-        setLastSaved(new Date());
-        toast.success("Changes saved");
-      } else if (result.error) {
-        toast.error("Failed to save changes");
-      }
-      setIsSaving(false);
-    });
-  }, [prd.id, content]);
-
-  const handleMetadataUpdate = useCallback((updates: Partial<{ status: string; approver: string; tags: string[]; template: string }>) => {
-    startTransition(async () => {
-      const result = await updatePRD({ id: prd.id, ...updates });
-      if (result.data) {
-        setLastSaved(new Date());
-        toast.success("Changes saved");
-      } else if (result.error) {
-        toast.error("Failed to save changes");
-      }
-    });
-  }, [prd.id]);
-
-  const handleStatusChange = (newStatus: string) => {
-    setStatus(newStatus);
-    handleMetadataUpdate({ status: newStatus });
-  };
-
-  const handleApproverChange = (newApprover: string) => {
-    setApprover(newApprover);
-  };
-
-  const handleApproverBlur = () => {
-    if (approver !== prd.approver) {
-      handleMetadataUpdate({ approver });
-    }
-  };
-
-  const handleTemplateChange = (newTemplate: string) => {
-    setTemplate(newTemplate);
-    handleMetadataUpdate({ template: newTemplate });
-  };
-
-  const handleAddTag = () => {
-    if (newTag.trim() && !tags.includes(newTag.trim())) {
-      const newTags = [...tags, newTag.trim()];
-      setTags(newTags);
-      setNewTag("");
-      handleMetadataUpdate({ tags: newTags });
-    }
-  };
-
-  const handleRemoveTag = (tagToRemove: string) => {
-    const newTags = tags.filter((tag) => tag !== tagToRemove);
-    setTags(newTags);
-    handleMetadataUpdate({ tags: newTags });
-  };
-
-  const handleTagKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleAddTag();
-    }
-  };
-
-  const handleRename = () => {
-    startTransition(async () => {
-      await renamePRD(prd.id, newTitle, newFileName);
-      setShowRenameDialog(false);
-    });
-  };
-
-  const handleDuplicate = () => {
-    startTransition(async () => {
-      const result = await duplicatePRD(prd.id);
-      if (result.data) {
-        router.push(`/prds/${result.data.id}`);
-      }
-    });
-  };
-
-  const handleExport = () => {
-    const blob = new Blob([content], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = prd.fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleDelete = () => {
-    startTransition(async () => {
-      await deletePRD(prd.id);
-      router.push("/prds");
-    });
-  };
-
-  const handleGenerateImplementationPlan = () => {
-    setShowGeneratePlanModal(true);
-  };
-
-  const formatLastSaved = (date: Date) => {
-    const now = new Date();
-    const diff = now.getTime() - new Date(date).getTime();
-    const minutes = Math.floor(diff / 60000);
-
-    if (minutes < 1) return "Just now";
-    if (minutes === 1) return "1 min ago";
-    if (minutes < 60) return `${minutes} min ago`;
-
-    const hours = Math.floor(minutes / 60);
-    if (hours === 1) return "1 hour ago";
-    if (hours < 24) return `${hours} hours ago`;
-
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }).format(new Date(date));
-  };
+  const {
+    isPending,
+    content,
+    setContent,
+    lastSaved,
+    isSaving,
+    status,
+    approver,
+    tags,
+    template,
+    newTag,
+    setNewTag,
+    showMetadataPanel,
+    setShowMetadataPanel,
+    showRenameDialog,
+    setShowRenameDialog,
+    showDeleteDialog,
+    setShowDeleteDialog,
+    showGeneratePlanModal,
+    setShowGeneratePlanModal,
+    newTitle,
+    setNewTitle,
+    newFileName,
+    setNewFileName,
+    handleSave,
+    handleStatusChange,
+    handleApproverChange,
+    handleApproverBlur,
+    handleTemplateChange,
+    handleAddTag,
+    handleRemoveTag,
+    handleTagKeyDown,
+    handleRename,
+    handleDuplicate,
+    handleExport,
+    handleCopyMarkdown,
+    handleDelete,
+  } = usePRDEditor(prd);
 
   return (
     <div className="flex flex-col h-full">
@@ -225,7 +113,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
           <PRDStatusBadge status={status} />
 
           <span className="text-sm text-muted-foreground">
-            {isSaving ? "Saving..." : `Last saved: ${formatLastSaved(lastSaved)}`}
+            {isSaving ? "Saving..." : `Last saved: ${formatRelativeTime(lastSaved)}`}
           </span>
         </div>
 
@@ -239,7 +127,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
             Details
           </Button>
 
-          <Button onClick={handleGenerateImplementationPlan} variant="outline">
+          <Button onClick={() => setShowGeneratePlanModal(true)} variant="outline">
             <SparklesIcon className="mr-2 h-4 w-4" />
             Generate Implementation Plan
           </Button>
@@ -302,12 +190,12 @@ export function PRDEditor({ prd }: PRDEditorProps) {
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Status</Label>
-                <Select value={status} onValueChange={handleStatusChange}>
+                <Select value={status} onValueChange={(v) => handleStatusChange(v as PRDStatus)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {STATUS_OPTIONS.map((opt) => (
+                    {PRD_STATUS_OPTIONS.map((opt) => (
                       <SelectItem key={opt} value={opt}>
                         {opt}
                       </SelectItem>
@@ -328,12 +216,12 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
               <div className="space-y-2">
                 <Label>Template</Label>
-                <Select value={template} onValueChange={handleTemplateChange}>
+                <Select value={template} onValueChange={(v) => handleTemplateChange(v as PRDTemplate)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {TEMPLATE_OPTIONS.map((opt) => (
+                    {PRD_TEMPLATE_OPTIONS.map((opt) => (
                       <SelectItem key={opt} value={opt}>
                         {opt}
                       </SelectItem>
@@ -425,25 +313,14 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete PRD</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{prd.title}"? This action cannot be
-              undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDeleteDialog(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isPending}>
-              {isPending ? "Deleting..." : "Delete"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteConfirmationDialog
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+        title="PRD"
+        itemName={prd.title}
+        onConfirm={handleDelete}
+        isPending={isPending}
+      />
 
       {/* Generate Implementation Plan Modal */}
       <NewImplementationPlanModal

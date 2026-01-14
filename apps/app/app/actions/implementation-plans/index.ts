@@ -2,10 +2,22 @@
 
 import { database } from "@repo/database";
 import { revalidatePath } from "next/cache";
+import type { ImplementationPlan, PRD } from "@repo/database/generated/client";
+import {
+  type ActionResult,
+  success,
+  failure,
+  type ImplPlanStatus,
+  type ImplPlanType,
+} from "@/lib/types";
+
+type ImplementationPlanWithPRD = ImplementationPlan & {
+  sourcePrd: Pick<PRD, "id" | "title">;
+};
 
 export type CreateImplementationPlanInput = {
   sourcePrdId: string;
-  planType: string;
+  planType: ImplPlanType;
   targetRelease?: string;
   engineeringTeam?: string;
   createdBy: string;
@@ -15,15 +27,15 @@ export type CreateImplementationPlanInput = {
 export type UpdateImplementationPlanInput = {
   id: string;
   title?: string;
-  status?: string;
+  status?: ImplPlanStatus;
   content?: string;
   approver?: string;
-  planType?: string;
+  planType?: ImplPlanType;
   targetRelease?: string;
   engineeringTeam?: string;
 };
 
-export async function getImplementationPlans() {
+export async function getImplementationPlans(): Promise<ActionResult<ImplementationPlanWithPRD[]>> {
   try {
     const plans = await database.implementationPlan.findMany({
       orderBy: { createdAt: "desc" },
@@ -36,14 +48,14 @@ export async function getImplementationPlans() {
         },
       },
     });
-    return { data: plans };
+    return success(plans);
   } catch (error) {
     console.error("Failed to fetch implementation plans:", error);
-    return { error: "Failed to fetch implementation plans" };
+    return failure("Failed to fetch implementation plans");
   }
 }
 
-export async function getImplementationPlanById(id: string) {
+export async function getImplementationPlanById(id: string): Promise<ActionResult<ImplementationPlanWithPRD>> {
   try {
     const plan = await database.implementationPlan.findUnique({
       where: { id },
@@ -57,16 +69,16 @@ export async function getImplementationPlanById(id: string) {
       },
     });
     if (!plan) {
-      return { error: "Implementation plan not found" };
+      return failure("Implementation plan not found");
     }
-    return { data: plan };
+    return success(plan);
   } catch (error) {
     console.error("Failed to fetch implementation plan:", error);
-    return { error: "Failed to fetch implementation plan" };
+    return failure("Failed to fetch implementation plan");
   }
 }
 
-export async function createImplementationPlan(input: CreateImplementationPlanInput) {
+export async function createImplementationPlan(input: CreateImplementationPlanInput): Promise<ActionResult<ImplementationPlan>> {
   try {
     // Get the source PRD to generate the title and inherit approver
     const sourcePrd = await database.pRD.findUnique({
@@ -74,7 +86,7 @@ export async function createImplementationPlan(input: CreateImplementationPlanIn
     });
 
     if (!sourcePrd) {
-      return { error: "Source PRD not found" };
+      return failure("Source PRD not found");
     }
 
     // Count existing plans for this PRD to determine version
@@ -104,14 +116,14 @@ export async function createImplementationPlan(input: CreateImplementationPlanIn
     });
 
     revalidatePath("/implementation-plans");
-    return { data: plan };
+    return success(plan);
   } catch (error) {
     console.error("Failed to create implementation plan:", error);
-    return { error: "Failed to create implementation plan" };
+    return failure("Failed to create implementation plan");
   }
 }
 
-export async function updateImplementationPlan(input: UpdateImplementationPlanInput) {
+export async function updateImplementationPlan(input: UpdateImplementationPlanInput): Promise<ActionResult<ImplementationPlan>> {
   try {
     const { id, ...data } = input;
     const plan = await database.implementationPlan.update({
@@ -120,27 +132,27 @@ export async function updateImplementationPlan(input: UpdateImplementationPlanIn
     });
     revalidatePath("/implementation-plans");
     revalidatePath(`/implementation-plans/${id}`);
-    return { data: plan };
+    return success(plan);
   } catch (error) {
     console.error("Failed to update implementation plan:", error);
-    return { error: "Failed to update implementation plan" };
+    return failure("Failed to update implementation plan");
   }
 }
 
-export async function deleteImplementationPlan(id: string) {
+export async function deleteImplementationPlan(id: string): Promise<ActionResult<{ deleted: true }>> {
   try {
     await database.implementationPlan.delete({
       where: { id },
     });
     revalidatePath("/implementation-plans");
-    return { success: true };
+    return success({ deleted: true });
   } catch (error) {
     console.error("Failed to delete implementation plan:", error);
-    return { error: "Failed to delete implementation plan" };
+    return failure("Failed to delete implementation plan");
   }
 }
 
-export async function regenerateImplementationPlan(id: string) {
+export async function regenerateImplementationPlan(id: string): Promise<ActionResult<ImplementationPlan>> {
   try {
     const plan = await database.implementationPlan.findUnique({
       where: { id },
@@ -148,7 +160,7 @@ export async function regenerateImplementationPlan(id: string) {
     });
 
     if (!plan) {
-      return { error: "Implementation plan not found" };
+      return failure("Implementation plan not found");
     }
 
     // For now, just increment version and update timestamp
@@ -163,10 +175,10 @@ export async function regenerateImplementationPlan(id: string) {
 
     revalidatePath("/implementation-plans");
     revalidatePath(`/implementation-plans/${id}`);
-    return { data: updatedPlan };
+    return success(updatedPlan);
   } catch (error) {
     console.error("Failed to regenerate implementation plan:", error);
-    return { error: "Failed to regenerate implementation plan" };
+    return failure("Failed to regenerate implementation plan");
   }
 }
 

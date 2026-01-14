@@ -11,7 +11,7 @@ export async function generateMetadata({ params }: PRDPageProps): Promise<Metada
   const { id } = await params;
   const result = await getPRDById(id);
 
-  if (result.error || !result.data) {
+  if (!result.success) {
     return { title: "PRD Not Found" };
   }
 
@@ -25,7 +25,7 @@ export default async function PRDPage({ params }: PRDPageProps) {
   const { id } = await params;
   const result = await getPRDById(id);
 
-  if (result.error || !result.data) {
+  if (!result.success) {
     notFound();
   }
 

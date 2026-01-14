@@ -25,13 +25,14 @@ import { useRouter } from "next/navigation";
 import { createImplementationPlan } from "@/app/actions/implementation-plans";
 import { getPRDs } from "@/app/actions/prds";
 import type { PRD } from "@repo/database/generated/client";
+import { IMPL_PLAN_TYPE_OPTIONS, type ImplPlanType } from "@/lib/types";
 
-const PLAN_TYPE_OPTIONS = [
-  { value: "Standard", label: "Standard Implementation" },
-  { value: "Quick", label: "Quick Implementation" },
-  { value: "Detailed", label: "Detailed Breakdown" },
-  { value: "Technical", label: "Technical Spec" },
-];
+const PLAN_TYPE_LABELS: Record<ImplPlanType, string> = {
+  Standard: "Standard Implementation",
+  Quick: "Quick Implementation",
+  Detailed: "Detailed Breakdown",
+  Technical: "Technical Spec",
+};
 
 type NewImplementationPlanModalProps = {
   defaultPrdId?: string;
@@ -60,7 +61,7 @@ export function NewImplementationPlanModal({
 
   // Form state
   const [sourcePrdId, setSourcePrdId] = useState(defaultPrdId ?? "");
-  const [planType, setPlanType] = useState("Standard");
+  const [planType, setPlanType] = useState<ImplPlanType>("Standard");
   const [targetRelease, setTargetRelease] = useState("");
   const [engineeringTeam, setEngineeringTeam] = useState("");
   const [createdBy, setCreatedBy] = useState("");
@@ -78,7 +79,7 @@ export function NewImplementationPlanModal({
     if (open && !defaultPrdId) {
       setLoadingPrds(true);
       getPRDs().then((result) => {
-        if (result.data) {
+        if (result.success) {
           setPrds(result.data);
         }
         setLoadingPrds(false);
@@ -95,7 +96,7 @@ export function NewImplementationPlanModal({
 
   const resetForm = () => {
     setSourcePrdId(defaultPrdId ?? "");
-    setPlanType("Standard");
+    setPlanType("Standard" as ImplPlanType);
     setTargetRelease("");
     setEngineeringTeam("");
     setCreatedBy("");
@@ -130,16 +131,14 @@ export function NewImplementationPlanModal({
           approver: approver.trim() || undefined,
         });
 
-        if (result.error) {
+        if (!result.success) {
           setError(result.error);
           return;
         }
 
-        if (result.data) {
-          setOpen(false);
-          resetForm();
-          router.push(`/implementation-plans/${result.data.id}`);
-        }
+        setOpen(false);
+        resetForm();
+        router.push(`/implementation-plans/${result.data.id}`);
       } catch (err) {
         console.error("Failed to create implementation plan:", err);
         setError("An unexpected error occurred");
@@ -212,14 +211,14 @@ export function NewImplementationPlanModal({
 
           <div className="space-y-2">
             <Label htmlFor="plan-type">Plan Type</Label>
-            <Select value={planType} onValueChange={setPlanType}>
+            <Select value={planType} onValueChange={(v) => setPlanType(v as ImplPlanType)}>
               <SelectTrigger id="plan-type">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PLAN_TYPE_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
+                {IMPL_PLAN_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt} value={opt}>
+                    {PLAN_TYPE_LABELS[opt]}
                   </SelectItem>
                 ))}
               </SelectContent>
