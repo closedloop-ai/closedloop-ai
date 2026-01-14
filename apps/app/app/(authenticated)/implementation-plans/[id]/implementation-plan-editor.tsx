@@ -29,17 +29,13 @@ import {
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger } from "@repo/design-system/components/ui/tabs";
 import {
   ArrowLeftIcon,
   CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
   TrashIcon,
-  EyeIcon,
-  CodeIcon,
   CheckIcon,
-  PencilIcon,
   SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -61,15 +57,12 @@ type ImplementationPlanEditorProps = {
   plan: ImplementationPlanWithPRD;
 };
 
-type ViewMode = "rendered" | "markdown";
-
 export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [content, setContent] = useState(plan.content);
   const [lastSaved, setLastSaved] = useState<Date>(plan.updatedAt);
   const [isSaving, setIsSaving] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
 
   // Editable metadata state
   const [status, setStatus] = useState(plan.status);
@@ -163,12 +156,6 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
     });
   };
 
-  const handleModify = () => {
-    // TODO: Implement modify functionality
-    // For now, just switch to markdown view for editing
-    setViewMode("markdown");
-  };
-
   const handleExport = () => {
     const blob = new Blob([content], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -240,20 +227,6 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
         </div>
 
         <div className="flex items-center gap-2">
-          {/* View Mode Toggle */}
-          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-            <TabsList className="h-8">
-              <TabsTrigger value="rendered" className="h-6 px-2 text-xs">
-                <EyeIcon className="mr-1 h-3 w-3" />
-                Rendered
-              </TabsTrigger>
-              <TabsTrigger value="markdown" className="h-6 px-2 text-xs">
-                <CodeIcon className="mr-1 h-3 w-3" />
-                Markdown
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-
           <Button
             onClick={() => setShowMetadataPanel(!showMetadataPanel)}
             variant={showMetadataPanel ? "secondary" : "outline"}
@@ -263,15 +236,9 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
             Details
           </Button>
 
-          {/* Modify button (replaces Regenerate) */}
-          <Button onClick={handleModify} variant="outline" size="sm">
-            <PencilIcon className="mr-2 h-4 w-4" />
-            Modify
-          </Button>
-
           {/* Approve button - only shown for Draft plans */}
           {isDraft && (
-            <Button onClick={handleApprove} variant="default" size="sm" disabled={isPending}>
+            <Button onClick={handleApprove} variant="outline" size="sm" disabled={isPending}>
               <CheckIcon className="mr-2 h-4 w-4" />
               Approve
             </Button>
@@ -287,11 +254,9 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
             Copy MD
           </Button>
 
-          {viewMode === "markdown" && (
-            <Button onClick={handleSave} disabled={isPending} size="sm">
-              {isSaving ? "Saving..." : "Save"}
-            </Button>
-          )}
+          <Button onClick={handleSave} disabled={isPending}>
+            {isSaving ? "Saving..." : "Save"}
+          </Button>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -320,21 +285,15 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
 
       {/* Content Area with Optional Metadata Panel */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Scrollable Content */}
+        {/* Scrollable Editor */}
         <div className="flex-1 overflow-auto">
           <div className="max-w-4xl mx-auto p-4">
-            {viewMode === "rendered" ? (
-              <div className="prose prose-sm dark:prose-invert max-w-none">
-                <MarkdownPreview content={content} />
-              </div>
-            ) : (
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Implementation plan content..."
-                className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
-              />
-            )}
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Start writing your implementation plan..."
+              className="min-h-[calc(100vh-200px)] font-mono text-sm resize-none border-0 focus-visible:ring-0 p-0 shadow-none"
+            />
           </div>
         </div>
 
@@ -442,51 +401,4 @@ export function ImplementationPlanEditor({ plan }: ImplementationPlanEditorProps
       </Dialog>
     </div>
   );
-}
-
-// Simple Markdown preview component
-function MarkdownPreview({ content }: { content: string }) {
-  // Convert markdown to HTML with basic formatting
-  const html = content
-    // Headers
-    .replace(/^### (.+)$/gm, '<h3 class="text-lg font-semibold mt-6 mb-2">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-xl font-semibold mt-8 mb-3">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="text-2xl font-bold mt-8 mb-4">$1</h1>')
-    // Bold
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Italic
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Code blocks
-    .replace(/```[\s\S]*?```/g, (match) => {
-      const code = match.slice(3, -3).trim();
-      return `<pre class="bg-muted p-4 rounded-lg overflow-x-auto my-4"><code class="text-sm">${escapeHtml(code)}</code></pre>`;
-    })
-    // Inline code
-    .replace(/`([^`]+)`/g, '<code class="bg-muted px-1.5 py-0.5 rounded text-sm">$1</code>')
-    // Checkboxes
-    .replace(/^- \[x\] (.+)$/gm, '<div class="flex items-center gap-2 my-1"><input type="checkbox" checked disabled class="h-4 w-4" /><span class="line-through text-muted-foreground">$1</span></div>')
-    .replace(/^- \[ \] (.+)$/gm, '<div class="flex items-center gap-2 my-1"><input type="checkbox" disabled class="h-4 w-4" /><span>$1</span></div>')
-    // Unordered lists
-    .replace(/^- (.+)$/gm, '<li class="ml-4">$1</li>')
-    // Horizontal rules
-    .replace(/^---$/gm, '<hr class="my-6 border-border" />')
-    // Line breaks
-    .replace(/\n\n/g, '</p><p class="my-4">')
-    .replace(/\n/g, '<br />');
-
-  return (
-    <div
-      className="markdown-content"
-      dangerouslySetInnerHTML={{ __html: `<p class="my-4">${html}</p>` }}
-    />
-  );
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
