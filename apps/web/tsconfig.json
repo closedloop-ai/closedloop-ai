@@ -15,6 +15,7 @@
     "next.config.ts",
     "**/*.ts",
     "**/*.tsx",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    "../../packages/cms/basehub-types.d.ts"
   ]
 }

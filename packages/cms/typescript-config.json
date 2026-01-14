@@ -1,1 +1,4 @@
-{}
+{
+  "compilerOptions": {},
+  "include": ["basehub-types.d.ts"]
+}
