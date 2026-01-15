@@ -451,6 +451,25 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 
 ### Submit Review
 
+**ENFORCEMENT**: Before executing ANY `gh pr review` command, validate it does not contain forbidden flags:
+
+```bash
+# Validation function - MUST be used before any gh pr review command
+validate_review_command() {
+  local cmd="$1"
+  if echo "$cmd" | grep -qE -- '--(approve|request-changes)'; then
+    echo "ERROR: Forbidden flag detected. This workflow only posts comments."
+    echo "Remove --approve or --request-changes and use --comment instead."
+    return 1
+  fi
+  return 0
+}
+
+# Example usage:
+REVIEW_CMD="gh pr review <PR_NUMBER> --comment --body \"See summary comment above.\""
+validate_review_command "$REVIEW_CMD" && eval "$REVIEW_CMD"
+```
+
 ```bash
 # Submit review as comment only - never approve or request changes automatically
 gh pr review <PR_NUMBER> --comment \
@@ -458,6 +477,8 @@ gh pr review <PR_NUMBER> --comment \
 ```
 
 **CRITICAL**: Always use `--comment` only. Never use `--approve` or `--request-changes`. Humans make the final approval decision.
+
+**Why no API-level enforcement?** The GitHub App token requires `pull-requests: write` permission to post inline comments, which also grants approval rights. The validation function above provides defense-in-depth at the command level.
 
 Mark todo as `completed`.
 
