@@ -99,13 +99,6 @@ export const ContactForm = ({ dictionary }: ContactFormProps) => {
                 </Label>
                 <Input id="lastname" type="text" />
               </div>
-              <div className="grid w-full max-w-sm items-center gap-1">
-                <Label htmlFor="picture">
-                  {dictionary.web.contact.hero.form.resume}
-                </Label>
-                <Input id="picture" type="file" />
-              </div>
-
               <Button className="w-full gap-4">
                 {dictionary.web.contact.hero.form.cta}{" "}
                 <MoveRight className="h-4 w-4" />
