@@ -125,7 +125,7 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 **Agent Prompt Template:**
 
 ```
-Review ONLY the changed code in these files. Return findings as JSON with severity BLOCKING, HIGH, or MEDIUM.
+Review ONLY the changed code in these files. Return findings as JSON.
 
 **FILES CHANGED IN THIS PR**:
 - {filepath_1}
@@ -137,12 +137,20 @@ Review ONLY the changed code in these files. Return findings as JSON with severi
 2. Do NOT flag pre-existing issues in unchanged code - even if you see problems
 3. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
 4. Focus on: new code introduced, modifications to existing code, new patterns being added
-5. Ignore: formatting issues, pre-existing technical debt, issues in unchanged imports
 
-**SEVERITY GUIDELINES**:
-- BLOCKING: Security vulnerabilities, runtime crashes, missing auth, data loss risks
-- HIGH: Performance issues, broken patterns, significant duplication in NEW code
-- MEDIUM: Minor quality issues in NEW code, suggestions for NEW patterns
+**SEVERITY GUIDELINES - BE STRICT**:
+- BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
+- HIGH: Bugs that WILL cause errors in production, missing error handling that WILL crash, broken API contracts, race conditions
+- MEDIUM: Code quality issues, minor improvements, style suggestions, hypothetical issues
+
+**IMPORTANT**: Most findings should be MEDIUM. Only use HIGH/BLOCKING for issues that WILL cause real problems in production. If you're unsure, use MEDIUM.
+
+**DO NOT use HIGH/BLOCKING for**:
+- Style preferences or patterns that "could be better"
+- Missing optional features or nice-to-haves
+- Hypothetical edge cases that are unlikely
+- Configuration suggestions
+- Documentation improvements
 
 **Return JSON format**:
 {
@@ -150,10 +158,10 @@ Review ONLY the changed code in these files. Return findings as JSON with severi
     {
       "file": "path/to/file.ts",
       "line": 42,
-      "severity": "BLOCKING",
-      "category": "Security",
+      "severity": "MEDIUM",
+      "category": "Code Quality",
       "issue": "Brief description",
-      "explanation": "Why this is a problem",
+      "explanation": "Why this matters",
       "recommendation": "How to fix",
       "code_snippet": "actual code from file",
       "is_new_code": true
@@ -161,8 +169,8 @@ Review ONLY the changed code in these files. Return findings as JSON with severi
   ]
 }
 
-If you find NO issues in the changed code, return: {"findings": []}
-Do NOT invent issues just to have something to report.
+If you find NO issues, return: {"findings": []}
+Empty findings is a valid response for clean code.
 ```
 
 **Critic Agent Mapping:**
@@ -225,13 +233,11 @@ Only lines starting with `+` (additions) or lines adjacent to changes are valid 
 1. Parse JSON findings from each agent
 2. **Filter by severity** for inline comments:
    - **Post inline comments**: BLOCKING and HIGH severity only
-   - **Summary only**: MEDIUM severity (no inline comment)
+   - **Summary only**: MEDIUM severity (no inline comment, just listed in summary)
 
-### Validate EVERY Finding (not just BLOCKING/HIGH)
+### Validate EVERY Finding
 
-**IMPORTANT**: This validation applies to ALL findings, including MEDIUM severity.
-
-For each finding:
+For each finding (all severities):
 
 1. **Check if file was changed in PR**:
    - If finding's file NOT in CHANGED_FILES: **DISCARD** (reason: "File not modified in this PR")
@@ -239,23 +245,28 @@ For each finding:
 2. **Check if line is in the changed lines**:
    - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this PR")
    - Allow ±3 lines tolerance for immediate context
-   - Exception: Issues in imports/exports at top of file IF the file was modified
 
-3. **Read the full file to confirm issue is real**:
-   - Check imports, error handling, types exist
+3. **Verify severity is appropriate**:
+   - BLOCKING/HIGH claimed but it's a style preference? **DOWNGRADE to MEDIUM**
+   - BLOCKING/HIGH claimed but it's hypothetical? **DOWNGRADE to MEDIUM**
+   - Only keep BLOCKING/HIGH for issues that WILL cause production problems
+
+4. **Read the full file to confirm issue is real**:
    - Verify the code snippet matches actual code
+   - Check if issue is already handled elsewhere
    - If issue doesn't exist or is already handled: **DISCARD** (reason: "False positive")
 
-4. **Check for duplicates**: Build dedup key `file:line:category`
+5. **Check for duplicates**: Build dedup key `file:line:category`
 
-### Discard Reasons to Track
+### Discard or Downgrade Reasons
 
+- **DOWNGRADE_TO_MEDIUM**: Claimed HIGH/BLOCKING but it's a style preference or hypothetical
 - **DISCARD_FILE_NOT_CHANGED**: Finding is in a file not modified by this PR
 - **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
 - **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code
 - **DISCARD_DUPLICATE**: Already reported by another agent
 
-**IMPORTANT**: Be aggressive about discarding findings on unchanged code. Reviewers should ONLY flag issues introduced or modified by this PR, not pre-existing issues in the codebase.
+**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. Only BLOCKING/HIGH get inline comments posted.
 
 Track validated findings and discarded findings with specific reasons.
 
@@ -336,12 +347,14 @@ Mark todo "Post inline comments for BLOCKING/HIGH findings" as `in_progress`.
 For each validated BLOCKING/HIGH finding:
 
 1. **Check dedup map**: If `file:line:category` already has comment, SKIP
-2. **Create inline comment**:
+2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
+3. **Create inline comment** (with error handling):
 
 Use the `mcp__github_inline_comment__create_inline_comment` tool if available, OR use gh api:
 
 ```bash
-gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/comments \
+# Wrap in error handling - don't fail entire review if one comment fails
+COMMENT_RESULT=$(gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/comments \
   -f body="**[SEVERITY]** Category
 
 Issue description
@@ -353,8 +366,19 @@ code snippet
 \`\`\`" \
   -f path="<FILE_PATH>" \
   -F line=<LINE_NUMBER> \
-  -f commit_id="<HEAD_SHA>"
+  -f commit_id="<HEAD_SHA>" 2>&1) || true
+
+# Check for line resolution errors - these are expected for edge cases
+if echo "$COMMENT_RESULT" | grep -q "could not be resolved"; then
+  echo "Warning: Could not post comment on <FILE_PATH>:<LINE_NUMBER> - line not in diff"
+  # Continue to next finding, don't fail
+fi
 ```
+
+**Error Handling**: If inline comment fails with "line could not be resolved":
+- Log warning but continue processing other findings
+- Add to summary as "comment skipped - line not in diff"
+- Do NOT fail the entire review
 
 **Comment Format:**
 
@@ -386,8 +410,7 @@ Mark todo "Post summary comment with approval decision" as `in_progress`.
 
 Based on validated findings, set status label for the summary comment:
 - **BLOCKING findings > 0**: "Changes Requested" (label only)
-- **HIGH findings > 3**: "Changes Requested" (label only)
-- **HIGH findings 1-3 + no BLOCKING**: "Needs Attention" (label only)
+- **HIGH findings > 0 + no BLOCKING**: "Needs Attention" (label only)
 - **MEDIUM only or no findings**: "Approved" (label only)
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
@@ -430,7 +453,7 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 | High | Y |
 | Medium | Z |
 
-### BLOCKING Issues (requires fix before merge)
+### BLOCKING Issues (must fix before merge)
 
 1. **[File:Line]** Brief description
 
@@ -438,15 +461,13 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 
 1. **[File:Line]** Brief description
 
-### Validation Summary
+### MEDIUM Issues (suggestions)
 
-- Total findings from agents: X
-- Validated: Y
-- Discarded: Z (false positives, unchanged lines, etc.)
+1. **[File:Line]** Brief description
 
 ---
 
-**Recommendation:** [Approve this PR | Address blocking issues before merge | Review high-priority items]
+**Recommendation:** [Approve this PR | Address blocking issues before merge | Consider high-priority items]
 ```
 
 ### Submit Review
