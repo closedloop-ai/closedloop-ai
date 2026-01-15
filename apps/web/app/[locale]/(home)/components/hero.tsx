@@ -15,7 +15,7 @@ export const Hero = async ({ dictionary }: HeroProps) => (
     <div className="container mx-auto">
       <div className="flex flex-col items-center justify-center gap-8 py-20 lg:py-40">
         <div>
-          <Feed queries={[blog.latestPostQuery]}>
+          <Feed queries={[blog.latestPostQuery()]}>
             {/* biome-ignore lint/suspicious/useAwait: "Server Actions must be async" */}
             {async ([data]) => {
               "use server";

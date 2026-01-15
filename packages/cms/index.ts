@@ -62,16 +62,17 @@ export const blog = {
     },
   }),
 
-  latestPostQuery: fragmentOn("Query", {
-    blog: {
-      posts: {
-        __args: {
-          orderBy: "_sys_createdAt__DESC",
+  latestPostQuery: () =>
+    fragmentOn("Query", {
+      blog: {
+        posts: {
+          __args: {
+            orderBy: "_sys_createdAt__DESC",
+          },
+          item: postFragment,
         },
-        item: postFragment,
       },
-    },
-  }),
+    }),
 
   postQuery: (slug: string) =>
     fragmentOn("Query", {
@@ -94,7 +95,7 @@ export const blog = {
   },
 
   getLatestPost: async (): Promise<Post | null> => {
-    const data = await basehub.query(blog.latestPostQuery);
+    const data = await basehub.query(blog.latestPostQuery());
 
     return data.blog.posts.item;
   },
