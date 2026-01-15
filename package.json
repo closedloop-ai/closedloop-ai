@@ -51,10 +51,5 @@
       "parse5": "^7.2.1"
     }
   },
-  "type": "module",
-  "lint-staged": {
-    "*.{js,jsx,ts,tsx,json,jsonc}": [
-      "npx ultracite@latest check"
-    ]
-  }
+  "type": "module"
 }

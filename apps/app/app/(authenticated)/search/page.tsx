@@ -1,6 +1,8 @@
 import { auth } from "@repo/auth/server";
-import { database } from "@repo/database";
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { searchWorkstreams } from "@/app/actions/workstreams";
+import { WorkstreamStateBadge } from "@/components/status-badge";
 import { Header } from "../components/header";
 
 type SearchPageProperties = {
@@ -22,13 +24,6 @@ export const generateMetadata = async ({
 
 const SearchPage = async ({ searchParams }: SearchPageProperties) => {
   const { q } = await searchParams;
-  const pages = await database.page.findMany({
-    where: {
-      name: {
-        contains: q,
-      },
-    },
-  });
   const { orgId } = await auth();
 
   if (!orgId) {
@@ -39,18 +34,41 @@ const SearchPage = async ({ searchParams }: SearchPageProperties) => {
     redirect("/");
   }
 
+  const result = await searchWorkstreams(q);
+  const workstreams = result.success ? result.data : [];
+
   return (
     <>
-      <Header page="Search" pages={["Building Your Application"]} />
+      <Header page="Search" pages={["Results"]} />
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
+        <div className="mb-4">
+          <p className="text-muted-foreground">
+            {workstreams.length} result{workstreams.length !== 1 ? "s" : ""} for
+            &quot;{q}&quot;
+          </p>
+        </div>
         <div className="grid auto-rows-min gap-4 md:grid-cols-3">
-          {pages.map((page) => (
-            <div className="aspect-video rounded-xl bg-muted/50" key={page.id}>
-              {page.name}
-            </div>
+          {workstreams.map((ws) => (
+            <Link
+              className="flex aspect-video flex-col justify-between rounded-xl bg-muted/50 p-4 transition-colors hover:bg-muted/70"
+              href={`/workstreams/${ws.id}`}
+              key={ws.id}
+            >
+              <div>
+                <h3 className="font-medium">{ws.title}</h3>
+                <p className="text-muted-foreground text-sm">
+                  {ws.project.name}
+                </p>
+              </div>
+              <WorkstreamStateBadge state={ws.state} />
+            </Link>
           ))}
         </div>
-        <div className="min-h-[100vh] flex-1 rounded-xl bg-muted/50 md:min-h-min" />
+        {workstreams.length === 0 && (
+          <div className="py-8 text-center text-muted-foreground">
+            No workstreams found matching your search.
+          </div>
+        )}
       </div>
     </>
   );

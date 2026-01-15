@@ -1,6 +1,6 @@
 "use client";
 
-import type { Prd } from "@repo/api/src/types/prd";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -16,41 +16,50 @@ import {
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
+import {
+  deleteArtifact,
+  duplicateArtifact,
+  renameArtifact,
+} from "@/app/actions/artifacts";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { downloadAsMarkdown } from "@/lib/clipboard-and-download-utils";
 
 type PRDRowActionsProps = {
-  prd: Prd;
+  prd: ArtifactWithWorkstream;
 };
 
 export function PRDRowActions({ prd }: PRDRowActionsProps) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const handleRename = (newTitle: string, newFileName: string) => {
     startTransition(async () => {
-      await renamePRD(prd.id, newTitle, newFileName);
+      await renameArtifact(prd.id, newTitle, newFileName);
       setShowRenameDialog(false);
     });
   };
 
   const handleDuplicate = () => {
     startTransition(async () => {
-      await duplicatePRD(prd.id);
+      const result = await duplicateArtifact(prd.id);
+      if (result.success) {
+        router.push(`/prds/${result.data.id}`);
+      }
     });
   };
 
   const handleExport = () => {
-    downloadAsMarkdown(prd.content, prd.fileName);
+    downloadAsMarkdown(prd.content ?? "", prd.fileName ?? `${prd.title}.md`);
   };
 
   const handleDelete = () => {
     startTransition(async () => {
-      await deletePRD(prd.id);
+      await deleteArtifact(prd.id);
       setShowDeleteDialog(false);
     });
   };
@@ -89,7 +98,7 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
       </DropdownMenu>
 
       <RenameDialog
-        currentFileName={prd.fileName}
+        currentFileName={prd.fileName ?? ""}
         currentTitle={prd.title}
         description="Update the title and file name for this PRD."
         isPending={isPending}

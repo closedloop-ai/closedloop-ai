@@ -1,6 +1,6 @@
 "use client";
 
-import { OrganizationSwitcher, UserButton } from "@repo/auth/client";
+import { UserButton } from "@repo/auth/client";
 import { ModeToggle } from "@repo/design-system/components/mode-toggle";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -33,8 +33,8 @@ import {
   BookOpenIcon,
   ChevronRightIcon,
   ClipboardListIcon,
+  FileTextIcon,
   LifeBuoyIcon,
-  ListChecksIcon,
   SendIcon,
   Settings2Icon,
 } from "lucide-react";
@@ -56,12 +56,12 @@ const data = {
     {
       title: "PRD Library",
       url: "/prds",
-      icon: ClipboardListIcon,
+      icon: FileTextIcon,
     },
     {
       title: "Implementation Plans",
       url: "/implementation-plans",
-      icon: ListChecksIcon,
+      icon: ClipboardListIcon,
     },
     {
       title: "Documentation",
@@ -140,14 +140,11 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
             <SidebarMenuItem>
               <div
                 className={cn(
-                  "h-[36px] overflow-hidden transition-all [&>div]:w-full",
-                  sidebar.open ? "" : "-mx-1"
+                  "flex h-[36px] items-center overflow-hidden transition-all",
+                  sidebar.open ? "px-2" : "justify-center"
                 )}
               >
-                <OrganizationSwitcher
-                  afterSelectOrganizationUrl="/"
-                  hidePersonal
-                />
+                <span className="font-semibold text-lg">Symphony</span>
               </div>
             </SidebarMenuItem>
           </SidebarMenu>

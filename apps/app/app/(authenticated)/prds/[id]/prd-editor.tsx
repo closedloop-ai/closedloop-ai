@@ -1,13 +1,10 @@
 "use client";
 
-import type { Prd } from "@repo/api/src/types/prd";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import {
-  PRD_STATUS_OPTIONS,
-  PRD_TEMPLATE_OPTIONS,
-  type PrdStatus,
-  type PrdTemplate,
-} from "@repo/api/src/types/prd";
-import { Badge } from "@repo/design-system/components/ui/badge";
+  ARTIFACT_STATUS_OPTIONS,
+  type ArtifactStatus,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -36,18 +33,20 @@ import {
   SettingsIcon,
   SparklesIcon,
   TrashIcon,
-  XIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { NewImplementationPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-implementation-plan-modal";
+import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { PrdStatusBadge } from "@/components/status-badge";
+import {
+  ArtifactStatusBadge,
+  artifactStatusLabels,
+} from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { usePRDEditor } from "./use-prd-editor";
 
 type PRDEditorProps = {
-  prd: Prd;
+  prd: ArtifactWithWorkstream;
 };
 
 export function PRDEditor({ prd }: PRDEditorProps) {
@@ -59,10 +58,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     isSaving,
     status,
     approver,
-    tags,
-    template,
-    newTag,
-    setNewTag,
     showMetadataPanel,
     setShowMetadataPanel,
     showRenameDialog,
@@ -75,10 +70,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
-    handleTemplateChange,
-    handleAddTag,
-    handleRemoveTag,
-    handleTagKeyDown,
     handleRename,
     handleDuplicate,
     handleExport,
@@ -99,11 +90,11 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <FileTextIcon className="h-4 w-4" />
-            <span>{prd.fileName}</span>
+            <span>{prd.fileName ?? prd.title}</span>
             <span className="font-mono">v{prd.version}</span>
           </div>
 
-          <PrdStatusBadge status={status} />
+          <ArtifactStatusBadge status={status} />
 
           <span className="text-muted-foreground text-sm">
             {isSaving
@@ -124,7 +115,8 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
           <Button
             onClick={() => setShowGeneratePlanModal(true)}
-            variant="outline"
+            size="sm"
+            variant="default"
           >
             <SparklesIcon className="mr-2 h-4 w-4" />
             Generate Implementation Plan
@@ -189,16 +181,16 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               <div className="space-y-2">
                 <Label>Status</Label>
                 <Select
-                  onValueChange={(v) => handleStatusChange(v as PrdStatus)}
+                  onValueChange={(v) => handleStatusChange(v as ArtifactStatus)}
                   value={status}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {PRD_STATUS_OPTIONS.map((opt) => (
+                    {ARTIFACT_STATUS_OPTIONS.map((opt) => (
                       <SelectItem key={opt} value={opt}>
-                        {opt}
+                        {artifactStatusLabels[opt] ?? opt}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -213,62 +205,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                   placeholder="Approver name"
                   value={approver}
                 />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Template</Label>
-                <Select
-                  onValueChange={(v) => handleTemplateChange(v as PrdTemplate)}
-                  value={template}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PRD_TEMPLATE_OPTIONS.map((opt) => (
-                      <SelectItem key={opt} value={opt}>
-                        {opt}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Tags</Label>
-                <div className="flex gap-2">
-                  <Input
-                    className="flex-1"
-                    onChange={(e) => setNewTag(e.target.value)}
-                    onKeyDown={handleTagKeyDown}
-                    placeholder="Add tag"
-                    value={newTag}
-                  />
-                  <Button
-                    onClick={handleAddTag}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Add
-                  </Button>
-                </div>
-                {tags.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {tags.map((tag) => (
-                      <Badge className="gap-1" key={tag} variant="secondary">
-                        {tag}
-                        <button
-                          className="ml-1 hover:text-destructive"
-                          onClick={() => handleRemoveTag(tag)}
-                          type="button"
-                        >
-                          <XIcon className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    ))}
-                  </div>
-                ) : null}
               </div>
 
               <div className="border-t pt-4">
@@ -295,7 +231,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
 
       {/* Rename Dialog */}
       <RenameDialog
-        currentFileName={prd.fileName}
+        currentFileName={prd.fileName ?? ""}
         currentTitle={prd.title}
         description="Update the title and file name for this PRD."
         isPending={isPending}
@@ -316,12 +252,10 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       />
 
       {/* Generate Implementation Plan Modal */}
-      <NewImplementationPlanModal
-        defaultPrdId={prd.id}
-        defaultPrdTitle={prd.title}
+      <NewPlanModal
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
-        trigger={null}
+        sourcePrd={prd}
       />
     </div>
   );
