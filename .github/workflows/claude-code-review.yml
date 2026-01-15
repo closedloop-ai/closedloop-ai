@@ -53,12 +53,9 @@ jobs:
       - name: Determine review command
         id: determine-command
         run: |
-          BRANCH_NAME="${{ github.event.pull_request.head.ref || github.head_ref || github.ref_name }}"
-          if [[ "$BRANCH_NAME" == "dependabot/npm_and_yarn/"* ]]; then
-            echo "command=/gh-code-review --detailed" >> $GITHUB_OUTPUT
-          else
-            echo "command=/gh-code-review --detailed" >> $GITHUB_OUTPUT
-          fi
+          # Uses /gh-code-review from .claude/commands/gh-code-review.md
+          # This runs the multi-agent code review that posts inline comments to the PR
+          echo "command=/gh-code-review --detailed" >> $GITHUB_OUTPUT
 
       - name: Run Claude Code Review
         id: claude-review
