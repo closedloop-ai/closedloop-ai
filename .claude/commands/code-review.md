@@ -97,7 +97,17 @@ For each critic in FINAL_CRITICS:
 ```
 Task(
   subagent_type: "<critic-subagent-type>",
-  prompt: "Review these files for issues: [FILES_TO_REVIEW]. Return findings as: SEVERITY | File:Line | Issue | Recommendation. Severities: BLOCKING, HIGH, MEDIUM.",
+  prompt: "Review ONLY the CHANGED code in these files: [FILES_TO_REVIEW].
+
+CRITICAL: Only report issues on lines that were ADDED or MODIFIED in this branch.
+- Do NOT flag pre-existing issues in unchanged code
+- Do NOT flag issues in files that weren't changed
+- Focus on: new code, modifications, new patterns being introduced
+
+Return findings as: SEVERITY | File:Line | Issue | Recommendation
+Severities: BLOCKING (security/crashes), HIGH (significant issues in new code), MEDIUM (minor issues in new code)
+
+If no issues found in the changed code, return 'No issues found in changed code.'",
   run_in_background: true,
   description: "Code review: <critic-name>"
 )
@@ -151,17 +161,40 @@ Mark todo as `completed`.
 
 Mark todo "Validate findings against actual code" as `in_progress`.
 
-For EACH finding:
+### CRITICAL: Only validate issues on CHANGED lines
 
-1. **Read the actual file** at the reported location
-2. **Verify the issue exists** in current code
-3. **Check for duplicates** - merge if multiple agents reported same issue
-4. **Classify finding:**
-   - VALID: Issue confirmed in code
-   - DUPLICATE: Merged with another finding
-   - DISCARD: Cannot verify in code (false positive)
+First, get the diff to identify which lines were actually changed:
 
-Track discarded findings with reasons.
+```bash
+# Get the actual diff with line numbers
+git diff main...HEAD --unified=0
+```
+
+Parse the diff to build a map of changed files and their changed line numbers:
+- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }`
+
+### For EACH finding:
+
+1. **Check if file is in the diff**:
+   - If finding's file NOT in FILES_TO_REVIEW: **DISCARD** (reason: "File not changed in this branch")
+
+2. **Check if line is in the changed lines**:
+   - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this branch")
+   - Allow ±3 lines tolerance for context (e.g., if line 45 changed, accept findings on lines 42-48)
+
+3. **Read the actual file** at the reported location
+4. **Verify the issue exists** in current code
+5. **Check for duplicates** - merge if multiple agents reported same issue
+
+### Classify each finding:
+- **VALID**: Issue confirmed AND on a changed line
+- **DUPLICATE**: Merged with another finding
+- **DISCARD_UNCHANGED**: Finding is on code that wasn't modified in this branch
+- **DISCARD_FALSE_POSITIVE**: Cannot verify issue in code
+
+**IMPORTANT**: Be aggressive about discarding findings on unchanged code. The purpose of code review is to review the CHANGES, not pre-existing issues in the codebase.
+
+Track all discarded findings with specific reasons.
 
 Mark todo as `completed`.
 
@@ -208,10 +241,14 @@ Output in this format:
 
 ## Validation Summary
 
-- **Total findings:** X from Y agents
-- **Validated:** A
-- **Discarded:** B (list with reasons)
-- **Duplicates merged:** C
+- **Total findings from agents:** X
+- **Validated (on changed lines):** A
+- **Discarded - unchanged code:** B
+- **Discarded - false positives:** C
+- **Duplicates merged:** D
+
+### Discarded Findings (not on changed lines)
+[List any findings that were discarded because they were on unchanged code - this helps track what agents flagged incorrectly]
 
 ---
 

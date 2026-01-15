@@ -125,18 +125,24 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 **Agent Prompt Template:**
 
 ```
-Review these files for issues. Return findings as JSON with severity BLOCKING, HIGH, or MEDIUM.
+Review ONLY the changed code in these files. Return findings as JSON with severity BLOCKING, HIGH, or MEDIUM.
 
-**FILES TO REVIEW**:
+**FILES CHANGED IN THIS PR**:
 - {filepath_1}
 - {filepath_2}
 ...
 
-**RULES**:
-- Only flag issues on lines ADDED in the PR (+ lines in diff)
-- BLOCKING: Security vulnerabilities, runtime crashes, missing auth, data loss
-- HIGH: Performance issues, broken patterns, significant duplication
-- MEDIUM: Minor quality issues, small duplication, suggestions
+**CRITICAL RULES - READ CAREFULLY**:
+1. ONLY flag issues on lines that were ADDED or MODIFIED in this PR
+2. Do NOT flag pre-existing issues in unchanged code - even if you see problems
+3. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
+4. Focus on: new code introduced, modifications to existing code, new patterns being added
+5. Ignore: formatting issues, pre-existing technical debt, issues in unchanged imports
+
+**SEVERITY GUIDELINES**:
+- BLOCKING: Security vulnerabilities, runtime crashes, missing auth, data loss risks
+- HIGH: Performance issues, broken patterns, significant duplication in NEW code
+- MEDIUM: Minor quality issues in NEW code, suggestions for NEW patterns
 
 **Return JSON format**:
 {
@@ -149,10 +155,14 @@ Review these files for issues. Return findings as JSON with severity BLOCKING, H
       "issue": "Brief description",
       "explanation": "Why this is a problem",
       "recommendation": "How to fix",
-      "code_snippet": "actual code from file"
+      "code_snippet": "actual code from file",
+      "is_new_code": true
     }
   ]
 }
+
+If you find NO issues in the changed code, return: {"findings": []}
+Do NOT invent issues just to have something to report.
 ```
 
 **Critic Agent Mapping:**
@@ -189,6 +199,21 @@ Mark todo "Collect and validate agent findings" as `in_progress`.
 
 Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 
+### CRITICAL: Build the Changed Lines Map FIRST
+
+Before validating ANY findings, build a definitive map of what lines were actually changed:
+
+```bash
+# Get PR files with patches
+gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files
+```
+
+Parse each file's `patch` field to extract changed line numbers:
+- **CHANGED_FILES**: Set of file paths that were modified
+- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }`
+
+Only lines starting with `+` (additions) or lines adjacent to changes are valid targets.
+
 ### Parse and Filter Findings
 
 1. Parse JSON findings from each agent
@@ -196,28 +221,37 @@ Use `TaskOutput` with `block: true` to collect results from each spawned agent.
    - **Post inline comments**: BLOCKING and HIGH severity only
    - **Summary only**: MEDIUM severity (no inline comment)
 
-### Validate Each BLOCKING/HIGH Finding
+### Validate EVERY Finding (not just BLOCKING/HIGH)
 
-For each finding that will get an inline comment:
+**IMPORTANT**: This validation applies to ALL findings, including MEDIUM severity.
 
-1. **Get the PR diff for the file**:
-   ```bash
-   gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files
-   ```
-   Find the file in the response and extract the `patch` field.
+For each finding:
 
-2. **Verify the line is in the diff**:
-   - Parse diff hunks to extract changed line numbers
-   - If finding's line NOT in changed lines: **DISCARD**
+1. **Check if file was changed in PR**:
+   - If finding's file NOT in CHANGED_FILES: **DISCARD** (reason: "File not modified in this PR")
+
+2. **Check if line is in the changed lines**:
+   - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this PR")
+   - Allow ±3 lines tolerance for immediate context
+   - Exception: Issues in imports/exports at top of file IF the file was modified
 
 3. **Read the full file to confirm issue is real**:
    - Check imports, error handling, types exist
    - Verify the code snippet matches actual code
-   - If issue doesn't exist or is already handled: **DISCARD**
+   - If issue doesn't exist or is already handled: **DISCARD** (reason: "False positive")
 
 4. **Check for duplicates**: Build dedup key `file:line:category`
 
-Track validated findings and discarded findings with reasons.
+### Discard Reasons to Track
+
+- **DISCARD_FILE_NOT_CHANGED**: Finding is in a file not modified by this PR
+- **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
+- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code
+- **DISCARD_DUPLICATE**: Already reported by another agent
+
+**IMPORTANT**: Be aggressive about discarding findings on unchanged code. Reviewers should ONLY flag issues introduced or modified by this PR, not pre-existing issues in the codebase.
+
+Track validated findings and discarded findings with specific reasons.
 
 Mark todo as `completed`.
 
