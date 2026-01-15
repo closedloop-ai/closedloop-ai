@@ -47,6 +47,7 @@ cd packages/database && pnpm prisma db push # Push schema changes
 
 ### Packages (in `/packages`)
 Shared packages are imported as `@repo/<package-name>`:
+- **api** - Shared API types between frontend and backend
 - **database** - Prisma client with Neon (production) / pg (local) adapters
 - **auth** - Clerk authentication
 - **design-system** - Shadcn/ui components with Tailwind
@@ -67,6 +68,24 @@ Each app has its own `.env.local`. Key patterns:
 - Config: `packages/database/prisma.config.ts`
 - Client generated to: `packages/database/generated/`
 - Local dev uses `pg` adapter; production uses Neon adapter (auto-detected via URL)
+
+### Data Access Pattern (IMPORTANT)
+
+**Do NOT import `@repo/database` in `apps/app` (frontend).**
+
+All database access must go through the BFF API (`apps/api`):
+
+1. **API routes** (`apps/api/app/api/`) - Handle database operations, import `@repo/database`
+2. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
+3. **Frontend actions** (`apps/app/app/actions/`) - Call API routes via `apiClient`, never touch database directly
+
+```
+apps/app (frontend)  →  apps/api (BFF)  →  @repo/database
+     ↑                       ↑
+     └── @repo/api types ────┘
+```
+
+This separation ensures the frontend never has direct database access.
 
 ## Key Files
 - `turbo.json` - Turborepo task configuration

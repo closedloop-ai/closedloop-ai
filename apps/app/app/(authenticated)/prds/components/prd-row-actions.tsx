@@ -1,6 +1,6 @@
 "use client";
 
-import type { PRD } from "@repo/database/generated/client";
+import type { Prd } from "@repo/api/src/types/prd";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -20,10 +20,10 @@ import { useState, useTransition } from "react";
 import { deletePRD, duplicatePRD, renamePRD } from "@/app/actions/prds";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { downloadAsMarkdown } from "@/lib/utils";
+import { downloadAsMarkdown } from "@/lib/clipboard-and-download-utils";
 
 type PRDRowActionsProps = {
-  prd: PRD;
+  prd: Prd;
 };
 
 export function PRDRowActions({ prd }: PRDRowActionsProps) {

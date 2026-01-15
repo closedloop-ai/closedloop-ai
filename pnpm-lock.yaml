@@ -63,6 +63,9 @@ importers:
       '@repo/analytics':
         specifier: workspace:*
         version: link:../../packages/analytics
+      '@repo/api':
+        specifier: workspace:*
+        version: link:../../packages/api
       '@repo/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -139,15 +142,15 @@ importers:
       '@repo/analytics':
         specifier: workspace:*
         version: link:../../packages/analytics
+      '@repo/api':
+        specifier: workspace:*
+        version: link:../../packages/api
       '@repo/auth':
         specifier: workspace:*
         version: link:../../packages/auth
       '@repo/collaboration':
         specifier: workspace:*
         version: link:../../packages/collaboration
-      '@repo/database':
-        specifier: workspace:*
-        version: link:../../packages/database
       '@repo/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
@@ -559,6 +562,22 @@ importers:
       '@types/react-dom':
         specifier: 19.2.3
         version: 19.2.3(@types/react@19.2.7)
+
+  packages/api:
+    dependencies:
+      zod:
+        specifier: ^4.1.13
+        version: 4.1.13
+    devDependencies:
+      '@repo/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      '@types/node':
+        specifier: 24.10.1
+        version: 24.10.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   packages/auth:
     dependencies:
@@ -11547,9 +11566,6 @@ packages:
     peerDependencies:
       zod: ^3.25 || ^4
 
-  zod@3.25.28:
-    resolution: {integrity: sha512-/nt/67WYKnr5by3YS7LroZJbtcCBurDKKPBPWWzaxvVCGuG/NOsiKkrjoOhI8mJ+SQUXEbUzeB3S+6XDUEEj7Q==}
-
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
@@ -15508,8 +15524,8 @@ snapshots:
       ai: 5.0.107(zod@4.1.13)
       openai: 4.86.1(ws@8.18.3(bufferutil@4.0.9))(zod@4.1.13)
       stripe: 17.7.0
-      zod: 3.25.28
-      zod-to-json-schema: 3.24.5(zod@3.25.28)
+      zod: 3.25.76
+      zod-to-json-schema: 3.24.5(zod@3.25.76)
 
   '@swc/helpers@0.5.15':
     dependencies:
@@ -23685,10 +23701,6 @@ snapshots:
     dependencies:
       grammex: 3.1.12
 
-  zod-to-json-schema@3.24.5(zod@3.25.28):
-    dependencies:
-      zod: 3.25.28
-
   zod-to-json-schema@3.24.5(zod@3.25.76):
     dependencies:
       zod: 3.25.76
@@ -23700,8 +23712,6 @@ snapshots:
   zod-to-json-schema@3.25.1(zod@3.25.76):
     dependencies:
       zod: 3.25.76
-
-  zod@3.25.28: {}
 
   zod@3.25.76: {}
 

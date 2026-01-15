@@ -1,5 +1,10 @@
 "use client";
 
+import type {
+  ImplementationPlanWithPrd,
+  ImplPlanStatus,
+  ImplPlanType,
+} from "@repo/api/src/types/implementation-plan";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
@@ -7,14 +12,12 @@ import {
   deleteImplementationPlan,
   updateImplementationPlan,
 } from "@/app/actions/implementation-plans";
-import type {
-  ImplementationPlanWithPRD,
-  ImplPlanStatus,
-  ImplPlanType,
-} from "@/lib/types";
-import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
+import {
+  copyToClipboard,
+  downloadAsMarkdown,
+} from "@/lib/clipboard-and-download-utils";
 
-export function useImplementationPlanEditor(plan: ImplementationPlanWithPRD) {
+export function useImplementationPlanEditor(plan: ImplementationPlanWithPrd) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 

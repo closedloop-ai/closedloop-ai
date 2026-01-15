@@ -1,5 +1,6 @@
 "use client";
 
+import type { ImplementationPlanWithPrd } from "@repo/api/src/types/implementation-plan";
 import {
   type Column,
   DataTable,
@@ -8,15 +9,14 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { useRouter } from "next/navigation";
 import { ImplementationPlanStatusBadge } from "@/components/status-badge";
-import type { ImplementationPlanWithPRD } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/date-utils";
 import { ImplementationPlanRowActions } from "./implementation-plan-row-actions";
 
 type ImplementationPlanTableProps = {
-  plans: ImplementationPlanWithPRD[];
+  plans: ImplementationPlanWithPrd[];
 };
 
-const columns: Column<ImplementationPlanWithPRD>[] = [
+const columns: Column<ImplementationPlanWithPrd>[] = [
   {
     key: "title",
     header: "Plan Name / Source PRD",
@@ -75,7 +75,7 @@ export function ImplementationPlanTable({
 }: ImplementationPlanTableProps) {
   const router = useRouter();
 
-  const handleRowClick = (plan: ImplementationPlanWithPRD) => {
+  const handleRowClick = (plan: ImplementationPlanWithPrd) => {
     router.push(`/implementation-plans/${plan.id}`);
   };
 

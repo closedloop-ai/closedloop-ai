@@ -1,6 +1,6 @@
 "use client";
 
-import type { PRD } from "@repo/database/generated/client";
+import type { Prd, PrdStatus, PrdTemplate } from "@repo/api/src/types/prd";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
@@ -10,10 +10,12 @@ import {
   renamePRD,
   updatePRD,
 } from "@/app/actions/prds";
-import type { PRDStatus, PRDTemplate } from "@/lib/types";
-import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
+import {
+  copyToClipboard,
+  downloadAsMarkdown,
+} from "@/lib/clipboard-and-download-utils";
 
-export function usePRDEditor(prd: PRD) {
+export function usePRDEditor(prd: Prd) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -53,10 +55,10 @@ export function usePRDEditor(prd: PRD) {
   const handleMetadataUpdate = useCallback(
     (
       updates: Partial<{
-        status: PRDStatus;
+        status: PrdStatus;
         approver: string;
         tags: string[];
-        template: PRDTemplate;
+        template: PrdTemplate;
       }>
     ) => {
       startTransition(async () => {
@@ -73,7 +75,7 @@ export function usePRDEditor(prd: PRD) {
   );
 
   const handleStatusChange = useCallback(
-    (newStatus: PRDStatus) => {
+    (newStatus: PrdStatus) => {
       setStatus(newStatus);
       handleMetadataUpdate({ status: newStatus });
     },
@@ -91,7 +93,7 @@ export function usePRDEditor(prd: PRD) {
   }, [approver, prd.approver, handleMetadataUpdate]);
 
   const handleTemplateChange = useCallback(
-    (newTemplate: PRDTemplate) => {
+    (newTemplate: PrdTemplate) => {
       setTemplate(newTemplate);
       handleMetadataUpdate({ template: newTemplate });
     },

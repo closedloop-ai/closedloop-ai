@@ -18,7 +18,7 @@ model Page {
   name String
 }
 
-model PRD {
+model Prd {
   id                  String               @id @default(cuid())
   title               String
   fileName            String
@@ -37,7 +37,7 @@ model ImplementationPlan {
   id              String   @id @default(cuid())
   title           String
   sourcePrdId     String
-  sourcePrd       PRD      @relation(fields: [sourcePrdId], references: [id], onDelete: Cascade)
+  sourcePrd       Prd      @relation(fields: [sourcePrdId], references: [id], onDelete: Cascade)
   version         Int      @default(1)
   createdBy       String
   approver        String?

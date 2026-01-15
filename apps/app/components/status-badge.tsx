@@ -28,7 +28,7 @@ export function StatusBadge({
 }
 
 // Pre-configured color maps for common use cases
-export const PRD_STATUS_COLORS: Record<string, string> = {
+export const prdStatusColors: Record<string, string> = {
   Draft: "bg-muted text-muted-foreground border-muted",
   Review:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
@@ -38,7 +38,7 @@ export const PRD_STATUS_COLORS: Record<string, string> = {
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-export const IMPL_PLAN_STATUS_COLORS: Record<string, string> = {
+export const implPlanStatusColors: Record<string, string> = {
   Draft:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
   Ready:
@@ -53,10 +53,10 @@ export const IMPL_PLAN_STATUS_COLORS: Record<string, string> = {
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-export function PRDStatusBadge({ status }: { status: string }) {
-  return <StatusBadge colorMap={PRD_STATUS_COLORS} status={status} />;
+export function PrdStatusBadge({ status }: { status: string }) {
+  return <StatusBadge colorMap={prdStatusColors} status={status} />;
 }
 
 export function ImplementationPlanStatusBadge({ status }: { status: string }) {
-  return <StatusBadge colorMap={IMPL_PLAN_STATUS_COLORS} status={status} />;
+  return <StatusBadge colorMap={implPlanStatusColors} status={status} />;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import type { PRD } from "@repo/database/generated/client";
+import type { Prd } from "@repo/api/src/types/prd";
 import {
   type Column,
   DataTable,
@@ -8,15 +8,15 @@ import {
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
 import { useRouter } from "next/navigation";
-import { PRDStatusBadge } from "@/components/status-badge";
-import { formatDate } from "@/lib/utils";
+import { PrdStatusBadge } from "@/components/status-badge";
+import { formatDate } from "@/lib/date-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
 type PRDTableProps = {
-  prds: PRD[];
+  prds: Prd[];
 };
 
-const columns: Column<PRD>[] = [
+const columns: Column<Prd>[] = [
   {
     key: "title",
     header: "Name / Title",
@@ -30,7 +30,7 @@ const columns: Column<PRD>[] = [
   {
     key: "status",
     header: "Status",
-    render: (prd) => <PRDStatusBadge status={prd.status} />,
+    render: (prd) => <PrdStatusBadge status={prd.status} />,
   },
   {
     key: "approver",
@@ -62,7 +62,7 @@ const filterOptions: FilterOption[] = [
 export function PRDTable({ prds }: PRDTableProps) {
   const router = useRouter();
 
-  const handleRowClick = (prd: PRD) => {
+  const handleRowClick = (prd: Prd) => {
     router.push(`/prds/${prd.id}`);
   };
 

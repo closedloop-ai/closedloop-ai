@@ -1,5 +1,12 @@
 "use client";
 
+import {
+  IMPL_PLAN_STATUS_OPTIONS,
+  IMPL_PLAN_TYPE_OPTIONS,
+  type ImplementationPlanWithPrd,
+  type ImplPlanStatus,
+  type ImplPlanType,
+} from "@repo/api/src/types/implementation-plan";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -30,18 +37,11 @@ import {
 import Link from "next/link";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { ImplementationPlanStatusBadge } from "@/components/status-badge";
-import {
-  IMPL_PLAN_STATUS_OPTIONS,
-  IMPL_PLAN_TYPE_OPTIONS,
-  type ImplementationPlanWithPRD,
-  type ImplPlanStatus,
-  type ImplPlanType,
-} from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
+import { formatRelativeTime } from "@/lib/date-utils";
 import { useImplementationPlanEditor } from "./use-implementation-plan-editor";
 
 type ImplementationPlanEditorProps = {
-  plan: ImplementationPlanWithPRD;
+  plan: ImplementationPlanWithPrd;
 };
 
 export function ImplementationPlanEditor({
@@ -116,7 +116,7 @@ export function ImplementationPlanEditor({
           </Button>
 
           {/* Approve button - only shown for Draft plans */}
-          {isDraft && (
+          {isDraft ? (
             <Button
               disabled={isPending}
               onClick={handleApprove}
@@ -126,7 +126,7 @@ export function ImplementationPlanEditor({
               <CheckIcon className="mr-2 h-4 w-4" />
               Approve
             </Button>
-          )}
+          ) : null}
 
           <Button onClick={handleExport} size="sm" variant="outline">
             <DownloadIcon className="mr-2 h-4 w-4" />
@@ -180,7 +180,7 @@ export function ImplementationPlanEditor({
         </div>
 
         {/* Metadata Panel */}
-        {showMetadataPanel && (
+        {showMetadataPanel ? (
           <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
             <h3 className="mb-4 font-semibold">Plan Details</h3>
 
@@ -274,7 +274,7 @@ export function ImplementationPlanEditor({
               </div>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Delete Confirmation Dialog */}

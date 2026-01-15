@@ -1,5 +1,6 @@
 "use client";
 
+import type { ImplementationPlanWithPrd } from "@repo/api/src/types/implementation-plan";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -22,11 +23,13 @@ import {
   regenerateImplementationPlan,
 } from "@/app/actions/implementation-plans";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import type { ImplementationPlanWithPRD } from "@/lib/types";
-import { copyToClipboard, downloadAsMarkdown } from "@/lib/utils";
+import {
+  copyToClipboard,
+  downloadAsMarkdown,
+} from "@/lib/clipboard-and-download-utils";
 
 type ImplementationPlanRowActionsProps = {
-  plan: ImplementationPlanWithPRD;
+  plan: ImplementationPlanWithPrd;
 };
 
 export function ImplementationPlanRowActions({

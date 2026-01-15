@@ -1,6 +1,12 @@
 "use client";
 
-import type { PRD } from "@repo/database/generated/client";
+import type { Prd } from "@repo/api/src/types/prd";
+import {
+  PRD_STATUS_OPTIONS,
+  PRD_TEMPLATE_OPTIONS,
+  type PrdStatus,
+  type PrdTemplate,
+} from "@repo/api/src/types/prd";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -36,18 +42,12 @@ import Link from "next/link";
 import { NewImplementationPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-implementation-plan-modal";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { PRDStatusBadge } from "@/components/status-badge";
-import {
-  PRD_STATUS_OPTIONS,
-  PRD_TEMPLATE_OPTIONS,
-  type PRDStatus,
-  type PRDTemplate,
-} from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
+import { PrdStatusBadge } from "@/components/status-badge";
+import { formatRelativeTime } from "@/lib/date-utils";
 import { usePRDEditor } from "./use-prd-editor";
 
 type PRDEditorProps = {
-  prd: PRD;
+  prd: Prd;
 };
 
 export function PRDEditor({ prd }: PRDEditorProps) {
@@ -82,7 +82,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     handleRename,
     handleDuplicate,
     handleExport,
-    handleCopyMarkdown,
     handleDelete,
   } = usePRDEditor(prd);
 
@@ -104,7 +103,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
             <span className="font-mono">v{prd.version}</span>
           </div>
 
-          <PRDStatusBadge status={status} />
+          <PrdStatusBadge status={status} />
 
           <span className="text-muted-foreground text-sm">
             {isSaving
@@ -182,7 +181,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
         </div>
 
         {/* Metadata Panel */}
-        {showMetadataPanel && (
+        {showMetadataPanel ? (
           <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
             <h3 className="mb-4 font-semibold">PRD Details</h3>
 
@@ -190,7 +189,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               <div className="space-y-2">
                 <Label>Status</Label>
                 <Select
-                  onValueChange={(v) => handleStatusChange(v as PRDStatus)}
+                  onValueChange={(v) => handleStatusChange(v as PrdStatus)}
                   value={status}
                 >
                   <SelectTrigger>
@@ -219,7 +218,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               <div className="space-y-2">
                 <Label>Template</Label>
                 <Select
-                  onValueChange={(v) => handleTemplateChange(v as PRDTemplate)}
+                  onValueChange={(v) => handleTemplateChange(v as PrdTemplate)}
                   value={template}
                 >
                   <SelectTrigger>
@@ -254,7 +253,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                     Add
                   </Button>
                 </div>
-                {tags.length > 0 && (
+                {tags.length > 0 ? (
                   <div className="mt-2 flex flex-wrap gap-1">
                     {tags.map((tag) => (
                       <Badge className="gap-1" key={tag} variant="secondary">
@@ -269,7 +268,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                       </Badge>
                     ))}
                   </div>
-                )}
+                ) : null}
               </div>
 
               <div className="border-t pt-4">
@@ -291,7 +290,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               </div>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Rename Dialog */}

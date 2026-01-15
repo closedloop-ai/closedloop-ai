@@ -1,6 +1,10 @@
 "use client";
 
-import type { PRD } from "@repo/database/generated/client";
+import {
+  IMPL_PLAN_TYPE_OPTIONS,
+  type ImplPlanType,
+} from "@repo/api/src/types/implementation-plan";
+import type { Prd } from "@repo/api/src/types/prd";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
@@ -25,7 +29,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { createImplementationPlan } from "@/app/actions/implementation-plans";
 import { getPRDs } from "@/app/actions/prds";
-import { IMPL_PLAN_TYPE_OPTIONS, type ImplPlanType } from "@/lib/types";
 
 const PLAN_TYPE_LABELS: Record<ImplPlanType, string> = {
   Standard: "Standard Implementation",
@@ -57,7 +60,7 @@ export function NewImplementationPlanModal({
   // Support both controlled and uncontrolled modes
   const isControlled = controlledOpen !== undefined;
   const open = isControlled ? controlledOpen : internalOpen;
-  const setOpen = isControlled ? controlledOnOpenChange! : setInternalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
 
   // Form state
   const [sourcePrdId, setSourcePrdId] = useState(defaultPrdId ?? "");
@@ -71,7 +74,7 @@ export function NewImplementationPlanModal({
   const [includeTestPlan, setIncludeTestPlan] = useState(true);
 
   // PRDs for dropdown
-  const [prds, setPrds] = useState<PRD[]>([]);
+  const [prds, setPrds] = useState<Prd[]>([]);
   const [loadingPrds, setLoadingPrds] = useState(false);
 
   // Load PRDs when modal opens (skip if we have a default PRD)
@@ -146,13 +149,23 @@ export function NewImplementationPlanModal({
     });
   };
 
-  // Default trigger button
-  const defaultTrigger = (
-    <Button>
-      <SparklesIcon className="mr-2 h-4 w-4" />
-      Generate Plan
-    </Button>
-  );
+  // Determine trigger element
+  const triggerElement = (() => {
+    if (trigger === undefined) {
+      return (
+        <DialogTrigger asChild>
+          <Button>
+            <SparklesIcon className="mr-2 h-4 w-4" />
+            Generate Plan
+          </Button>
+        </DialogTrigger>
+      );
+    }
+    if (trigger) {
+      return <DialogTrigger asChild>{trigger}</DialogTrigger>;
+    }
+    return null;
+  })();
 
   return (
     <Dialog
@@ -164,22 +177,18 @@ export function NewImplementationPlanModal({
       }}
       open={open}
     >
-      {trigger !== undefined ? (
-        trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>
-      ) : (
-        <DialogTrigger asChild>{defaultTrigger}</DialogTrigger>
-      )}
+      {triggerElement}
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>Generate Implementation Plan</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {error && (
+          {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
             </div>
-          )}
+          ) : null}
 
           <div className="space-y-2">
             <Label htmlFor="source-prd">

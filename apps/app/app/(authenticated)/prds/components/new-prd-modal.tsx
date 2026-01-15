@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  PRD_STATUS_OPTIONS,
+  PRD_TEMPLATE_OPTIONS,
+  type PrdStatus,
+  type PrdTemplate,
+} from "@repo/api/src/types/prd";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -24,12 +30,6 @@ import { LoaderIcon, PlusIcon, XIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { createPRD } from "@/app/actions/prds";
-import {
-  PRD_STATUS_OPTIONS,
-  PRD_TEMPLATE_OPTIONS,
-  type PRDStatus,
-  type PRDTemplate,
-} from "@/lib/types";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -40,8 +40,8 @@ export function NewPRDModal() {
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
   const [approver, setApprover] = useState("");
-  const [status, setStatus] = useState<PRDStatus>("Draft");
-  const [template, setTemplate] = useState<PRDTemplate>("Standard PRD");
+  const [status, setStatus] = useState<PrdStatus>("Draft");
+  const [template, setTemplate] = useState<PrdTemplate>("Standard PRD");
   const [tags, setTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
   const [content, setContent] = useState("");
@@ -81,8 +81,8 @@ export function NewPRDModal() {
     setTitle("");
     setFileName("");
     setApprover("");
-    setStatus("Draft" as PRDStatus);
-    setTemplate("Standard PRD" as PRDTemplate);
+    setStatus("Draft" as PrdStatus);
+    setTemplate("Standard PRD" as PrdTemplate);
     setTags([]);
     setNewTag("");
     setContent("");
@@ -146,11 +146,11 @@ export function NewPRDModal() {
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {error && (
+          {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
             </div>
-          )}
+          ) : null}
 
           <div className="space-y-2">
             <Label htmlFor="new-title">
@@ -192,7 +192,7 @@ export function NewPRDModal() {
             <div className="space-y-2">
               <Label>Status</Label>
               <Select
-                onValueChange={(v) => setStatus(v as PRDStatus)}
+                onValueChange={(v) => setStatus(v as PrdStatus)}
                 value={status}
               >
                 <SelectTrigger>
@@ -211,7 +211,7 @@ export function NewPRDModal() {
             <div className="space-y-2">
               <Label>Template</Label>
               <Select
-                onValueChange={(v) => setTemplate(v as PRDTemplate)}
+                onValueChange={(v) => setTemplate(v as PrdTemplate)}
                 value={template}
               >
                 <SelectTrigger>
@@ -242,7 +242,7 @@ export function NewPRDModal() {
                 Add
               </Button>
             </div>
-            {tags.length > 0 && (
+            {tags.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1">
                 {tags.map((tag) => (
                   <Badge className="gap-1" key={tag} variant="secondary">
@@ -257,7 +257,7 @@ export function NewPRDModal() {
                   </Badge>
                 ))}
               </div>
-            )}
+            ) : null}
           </div>
 
           <div className="space-y-2">

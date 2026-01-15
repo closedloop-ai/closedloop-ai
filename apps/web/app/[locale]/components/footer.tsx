@@ -75,9 +75,7 @@ export const Footer = () => {
                             : undefined
                         }
                         target={
-                          subItem.href.includes("http")
-                            ? "_blank"
-                            : undefined
+                          subItem.href.includes("http") ? "_blank" : undefined
                         }
                       >
                         <span className="text-foreground/75">
