@@ -38,11 +38,6 @@ export const Header = ({ dictionary }: HeaderProps) => {
         },
       ],
     },
-    {
-      title: dictionary.web.header.blog,
-      href: "/blog",
-      description: "",
-    },
   ];
 
   if (env.NEXT_PUBLIC_DOCS_URL) {
@@ -123,7 +118,7 @@ export const Header = ({ dictionary }: HeaderProps) => {
               fill="currentColor"
             />
           </svg>
-          <p className="whitespace-nowrap font-semibold">next-forge</p>
+          <p className="whitespace-nowrap font-semibold">symphony-alpha</p>
         </div>
         <div className="flex w-full justify-end gap-4">
           <Button asChild className="hidden md:inline" variant="ghost">
