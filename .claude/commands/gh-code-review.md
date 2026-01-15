@@ -1,11 +1,11 @@
 ---
-description: Run comprehensive code review on PR and post inline comments with approval decision
+description: Run comprehensive code review on PR and post inline comments (comments only, no approval/rejection)
 argument-hint: "[PR_NUMBER] or leave blank to auto-detect"
 ---
 
 # GitHub PR Code Review
 
-Run a multi-agent code review that posts inline comments to GitHub PR and provides approval decision.
+Run a multi-agent code review that posts inline comments and a summary to GitHub PR. **Comments only - never approves or requests changes automatically.**
 
 ## Usage
 
@@ -204,9 +204,15 @@ Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 Before validating ANY findings, build a definitive map of what lines were actually changed:
 
 ```bash
-# Get PR files with patches
-gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files
+# Get PR files with patches (handles pagination for large PRs)
+# For PRs with 100+ files, use pagination to avoid rate limits
+gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files --paginate
 ```
+
+**Rate Limit Handling**: If you receive a 403 or rate limit error:
+1. Wait 60 seconds and retry
+2. For very large PRs (300+ files), fetch in batches using `?per_page=100&page=N`
+3. If still failing, report error and suggest running review on smaller scope
 
 Parse each file's `patch` field to extract changed line numbers:
 - **CHANGED_FILES**: Set of file paths that were modified
@@ -295,16 +301,27 @@ query($owner:String!, $name:String!, $number:Int!) {
    - Read current state of file/line
    - If issue is FIXED or line no longer exists: RESOLVE it
 
-3. **Resolve outdated threads**:
+3. **Resolve outdated threads** (with error handling):
 
 ```bash
-gh api graphql -f query='
+# Resolve thread - capture output to check for errors
+RESULT=$(gh api graphql -f query='
 mutation($threadId:ID!) {
   resolveReviewThread(input:{threadId:$threadId}) {
     thread { isResolved }
   }
-}' -f threadId="<THREAD_ID>"
+}' -f threadId="<THREAD_ID>" 2>&1)
+
+# Check for errors in response
+if echo "$RESULT" | grep -q "errors"; then
+  echo "Warning: Failed to resolve thread <THREAD_ID> - continuing"
+fi
 ```
+
+**Error Handling**: If GraphQL mutation fails:
+- Log the error but continue processing other threads
+- Common failures: thread already resolved, permission denied, thread not found
+- Do NOT fail the entire review due to cleanup errors
 
 4. **Build dedup map** of remaining unresolved threads: `{file:line:category}`
 
@@ -365,13 +382,15 @@ Mark todo "Post summary comment with approval decision" as `in_progress`.
 
 **CRITICAL**: This step is MANDATORY, even if there are no findings.
 
-### Determine Approval Status
+### Determine Status Label (for summary only)
 
-Based on validated findings:
-- **BLOCKING findings > 0**: Request Changes
-- **HIGH findings > 3**: Request Changes
-- **HIGH findings 1-3 + no BLOCKING**: Comment (needs attention)
-- **MEDIUM only or no findings**: Approve
+Based on validated findings, set status label for the summary comment:
+- **BLOCKING findings > 0**: "Changes Requested" (label only)
+- **HIGH findings > 3**: "Changes Requested" (label only)
+- **HIGH findings 1-3 + no BLOCKING**: "Needs Attention" (label only)
+- **MEDIUM only or no findings**: "Approved" (label only)
+
+**IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
 ### Find or Create Summary Comment
 
@@ -433,10 +452,12 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 ### Submit Review
 
 ```bash
-# Submit official review with approval status
-gh pr review <PR_NUMBER> --[approve|request-changes|comment] \
+# Submit review as comment only - never approve or request changes automatically
+gh pr review <PR_NUMBER> --comment \
   --body "See summary comment above for details."
 ```
+
+**CRITICAL**: Always use `--comment` only. Never use `--approve` or `--request-changes`. Humans make the final approval decision.
 
 Mark todo as `completed`.
 

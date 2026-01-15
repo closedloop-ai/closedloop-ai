@@ -67,15 +67,9 @@ Mark todo as `completed`.
 
 Mark todo "Match files to critics and select reviewers" as `in_progress`.
 
-For each file, check which patterns from moduleCritics match:
+For each file, check which patterns from `moduleCritics` in `.claude/settings/critic-gates.json` match.
 
-| Pattern | Critics |
-|---------|---------|
-| auth, session, clerk, jwt | security-privacy, auth-security-expert |
-| component, ui, design-system | design-system-expert, react-component-architect |
-| api, rest, fetch, query | api-architect, caching-strategist |
-| database, prisma, cache | database-architect, caching-strategist |
-| test, vitest, jest, e2e | test-strategist |
+**Pattern matching is defined in critic-gates.json** - do NOT hardcode patterns here. Read the config file for current mappings.
 
 Build **FINAL_CRITICS**: baseCritics + matched critics (deduplicated, respecting reviewBudget).
 
@@ -115,27 +109,13 @@ If no issues found in the changed code, return 'No issues found in changed code.
 
 **Critic Agent Mapping:**
 
-| Critic | Subagent Type |
-|--------|---------------|
-| typescript-expert | symphony-fe:typescript-expert |
-| dry-kiss-reviewer | dry-kiss-reviewer |
-| security-privacy | symphony-fe:security-privacy |
-| auth-security-expert | symphony-fe:auth-security-expert |
-| navigation-expert | symphony-fe:navigation-expert |
-| web-platform-expert | symphony-fe:web-platform-expert |
-| web-build-expert | symphony-fe:web-build-expert |
-| api-architect | symphony-fe:api-architect |
-| caching-strategist | symphony-fe:caching-strategist |
-| state-management-architect | symphony-fe:state-management-architect |
-| react-component-architect | symphony-fe:react-component-architect |
-| design-system-expert | symphony-fe:design-system-expert |
-| database-architect | symphony-fe:database-architect |
-| realtime-architect | symphony-fe:realtime-architect |
-| test-strategist | symphony-fe:test-strategist |
-| ci-cd-architect | symphony-fe:ci-cd-architect |
-| observability-architect | symphony-fe:observability-architect |
-| analytics-integration-expert | symphony-fe:analytics-integration-expert |
-| code-reviewer | symphony-core:code-reviewer |
+See `.claude/commands/gh-code-review.md` Step 4 for the full critic-to-subagent mapping table.
+
+Common mappings:
+- `typescript-expert` → `symphony-fe:typescript-expert`
+- `dry-kiss-reviewer` → `dry-kiss-reviewer`
+- `security-privacy` → `symphony-fe:security-privacy`
+- `code-reviewer` → `symphony-core:code-reviewer`
 
 Mark todo as `completed`.
 
