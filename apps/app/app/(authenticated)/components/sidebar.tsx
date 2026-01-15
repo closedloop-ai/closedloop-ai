@@ -37,7 +37,6 @@ import {
   ListChecksIcon,
   SendIcon,
   Settings2Icon,
-  // SquareTerminalIcon, // TODO: Uncomment when enabling Playground
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -54,27 +53,6 @@ const data = {
     avatar: "/avatars/shadcn.jpg",
   },
   navMain: [
-    // TODO: Uncomment when ready to enable Playground behind feature flag
-    // {
-    //   title: "Playground",
-    //   url: "#",
-    //   icon: SquareTerminalIcon,
-    //   isActive: true,
-    //   items: [
-    //     {
-    //       title: "History",
-    //       url: "#",
-    //     },
-    //     {
-    //       title: "Starred",
-    //       url: "#",
-    //     },
-    //     {
-    //       title: "Settings",
-    //       url: "#",
-    //     },
-    //   ],
-    // },
     {
       title: "PRD Library",
       url: "/prds",
