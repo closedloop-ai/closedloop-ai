@@ -49,5 +49,23 @@ model ImplementationPlan {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  // Target repository (user input - which repo to run symphony against)
+  targetRepo String?
+  targetRef  String?
+
+  // GitHub job tracking
+  correlationId  String?   @unique
+  sessionId      String?
+  jobStatus      String?   @default("pending")
+  jobRunId       String?
+  jobStartedAt   DateTime?
+  jobCompletedAt DateTime?
+
+  // Artifact storage
+  artifactUrl  String?
+  artifactKeys String[] @default([])
+
   @@index([sourcePrdId])
+  @@index([correlationId])
+  @@index([jobRunId])
 }

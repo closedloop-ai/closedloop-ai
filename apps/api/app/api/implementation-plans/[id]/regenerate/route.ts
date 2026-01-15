@@ -1,7 +1,9 @@
 import { type ApiResult, failure, success } from "@repo/api/src/types/common";
 import type { ImplementationPlan } from "@repo/api/src/types/implementation-plan";
 import { database } from "@repo/database";
+import { triggerWorkflowDispatch, keys as githubKeys } from "@repo/github";
 import { NextResponse } from "next/server";
+import { createId } from "@paralleldrive/cuid2";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -23,13 +25,75 @@ export async function POST(
       });
     }
 
-    // For now, just increment version and update timestamp
-    // TODO: Actually regenerate content based on PRD
+    // Check if GitHub integration is configured
+    let githubConfigured = true;
+    try {
+      githubKeys();
+    } catch {
+      githubConfigured = false;
+    }
+
+    if (!githubConfigured) {
+      // Fall back to placeholder content if GitHub not configured
+      const updatedPlan = await database.implementationPlan.update({
+        where: { id },
+        data: {
+          version: plan.version + 1,
+          status: "Draft",
+          content: getDefaultContent(plan.sourcePrd.title, plan.version + 1),
+        },
+      });
+      return NextResponse.json(success(updatedPlan));
+    }
+
+    // Check if there's already a job running
+    if (plan.jobStatus === "running") {
+      return NextResponse.json(
+        failure("Plan generation already in progress"),
+        { status: 409 }
+      );
+    }
+
+    // Generate correlation ID for tracking
+    const correlationId = createId();
+
+    // Require target repo to be set
+    if (!plan.targetRepo) {
+      return NextResponse.json(
+        failure("Target repository must be set before generating a plan"),
+        { status: 400 }
+      );
+    }
+
+    // Trigger the workflow
+    const result = await triggerWorkflowDispatch({
+      targetRepo: plan.targetRepo,
+      ref: plan.targetRef || "main",
+      command: "plan",
+      context: plan.sourcePrd.content,
+      correlationId,
+    });
+
+    if (!result.success) {
+      return NextResponse.json(
+        failure(`Failed to trigger plan generation: ${result.error}`),
+        { status: 500 }
+      );
+    }
+
+    // Update the plan with job tracking info
     const updatedPlan = await database.implementationPlan.update({
       where: { id },
       data: {
         version: plan.version + 1,
-        content: getDefaultContent(plan.sourcePrd.title, plan.version + 1),
+        status: "Generating",
+        jobStatus: "running",
+        correlationId,
+        jobStartedAt: new Date(),
+        jobCompletedAt: null,
+        // Clear previous artifacts
+        artifactUrl: null,
+        artifactKeys: [],
       },
     });
 

@@ -1,7 +1,9 @@
 import { keys as analytics } from "@repo/analytics/keys";
 import { keys as auth } from "@repo/auth/keys";
+import { keys as aws } from "@repo/aws/keys";
 import { keys as database } from "@repo/database/keys";
 import { keys as email } from "@repo/email/keys";
+import { keys as github } from "@repo/github/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
 import { keys as payments } from "@repo/payments/keys";
@@ -14,8 +16,10 @@ export const env = createEnv({
     core(),
     database(),
     email(),
+    github(),
     observability(),
     payments(),
+    aws(),
   ],
   server: {},
   client: {},
