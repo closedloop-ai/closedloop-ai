@@ -18,6 +18,7 @@ const CollaborationProvider = dynamic(() =>
   )
 );
 
+
 export const metadata: Metadata = {
   title,
   description,
