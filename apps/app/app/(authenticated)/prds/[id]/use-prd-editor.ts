@@ -6,7 +6,7 @@ import type {
 } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   deleteArtifact,
   duplicateArtifact,
@@ -34,6 +34,14 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
+
+  // Sync state when prd prop changes (e.g., server refresh, navigation)
+  useEffect(() => {
+    setContent(prd.content ?? "");
+    setLastSaved(prd.updatedAt);
+    setStatus(prd.status);
+    setApprover(prd.approver ?? "");
+  }, [prd.content, prd.updatedAt, prd.status, prd.approver]);
 
   // Handlers
   const handleSave = useCallback(() => {
