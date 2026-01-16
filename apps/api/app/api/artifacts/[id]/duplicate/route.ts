@@ -71,6 +71,8 @@ export async function POST(
     return NextResponse.json(success(duplicate as Artifact));
   } catch (error) {
     console.error("Failed to duplicate artifact:", error);
-    return NextResponse.json(failure("Failed to duplicate artifact"));
+    return NextResponse.json(failure("Failed to duplicate artifact"), {
+      status: 500,
+    });
   }
 }

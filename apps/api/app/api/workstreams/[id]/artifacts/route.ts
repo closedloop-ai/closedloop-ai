@@ -32,7 +32,9 @@ export async function GET(
     return NextResponse.json(success(artifacts as Artifact[]));
   } catch (error) {
     console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"));
+    return NextResponse.json(failure("Failed to fetch artifacts"), {
+      status: 500,
+    });
   }
 }
 
@@ -82,6 +84,8 @@ export async function POST(
     return NextResponse.json(success(artifact as Artifact));
   } catch (error) {
     console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"));
+    return NextResponse.json(failure("Failed to create artifact"), {
+      status: 500,
+    });
   }
 }

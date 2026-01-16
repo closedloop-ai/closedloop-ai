@@ -19,7 +19,9 @@ export async function GET(
     return NextResponse.json(success(users as User[]));
   } catch (error) {
     console.error("Failed to fetch users:", error);
-    return NextResponse.json(failure("Failed to fetch users"));
+    return NextResponse.json(failure("Failed to fetch users"), {
+      status: 500,
+    });
   }
 }
 
@@ -42,6 +44,8 @@ export async function POST(
     return NextResponse.json(success(user as User));
   } catch (error) {
     console.error("Failed to create user:", error);
-    return NextResponse.json(failure("Failed to create user"));
+    return NextResponse.json(failure("Failed to create user"), {
+      status: 500,
+    });
   }
 }

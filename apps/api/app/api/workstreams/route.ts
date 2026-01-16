@@ -43,7 +43,9 @@ export async function GET(
     return NextResponse.json(success(workstreams as Workstream[]));
   } catch (error) {
     console.error("Failed to fetch workstreams:", error);
-    return NextResponse.json(failure("Failed to fetch workstreams"));
+    return NextResponse.json(failure("Failed to fetch workstreams"), {
+      status: 500,
+    });
   }
 }
 
@@ -68,6 +70,8 @@ export async function POST(
     return NextResponse.json(success(workstream as Workstream));
   } catch (error) {
     console.error("Failed to create workstream:", error);
-    return NextResponse.json(failure("Failed to create workstream"));
+    return NextResponse.json(failure("Failed to create workstream"), {
+      status: 500,
+    });
   }
 }

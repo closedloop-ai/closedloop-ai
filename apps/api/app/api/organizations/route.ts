@@ -15,7 +15,9 @@ export async function GET(): Promise<NextResponse<ApiResult<Organization[]>>> {
     return NextResponse.json(success(organizations as Organization[]));
   } catch (error) {
     console.error("Failed to fetch organizations:", error);
-    return NextResponse.json(failure("Failed to fetch organizations"));
+    return NextResponse.json(failure("Failed to fetch organizations"), {
+      status: 500,
+    });
   }
 }
 
@@ -36,6 +38,8 @@ export async function POST(
     return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to create organization:", error);
-    return NextResponse.json(failure("Failed to create organization"));
+    return NextResponse.json(failure("Failed to create organization"), {
+      status: 500,
+    });
   }
 }

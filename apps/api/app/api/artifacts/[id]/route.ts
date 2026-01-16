@@ -48,7 +48,9 @@ export async function GET(
     return NextResponse.json(success(artifact as ArtifactWithWorkstream));
   } catch (error) {
     console.error("Failed to fetch artifact:", error);
-    return NextResponse.json(failure("Failed to fetch artifact"));
+    return NextResponse.json(failure("Failed to fetch artifact"), {
+      status: 500,
+    });
   }
 }
 
@@ -70,7 +72,9 @@ export async function PUT(
     return NextResponse.json(success(artifact as Artifact));
   } catch (error) {
     console.error("Failed to update artifact:", error);
-    return NextResponse.json(failure("Failed to update artifact"));
+    return NextResponse.json(failure("Failed to update artifact"), {
+      status: 500,
+    });
   }
 }
 
@@ -84,6 +88,8 @@ export async function DELETE(
     return NextResponse.json(success({ deleted: true }));
   } catch (error) {
     console.error("Failed to delete artifact:", error);
-    return NextResponse.json(failure("Failed to delete artifact"));
+    return NextResponse.json(failure("Failed to delete artifact"), {
+      status: 500,
+    });
   }
 }

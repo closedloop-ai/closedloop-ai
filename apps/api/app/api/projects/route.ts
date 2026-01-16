@@ -22,7 +22,9 @@ export async function GET(
     return NextResponse.json(success(projects as Project[]));
   } catch (error) {
     console.error("Failed to fetch projects:", error);
-    return NextResponse.json(failure("Failed to fetch projects"));
+    return NextResponse.json(failure("Failed to fetch projects"), {
+      status: 500,
+    });
   }
 }
 
@@ -43,6 +45,8 @@ export async function POST(
     return NextResponse.json(success(project as Project));
   } catch (error) {
     console.error("Failed to create project:", error);
-    return NextResponse.json(failure("Failed to create project"));
+    return NextResponse.json(failure("Failed to create project"), {
+      status: 500,
+    });
   }
 }

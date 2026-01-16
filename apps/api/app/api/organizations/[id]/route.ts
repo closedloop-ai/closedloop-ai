@@ -28,7 +28,9 @@ export async function GET(
     return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to fetch organization:", error);
-    return NextResponse.json(failure("Failed to fetch organization"));
+    return NextResponse.json(failure("Failed to fetch organization"), {
+      status: 500,
+    });
   }
 }
 
@@ -55,7 +57,9 @@ export async function PUT(
     return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to update organization:", error);
-    return NextResponse.json(failure("Failed to update organization"));
+    return NextResponse.json(failure("Failed to update organization"), {
+      status: 500,
+    });
   }
 }
 
@@ -69,6 +73,8 @@ export async function DELETE(
     return NextResponse.json(success({ deleted: true }));
   } catch (error) {
     console.error("Failed to delete organization:", error);
-    return NextResponse.json(failure("Failed to delete organization"));
+    return NextResponse.json(failure("Failed to delete organization"), {
+      status: 500,
+    });
   }
 }
