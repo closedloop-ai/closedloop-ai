@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-findings",
+  "description": "Schema for code review agent findings",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "severity", "category", "issue", "explanation", "recommendation"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Full file path relative to repository root"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Line number where the issue occurs"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["BLOCKING", "HIGH", "MEDIUM"],
+            "description": "Severity level of the finding"
+          },
+          "category": {
+            "type": "string",
+            "description": "Category of the issue (e.g., Security, Performance, DRY, KISS, Architecture)"
+          },
+          "issue": {
+            "type": "string",
+            "description": "Brief one-line description of the issue"
+          },
+          "explanation": {
+            "type": "string",
+            "description": "Detailed explanation of why this is a problem"
+          },
+          "recommendation": {
+            "type": "string",
+            "description": "Specific, actionable recommendation to fix the issue"
+          },
+          "code_snippet": {
+            "type": "string",
+            "description": "Actual code from the file showing the issue"
+          }
+        }
+      }
+    }
+  }
+}
