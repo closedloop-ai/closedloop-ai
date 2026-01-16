@@ -8,6 +8,7 @@
     "dist/index.js"
   ],
   "scripts": {
+    "postinstall": "cd packages/database && DATABASE_URL=${DATABASE_URL:-postgresql://localhost:5432/placeholder} npx prisma generate --schema=./prisma/schema.prisma",
     "build": "turbo build",
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",

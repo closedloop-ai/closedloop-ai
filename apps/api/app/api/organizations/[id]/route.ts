@@ -25,7 +25,7 @@ export async function GET(
       });
     }
 
-    return NextResponse.json(success(organization));
+    return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to fetch organization:", error);
     return NextResponse.json(failure("Failed to fetch organization"));
@@ -52,7 +52,7 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(organization));
+    return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to update organization:", error);
     return NextResponse.json(failure("Failed to update organization"));

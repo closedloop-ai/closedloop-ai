@@ -21,7 +21,16 @@ const createClient = () => {
     const adapter = new PrismaNeon({ connectionString });
     return new PrismaClient({ adapter });
   }
-  const pool = new pg.Pool({ connectionString });
+  // Strip sslmode from connection string and handle SSL via pool config
+  const url = new URL(connectionString);
+  url.searchParams.delete("sslmode");
+
+  const pool = new pg.Pool({
+    connectionString: url.toString(),
+    ssl: {
+      rejectUnauthorized: false,
+    },
+  });
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 };

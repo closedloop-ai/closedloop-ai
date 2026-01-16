@@ -1,42 +1,44 @@
 // Artifact and Approval types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
-export const ARTIFACT_TYPE_OPTIONS = [
-  "PRD",
-  "FIGMA_DESIGN",
-  "IMPLEMENTATION_PLAN",
-  "CODE_REVIEW_REPORT",
-  "VISUAL_QA_REPORT",
-  "ACCESSIBILITY_REPORT",
-  "TEST_REPORT",
-  "COMPLETION_SUMMARY",
-] as const;
-export type ArtifactType = (typeof ARTIFACT_TYPE_OPTIONS)[number];
+export const ArtifactType = {
+  Prd: "PRD",
+  FigmaDesign: "FIGMA_DESIGN",
+  ImplementationPlan: "IMPLEMENTATION_PLAN",
+  CodeReviewReport: "CODE_REVIEW_REPORT",
+  VisualQaReport: "VISUAL_QA_REPORT",
+  AccessibilityReport: "ACCESSIBILITY_REPORT",
+  TestReport: "TEST_REPORT",
+  CompletionSummary: "COMPLETION_SUMMARY",
+} as const;
+export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
 
-export const ARTIFACT_STATUS_OPTIONS = [
-  "DRAFT",
-  "REVIEW",
-  "APPROVED",
-  "ARCHIVED",
-] as const;
-export type ArtifactStatus = (typeof ARTIFACT_STATUS_OPTIONS)[number];
+export const ArtifactStatus = {
+  Draft: "DRAFT",
+  Review: "REVIEW",
+  Approved: "APPROVED",
+  Archived: "ARCHIVED",
+} as const;
+export type ArtifactStatus =
+  (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
 
-export const APPROVAL_STATUS_OPTIONS = [
-  "PENDING",
-  "APPROVED",
-  "REJECTED",
-  "REVISION_REQUESTED",
-] as const;
-export type ApprovalStatus = (typeof APPROVAL_STATUS_OPTIONS)[number];
+export const ApprovalStatus = {
+  Pending: "PENDING",
+  Approved: "APPROVED",
+  Rejected: "REJECTED",
+  RevisionRequested: "REVISION_REQUESTED",
+} as const;
+export type ApprovalStatus =
+  (typeof ApprovalStatus)[keyof typeof ApprovalStatus];
 
-export const APPROVER_ROLE_OPTIONS = [
-  "PM",
-  "DESIGNER",
-  "TECH_LEAD",
-  "ENGINEER",
-  "STAKEHOLDER",
-] as const;
-export type ApproverRole = (typeof APPROVER_ROLE_OPTIONS)[number];
+export const ApproverRole = {
+  Pm: "PM",
+  Designer: "DESIGNER",
+  TechLead: "TECH_LEAD",
+  Engineer: "ENGINEER",
+  Stakeholder: "STAKEHOLDER",
+} as const;
+export type ApproverRole = (typeof ApproverRole)[keyof typeof ApproverRole];
 
 export type Artifact = {
   id: string;

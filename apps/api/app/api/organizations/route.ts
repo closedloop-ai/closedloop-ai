@@ -12,7 +12,7 @@ export async function GET(): Promise<NextResponse<ApiResult<Organization[]>>> {
     const organizations = await database.organization.findMany({
       orderBy: { createdAt: "desc" },
     });
-    return NextResponse.json(success(organizations));
+    return NextResponse.json(success(organizations as Organization[]));
   } catch (error) {
     console.error("Failed to fetch organizations:", error);
     return NextResponse.json(failure("Failed to fetch organizations"));
@@ -33,7 +33,7 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(success(organization));
+    return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to create organization:", error);
     return NextResponse.json(failure("Failed to create organization"));

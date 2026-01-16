@@ -10,6 +10,9 @@ import { NextResponse } from "next/server";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
+// TODO: Add orgId/projectId to queries for multi-tenant safety once auth context is available
+// Pattern: include organizationId/projectId in WHERE clauses to ensure data isolation
+
 export async function GET(
   _request: Request,
   { params }: RouteParams
@@ -29,6 +32,12 @@ export async function GET(
             },
           },
         },
+        project: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -43,13 +52,15 @@ export async function GET(
   }
 }
 
+type UpdateArtifactBody = Omit<UpdateArtifactInput, "id">;
+
 export async function PUT(
   request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateArtifactInput, "id">;
+    const body: UpdateArtifactBody = await request.json();
 
     const artifact = await database.artifact.update({
       where: { id },

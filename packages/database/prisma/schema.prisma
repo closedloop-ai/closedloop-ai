@@ -212,6 +212,7 @@ model Repository {
 // WORKSTREAM
 // =============================================================================
 
+/// Note: Displayed as "Initiative" in the UI
 model Workstream {
   id             String          @id @default(cuid())
   projectId      String          @map("project_id")
@@ -233,13 +234,10 @@ model Workstream {
   project   Project    @relation(fields: [projectId], references: [id])
   artifacts Artifact[]
 
-  @@index([projectId])
+  @@index([projectId, state])
   @@index([state])
   @@index([createdById])
   @@index([assignedToId])
-  @@index([createdAt])
-  @@index([projectId, state])
-  @@index([projectId, createdAt])
   @@map("workstreams")
 }
 
@@ -254,11 +252,9 @@ model WorkstreamEvent {
   data         Json                @default("{}")
   createdAt    DateTime            @default(now()) @map("created_at")
 
-  @@index([workstreamId])
   @@index([workstreamId, type])
   @@index([workstreamId, createdAt])
   @@index([type])
-  @@index([createdAt])
   @@map("workstream_events")
 }
 
@@ -289,12 +285,8 @@ model Artifact {
   workstream Workstream? @relation(fields: [workstreamId], references: [id])
   project    Project?    @relation(fields: [projectId], references: [id])
 
-  @@index([workstreamId])
   @@index([projectId])
-  @@index([workstreamId, type])
   @@index([workstreamId, type, isLatest])
-  @@index([type])
-  @@index([parentId])
   @@map("artifacts")
 }
 
@@ -322,6 +314,7 @@ model FileUpload {
 
 model Approval {
   id           String         @id @default(cuid())
+  projectId    String         @map("project_id")
   workstreamId String         @map("workstream_id")
   artifactId   String         @map("artifact_id")
   requiredRole ApproverRole   @map("required_role")
@@ -331,11 +324,9 @@ model Approval {
   requestedAt  DateTime       @default(now()) @map("requested_at")
   decidedAt    DateTime?      @map("decided_at")
 
-  @@index([workstreamId])
+  @@index([projectId])
   @@index([workstreamId, status])
   @@index([artifactId])
-  @@index([approverId])
-  @@index([status])
   @@index([approverId, status])
   @@map("approvals")
 }
@@ -351,7 +342,6 @@ model Conversation {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  @@index([workstreamId])
   @@index([workstreamId, agentType])
   @@map("conversations")
 }
@@ -364,7 +354,6 @@ model Message {
   tokenUsage     Json?    @map("token_usage")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  @@index([conversationId])
   @@index([conversationId, createdAt])
   @@map("messages")
 }
@@ -378,7 +367,6 @@ model Comment {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  @@index([workstreamId])
   @@index([workstreamId, createdAt])
   @@index([authorId])
   @@index([artifactId])
@@ -479,10 +467,8 @@ model GitHubPullRequest {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   @@unique([repositoryId, number])
-  @@index([workstreamId])
-  @@index([repositoryId])
-  @@index([state])
   @@index([workstreamId, state])
+  @@index([repositoryId])
   @@map("github_pull_requests")
 }
 
@@ -503,9 +489,6 @@ model GitHubActionRun {
   updatedAt    DateTime           @updatedAt @map("updated_at")
 
   @@unique([repositoryId, runId])
-  @@index([workstreamId])
-  @@index([repositoryId])
-  @@index([status])
   @@index([workstreamId, status])
   @@index([workstreamId, workflowName])
   @@map("github_action_runs")

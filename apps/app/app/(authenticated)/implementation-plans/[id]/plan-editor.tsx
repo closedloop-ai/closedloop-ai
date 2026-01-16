@@ -1,9 +1,8 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import {
-  ARTIFACT_STATUS_OPTIONS,
-  type ArtifactStatus,
+  ArtifactStatus,
+  type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -189,9 +188,9 @@ export function PlanEditor({ plan }: PlanEditorProps) {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {ARTIFACT_STATUS_OPTIONS.map((opt) => (
-                      <SelectItem key={opt} value={opt}>
-                        {artifactStatusLabels[opt] ?? opt}
+                    {Object.values(ArtifactStatus).map((statusOption) => (
+                      <SelectItem key={statusOption} value={statusOption}>
+                        {artifactStatusLabels[statusOption] ?? statusOption}
                       </SelectItem>
                     ))}
                   </SelectContent>

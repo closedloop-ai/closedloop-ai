@@ -25,7 +25,7 @@ import {
 } from "@/app/actions/artifacts";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { downloadAsMarkdown } from "@/lib/clipboard-and-download-utils";
+import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type PRDRowActionsProps = {
   prd: ArtifactWithWorkstream;
