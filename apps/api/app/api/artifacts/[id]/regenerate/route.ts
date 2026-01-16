@@ -3,7 +3,8 @@ import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { keys as githubKeys, triggerWorkflowDispatch } from "@repo/github";
+import { triggerWorkflowDispatch } from "@repo/github";
+import { keys as githubKeys } from "@repo/github/keys";
 import { NextResponse } from "next/server";
 
 type RouteParams = { params: Promise<{ id: string }> };
