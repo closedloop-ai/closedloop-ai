@@ -63,6 +63,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.generate_token.outputs.token }}
@@ -84,5 +85,13 @@ jobs:
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
             --allowedTools "Read,Task,TodoWrite,Grep,Glob,mcp__github_inline_comment__create_inline_comment,mcp__context7__resolve-library-id,mcp__context7__get-library-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
 
-          # Use sticky comments to make Claude reuse the same comment on subsequent pushes
-          use_sticky_comment: true
+          # Sticky comments disabled - was causing streaming mode errors
+          use_sticky_comment: false
+
+      - name: Review completed
+        if: always()
+        run: |
+          echo "Code review workflow completed"
+          echo "Review outcome: ${{ steps.claude-review.outcome }}"
+          # Always exit 0 so the workflow passes - review is advisory, not blocking
+          exit 0
