@@ -24,6 +24,7 @@ const ImplementationPlanPage = async ({ params }: PlanPageProps) => {
   const result = await getArtifactById(id);
 
   if (!result.success || result.data.type !== "IMPLEMENTATION_PLAN") {
+    // notFound() throws a NEXT_NOT_FOUND error which triggers the not-found.tsx page
     notFound();
   }
 

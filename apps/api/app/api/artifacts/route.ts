@@ -9,6 +9,52 @@ import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import { NextResponse } from "next/server";
 
+const DEFAULT_ORG_SLUG = "default";
+const DEFAULT_PROJECT_NAME = "Default Project";
+
+/**
+ * Get or create a default project for standalone artifacts
+ */
+async function getOrCreateDefaultProject(
+  tx: Parameters<Parameters<typeof database.$transaction>[0]>[0]
+): Promise<string> {
+  // Try to find existing default organization
+  let org = await tx.organization.findFirst({
+    where: { slug: DEFAULT_ORG_SLUG },
+  });
+
+  // Create default org if it doesn't exist
+  if (!org) {
+    org = await tx.organization.create({
+      data: {
+        name: "Default Organization",
+        slug: DEFAULT_ORG_SLUG,
+      },
+    });
+  }
+
+  // Try to find existing default project
+  let project = await tx.project.findFirst({
+    where: {
+      organizationId: org.id,
+      name: DEFAULT_PROJECT_NAME,
+    },
+  });
+
+  // Create default project if it doesn't exist
+  if (!project) {
+    project = await tx.project.create({
+      data: {
+        organizationId: org.id,
+        name: DEFAULT_PROJECT_NAME,
+        description: "Default project for standalone PRDs and artifacts",
+      },
+    });
+  }
+
+  return project.id;
+}
+
 export async function GET(
   request: Request
 ): Promise<NextResponse<ApiResult<ArtifactWithWorkstream[]>>> {
@@ -62,43 +108,48 @@ export async function POST(
   try {
     const body = (await request.json()) as CreateArtifactInput;
 
-    // If there's a workstreamId, mark existing artifacts of same type as not latest
-    if (body.workstreamId) {
-      await database.artifact.updateMany({
-        where: {
-          workstreamId: body.workstreamId,
-          type: body.type,
-          isLatest: true,
-        },
+    // Use transaction to ensure atomic operations
+    const artifact = await database.$transaction(async (tx) => {
+      // Auto-create default project if no projectId or workstreamId provided
+      const projectId =
+        body.projectId ||
+        (body.workstreamId ? undefined : await getOrCreateDefaultProject(tx));
+
+      // Build the scope condition for this artifact context
+      const scopeCondition = {
+        ...(body.workstreamId ? { workstreamId: body.workstreamId } : {}),
+        ...(projectId ? { projectId } : {}),
+        type: body.type,
+      };
+
+      // Mark existing artifacts of same type in this scope as not latest
+      await tx.artifact.updateMany({
+        where: { ...scopeCondition, isLatest: true },
         data: { isLatest: false },
       });
-    }
 
-    // Get latest version number
-    const latestArtifact = await database.artifact.findFirst({
-      where: {
-        ...(body.workstreamId ? { workstreamId: body.workstreamId } : {}),
-        ...(body.projectId ? { projectId: body.projectId } : {}),
-        type: body.type,
-      },
-      orderBy: { version: "desc" },
-    });
+      // Get latest version number for this scope and type
+      const latestArtifact = await tx.artifact.findFirst({
+        where: scopeCondition,
+        orderBy: { version: "desc" },
+      });
 
-    const artifact = await database.artifact.create({
-      data: {
-        workstreamId: body.workstreamId,
-        projectId: body.projectId,
-        type: body.type,
-        title: body.title,
-        fileName: body.fileName,
-        approver: body.approver,
-        status: body.status ?? "DRAFT",
-        content: body.content,
-        externalUrl: body.externalUrl,
-        generatedBy: body.generatedBy,
-        version: (latestArtifact?.version ?? 0) + 1,
-        isLatest: true,
-      },
+      return tx.artifact.create({
+        data: {
+          workstreamId: body.workstreamId,
+          projectId,
+          type: body.type,
+          title: body.title,
+          fileName: body.fileName,
+          approver: body.approver,
+          status: body.status ?? "DRAFT",
+          content: body.content,
+          externalUrl: body.externalUrl,
+          generatedBy: body.generatedBy,
+          version: (latestArtifact?.version ?? 0) + 1,
+          isLatest: true,
+        },
+      });
     });
 
     return NextResponse.json(success(artifact as Artifact));

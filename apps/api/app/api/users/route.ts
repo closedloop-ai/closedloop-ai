@@ -11,8 +11,14 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const organizationId = searchParams.get("organizationId");
 
+    if (!organizationId) {
+      return NextResponse.json(failure("organizationId is required"), {
+        status: 400,
+      });
+    }
+
     const users = await database.user.findMany({
-      where: organizationId ? { organizationId } : undefined,
+      where: { organizationId },
       orderBy: { createdAt: "desc" },
     });
 

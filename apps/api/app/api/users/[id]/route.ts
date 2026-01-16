@@ -51,18 +51,5 @@ export async function PUT(
   }
 }
 
-export async function DELETE(
-  _request: Request,
-  { params }: RouteParams
-): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
-  try {
-    const { id } = await params;
-    await database.user.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
-  } catch (error) {
-    console.error("Failed to delete user:", error);
-    return NextResponse.json(failure("Failed to delete user"), {
-      status: 500,
-    });
-  }
-}
+// Note: DELETE intentionally not implemented - users should be deactivated, not deleted
+// This preserves audit trail and referential integrity
