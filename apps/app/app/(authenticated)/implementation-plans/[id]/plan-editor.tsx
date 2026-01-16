@@ -29,6 +29,7 @@ import {
   CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
+  RefreshCwIcon,
   SettingsIcon,
   TrashIcon,
 } from "lucide-react";
@@ -67,6 +68,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     handleExport,
     handleCopyMarkdown,
     handleDelete,
+    handleRegenerate,
   } = usePlanEditor(plan);
 
   return (
@@ -140,6 +142,10 @@ export function PlanEditor({ plan }: PlanEditorProps) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-[180px]">
+              <DropdownMenuItem disabled={isPending} onClick={handleRegenerate}>
+                <RefreshCwIcon className="mr-2 h-4 w-4" />
+                Regenerate Plan
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"

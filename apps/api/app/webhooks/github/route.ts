@@ -16,29 +16,27 @@ import AdmZip from "adm-zip";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 
+type WorkflowContext = {
+  correlationId: string;
+  artifactId: string;
+  workstreamId: string;
+  runId: number;
+};
+
 /**
- * Handle successful workflow completion.
- * Downloads artifacts, uploads to S3, and updates the implementation plan.
+ * Download and upload workflow artifacts to S3.
  */
-async function handleWorkflowSuccess(
+async function processArtifactUploads(
   correlationId: string,
   runId: number
-): Promise<void> {
+): Promise<{ planContent: string | null; artifactKeys: string[] }> {
   const artifacts = await downloadWorkflowArtifacts(runId);
-
-  if (artifacts.length === 0) {
-    log.warn(`No artifacts found for run ${runId}`);
-    return;
-  }
-
   let planContent: string | null = null;
   const artifactKeys: string[] = [];
 
   for (const artifact of artifacts) {
     const zip = new AdmZip(artifact.data);
-    const entries = zip.getEntries();
-
-    for (const entry of entries) {
+    for (const entry of zip.getEntries()) {
       if (entry.isDirectory) {
         continue;
       }
@@ -55,17 +53,51 @@ async function handleWorkflowSuccess(
     }
   }
 
-  await database.implementationPlan.update({
-    where: { correlationId },
+  return { planContent, artifactKeys };
+}
+
+/**
+ * Handle successful workflow completion.
+ */
+async function handleWorkflowSuccess(
+  ctx: WorkflowContext,
+  s3Configured: boolean
+): Promise<void> {
+  const { correlationId, artifactId, workstreamId, runId } = ctx;
+  let planContent: string | null = null;
+  let artifactKeys: string[] = [];
+
+  if (s3Configured) {
+    const result = await processArtifactUploads(correlationId, runId);
+    planContent = result.planContent;
+    artifactKeys = result.artifactKeys;
+  }
+
+  await database.artifact.update({
+    where: { id: artifactId },
     data: {
-      jobStatus: "completed",
-      jobCompletedAt: new Date(),
+      status: "DRAFT",
       content: planContent || undefined,
-      artifactUrl:
+      externalUrl:
         artifactKeys.length > 0
           ? getArtifactUrl(`plans/${correlationId}/`)
           : undefined,
-      artifactKeys,
+      generatedBy: `symphony-dispatch:${correlationId}:completed`,
+    },
+  });
+
+  await database.workstreamEvent.create({
+    data: {
+      workstreamId,
+      type: "GITHUB_ACTION_COMPLETED",
+      actorType: "system",
+      data: {
+        correlationId,
+        artifactId,
+        runId,
+        conclusion: "success",
+        artifactKeys,
+      },
     },
   });
 
@@ -78,16 +110,40 @@ async function handleWorkflowSuccess(
  * Handle failed workflow completion.
  */
 async function handleWorkflowFailure(
-  correlationId: string,
-  runId: number,
+  ctx: WorkflowContext,
   htmlUrl: string
 ): Promise<void> {
-  await database.implementationPlan.update({
-    where: { correlationId },
+  const { correlationId, artifactId, workstreamId, runId } = ctx;
+
+  await database.artifact.update({
+    where: { id: artifactId },
     data: {
-      jobStatus: "failed",
-      jobCompletedAt: new Date(),
-      content: `Plan generation failed. See workflow run: ${htmlUrl}`,
+      status: "DRAFT",
+      content: `# Plan Generation Failed
+
+The automated plan generation encountered an error.
+
+**Workflow Run:** [View on GitHub](${htmlUrl})
+**Correlation ID:** ${correlationId}
+
+Please check the workflow logs for more details, or try regenerating the plan.
+`,
+      generatedBy: `symphony-dispatch:${correlationId}:failed`,
+    },
+  });
+
+  await database.workstreamEvent.create({
+    data: {
+      workstreamId,
+      type: "GITHUB_ACTION_COMPLETED",
+      actorType: "system",
+      data: {
+        correlationId,
+        artifactId,
+        runId,
+        conclusion: "failure",
+        htmlUrl,
+      },
     },
   });
 
@@ -131,7 +187,6 @@ async function processWorkflowCompletion(
   const inputs = await getWorkflowRunInputs(runId);
 
   if (!inputs) {
-    // Manual run or non-workflow_dispatch trigger
     log.info(`Workflow run ${runId} has no inputs (manual run?), ignoring`);
     return NextResponse.json({
       message: "No workflow inputs found (manual run)",
@@ -163,38 +218,61 @@ async function processWorkflowCompletion(
     });
   }
 
-  // Look up the plan by correlation ID
-  const plan = await database.implementationPlan.findUnique({
-    where: { correlationId },
+  // Find the GitHubActionRun by correlation ID in triggerData
+  // We stored it as triggerData: { correlationId, artifactId, command }
+  const actionRuns = await database.gitHubActionRun.findMany({
+    where: {
+      workflowName: "symphony-dispatch",
+      status: { in: ["PENDING", "RUNNING"] },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
   });
 
-  if (!plan) {
-    log.warn(`No implementation plan found for correlation ${correlationId}`);
+  // Find the one with matching correlation ID
+  const actionRun = actionRuns.find((run) => {
+    const data = run.triggerData as { correlationId?: string } | null;
+    return data?.correlationId === correlationId;
+  });
+
+  if (!actionRun) {
+    log.warn(`No GitHubActionRun found for correlation ${correlationId}`);
     return NextResponse.json({
-      message: `No matching plan found for correlation ${correlationId}`,
+      message: `No matching action run found for correlation ${correlationId}`,
       ok: true,
     });
   }
 
-  if (event.workflow_run.conclusion === "success") {
-    if (s3Configured) {
-      await handleWorkflowSuccess(correlationId, runId);
-    } else {
-      await database.implementationPlan.update({
-        where: { correlationId },
-        data: {
-          jobStatus: "completed",
-          jobCompletedAt: new Date(),
-        },
-      });
-      log.info(`Marked plan as completed (S3 not configured) for run ${runId}`);
-    }
+  const triggerData = actionRun.triggerData as {
+    correlationId: string;
+    artifactId: string;
+  };
+
+  // Update GitHubActionRun
+  const conclusion = event.workflow_run.conclusion;
+  await database.gitHubActionRun.update({
+    where: { id: actionRun.id },
+    data: {
+      runId: BigInt(runId),
+      status: conclusion === "success" ? "SUCCESS" : "FAILURE",
+      conclusion,
+      htmlUrl: event.workflow_run.html_url,
+      completedAt: new Date(),
+    },
+  });
+
+  // Process the result
+  const ctx: WorkflowContext = {
+    correlationId,
+    artifactId: triggerData.artifactId,
+    workstreamId: actionRun.workstreamId,
+    runId,
+  };
+
+  if (conclusion === "success") {
+    await handleWorkflowSuccess(ctx, s3Configured);
   } else {
-    await handleWorkflowFailure(
-      correlationId,
-      runId,
-      event.workflow_run.html_url
-    );
+    await handleWorkflowFailure(ctx, event.workflow_run.html_url);
   }
 
   return NextResponse.json({ result: "processed", ok: true });

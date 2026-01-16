@@ -7,7 +7,11 @@ import type {
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
-import { deleteArtifact, updateArtifact } from "@/app/actions/artifacts";
+import {
+  deleteArtifact,
+  regenerateArtifact,
+  updateArtifact,
+} from "@/app/actions/artifacts";
 import {
   copyToClipboard,
   downloadAsMarkdown,
@@ -124,6 +128,20 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     });
   }, [plan.id, router]);
 
+  const handleRegenerate = useCallback(() => {
+    startTransition(async () => {
+      const result = await regenerateArtifact(plan.id);
+      if (result.success) {
+        setContent(result.data.content ?? "");
+        setLastSaved(new Date());
+        toast.success("Plan regeneration started");
+        router.refresh();
+      } else {
+        toast.error(result.error || "Failed to regenerate plan");
+      }
+    });
+  }, [plan.id, router]);
+
   return {
     // State
     isPending,
@@ -148,5 +166,6 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     handleExport,
     handleCopyMarkdown,
     handleDelete,
+    handleRegenerate,
   };
 }

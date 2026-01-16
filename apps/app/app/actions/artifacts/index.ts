@@ -127,3 +127,19 @@ export async function renameArtifact(
 
   return result;
 }
+
+export async function regenerateArtifact(
+  id: string
+): Promise<ApiResult<Artifact>> {
+  const result = await apiClient.post<Artifact>(
+    `/api/artifacts/${id}/regenerate`,
+    {}
+  );
+
+  if (result.success) {
+    revalidatePath(`/implementation-plans/${id}`);
+    revalidatePath("/implementation-plans");
+  }
+
+  return result;
+}
