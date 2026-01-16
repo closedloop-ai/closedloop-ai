@@ -23,7 +23,7 @@ export async function GET(
       return NextResponse.json(failure("Project not found"), { status: 404 });
     }
 
-    return NextResponse.json(success(project));
+    return NextResponse.json(success(project as Project));
   } catch (error) {
     console.error("Failed to fetch project:", error);
     return NextResponse.json(failure("Failed to fetch project"));
@@ -49,7 +49,7 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(project));
+    return NextResponse.json(success(project as Project));
   } catch (error) {
     console.error("Failed to update project:", error);
     return NextResponse.json(failure("Failed to update project"));

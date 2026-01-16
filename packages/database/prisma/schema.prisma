@@ -212,6 +212,7 @@ model Repository {
 // WORKSTREAM
 // =============================================================================
 
+/// Note: Displayed as "Initiative" in the UI
 model Workstream {
   id             String          @id @default(cuid())
   projectId      String          @map("project_id")

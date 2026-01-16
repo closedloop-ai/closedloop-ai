@@ -1,9 +1,6 @@
 "use client";
 
-import {
-  ARTIFACT_STATUS_OPTIONS,
-  type ArtifactStatus,
-} from "@repo/api/src/types/artifact";
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -166,9 +163,10 @@ export function NewPRDModal() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {ARTIFACT_STATUS_OPTIONS.map((opt) => (
-                  <SelectItem key={opt} value={opt}>
-                    {opt.charAt(0) + opt.slice(1).toLowerCase()}
+                {Object.values(ArtifactStatus).map((statusOption) => (
+                  <SelectItem key={statusOption} value={statusOption}>
+                    {statusOption.charAt(0) +
+                      statusOption.slice(1).toLowerCase()}
                   </SelectItem>
                 ))}
               </SelectContent>

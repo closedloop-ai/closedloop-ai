@@ -19,10 +19,8 @@ import {
 import { useState, useTransition } from "react";
 import { deleteArtifact } from "@/app/actions/artifacts";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import {
-  copyToClipboard,
-  downloadAsMarkdown,
-} from "@/lib/clipboard-and-download-utils";
+import { copyToClipboard } from "@/lib/clipboard-utils";
+import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type PlanRowActionsProps = {
   plan: ArtifactWithWorkstream;

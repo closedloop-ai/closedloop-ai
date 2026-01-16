@@ -8,10 +8,8 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { deleteArtifact, updateArtifact } from "@/app/actions/artifacts";
-import {
-  copyToClipboard,
-  downloadAsMarkdown,
-} from "@/lib/clipboard-and-download-utils";
+import { copyToClipboard } from "@/lib/clipboard-utils";
+import { downloadAsMarkdown } from "@/lib/download-utils";
 
 export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const router = useRouter();

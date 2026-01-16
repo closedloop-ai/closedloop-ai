@@ -1,6 +1,7 @@
 // Organization, User, Project, Repository types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+import type { ApproverRole } from "./artifact";
 import type { JsonObject } from "./common";
 
 export type Organization = {
@@ -8,7 +9,7 @@ export type Organization = {
   name: string;
   slug: string;
   anthropicApiKey: string | null;
-  settings: unknown;
+  settings: JsonObject;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -34,7 +35,7 @@ export type User = {
   email: string;
   name: string | null;
   avatarUrl: string | null;
-  role: "PM" | "DESIGNER" | "TECH_LEAD" | "ENGINEER" | "STAKEHOLDER";
+  role: ApproverRole;
   linearUserId: string | null;
   slackUserId: string | null;
   githubUsername: string | null;
@@ -47,14 +48,14 @@ export type CreateUserInput = {
   email: string;
   name?: string;
   avatarUrl?: string;
-  role?: "PM" | "DESIGNER" | "TECH_LEAD" | "ENGINEER" | "STAKEHOLDER";
+  role?: ApproverRole;
 };
 
 export type UpdateUserInput = {
   id: string;
   name?: string;
   avatarUrl?: string;
-  role?: "PM" | "DESIGNER" | "TECH_LEAD" | "ENGINEER" | "STAKEHOLDER";
+  role?: ApproverRole;
   linearUserId?: string;
   slackUserId?: string;
   githubUsername?: string;
@@ -66,9 +67,9 @@ export type Project = {
   organizationId: string;
   name: string;
   description: string | null;
-  codebaseSummary: unknown;
+  codebaseSummary: JsonObject | null;
   lastIndexedAt: Date | null;
-  settings: unknown;
+  settings: JsonObject;
   createdAt: Date;
   updatedAt: Date;
 };

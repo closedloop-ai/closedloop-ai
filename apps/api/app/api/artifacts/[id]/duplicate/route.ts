@@ -32,24 +32,40 @@ export async function POST(
       orderBy: { version: "desc" },
     });
 
-    // Create a duplicate with a new title
-    const duplicate = await database.artifact.create({
-      data: {
-        workstreamId: original.workstreamId,
-        projectId: original.projectId,
-        type: original.type,
-        title: `${original.title} (Copy)`,
-        fileName: original.fileName
-          ? original.fileName.replace(".md", "-copy.md")
-          : null,
-        approver: original.approver,
-        status: "DRAFT",
-        content: original.content,
-        externalUrl: original.externalUrl,
-        generatedBy: original.generatedBy,
-        version: (latestArtifact?.version ?? 0) + 1,
-        isLatest: true,
-      },
+    // Create a duplicate with a new title, marking previous versions as not latest
+    const duplicate = await database.$transaction(async (tx) => {
+      // Mark all existing versions as not latest
+      await tx.artifact.updateMany({
+        where: {
+          ...(original.workstreamId
+            ? { workstreamId: original.workstreamId }
+            : {}),
+          ...(original.projectId ? { projectId: original.projectId } : {}),
+          type: original.type,
+          isLatest: true,
+        },
+        data: { isLatest: false },
+      });
+
+      // Create the new duplicate
+      return tx.artifact.create({
+        data: {
+          workstreamId: original.workstreamId,
+          projectId: original.projectId,
+          type: original.type,
+          title: `${original.title} (Copy)`,
+          fileName: original.fileName
+            ? original.fileName.replace(".md", "-copy.md")
+            : null,
+          approver: original.approver,
+          status: "DRAFT",
+          content: original.content,
+          externalUrl: original.externalUrl,
+          generatedBy: original.generatedBy,
+          version: (latestArtifact?.version ?? 0) + 1,
+          isLatest: true,
+        },
+      });
     });
 
     return NextResponse.json(success(duplicate as Artifact));
