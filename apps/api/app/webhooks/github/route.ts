@@ -1,6 +1,5 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
-import { keys as awsKeys } from "@repo/aws/keys";
 import { database } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
@@ -9,7 +8,6 @@ import {
   parseCorrelationId,
   verifyWebhookSignature,
 } from "@repo/github";
-import { keys as githubKeys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
@@ -151,21 +149,22 @@ Please check the workflow logs for more details, or try regenerating the plan.
 }
 
 function isGitHubConfigured(): boolean {
-  try {
-    githubKeys();
-    return true;
-  } catch {
-    return false;
-  }
+  // Check env vars directly to avoid build-time validation errors
+  return Boolean(
+    process.env.SYMPHONY_APP_ID &&
+      process.env.SYMPHONY_APP_PRIVATE_KEY &&
+      process.env.GITHUB_WEBHOOK_SECRET &&
+      process.env.SYMPHONY_DISPATCH_REPO
+  );
 }
 
 function isS3Configured(): boolean {
-  try {
-    const s3Keys = awsKeys();
-    return Boolean(s3Keys.S3_BUCKET_NAME);
-  } catch {
-    return false;
-  }
+  // Check env vars directly to avoid build-time validation errors
+  return Boolean(
+    process.env.AWS_ACCESS_KEY_ID &&
+      process.env.AWS_SECRET_ACCESS_KEY &&
+      process.env.S3_BUCKET_NAME
+  );
 }
 
 async function validateRequest(request: Request) {

@@ -4,18 +4,18 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
-import { keys as githubKeys } from "@repo/github/keys";
 import { NextResponse } from "next/server";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
 function isGitHubConfigured(): boolean {
-  try {
-    githubKeys();
-    return true;
-  } catch {
-    return false;
-  }
+  // Check env vars directly to avoid build-time validation errors
+  return Boolean(
+    process.env.SYMPHONY_APP_ID &&
+      process.env.SYMPHONY_APP_PRIVATE_KEY &&
+      process.env.GITHUB_WEBHOOK_SECRET &&
+      process.env.SYMPHONY_DISPATCH_REPO
+  );
 }
 
 export async function POST(

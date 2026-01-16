@@ -7,16 +7,29 @@ import { keys } from "./keys";
 // Top-level regex for performance
 const CORRELATION_ID_REGEX = /^(stage|prod):(.+)$/;
 
-const config = keys();
+// Lazy config getter - only validates when actually called at runtime
+let _config: ReturnType<typeof keys> | null = null;
+function getConfig() {
+  if (!_config) {
+    _config = keys();
+  }
+  return _config;
+}
 
-// Parse dispatch repo into owner/repo
-const [dispatchOwner, dispatchRepo] = config.SYMPHONY_DISPATCH_REPO.split("/");
+// Lazy dispatch repo parser
+function getDispatchRepo() {
+  const config = getConfig();
+  return config.SYMPHONY_DISPATCH_REPO.split("/") as [string, string];
+}
 
 /**
  * Create an authenticated Octokit instance using the GitHub App installation token.
  * This generates a fresh token for the symphony-cli repo where workflows run.
  */
 async function getAuthenticatedOctokit(): Promise<Octokit> {
+  const config = getConfig();
+  const [dispatchOwner, dispatchRepo] = getDispatchRepo();
+
   const auth = createAppAuth({
     appId: config.SYMPHONY_APP_ID,
     privateKey: config.SYMPHONY_APP_PRIVATE_KEY,
@@ -65,6 +78,8 @@ export async function triggerWorkflowDispatch(
   opts: TriggerWorkflowDispatchOptions
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const config = getConfig();
+    const [dispatchOwner, dispatchRepo] = getDispatchRepo();
     const octokit = await getAuthenticatedOctokit();
 
     // Prefix correlation ID with environment
@@ -107,6 +122,7 @@ export function verifyWebhookSignature(
     return false;
   }
 
+  const config = getConfig();
   const expectedSignature = createHmac("sha256", config.GITHUB_WEBHOOK_SECRET)
     .update(payload)
     .digest("hex");
@@ -130,6 +146,7 @@ export function verifyWebhookSignature(
 export async function getWorkflowRunInputs(
   runId: number
 ): Promise<Record<string, string> | null> {
+  const [dispatchOwner, dispatchRepo] = getDispatchRepo();
   const octokit = await getAuthenticatedOctokit();
 
   const { data: run } = await octokit.actions.getWorkflowRun({
@@ -158,6 +175,7 @@ export async function downloadWorkflowArtifacts(
   runId: number,
   artifactName?: string
 ): Promise<{ name: string; data: Buffer }[]> {
+  const [dispatchOwner, dispatchRepo] = getDispatchRepo();
   const octokit = await getAuthenticatedOctokit();
 
   // List artifacts for the run
@@ -218,5 +236,6 @@ export function isCurrentEnvironment(correlationId: string): boolean {
   if (!parsed) {
     return false;
   }
+  const config = getConfig();
   return parsed.env === config.WEBAPP_ENV;
 }

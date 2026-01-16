@@ -124,6 +124,9 @@ importers:
         specifier: ^4.1.13
         version: 4.1.13
     devDependencies:
+      '@octokit/webhooks-types':
+        specifier: ^7.6.1
+        version: 7.6.1
       '@repo/typescript-config':
         specifier: workspace:*
         version: link:../../packages/typescript-config
