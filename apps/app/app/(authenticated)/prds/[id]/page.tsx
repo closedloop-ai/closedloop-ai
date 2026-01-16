@@ -1,35 +1,35 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getPRDById } from "@/app/actions/prds";
+import { getArtifactById } from "@/app/actions/artifacts";
 import { PRDEditor } from "./prd-editor";
 
-type PRDPageProps = {
+type PrdPageProps = {
   params: Promise<{ id: string }>;
 };
 
-export async function generateMetadata({
+export const generateMetadata = async ({
   params,
-}: PRDPageProps): Promise<Metadata> {
+}: PrdPageProps): Promise<Metadata> => {
   const { id } = await params;
-  const result = await getPRDById(id);
-
-  if (!result.success) {
-    return { title: "PRD Not Found" };
-  }
+  const result = await getArtifactById(id);
 
   return {
-    title: result.data.title,
-    description: `PRD: ${result.data.title}`,
+    title: result.success ? result.data.title : "PRD",
+    description: "Product Requirements Document",
   };
-}
+};
 
-export default async function PRDPage({ params }: PRDPageProps) {
+const PrdPage = async ({ params }: PrdPageProps) => {
   const { id } = await params;
-  const result = await getPRDById(id);
+  const result = await getArtifactById(id);
 
-  if (!result.success) {
+  if (!result.success || result.data.type !== "PRD") {
     notFound();
   }
 
-  return <PRDEditor prd={result.data} />;
-}
+  const prd = result.data;
+
+  return <PRDEditor prd={prd} />;
+};
+
+export default PrdPage;

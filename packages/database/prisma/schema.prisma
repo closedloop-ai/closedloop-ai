@@ -11,61 +11,521 @@ datasource db {
   relationMode = "prisma"
 }
 
-// This is a stub model.
-// Delete it and add your own Prisma models.
-model Page {
-  id   Int    @id @default(autoincrement())
-  name String
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum WorkstreamType {
+  FEATURE_DELIVERY
+  BUG_FIX
+  TECH_DEBT
+  SPIKE
 }
 
-model Prd {
-  id                  String               @id @default(cuid())
-  title               String
-  fileName            String
-  approver            String
-  version             Int                  @default(1)
-  status              String               @default("Draft")
-  tags                String[]             @default([])
-  template            String               @default("Standard PRD")
-  content             String               @default("")
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  implementationPlans ImplementationPlan[]
+enum WorkstreamState {
+  INITIATED
+  REQUIREMENTS_GENERATING
+  REQUIREMENTS_PENDING_APPROVAL
+  DESIGN_IN_PROGRESS
+  DESIGN_PENDING_APPROVAL
+  IMPLEMENTATION_PLANNING
+  IMPLEMENTATION_IN_PROGRESS
+  IMPLEMENTATION_PENDING_REVIEW
+  CODE_REVIEW_RUNNING
+  CODE_REVIEW_PENDING_APPROVAL
+  VISUAL_QA_RUNNING
+  VISUAL_QA_PENDING_APPROVAL
+  MERGING
+  DEPLOYED
+  COMPLETED
+  BLOCKED
+  CANCELLED
 }
 
-model ImplementationPlan {
+enum ArtifactType {
+  PRD
+  FIGMA_DESIGN
+  IMPLEMENTATION_PLAN
+  CODE_REVIEW_REPORT
+  VISUAL_QA_REPORT
+  ACCESSIBILITY_REPORT
+  TEST_REPORT
+  COMPLETION_SUMMARY
+}
+
+enum ArtifactStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  ARCHIVED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVISION_REQUESTED
+}
+
+enum ApproverRole {
+  PM
+  DESIGNER
+  TECH_LEAD
+  ENGINEER
+  STAKEHOLDER
+}
+
+enum FileUploadType {
+  SCREENSHOT
+  ATTACHMENT
+  REPORT_IMAGE
+}
+
+enum WorkstreamEventType {
+  STATE_CHANGED
+  ARTIFACT_CREATED
+  ARTIFACT_UPDATED
+  APPROVAL_REQUESTED
+  APPROVAL_GRANTED
+  APPROVAL_REJECTED
+  REVISION_REQUESTED
+  LINEAR_ISSUE_CREATED
+  LINEAR_ISSUE_UPDATED
+  LINEAR_SUBTASK_CREATED
+  GITHUB_PR_CREATED
+  GITHUB_PR_MERGED
+  GITHUB_ACTION_TRIGGERED
+  GITHUB_ACTION_COMPLETED
+  SLACK_NOTIFICATION_SENT
+  COMMENT_ADDED
+  ASSIGNEE_CHANGED
+  BLOCKED
+  UNBLOCKED
+}
+
+enum LinearSyncStatus {
+  SYNCED
+  PENDING
+  ERROR
+}
+
+enum GitHubPRState {
+  OPEN
+  MERGED
+  CLOSED
+}
+
+enum GitHubActionStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILURE
+  CANCELLED
+}
+
+// =============================================================================
+// CORE ENTITIES
+// =============================================================================
+
+model Organization {
   id              String   @id @default(cuid())
-  title           String
-  sourcePrdId     String
-  sourcePrd       Prd      @relation(fields: [sourcePrdId], references: [id], onDelete: Cascade)
-  version         Int      @default(1)
-  createdBy       String
-  approver        String?
-  status          String   @default("Draft")
-  planType        String   @default("Standard")
-  targetRelease   String?
-  engineeringTeam String?
-  content         String   @default("")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  name            String
+  slug            String   @unique
+  anthropicApiKey String?  @map("anthropic_api_key")
+  settings        Json     @default("{}")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  // Target repository (user input - which repo to run symphony against)
-  targetRepo String?
-  targetRef  String?
+  // Relations
+  projects Project[]
+  users    User[]
 
-  // GitHub job tracking
-  correlationId  String?   @unique
-  sessionId      String?
-  jobStatus      String?   @default("pending")
-  jobRunId       String?
-  jobStartedAt   DateTime?
-  jobCompletedAt DateTime?
+  @@map("organizations")
+}
 
-  // Artifact storage
-  artifactUrl  String?
-  artifactKeys String[] @default([])
+model User {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  email          String
+  name           String?
+  avatarUrl      String?      @map("avatar_url")
+  role           ApproverRole @default(ENGINEER)
+  linearUserId   String?      @map("linear_user_id")
+  slackUserId    String?      @map("slack_user_id")
+  githubUsername String?      @map("github_username")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
 
-  @@index([sourcePrdId])
-  @@index([correlationId])
-  @@index([jobRunId])
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([linearUserId])
+  @@index([slackUserId])
+  @@index([githubUsername])
+  @@map("users")
+}
+
+model Project {
+  id              String    @id @default(cuid())
+  organizationId  String    @map("organization_id")
+  name            String
+  description     String?
+  codebaseSummary Json?     @map("codebase_summary")
+  lastIndexedAt   DateTime? @map("last_indexed_at")
+  settings        Json      @default("{}")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workstreams  Workstream[]
+  repositories Repository[]
+  artifacts    Artifact[]
+
+  @@index([organizationId])
+  @@map("projects")
+}
+
+model Repository {
+  id            String   @id @default(cuid())
+  projectId     String   @map("project_id")
+  githubId      Int      @unique @map("github_id")
+  owner         String
+  name          String
+  fullName      String   @map("full_name")
+  defaultBranch String   @default("main") @map("default_branch")
+  isPrimary     Boolean  @default(false) @map("is_primary")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([owner, name])
+  @@index([projectId])
+  @@map("repositories")
+}
+
+// =============================================================================
+// WORKSTREAM
+// =============================================================================
+
+model Workstream {
+  id             String          @id @default(cuid())
+  projectId      String          @map("project_id")
+  title          String
+  description    String?
+  type           WorkstreamType  @default(FEATURE_DELIVERY)
+  state          WorkstreamState @default(INITIATED)
+  stateChangedAt DateTime        @default(now()) @map("state_changed_at")
+  createdById    String          @map("created_by_id")
+  assignedToId   String?         @map("assigned_to_id")
+  hasUIChanges   Boolean         @default(false) @map("has_ui_changes")
+  startedAt      DateTime        @default(now()) @map("started_at")
+  completedAt    DateTime?       @map("completed_at")
+  metrics        Json?
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  project   Project    @relation(fields: [projectId], references: [id])
+  artifacts Artifact[]
+
+  @@index([projectId])
+  @@index([state])
+  @@index([createdById])
+  @@index([assignedToId])
+  @@index([createdAt])
+  @@index([projectId, state])
+  @@index([projectId, createdAt])
+  @@map("workstreams")
+}
+
+model WorkstreamEvent {
+  id           String              @id @default(cuid())
+  workstreamId String              @map("workstream_id")
+  type         WorkstreamEventType
+  fromState    WorkstreamState?    @map("from_state")
+  toState      WorkstreamState?    @map("to_state")
+  actorId      String?             @map("actor_id")
+  actorType    String              @default("system") @map("actor_type")
+  data         Json                @default("{}")
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  @@index([workstreamId])
+  @@index([workstreamId, type])
+  @@index([workstreamId, createdAt])
+  @@index([type])
+  @@index([createdAt])
+  @@map("workstream_events")
+}
+
+// =============================================================================
+// ARTIFACTS
+// =============================================================================
+
+model Artifact {
+  id           String          @id @default(cuid())
+  workstreamId String?         @map("workstream_id")
+  projectId    String?         @map("project_id")
+  type         ArtifactType
+  title        String
+  fileName     String?         @map("file_name")
+  approver     String?
+  status       ArtifactStatus  @default(DRAFT)
+  content      String?         @db.Text
+  externalUrl  String?         @map("external_url")
+  version      Int             @default(1)
+  isLatest     Boolean         @default(true) @map("is_latest")
+  parentId     String?         @map("parent_id")
+  generatedBy  String?         @map("generated_by")
+  tokenUsage   Json?           @map("token_usage")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  workstream Workstream? @relation(fields: [workstreamId], references: [id])
+  project    Project?    @relation(fields: [projectId], references: [id])
+
+  @@index([workstreamId])
+  @@index([projectId])
+  @@index([workstreamId, type])
+  @@index([workstreamId, type, isLatest])
+  @@index([type])
+  @@index([parentId])
+  @@map("artifacts")
+}
+
+model FileUpload {
+  id         String         @id @default(cuid())
+  artifactId String?        @map("artifact_id")
+  type       FileUploadType
+  bucket     String
+  key        String
+  filename   String
+  mimeType   String         @map("mime_type")
+  sizeBytes  Int            @map("size_bytes")
+  viewport   Json?
+  pageUrl    String?        @map("page_url")
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@index([artifactId])
+  @@index([bucket, key])
+  @@map("file_uploads")
+}
+
+// =============================================================================
+// APPROVALS
+// =============================================================================
+
+model Approval {
+  id           String         @id @default(cuid())
+  workstreamId String         @map("workstream_id")
+  artifactId   String         @map("artifact_id")
+  requiredRole ApproverRole   @map("required_role")
+  approverId   String?        @map("approver_id")
+  status       ApprovalStatus @default(PENDING)
+  feedback     String?        @db.Text
+  requestedAt  DateTime       @default(now()) @map("requested_at")
+  decidedAt    DateTime?      @map("decided_at")
+
+  @@index([workstreamId])
+  @@index([workstreamId, status])
+  @@index([artifactId])
+  @@index([approverId])
+  @@index([status])
+  @@index([approverId, status])
+  @@map("approvals")
+}
+
+// =============================================================================
+// CONVERSATIONS
+// =============================================================================
+
+model Conversation {
+  id           String   @id @default(cuid())
+  workstreamId String   @map("workstream_id")
+  agentType    String   @map("agent_type")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([workstreamId])
+  @@index([workstreamId, agentType])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String   @db.Text
+  tokenUsage     Json?    @map("token_usage")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([conversationId])
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model Comment {
+  id           String   @id @default(cuid())
+  workstreamId String   @map("workstream_id")
+  authorId     String   @map("author_id")
+  content      String   @db.Text
+  artifactId   String?  @map("artifact_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([workstreamId])
+  @@index([workstreamId, createdAt])
+  @@index([authorId])
+  @@index([artifactId])
+  @@map("comments")
+}
+
+// =============================================================================
+// LINEAR INTEGRATION
+// =============================================================================
+
+model LinearIntegration {
+  id             String    @id @default(cuid())
+  organizationId String    @unique @map("organization_id")
+  accessToken    String    @map("access_token")
+  refreshToken   String?   @map("refresh_token")
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  linearOrgId    String    @map("linear_org_id")
+  linearOrgName  String    @map("linear_org_name")
+  defaultTeamId  String?   @map("default_team_id")
+  webhookId      String?   @map("webhook_id")
+  webhookSecret  String?   @map("webhook_secret")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("linear_integrations")
+}
+
+model LinearIssue {
+  id           String           @id @default(cuid())
+  workstreamId String           @unique @map("workstream_id")
+  linearId     String           @unique @map("linear_id")
+  linearKey    String           @map("linear_key")
+  linearUrl    String           @map("linear_url")
+  teamId       String           @map("team_id")
+  teamKey      String           @map("team_key")
+  syncStatus   LinearSyncStatus @default(SYNCED) @map("sync_status")
+  lastSyncedAt DateTime         @default(now()) @map("last_synced_at")
+  syncError    String?          @map("sync_error")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  @@index([linearId])
+  @@index([linearKey])
+  @@index([syncStatus])
+  @@map("linear_issues")
+}
+
+model LinearSubtask {
+  id           String   @id @default(cuid())
+  workstreamId String   @map("workstream_id")
+  linearId     String   @unique @map("linear_id")
+  linearKey    String   @map("linear_key")
+  linearUrl    String   @map("linear_url")
+  title        String
+  description  String?
+  isCompleted  Boolean  @default(false) @map("is_completed")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([workstreamId])
+  @@index([linearId])
+  @@index([workstreamId, isCompleted])
+  @@map("linear_subtasks")
+}
+
+// =============================================================================
+// GITHUB INTEGRATION
+// =============================================================================
+
+model GitHubInstallation {
+  id             String   @id @default(cuid())
+  organizationId String   @unique @map("organization_id")
+  installationId Int      @unique @map("installation_id")
+  accountLogin   String   @map("account_login")
+  accountType    String   @map("account_type")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("github_installations")
+}
+
+model GitHubPullRequest {
+  id             String        @id @default(cuid())
+  workstreamId   String        @map("workstream_id")
+  repositoryId   String        @map("repository_id")
+  githubId       Int           @map("github_id")
+  number         Int
+  title          String
+  body           String?       @db.Text
+  htmlUrl        String        @map("html_url")
+  headBranch     String        @map("head_branch")
+  baseBranch     String        @map("base_branch")
+  headSha        String?       @map("head_sha")
+  state          GitHubPRState @default(OPEN)
+  mergedAt       DateTime?     @map("merged_at")
+  mergeCommitSha String?       @map("merge_commit_sha")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@unique([repositoryId, number])
+  @@index([workstreamId])
+  @@index([repositoryId])
+  @@index([state])
+  @@index([workstreamId, state])
+  @@map("github_pull_requests")
+}
+
+model GitHubActionRun {
+  id           String             @id @default(cuid())
+  workstreamId String             @map("workstream_id")
+  repositoryId String             @map("repository_id")
+  runId        BigInt             @map("run_id")
+  workflowName String             @map("workflow_name")
+  status       GitHubActionStatus @default(PENDING)
+  conclusion   String?
+  htmlUrl      String             @map("html_url")
+  triggerEvent String             @map("trigger_event")
+  triggerData  Json?              @map("trigger_data")
+  startedAt    DateTime?          @map("started_at")
+  completedAt  DateTime?          @map("completed_at")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  @@unique([repositoryId, runId])
+  @@index([workstreamId])
+  @@index([repositoryId])
+  @@index([status])
+  @@index([workstreamId, status])
+  @@index([workstreamId, workflowName])
+  @@map("github_action_runs")
+}
+
+// =============================================================================
+// SLACK INTEGRATION
+// =============================================================================
+
+model SlackIntegration {
+  id                 String   @id @default(cuid())
+  organizationId     String   @unique @map("organization_id")
+  accessToken        String   @map("access_token")
+  botUserId          String   @map("bot_user_id")
+  teamId             String   @map("team_id")
+  teamName           String   @map("team_name")
+  defaultChannelId   String?  @map("default_channel_id")
+  defaultChannelName String?  @map("default_channel_name")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("slack_integrations")
 }

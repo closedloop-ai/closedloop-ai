@@ -114,6 +114,10 @@ export function DataTable<T extends { id: string }>({
             : aVal.localeCompare(bVal);
         }
 
+        if (typeof aVal === "number" && typeof bVal === "number") {
+          return sortDir === "desc" ? bVal - aVal : aVal - bVal;
+        }
+
         return 0;
       });
     }

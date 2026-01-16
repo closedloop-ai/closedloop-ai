@@ -1,25 +1,25 @@
 import type { Metadata } from "next";
-import { getImplementationPlans } from "@/app/actions/implementation-plans";
+import { getArtifactsByType } from "@/app/actions/artifacts";
 import { Header } from "../components/header";
-import { ImplementationPlanTable } from "./components/implementation-plan-table";
-import { NewImplementationPlanModal } from "./components/new-implementation-plan-modal";
+import { NewPlanModal } from "./components/new-plan-modal";
+import { PlanTable } from "./components/plan-table";
 
 export const metadata: Metadata = {
   title: "Implementation Plans",
-  description: "Implementation Plans generated from PRDs",
+  description: "Implementation Plans",
 };
 
 export default async function ImplementationPlansPage() {
-  const result = await getImplementationPlans();
-  const plans = result.success ? result.data : [];
+  const plansResult = await getArtifactsByType("IMPLEMENTATION_PLAN");
+  const plans = plansResult.success ? plansResult.data : [];
 
   return (
     <>
-      <Header page="Implementation Plans" pages={["Generated Plans from PRDs"]}>
-        <NewImplementationPlanModal />
+      <Header page="Implementation Plans" pages={["Documents"]}>
+        <NewPlanModal />
       </Header>
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-        <ImplementationPlanTable plans={plans} />
+        <PlanTable plans={plans} />
       </div>
     </>
   );

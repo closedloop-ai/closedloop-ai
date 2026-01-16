@@ -1,4 +1,19 @@
 /**
+ * JSON-compatible types for API input/output
+ * These match Prisma's JsonValue types
+ */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonObject
+  | JsonArray;
+
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonArray = JsonValue[];
+
+/**
  * Discriminated union for API responses
  * Use this for all API responses to ensure consistent error handling
  */

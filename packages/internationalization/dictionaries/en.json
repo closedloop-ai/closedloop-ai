@@ -1,14 +1,14 @@
 {
   "web": {
     "global": {
-      "primaryCta": "Book a call",
-      "secondaryCta": "Sign up"
+      "primaryCta": "Start building",
+      "secondaryCta": "Book a demo"
     },
     "header": {
       "home": "Home",
       "product": {
         "title": "Product",
-        "description": "Managing a small business today is already tough.",
+        "description": "From requirements to production-ready code in minutes.",
         "pricing": "Pricing"
       },
       "blog": "Blog",
@@ -19,97 +19,97 @@
     },
     "home": {
       "meta": {
-        "title": "Transform Your Business Operations Today",
-        "description": "In today's fast-paced world, your business deserves better than outdated trading systems. Our innovative platform streamlines operations, reduces complexity, and helps small businesses thrive in the modern economy."
+        "title": "Turn PRDs into Beautiful Code Engineers Love",
+        "description": "Transform product requirements into intelligent development plans and production-ready code. Our AI-powered platform generates type-safe, maintainable code that follows best practices,  helping engineering teams ship faster without sacrificing quality."
       },
       "hero": {
-        "announcement": "Read our latest article"
+        "announcement": "Introducing AI-powered architecture planning"
       },
       "cases": {
-        "title": "Empowering Success Stories Across the Globe"
+        "title": "Trusted by Engineering Teams Worldwide"
       },
       "features": {
-        "title": "Powerful Tools for Modern Business",
-        "description": "Discover how our cutting-edge features can revolutionize your daily operations.",
+        "title": "From Requirements to Production Code",
+        "description": "Our intelligent platform transforms your PRDs into actionable plans and generates beautiful, maintainable code that your engineers will actually want to work with.",
         "items": [
           {
-            "title": "Streamlined Operations",
-            "description": "Our platform streamlines operations, reduces complexity, and helps small businesses thrive in the modern economy."
+            "title": "Intelligent Plan Generation",
+            "description": "Automatically transform PRDs into comprehensive technical plans with architecture decisions, component breakdowns, and implementation strategies tailored to your stack."
           },
           {
-            "title": "Real-Time Analytics",
-            "description": "Get instant insights into your business performance with comprehensive analytics and reporting tools."
+            "title": "Production-Ready Code",
+            "description": "Generate type-safe, tested, and documented code that follows industry best practices. Every line is crafted with maintainability and scalability in mind."
           },
           {
-            "title": "Automated Workflows",
-            "description": "Save time and reduce errors with intelligent automation that handles repetitive tasks for you."
+            "title": "Engineer-Friendly Output",
+            "description": "Code that engineers love to work with—readable, well-structured, and consistent. No brittle templates or messy generation artifacts."
           },
           {
-            "title": "Secure Transactions",
-            "description": "Rest easy knowing your business operations are protected by enterprise-grade security and encryption."
+            "title": "Seamless Integration",
+            "description": "Works with your existing tools and workflows. Support for React, Next.js, TypeScript, Tailwind, Prisma, and modern development stacks."
           }
         ]
       },
       "stats": {
-        "title": "Real Results, Real Impact",
-        "description": "Join thousands of businesses that have transformed their operations with our platform. Our solutions have helped companies reduce administrative overhead by 60% and increase trading efficiency by 45% on average.",
+        "title": "Accelerating Engineering Velocity",
+        "description": "Join thousands of engineering teams shipping faster with AI-powered code generation. Our platform has generated over 10 million lines of production code, helping teams reduce development  time by 70% while maintaining code quality that passes peer review.",
         "items": [
           {
-            "title": "Monthly active users",
-            "metric": "100000",
-            "delta": "10",
+            "title": "PRDs processed",
+            "metric": "50000",
+            "delta": "35",
             "type": "unit"
           },
           {
-            "title": "Daily active users",
-            "metric": "10000",
-            "delta": "-5",
+            "title": "Lines of code generated",
+            "metric": "10000000",
+            "delta": "42",
             "type": "unit"
           },
           {
-            "title": "Monthly recurring revenue",
-            "metric": "100000",
-            "delta": "20",
-            "type": "currency"
+            "title": "Development hours saved",
+            "metric": "500000",
+            "delta": "28",
+            "type": "unit"
           },
           {
-            "title": "Cost per acquisition",
-            "metric": "100",
-            "delta": "-10",
-            "type": "currency"
+            "title": "Average code quality score",
+            "metric": "95",
+            "delta": "5",
+            "type": "unit"
           }
         ]
       },
       "testimonials": {
-        "title": "Hear from Our Thriving Community",
+        "title": "Built by Engineers, for Engineers",
         "items": [
           {
-            "title": "Best decision",
-            "description": "Our goal was to streamline SMB trade, making it easier and faster than ever and we did it together.",
+            "title": "Game-changing for our velocity",
+            "description": "We went from PRD to working prototype in hours instead of weeks. The generated code is cleaner than what some of our junior devs write, and it passes our strict code review standards.",
             "author": {
               "name": "Hayden Bleasel",
               "image": "https://github.com/haydenbleasel.png"
             }
           },
           {
-            "title": "Game changer",
-            "description": "This platform revolutionized how we handle our day-to-day operations. The efficiency gains have been remarkable.",
+            "title": "Finally, AI that understands architecture",
+            "description": "This isn't just code generation—it's architectural thinking. The plans are thoughtful, the code is production-ready, and my team actually enjoys working with the output.",
             "author": {
               "name": "Lee Robinson",
               "image": "https://github.com/leerob.png"
             }
           },
           {
-            "title": "Exceeded expectations",
-            "description": "Implementation was smooth and the results were immediate. Our team adapted quickly and productivity soared.",
+            "title": "The code quality blew me away",
+            "description": "Type-safe, tested, documented, and following all our conventions. It's like having a senior engineer who never gets tired and always follows best practices.",
             "author": {
               "name": "shadcn",
               "image": "https://github.com/shadcn.png"
             }
           },
           {
-            "title": "Outstanding support",
-            "description": "Not only is the platform powerful, but the customer support team has been exceptional in helping us maximize its potential.",
+            "title": "Reduced our sprint planning by 80%",
+            "description": "We feed in the PRD and get back a complete technical plan with component breakdowns, API contracts, and even implementation estimates. Our planning meetings are now 30 minutes instead of 3 hours.",
             "author": {
               "name": "Pontus Abrahamsson",
               "image": "https://github.com/pontusab.png"
@@ -118,70 +118,73 @@
         ]
       },
       "faq": {
-        "title": "Common Questions, Expert Answers",
-        "description": "Get quick answers to your most pressing questions about our platform. We've compiled everything you need to know about transforming your business operations and getting started with modern trading solutions.",
-        "cta": "Any questions? Reach out",
+        "title": "Common Questions from Engineering Teams",
+        "description": "Learn how our platform helps you go from requirements to production-ready code while maintaining the quality and control your team needs. We've answered the most common questions about code generation, customization, and integration with your existing workflows.",
+        "cta": "Still have questions? Let's talk",
         "items": [
           {
-            "question": "What is the platform?",
-            "answer": "The platform is a trading platform that allows you to trade with confidence."
+            "question": "How is the generated code different from other AI tools?",
+            "answer": "Our platform generates production-ready, type-safe code that follows modern best practices and architectural patterns. Unlike generic AI tools, we understand full-stack development, monorepo structures, and enterprise patterns. Every component is tested, documented, and designed for maintainability."
           },
           {
-            "question": "How secure is the platform?",
-            "answer": "Our platform employs enterprise-grade security measures, including end-to-end encryption and multi-factor authentication, to ensure your trading activities remain completely secure."
+            "question": "Can I customize the code generation to match our style?",
+            "answer": "Absolutely. Configure your tech stack, coding conventions, component patterns, and architectural preferences. The platform learns from your existing codebase and generates code that feels native to your project."
           },
           {
-            "question": "What trading features are available?",
-            "answer": "The platform offers comprehensive trading tools including real-time market data, advanced charting, automated trading strategies, and detailed analytics to support informed decision-making."
+            "question": "What technologies and frameworks do you support?",
+            "answer": "We support modern JavaScript/TypeScript stacks including Next.js, React, Node.js, Turborepo, Prisma, tRPC, Tailwind CSS, and more. Our platform works with popular design systems like shadcn/ui and integrates with services like Clerk, Stripe, and Vercel."
           },
           {
             "question": "How does pricing work?",
-            "answer": "We offer flexible pricing tiers designed to scale with your business needs, from starter plans for individual traders to enterprise solutions for large organizations."
+            "answer": "We offer flexible plans based on your team size and usage. Start with our free tier to generate up to 10 plans per month, or upgrade to Pro for unlimited plans, custom templates, and priority support. Enterprise plans include dedicated infrastructure and custom integrations."
           },
           {
-            "question": "What kind of support do you provide?",
-            "answer": "Our dedicated support team is available 24/7 through multiple channels including live chat, email, and phone. We also provide extensive documentation and training resources."
+            "question": "Is the generated code truly production-ready?",
+            "answer": "Yes. All generated code includes TypeScript types, unit tests, error handling, accessibility features, and comprehensive documentation. Our customers regularly ship generated code to production after standard code review processes."
           }
         ]
       },
       "cta": {
-        "title": "Start Your Business Transformation",
-        "description": "Join thousands of forward-thinking businesses who have already modernized their operations. Our platform offers the tools, support, and efficiency you need to succeed in today's competitive market. Get started in minutes."
+        "title": "Ship Beautiful Code Faster",
+        "description": "Join engineering teams at startups and enterprises who are shipping production features 10x faster. Transform your PRDs into intelligent plans and production-ready code in minutes. Start building today with our free tier—no credit card required.",
+        "secondaryDescription": "Loved by 10,000+ engineers at companies building the future"
       }
     },
     "blog": {
       "meta": {
         "title": "Blog",
-        "description": "Thoughts, ideas, and opinions."
+        "description": "Insights on AI-powered development, code generation, and engineering best practices."
       }
     },
     "contact": {
       "meta": {
-        "title": "Let's Talk About Your Business",
-        "description": "Schedule a consultation with our team to discuss how we can help streamline your operations and drive growth for your business."
+        "title": "Let's Transform How Your Team Ships Code",
+        "description": "Schedule a demo with our engineering team to see how we can help you go from PRDs to production-ready code in minutes. We'll show you real examples with your tech stack and discuss custom solutions for your engineering organization."
       },
       "hero": {
         "benefits": [
           {
-            "title": "Personalized Consultation",
-            "description": "Get tailored solutions and expert advice specific to your business needs."
+            "title": "Custom Tech Stack Integration",
+            "description": "We'll configure the platform to work seamlessly with your existing tools, frameworks, and development workflows."
           },
           {
-            "title": "Seamless Integration",
-            "description": "We seamlessly integrate with your existing systems to ensure a smooth transition and minimal disruption."
+            "title": "Architecture Review Session",
+            "description": "Our engineering team will review your architecture and show you how the generated code fits into your systems."
           },
           {
-            "title": "Expert Guidance",
-            "description": "Our team of experts will guide you through the process, ensuring you get the most out of our platform."
+            "title": "Team Training & Onboarding",
+            "description": "Comprehensive onboarding for your engineering team, including best practices for reviewing and extending generated code."
           }
         ],
         "form": {
-          "title": "Book a meeting",
-          "date": "Date",
+          "title": "Book a demo",
+          "date": "Preferred date",
           "firstName": "First name",
           "lastName": "Last name",
-          "resume": "Upload resume",
-          "cta": "Book the meeting"
+          "company": "Company",
+          "role": "Your role",
+          "teamSize": "Engineering team size",
+          "cta": "Schedule demo"
         }
       }
     }

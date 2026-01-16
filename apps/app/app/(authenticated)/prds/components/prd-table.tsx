@@ -1,6 +1,6 @@
 "use client";
 
-import type { Prd } from "@repo/api/src/types/prd";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import {
   type Column,
   DataTable,
@@ -8,19 +8,28 @@ import {
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
 import { useRouter } from "next/navigation";
-import { PrdStatusBadge } from "@/components/status-badge";
+import { ArtifactStatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/date-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
 type PRDTableProps = {
-  prds: Prd[];
+  prds: ArtifactWithWorkstream[];
 };
 
-const columns: Column<Prd>[] = [
+const columns: Column<ArtifactWithWorkstream>[] = [
   {
     key: "title",
     header: "Name / Title",
     render: (prd) => <span className="font-medium">{prd.title}</span>,
+  },
+  {
+    key: "fileName",
+    header: "File Name",
+    render: (prd) => (
+      <span className="font-mono text-muted-foreground text-sm">
+        {prd.fileName ?? "-"}
+      </span>
+    ),
   },
   {
     key: "version",
@@ -30,16 +39,21 @@ const columns: Column<Prd>[] = [
   {
     key: "status",
     header: "Status",
-    render: (prd) => <PrdStatusBadge status={prd.status} />,
+    render: (prd) => <ArtifactStatusBadge status={prd.status} />,
   },
   {
     key: "approver",
     header: "Approver",
+    render: (prd) => (
+      <span className="text-muted-foreground">{prd.approver ?? "-"}</span>
+    ),
   },
   {
     key: "updatedAt",
     header: "Updated",
-    render: (prd) => formatDate(prd.updatedAt),
+    render: (prd) => (
+      <span className="text-muted-foreground">{formatDate(prd.updatedAt)}</span>
+    ),
   },
 ];
 
@@ -53,16 +67,16 @@ const sortOptions: SortOption[] = [
 ];
 
 const filterOptions: FilterOption[] = [
-  { label: "Draft", value: "Draft" },
-  { label: "Review", value: "Review" },
-  { label: "Approved", value: "Approved" },
-  { label: "Archived", value: "Archived" },
+  { label: "Draft", value: "DRAFT" },
+  { label: "Review", value: "REVIEW" },
+  { label: "Approved", value: "APPROVED" },
+  { label: "Archived", value: "ARCHIVED" },
 ];
 
 export function PRDTable({ prds }: PRDTableProps) {
   const router = useRouter();
 
-  const handleRowClick = (prd: Prd) => {
+  const handleRowClick = (prd: ArtifactWithWorkstream) => {
     router.push(`/prds/${prd.id}`);
   };
 
@@ -76,7 +90,7 @@ export function PRDTable({ prds }: PRDTableProps) {
       onRowClick={handleRowClick}
       renderRowActions={(prd) => <PRDRowActions prd={prd} />}
       searchKey="title"
-      searchPlaceholder="Search .md files"
+      searchPlaceholder="Search PRDs..."
       sortOptions={sortOptions}
     />
   );

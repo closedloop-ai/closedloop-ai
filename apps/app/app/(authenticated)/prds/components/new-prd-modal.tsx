@@ -1,12 +1,9 @@
 "use client";
 
 import {
-  PRD_STATUS_OPTIONS,
-  PRD_TEMPLATE_OPTIONS,
-  type PrdStatus,
-  type PrdTemplate,
-} from "@repo/api/src/types/prd";
-import { Badge } from "@repo/design-system/components/ui/badge";
+  ARTIFACT_STATUS_OPTIONS,
+  type ArtifactStatus,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -26,10 +23,10 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { LoaderIcon, PlusIcon, XIcon } from "lucide-react";
+import { LoaderIcon, PlusIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { createPRD } from "@/app/actions/prds";
+import { createArtifact } from "@/app/actions/artifacts";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -40,10 +37,7 @@ export function NewPRDModal() {
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
   const [approver, setApprover] = useState("");
-  const [status, setStatus] = useState<PrdStatus>("Draft");
-  const [template, setTemplate] = useState<PrdTemplate>("Standard PRD");
-  const [tags, setTags] = useState<string[]>([]);
-  const [newTag, setNewTag] = useState("");
+  const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [content, setContent] = useState("");
 
   const handleTitleChange = (value: string) => {
@@ -59,32 +53,11 @@ export function NewPRDModal() {
     }
   };
 
-  const handleAddTag = () => {
-    if (newTag.trim() && !tags.includes(newTag.trim())) {
-      setTags([...tags, newTag.trim()]);
-      setNewTag("");
-    }
-  };
-
-  const handleRemoveTag = (tagToRemove: string) => {
-    setTags(tags.filter((tag) => tag !== tagToRemove));
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleAddTag();
-    }
-  };
-
   const resetForm = () => {
     setTitle("");
     setFileName("");
     setApprover("");
-    setStatus("Draft" as PrdStatus);
-    setTemplate("Standard PRD" as PrdTemplate);
-    setTags([]);
-    setNewTag("");
+    setStatus("DRAFT");
     setContent("");
     setError(null);
   };
@@ -92,20 +65,19 @@ export function NewPRDModal() {
   const handleSubmit = () => {
     setError(null);
 
-    if (!(title.trim() && fileName.trim() && approver.trim())) {
-      setError("Please fill in all required fields");
+    if (!title.trim()) {
+      setError("Please enter a title");
       return;
     }
 
     startTransition(async () => {
       try {
-        const result = await createPRD({
+        const result = await createArtifact({
+          type: "PRD",
           title: title.trim(),
-          fileName: fileName.trim(),
-          approver: approver.trim(),
+          fileName: fileName.trim() || undefined,
+          approver: approver.trim() || undefined,
           status,
-          template,
-          tags,
           content: content.trim() || undefined,
         });
 
@@ -165,9 +137,7 @@ export function NewPRDModal() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="new-filename">
-              File name<span className="text-destructive">*</span>
-            </Label>
+            <Label htmlFor="new-filename">File name</Label>
             <Input
               id="new-filename"
               onChange={(e) => setFileName(e.target.value)}
@@ -177,9 +147,7 @@ export function NewPRDModal() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="new-approver">
-              Approver<span className="text-destructive">*</span>
-            </Label>
+            <Label htmlFor="new-approver">Approver</Label>
             <Input
               id="new-approver"
               onChange={(e) => setApprover(e.target.value)}
@@ -188,81 +156,28 @@ export function NewPRDModal() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select
-                onValueChange={(v) => setStatus(v as PrdStatus)}
-                value={status}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PRD_STATUS_OPTIONS.map((opt) => (
-                    <SelectItem key={opt} value={opt}>
-                      {opt}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Template</Label>
-              <Select
-                onValueChange={(v) => setTemplate(v as PrdTemplate)}
-                value={template}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PRD_TEMPLATE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt} value={opt}>
-                      {opt}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
           <div className="space-y-2">
-            <Label>Tags</Label>
-            <div className="flex gap-2">
-              <Input
-                className="flex-1"
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Add tag"
-                value={newTag}
-              />
-              <Button onClick={handleAddTag} type="button" variant="outline">
-                Add
-              </Button>
-            </div>
-            {tags.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1">
-                {tags.map((tag) => (
-                  <Badge className="gap-1" key={tag} variant="secondary">
-                    {tag}
-                    <button
-                      className="ml-1 hover:text-destructive"
-                      onClick={() => handleRemoveTag(tag)}
-                      type="button"
-                    >
-                      <XIcon className="h-3 w-3" />
-                    </button>
-                  </Badge>
+            <Label>Status</Label>
+            <Select
+              onValueChange={(v) => setStatus(v as ArtifactStatus)}
+              value={status}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ARTIFACT_STATUS_OPTIONS.map((opt) => (
+                  <SelectItem key={opt} value={opt}>
+                    {opt.charAt(0) + opt.slice(1).toLowerCase()}
+                  </SelectItem>
                 ))}
-              </div>
-            ) : null}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="new-content">
-              Initial Content{" "}
+              Content{" "}
               <span className="text-muted-foreground text-xs">
                 (optional - paste markdown here)
               </span>
@@ -281,19 +196,14 @@ export function NewPRDModal() {
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button
-            disabled={
-              isPending || !title.trim() || !fileName.trim() || !approver.trim()
-            }
-            onClick={handleSubmit}
-          >
+          <Button disabled={isPending || !title.trim()} onClick={handleSubmit}>
             {isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...
               </>
             ) : (
-              "Create & Edit"
+              "Create PRD"
             )}
           </Button>
         </DialogFooter>

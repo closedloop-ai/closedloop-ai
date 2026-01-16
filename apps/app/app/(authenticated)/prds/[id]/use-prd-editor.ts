@@ -1,35 +1,35 @@
 "use client";
 
-import type { Prd, PrdStatus, PrdTemplate } from "@repo/api/src/types/prd";
+import type {
+  ArtifactStatus,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import {
-  deletePRD,
-  duplicatePRD,
-  renamePRD,
-  updatePRD,
-} from "@/app/actions/prds";
+  deleteArtifact,
+  duplicateArtifact,
+  renameArtifact,
+  updateArtifact,
+} from "@/app/actions/artifacts";
 import {
   copyToClipboard,
   downloadAsMarkdown,
 } from "@/lib/clipboard-and-download-utils";
 
-export function usePRDEditor(prd: Prd) {
+export function usePRDEditor(prd: ArtifactWithWorkstream) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
   // Content state
-  const [content, setContent] = useState(prd.content);
+  const [content, setContent] = useState(prd.content ?? "");
   const [lastSaved, setLastSaved] = useState<Date>(prd.updatedAt);
   const [isSaving, setIsSaving] = useState(false);
 
   // Metadata state
   const [status, setStatus] = useState(prd.status);
-  const [approver, setApprover] = useState(prd.approver);
-  const [tags, setTags] = useState<string[]>(prd.tags ?? []);
-  const [template, setTemplate] = useState(prd.template);
-  const [newTag, setNewTag] = useState("");
+  const [approver, setApprover] = useState(prd.approver ?? "");
 
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
@@ -41,7 +41,7 @@ export function usePRDEditor(prd: Prd) {
   const handleSave = useCallback(() => {
     setIsSaving(true);
     startTransition(async () => {
-      const result = await updatePRD({ id: prd.id, content });
+      const result = await updateArtifact({ id: prd.id, content });
       if (result.success) {
         setLastSaved(new Date());
         toast.success("Changes saved");
@@ -55,14 +55,12 @@ export function usePRDEditor(prd: Prd) {
   const handleMetadataUpdate = useCallback(
     (
       updates: Partial<{
-        status: PrdStatus;
+        status: ArtifactStatus;
         approver: string;
-        tags: string[];
-        template: PrdTemplate;
       }>
     ) => {
       startTransition(async () => {
-        const result = await updatePRD({ id: prd.id, ...updates });
+        const result = await updateArtifact({ id: prd.id, ...updates });
         if (result.success) {
           setLastSaved(new Date());
           toast.success("Changes saved");
@@ -75,7 +73,7 @@ export function usePRDEditor(prd: Prd) {
   );
 
   const handleStatusChange = useCallback(
-    (newStatus: PrdStatus) => {
+    (newStatus: ArtifactStatus) => {
       setStatus(newStatus);
       handleMetadataUpdate({ status: newStatus });
     },
@@ -87,51 +85,15 @@ export function usePRDEditor(prd: Prd) {
   }, []);
 
   const handleApproverBlur = useCallback(() => {
-    if (approver !== prd.approver) {
-      handleMetadataUpdate({ approver });
+    if (approver !== (prd.approver ?? "")) {
+      handleMetadataUpdate({ approver: approver || undefined });
     }
   }, [approver, prd.approver, handleMetadataUpdate]);
-
-  const handleTemplateChange = useCallback(
-    (newTemplate: PrdTemplate) => {
-      setTemplate(newTemplate);
-      handleMetadataUpdate({ template: newTemplate });
-    },
-    [handleMetadataUpdate]
-  );
-
-  const handleAddTag = useCallback(() => {
-    if (newTag.trim() && !tags.includes(newTag.trim())) {
-      const updatedTags = [...tags, newTag.trim()];
-      setTags(updatedTags);
-      setNewTag("");
-      handleMetadataUpdate({ tags: updatedTags });
-    }
-  }, [newTag, tags, handleMetadataUpdate]);
-
-  const handleRemoveTag = useCallback(
-    (tagToRemove: string) => {
-      const updatedTags = tags.filter((tag) => tag !== tagToRemove);
-      setTags(updatedTags);
-      handleMetadataUpdate({ tags: updatedTags });
-    },
-    [tags, handleMetadataUpdate]
-  );
-
-  const handleTagKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleAddTag();
-      }
-    },
-    [handleAddTag]
-  );
 
   const handleRename = useCallback(
     (title: string, fileName: string) => {
       startTransition(async () => {
-        await renamePRD(prd.id, title, fileName);
+        await renameArtifact(prd.id, title, fileName);
         setShowRenameDialog(false);
       });
     },
@@ -140,7 +102,7 @@ export function usePRDEditor(prd: Prd) {
 
   const handleDuplicate = useCallback(() => {
     startTransition(async () => {
-      const result = await duplicatePRD(prd.id);
+      const result = await duplicateArtifact(prd.id);
       if (result.success) {
         router.push(`/prds/${result.data.id}`);
       }
@@ -148,8 +110,8 @@ export function usePRDEditor(prd: Prd) {
   }, [prd.id, router]);
 
   const handleExport = useCallback(() => {
-    downloadAsMarkdown(content, prd.fileName);
-  }, [content, prd.fileName]);
+    downloadAsMarkdown(content, prd.fileName ?? `${prd.title}.md`);
+  }, [content, prd.fileName, prd.title]);
 
   const handleCopyMarkdown = useCallback(async () => {
     const success = await copyToClipboard(content);
@@ -162,7 +124,7 @@ export function usePRDEditor(prd: Prd) {
 
   const handleDelete = useCallback(() => {
     startTransition(async () => {
-      await deletePRD(prd.id);
+      await deleteArtifact(prd.id);
       router.push("/prds");
     });
   }, [prd.id, router]);
@@ -176,10 +138,6 @@ export function usePRDEditor(prd: Prd) {
     isSaving,
     status,
     approver,
-    tags,
-    template,
-    newTag,
-    setNewTag,
     showMetadataPanel,
     setShowMetadataPanel,
     showRenameDialog,
@@ -194,10 +152,6 @@ export function usePRDEditor(prd: Prd) {
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
-    handleTemplateChange,
-    handleAddTag,
-    handleRemoveTag,
-    handleTagKeyDown,
     handleRename,
     handleDuplicate,
     handleExport,

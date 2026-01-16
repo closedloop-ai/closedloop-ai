@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getPRDs } from "@/app/actions/prds";
+import { getArtifactsByType } from "@/app/actions/artifacts";
 import { Header } from "../components/header";
 import { NewPRDModal } from "./components/new-prd-modal";
 import { PRDTable } from "./components/prd-table";
@@ -10,8 +10,8 @@ export const metadata: Metadata = {
 };
 
 export default async function PRDsPage() {
-  const result = await getPRDs();
-  const prds = result.success ? result.data : [];
+  const prdsResult = await getArtifactsByType("PRD");
+  const prds = prdsResult.success ? prdsResult.data : [];
 
   return (
     <>
