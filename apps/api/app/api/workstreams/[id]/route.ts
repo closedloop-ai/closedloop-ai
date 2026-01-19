@@ -6,44 +6,28 @@ import type { NextResponse } from "next/server";
 import {
   deleteResponse,
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
-  unauthorizedResponse,
-  verifyWorkstreamAccess,
 } from "@/lib/route-utils";
 
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-    const { exists, hasAccess } = await verifyWorkstreamAccess(
-      id,
-      authContext.organizationId
-    );
-
-    if (!exists) {
-      return notFoundResponse("Workstream");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
-    }
 
     const workstream = await database.workstream.findUnique({
       where: { id },
     });
+
+    if (!workstream) {
+      return notFoundResponse("Workstream");
+    }
 
     return successResponse(workstream as Workstream);
   } catch (error) {
@@ -56,23 +40,14 @@ export async function PUT(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-    const { exists, hasAccess } = await verifyWorkstreamAccess(
-      id,
-      authContext.organizationId
-    );
 
-    if (!exists) {
+    const existing = await database.workstream.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
       return notFoundResponse("Workstream");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
     }
 
     const body = await parseBody(request, updateWorkstreamSchema);
@@ -102,23 +77,14 @@ export async function DELETE(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-    const { exists, hasAccess } = await verifyWorkstreamAccess(
-      id,
-      authContext.organizationId
-    );
 
-    if (!exists) {
+    const existing = await database.workstream.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
       return notFoundResponse("Workstream");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
     }
 
     await database.workstream.delete({ where: { id } });

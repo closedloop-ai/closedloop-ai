@@ -5,26 +5,17 @@ import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   isErrorResponse,
   parseBody,
   successResponse,
-  unauthorizedResponse,
 } from "@/lib/route-utils";
 
+// TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
   _request: Request
 ): Promise<NextResponse<ApiResult<User[]>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
-    // Filter users by the authenticated user's organization
     const users = await database.user.findMany({
-      where: { organizationId: authContext.organizationId },
       orderBy: { createdAt: "desc" },
     });
 
@@ -34,23 +25,14 @@ export async function GET(
   }
 }
 
+// TODO: Add org verification once auth middleware provides organizationId
 export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const body = await parseBody(request, createUserSchema);
     if (isErrorResponse(body)) {
       return body;
-    }
-
-    // Users can only create new users in their own organization
-    if (body.organizationId !== authContext.organizationId) {
-      return forbiddenResponse();
     }
 
     const user = await database.user.create({

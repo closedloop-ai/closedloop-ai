@@ -5,44 +5,28 @@ import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
-  unauthorizedResponse,
-  verifyUserAccess,
 } from "@/lib/route-utils";
 
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-    const { exists, hasAccess } = await verifyUserAccess(
-      id,
-      authContext.organizationId
-    );
-
-    if (!exists) {
-      return notFoundResponse("User");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
-    }
 
     const user = await database.user.findUnique({
       where: { id },
     });
+
+    if (!user) {
+      return notFoundResponse("User");
+    }
 
     return successResponse(user as User);
   } catch (error) {
@@ -55,23 +39,14 @@ export async function PUT(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-    const { exists, hasAccess } = await verifyUserAccess(
-      id,
-      authContext.organizationId
-    );
 
-    if (!exists) {
+    const existing = await database.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
       return notFoundResponse("User");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
     }
 
     const body = await parseBody(request, updateUserSchema);

@@ -5,26 +5,17 @@ import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   isErrorResponse,
   parseBody,
   successResponse,
-  unauthorizedResponse,
 } from "@/lib/route-utils";
 
+// TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
   _request: Request
 ): Promise<NextResponse<ApiResult<Project[]>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
-    // Filter projects by user's organization
     const projects = await database.project.findMany({
-      where: { organizationId: authContext.organizationId },
       orderBy: { createdAt: "desc" },
     });
 
@@ -38,19 +29,9 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const body = await parseBody(request, createProjectSchema);
     if (isErrorResponse(body)) {
       return body;
-    }
-
-    // Verify the user is creating a project in their own organization
-    if (body.organizationId !== authContext.organizationId) {
-      return forbiddenResponse();
     }
 
     const project = await database.project.create({

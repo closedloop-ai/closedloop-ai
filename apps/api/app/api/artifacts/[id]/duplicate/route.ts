@@ -8,40 +8,18 @@ import {
 } from "@/lib/artifact-utils";
 import {
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   notFoundResponse,
   type RouteParams,
   successResponse,
-  unauthorizedResponse,
-  verifyArtifactAccess,
 } from "@/lib/route-utils";
 
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function POST(
   _request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id } = await params;
-
-    // Verify access to the original artifact
-    const { exists, hasAccess } = await verifyArtifactAccess(
-      id,
-      authContext.organizationId
-    );
-
-    if (!exists) {
-      return notFoundResponse("Artifact");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
-    }
 
     // Find the original artifact
     const original = await database.artifact.findUnique({

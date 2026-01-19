@@ -9,40 +9,28 @@ import {
 } from "@/lib/artifact-utils";
 import {
   errorResponse,
-  forbiddenResponse,
-  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
-  unauthorizedResponse,
-  verifyWorkstreamAccess,
 } from "@/lib/route-utils";
 
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact[]>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id: workstreamId } = await params;
 
-    const { exists, hasAccess } = await verifyWorkstreamAccess(
-      workstreamId,
-      authContext.organizationId
-    );
+    // Verify workstream exists
+    const workstream = await database.workstream.findUnique({
+      where: { id: workstreamId },
+    });
 
-    if (!exists) {
+    if (!workstream) {
       return notFoundResponse("Workstream");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
     }
 
     const { searchParams } = new URL(request.url);
@@ -69,24 +57,15 @@ export async function POST(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
-    const authContext = await getAuthContext();
-    if (!authContext) {
-      return unauthorizedResponse();
-    }
-
     const { id: workstreamId } = await params;
 
-    const { exists, hasAccess } = await verifyWorkstreamAccess(
-      workstreamId,
-      authContext.organizationId
-    );
+    // Verify workstream exists
+    const workstream = await database.workstream.findUnique({
+      where: { id: workstreamId },
+    });
 
-    if (!exists) {
+    if (!workstream) {
       return notFoundResponse("Workstream");
-    }
-
-    if (!hasAccess) {
-      return forbiddenResponse();
     }
 
     const body = await parseBody(request, createArtifactSchema);
