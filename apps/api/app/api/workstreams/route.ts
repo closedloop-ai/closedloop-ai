@@ -1,13 +1,13 @@
 import { createWorkstreamSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure } from "@repo/api/src/types/common";
 import type {
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 import {
+  badRequestResponse,
   errorResponse,
   isErrorResponse,
   notFoundResponse,
@@ -27,9 +27,7 @@ export async function GET(
     const limit = searchParams.get("limit");
 
     if (!projectId) {
-      return NextResponse.json(failure("projectId is required"), {
-        status: 400,
-      });
+      return badRequestResponse("projectId is required");
     }
 
     // Verify project exists

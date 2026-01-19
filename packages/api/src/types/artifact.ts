@@ -54,6 +54,7 @@ export type Artifact = {
   version: number;
   isLatest: boolean;
   parentId: string | null;
+  documentSlug: string | null;
   generatedBy: string | null;
   tokenUsage: unknown;
   createdAt: Date;
@@ -86,6 +87,7 @@ export type CreateArtifactInput = {
   content?: string;
   externalUrl?: string;
   generatedBy?: string;
+  documentSlug?: string;
 };
 
 export type UpdateArtifactInput = {

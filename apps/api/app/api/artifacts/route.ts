@@ -5,9 +5,8 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 import {
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
@@ -17,6 +16,7 @@ import {
 import {
   errorResponse,
   isErrorResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
@@ -66,9 +66,7 @@ export async function POST(
         where: { id: body.workstreamId },
       });
       if (!workstream) {
-        return NextResponse.json(failure("Workstream not found"), {
-          status: 404,
-        });
+        return notFoundResponse("Workstream");
       }
     }
 
@@ -78,7 +76,7 @@ export async function POST(
         where: { id: body.projectId },
       });
       if (!project) {
-        return NextResponse.json(failure("Project not found"), { status: 404 });
+        return notFoundResponse("Project");
       }
     }
 

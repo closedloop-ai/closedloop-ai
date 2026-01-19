@@ -30,7 +30,10 @@ export async function parseBody<T extends z.ZodType>(
     }
 
     return parseResult.data;
-  } catch {
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    console.error("Failed to parse request body:", errorMessage);
     return NextResponse.json(failure("Invalid JSON body"), { status: 400 });
   }
 }
@@ -45,15 +48,25 @@ export function isErrorResponse<T>(
 }
 
 /**
- * Create a standardized error response with logging.
+ * Create a standardized error response with sanitized logging.
  */
 export function errorResponse(
   message: string,
   error: unknown,
   status = 500
 ): NextResponse<ApiResult<never>> {
-  console.error(`${message}:`, error);
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  console.error(`${message}:`, errorMessage);
   return NextResponse.json(failure(message), { status });
+}
+
+/**
+ * Create a bad request response.
+ */
+export function badRequestResponse(
+  message: string
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure(message), { status: 400 });
 }
 
 /**
