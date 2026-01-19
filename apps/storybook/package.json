@@ -33,7 +33,7 @@
     "@types/node": "^24",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "chromatic": "^13.3.4",
+    "chromatic": "^13.3.5",
     "postcss": "^8",
     "storybook": "^10.1.4",
     "tailwindcss": "^4.1.17",
