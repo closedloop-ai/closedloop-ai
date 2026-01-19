@@ -5,6 +5,7 @@
   "types": "./index.ts",
   "scripts": {
     "analyze": "prisma generate --no-hints --schema=./prisma/schema.prisma",
+    "prebuild": "node scripts/migrate.mjs",
     "build": "prisma generate --no-hints --schema=./prisma/schema.prisma",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
