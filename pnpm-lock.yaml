@@ -17064,7 +17064,7 @@ snapshots:
 
   '@types/adm-zip@0.5.7':
     dependencies:
-      '@types/node': 24.10.1
+      '@types/node': 25.0.9
 
   '@types/aria-query@5.0.4': {}
 
@@ -23268,7 +23268,7 @@ snapshots:
     dependencies:
       qs: 6.14.0
     optionalDependencies:
-      '@types/node': 24.10.9
+      '@types/node': 25.0.9
 
   strnum@2.1.2: {}
 
