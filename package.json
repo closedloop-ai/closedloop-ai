@@ -8,7 +8,7 @@
     "dist/index.js"
   ],
   "scripts": {
-    "postinstall": "cd packages/database && DATABASE_URL=${DATABASE_URL:-postgresql://localhost:5432/placeholder} npx prisma generate --schema=./prisma/schema.prisma",
+    "postinstall": "cd packages/database && AWS_ROLE_ARN=${AWS_ROLE_ARN:-arn:aws:iam::000000000000:role/placeholder} AWS_REGION=${AWS_REGION:-us-east-1} PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5432} PGUSER=${PGUSER:-postgres} PGDATABASE=${PGDATABASE:-app} npx prisma generate --schema=./prisma/schema.prisma",
     "build": "turbo build",
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",

@@ -1,37 +1,38 @@
 import "server-only";
 
-import { neonConfig } from "@neondatabase/serverless";
-import { PrismaNeon } from "@prisma/adapter-neon";
+import { Signer } from "@aws-sdk/rds-signer";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { awsCredentialsProvider } from "@vercel/functions/oidc";
 import pg from "pg";
-import ws from "ws";
 import { PrismaClient } from "./generated/client";
 import { keys } from "./keys";
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
 
-const connectionString = keys().DATABASE_URL;
-const isNeon = connectionString.includes("neon.tech");
+const env = keys();
 
-// Use Neon adapter for Neon databases (production)
-// Use pg adapter for local PostgreSQL
+const signer = new Signer({
+  hostname: env.PGHOST,
+  port: Number(env.PGPORT),
+  username: env.PGUSER,
+  region: env.AWS_REGION,
+  credentials: awsCredentialsProvider({
+    roleArn: env.AWS_ROLE_ARN,
+    clientConfig: { region: env.AWS_REGION },
+  }),
+});
+
+const pool = new pg.Pool({
+  host: env.PGHOST,
+  user: env.PGUSER,
+  database: env.PGDATABASE || "app",
+  password: () => signer.getAuthToken(),
+  port: Number(env.PGPORT || "5432"),
+  ssl: { rejectUnauthorized: false },
+  max: 20,
+});
+
 const createClient = () => {
-  if (isNeon) {
-    neonConfig.webSocketConstructor = ws;
-    const adapter = new PrismaNeon({ connectionString });
-    return new PrismaClient({ adapter });
-  }
-  // For local PostgreSQL, don't use SSL
-  const url = new URL(connectionString);
-  const isLocalhost =
-    url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  url.searchParams.delete("sslmode");
-
-  const pool = new pg.Pool({
-    connectionString: url.toString(),
-    // Only use SSL for non-localhost connections
-    ssl: isLocalhost ? false : { rejectUnauthorized: false },
-  });
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
 };
