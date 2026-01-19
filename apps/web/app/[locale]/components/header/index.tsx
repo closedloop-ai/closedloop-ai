@@ -158,7 +158,7 @@ export const Header = ({ dictionary }: HeaderProps) => {
                         rel={
                           item.href.startsWith("http")
                             ? "noopener noreferrer"
-                            : null
+                            : undefined
                         }
                         target={item.href.startsWith("http") ? "_blank" : null}
                       >
