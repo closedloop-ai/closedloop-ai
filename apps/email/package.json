@@ -9,7 +9,7 @@
     "clean": "git clean -xdf .cache .turbo dist node_modules"
   },
   "dependencies": {
-    "@react-email/components": "1.0.1",
+    "@react-email/components": "1.0.4",
     "@react-email/preview-server": "^5.0.5",
     "@repo/email": "workspace:*",
     "react": "19.2.1",
