@@ -14,9 +14,9 @@
     "@t3-oss/env-nextjs": "^0.13.8",
     "ai": "^6.0.39",
     "react": "19.2.1",
-    "streamdown": "^2.0.1",
+    "streamdown": "^2.1.0",
     "tailwind-merge": "^3.4.0",
-    "zod": "^4.1.13"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
