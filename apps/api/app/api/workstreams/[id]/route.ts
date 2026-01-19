@@ -1,4 +1,3 @@
-import { updateWorkstreamSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { database } from "@repo/database";
@@ -6,17 +5,17 @@ import type { NextResponse } from "next/server";
 import {
   deleteResponse,
   errorResponse,
-  isErrorResponse,
+  type IdRouteParams,
   notFoundResponse,
   parseBody,
-  type RouteParams,
   successResponse,
 } from "@/lib/route-utils";
+import { updateWorkstreamSchema } from "../schemas";
 
 // TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
     const { id } = await params;
@@ -37,7 +36,7 @@ export async function GET(
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
     const { id } = await params;
@@ -50,9 +49,12 @@ export async function PUT(
       return notFoundResponse("Workstream");
     }
 
-    const body = await parseBody(request, updateWorkstreamSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateWorkstreamSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     // If state is being changed, update stateChangedAt
@@ -74,7 +76,7 @@ export async function PUT(
 
 export async function DELETE(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
     const { id } = await params;

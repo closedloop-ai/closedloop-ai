@@ -48,9 +48,6 @@ export const artifactIncludeWithContext = {
       id: true,
       title: true,
       state: true,
-      project: {
-        select: { name: true },
-      },
     },
   },
   project: {

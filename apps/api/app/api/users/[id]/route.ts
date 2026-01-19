@@ -1,21 +1,20 @@
-import { updateUserSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
-  isErrorResponse,
+  type IdRouteParams,
   notFoundResponse,
   parseBody,
-  type RouteParams,
   successResponse,
 } from "@/lib/route-utils";
+import { updateUserSchema } from "../schemas";
 
 // TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
     const { id } = await params;
@@ -36,7 +35,7 @@ export async function GET(
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
     const { id } = await params;
@@ -49,9 +48,12 @@ export async function PUT(
       return notFoundResponse("User");
     }
 
-    const body = await parseBody(request, updateUserSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateUserSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     const user = await database.user.update({

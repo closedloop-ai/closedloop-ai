@@ -1,23 +1,31 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
+import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import type { z } from "zod";
 
 /**
  * Standard route params type for [id] routes.
  */
-export type RouteParams<T extends string = "id"> = {
+export type IdRouteParams<T extends string = "id"> = {
   params: Promise<{ [K in T]: string }>;
 };
 
 /**
+ * Result of parsing a request body.
+ */
+export type ParseBodyResult<T> =
+  | { body: T; errorResponse: null }
+  | { body: null; errorResponse: NextResponse<ApiResult<never>> };
+
+/**
  * Parse and validate request body against a zod schema.
- * Returns the validated data or a NextResponse error.
+ * Returns an object with either body (on success) or errorResponse (on failure).
  */
 export async function parseBody<T extends z.ZodType>(
   request: Request,
   schema: T
-): Promise<z.infer<T> | NextResponse<ApiResult<never>>> {
+): Promise<ParseBodyResult<z.infer<T>>> {
   try {
     const rawBody = await request.json();
     const parseResult = schema.safeParse(rawBody);
@@ -26,25 +34,26 @@ export async function parseBody<T extends z.ZodType>(
       const errorMessage = parseResult.error.issues
         .map((issue) => issue.message)
         .join(", ");
-      return NextResponse.json(failure(errorMessage), { status: 400 });
+      return {
+        body: null,
+        errorResponse: NextResponse.json(failure(errorMessage), {
+          status: 400,
+        }),
+      };
     }
 
-    return parseResult.data;
+    return { body: parseResult.data, errorResponse: null };
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
-    console.error("Failed to parse request body:", errorMessage);
-    return NextResponse.json(failure("Invalid JSON body"), { status: 400 });
+    log.error("Failed to parse request body:", { error: errorMessage });
+    return {
+      body: null,
+      errorResponse: NextResponse.json(failure("Invalid JSON body"), {
+        status: 400,
+      }),
+    };
   }
-}
-
-/**
- * Check if the result of parseBody is an error response.
- */
-export function isErrorResponse<T>(
-  result: T | NextResponse<ApiResult<never>>
-): result is NextResponse<ApiResult<never>> {
-  return result instanceof NextResponse;
 }
 
 /**
@@ -56,7 +65,7 @@ export function errorResponse(
   status = 500
 ): NextResponse<ApiResult<never>> {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  console.error(`${message}:`, errorMessage);
+  log.error(message, { error: errorMessage });
   return NextResponse.json(failure(message), { status });
 }
 
@@ -83,6 +92,13 @@ export function notFoundResponse(
   entity: string
 ): NextResponse<ApiResult<never>> {
   return NextResponse.json(failure(`${entity} not found`), { status: 404 });
+}
+
+/**
+ * Create an unauthorized response.
+ */
+export function unauthorizedResponse(): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure("Unauthorized"), { status: 401 });
 }
 
 /**

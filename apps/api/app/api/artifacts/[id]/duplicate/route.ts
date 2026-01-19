@@ -8,15 +8,15 @@ import {
 } from "@/lib/artifact-utils";
 import {
   errorResponse,
+  type IdRouteParams,
   notFoundResponse,
-  type RouteParams,
   successResponse,
 } from "@/lib/route-utils";
 
 // TODO: Add org access verification once auth middleware provides organizationId
 export async function POST(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id } = await params;

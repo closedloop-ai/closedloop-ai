@@ -1,4 +1,3 @@
-import { createArtifactSchema } from "@repo/api/src/schemas/organization";
 import type {
   Artifact,
   ArtifactType,
@@ -15,11 +14,11 @@ import {
 } from "@/lib/artifact-utils";
 import {
   errorResponse,
-  isErrorResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { createArtifactSchema } from "./schemas";
 
 // TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
@@ -55,9 +54,12 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
-    const body = await parseBody(request, createArtifactSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createArtifactSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     // Verify workstream exists if specified

@@ -1,6 +1,19 @@
 // Artifact and Approval types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+// Artifact Type
+export const ARTIFACT_TYPE_OPTIONS = [
+  "PRD",
+  "FIGMA_DESIGN",
+  "IMPLEMENTATION_PLAN",
+  "CODE_REVIEW_REPORT",
+  "VISUAL_QA_REPORT",
+  "ACCESSIBILITY_REPORT",
+  "TEST_REPORT",
+  "COMPLETION_SUMMARY",
+] as const;
+export type ArtifactType = (typeof ARTIFACT_TYPE_OPTIONS)[number];
+
 export const ArtifactType = {
   Prd: "PRD",
   FigmaDesign: "FIGMA_DESIGN",
@@ -10,26 +23,49 @@ export const ArtifactType = {
   AccessibilityReport: "ACCESSIBILITY_REPORT",
   TestReport: "TEST_REPORT",
   CompletionSummary: "COMPLETION_SUMMARY",
-} as const;
-export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
+} as const satisfies Record<string, ArtifactType>;
+
+// Artifact Status
+export const ARTIFACT_STATUS_OPTIONS = [
+  "DRAFT",
+  "REVIEW",
+  "APPROVED",
+  "ARCHIVED",
+] as const;
+export type ArtifactStatus = (typeof ARTIFACT_STATUS_OPTIONS)[number];
 
 export const ArtifactStatus = {
   Draft: "DRAFT",
   Review: "REVIEW",
   Approved: "APPROVED",
   Archived: "ARCHIVED",
-} as const;
-export type ArtifactStatus =
-  (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
+} as const satisfies Record<string, ArtifactStatus>;
+
+// Approval Status
+export const APPROVAL_STATUS_OPTIONS = [
+  "PENDING",
+  "APPROVED",
+  "REJECTED",
+  "REVISION_REQUESTED",
+] as const;
+export type ApprovalStatus = (typeof APPROVAL_STATUS_OPTIONS)[number];
 
 export const ApprovalStatus = {
   Pending: "PENDING",
   Approved: "APPROVED",
   Rejected: "REJECTED",
   RevisionRequested: "REVISION_REQUESTED",
-} as const;
-export type ApprovalStatus =
-  (typeof ApprovalStatus)[keyof typeof ApprovalStatus];
+} as const satisfies Record<string, ApprovalStatus>;
+
+// Approver Role
+export const APPROVER_ROLE_OPTIONS = [
+  "PM",
+  "DESIGNER",
+  "TECH_LEAD",
+  "ENGINEER",
+  "STAKEHOLDER",
+] as const;
+export type ApproverRole = (typeof APPROVER_ROLE_OPTIONS)[number];
 
 export const ApproverRole = {
   Pm: "PM",
@@ -37,8 +73,7 @@ export const ApproverRole = {
   TechLead: "TECH_LEAD",
   Engineer: "ENGINEER",
   Stakeholder: "STAKEHOLDER",
-} as const;
-export type ApproverRole = (typeof ApproverRole)[keyof typeof ApproverRole];
+} as const satisfies Record<string, ApproverRole>;
 
 export type Artifact = {
   id: string;
@@ -66,9 +101,6 @@ export type ArtifactWithWorkstream = Artifact & {
     id: string;
     title: string;
     state: string;
-    project: {
-      name: string;
-    };
   } | null;
   project?: {
     id: string;

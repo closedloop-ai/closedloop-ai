@@ -1,19 +1,20 @@
-import { createWorkstreamSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
+import { auth } from "@repo/auth/server";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   badRequestResponse,
   errorResponse,
-  isErrorResponse,
   notFoundResponse,
   parseBody,
   successResponse,
+  unauthorizedResponse,
 } from "@/lib/route-utils";
+import { createWorkstreamSchema } from "./schemas";
 
 // TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
@@ -66,9 +67,17 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
-    const body = await parseBody(request, createWorkstreamSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { userId } = await auth();
+    if (!userId) {
+      return unauthorizedResponse();
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createWorkstreamSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     // Verify project exists
@@ -86,7 +95,7 @@ export async function POST(
         title: body.title,
         description: body.description,
         type: body.type ?? "FEATURE_DELIVERY",
-        createdById: body.createdById,
+        createdById: userId,
         assignedToId: body.assignedToId,
         hasUIChanges: body.hasUIChanges ?? false,
       },

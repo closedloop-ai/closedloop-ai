@@ -1,4 +1,3 @@
-import { updateArtifactSchema } from "@repo/api/src/schemas/organization";
 import type {
   Artifact,
   ArtifactWithWorkstream,
@@ -10,17 +9,17 @@ import { artifactIncludeWithContext } from "@/lib/artifact-utils";
 import {
   deleteResponse,
   errorResponse,
-  isErrorResponse,
+  type IdRouteParams,
   notFoundResponse,
   parseBody,
-  type RouteParams,
   successResponse,
 } from "@/lib/route-utils";
+import { updateArtifactSchema } from "../schemas";
 
 // TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<ArtifactWithWorkstream>>> {
   try {
     const { id } = await params;
@@ -42,7 +41,7 @@ export async function GET(
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id } = await params;
@@ -55,9 +54,12 @@ export async function PUT(
       return notFoundResponse("Artifact");
     }
 
-    const body = await parseBody(request, updateArtifactSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateArtifactSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     const artifact = await database.artifact.update({
@@ -73,7 +75,7 @@ export async function PUT(
 
 export async function DELETE(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
     const { id } = await params;

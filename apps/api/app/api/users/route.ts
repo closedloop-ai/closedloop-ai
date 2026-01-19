@@ -1,14 +1,9 @@
-import { createUserSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
-import {
-  errorResponse,
-  isErrorResponse,
-  parseBody,
-  successResponse,
-} from "@/lib/route-utils";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { createUserSchema } from "./schemas";
 
 // TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
@@ -30,9 +25,12 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const body = await parseBody(request, createUserSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createUserSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     const user = await database.user.create({

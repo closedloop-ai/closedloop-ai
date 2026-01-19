@@ -1,4 +1,3 @@
-import { createArtifactSchema } from "@repo/api/src/schemas/organization";
 import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
@@ -9,17 +8,17 @@ import {
 } from "@/lib/artifact-utils";
 import {
   errorResponse,
-  isErrorResponse,
+  type IdRouteParams,
   notFoundResponse,
   parseBody,
-  type RouteParams,
   successResponse,
 } from "@/lib/route-utils";
+import { createArtifactSchema } from "../../../artifacts/schemas";
 
 // TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact[]>>> {
   try {
     const { id: workstreamId } = await params;
@@ -54,7 +53,7 @@ export async function GET(
 
 export async function POST(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id: workstreamId } = await params;
@@ -68,9 +67,12 @@ export async function POST(
       return notFoundResponse("Workstream");
     }
 
-    const body = await parseBody(request, createArtifactSchema);
-    if (isErrorResponse(body)) {
-      return body;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createArtifactSchema
+    );
+    if (parseError) {
+      return parseError;
     }
 
     // Use transaction to ensure atomic isLatest update and version increment
