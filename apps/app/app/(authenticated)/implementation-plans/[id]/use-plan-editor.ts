@@ -133,12 +133,11 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
         setContent(result.data.content ?? "");
         setLastSaved(new Date());
         toast.success("Plan regeneration started");
-        router.refresh();
       } else {
         toast.error(result.error || "Failed to regenerate plan");
       }
     });
-  }, [plan.id, router]);
+  }, [plan.id]);
 
   return {
     // State
