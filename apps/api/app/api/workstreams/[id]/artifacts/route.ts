@@ -4,6 +4,7 @@ import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   buildArtifactScopeCondition,
+  generateDocumentSlug,
   prepareArtifactVersion,
 } from "@/lib/artifact-utils";
 import {
@@ -77,11 +78,15 @@ export async function POST(
 
     // Use transaction to ensure atomic isLatest update and version increment
     const artifact = await database.$transaction(async (tx) => {
+      // Auto-generate documentSlug if not provided (required for versioning)
+      const documentSlug =
+        body.documentSlug ?? generateDocumentSlug(body.fileName, body.title);
+
       // Build scope and get next version (marks existing as not latest)
       const scopeCondition = buildArtifactScopeCondition({
         workstreamId,
         type: body.type,
-        documentSlug: body.documentSlug,
+        documentSlug,
       });
       const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
@@ -93,7 +98,7 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          documentSlug: body.documentSlug,
+          documentSlug,
           version: nextVersion,
           isLatest: true,
         },

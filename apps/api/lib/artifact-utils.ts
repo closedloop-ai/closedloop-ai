@@ -1,6 +1,31 @@
 import type { ArtifactType } from "@repo/api/src/types/artifact";
 import type { database } from "@repo/database";
 
+// Regex patterns for slug generation (top-level for performance)
+const MD_EXTENSION_REGEX = /\.md$/;
+const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
+const TRIM_HYPHENS_REGEX = /^-+|-+$/g;
+
+/**
+ * Generate a document slug from fileName or title.
+ * Used to uniquely identify a document for versioning purposes.
+ */
+export function generateDocumentSlug(
+  fileName?: string | null,
+  title?: string | null
+): string | null {
+  const source = fileName || title;
+  if (!source) {
+    return null;
+  }
+
+  return source
+    .toLowerCase()
+    .replace(MD_EXTENSION_REGEX, "")
+    .replace(NON_ALPHANUMERIC_REGEX, "-")
+    .replace(TRIM_HYPHENS_REGEX, "");
+}
+
 /**
  * Type for Prisma transaction client.
  */

@@ -2,18 +2,6 @@
 // These are explicitly defined to keep packages/api independent of database
 
 // Artifact Type
-export const ARTIFACT_TYPE_OPTIONS = [
-  "PRD",
-  "FIGMA_DESIGN",
-  "IMPLEMENTATION_PLAN",
-  "CODE_REVIEW_REPORT",
-  "VISUAL_QA_REPORT",
-  "ACCESSIBILITY_REPORT",
-  "TEST_REPORT",
-  "COMPLETION_SUMMARY",
-] as const;
-export type ArtifactType = (typeof ARTIFACT_TYPE_OPTIONS)[number];
-
 export const ArtifactType = {
   Prd: "PRD",
   FigmaDesign: "FIGMA_DESIGN",
@@ -23,7 +11,9 @@ export const ArtifactType = {
   AccessibilityReport: "ACCESSIBILITY_REPORT",
   TestReport: "TEST_REPORT",
   CompletionSummary: "COMPLETION_SUMMARY",
-} as const satisfies Record<string, ArtifactType>;
+} as const;
+export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
+export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
 
 // Artifact Status
 export const ARTIFACT_STATUS_OPTIONS = [

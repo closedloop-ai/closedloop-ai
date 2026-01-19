@@ -9,6 +9,7 @@ import type { NextResponse } from "next/server";
 import {
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
+  generateDocumentSlug,
   getOrCreateDefaultProject,
   prepareArtifactVersion,
 } from "@/lib/artifact-utils";
@@ -108,12 +109,16 @@ export async function POST(
         projectId = await getOrCreateDefaultProject(tx, organizationId);
       }
 
+      // Auto-generate documentSlug if not provided (required for versioning)
+      const documentSlug =
+        body.documentSlug ?? generateDocumentSlug(body.fileName, body.title);
+
       // Build scope and get next version (marks existing as not latest)
       const scopeCondition = buildArtifactScopeCondition({
         workstreamId: body.workstreamId,
         projectId,
         type: body.type,
-        documentSlug: body.documentSlug,
+        documentSlug,
       });
       const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
@@ -129,7 +134,7 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          documentSlug: body.documentSlug,
+          documentSlug,
           version: nextVersion,
           isLatest: true,
         },
