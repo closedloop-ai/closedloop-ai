@@ -40,7 +40,7 @@
     "@octokit/webhooks-types": "^7.6.1",
     "@repo/typescript-config": "workspace:*",
     "@types/adm-zip": "^0.5.7",
-    "@types/node": "24.10.1",
+    "@types/node": "25.0.9",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
