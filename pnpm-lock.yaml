@@ -1039,8 +1039,8 @@ importers:
   packages/observability:
     dependencies:
       '@logtail/next':
-        specifier: ^0.2.1
-        version: 0.2.1(next@16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react@19.2.1)
+        specifier: ^0.3.1
+        version: 0.3.1(next@16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react@19.2.1)
       '@sentry/nextjs':
         specifier: ^10.29.0
         version: 10.29.0(@opentelemetry/context-async-hooks@2.2.0(@opentelemetry/api@1.9.0))(@opentelemetry/core@2.2.0(@opentelemetry/api@1.9.0))(@opentelemetry/sdk-trace-base@2.2.0(@opentelemetry/api@1.9.0))(next@16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react@19.2.1)(webpack@5.104.1(esbuild@0.27.1))
@@ -2842,11 +2842,11 @@ packages:
       '@types/react-dom':
         optional: true
 
-  '@logtail/next@0.2.1':
-    resolution: {integrity: sha512-kvI7CNzei+fIErWOfMf/o3mgZkmGptR6W/C4850+oyXS0ouJO9C2+5a166Rd6ywzXb/lP9QPOABPS1r26dNnpQ==}
+  '@logtail/next@0.3.1':
+    resolution: {integrity: sha512-RiIYLO51ax/TI67h6/TdCSh/mUmcSTtP5JbkcERcBK2/KIWylxLiPMK5SO5PA7NUfLJVaUIMYkqGHKIcVCKljw==}
     engines: {node: '>=18'}
     peerDependencies:
-      next: '>=14.0'
+      next: '>=15.0'
       react: '>=18.0.0'
 
   '@mdx-js/esbuild@3.1.0':
@@ -13392,7 +13392,7 @@ snapshots:
     transitivePeerDependencies:
       - '@types/json-schema'
 
-  '@logtail/next@0.2.1(next@16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react@19.2.1)':
+  '@logtail/next@0.3.1(next@16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react@19.2.1)':
     dependencies:
       next: 16.0.10(@opentelemetry/api@1.9.0)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
       react: 19.2.1
