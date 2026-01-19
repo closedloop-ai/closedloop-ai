@@ -13,14 +13,19 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
+    "@repo/ai": "workspace:*",
     "@repo/analytics": "workspace:*",
     "@repo/api": "workspace:*",
     "@repo/auth": "workspace:*",
     "@repo/database": "workspace:*",
     "@repo/design-system": "workspace:*",
+    "@repo/github": "workspace:*",
     "@repo/next-config": "workspace:*",
     "@repo/observability": "workspace:*",
     "@repo/payments": "workspace:*",
+    "@repo/aws": "workspace:*",
+    "@paralleldrive/cuid2": "^2.2.2",
+    "adm-zip": "^0.5.16",
     "@sentry/nextjs": "^10.29.0",
     "@t3-oss/env-nextjs": "^0.13.8",
     "import-in-the-middle": "^2.0.0",
@@ -32,8 +37,10 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@octokit/webhooks-types": "^7.6.1",
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "24.10.1",
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "25.0.9",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^5.1.1",

@@ -10,8 +10,9 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@octokit/webhooks-types": "^7.6.1",
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "24.10.1",
+    "@types/node": "25.0.9",
     "typescript": "^5.9.3"
   }
 }

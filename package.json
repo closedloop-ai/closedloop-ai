@@ -8,7 +8,7 @@
     "dist/index.js"
   ],
   "scripts": {
-    "postinstall": "cd packages/database && DATABASE_URL=${DATABASE_URL:-postgresql://localhost:5432/placeholder} npx prisma generate --schema=./prisma/schema.prisma",
+    "postinstall": "cd packages/database && AWS_ROLE_ARN=${AWS_ROLE_ARN:-arn:aws:iam::000000000000:role/placeholder} AWS_REGION=${AWS_REGION:-us-east-1} PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5432} PGUSER=${PGUSER:-postgres} PGDATABASE=${PGDATABASE:-app} npx prisma generate --schema=./prisma/schema.prisma",
     "build": "turbo build",
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",
@@ -22,14 +22,15 @@
     "bump-ui": "npx shadcn@latest add --all --overwrite -c packages/design-system",
     "migrate": "cd packages/database && npx prisma format && npx prisma generate && npx prisma db push",
     "clean": "git clean -xdf node_modules",
-    "prepare": "husky"
+    "prepare": "husky",
+    "start-apps": "turbo dev --filter=app --filter=api"
   },
   "devDependencies": {
     "@auto-it/first-time-contributor": "^11.3.6",
     "@biomejs/biome": "2.3.8",
     "@repo/typescript-config": "workspace:*",
     "@turbo/gen": "^2.6.3",
-    "@types/node": "^24.10.1",
+    "@types/node": "^25.0.9",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "next": "16.0.10",
@@ -42,7 +43,7 @@
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@10.24.0",
+  "packageManager": "pnpm@10.28.1+sha512.7d7dbbca9e99447b7c3bf7a73286afaaf6be99251eb9498baefa7d406892f67b879adb3a1d7e687fc4ccc1a388c7175fbaae567a26ab44d1067b54fcb0d6a316",
   "dependencies": {
     "@clack/prompts": "^0.11.0",
     "commander": "^14.0.2"
@@ -50,7 +51,11 @@
   "pnpm": {
     "overrides": {
       "parse5": "^7.2.1"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@clerk/shared",
+      "esbuild"
+    ]
   },
   "type": "module"
 }
