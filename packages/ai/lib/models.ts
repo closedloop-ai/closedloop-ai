@@ -1,11 +1,10 @@
-import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { keys } from "../keys";
 
-const openai = createOpenAI({
-  apiKey: keys().OPENAI_API_KEY,
+const anthropic = createAnthropic({
+  apiKey: keys().ANTHROPIC_API_KEY,
 });
 
 export const models = {
-  chat: openai("gpt-4o-mini"),
-  embeddings: openai("text-embedding-3-small"),
-};
+  opus: anthropic("claude-opus-4-5"),
+} as const;

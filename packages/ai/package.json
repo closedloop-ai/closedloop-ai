@@ -7,11 +7,12 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.77",
-    "@ai-sdk/provider": "^2.0.0",
-    "@ai-sdk/react": "^1.2.12",
+    "@ai-sdk/anthropic": "^3.0.15",
+    "@ai-sdk/openai": "^3.0.12",
+    "@ai-sdk/provider": "^3.0.4",
+    "@ai-sdk/react": "^3.0.41",
     "@t3-oss/env-nextjs": "^0.13.8",
-    "ai": "^5.0.107",
+    "ai": "^6.0.39",
     "react": "19.2.1",
     "streamdown": "^2.1.0",
     "tailwind-merge": "^3.4.0",

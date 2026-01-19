@@ -263,23 +263,23 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id           String          @id @default(cuid())
-  workstreamId String?         @map("workstream_id")
-  projectId    String?         @map("project_id")
+  id           String         @id @default(cuid())
+  workstreamId String?        @map("workstream_id")
+  projectId    String?        @map("project_id")
   type         ArtifactType
   title        String
-  fileName     String?         @map("file_name")
+  fileName     String?        @map("file_name")
   approver     String?
-  status       ArtifactStatus  @default(DRAFT)
-  content      String?         @db.Text
-  externalUrl  String?         @map("external_url")
-  version      Int             @default(1)
-  isLatest     Boolean         @default(true) @map("is_latest")
-  parentId     String?         @map("parent_id")
-  generatedBy  String?         @map("generated_by")
-  tokenUsage   Json?           @map("token_usage")
-  createdAt    DateTime        @default(now()) @map("created_at")
-  updatedAt    DateTime        @updatedAt @map("updated_at")
+  status       ArtifactStatus @default(DRAFT)
+  content      String?        @db.Text
+  externalUrl  String?        @map("external_url")
+  version      Int            @default(1)
+  isLatest     Boolean        @default(true) @map("is_latest")
+  parentId     String?        @map("parent_id")
+  generatedBy  String?        @map("generated_by")
+  tokenUsage   Json?          @map("token_usage")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
 
   // Relations
   workstream Workstream? @relation(fields: [workstreamId], references: [id])
