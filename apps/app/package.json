@@ -34,7 +34,7 @@
     "react": "19.2.1",
     "react-dom": "19.2.1",
     "require-in-the-middle": "8.0.1",
-    "zod": "^4.1.13"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
@@ -44,7 +44,7 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "jsdom": "^27.2.0",
+    "jsdom": "^27.4.0",
     "tailwindcss": "^4.1.17",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
