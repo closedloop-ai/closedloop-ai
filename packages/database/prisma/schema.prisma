@@ -146,6 +146,7 @@ model Organization {
 model User {
   id             String       @id @default(cuid())
   organizationId String       @map("organization_id")
+  clerkUserId    String?      @unique @map("clerk_user_id")
   email          String
   name           String?
   avatarUrl      String?      @map("avatar_url")
@@ -161,6 +162,7 @@ model User {
 
   @@unique([organizationId, email])
   @@index([organizationId])
+  @@index([clerkUserId])
   @@index([linearUserId])
   @@index([slackUserId])
   @@index([githubUsername])
@@ -276,6 +278,7 @@ model Artifact {
   version      Int             @default(1)
   isLatest     Boolean         @default(true) @map("is_latest")
   parentId     String?         @map("parent_id")
+  documentSlug String?         @map("document_slug")
   generatedBy  String?         @map("generated_by")
   tokenUsage   Json?           @map("token_usage")
   createdAt    DateTime        @default(now()) @map("created_at")
@@ -287,6 +290,7 @@ model Artifact {
 
   @@index([projectId])
   @@index([workstreamId, type, isLatest])
+  @@index([workstreamId, type, documentSlug])
   @@map("artifacts")
 }
 

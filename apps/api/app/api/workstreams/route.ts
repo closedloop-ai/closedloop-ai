@@ -9,15 +9,25 @@ import { database } from "@repo/database";
 import { NextResponse } from "next/server";
 import {
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
+  unauthorizedResponse,
+  verifyProjectAccess,
 } from "@/lib/route-utils";
 
 export async function GET(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream[]>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { searchParams } = new URL(request.url);
     const projectId = searchParams.get("projectId");
     const state = searchParams.get("state");
@@ -30,8 +40,20 @@ export async function GET(
       });
     }
 
-    // Note: Removed project include to avoid N+1 query pattern
-    // If project name is needed, fetch it separately or join at the caller level
+    // Verify project belongs to user's organization
+    const { exists, hasAccess } = await verifyProjectAccess(
+      projectId,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Project");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const workstreams = await database.workstream.findMany({
       where: {
         projectId,
@@ -59,9 +81,28 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const body = await parseBody(request, createWorkstreamSchema);
     if (isErrorResponse(body)) {
       return body;
+    }
+
+    // Verify project belongs to user's organization
+    const { exists, hasAccess } = await verifyProjectAccess(
+      body.projectId,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Project");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
     }
 
     const workstream = await database.workstream.create({

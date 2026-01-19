@@ -4,11 +4,20 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
+  buildArtifactScopeCondition,
+  prepareArtifactVersion,
+} from "@/lib/artifact-utils";
+import {
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
+  notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
+  unauthorizedResponse,
+  verifyWorkstreamAccess,
 } from "@/lib/route-utils";
 
 export async function GET(
@@ -16,7 +25,26 @@ export async function GET(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact[]>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id: workstreamId } = await params;
+
+    const { exists, hasAccess } = await verifyWorkstreamAccess(
+      workstreamId,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Workstream");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type");
     const latestOnly = searchParams.get("latestOnly") === "true";
@@ -41,7 +69,26 @@ export async function POST(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id: workstreamId } = await params;
+
+    const { exists, hasAccess } = await verifyWorkstreamAccess(
+      workstreamId,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Workstream");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const body = await parseBody(request, createArtifactSchema);
     if (isErrorResponse(body)) {
       return body;
@@ -49,24 +96,13 @@ export async function POST(
 
     // Use transaction to ensure atomic isLatest update and version increment
     const artifact = await database.$transaction(async (tx) => {
-      // Mark any existing artifacts of the same type as not latest
-      await tx.artifact.updateMany({
-        where: {
-          workstreamId,
-          type: body.type,
-          isLatest: true,
-        },
-        data: { isLatest: false },
+      // Build scope and get next version (marks existing as not latest)
+      const scopeCondition = buildArtifactScopeCondition({
+        workstreamId,
+        type: body.type,
+        documentSlug: body.documentSlug,
       });
-
-      // Get the latest version number for this artifact type in this workstream
-      const latestArtifact = await tx.artifact.findFirst({
-        where: {
-          workstreamId,
-          type: body.type,
-        },
-        orderBy: { version: "desc" },
-      });
+      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
       return tx.artifact.create({
         data: {
@@ -76,7 +112,8 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          version: (latestArtifact?.version ?? 0) + 1,
+          documentSlug: body.documentSlug,
+          version: nextVersion,
           isLatest: true,
         },
       });

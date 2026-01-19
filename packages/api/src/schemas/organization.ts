@@ -121,6 +121,9 @@ export const createArtifactSchema = z.object({
   content: z.string().optional(),
   externalUrl: z.string().url().optional(),
   generatedBy: z.string().optional(),
+  // documentSlug groups related artifact versions together
+  // Multiple documents of the same type can exist in one workstream
+  documentSlug: z.string().optional(),
 });
 
 export const updateArtifactSchema = z.object({

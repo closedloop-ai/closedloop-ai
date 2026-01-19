@@ -5,96 +5,76 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
+import { failure } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import type { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import {
+  artifactIncludeWithContext,
+  buildArtifactScopeCondition,
+  getOrCreateDefaultProject,
+  prepareArtifactVersion,
+} from "@/lib/artifact-utils";
 import {
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
   parseBody,
   successResponse,
+  unauthorizedResponse,
+  verifyProjectAccess,
+  verifyWorkstreamAccess,
 } from "@/lib/route-utils";
-
-const DEFAULT_ORG_SLUG = "default";
-const DEFAULT_PROJECT_NAME = "Default Project";
-
-/**
- * Get or create a default project for standalone artifacts
- */
-async function getOrCreateDefaultProject(
-  tx: Parameters<Parameters<typeof database.$transaction>[0]>[0]
-): Promise<string> {
-  // Try to find existing default organization
-  let org = await tx.organization.findFirst({
-    where: { slug: DEFAULT_ORG_SLUG },
-  });
-
-  // Create default org if it doesn't exist
-  if (!org) {
-    org = await tx.organization.create({
-      data: {
-        name: "Default Organization",
-        slug: DEFAULT_ORG_SLUG,
-      },
-    });
-  }
-
-  // Try to find existing default project
-  let project = await tx.project.findFirst({
-    where: {
-      organizationId: org.id,
-      name: DEFAULT_PROJECT_NAME,
-    },
-  });
-
-  // Create default project if it doesn't exist
-  if (!project) {
-    project = await tx.project.create({
-      data: {
-        organizationId: org.id,
-        name: DEFAULT_PROJECT_NAME,
-        description: "Default project for standalone PRDs and artifacts",
-      },
-    });
-  }
-
-  return project.id;
-}
 
 export async function GET(
   request: Request
 ): Promise<NextResponse<ApiResult<ArtifactWithWorkstream[]>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type");
     const latestOnly = searchParams.get("latestOnly") !== "false";
     const workstreamId = searchParams.get("workstreamId");
     const projectId = searchParams.get("projectId");
 
+    // Verify access to filtered workstream or project if specified
+    if (workstreamId) {
+      const { hasAccess } = await verifyWorkstreamAccess(
+        workstreamId,
+        authContext.organizationId
+      );
+      if (!hasAccess) {
+        return forbiddenResponse();
+      }
+    }
+
+    if (projectId) {
+      const { hasAccess } = await verifyProjectAccess(
+        projectId,
+        authContext.organizationId
+      );
+      if (!hasAccess) {
+        return forbiddenResponse();
+      }
+    }
+
+    // Fetch artifacts filtered to user's organization via project relationship
     const artifacts = await database.artifact.findMany({
       where: {
         ...(type ? { type: type as ArtifactType } : {}),
         ...(latestOnly ? { isLatest: true } : {}),
         ...(workstreamId ? { workstreamId } : {}),
         ...(projectId ? { projectId } : {}),
-      },
-      include: {
-        workstream: {
-          select: {
-            id: true,
-            title: true,
-            state: true,
-            project: {
-              select: { name: true },
-            },
-          },
-        },
+        // Filter by organization - artifacts belong to org via project
         project: {
-          select: {
-            id: true,
-            name: true,
-          },
+          organizationId: authContext.organizationId,
         },
       },
+      include: artifactIncludeWithContext,
       orderBy: { createdAt: "desc" },
     });
 
@@ -108,36 +88,60 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const body = await parseBody(request, createArtifactSchema);
     if (isErrorResponse(body)) {
       return body;
     }
 
+    // Verify access to workstream or project if specified
+    if (body.workstreamId) {
+      const { hasAccess } = await verifyWorkstreamAccess(
+        body.workstreamId,
+        authContext.organizationId
+      );
+      if (!hasAccess) {
+        return NextResponse.json(
+          failure("Workstream not found or access denied"),
+          { status: 403 }
+        );
+      }
+    }
+
+    if (body.projectId) {
+      const { hasAccess } = await verifyProjectAccess(
+        body.projectId,
+        authContext.organizationId
+      );
+      if (!hasAccess) {
+        return NextResponse.json(
+          failure("Project not found or access denied"),
+          { status: 403 }
+        );
+      }
+    }
+
     // Use transaction to ensure atomic operations
     const artifact = await database.$transaction(async (tx) => {
-      // Auto-create default project if no projectId or workstreamId provided
+      // Auto-create default project in user's org if no projectId or workstreamId provided
       const projectId =
         body.projectId ||
-        (body.workstreamId ? undefined : await getOrCreateDefaultProject(tx));
+        (body.workstreamId
+          ? undefined
+          : await getOrCreateDefaultProject(tx, authContext.organizationId));
 
-      // Build the scope condition for this artifact context
-      const scopeCondition = {
-        ...(body.workstreamId ? { workstreamId: body.workstreamId } : {}),
-        ...(projectId ? { projectId } : {}),
+      // Build scope and get next version (marks existing as not latest)
+      const scopeCondition = buildArtifactScopeCondition({
+        workstreamId: body.workstreamId,
+        projectId,
         type: body.type,
-      };
-
-      // Mark existing artifacts of same type in this scope as not latest
-      await tx.artifact.updateMany({
-        where: { ...scopeCondition, isLatest: true },
-        data: { isLatest: false },
+        documentSlug: body.documentSlug,
       });
-
-      // Get latest version number for this scope and type
-      const latestArtifact = await tx.artifact.findFirst({
-        where: scopeCondition,
-        orderBy: { version: "desc" },
-      });
+      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
       return tx.artifact.create({
         data: {
@@ -151,7 +155,8 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          version: (latestArtifact?.version ?? 0) + 1,
+          documentSlug: body.documentSlug,
+          version: nextVersion,
           isLatest: true,
         },
       });

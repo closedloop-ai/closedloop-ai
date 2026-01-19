@@ -5,18 +5,27 @@ import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
+  getAuthContext,
   isErrorResponse,
   parseBody,
   successResponse,
+  unauthorizedResponse,
 } from "@/lib/route-utils";
 
 // Note: GET all organizations intentionally not implemented for security
 // Users should only access their own organization via /organizations/[id]
 
+// Note: POST creates a new organization - typically used during onboarding
+// In production, this would be restricted to admin users or signup flow
 export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const body = await parseBody(request, createOrganizationSchema);
     if (isErrorResponse(body)) {
       return body;

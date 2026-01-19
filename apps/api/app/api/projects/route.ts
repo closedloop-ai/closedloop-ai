@@ -1,31 +1,30 @@
 import { createProjectSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure } from "@repo/api/src/types/common";
 import type { Project } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
 import {
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
   parseBody,
   successResponse,
+  unauthorizedResponse,
 } from "@/lib/route-utils";
 
 export async function GET(
-  request: Request
+  _request: Request
 ): Promise<NextResponse<ApiResult<Project[]>>> {
   try {
-    const { searchParams } = new URL(request.url);
-    const organizationId = searchParams.get("organizationId");
-
-    if (!organizationId) {
-      return NextResponse.json(failure("organizationId is required"), {
-        status: 400,
-      });
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
     }
 
+    // Filter projects by user's organization
     const projects = await database.project.findMany({
-      where: { organizationId },
+      where: { organizationId: authContext.organizationId },
       orderBy: { createdAt: "desc" },
     });
 
@@ -39,9 +38,19 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const body = await parseBody(request, createProjectSchema);
     if (isErrorResponse(body)) {
       return body;
+    }
+
+    // Verify the user is creating a project in their own organization
+    if (body.organizationId !== authContext.organizationId) {
+      return forbiddenResponse();
     }
 
     const project = await database.project.create({

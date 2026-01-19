@@ -6,11 +6,14 @@ import type { NextResponse } from "next/server";
 import {
   deleteResponse,
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
+  unauthorizedResponse,
 } from "@/lib/route-utils";
 
 export async function GET(
@@ -18,7 +21,18 @@ export async function GET(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+
+    // Users can only access their own organization
+    if (id !== authContext.organizationId) {
+      return forbiddenResponse();
+    }
+
     const organization = await database.organization.findUnique({
       where: { id },
     });
@@ -38,7 +52,18 @@ export async function PUT(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+
+    // Users can only update their own organization
+    if (id !== authContext.organizationId) {
+      return forbiddenResponse();
+    }
+
     const body = await parseBody(request, updateOrganizationSchema);
     if (isErrorResponse(body)) {
       return body;
@@ -67,7 +92,18 @@ export async function DELETE(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+
+    // Users can only delete their own organization
+    if (id !== authContext.organizationId) {
+      return forbiddenResponse();
+    }
+
     await database.organization.delete({ where: { id } });
     return deleteResponse();
   } catch (error) {

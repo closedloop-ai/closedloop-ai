@@ -6,50 +6,50 @@ import type {
 import type { ApiResult } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
+import { artifactIncludeWithContext } from "@/lib/artifact-utils";
 import {
   deleteResponse,
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
+  unauthorizedResponse,
+  verifyArtifactAccess,
 } from "@/lib/route-utils";
-
-// TODO: Add orgId/projectId to queries for multi-tenant safety once auth context is available
-// Pattern: include organizationId/projectId in WHERE clauses to ensure data isolation
 
 export async function GET(
   _request: Request,
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<ArtifactWithWorkstream>>> {
   try {
-    const { id } = await params;
-    const artifact = await database.artifact.findUnique({
-      where: { id },
-      include: {
-        workstream: {
-          select: {
-            id: true,
-            title: true,
-            state: true,
-            project: {
-              select: { name: true },
-            },
-          },
-        },
-        project: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
 
-    if (!artifact) {
+    const { id } = await params;
+    const { exists, hasAccess } = await verifyArtifactAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
       return notFoundResponse("Artifact");
     }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
+    // Fetch with the full include structure for response
+    const artifact = await database.artifact.findUnique({
+      where: { id },
+      include: artifactIncludeWithContext,
+    });
 
     return successResponse(artifact as ArtifactWithWorkstream);
   } catch (error) {
@@ -62,7 +62,25 @@ export async function PUT(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+    const { exists, hasAccess } = await verifyArtifactAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Artifact");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const body = await parseBody(request, updateArtifactSchema);
     if (isErrorResponse(body)) {
       return body;
@@ -84,7 +102,25 @@ export async function DELETE(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+    const { exists, hasAccess } = await verifyArtifactAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Artifact");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     await database.artifact.delete({ where: { id } });
     return deleteResponse();
   } catch (error) {

@@ -6,11 +6,15 @@ import type { NextResponse } from "next/server";
 import {
   deleteResponse,
   errorResponse,
+  forbiddenResponse,
+  getAuthContext,
   isErrorResponse,
   notFoundResponse,
   parseBody,
   type RouteParams,
   successResponse,
+  unauthorizedResponse,
+  verifyProjectAccess,
 } from "@/lib/route-utils";
 
 export async function GET(
@@ -18,14 +22,28 @@ export async function GET(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+    const { exists, hasAccess } = await verifyProjectAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Project");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const project = await database.project.findUnique({
       where: { id },
     });
-
-    if (!project) {
-      return notFoundResponse("Project");
-    }
 
     return successResponse(project as Project);
   } catch (error) {
@@ -38,7 +56,25 @@ export async function PUT(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+    const { exists, hasAccess } = await verifyProjectAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Project");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     const body = await parseBody(request, updateProjectSchema);
     if (isErrorResponse(body)) {
       return body;
@@ -66,7 +102,25 @@ export async function DELETE(
   { params }: RouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
+    const authContext = await getAuthContext();
+    if (!authContext) {
+      return unauthorizedResponse();
+    }
+
     const { id } = await params;
+    const { exists, hasAccess } = await verifyProjectAccess(
+      id,
+      authContext.organizationId
+    );
+
+    if (!exists) {
+      return notFoundResponse("Project");
+    }
+
+    if (!hasAccess) {
+      return forbiddenResponse();
+    }
+
     await database.project.delete({ where: { id } });
     return deleteResponse();
   } catch (error) {
