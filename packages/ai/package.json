@@ -13,7 +13,7 @@
     "@t3-oss/env-nextjs": "^0.13.8",
     "ai": "^5.0.107",
     "react": "19.2.1",
-    "streamdown": "^1.6.10",
+    "streamdown": "^2.1.0",
     "tailwind-merge": "^3.4.0",
     "zod": "^4.3.5"
   },
