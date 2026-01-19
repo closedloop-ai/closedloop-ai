@@ -1,10 +1,16 @@
+import { updateUserSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type { UpdateUserInput, User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
-
-type RouteParams = { params: Promise<{ id: string }> };
+import type { NextResponse } from "next/server";
+import {
+  errorResponse,
+  isErrorResponse,
+  notFoundResponse,
+  parseBody,
+  type RouteParams,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   _request: Request,
@@ -17,15 +23,12 @@ export async function GET(
     });
 
     if (!user) {
-      return NextResponse.json(failure("User not found"), { status: 404 });
+      return notFoundResponse("User");
     }
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to fetch user:", error);
-    return NextResponse.json(failure("Failed to fetch user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch user", error);
   }
 }
 
@@ -35,19 +38,19 @@ export async function PUT(
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateUserInput, "id">;
+    const body = await parseBody(request, updateUserSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     const user = await database.user.update({
       where: { id },
       data: body,
     });
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to update user:", error);
-    return NextResponse.json(failure("Failed to update user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update user", error);
   }
 }
 

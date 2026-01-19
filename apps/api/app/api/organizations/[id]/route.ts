@@ -1,13 +1,17 @@
+import { updateOrganizationSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  Organization,
-  UpdateOrganizationInput,
-} from "@repo/api/src/types/organization";
+import type { Organization } from "@repo/api/src/types/organization";
 import { database, type Prisma } from "@repo/database";
-import { NextResponse } from "next/server";
-
-type RouteParams = { params: Promise<{ id: string }> };
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  isErrorResponse,
+  notFoundResponse,
+  parseBody,
+  type RouteParams,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   _request: Request,
@@ -20,17 +24,12 @@ export async function GET(
     });
 
     if (!organization) {
-      return NextResponse.json(failure("Organization not found"), {
-        status: 404,
-      });
+      return notFoundResponse("Organization");
     }
 
-    return NextResponse.json(success(organization as Organization));
+    return successResponse(organization as Organization);
   } catch (error) {
-    console.error("Failed to fetch organization:", error);
-    return NextResponse.json(failure("Failed to fetch organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch organization", error);
   }
 }
 
@@ -40,13 +39,16 @@ export async function PUT(
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateOrganizationInput, "id">;
+    const body = await parseBody(request, updateOrganizationSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     const data: Prisma.OrganizationUpdateInput = {
       name: body.name,
       slug: body.slug,
       anthropicApiKey: body.anthropicApiKey,
-      settings: body.settings,
+      settings: body.settings as Prisma.InputJsonValue,
     };
 
     const organization = await database.organization.update({
@@ -54,12 +56,9 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(organization as Organization));
+    return successResponse(organization as Organization);
   } catch (error) {
-    console.error("Failed to update organization:", error);
-    return NextResponse.json(failure("Failed to update organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update organization", error);
   }
 }
 
@@ -70,11 +69,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     await database.organization.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
+    return deleteResponse();
   } catch (error) {
-    console.error("Failed to delete organization:", error);
-    return NextResponse.json(failure("Failed to delete organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to delete organization", error);
   }
 }

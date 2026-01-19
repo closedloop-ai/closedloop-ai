@@ -1,13 +1,17 @@
+import { updateWorkstreamSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  UpdateWorkstreamInput,
-  Workstream,
-} from "@repo/api/src/types/workstream";
+import type { Workstream } from "@repo/api/src/types/workstream";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
-
-type RouteParams = { params: Promise<{ id: string }> };
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  isErrorResponse,
+  notFoundResponse,
+  parseBody,
+  type RouteParams,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   _request: Request,
@@ -20,17 +24,12 @@ export async function GET(
     });
 
     if (!workstream) {
-      return NextResponse.json(failure("Workstream not found"), {
-        status: 404,
-      });
+      return notFoundResponse("Workstream");
     }
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to fetch workstream:", error);
-    return NextResponse.json(failure("Failed to fetch workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch workstream", error);
   }
 }
 
@@ -40,7 +39,10 @@ export async function PUT(
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateWorkstreamInput, "id">;
+    const body = await parseBody(request, updateWorkstreamSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     // If state is being changed, update stateChangedAt
     const updateData: Record<string, unknown> = { ...body };
@@ -53,12 +55,9 @@ export async function PUT(
       data: updateData,
     });
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to update workstream:", error);
-    return NextResponse.json(failure("Failed to update workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update workstream", error);
   }
 }
 
@@ -69,11 +68,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     await database.workstream.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
+    return deleteResponse();
   } catch (error) {
-    console.error("Failed to delete workstream:", error);
-    return NextResponse.json(failure("Failed to delete workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to delete workstream", error);
   }
 }

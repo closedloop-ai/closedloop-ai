@@ -1,13 +1,17 @@
+import { updateProjectSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  Project,
-  UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+import type { Project } from "@repo/api/src/types/organization";
 import { database, type Prisma } from "@repo/database";
-import { NextResponse } from "next/server";
-
-type RouteParams = { params: Promise<{ id: string }> };
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  isErrorResponse,
+  notFoundResponse,
+  parseBody,
+  type RouteParams,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   _request: Request,
@@ -20,15 +24,12 @@ export async function GET(
     });
 
     if (!project) {
-      return NextResponse.json(failure("Project not found"), { status: 404 });
+      return notFoundResponse("Project");
     }
 
-    return NextResponse.json(success(project as Project));
+    return successResponse(project as Project);
   } catch (error) {
-    console.error("Failed to fetch project:", error);
-    return NextResponse.json(failure("Failed to fetch project"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch project", error);
   }
 }
 
@@ -38,12 +39,15 @@ export async function PUT(
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateProjectInput, "id">;
+    const body = await parseBody(request, updateProjectSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     const data: Prisma.ProjectUpdateInput = {
       name: body.name,
       description: body.description,
-      settings: body.settings,
+      settings: body.settings as Prisma.InputJsonValue,
     };
 
     const project = await database.project.update({
@@ -51,12 +55,9 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(project as Project));
+    return successResponse(project as Project);
   } catch (error) {
-    console.error("Failed to update project:", error);
-    return NextResponse.json(failure("Failed to update project"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update project", error);
   }
 }
 
@@ -67,11 +68,8 @@ export async function DELETE(
   try {
     const { id } = await params;
     await database.project.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
+    return deleteResponse();
   } catch (error) {
-    console.error("Failed to delete project:", error);
-    return NextResponse.json(failure("Failed to delete project"), {
-      status: 500,
-    });
+    return errorResponse("Failed to delete project", error);
   }
 }

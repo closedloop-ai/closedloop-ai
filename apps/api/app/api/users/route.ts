@@ -1,8 +1,15 @@
+import { createUserSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type { CreateUserInput, User } from "@repo/api/src/types/organization";
+import { failure } from "@repo/api/src/types/common";
+import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
 import { NextResponse } from "next/server";
+import {
+  errorResponse,
+  isErrorResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   request: Request
@@ -22,12 +29,9 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(users as User[]));
+    return successResponse(users as User[]);
   } catch (error) {
-    console.error("Failed to fetch users:", error);
-    return NextResponse.json(failure("Failed to fetch users"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch users", error);
   }
 }
 
@@ -35,7 +39,10 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const body = (await request.json()) as CreateUserInput;
+    const body = await parseBody(request, createUserSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     const user = await database.user.create({
       data: {
@@ -47,11 +54,8 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to create user:", error);
-    return NextResponse.json(failure("Failed to create user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create user", error);
   }
 }

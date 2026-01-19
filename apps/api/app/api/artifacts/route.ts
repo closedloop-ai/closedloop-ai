@@ -1,13 +1,18 @@
+import { createArtifactSchema } from "@repo/api/src/schemas/organization";
 import type {
   Artifact,
   ArtifactType,
   ArtifactWithWorkstream,
-  CreateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  errorResponse,
+  isErrorResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 
 const DEFAULT_ORG_SLUG = "default";
 const DEFAULT_PROJECT_NAME = "Default Project";
@@ -93,12 +98,9 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(artifacts as ArtifactWithWorkstream[]));
+    return successResponse(artifacts as ArtifactWithWorkstream[]);
   } catch (error) {
-    console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch artifacts", error);
   }
 }
 
@@ -106,7 +108,10 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
-    const body = (await request.json()) as CreateArtifactInput;
+    const body = await parseBody(request, createArtifactSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     // Use transaction to ensure atomic operations
     const artifact = await database.$transaction(async (tx) => {
@@ -152,11 +157,8 @@ export async function POST(
       });
     });
 
-    return NextResponse.json(success(artifact as Artifact));
+    return successResponse(artifact as Artifact);
   } catch (error) {
-    console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create artifact", error);
   }
 }

@@ -1,12 +1,18 @@
+import { createWorkstreamSchema } from "@repo/api/src/schemas/organization";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
+import { failure } from "@repo/api/src/types/common";
 import type {
-  CreateWorkstreamInput,
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
 import { database } from "@repo/database";
 import { NextResponse } from "next/server";
+import {
+  errorResponse,
+  isErrorResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   request: Request
@@ -43,12 +49,9 @@ export async function GET(
       ...(limit ? { take: Number.parseInt(limit, 10) } : {}),
     });
 
-    return NextResponse.json(success(workstreams as Workstream[]));
+    return successResponse(workstreams as Workstream[]);
   } catch (error) {
-    console.error("Failed to fetch workstreams:", error);
-    return NextResponse.json(failure("Failed to fetch workstreams"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch workstreams", error);
   }
 }
 
@@ -56,7 +59,10 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
-    const body = (await request.json()) as CreateWorkstreamInput;
+    const body = await parseBody(request, createWorkstreamSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     const workstream = await database.workstream.create({
       data: {
@@ -70,11 +76,8 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to create workstream:", error);
-    return NextResponse.json(failure("Failed to create workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create workstream", error);
   }
 }

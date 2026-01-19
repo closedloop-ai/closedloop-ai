@@ -1,14 +1,15 @@
-import type {
-  Artifact,
-  ArtifactType,
-  CreateArtifactInput,
-} from "@repo/api/src/types/artifact";
+import { createArtifactSchema } from "@repo/api/src/schemas/organization";
+import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
-
-type RouteParams = { params: Promise<{ id: string }> };
+import type { NextResponse } from "next/server";
+import {
+  errorResponse,
+  isErrorResponse,
+  parseBody,
+  type RouteParams,
+  successResponse,
+} from "@/lib/route-utils";
 
 export async function GET(
   request: Request,
@@ -29,12 +30,9 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(artifacts as Artifact[]));
+    return successResponse(artifacts as Artifact[]);
   } catch (error) {
-    console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch artifacts", error);
   }
 }
 
@@ -44,10 +42,10 @@ export async function POST(
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id: workstreamId } = await params;
-    const body = (await request.json()) as Omit<
-      CreateArtifactInput,
-      "workstreamId"
-    >;
+    const body = await parseBody(request, createArtifactSchema);
+    if (isErrorResponse(body)) {
+      return body;
+    }
 
     // Use transaction to ensure atomic isLatest update and version increment
     const artifact = await database.$transaction(async (tx) => {
@@ -84,11 +82,8 @@ export async function POST(
       });
     });
 
-    return NextResponse.json(success(artifact as Artifact));
+    return successResponse(artifact as Artifact);
   } catch (error) {
-    console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create artifact", error);
   }
 }

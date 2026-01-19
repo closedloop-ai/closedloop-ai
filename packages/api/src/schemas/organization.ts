@@ -48,3 +48,86 @@ export const updateUserSchema = z.object({
   slackUserId: z.string().optional(),
   githubUsername: z.string().optional(),
 });
+
+// Workstream schemas
+const workstreamTypeEnum = z.enum([
+  "FEATURE_DELIVERY",
+  "BUG_FIX",
+  "TECH_DEBT",
+  "SPIKE",
+]);
+
+const workstreamStateEnum = z.enum([
+  "INITIATED",
+  "REQUIREMENTS_GENERATING",
+  "REQUIREMENTS_PENDING_APPROVAL",
+  "DESIGN_IN_PROGRESS",
+  "DESIGN_PENDING_APPROVAL",
+  "IMPLEMENTATION_PLANNING",
+  "IMPLEMENTATION_IN_PROGRESS",
+  "IMPLEMENTATION_PENDING_REVIEW",
+  "CODE_REVIEW_RUNNING",
+  "CODE_REVIEW_PENDING_APPROVAL",
+  "VISUAL_QA_RUNNING",
+  "VISUAL_QA_PENDING_APPROVAL",
+  "MERGING",
+  "DEPLOYED",
+  "COMPLETED",
+  "BLOCKED",
+  "CANCELLED",
+]);
+
+export const createWorkstreamSchema = z.object({
+  projectId: z.string().min(1, "projectId is required"),
+  title: z.string().min(1, "Title is required"),
+  description: z.string().optional(),
+  type: workstreamTypeEnum.optional(),
+  createdById: z.string().min(1, "createdById is required"),
+  assignedToId: z.string().optional(),
+  hasUIChanges: z.boolean().optional(),
+});
+
+export const updateWorkstreamSchema = z.object({
+  title: z.string().min(1).optional(),
+  description: z.string().optional(),
+  state: workstreamStateEnum.optional(),
+  type: workstreamTypeEnum.optional(),
+  assignedToId: z.string().nullable().optional(),
+  hasUIChanges: z.boolean().optional(),
+});
+
+// Artifact schemas
+const artifactTypeEnum = z.enum([
+  "PRD",
+  "FIGMA_DESIGN",
+  "IMPLEMENTATION_PLAN",
+  "CODE_REVIEW_REPORT",
+  "VISUAL_QA_REPORT",
+  "ACCESSIBILITY_REPORT",
+  "TEST_REPORT",
+  "COMPLETION_SUMMARY",
+]);
+
+const artifactStatusEnum = z.enum(["DRAFT", "REVIEW", "APPROVED", "ARCHIVED"]);
+
+export const createArtifactSchema = z.object({
+  workstreamId: z.string().optional(),
+  projectId: z.string().optional(),
+  type: artifactTypeEnum,
+  title: z.string().min(1, "Title is required"),
+  fileName: z.string().optional(),
+  approver: z.string().optional(),
+  status: artifactStatusEnum.optional(),
+  content: z.string().optional(),
+  externalUrl: z.string().url().optional(),
+  generatedBy: z.string().optional(),
+});
+
+export const updateArtifactSchema = z.object({
+  title: z.string().min(1).optional(),
+  fileName: z.string().optional(),
+  approver: z.string().nullable().optional(),
+  status: artifactStatusEnum.optional(),
+  content: z.string().optional(),
+  externalUrl: z.string().url().nullable().optional(),
+});
