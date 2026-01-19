@@ -32,7 +32,9 @@ export async function GET(
     return NextResponse.json(success(artifacts as Artifact[]));
   } catch (error) {
     console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"));
+    return NextResponse.json(failure("Failed to fetch artifacts"), {
+      status: 500,
+    });
   }
 }
 
@@ -47,41 +49,46 @@ export async function POST(
       "workstreamId"
     >;
 
-    // Mark any existing artifacts of the same type as not latest
-    await database.artifact.updateMany({
-      where: {
-        workstreamId,
-        type: body.type,
-        isLatest: true,
-      },
-      data: { isLatest: false },
-    });
+    // Use transaction to ensure atomic isLatest update and version increment
+    const artifact = await database.$transaction(async (tx) => {
+      // Mark any existing artifacts of the same type as not latest
+      await tx.artifact.updateMany({
+        where: {
+          workstreamId,
+          type: body.type,
+          isLatest: true,
+        },
+        data: { isLatest: false },
+      });
 
-    // Get the latest version number for this artifact type
-    const latestArtifact = await database.artifact.findFirst({
-      where: {
-        workstreamId,
-        type: body.type,
-      },
-      orderBy: { version: "desc" },
-    });
+      // Get the latest version number for this artifact type in this workstream
+      const latestArtifact = await tx.artifact.findFirst({
+        where: {
+          workstreamId,
+          type: body.type,
+        },
+        orderBy: { version: "desc" },
+      });
 
-    const artifact = await database.artifact.create({
-      data: {
-        workstreamId,
-        type: body.type,
-        title: body.title,
-        content: body.content,
-        externalUrl: body.externalUrl,
-        generatedBy: body.generatedBy,
-        version: (latestArtifact?.version ?? 0) + 1,
-        isLatest: true,
-      },
+      return tx.artifact.create({
+        data: {
+          workstreamId,
+          type: body.type,
+          title: body.title,
+          content: body.content,
+          externalUrl: body.externalUrl,
+          generatedBy: body.generatedBy,
+          version: (latestArtifact?.version ?? 0) + 1,
+          isLatest: true,
+        },
+      });
     });
 
     return NextResponse.json(success(artifact as Artifact));
   } catch (error) {
     console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"));
+    return NextResponse.json(failure("Failed to create artifact"), {
+      status: 500,
+    });
   }
 }

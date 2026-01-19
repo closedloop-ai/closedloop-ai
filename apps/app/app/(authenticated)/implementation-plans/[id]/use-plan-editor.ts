@@ -6,7 +6,7 @@ import type {
 } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   deleteArtifact,
   regenerateArtifact,
@@ -31,6 +31,14 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+
+  // Sync state when plan prop changes (e.g., server refresh, navigation)
+  useEffect(() => {
+    setContent(plan.content ?? "");
+    setLastSaved(plan.updatedAt);
+    setStatus(plan.status);
+    setApprover(plan.approver ?? "");
+  }, [plan.content, plan.updatedAt, plan.status, plan.approver]);
 
   const isDraft = status === "DRAFT";
 

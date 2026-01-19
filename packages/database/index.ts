@@ -21,15 +21,16 @@ const createClient = () => {
     const adapter = new PrismaNeon({ connectionString });
     return new PrismaClient({ adapter });
   }
-  // Strip sslmode from connection string and handle SSL via pool config
+  // For local PostgreSQL, don't use SSL
   const url = new URL(connectionString);
+  const isLocalhost =
+    url.hostname === "localhost" || url.hostname === "127.0.0.1";
   url.searchParams.delete("sslmode");
 
   const pool = new pg.Pool({
     connectionString: url.toString(),
-    ssl: {
-      rejectUnauthorized: false,
-    },
+    // Only use SSL for non-localhost connections
+    ssl: isLocalhost ? false : { rejectUnauthorized: false },
   });
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });

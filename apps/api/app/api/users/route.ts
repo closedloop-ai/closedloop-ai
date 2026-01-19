@@ -11,15 +11,23 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const organizationId = searchParams.get("organizationId");
 
+    if (!organizationId) {
+      return NextResponse.json(failure("organizationId is required"), {
+        status: 400,
+      });
+    }
+
     const users = await database.user.findMany({
-      where: organizationId ? { organizationId } : undefined,
+      where: { organizationId },
       orderBy: { createdAt: "desc" },
     });
 
     return NextResponse.json(success(users as User[]));
   } catch (error) {
     console.error("Failed to fetch users:", error);
-    return NextResponse.json(failure("Failed to fetch users"));
+    return NextResponse.json(failure("Failed to fetch users"), {
+      status: 500,
+    });
   }
 }
 
@@ -42,6 +50,8 @@ export async function POST(
     return NextResponse.json(success(user as User));
   } catch (error) {
     console.error("Failed to create user:", error);
-    return NextResponse.json(failure("Failed to create user"));
+    return NextResponse.json(failure("Failed to create user"), {
+      status: 500,
+    });
   }
 }

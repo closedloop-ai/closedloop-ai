@@ -23,7 +23,9 @@ export async function GET(
     return NextResponse.json(success(user as User));
   } catch (error) {
     console.error("Failed to fetch user:", error);
-    return NextResponse.json(failure("Failed to fetch user"));
+    return NextResponse.json(failure("Failed to fetch user"), {
+      status: 500,
+    });
   }
 }
 
@@ -43,20 +45,11 @@ export async function PUT(
     return NextResponse.json(success(user as User));
   } catch (error) {
     console.error("Failed to update user:", error);
-    return NextResponse.json(failure("Failed to update user"));
+    return NextResponse.json(failure("Failed to update user"), {
+      status: 500,
+    });
   }
 }
 
-export async function DELETE(
-  _request: Request,
-  { params }: RouteParams
-): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
-  try {
-    const { id } = await params;
-    await database.user.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
-  } catch (error) {
-    console.error("Failed to delete user:", error);
-    return NextResponse.json(failure("Failed to delete user"));
-  }
-}
+// Note: DELETE intentionally not implemented - users should be deactivated, not deleted
+// This preserves audit trail and referential integrity

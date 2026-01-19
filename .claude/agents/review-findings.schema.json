@@ -9,7 +9,15 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["file", "line", "severity", "category", "issue", "explanation", "recommendation"],
+        "required": [
+          "file",
+          "line",
+          "severity",
+          "category",
+          "issue",
+          "explanation",
+          "recommendation"
+        ],
         "properties": {
           "file": {
             "type": "string",

@@ -28,7 +28,9 @@ export async function GET(
     return NextResponse.json(success(workstream as Workstream));
   } catch (error) {
     console.error("Failed to fetch workstream:", error);
-    return NextResponse.json(failure("Failed to fetch workstream"));
+    return NextResponse.json(failure("Failed to fetch workstream"), {
+      status: 500,
+    });
   }
 }
 
@@ -54,7 +56,9 @@ export async function PUT(
     return NextResponse.json(success(workstream as Workstream));
   } catch (error) {
     console.error("Failed to update workstream:", error);
-    return NextResponse.json(failure("Failed to update workstream"));
+    return NextResponse.json(failure("Failed to update workstream"), {
+      status: 500,
+    });
   }
 }
 
@@ -68,6 +72,8 @@ export async function DELETE(
     return NextResponse.json(success({ deleted: true }));
   } catch (error) {
     console.error("Failed to delete workstream:", error);
-    return NextResponse.json(failure("Failed to delete workstream"));
+    return NextResponse.json(failure("Failed to delete workstream"), {
+      status: 500,
+    });
   }
 }

@@ -7,17 +7,8 @@ import type {
 import { database } from "@repo/database";
 import { NextResponse } from "next/server";
 
-export async function GET(): Promise<NextResponse<ApiResult<Organization[]>>> {
-  try {
-    const organizations = await database.organization.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-    return NextResponse.json(success(organizations as Organization[]));
-  } catch (error) {
-    console.error("Failed to fetch organizations:", error);
-    return NextResponse.json(failure("Failed to fetch organizations"));
-  }
-}
+// Note: GET all organizations intentionally not implemented for security
+// Users should only access their own organization via /organizations/[id]
 
 export async function POST(
   request: Request
@@ -36,6 +27,8 @@ export async function POST(
     return NextResponse.json(success(organization as Organization));
   } catch (error) {
     console.error("Failed to create organization:", error);
-    return NextResponse.json(failure("Failed to create organization"));
+    return NextResponse.json(failure("Failed to create organization"), {
+      status: 500,
+    });
   }
 }

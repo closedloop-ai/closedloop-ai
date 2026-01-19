@@ -18,9 +18,17 @@ export async function GET(
     const search = searchParams.get("search");
     const limit = searchParams.get("limit");
 
+    if (!projectId) {
+      return NextResponse.json(failure("projectId is required"), {
+        status: 400,
+      });
+    }
+
+    // Note: Removed project include to avoid N+1 query pattern
+    // If project name is needed, fetch it separately or join at the caller level
     const workstreams = await database.workstream.findMany({
       where: {
-        ...(projectId ? { projectId } : {}),
+        projectId,
         ...(state ? { state: state as WorkstreamState } : {}),
         ...(search
           ? {
@@ -31,11 +39,6 @@ export async function GET(
             }
           : {}),
       },
-      include: {
-        project: {
-          select: { name: true },
-        },
-      },
       orderBy: { createdAt: "desc" },
       ...(limit ? { take: Number.parseInt(limit, 10) } : {}),
     });
@@ -43,7 +46,9 @@ export async function GET(
     return NextResponse.json(success(workstreams as Workstream[]));
   } catch (error) {
     console.error("Failed to fetch workstreams:", error);
-    return NextResponse.json(failure("Failed to fetch workstreams"));
+    return NextResponse.json(failure("Failed to fetch workstreams"), {
+      status: 500,
+    });
   }
 }
 
@@ -68,6 +73,8 @@ export async function POST(
     return NextResponse.json(success(workstream as Workstream));
   } catch (error) {
     console.error("Failed to create workstream:", error);
-    return NextResponse.json(failure("Failed to create workstream"));
+    return NextResponse.json(failure("Failed to create workstream"), {
+      status: 500,
+    });
   }
 }
