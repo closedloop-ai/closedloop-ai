@@ -15,7 +15,7 @@
     "react": "19.2.1",
     "streamdown": "^1.6.10",
     "tailwind-merge": "^3.4.0",
-    "zod": "^4.1.13"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

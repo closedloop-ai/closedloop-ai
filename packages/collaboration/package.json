@@ -13,7 +13,7 @@
     "@liveblocks/react": "^3.11.0",
     "react": "19.2.1",
     "server-only": "^0.0.1",
-    "zod": "^4.1.13"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
