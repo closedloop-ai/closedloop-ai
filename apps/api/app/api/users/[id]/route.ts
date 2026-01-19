@@ -1,53 +1,69 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type { UpdateUserInput, User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  errorResponse,
+  type IdRouteParams,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { updateUserSchema } from "../schemas";
 
-type RouteParams = { params: Promise<{ id: string }> };
-
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
     const { id } = await params;
+
     const user = await database.user.findUnique({
       where: { id },
     });
 
     if (!user) {
-      return NextResponse.json(failure("User not found"), { status: 404 });
+      return notFoundResponse("User");
     }
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to fetch user:", error);
-    return NextResponse.json(failure("Failed to fetch user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch user", error);
   }
 }
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateUserInput, "id">;
+
+    const existing = await database.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return notFoundResponse("User");
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateUserSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     const user = await database.user.update({
       where: { id },
       data: body,
     });
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to update user:", error);
-    return NextResponse.json(failure("Failed to update user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update user", error);
   }
 }
 

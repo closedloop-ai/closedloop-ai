@@ -1,49 +1,66 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  Project,
-  UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+import type { Project } from "@repo/api/src/types/organization";
 import { database, type Prisma } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  type IdRouteParams,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { updateProjectSchema } from "../schemas";
 
-type RouteParams = { params: Promise<{ id: string }> };
-
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
     const { id } = await params;
+
     const project = await database.project.findUnique({
       where: { id },
     });
 
     if (!project) {
-      return NextResponse.json(failure("Project not found"), { status: 404 });
+      return notFoundResponse("Project");
     }
 
-    return NextResponse.json(success(project as Project));
+    return successResponse(project as Project);
   } catch (error) {
-    console.error("Failed to fetch project:", error);
-    return NextResponse.json(failure("Failed to fetch project"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch project", error);
   }
 }
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Project>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateProjectInput, "id">;
+
+    const existing = await database.project.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return notFoundResponse("Project");
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateProjectSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     const data: Prisma.ProjectUpdateInput = {
       name: body.name,
       description: body.description,
-      settings: body.settings,
+      settings: body.settings as Prisma.InputJsonValue,
     };
 
     const project = await database.project.update({
@@ -51,27 +68,30 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(project as Project));
+    return successResponse(project as Project);
   } catch (error) {
-    console.error("Failed to update project:", error);
-    return NextResponse.json(failure("Failed to update project"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update project", error);
   }
 }
 
 export async function DELETE(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
     const { id } = await params;
-    await database.project.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
-  } catch (error) {
-    console.error("Failed to delete project:", error);
-    return NextResponse.json(failure("Failed to delete project"), {
-      status: 500,
+
+    const existing = await database.project.findUnique({
+      where: { id },
     });
+
+    if (!existing) {
+      return notFoundResponse("Project");
+    }
+
+    await database.project.delete({ where: { id } });
+    return deleteResponse();
+  } catch (error) {
+    return errorResponse("Failed to delete project", error);
   }
 }

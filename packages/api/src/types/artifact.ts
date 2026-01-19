@@ -1,6 +1,7 @@
 // Artifact and Approval types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+// Artifact Type
 export const ArtifactType = {
   Prd: "PRD",
   FigmaDesign: "FIGMA_DESIGN",
@@ -12,7 +13,9 @@ export const ArtifactType = {
   CompletionSummary: "COMPLETION_SUMMARY",
 } as const;
 export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
+export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
 
+// Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",
   Review: "REVIEW",
@@ -21,7 +24,9 @@ export const ArtifactStatus = {
 } as const;
 export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
+export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatus);
 
+// Approval Status
 export const ApprovalStatus = {
   Pending: "PENDING",
   Approved: "APPROVED",
@@ -30,7 +35,9 @@ export const ApprovalStatus = {
 } as const;
 export type ApprovalStatus =
   (typeof ApprovalStatus)[keyof typeof ApprovalStatus];
+export const APPROVAL_STATUS_OPTIONS = Object.values(ApprovalStatus);
 
+// Approver Role
 export const ApproverRole = {
   Pm: "PM",
   Designer: "DESIGNER",
@@ -39,6 +46,7 @@ export const ApproverRole = {
   Stakeholder: "STAKEHOLDER",
 } as const;
 export type ApproverRole = (typeof ApproverRole)[keyof typeof ApproverRole];
+export const APPROVER_ROLE_OPTIONS = Object.values(ApproverRole);
 
 export type Artifact = {
   id: string;
@@ -54,6 +62,7 @@ export type Artifact = {
   version: number;
   isLatest: boolean;
   parentId: string | null;
+  documentSlug: string | null;
   generatedBy: string | null;
   tokenUsage: unknown;
   createdAt: Date;
@@ -65,9 +74,6 @@ export type ArtifactWithWorkstream = Artifact & {
     id: string;
     title: string;
     state: string;
-    project: {
-      name: string;
-    };
   } | null;
   project?: {
     id: string;
@@ -86,6 +92,7 @@ export type CreateArtifactInput = {
   content?: string;
   externalUrl?: string;
   generatedBy?: string;
+  documentSlug?: string;
 };
 
 export type UpdateArtifactInput = {

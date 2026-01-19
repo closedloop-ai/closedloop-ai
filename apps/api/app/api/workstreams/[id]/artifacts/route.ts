@@ -1,21 +1,38 @@
-import type {
-  Artifact,
-  ArtifactType,
-  CreateArtifactInput,
-} from "@repo/api/src/types/artifact";
+import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  buildArtifactScopeCondition,
+  generateDocumentSlug,
+  prepareArtifactVersion,
+} from "@/lib/artifact-utils";
+import {
+  errorResponse,
+  type IdRouteParams,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { createArtifactSchema } from "../../../artifacts/schemas";
 
-type RouteParams = { params: Promise<{ id: string }> };
-
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact[]>>> {
   try {
     const { id: workstreamId } = await params;
+
+    // Verify workstream exists
+    const workstream = await database.workstream.findUnique({
+      where: { id: workstreamId },
+    });
+
+    if (!workstream) {
+      return notFoundResponse("Workstream");
+    }
+
     const { searchParams } = new URL(request.url);
     const type = searchParams.get("type");
     const latestOnly = searchParams.get("latestOnly") === "true";
@@ -29,46 +46,49 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(artifacts as Artifact[]));
+    return successResponse(artifacts as Artifact[]);
   } catch (error) {
-    console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch artifacts", error);
   }
 }
 
 export async function POST(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
     const { id: workstreamId } = await params;
-    const body = (await request.json()) as Omit<
-      CreateArtifactInput,
-      "workstreamId"
-    >;
+
+    // Verify workstream exists
+    const workstream = await database.workstream.findUnique({
+      where: { id: workstreamId },
+    });
+
+    if (!workstream) {
+      return notFoundResponse("Workstream");
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createArtifactSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     // Use transaction to ensure atomic isLatest update and version increment
     const artifact = await database.$transaction(async (tx) => {
-      // Mark any existing artifacts of the same type as not latest
-      await tx.artifact.updateMany({
-        where: {
-          workstreamId,
-          type: body.type,
-          isLatest: true,
-        },
-        data: { isLatest: false },
-      });
+      // Auto-generate documentSlug if not provided (required for versioning)
+      const documentSlug =
+        body.documentSlug ?? generateDocumentSlug(body.fileName, body.title);
 
-      // Get the latest version number for this artifact type in this workstream
-      const latestArtifact = await tx.artifact.findFirst({
-        where: {
-          workstreamId,
-          type: body.type,
-        },
-        orderBy: { version: "desc" },
+      // Build scope and get next version (marks existing as not latest)
+      const scopeCondition = buildArtifactScopeCondition({
+        workstreamId,
+        type: body.type,
+        documentSlug,
       });
+      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
       return tx.artifact.create({
         data: {
@@ -78,17 +98,15 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          version: (latestArtifact?.version ?? 0) + 1,
+          documentSlug,
+          version: nextVersion,
           isLatest: true,
         },
       });
     });
 
-    return NextResponse.json(success(artifact as Artifact));
+    return successResponse(artifact as Artifact);
   } catch (error) {
-    console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create artifact", error);
   }
 }

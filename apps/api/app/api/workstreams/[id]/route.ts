@@ -1,46 +1,61 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  UpdateWorkstreamInput,
-  Workstream,
-} from "@repo/api/src/types/workstream";
+import type { Workstream } from "@repo/api/src/types/workstream";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  type IdRouteParams,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { updateWorkstreamSchema } from "../schemas";
 
-type RouteParams = { params: Promise<{ id: string }> };
-
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
     const { id } = await params;
+
     const workstream = await database.workstream.findUnique({
       where: { id },
     });
 
     if (!workstream) {
-      return NextResponse.json(failure("Workstream not found"), {
-        status: 404,
-      });
+      return notFoundResponse("Workstream");
     }
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to fetch workstream:", error);
-    return NextResponse.json(failure("Failed to fetch workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch workstream", error);
   }
 }
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateWorkstreamInput, "id">;
+
+    const existing = await database.workstream.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return notFoundResponse("Workstream");
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateWorkstreamSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     // If state is being changed, update stateChangedAt
     const updateData: Record<string, unknown> = { ...body };
@@ -53,27 +68,30 @@ export async function PUT(
       data: updateData,
     });
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to update workstream:", error);
-    return NextResponse.json(failure("Failed to update workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update workstream", error);
   }
 }
 
 export async function DELETE(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
     const { id } = await params;
-    await database.workstream.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
-  } catch (error) {
-    console.error("Failed to delete workstream:", error);
-    return NextResponse.json(failure("Failed to delete workstream"), {
-      status: 500,
+
+    const existing = await database.workstream.findUnique({
+      where: { id },
     });
+
+    if (!existing) {
+      return notFoundResponse("Workstream");
+    }
+
+    await database.workstream.delete({ where: { id } });
+    return deleteResponse();
+  } catch (error) {
+    return errorResponse("Failed to delete workstream", error);
   }
 }

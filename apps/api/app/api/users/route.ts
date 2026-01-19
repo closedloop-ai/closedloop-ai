@@ -1,41 +1,37 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type { CreateUserInput, User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { createUserSchema } from "./schemas";
 
+// TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
-  request: Request
+  _request: Request
 ): Promise<NextResponse<ApiResult<User[]>>> {
   try {
-    const { searchParams } = new URL(request.url);
-    const organizationId = searchParams.get("organizationId");
-
-    if (!organizationId) {
-      return NextResponse.json(failure("organizationId is required"), {
-        status: 400,
-      });
-    }
-
     const users = await database.user.findMany({
-      where: { organizationId },
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(users as User[]));
+    return successResponse(users as User[]);
   } catch (error) {
-    console.error("Failed to fetch users:", error);
-    return NextResponse.json(failure("Failed to fetch users"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch users", error);
   }
 }
 
+// TODO: Add org verification once auth middleware provides organizationId
 export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<User>>> {
   try {
-    const body = (await request.json()) as CreateUserInput;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createUserSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     const user = await database.user.create({
       data: {
@@ -47,11 +43,8 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(success(user as User));
+    return successResponse(user as User);
   } catch (error) {
-    console.error("Failed to create user:", error);
-    return NextResponse.json(failure("Failed to create user"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create user", error);
   }
 }

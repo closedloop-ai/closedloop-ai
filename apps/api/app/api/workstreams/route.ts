@@ -1,13 +1,22 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
 import type {
-  CreateWorkstreamInput,
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
+import { auth } from "@repo/auth/server";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  badRequestResponse,
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+  unauthorizedResponse,
+} from "@/lib/route-utils";
+import { createWorkstreamSchema } from "./schemas";
 
+// TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream[]>>> {
@@ -19,13 +28,18 @@ export async function GET(
     const limit = searchParams.get("limit");
 
     if (!projectId) {
-      return NextResponse.json(failure("projectId is required"), {
-        status: 400,
-      });
+      return badRequestResponse("projectId is required");
     }
 
-    // Note: Removed project include to avoid N+1 query pattern
-    // If project name is needed, fetch it separately or join at the caller level
+    // Verify project exists
+    const project = await database.project.findUnique({
+      where: { id: projectId },
+    });
+
+    if (!project) {
+      return notFoundResponse("Project");
+    }
+
     const workstreams = await database.workstream.findMany({
       where: {
         projectId,
@@ -43,12 +57,9 @@ export async function GET(
       ...(limit ? { take: Number.parseInt(limit, 10) } : {}),
     });
 
-    return NextResponse.json(success(workstreams as Workstream[]));
+    return successResponse(workstreams as Workstream[]);
   } catch (error) {
-    console.error("Failed to fetch workstreams:", error);
-    return NextResponse.json(failure("Failed to fetch workstreams"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch workstreams", error);
   }
 }
 
@@ -56,7 +67,27 @@ export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Workstream>>> {
   try {
-    const body = (await request.json()) as CreateWorkstreamInput;
+    const { userId } = await auth();
+    if (!userId) {
+      return unauthorizedResponse();
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createWorkstreamSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
+
+    // Verify project exists
+    const project = await database.project.findUnique({
+      where: { id: body.projectId },
+    });
+
+    if (!project) {
+      return notFoundResponse("Project");
+    }
 
     const workstream = await database.workstream.create({
       data: {
@@ -64,17 +95,14 @@ export async function POST(
         title: body.title,
         description: body.description,
         type: body.type ?? "FEATURE_DELIVERY",
-        createdById: body.createdById,
+        createdById: userId,
         assignedToId: body.assignedToId,
         hasUIChanges: body.hasUIChanges ?? false,
       },
     });
 
-    return NextResponse.json(success(workstream as Workstream));
+    return successResponse(workstream as Workstream);
   } catch (error) {
-    console.error("Failed to create workstream:", error);
-    return NextResponse.json(failure("Failed to create workstream"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create workstream", error);
   }
 }

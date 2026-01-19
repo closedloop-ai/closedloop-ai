@@ -1,20 +1,26 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  CreateOrganizationInput,
-  Organization,
-} from "@repo/api/src/types/organization";
+import type { Organization } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { createOrganizationSchema } from "./schemas";
 
 // Note: GET all organizations intentionally not implemented for security
 // Users should only access their own organization via /organizations/[id]
 
+// Note: POST creates a new organization - typically used during onboarding
+// TODO: Add auth check once auth middleware is implemented
 export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
-    const body = (await request.json()) as CreateOrganizationInput;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createOrganizationSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     const organization = await database.organization.create({
       data: {
@@ -24,11 +30,8 @@ export async function POST(
       },
     });
 
-    return NextResponse.json(success(organization as Organization));
+    return successResponse(organization as Organization);
   } catch (error) {
-    console.error("Failed to create organization:", error);
-    return NextResponse.json(failure("Failed to create organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create organization", error);
   }
 }

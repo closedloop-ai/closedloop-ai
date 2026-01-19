@@ -1,52 +1,67 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
-import type {
-  Organization,
-  UpdateOrganizationInput,
-} from "@repo/api/src/types/organization";
+import type { Organization } from "@repo/api/src/types/organization";
 import { database, type Prisma } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  deleteResponse,
+  errorResponse,
+  type IdRouteParams,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { updateOrganizationSchema } from "../schemas";
 
-type RouteParams = { params: Promise<{ id: string }> };
-
+// TODO: Add org access verification once auth middleware provides organizationId
 export async function GET(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
     const { id } = await params;
+
     const organization = await database.organization.findUnique({
       where: { id },
     });
 
     if (!organization) {
-      return NextResponse.json(failure("Organization not found"), {
-        status: 404,
-      });
+      return notFoundResponse("Organization");
     }
 
-    return NextResponse.json(success(organization as Organization));
+    return successResponse(organization as Organization);
   } catch (error) {
-    console.error("Failed to fetch organization:", error);
-    return NextResponse.json(failure("Failed to fetch organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch organization", error);
   }
 }
 
 export async function PUT(
   request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<Organization>>> {
   try {
     const { id } = await params;
-    const body = (await request.json()) as Omit<UpdateOrganizationInput, "id">;
+
+    const existing = await database.organization.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      return notFoundResponse("Organization");
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      updateOrganizationSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
 
     const data: Prisma.OrganizationUpdateInput = {
       name: body.name,
       slug: body.slug,
       anthropicApiKey: body.anthropicApiKey,
-      settings: body.settings,
+      settings: body.settings as Prisma.InputJsonValue,
     };
 
     const organization = await database.organization.update({
@@ -54,27 +69,30 @@ export async function PUT(
       data,
     });
 
-    return NextResponse.json(success(organization as Organization));
+    return successResponse(organization as Organization);
   } catch (error) {
-    console.error("Failed to update organization:", error);
-    return NextResponse.json(failure("Failed to update organization"), {
-      status: 500,
-    });
+    return errorResponse("Failed to update organization", error);
   }
 }
 
 export async function DELETE(
   _request: Request,
-  { params }: RouteParams
+  { params }: IdRouteParams
 ): Promise<NextResponse<ApiResult<{ deleted: true }>>> {
   try {
     const { id } = await params;
-    await database.organization.delete({ where: { id } });
-    return NextResponse.json(success({ deleted: true }));
-  } catch (error) {
-    console.error("Failed to delete organization:", error);
-    return NextResponse.json(failure("Failed to delete organization"), {
-      status: 500,
+
+    const existing = await database.organization.findUnique({
+      where: { id },
     });
+
+    if (!existing) {
+      return notFoundResponse("Organization");
+    }
+
+    await database.organization.delete({ where: { id } });
+    return deleteResponse();
+  } catch (error) {
+    return errorResponse("Failed to delete organization", error);
   }
 }

@@ -2,59 +2,26 @@ import type {
   Artifact,
   ArtifactType,
   ArtifactWithWorkstream,
-  CreateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
-import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import { NextResponse } from "next/server";
+import type { NextResponse } from "next/server";
+import {
+  artifactIncludeWithContext,
+  buildArtifactScopeCondition,
+  generateDocumentSlug,
+  getOrCreateDefaultProject,
+  prepareArtifactVersion,
+} from "@/lib/artifact-utils";
+import {
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { createArtifactSchema } from "./schemas";
 
-const DEFAULT_ORG_SLUG = "default";
-const DEFAULT_PROJECT_NAME = "Default Project";
-
-/**
- * Get or create a default project for standalone artifacts
- */
-async function getOrCreateDefaultProject(
-  tx: Parameters<Parameters<typeof database.$transaction>[0]>[0]
-): Promise<string> {
-  // Try to find existing default organization
-  let org = await tx.organization.findFirst({
-    where: { slug: DEFAULT_ORG_SLUG },
-  });
-
-  // Create default org if it doesn't exist
-  if (!org) {
-    org = await tx.organization.create({
-      data: {
-        name: "Default Organization",
-        slug: DEFAULT_ORG_SLUG,
-      },
-    });
-  }
-
-  // Try to find existing default project
-  let project = await tx.project.findFirst({
-    where: {
-      organizationId: org.id,
-      name: DEFAULT_PROJECT_NAME,
-    },
-  });
-
-  // Create default project if it doesn't exist
-  if (!project) {
-    project = await tx.project.create({
-      data: {
-        organizationId: org.id,
-        name: DEFAULT_PROJECT_NAME,
-        description: "Default project for standalone PRDs and artifacts",
-      },
-    });
-  }
-
-  return project.id;
-}
-
+// TODO: Add org filtering once auth middleware provides organizationId
 export async function GET(
   request: Request
 ): Promise<NextResponse<ApiResult<ArtifactWithWorkstream[]>>> {
@@ -65,6 +32,7 @@ export async function GET(
     const workstreamId = searchParams.get("workstreamId");
     const projectId = searchParams.get("projectId");
 
+    // Fetch artifacts (org filtering will be added via auth middleware)
     const artifacts = await database.artifact.findMany({
       where: {
         ...(type ? { type: type as ArtifactType } : {}),
@@ -72,67 +40,87 @@ export async function GET(
         ...(workstreamId ? { workstreamId } : {}),
         ...(projectId ? { projectId } : {}),
       },
-      include: {
-        workstream: {
-          select: {
-            id: true,
-            title: true,
-            state: true,
-            project: {
-              select: { name: true },
-            },
-          },
-        },
-        project: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
+      include: artifactIncludeWithContext,
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json(success(artifacts as ArtifactWithWorkstream[]));
+    return successResponse(artifacts as ArtifactWithWorkstream[]);
   } catch (error) {
-    console.error("Failed to fetch artifacts:", error);
-    return NextResponse.json(failure("Failed to fetch artifacts"), {
-      status: 500,
-    });
+    return errorResponse("Failed to fetch artifacts", error);
   }
 }
 
+// TODO: Add org verification once auth middleware provides organizationId
 export async function POST(
   request: Request
 ): Promise<NextResponse<ApiResult<Artifact>>> {
   try {
-    const body = (await request.json()) as CreateArtifactInput;
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      createArtifactSchema
+    );
+    if (parseError) {
+      return parseError;
+    }
+
+    // Verify workstream exists if specified
+    if (body.workstreamId) {
+      const workstream = await database.workstream.findUnique({
+        where: { id: body.workstreamId },
+      });
+      if (!workstream) {
+        return notFoundResponse("Workstream");
+      }
+    }
+
+    // Verify project exists if specified
+    if (body.projectId) {
+      const project = await database.project.findUnique({
+        where: { id: body.projectId },
+      });
+      if (!project) {
+        return notFoundResponse("Project");
+      }
+    }
 
     // Use transaction to ensure atomic operations
     const artifact = await database.$transaction(async (tx) => {
+      // Get organizationId from workstream's project or from specified project
+      let organizationId: string | undefined;
+
+      if (body.workstreamId) {
+        const workstream = await tx.workstream.findUnique({
+          where: { id: body.workstreamId },
+          include: { project: { select: { organizationId: true } } },
+        });
+        organizationId = workstream?.project.organizationId;
+      } else if (body.projectId) {
+        const project = await tx.project.findUnique({
+          where: { id: body.projectId },
+          select: { organizationId: true },
+        });
+        organizationId = project?.organizationId;
+      }
+
       // Auto-create default project if no projectId or workstreamId provided
-      const projectId =
-        body.projectId ||
-        (body.workstreamId ? undefined : await getOrCreateDefaultProject(tx));
+      // Note: This requires an organizationId which should come from auth middleware
+      let projectId: string | undefined = body.projectId ?? undefined;
+      if (!(projectId || body.workstreamId) && organizationId) {
+        projectId = await getOrCreateDefaultProject(tx, organizationId);
+      }
 
-      // Build the scope condition for this artifact context
-      const scopeCondition = {
-        ...(body.workstreamId ? { workstreamId: body.workstreamId } : {}),
-        ...(projectId ? { projectId } : {}),
+      // Auto-generate documentSlug if not provided (required for versioning)
+      const documentSlug =
+        body.documentSlug ?? generateDocumentSlug(body.fileName, body.title);
+
+      // Build scope and get next version (marks existing as not latest)
+      const scopeCondition = buildArtifactScopeCondition({
+        workstreamId: body.workstreamId,
+        projectId,
         type: body.type,
-      };
-
-      // Mark existing artifacts of same type in this scope as not latest
-      await tx.artifact.updateMany({
-        where: { ...scopeCondition, isLatest: true },
-        data: { isLatest: false },
+        documentSlug,
       });
-
-      // Get latest version number for this scope and type
-      const latestArtifact = await tx.artifact.findFirst({
-        where: scopeCondition,
-        orderBy: { version: "desc" },
-      });
+      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
       return tx.artifact.create({
         data: {
@@ -146,17 +134,15 @@ export async function POST(
           content: body.content,
           externalUrl: body.externalUrl,
           generatedBy: body.generatedBy,
-          version: (latestArtifact?.version ?? 0) + 1,
+          documentSlug,
+          version: nextVersion,
           isLatest: true,
         },
       });
     });
 
-    return NextResponse.json(success(artifact as Artifact));
+    return successResponse(artifact as Artifact);
   } catch (error) {
-    console.error("Failed to create artifact:", error);
-    return NextResponse.json(failure("Failed to create artifact"), {
-      status: 500,
-    });
+    return errorResponse("Failed to create artifact", error);
   }
 }
