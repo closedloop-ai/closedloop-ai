@@ -160,7 +160,7 @@ export const Header = ({ dictionary }: HeaderProps) => {
                             ? "noopener noreferrer"
                             : undefined
                         }
-                        target={item.href.startsWith("http") ? "_blank" : null}
+                        target={item.href.startsWith("http") ? "_blank" : undefined }
                       >
                         <span className="text-lg">{item.title}</span>
                         <MoveRight className="h-4 w-4 stroke-1 text-muted-foreground" />
