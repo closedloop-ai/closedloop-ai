@@ -2,6 +2,10 @@ import withBundleAnalyzer from "@next/bundle-analyzer";
 import type { NextConfig } from "next";
 
 export const config: NextConfig = {
+  // React Compiler automatically memoizes components and hooks
+  // No need for manual useMemo, useCallback, or React.memo
+  reactCompiler: true,
+
   images: {
     formats: ["image/avif", "image/webp"],
     remotePatterns: [

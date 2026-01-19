@@ -23,11 +23,11 @@ export const Header = ({ pages, page, children }: HeaderProps) => (
       <Separator className="mr-2 h-4" orientation="vertical" />
       <Breadcrumb>
         <BreadcrumbList>
-          {pages.map((page, index) => (
-            <Fragment key={page}>
+          {pages.map((breadcrumbPage, index) => (
+            <Fragment key={breadcrumbPage}>
               {index > 0 && <BreadcrumbSeparator className="hidden md:block" />}
               <BreadcrumbItem className="hidden md:block">
-                <BreadcrumbLink href="#">{page}</BreadcrumbLink>
+                <BreadcrumbLink href="#">{breadcrumbPage}</BreadcrumbLink>
               </BreadcrumbItem>
             </Fragment>
           ))}
