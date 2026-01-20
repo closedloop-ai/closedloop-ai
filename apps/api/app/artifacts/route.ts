@@ -12,7 +12,7 @@ import {
   generateDocumentSlug,
   getOrCreateDefaultProject,
   prepareArtifactVersion,
-} from "@/lib/artifact-utils";
+} from "@/app/artifacts/artifact-utils";
 import {
   errorResponse,
   notFoundResponse,

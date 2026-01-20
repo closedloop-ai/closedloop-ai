@@ -5,7 +5,7 @@ import type {
 import type { ApiResult } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import type { NextResponse } from "next/server";
-import { artifactIncludeWithContext } from "@/lib/artifact-utils";
+import { artifactIncludeWithContext } from "@/app/artifacts/artifact-utils";
 import {
   deleteResponse,
   errorResponse,

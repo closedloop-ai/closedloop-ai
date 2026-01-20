@@ -23,7 +23,7 @@ export async function getArtifacts(
   params.set("latestOnly", String(latestOnly));
 
   return await apiClient.get<ArtifactWithWorkstream[]>(
-    `/api/artifacts?${params.toString()}`
+    `/artifacts?${params.toString()}`
   );
 }
 
@@ -36,14 +36,14 @@ export async function getArtifactsByType(
   params.set("latestOnly", String(latestOnly));
 
   return await apiClient.get<ArtifactWithWorkstream[]>(
-    `/api/artifacts?${params.toString()}`
+    `/artifacts?${params.toString()}`
   );
 }
 
 export async function getArtifactById(
   id: string
 ): Promise<ApiResult<ArtifactWithWorkstream>> {
-  return await apiClient.get<ArtifactWithWorkstream>(`/api/artifacts/${id}`);
+  return await apiClient.get<ArtifactWithWorkstream>(`/artifacts/${id}`);
 }
 
 export async function createArtifact(
@@ -66,7 +66,7 @@ export async function updateArtifact(
   input: UpdateArtifactInput
 ): Promise<ApiResult<Artifact>> {
   const { id, ...body } = input;
-  const result = await apiClient.put<Artifact>(`/api/artifacts/${id}`, body);
+  const result = await apiClient.put<Artifact>(`/artifacts/${id}`, body);
 
   if (result.success) {
     revalidatePath(`/artifacts/${id}`);
@@ -80,9 +80,7 @@ export async function updateArtifact(
 export async function deleteArtifact(
   id: string
 ): Promise<ApiResult<{ deleted: true }>> {
-  const result = await apiClient.delete<{ deleted: true }>(
-    `/api/artifacts/${id}`
-  );
+  const result = await apiClient.delete<{ deleted: true }>(`/artifacts/${id}`);
 
   if (result.success) {
     revalidatePath("/prds");
@@ -96,7 +94,7 @@ export async function duplicateArtifact(
   id: string
 ): Promise<ApiResult<Artifact>> {
   const result = await apiClient.post<Artifact>(
-    `/api/artifacts/${id}/duplicate`,
+    `/artifacts/${id}/duplicate`,
     {}
   );
 
@@ -113,7 +111,7 @@ export async function renameArtifact(
   title: string,
   fileName: string
 ): Promise<ApiResult<Artifact>> {
-  const result = await apiClient.put<Artifact>(`/api/artifacts/${id}`, {
+  const result = await apiClient.put<Artifact>(`/artifacts/${id}`, {
     title,
     fileName,
   });
@@ -132,7 +130,7 @@ export async function regenerateArtifact(
   id: string
 ): Promise<ApiResult<Artifact>> {
   const result = await apiClient.post<Artifact>(
-    `/api/artifacts/${id}/regenerate`,
+    `/artifacts/${id}/regenerate`,
     {}
   );
 
