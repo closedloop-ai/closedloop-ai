@@ -51,15 +51,13 @@ export async function getOrCreateDefaultProject(
   });
 
   // Create default project if it doesn't exist
-  if (!project) {
-    project = await tx.project.create({
-      data: {
-        organizationId,
-        name: DEFAULT_PROJECT_NAME,
-        description: "Default project for standalone PRDs and artifacts",
-      },
-    });
-  }
+  project ??= await tx.project.create({
+    data: {
+      organizationId,
+      name: DEFAULT_PROJECT_NAME,
+      description: "Default project for standalone PRDs and artifacts",
+    },
+  });
 
   return project.id;
 }
@@ -78,6 +76,7 @@ export const artifactIncludeWithContext = {
   project: {
     select: {
       id: true,
+      organizationId: true,
       name: true,
     },
   },

@@ -1,4 +1,7 @@
+import "server-only";
+
 import type { ApiResult } from "@repo/api/src/types/common";
+import { auth } from "@repo/auth/server";
 import { env } from "@/env";
 
 const API_BASE = env.API_URL;
@@ -10,10 +13,18 @@ async function fetchApi<T>(
   const url = `${API_BASE}${path}`;
 
   try {
+    const { getToken } = await auth();
+    const token = await getToken();
+
+    const authHeaders: Record<string, string> = token
+      ? { Authorization: `Bearer ${token}` }
+      : {};
+
     const response = await fetch(url, {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...authHeaders,
         ...options?.headers,
       },
     });
