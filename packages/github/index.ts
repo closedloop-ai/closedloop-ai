@@ -77,13 +77,26 @@ export type TriggerWorkflowDispatchOptions = {
 export async function triggerWorkflowDispatch(
   opts: TriggerWorkflowDispatchOptions
 ): Promise<{ success: boolean; error?: string }> {
-  try {
-    const config = getConfig();
-    const [dispatchOwner, dispatchRepo] = getDispatchRepo();
-    const octokit = await getAuthenticatedOctokit();
+  const config = getConfig();
+  const [dispatchOwner, dispatchRepo] = getDispatchRepo();
 
-    // Prefix correlation ID with environment
-    const prefixedCorrelationId = `${config.WEBAPP_ENV}:${opts.correlationId}`;
+  // Prefix correlation ID with environment
+  const prefixedCorrelationId = `${config.WEBAPP_ENV}:${opts.correlationId}`;
+
+  // Log dispatch attempt (excluding context which can be verbose)
+  console.log("[github/dispatch] Triggering workflow dispatch", {
+    dispatchRepo: `${dispatchOwner}/${dispatchRepo}`,
+    targetRepo: opts.targetRepo,
+    ref: opts.ref || "main",
+    command: opts.command,
+    commandArgs: opts.commandArgs || "(none)",
+    correlationId: prefixedCorrelationId,
+    sessionId: opts.sessionId || "(none)",
+    contextLength: opts.context?.length || 0,
+  });
+
+  try {
+    const octokit = await getAuthenticatedOctokit();
 
     await octokit.actions.createWorkflowDispatch({
       owner: dispatchOwner,
@@ -101,12 +114,26 @@ export async function triggerWorkflowDispatch(
       },
     });
 
+    console.log("[github/dispatch] Successfully triggered workflow", {
+      correlationId: prefixedCorrelationId,
+      targetRepo: opts.targetRepo,
+      command: opts.command,
+    });
+
     return { success: true };
   } catch (error) {
-    console.error("Failed to trigger workflow dispatch:", error);
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    console.error("[github/dispatch] Failed to trigger workflow", {
+      correlationId: prefixedCorrelationId,
+      targetRepo: opts.targetRepo,
+      command: opts.command,
+      error: errorMessage,
+      errorStack: error instanceof Error ? error.stack : undefined,
+    });
     return {
       success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: errorMessage,
     };
   }
 }
