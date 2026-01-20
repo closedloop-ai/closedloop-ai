@@ -23,7 +23,7 @@ export async function getProjectById(id: string): Promise<ApiResult<Project>> {
 export async function createProject(
   input: CreateProjectInput
 ): Promise<ApiResult<Project>> {
-  const result = await apiClient.post<Project>("/api/projects", input);
+  const result = await apiClient.post<Project>("/projects", input);
   if (result.success) {
     revalidatePath("/projects");
   }
