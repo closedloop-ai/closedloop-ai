@@ -183,7 +183,21 @@ async function processWorkflowCompletion(
   const runId = event.workflow_run.id;
 
   // Fetch workflow inputs to get correlation_id
-  const inputs = await getWorkflowRunInputs(runId);
+  let inputs: Record<string, string> | null;
+  try {
+    inputs = await getWorkflowRunInputs(runId);
+  } catch (error) {
+    const errorMessage = parseError(error);
+    log.error("[webhook/github] Failed to fetch workflow inputs", {
+      runId,
+      error: errorMessage,
+    });
+    // Acknowledge the webhook but log the error - don't return 500
+    return NextResponse.json({
+      message: "Failed to fetch workflow inputs",
+      ok: true,
+    });
+  }
 
   if (!inputs) {
     log.info("[webhook/github] No workflow inputs found", {
@@ -333,10 +347,7 @@ export const POST = async (request: Request): Promise<Response> => {
   try {
     const { body, signature, eventType } = await validateRequest(request);
 
-    log.info("[webhook/github] Validating request", {
-      eventType,
-      hasSignature: !!signature,
-    });
+    log.info("[webhook/github] Validating request", { eventType });
 
     if (!signature) {
       log.warn("[webhook/github] Missing signature header, rejecting");

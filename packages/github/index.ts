@@ -2,6 +2,7 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { log } from "@repo/observability/log";
 import { keys } from "./keys";
 
 // Top-level regex for performance
@@ -84,7 +85,7 @@ export async function triggerWorkflowDispatch(
   const prefixedCorrelationId = `${config.WEBAPP_ENV}:${opts.correlationId}`;
 
   // Log dispatch attempt (excluding context which can be verbose)
-  console.log("[github/dispatch] Triggering workflow dispatch", {
+  log.info("[github/dispatch] Triggering workflow dispatch", {
     dispatchRepo: `${dispatchOwner}/${dispatchRepo}`,
     targetRepo: opts.targetRepo,
     ref: opts.ref || "main",
@@ -114,7 +115,7 @@ export async function triggerWorkflowDispatch(
       },
     });
 
-    console.log("[github/dispatch] Successfully triggered workflow", {
+    log.info("[github/dispatch] Successfully triggered workflow", {
       correlationId: prefixedCorrelationId,
       targetRepo: opts.targetRepo,
       command: opts.command,
@@ -124,12 +125,11 @@ export async function triggerWorkflowDispatch(
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
-    console.error("[github/dispatch] Failed to trigger workflow", {
+    log.error("[github/dispatch] Failed to trigger workflow", {
       correlationId: prefixedCorrelationId,
       targetRepo: opts.targetRepo,
       command: opts.command,
       error: errorMessage,
-      errorStack: error instanceof Error ? error.stack : undefined,
     });
     return {
       success: false,
