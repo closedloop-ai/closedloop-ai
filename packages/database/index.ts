@@ -51,10 +51,10 @@ function getSigner(): Signer {
 
 /**
  * Gets or creates the pg Pool.
- * For IAM auth, uses password callback to generate fresh tokens per connection.
+ * For IAM auth, generates token upfront and embeds in connection string.
  * Cached globally to reuse connections.
  */
-function getPool(): pg.Pool {
+async function getPool(): Promise<pg.Pool> {
   if (globalForPrisma.pool) {
     return globalForPrisma.pool;
   }
@@ -89,16 +89,17 @@ function getPool(): pg.Pool {
     // Vercel/production with IAM authentication
     const signer = getSigner();
 
+    console.log("[Database] Generating IAM token for connection");
+    const token = await signer.getAuthToken();
+    console.log("[Database] Token generated successfully");
+
+    // Build connection string with token (matches migration script pattern)
+    const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
+      token
+    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}?sslmode=require`;
+
     globalForPrisma.pool = new pg.Pool({
-      host: env.PGHOST,
-      user: env.PGUSER,
-      database: env.PGDATABASE || "app",
-      password: () => {
-        console.log("[Database] Generating IAM token for new connection");
-        return signer.getAuthToken();
-      },
-      port: Number(env.PGPORT || "5432"),
-      ssl: { rejectUnauthorized: false },
+      connectionString,
       max: 20,
       connectionTimeoutMillis: 30_000,
       idleTimeoutMillis: 30_000,
@@ -113,13 +114,13 @@ function getPool(): pg.Pool {
  * Gets or creates the Prisma Client.
  * Uses global caching to reuse client across requests.
  */
-function getDatabase(): PrismaClient {
+async function getDatabase(): Promise<PrismaClient> {
   if (globalForPrisma.prisma) {
     return globalForPrisma.prisma;
   }
 
   console.log("[Database] Creating Prisma client");
-  const pool = getPool();
+  const pool = await getPool();
   const adapter = new PrismaPg(pool);
   globalForPrisma.prisma = new PrismaClient({ adapter });
 
@@ -135,15 +136,17 @@ export const database = new Proxy({} as PrismaClient, {
     }
 
     // Lazily initialize and delegate to actual client
-    const client = getDatabase();
-    const value = client[prop as keyof PrismaClient];
-
-    if (typeof value === "function") {
-      return (...args: unknown[]) =>
-        (value as (...params: unknown[]) => unknown).apply(client, args);
-    }
-
-    return value;
+    return (...args: unknown[]) =>
+      getDatabase().then((client) => {
+        const value = client[prop as keyof PrismaClient];
+        if (typeof value === "function") {
+          return (value as (...params: unknown[]) => unknown).apply(
+            client,
+            args
+          );
+        }
+        return value;
+      });
   },
 });
 
