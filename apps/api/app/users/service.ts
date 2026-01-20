@@ -21,9 +21,9 @@ export const usersService = {
   /**
    * Find a user by ID
    */
-  findById(id: string) {
+  findById(id: string, organizationId: string) {
     return database.user.findUnique({
-      where: { id },
+      where: { id, organizationId },
     });
   },
 

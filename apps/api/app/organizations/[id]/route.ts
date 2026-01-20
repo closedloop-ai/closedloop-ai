@@ -1,11 +1,8 @@
-import type { ApiResult } from "@repo/api/src/types/common";
 import type { Organization } from "@repo/api/src/types/organization";
-import { auth } from "@repo/auth/server";
-import type { NextResponse } from "next/server";
+import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
   forbiddenResponse,
-  type IdRouteParams,
   notFoundResponse,
   parseBody,
   successResponse,
@@ -13,50 +10,52 @@ import {
 import { updateOrganizationSchema } from "../schemas";
 import { organizationsService } from "../service";
 
-export async function GET(
-  _: Request,
-  { params }: IdRouteParams
-): Promise<NextResponse<ApiResult<Organization>>> {
-  try {
-    const { orgId } = await auth();
-    const { id } = await params;
+export const GET = withAuth<Organization, "/organizations/[id]">(
+  async ({ user }, _, params) => {
+    try {
+      const { id } = await params;
 
-    if (orgId !== id) {
-      return forbiddenResponse();
+      // Users can only fetch their own organization
+      if (id !== user.organizationId) {
+        return forbiddenResponse();
+      }
+
+      const organization = await organizationsService.findById(id);
+
+      if (!organization) {
+        return notFoundResponse("Organization");
+      }
+
+      return successResponse(organization as Organization);
+    } catch (error) {
+      return errorResponse("Failed to fetch organization", error);
     }
-
-    const organization = await organizationsService.findById(id);
-
-    if (!organization) {
-      return notFoundResponse("Organization");
-    }
-
-    return successResponse(organization as Organization);
-  } catch (error) {
-    return errorResponse("Failed to fetch organization", error);
   }
-}
+);
 
-export async function PUT(
-  request: Request,
-  { params }: IdRouteParams
-): Promise<NextResponse<ApiResult<Organization>>> {
-  try {
-    const { id } = await params;
+export const PUT = withAuth<Organization, "/organizations/[id]">(
+  async ({ user }, request, params) => {
+    try {
+      const { id } = await params;
 
-    const { body, errorResponse: parseError } = await parseBody(
-      request,
-      updateOrganizationSchema
-    );
-    if (parseError) {
-      return parseError;
+      // Users can only update their own organization
+      if (id !== user.organizationId) {
+        return forbiddenResponse();
+      }
+
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        updateOrganizationSchema
+      );
+      if (parseError) {
+        return parseError;
+      }
+
+      const organization = await organizationsService.update(id, body);
+
+      return successResponse(organization as Organization);
+    } catch (error) {
+      return errorResponse("Failed to update organization", error);
     }
-
-    const organization = await organizationsService.update(id, body);
-
-    // Prisma uses JsonValue for JSON, and we need a JsonObject.
-    return successResponse(organization as Organization);
-  } catch (error) {
-    return errorResponse("Failed to update organization", error);
   }
-}
+);

@@ -5,7 +5,7 @@ import type { NextResponse } from "next/server";
 import {
   buildArtifactScopeCondition,
   prepareArtifactVersion,
-} from "@/lib/artifact-utils";
+} from "@/app/artifacts/artifact-utils";
 import {
   errorResponse,
   type IdRouteParams,
