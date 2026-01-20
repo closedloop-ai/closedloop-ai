@@ -23,11 +23,6 @@ function getSigner(): Signer {
   }
 
   const env = keys();
-  console.log("[Database] Creating RDS Signer");
-  console.log("[Database] PGHOST:", env.PGHOST);
-  console.log("[Database] PGUSER:", env.PGUSER);
-  console.log("[Database] AWS_REGION:", env.AWS_REGION);
-  console.log("[Database] AWS_ROLE_ARN:", env.AWS_ROLE_ARN ? "set" : "missing");
 
   if (!(env.PGHOST && env.PGUSER && env.AWS_REGION && env.AWS_ROLE_ARN)) {
     throw new Error(
@@ -73,9 +68,6 @@ async function getPool(): Promise<pg.Pool> {
       })()
     : false;
 
-  console.log("[Database] Creating pool");
-  console.log("[Database] Mode:", isLocalhost ? "localhost" : "IAM");
-
   if (isLocalhost) {
     // Local development with DATABASE_URL
     const url = new URL(env.DATABASE_URL as string);
@@ -89,9 +81,7 @@ async function getPool(): Promise<pg.Pool> {
     // Vercel/production with IAM authentication
     const signer = getSigner();
 
-    console.log("[Database] Generating IAM token for connection");
     const token = await signer.getAuthToken();
-    console.log("[Database] Token generated successfully");
 
     // Build connection string with token (matches migration script pattern)
     const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
@@ -106,7 +96,6 @@ async function getPool(): Promise<pg.Pool> {
     });
   }
 
-  console.log("[Database] Pool created");
   return globalForPrisma.pool;
 }
 
@@ -119,7 +108,6 @@ async function getDatabase(): Promise<PrismaClient> {
     return globalForPrisma.prisma;
   }
 
-  console.log("[Database] Creating Prisma client");
   const pool = await getPool();
   const adapter = new PrismaPg(pool);
   globalForPrisma.prisma = new PrismaClient({ adapter });
