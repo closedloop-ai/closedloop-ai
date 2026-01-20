@@ -11,9 +11,41 @@ import { keys } from "./keys";
 export * from "./generated/client";
 
 /**
+ * Check if OIDC is available (either via env var or we're in local dev mode)
+ */
+function isOidcAvailable(): boolean {
+  const env = keys();
+  const isLocalhost = env.DATABASE_URL
+    ? (() => {
+        try {
+          const url = new URL(env.DATABASE_URL);
+          return url.hostname === "localhost" || url.hostname === "127.0.0.1";
+        } catch {
+          return false;
+        }
+      })()
+    : false;
+
+  // OIDC not needed for localhost
+  if (isLocalhost) {
+    return true;
+  }
+
+  // Check if OIDC token is available in environment
+  return !!process.env.VERCEL_OIDC_TOKEN;
+}
+
+/**
  * Initialize the database client. This must be called on server startup.
+ * If OIDC is not yet available, initialization is deferred to first request.
  */
 export async function initializeDatabase() {
+  if (!isOidcAvailable()) {
+    console.log(
+      "OIDC token not available at startup, database will be initialized on first request"
+    );
+    return;
+  }
   globalForPrisma.prisma ??= await getDatabase();
 }
 
@@ -21,16 +53,29 @@ export async function initializeDatabase() {
  * The database client.
  *
  * This is a trick that allows use to lazily initialize the database client, but still access
- * it through a normal global constant.
+ * it through a normal global constant. If the database hasn't been initialized yet (e.g., OIDC
+ * wasn't available at startup), it will be initialized on first access.
  */
 export const database = new Proxy({} as PrismaClient, {
   get(_target, prop) {
     if (!globalForPrisma.prisma) {
-      throw new Error("Database not initialized");
+      throw new Error(
+        "Database not initialized. Call initializeDatabase() first or ensure OIDC token is available."
+      );
     }
     return globalForPrisma.prisma[prop as keyof PrismaClient];
   },
 });
+
+/**
+ * Ensures the database is initialized. Call this at the start of request handlers
+ * that need database access. Safe to call multiple times.
+ */
+export async function ensureDatabase(): Promise<void> {
+  if (!globalForPrisma.prisma) {
+    globalForPrisma.prisma = await getDatabase();
+  }
+}
 
 /**
  * Gets or creates the Prisma Client.

@@ -4,6 +4,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { auth } from "@repo/auth/server";
+import { ensureDatabase } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import type { AppRouteHandlerRoutes } from "@/.next/types/routes";
@@ -79,6 +80,9 @@ export function withAuth<
     routeContext: RouteContext<TRoute>
   ): Promise<NextResponse<ApiResult<TResponse>>> => {
     try {
+      // Ensure database is initialized (handles OIDC token availability)
+      await ensureDatabase();
+
       const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
 
       if (!(clerkUserId && clerkOrgId)) {
