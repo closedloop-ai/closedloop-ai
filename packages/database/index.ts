@@ -36,15 +36,6 @@ function createLocalPool(): pg.Pool {
  * Creates a pg Pool for Vercel/production using RDS IAM authentication.
  */
 function createIamPool(): pg.Pool {
-  console.log("Creating IAM pool with:", {
-    host: env.PGHOST,
-    user: env.PGUSER,
-    database: env.PGDATABASE || "app",
-    port: env.PGPORT,
-    hasRoleArn: !!env.AWS_ROLE_ARN,
-    hasRegion: !!env.AWS_REGION,
-  });
-
   const signer = new Signer({
     hostname: env.PGHOST as string,
     port: Number(env.PGPORT),
@@ -65,28 +56,17 @@ function createIamPool(): pg.Pool {
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
     password: async () => {
-      try {
-        // Reuse token if it's still valid (refresh 1 minute before expiry)
-        const now = Date.now();
-        if (cachedToken && now < tokenExpiry - 60_000) {
-          console.log("Reusing cached IAM token");
-          return cachedToken;
-        }
-
-        console.log("Generating new IAM token...");
-        const start = Date.now();
-        const token = await signer.getAuthToken();
-        const duration = Date.now() - start;
-
-        cachedToken = token;
-        tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
-
-        console.log(`IAM token generated successfully in ${duration}ms`);
-        return token;
-      } catch (error) {
-        console.error("Failed to generate IAM token:", error);
-        throw error;
+      // Reuse token if it's still valid (refresh 1 minute before expiry)
+      const now = Date.now();
+      if (cachedToken && now < tokenExpiry - 60_000) {
+        return cachedToken;
       }
+
+      const token = await signer.getAuthToken();
+      cachedToken = token;
+      tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
+
+      return token;
     },
     port: Number(env.PGPORT),
     ssl: { rejectUnauthorized: false },
