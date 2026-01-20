@@ -49,7 +49,7 @@ export async function getArtifactById(
 export async function createArtifact(
   input: CreateArtifactInput
 ): Promise<ApiResult<Artifact>> {
-  const result = await apiClient.post<Artifact>("/api/artifacts", input);
+  const result = await apiClient.post<Artifact>("/artifacts", input);
 
   if (result.success) {
     if (input.workstreamId) {

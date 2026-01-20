@@ -49,7 +49,7 @@ export async function getWorkstreamById(
 export async function createWorkstream(
   input: CreateWorkstreamInput
 ): Promise<ApiResult<Workstream>> {
-  const result = await apiClient.post<Workstream>("/api/workstreams", input);
+  const result = await apiClient.post<Workstream>("/workstreams", input);
 
   if (result.success) {
     revalidatePath("/workstreams");
