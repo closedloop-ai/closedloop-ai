@@ -35,6 +35,7 @@ export type UpdateOrganizationInput = {
 // User types
 export type User = {
   id: string;
+  clerkId: string;
   organizationId: string;
   email: string;
   firstName: string | null;

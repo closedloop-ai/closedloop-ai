@@ -16,7 +16,7 @@ export async function getOrganizations(): Promise<ApiResult<Organization[]>> {
 export async function getOrganizationById(
   id: string
 ): Promise<ApiResult<Organization>> {
-  return await apiClient.get<Organization>(`/api/organizations/${id}`);
+  return await apiClient.get<Organization>(`/organizations/${id}`);
 }
 
 export async function createOrganization(
@@ -34,7 +34,7 @@ export async function updateOrganization(
 ): Promise<ApiResult<Organization>> {
   const { id, ...data } = input;
   const result = await apiClient.put<Organization>(
-    `/api/organizations/${id}`,
+    `/organizations/${id}`,
     data
   );
   if (result.success) {
@@ -48,7 +48,7 @@ export async function deleteOrganization(
   id: string
 ): Promise<ApiResult<{ deleted: true }>> {
   const result = await apiClient.delete<{ deleted: true }>(
-    `/api/organizations/${id}`
+    `/organizations/${id}`
   );
   if (result.success) {
     revalidatePath("/organizations");

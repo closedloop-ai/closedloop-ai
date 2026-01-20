@@ -7,7 +7,28 @@ import pg from "pg";
 import { PrismaClient } from "./generated/client";
 import { keys } from "./keys";
 
-const globalForPrisma = global as unknown as {
+// biome-ignore lint/performance/noBarrelFile: re-exporting
+export * from "./generated/client";
+
+export const database = await getDatabase();
+
+/**
+ * Gets or creates the Prisma Client.
+ * Uses global caching to reuse client across requests.
+ */
+async function getDatabase(): Promise<PrismaClient> {
+  if (globalForPrisma.prisma) {
+    return globalForPrisma.prisma;
+  }
+
+  const pool = await getPool();
+  const adapter = new PrismaPg(pool);
+  globalForPrisma.prisma = new PrismaClient({ adapter });
+
+  return globalForPrisma.prisma;
+}
+
+const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | null;
   pool: pg.Pool | null;
   signer: Signer | null;
@@ -99,45 +120,3 @@ async function getPool(): Promise<pg.Pool> {
 
   return globalForPrisma.pool;
 }
-
-/**
- * Gets or creates the Prisma Client.
- * Uses global caching to reuse client across requests.
- */
-async function getDatabase(): Promise<PrismaClient> {
-  if (globalForPrisma.prisma) {
-    return globalForPrisma.prisma;
-  }
-
-  const pool = await getPool();
-  const adapter = new PrismaPg(pool);
-  globalForPrisma.prisma = new PrismaClient({ adapter });
-
-  return globalForPrisma.prisma;
-}
-
-// Create a proxy that lazily initializes the client
-export const database = new Proxy({} as PrismaClient, {
-  get(_target, prop) {
-    if (prop === "then" || prop === "catch" || prop === "finally") {
-      // Don't intercept promise methods
-      return;
-    }
-
-    // Lazily initialize and delegate to actual client
-    return (...args: unknown[]) =>
-      getDatabase().then((client) => {
-        const value = client[prop as keyof PrismaClient];
-        if (typeof value === "function") {
-          return (value as (...params: unknown[]) => unknown).apply(
-            client,
-            args
-          );
-        }
-        return value;
-      });
-  },
-});
-
-// biome-ignore lint/performance/noBarrelFile: re-exporting
-export * from "./generated/client";
