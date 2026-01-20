@@ -10,10 +10,9 @@ const priorityBadgeVariants = cva(
     variants: {
       priority: {
         NOT_SET: "border-muted-foreground/30 bg-muted/50 text-muted-foreground",
-        LOW: "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300",
-        MEDIUM:
-          "border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
-        HIGH: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300",
+        LOW: "border-info/30 bg-info/10 text-info-foreground",
+        MEDIUM: "border-warning/30 bg-warning/10 text-warning-foreground",
+        HIGH: "border-destructive/30 bg-destructive/10 text-destructive-foreground",
       },
     },
     defaultVariants: {

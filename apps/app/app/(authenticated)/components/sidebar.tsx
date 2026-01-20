@@ -30,20 +30,19 @@ import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import {
   ChevronRightIcon,
+  ClipboardListIcon,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
   LightbulbIcon,
   MoreHorizontalIcon,
+  ScrollTextIcon,
   SendIcon,
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useState } from "react";
-import { CreateTeamModal } from "./create-team-modal";
 import { Search } from "./search";
-import { TeamsNav } from "./teams-nav";
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -75,6 +74,18 @@ const data = {
       url: "/my-documents",
       icon: FileTextIcon,
       disabled: true,
+    },
+    {
+      title: "PRD Library",
+      url: "/prds",
+      icon: ScrollTextIcon,
+      disabled: false,
+    },
+    {
+      title: "Implementation Plans",
+      url: "/implementation-plans",
+      icon: ClipboardListIcon,
+      disabled: false,
     },
     {
       title: "Members",
@@ -118,13 +129,6 @@ const data = {
 
 export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
   const sidebar = useSidebar();
-  const [createTeamOpen, setCreateTeamOpen] = useState(false);
-  const [teamsRefreshKey, setTeamsRefreshKey] = useState(0);
-
-  const handleTeamCreated = () => {
-    // Increment key to force TeamsNav to remount and refetch
-    setTeamsRefreshKey((k) => k + 1);
-  };
 
   return (
     <>
@@ -228,13 +232,6 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
             </SidebarMenu>
           </SidebarGroup>
 
-          {/* Your Teams Section */}
-          <TeamsNav
-            canAddTeam={true}
-            key={teamsRefreshKey}
-            onAddTeam={() => setCreateTeamOpen(true)}
-          />
-
           {/* Secondary Navigation (pushed to bottom) */}
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
@@ -298,11 +295,6 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset>{children}</SidebarInset>
-      <CreateTeamModal
-        onOpenChange={setCreateTeamOpen}
-        onTeamCreated={handleTeamCreated}
-        open={createTeamOpen}
-      />
     </>
   );
 };
