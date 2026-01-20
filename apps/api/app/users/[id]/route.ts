@@ -1,79 +1,60 @@
-import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
-import { auth } from "@repo/auth/server";
-import { database } from "@repo/database";
-import type { NextResponse } from "next/server";
+import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
-  forbiddenResponse,
-  type IdRouteParams,
   notFoundResponse,
   parseBody,
   successResponse,
-  unauthorizedResponse,
 } from "@/lib/route-utils";
 import { updateUserSchema } from "../schemas";
 import { usersService } from "../service";
 
-export async function GET(
-  _: Request,
-  { params }: IdRouteParams
-): Promise<NextResponse<ApiResult<User>>> {
-  try {
-    const { orgId } = await auth();
-    const { id } = await params;
+export const GET = withAuth<User, "/users/[id]">(
+  async ({ user }, _, params) => {
+    try {
+      const { id } = await params;
 
-    if (orgId !== id) {
-      return forbiddenResponse();
+      // Users can only fetch users in their organization
+      const targetUser = await usersService.findById(id, user.organizationId);
+
+      if (!targetUser) {
+        return notFoundResponse("User");
+      }
+
+      return successResponse(targetUser);
+    } catch (error) {
+      return errorResponse("Failed to fetch user", error);
     }
-
-    const user = await usersService.findById(id);
-
-    if (!user) {
-      return notFoundResponse("User");
-    }
-
-    return successResponse(user);
-  } catch (error) {
-    return errorResponse("Failed to fetch user", error);
   }
-}
+);
 
-export async function PUT(
-  request: Request,
-  { params }: IdRouteParams
-): Promise<NextResponse<ApiResult<User>>> {
-  try {
-    const { orgId } = await auth();
-    if (!orgId) {
-      return unauthorizedResponse();
+export const PUT = withAuth<User, "/users/[id]">(
+  async ({ user }, request, params) => {
+    try {
+      const { id } = await params;
+
+      const existing = await usersService.findById(id, user.organizationId);
+
+      if (!existing) {
+        return notFoundResponse("User");
+      }
+
+      const { body, errorResponse: parseError } = await parseBody(
+        request,
+        updateUserSchema
+      );
+      if (parseError) {
+        return parseError;
+      }
+
+      const updatedUser = await usersService.update(id, body);
+
+      return successResponse(updatedUser as User);
+    } catch (error) {
+      return errorResponse("Failed to update user", error);
     }
-
-    const { id } = await params;
-
-    const existing = await database.user.findUnique({
-      where: { id, organizationId: orgId },
-    });
-
-    if (!existing) {
-      return notFoundResponse("User");
-    }
-
-    const { body, errorResponse: parseError } = await parseBody(
-      request,
-      updateUserSchema
-    );
-    if (parseError) {
-      return parseError;
-    }
-
-    const user = await usersService.update(id, body);
-
-    return successResponse(user as User);
-  } catch (error) {
-    return errorResponse("Failed to update user", error);
   }
-}
+);
 
 // Note: DELETE intentionally not implemented - users should be deactivated, not deleted
 // This preserves audit trail and referential integrity

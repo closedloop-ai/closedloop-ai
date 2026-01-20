@@ -753,12 +753,6 @@ importers:
       '@aws-sdk/rds-signer':
         specifier: ^3.971.0
         version: 3.971.0
-      '@neondatabase/serverless':
-        specifier: ^1.0.2
-        version: 1.0.2
-      '@prisma/adapter-neon':
-        specifier: 7.1.0
-        version: 7.1.0
       '@prisma/adapter-pg':
         specifier: ^7.2.0
         version: 7.2.0
@@ -780,12 +774,6 @@ importers:
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
-      undici:
-        specifier: ^7.18.2
-        version: 7.18.2
-      ws:
-        specifier: ^8.18.3
-        version: 8.18.3(bufferutil@4.0.9)
       zod:
         specifier: ^4.3.5
         version: 4.3.5
@@ -799,9 +787,6 @@ importers:
       '@types/pg':
         specifier: ^8.16.0
         version: 8.16.0
-      '@types/ws':
-        specifier: ^8.18.1
-        version: 8.18.1
       bufferutil:
         specifier: ^4.0.9
         version: 4.0.9
@@ -3133,10 +3118,6 @@ packages:
   '@neoconfetti/react@1.0.0':
     resolution: {integrity: sha512-klcSooChXXOzIm+SE5IISIAn3bYzYfPjbX7D7HoqZL84oAfgREeSg5vSIaSFH+DaGzzvImTyWe1OyrJ67vik4A==}
 
-  '@neondatabase/serverless@1.0.2':
-    resolution: {integrity: sha512-I5sbpSIAHiB+b6UttofhrN/UJXII+4tZPAq1qugzwCwLIL8EZLV7F/JyHUrEIiGgQpEXzpnjlJ+zwcEhheGvCw==}
-    engines: {node: '>=19.0.0'}
-
   '@next/bundle-analyzer@16.0.7':
     resolution: {integrity: sha512-Um2YA3TSQND+DpqlMDuPZsdjdpcgLzo1wF3zx4zcBCLecS7ucP7O9YFqvHhg000HXTgt++KIjZ9FUwyJSKk1Kw==}
 
@@ -3641,9 +3622,6 @@ packages:
   '@posthog/core@1.7.1':
     resolution: {integrity: sha512-kjK0eFMIpKo9GXIbts8VtAknsoZ18oZorANdtuTj1CbgS28t4ZVq//HAWhnxEuXRTrtkd+SUJ6Ux3j2Af8NCuA==}
 
-  '@prisma/adapter-neon@7.1.0':
-    resolution: {integrity: sha512-gxxNjkFEyM9rSOCD5uBnvFabusIgcPpZFsvSVSvXJvhxr+/e1H90HJvZQYQJQFSYr6Datu2B9pZIvTdbSztSfg==}
-
   '@prisma/adapter-pg@7.2.0':
     resolution: {integrity: sha512-euIdQ13cRB2wZ3jPsnDnFhINquo1PYFPCg6yVL8b2rp3EdinQHsX9EDdCtRr489D5uhphcRk463OdQAFlsCr0w==}
 
@@ -3676,9 +3654,6 @@ packages:
 
   '@prisma/dev@0.15.0':
     resolution: {integrity: sha512-KhWaipnFlS/fWEs6I6Oqjcy2S08vKGmxJ5LexqUl/3Ve0EgLUsZwdKF0MvqPM5F5ttw8GtfZarjM5y7VLwv9Ow==}
-
-  '@prisma/driver-adapter-utils@7.1.0':
-    resolution: {integrity: sha512-AlVLzeXkw81+47MvQ9M8DvTiHkRfJ8xzklTbYjpskb0cTTDVHboTI/OVwT6Wcep/bNvfLKJYO0nylBiM5rxgww==}
 
   '@prisma/driver-adapter-utils@7.2.0':
     resolution: {integrity: sha512-gzrUcbI9VmHS24Uf+0+7DNzdIw7keglJsD5m/MHxQOU68OhGVzlphQRobLiDMn8CHNA2XN8uugwKjudVtnfMVQ==}
@@ -5790,9 +5765,6 @@ packages:
 
   '@types/webpack@5.28.5':
     resolution: {integrity: sha512-wR87cgvxj3p6D0Crt1r5avwqffqPXUkNlnQ1mjU93G7gCuFjufZR4I6j8cz5g1F1tTYpfOOFvly+cmIQwL9wvw==}
-
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
@@ -11287,10 +11259,6 @@ packages:
     resolution: {integrity: sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==}
     engines: {node: '>=14.0'}
 
-  undici@7.18.2:
-    resolution: {integrity: sha512-y+8YjDFzWdQlSE9N5nzKMT3g4a5UBX1HKowfdXh0uvAnTaqqwqB92Jt4UXBAeKekDs5IaDKyJFR4X1gYVCgXcw==}
-    engines: {node: '>=20.18.1'}
-
   unicode-canonical-property-names-ecmascript@2.0.1:
     resolution: {integrity: sha512-dA8WbNeb2a6oQzAQ55YlT5vQAWGV9WXOsi3SskE3bcCdM0P4SDd+24zS/OCacdRq5BkdsRj9q3Pg6YyQoxIGqg==}
     engines: {node: '>=4'}
@@ -14250,11 +14218,6 @@ snapshots:
 
   '@neoconfetti/react@1.0.0': {}
 
-  '@neondatabase/serverless@1.0.2':
-    dependencies:
-      '@types/node': 22.18.8
-      '@types/pg': 8.16.0
-
   '@next/bundle-analyzer@16.0.7(bufferutil@4.0.9)':
     dependencies:
       webpack-bundle-analyzer: 4.10.1(bufferutil@4.0.9)
@@ -14811,12 +14774,6 @@ snapshots:
     dependencies:
       cross-spawn: 7.0.6
 
-  '@prisma/adapter-neon@7.1.0':
-    dependencies:
-      '@neondatabase/serverless': 1.0.2
-      '@prisma/driver-adapter-utils': 7.1.0
-      postgres-array: 3.0.4
-
   '@prisma/adapter-pg@7.2.0':
     dependencies:
       '@prisma/driver-adapter-utils': 7.2.0
@@ -14870,10 +14827,6 @@ snapshots:
       zeptomatch: 2.0.2
     transitivePeerDependencies:
       - typescript
-
-  '@prisma/driver-adapter-utils@7.1.0':
-    dependencies:
-      '@prisma/debug': 7.1.0
 
   '@prisma/driver-adapter-utils@7.2.0':
     dependencies:
@@ -17415,10 +17368,6 @@ snapshots:
       - uglify-js
       - webpack-cli
     optional: true
-
-  '@types/ws@8.18.1':
-    dependencies:
-      '@types/node': 25.0.9
 
   '@ungap/structured-clone@1.3.0': {}
 
@@ -23925,8 +23874,6 @@ snapshots:
   undici@5.29.0:
     dependencies:
       '@fastify/busboy': 2.1.1
-
-  undici@7.18.2: {}
 
   unicode-canonical-property-names-ecmascript@2.0.1: {}
 
