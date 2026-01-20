@@ -2,7 +2,6 @@ import "server-only";
 
 import { Signer } from "@aws-sdk/rds-signer";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { awsCredentialsProvider } from "@vercel/functions/oidc";
 import pg from "pg";
 import { PrismaClient } from "./generated/client";
 import { keys } from "./keys";
@@ -58,8 +57,12 @@ const globalForPrisma = globalThis as unknown as {
 /**
  * Gets or creates the RDS Signer for IAM authentication.
  * Cached globally to reuse across requests.
+ *
+ * Note: Uses dynamic import for awsCredentialsProvider to avoid loading
+ * OIDC code at module initialization time (which fails during instrumentation
+ * when there's no request context).
  */
-function getSigner(): Signer {
+async function getSigner(): Promise<Signer> {
   if (globalForPrisma.signer) {
     return globalForPrisma.signer;
   }
@@ -71,6 +74,9 @@ function getSigner(): Signer {
       "Missing required IAM credentials: PGHOST, PGUSER, AWS_REGION, AWS_ROLE_ARN"
     );
   }
+
+  // Dynamic import to avoid OIDC token check at module load time
+  const { awsCredentialsProvider } = await import("@vercel/functions/oidc");
 
   globalForPrisma.signer = new Signer({
     hostname: env.PGHOST,
@@ -121,7 +127,7 @@ async function getPool(): Promise<pg.Pool> {
     });
   } else {
     // Vercel/production with IAM authentication
-    const signer = getSigner();
+    const signer = await getSigner();
 
     const token = await signer.getAuthToken();
 
