@@ -8,7 +8,8 @@
     "prebuild": "node scripts/migrate.mjs",
     "build": "prisma generate --no-hints --schema=./prisma/schema.prisma",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.971.0",
@@ -33,6 +34,7 @@
     "bufferutil": "^4.0.9",
     "dotenv": "^17.2.3",
     "prisma": "7.1.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.9.3"
   }
 }
