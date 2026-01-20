@@ -102,6 +102,13 @@ export function unauthorizedResponse(): NextResponse<ApiResult<never>> {
 }
 
 /**
+ * Create a forbidden response.
+ */
+export function forbiddenResponse(): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure("Forbidden"), { status: 403 });
+}
+
+/**
  * Create a standard delete success response.
  */
 export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {

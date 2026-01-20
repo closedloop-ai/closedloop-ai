@@ -6,8 +6,10 @@ import type { JsonObject } from "./common";
 
 export type Organization = {
   id: string;
+  clerkId: string;
   name: string;
   slug: string;
+  active: boolean;
   anthropicApiKey: string | null;
   settings: JsonObject;
   createdAt: Date;
@@ -15,17 +17,19 @@ export type Organization = {
 };
 
 export type CreateOrganizationInput = {
+  clerkId: string;
   name: string;
   slug: string;
-  anthropicApiKey?: string;
+  anthropicApiKey?: string | null;
 };
 
 export type UpdateOrganizationInput = {
   id: string;
   name?: string;
   slug?: string;
-  anthropicApiKey?: string;
+  anthropicApiKey?: string | null;
   settings?: JsonObject;
+  active?: boolean;
 };
 
 // User types
@@ -33,32 +37,41 @@ export type User = {
   id: string;
   organizationId: string;
   email: string;
-  name: string | null;
+  firstName: string | null;
+  lastName: string | null;
   avatarUrl: string | null;
+  phoneNumber: string | null;
   role: ApproverRole;
-  linearUserId: string | null;
-  slackUserId: string | null;
+  linearId: string | null;
+  slackId: string | null;
   githubUsername: string | null;
+  active: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
 
 export type CreateUserInput = {
+  clerkId: string;
   organizationId: string;
   email: string;
-  name?: string;
-  avatarUrl?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
   role?: ApproverRole;
 };
 
 export type UpdateUserInput = {
   id: string;
-  name?: string;
-  avatarUrl?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
   role?: ApproverRole;
-  linearUserId?: string;
-  slackUserId?: string;
-  githubUsername?: string;
+  linearId?: string | null;
+  slackId?: string | null;
+  githubUsername?: string | null;
+  active?: boolean;
 };
 
 // Project types
