@@ -129,6 +129,8 @@ enum GitHubActionStatus {
 
 model Organization {
   id              String   @id @default(cuid())
+  clerkId         String   @unique @map("clerk_id")
+  active          Boolean  @default(true) @map("active")
   name            String
   slug            String   @unique
   anthropicApiKey String?  @map("anthropic_api_key")
@@ -145,14 +147,17 @@ model Organization {
 
 model User {
   id             String       @id @default(cuid())
+  clerkId        String       @unique @map("clerk_id")
   organizationId String       @map("organization_id")
-  clerkId        String?      @unique @map("clerk_user_id")
+  active         Boolean      @default(true) @map("active")
   email          String
-  name           String?
+  firstName      String?      @map("first_name")
+  lastName       String?      @map("last_name")
   avatarUrl      String?      @map("avatar_url")
+  phoneNumber    String?      @map("phone_number")
   role           ApproverRole @default(ENGINEER)
-  linearUserId   String?      @map("linear_user_id")
-  slackUserId    String?      @map("slack_user_id")
+  linearId       String?      @map("linear_id")
+  slackId        String?      @map("slack_id")
   githubUsername String?      @map("github_username")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
@@ -161,10 +166,8 @@ model User {
   organization Organization @relation(fields: [organizationId], references: [id])
 
   @@unique([organizationId, email])
-  @@index([organizationId])
-  @@index([clerkId])
-  @@index([linearUserId])
-  @@index([slackUserId])
+  @@index([linearId])
+  @@index([slackId])
   @@index([githubUsername])
   @@map("users")
 }
