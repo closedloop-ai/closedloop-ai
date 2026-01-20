@@ -35,6 +35,16 @@ export async function ensureDatabase(): Promise<void> {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Internal implementation
+// -----------------------------------------------------------------------------
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | null;
+  pool: pg.Pool | null;
+  signer: Signer | null;
+};
+
 /**
  * Gets or creates the Prisma Client.
  *
@@ -51,12 +61,6 @@ async function getDatabase(): Promise<PrismaClient> {
 
   return globalForPrisma.prisma;
 }
-
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | null;
-  pool: pg.Pool | null;
-  signer: Signer | null;
-};
 
 /**
  * Gets or creates the RDS Signer for IAM authentication.
