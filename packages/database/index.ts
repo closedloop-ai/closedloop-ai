@@ -36,6 +36,15 @@ function createLocalPool(): pg.Pool {
  * Creates a pg Pool for Vercel/production using RDS IAM authentication.
  */
 function createIamPool(): pg.Pool {
+  console.log("Creating IAM pool with:", {
+    host: env.PGHOST,
+    user: env.PGUSER,
+    database: env.PGDATABASE || "app",
+    port: env.PGPORT,
+    hasRoleArn: !!env.AWS_ROLE_ARN,
+    hasRegion: !!env.AWS_REGION,
+  });
+
   const signer = new Signer({
     hostname: env.PGHOST as string,
     port: Number(env.PGPORT),
@@ -51,7 +60,16 @@ function createIamPool(): pg.Pool {
     host: env.PGHOST,
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
-    password: () => signer.getAuthToken(),
+    password: async () => {
+      try {
+        const token = await signer.getAuthToken();
+        console.log("IAM token generated successfully");
+        return token;
+      } catch (error) {
+        console.error("Failed to generate IAM token:", error);
+        throw error;
+      }
+    },
     port: Number(env.PGPORT),
     ssl: { rejectUnauthorized: false },
     max: 20,
