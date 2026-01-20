@@ -1,6 +1,6 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
-import { database } from "@repo/database";
+import { database, ensureDatabase } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
   getWorkflowRunInputs,
@@ -285,6 +285,7 @@ export const POST = async (request: Request): Promise<Response> => {
   const s3Configured = isS3Configured();
 
   try {
+    await ensureDatabase();
     const { body, signature, eventType } = await validateRequest(request);
 
     if (!signature) {

@@ -10,26 +10,39 @@ import { keys } from "./keys";
 export * from "./generated/client";
 
 /**
- * Initialize the database client. This must be called on server startup.
- */
-export async function initializeDatabase() {
-  globalForPrisma.prisma ??= await getDatabase();
-}
-
-/**
  * The database client.
  *
  * This is a trick that allows use to lazily initialize the database client, but still access
- * it through a normal global constant.
+ * it through a normal global constant. Requires ensureDatabase() to be called first.
  */
 export const database = new Proxy({} as PrismaClient, {
   get(_target, prop) {
     if (!globalForPrisma.prisma) {
-      throw new Error("Database not initialized");
+      throw new Error("Database not initialized. Call ensureDatabase() first.");
     }
     return globalForPrisma.prisma[prop as keyof PrismaClient];
   },
 });
+
+/**
+ * Ensures the database is initialized. Call this at the start of request handlers
+ * that need database access. Safe to call multiple times.
+ */
+export async function ensureDatabase(): Promise<void> {
+  if (!globalForPrisma.prisma) {
+    globalForPrisma.prisma = await getDatabase();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Internal implementation
+// -----------------------------------------------------------------------------
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | null;
+  pool: pg.Pool | null;
+  signer: Signer | null;
+};
 
 /**
  * Gets or creates the Prisma Client.
@@ -47,12 +60,6 @@ async function getDatabase(): Promise<PrismaClient> {
 
   return globalForPrisma.prisma;
 }
-
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | null;
-  pool: pg.Pool | null;
-  signer: Signer | null;
-};
 
 /**
  * Gets or creates the RDS Signer for IAM authentication.
