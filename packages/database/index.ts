@@ -34,7 +34,7 @@ function createLocalPool(): pg.Pool {
 
 /**
  * Creates a pg Pool for Vercel/production using RDS IAM authentication.
- * Matches the migration script pattern exactly.
+ * Pre-generates token to avoid cold start issues.
  */
 function createIamPool(): pg.Pool {
   const signer = new Signer({
@@ -50,9 +50,23 @@ function createIamPool(): pg.Pool {
 
   let currentToken: string | null = null;
   let tokenExpiry = 0;
+  let tokenPromise: Promise<string> | null = null;
 
-  // Get token synchronously using a Promise that we await in the password callback
+  // Eagerly generate first token to avoid cold start connection failures
+  tokenPromise = signer.getAuthToken().then((token) => {
+    currentToken = token;
+    tokenExpiry = Date.now() + 15 * 60 * 1000; // 15 min validity
+    tokenPromise = null; // Clear promise after first token
+    return token;
+  });
+
+  // Get token - reuses if valid, otherwise generates new
   async function getToken(): Promise<string> {
+    // If token is being generated, wait for it
+    if (tokenPromise) {
+      return tokenPromise;
+    }
+
     const now = Date.now();
 
     // Reuse token if still valid (refresh 1 min before expiry)
@@ -60,21 +74,19 @@ function createIamPool(): pg.Pool {
       return currentToken;
     }
 
-    // Generate new token (same as migration script)
+    // Generate new token
     const token = await signer.getAuthToken();
     currentToken = token;
-    tokenExpiry = now + 15 * 60 * 1000; // Tokens valid for 15 minutes
+    tokenExpiry = now + 15 * 60 * 1000;
 
     return token;
   }
 
-  // Use connection string format exactly like migration script
   const pool = new pg.Pool({
     host: env.PGHOST,
     port: Number(env.PGPORT),
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
-    // Password callback - must return promise
     password: getToken,
     ssl: {
       rejectUnauthorized: false,
