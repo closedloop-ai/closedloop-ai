@@ -34,6 +34,7 @@ function createLocalPool(): pg.Pool {
 
 /**
  * Creates a pg Pool for Vercel/production using RDS IAM authentication.
+ * Matches the migration script pattern exactly.
  */
 function createIamPool(): pg.Pool {
   const signer = new Signer({
@@ -47,45 +48,40 @@ function createIamPool(): pg.Pool {
     }),
   });
 
-  // Token cache - IAM tokens are valid for 15 minutes
-  let cachedToken: string | null = null;
+  let currentToken: string | null = null;
   let tokenExpiry = 0;
 
+  // Get token synchronously using a Promise that we await in the password callback
+  async function getToken(): Promise<string> {
+    const now = Date.now();
+
+    // Reuse token if still valid (refresh 1 min before expiry)
+    if (currentToken && now < tokenExpiry - 60_000) {
+      return currentToken;
+    }
+
+    // Generate new token (same as migration script)
+    const token = await signer.getAuthToken();
+    currentToken = token;
+    tokenExpiry = now + 15 * 60 * 1000; // Tokens valid for 15 minutes
+
+    return token;
+  }
+
+  // Use connection string format exactly like migration script
   const pool = new pg.Pool({
     host: env.PGHOST,
+    port: Number(env.PGPORT),
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
-    password: async () => {
-      // Reuse token if it's still valid (refresh 1 minute before expiry)
-      const now = Date.now();
-      if (cachedToken && now < tokenExpiry - 60_000) {
-        return cachedToken;
-      }
-
-      try {
-        const token = await signer.getAuthToken();
-        cachedToken = token;
-        tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
-        return token;
-      } catch (error) {
-        console.error("[DATABASE] Failed to generate IAM token:", error);
-        throw error;
-      }
+    // Password callback - must return promise
+    password: getToken,
+    ssl: {
+      rejectUnauthorized: false,
     },
-    port: Number(env.PGPORT),
-    ssl: { rejectUnauthorized: false },
     max: 20,
-    connectionTimeoutMillis: 30_000, // 30 second timeout for connections
+    connectionTimeoutMillis: 30_000,
     idleTimeoutMillis: 30_000,
-  });
-
-  // Log connection errors
-  pool.on("error", (err) => {
-    console.error("[DATABASE] Pool error:", err);
-  });
-
-  pool.on("connect", () => {
-    console.log("[DATABASE] Successfully connected to database");
   });
 
   return pool;
