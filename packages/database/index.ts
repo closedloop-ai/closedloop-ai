@@ -56,14 +56,32 @@ function createIamPool(): pg.Pool {
     }),
   });
 
+  // Token cache - IAM tokens are valid for 15 minutes
+  let cachedToken: string | null = null;
+  let tokenExpiry = 0;
+
   return new pg.Pool({
     host: env.PGHOST,
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
     password: async () => {
       try {
+        // Reuse token if it's still valid (refresh 1 minute before expiry)
+        const now = Date.now();
+        if (cachedToken && now < tokenExpiry - 60_000) {
+          console.log("Reusing cached IAM token");
+          return cachedToken;
+        }
+
+        console.log("Generating new IAM token...");
+        const start = Date.now();
         const token = await signer.getAuthToken();
-        console.log("IAM token generated successfully");
+        const duration = Date.now() - start;
+
+        cachedToken = token;
+        tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
+
+        console.log(`IAM token generated successfully in ${duration}ms`);
         return token;
       } catch (error) {
         console.error("Failed to generate IAM token:", error);
@@ -73,6 +91,8 @@ function createIamPool(): pg.Pool {
     port: Number(env.PGPORT),
     ssl: { rejectUnauthorized: false },
     max: 20,
+    connectionTimeoutMillis: 30_000, // 30 second timeout for connections
+    idleTimeoutMillis: 30_000,
   });
 }
 
