@@ -7,7 +7,10 @@ import pg from "pg";
 import { PrismaClient } from "./generated/client";
 import { keys } from "./keys";
 
-const globalForPrisma = global as unknown as { prisma: PrismaClient };
+const globalForPrisma = global as unknown as {
+  prisma: PrismaClient | null;
+  prismaPromise: Promise<PrismaClient> | null;
+};
 
 const env = keys();
 
@@ -34,9 +37,9 @@ function createLocalPool(): pg.Pool {
 
 /**
  * Creates a pg Pool for Vercel/production using RDS IAM authentication.
- * Pre-generates token to avoid cold start issues.
+ * Uses connection string with token (same as migration script).
  */
-function createIamPool(): pg.Pool {
+async function createIamPool(): Promise<pg.Pool> {
   const signer = new Signer({
     hostname: env.PGHOST as string,
     port: Number(env.PGPORT),
@@ -48,68 +51,62 @@ function createIamPool(): pg.Pool {
     }),
   });
 
-  let currentToken: string | null = null;
-  let tokenExpiry = 0;
-  let tokenPromise: Promise<string> | null = null;
+  // Generate token (same as migration script)
+  const token = await signer.getAuthToken();
 
-  // Eagerly generate first token to avoid cold start connection failures
-  tokenPromise = signer.getAuthToken().then((token) => {
-    currentToken = token;
-    tokenExpiry = Date.now() + 15 * 60 * 1000; // 15 min validity
-    tokenPromise = null; // Clear promise after first token
-    return token;
-  });
+  // Build connection string with token (same as migration script)
+  const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
+    token
+  )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}?sslmode=require`;
 
-  // Get token - reuses if valid, otherwise generates new
-  async function getToken(): Promise<string> {
-    // If token is being generated, wait for it
-    if (tokenPromise) {
-      return tokenPromise;
-    }
-
-    const now = Date.now();
-
-    // Reuse token if still valid (refresh 1 min before expiry)
-    if (currentToken && now < tokenExpiry - 60_000) {
-      return currentToken;
-    }
-
-    // Generate new token
-    const token = await signer.getAuthToken();
-    currentToken = token;
-    tokenExpiry = now + 15 * 60 * 1000;
-
-    return token;
-  }
-
-  const pool = new pg.Pool({
-    host: env.PGHOST,
-    port: Number(env.PGPORT),
-    user: env.PGUSER,
-    database: env.PGDATABASE || "app",
-    password: getToken,
-    ssl: {
-      rejectUnauthorized: false,
-    },
+  return new pg.Pool({
+    connectionString,
     max: 20,
     connectionTimeoutMillis: 30_000,
     idleTimeoutMillis: 30_000,
   });
-
-  return pool;
 }
 
-const createClient = (): PrismaClient => {
-  const pool = isLocalhost ? createLocalPool() : createIamPool();
+async function createClient(): Promise<PrismaClient> {
+  const pool = isLocalhost ? createLocalPool() : await createIamPool();
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });
-};
-
-export const database = globalForPrisma.prisma || createClient();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = database;
 }
+
+// Initialize client on first access
+function getDatabase(): Promise<PrismaClient> {
+  if (globalForPrisma.prisma) {
+    return Promise.resolve(globalForPrisma.prisma);
+  }
+
+  if (!globalForPrisma.prismaPromise) {
+    globalForPrisma.prismaPromise = createClient().then((client) => {
+      globalForPrisma.prisma = client;
+      return client;
+    });
+  }
+
+  return globalForPrisma.prismaPromise;
+}
+
+// Create a proxy that lazily initializes the client
+export const database = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    if (prop === "then" || prop === "catch" || prop === "finally") {
+      // Don't intercept promise methods
+      return;
+    }
+
+    return (...args: unknown[]) =>
+      getDatabase().then((client) => {
+        const value = client[prop as keyof PrismaClient];
+        if (typeof value === "function") {
+          return (value as (...params: unknown[]) => unknown)(...args);
+        }
+        return value;
+      });
+  },
+});
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting
 export * from "./generated/client";
