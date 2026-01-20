@@ -12,8 +12,6 @@
   },
   "dependencies": {
     "@aws-sdk/rds-signer": "^3.971.0",
-    "@neondatabase/serverless": "^1.0.2",
-    "@prisma/adapter-neon": "7.1.0",
     "@prisma/adapter-pg": "^7.2.0",
     "@prisma/client": "7.1.0",
     "@prisma/client-runtime-utils": "^7.1.0",
@@ -21,15 +19,12 @@
     "@vercel/functions": "^3.3.6",
     "pg": "^8.16.3",
     "server-only": "^0.0.1",
-    "undici": "^7.18.2",
-    "ws": "^8.18.3",
     "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "25.0.9",
     "@types/pg": "^8.16.0",
-    "@types/ws": "^8.18.1",
     "bufferutil": "^4.0.9",
     "dotenv": "^17.2.3",
     "prisma": "7.1.0",

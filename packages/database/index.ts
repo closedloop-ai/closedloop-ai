@@ -10,10 +10,31 @@ import { keys } from "./keys";
 // biome-ignore lint/performance/noBarrelFile: re-exporting
 export * from "./generated/client";
 
-export const database = await getDatabase();
+/**
+ * Initialize the database client. This must be called on server startup.
+ */
+export async function initializeDatabase() {
+  globalForPrisma.prisma ??= await getDatabase();
+}
+
+/**
+ * The database client.
+ *
+ * This is a trick that allows use to lazily initialize the database client, but still access
+ * it through a normal global constant.
+ */
+export const database = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    if (!globalForPrisma.prisma) {
+      throw new Error("Database not initialized");
+    }
+    return globalForPrisma.prisma[prop as keyof PrismaClient];
+  },
+});
 
 /**
  * Gets or creates the Prisma Client.
+ *
  * Uses global caching to reuse client across requests.
  */
 async function getDatabase(): Promise<PrismaClient> {
