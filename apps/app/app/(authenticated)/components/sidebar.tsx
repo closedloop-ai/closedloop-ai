@@ -29,18 +29,21 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import {
-  AnchorIcon,
-  BookOpenIcon,
   ChevronRightIcon,
-  ClipboardListIcon,
   FileTextIcon,
+  InboxIcon,
   LifeBuoyIcon,
+  LightbulbIcon,
+  MoreHorizontalIcon,
   SendIcon,
-  Settings2Icon,
+  UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { useState } from "react";
+import { CreateTeamModal } from "./create-team-modal";
 import { Search } from "./search";
+import { TeamsNav } from "./teams-nav";
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -52,85 +55,76 @@ const data = {
     email: "m@example.com",
     avatar: "/avatars/shadcn.jpg",
   },
-  navMain: [
+  // Workspace section - matches the design
+  workspace: [
     {
-      title: "PRD Library",
-      url: "/prds",
+      title: "Inbox",
+      url: "/inbox",
+      icon: InboxIcon,
+      badge: 1, // notification count
+      disabled: true,
+    },
+    {
+      title: "Initiatives",
+      url: "/initiatives",
+      icon: LightbulbIcon,
+      disabled: true,
+    },
+    {
+      title: "My Documents",
+      url: "/my-documents",
       icon: FileTextIcon,
+      disabled: true,
     },
     {
-      title: "Implementation Plans",
-      url: "/implementation-plans",
-      icon: ClipboardListIcon,
+      title: "Members",
+      url: "/members",
+      icon: UsersIcon,
+      disabled: true,
     },
     {
-      title: "Documentation",
+      title: "More",
       url: "#",
-      icon: BookOpenIcon,
+      icon: MoreHorizontalIcon,
       items: [
         {
-          title: "Introduction",
-          url: "#",
+          title: "Webhooks",
+          url: "/webhooks",
+          disabled: false,
         },
         {
-          title: "Get Started",
-          url: "#",
-        },
-        {
-          title: "Tutorials",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Settings",
-      url: "#",
-      icon: Settings2Icon,
-      items: [
-        {
-          title: "General",
-          url: "#",
-        },
-        {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Billing",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
+          title: "Settings",
+          url: "/settings",
+          disabled: false,
         },
       ],
     },
   ],
   navSecondary: [
     {
-      title: "Webhooks",
-      url: "/webhooks",
-      icon: AnchorIcon,
-    },
-    {
       title: "Support",
       url: "#",
       icon: LifeBuoyIcon,
+      disabled: true,
     },
     {
       title: "Feedback",
       url: "#",
       icon: SendIcon,
+      disabled: true,
     },
   ],
 };
 
 export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
   const sidebar = useSidebar();
+  const [createTeamOpen, setCreateTeamOpen] = useState(false);
+  const [teamsRefreshKey, setTeamsRefreshKey] = useState(0);
+
+  const handleTeamCreated = () => {
+    // Increment key to force TeamsNav to remount and refetch
+    setTeamsRefreshKey((k) => k + 1);
+  };
 
   return (
     <>
@@ -151,24 +145,48 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarHeader>
         <Search />
         <SidebarContent>
+          {/* Workspace Section */}
           <SidebarGroup>
-            <SidebarGroupLabel>Platform</SidebarGroupLabel>
+            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
-              {data.navMain.map((item, index) => (
+              {data.workspace.map((item, index) => (
                 <Collapsible
                   asChild
-                  defaultOpen={
-                    (item as { isActive?: boolean }).isActive ?? false
-                  }
-                  id={`nav-collapsible-${index}`}
+                  defaultOpen={false}
+                  id={`workspace-collapsible-${index}`}
                   key={item.title}
                 >
                   <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip={item.title}>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
+                    <SidebarMenuButton
+                      asChild={!item.disabled}
+                      className={cn(
+                        item.disabled
+                          ? "pointer-events-none cursor-not-allowed opacity-50"
+                          : ""
+                      )}
+                      tooltip={item.title}
+                    >
+                      {item.disabled ? (
+                        <span className="flex items-center gap-2">
+                          <item.icon />
+                          <span>{item.title}</span>
+                          {item.badge ? (
+                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
+                              {item.badge}
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <Link href={item.url}>
+                          <item.icon />
+                          <span>{item.title}</span>
+                          {item.badge ? (
+                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                              {item.badge}
+                            </span>
+                          ) : null}
+                        </Link>
+                      )}
                     </SidebarMenuButton>
                     {item.items?.length ? (
                       <>
@@ -182,10 +200,21 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
                           <SidebarMenuSub>
                             {item.items?.map((subItem) => (
                               <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton asChild>
-                                  <Link href={subItem.url}>
+                                <SidebarMenuSubButton
+                                  asChild={!subItem.disabled}
+                                  className={cn(
+                                    subItem.disabled
+                                      ? "pointer-events-none cursor-not-allowed opacity-50"
+                                      : ""
+                                  )}
+                                >
+                                  {subItem.disabled ? (
                                     <span>{subItem.title}</span>
-                                  </Link>
+                                  ) : (
+                                    <Link href={subItem.url}>
+                                      <span>{subItem.title}</span>
+                                    </Link>
+                                  )}
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>
                             ))}
@@ -198,16 +227,39 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
               ))}
             </SidebarMenu>
           </SidebarGroup>
+
+          {/* Your Teams Section */}
+          <TeamsNav
+            canAddTeam={true}
+            key={teamsRefreshKey}
+            onAddTeam={() => setCreateTeamOpen(true)}
+          />
+
+          {/* Secondary Navigation (pushed to bottom) */}
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
               <SidebarMenu>
                 {data.navSecondary.map((item) => (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
+                    <SidebarMenuButton
+                      asChild={!item.disabled}
+                      className={cn(
+                        item.disabled
+                          ? "pointer-events-none cursor-not-allowed opacity-50"
+                          : ""
+                      )}
+                    >
+                      {item.disabled ? (
+                        <span className="flex items-center gap-2">
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </span>
+                      ) : (
+                        <Link href={item.url}>
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </Link>
+                      )}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
@@ -246,6 +298,11 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset>{children}</SidebarInset>
+      <CreateTeamModal
+        onOpenChange={setCreateTeamOpen}
+        onTeamCreated={handleTeamCreated}
+        open={createTeamOpen}
+      />
     </>
   );
 };
