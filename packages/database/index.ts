@@ -51,7 +51,7 @@ function createIamPool(): pg.Pool {
   let cachedToken: string | null = null;
   let tokenExpiry = 0;
 
-  return new pg.Pool({
+  const pool = new pg.Pool({
     host: env.PGHOST,
     user: env.PGUSER,
     database: env.PGDATABASE || "app",
@@ -62,11 +62,15 @@ function createIamPool(): pg.Pool {
         return cachedToken;
       }
 
-      const token = await signer.getAuthToken();
-      cachedToken = token;
-      tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
-
-      return token;
+      try {
+        const token = await signer.getAuthToken();
+        cachedToken = token;
+        tokenExpiry = now + 15 * 60 * 1000; // Tokens are valid for 15 minutes
+        return token;
+      } catch (error) {
+        console.error("[DATABASE] Failed to generate IAM token:", error);
+        throw error;
+      }
     },
     port: Number(env.PGPORT),
     ssl: { rejectUnauthorized: false },
@@ -74,6 +78,17 @@ function createIamPool(): pg.Pool {
     connectionTimeoutMillis: 30_000, // 30 second timeout for connections
     idleTimeoutMillis: 30_000,
   });
+
+  // Log connection errors
+  pool.on("error", (err) => {
+    console.error("[DATABASE] Pool error:", err);
+  });
+
+  pool.on("connect", () => {
+    console.log("[DATABASE] Successfully connected to database");
+  });
+
+  return pool;
 }
 
 const createClient = (): PrismaClient => {
