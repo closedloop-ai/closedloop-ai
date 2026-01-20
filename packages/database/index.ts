@@ -9,35 +9,23 @@ import { keys } from "./keys";
 
 const globalForPrisma = global as unknown as {
   prisma: PrismaClient | null;
-  prismaPromise: Promise<PrismaClient> | null;
+  pool: pg.Pool | null;
+  signer: Signer | null;
 };
 
 /**
- * Creates a pg Pool for local development using DATABASE_URL.
+ * Gets or creates the RDS Signer for IAM authentication.
+ * Cached globally to reuse across requests.
  */
-function createLocalPool(): pg.Pool {
+function getSigner(): Signer {
+  if (globalForPrisma.signer) {
+    return globalForPrisma.signer;
+  }
+
   const env = keys();
-  console.log("[Database] Creating local pool with DATABASE_URL");
-
-  const url = new URL(env.DATABASE_URL as string);
-  url.searchParams.delete("sslmode");
-
-  return new pg.Pool({
-    connectionString: url.toString(),
-    ssl: false,
-  });
-}
-
-/**
- * Creates a pg Pool for Vercel/production using RDS IAM authentication.
- * Uses connection string with token (same as migration script).
- */
-async function createIamPool(): Promise<pg.Pool> {
-  const env = keys();
-  console.log("[Database] Creating IAM pool...");
+  console.log("[Database] Creating RDS Signer");
   console.log("[Database] PGHOST:", env.PGHOST);
   console.log("[Database] PGUSER:", env.PGUSER);
-  console.log("[Database] PGDATABASE:", env.PGDATABASE);
   console.log("[Database] AWS_REGION:", env.AWS_REGION);
   console.log("[Database] AWS_ROLE_ARN:", env.AWS_ROLE_ARN ? "set" : "missing");
 
@@ -47,46 +35,33 @@ async function createIamPool(): Promise<pg.Pool> {
     );
   }
 
-  try {
-    const signer = new Signer({
-      hostname: env.PGHOST as string,
-      port: Number(env.PGPORT),
-      username: env.PGUSER as string,
-      region: env.AWS_REGION as string,
-      credentials: awsCredentialsProvider({
-        roleArn: env.AWS_ROLE_ARN as string,
-        clientConfig: { region: env.AWS_REGION as string },
-      }),
-    });
+  globalForPrisma.signer = new Signer({
+    hostname: env.PGHOST,
+    port: Number(env.PGPORT || "5432"),
+    username: env.PGUSER,
+    region: env.AWS_REGION,
+    credentials: awsCredentialsProvider({
+      roleArn: env.AWS_ROLE_ARN,
+      clientConfig: { region: env.AWS_REGION },
+    }),
+  });
 
-    console.log("[Database] Generating IAM token...");
-    const token = await signer.getAuthToken();
-    console.log("[Database] Token generated successfully");
-
-    const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
-      token
-    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}?sslmode=require`;
-
-    console.log("[Database] Creating pg.Pool...");
-    const pool = new pg.Pool({
-      connectionString,
-      max: 20,
-      connectionTimeoutMillis: 30_000,
-      idleTimeoutMillis: 30_000,
-    });
-
-    console.log("[Database] IAM pool created successfully");
-    return pool;
-  } catch (error) {
-    console.error("[Database] Error creating IAM pool:", error);
-    throw error;
-  }
+  return globalForPrisma.signer;
 }
 
-async function createClient(): Promise<PrismaClient> {
+/**
+ * Gets or creates the pg Pool.
+ * For IAM auth, uses password callback to generate fresh tokens per connection.
+ * Cached globally to reuse connections.
+ */
+function getPool(): pg.Pool {
+  if (globalForPrisma.pool) {
+    return globalForPrisma.pool;
+  }
+
   const env = keys();
 
-  // Determine if connecting to localhost (local dev) or remote (Vercel/production)
+  // Determine if using local DATABASE_URL or remote IAM auth
   const isLocalhost = env.DATABASE_URL
     ? (() => {
         try {
@@ -98,28 +73,57 @@ async function createClient(): Promise<PrismaClient> {
       })()
     : false;
 
-  console.log("[Database] isLocalhost:", isLocalhost);
-  console.log("[Database] DATABASE_URL:", env.DATABASE_URL ? "set" : "not set");
+  console.log("[Database] Creating pool");
+  console.log("[Database] Mode:", isLocalhost ? "localhost" : "IAM");
 
-  const pool = isLocalhost ? createLocalPool() : await createIamPool();
-  const adapter = new PrismaPg(pool);
-  return new PrismaClient({ adapter });
-}
+  if (isLocalhost) {
+    // Local development with DATABASE_URL
+    const url = new URL(env.DATABASE_URL as string);
+    url.searchParams.delete("sslmode");
 
-// Initialize client on first access
-function getDatabase(): Promise<PrismaClient> {
-  if (globalForPrisma.prisma) {
-    return Promise.resolve(globalForPrisma.prisma);
-  }
+    globalForPrisma.pool = new pg.Pool({
+      connectionString: url.toString(),
+      ssl: false,
+    });
+  } else {
+    // Vercel/production with IAM authentication
+    const signer = getSigner();
 
-  if (!globalForPrisma.prismaPromise) {
-    globalForPrisma.prismaPromise = createClient().then((client) => {
-      globalForPrisma.prisma = client;
-      return client;
+    globalForPrisma.pool = new pg.Pool({
+      host: env.PGHOST,
+      user: env.PGUSER,
+      database: env.PGDATABASE || "app",
+      password: () => {
+        console.log("[Database] Generating IAM token for new connection");
+        return signer.getAuthToken();
+      },
+      port: Number(env.PGPORT || "5432"),
+      ssl: { rejectUnauthorized: false },
+      max: 20,
+      connectionTimeoutMillis: 30_000,
+      idleTimeoutMillis: 30_000,
     });
   }
 
-  return globalForPrisma.prismaPromise;
+  console.log("[Database] Pool created");
+  return globalForPrisma.pool;
+}
+
+/**
+ * Gets or creates the Prisma Client.
+ * Uses global caching to reuse client across requests.
+ */
+function getDatabase(): PrismaClient {
+  if (globalForPrisma.prisma) {
+    return globalForPrisma.prisma;
+  }
+
+  console.log("[Database] Creating Prisma client");
+  const pool = getPool();
+  const adapter = new PrismaPg(pool);
+  globalForPrisma.prisma = new PrismaClient({ adapter });
+
+  return globalForPrisma.prisma;
 }
 
 // Create a proxy that lazily initializes the client
@@ -130,14 +134,16 @@ export const database = new Proxy({} as PrismaClient, {
       return;
     }
 
-    return (...args: unknown[]) =>
-      getDatabase().then((client) => {
-        const value = client[prop as keyof PrismaClient];
-        if (typeof value === "function") {
-          return (value as (...params: unknown[]) => unknown)(...args);
-        }
-        return value;
-      });
+    // Lazily initialize and delegate to actual client
+    const client = getDatabase();
+    const value = client[prop as keyof PrismaClient];
+
+    if (typeof value === "function") {
+      return (...args: unknown[]) =>
+        (value as (...params: unknown[]) => unknown).apply(client, args);
+    }
+
+    return value;
   },
 });
 
