@@ -90,6 +90,7 @@ async function getPool(): Promise<pg.Pool> {
 
     globalForPrisma.pool = new pg.Pool({
       connectionString,
+      ssl: { rejectUnauthorized: false },
       max: 20,
       connectionTimeoutMillis: 30_000,
       idleTimeoutMillis: 30_000,
