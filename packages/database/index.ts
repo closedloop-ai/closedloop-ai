@@ -83,10 +83,10 @@ async function getPool(): Promise<pg.Pool> {
 
     const token = await signer.getAuthToken();
 
-    // Build connection string with token (matches migration script pattern)
+    // Build connection string with token (no sslmode in string - use ssl config instead)
     const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
       token
-    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}?sslmode=require`;
+    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}`;
 
     globalForPrisma.pool = new pg.Pool({
       connectionString,
