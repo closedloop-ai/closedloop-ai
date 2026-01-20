@@ -10,7 +10,7 @@ import { revalidatePath } from "next/cache";
 import { apiClient } from "@/lib/api-client";
 
 export async function getOrganizations(): Promise<ApiResult<Organization[]>> {
-  return await apiClient.get<Organization[]>("/api/organizations");
+  return await apiClient.get<Organization[]>("/organizations");
 }
 
 export async function getOrganizationById(
@@ -22,10 +22,7 @@ export async function getOrganizationById(
 export async function createOrganization(
   input: CreateOrganizationInput
 ): Promise<ApiResult<Organization>> {
-  const result = await apiClient.post<Organization>(
-    "/api/organizations",
-    input
-  );
+  const result = await apiClient.post<Organization>("/organizations", input);
   if (result.success) {
     revalidatePath("/organizations");
   }
