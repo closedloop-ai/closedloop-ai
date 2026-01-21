@@ -59,10 +59,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma Client
-        run: pnpm --filter=@repo/database prisma generate
+        run: cd packages/database && pnpm prisma generate
 
       - name: Setup database schema
-        run: pnpm --filter=@repo/database prisma db push
+        run: cd packages/database && pnpm prisma db push
         env:
           DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
 
