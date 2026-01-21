@@ -126,7 +126,8 @@ async function getSigner(): Promise<Signer> {
 
 /**
  * Gets or creates the pg Pool.
- * For IAM auth, generates token upfront and embeds in connection string.
+ * For IAM auth, uses dynamic password generation to refresh tokens automatically.
+ * IAM tokens expire after 15 minutes, so we generate a fresh token for each new connection.
  * Cached globally to reuse connections.
  */
 async function getPool(): Promise<pg.Pool> {
@@ -159,21 +160,24 @@ async function getPool(): Promise<pg.Pool> {
     });
   } else {
     // Vercel/production with IAM authentication
+    // Use dynamic password function to generate fresh IAM token for each new connection.
+    // This is critical because IAM tokens expire after 15 minutes.
     const signer = await getSigner();
 
-    const token = await signer.getAuthToken();
-
-    // Build connection string with token (no sslmode in string - use ssl config instead)
-    const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
-      token
-    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}`;
-
     globalForPrisma.pool = new pg.Pool({
-      connectionString,
+      host: env.PGHOST,
+      port: Number(env.PGPORT || "5432"),
+      database: env.PGDATABASE || "app",
+      user: env.PGUSER,
+      // pg.Pool calls this function for each new connection, ensuring fresh tokens
+      password: async () => signer.getAuthToken(),
       ssl: { rejectUnauthorized: false },
       max: 20,
+      // How long to wait for connection handshake (network timeout)
       connectionTimeoutMillis: 30_000,
-      idleTimeoutMillis: 30_000,
+      // Close idle connections after 10 minutes (before 15-minute token expiry)
+      // Active connections remain valid for their entire session
+      idleTimeoutMillis: 10 * 60 * 1000,
     });
   }
 

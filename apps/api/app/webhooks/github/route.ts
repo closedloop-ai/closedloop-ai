@@ -183,19 +183,47 @@ async function processWorkflowCompletion(
   const runId = event.workflow_run.id;
 
   // Fetch workflow inputs to get correlation_id
-  const inputs = await getWorkflowRunInputs(runId);
+  let inputs: Record<string, string> | null;
+  try {
+    inputs = await getWorkflowRunInputs(runId);
+  } catch (error) {
+    const errorMessage = parseError(error);
+    log.error("[webhook/github] Failed to fetch workflow inputs", {
+      runId,
+      error: errorMessage,
+    });
+    // Acknowledge the webhook but log the error - don't return 500
+    return NextResponse.json({
+      message: "Failed to fetch workflow inputs",
+      ok: true,
+    });
+  }
 
   if (!inputs) {
-    log.info(`Workflow run ${runId} has no inputs (manual run?), ignoring`);
+    log.info("[webhook/github] No workflow inputs found", {
+      runId,
+      reason: "Manual run or no inputs - ignoring",
+    });
     return NextResponse.json({
       message: "No workflow inputs found (manual run)",
       ok: true,
     });
   }
 
+  log.info("[webhook/github] Workflow inputs retrieved", {
+    runId,
+    targetRepo: inputs.target_repo,
+    command: inputs.command,
+    correlationId: inputs.correlation_id,
+    hasContext: !!inputs.context,
+  });
+
   const correlationId = inputs.correlation_id;
   if (!correlationId) {
-    log.info(`Workflow run ${runId} has no correlation_id input, ignoring`);
+    log.info("[webhook/github] No correlation_id in inputs", {
+      runId,
+      reason: "Missing correlation_id - ignoring",
+    });
     return NextResponse.json({
       message: "No correlation_id in workflow inputs",
       ok: true,
@@ -203,6 +231,14 @@ async function processWorkflowCompletion(
   }
 
   if (!isCurrentEnvironment(correlationId)) {
+    const parsed = parseCorrelationId(correlationId);
+    log.info("[webhook/github] Event for different environment", {
+      runId,
+      correlationId,
+      eventEnv: parsed?.env,
+      currentEnv: process.env.WEBAPP_ENV,
+      reason: "Environment mismatch - ignoring",
+    });
     return NextResponse.json({
       message: "Event for different environment, ignoring",
       ok: true,
@@ -211,11 +247,21 @@ async function processWorkflowCompletion(
 
   const parsed = parseCorrelationId(correlationId);
   if (!parsed) {
+    log.warn("[webhook/github] Invalid correlation ID format", {
+      runId,
+      correlationId,
+      reason: "Could not parse correlation ID",
+    });
     return NextResponse.json({
       message: "Invalid correlation ID format",
       ok: false,
     });
   }
+
+  log.info("[webhook/github] Looking up GitHubActionRun", {
+    correlationId: parsed.id,
+    env: parsed.env,
+  });
 
   // Find the GitHubActionRun by correlation ID in triggerData
   // We stored it as triggerData: { correlationId, artifactId, command }
@@ -235,12 +281,23 @@ async function processWorkflowCompletion(
   });
 
   if (!actionRun) {
-    log.warn(`No GitHubActionRun found for correlation ${correlationId}`);
+    log.warn("[webhook/github] No GitHubActionRun found", {
+      correlationId,
+      runId,
+      searchedCount: actionRuns.length,
+      reason: "No matching pending/running action run in database",
+    });
     return NextResponse.json({
       message: `No matching action run found for correlation ${correlationId}`,
       ok: true,
     });
   }
+
+  log.info("[webhook/github] Found matching GitHubActionRun", {
+    actionRunId: actionRun.id,
+    workstreamId: actionRun.workstreamId,
+    correlationId,
+  });
 
   const triggerData = actionRun.triggerData as {
     correlationId: string;
@@ -278,7 +335,10 @@ async function processWorkflowCompletion(
 }
 
 export const POST = async (request: Request): Promise<Response> => {
+  log.info("[webhook/github] Received webhook request");
+
   if (!isGitHubConfigured()) {
+    log.warn("[webhook/github] GitHub not configured, rejecting request");
     return NextResponse.json({ message: "GitHub not configured", ok: false });
   }
 
@@ -288,7 +348,10 @@ export const POST = async (request: Request): Promise<Response> => {
     await ensureDatabase();
     const { body, signature, eventType } = await validateRequest(request);
 
+    log.info("[webhook/github] Validating request", { eventType });
+
     if (!signature) {
+      log.warn("[webhook/github] Missing signature header, rejecting");
       return NextResponse.json(
         { message: "Missing signature", ok: false },
         { status: 401 }
@@ -296,6 +359,7 @@ export const POST = async (request: Request): Promise<Response> => {
     }
 
     if (!verifyWebhookSignature(body, signature)) {
+      log.warn("[webhook/github] Invalid signature, rejecting");
       return NextResponse.json(
         { message: "Invalid signature", ok: false },
         { status: 401 }
@@ -303,6 +367,10 @@ export const POST = async (request: Request): Promise<Response> => {
     }
 
     if (eventType !== "workflow_run") {
+      log.info("[webhook/github] Ignoring non-workflow_run event", {
+        eventType,
+        reason: "Not a workflow_run event",
+      });
       return NextResponse.json({
         message: `Ignoring event type: ${eventType}`,
         ok: true,
@@ -311,7 +379,20 @@ export const POST = async (request: Request): Promise<Response> => {
 
     const event: WorkflowRunCompletedEvent = JSON.parse(body);
 
+    log.info("[webhook/github] Parsed workflow_run event", {
+      action: event.action,
+      workflowName: event.workflow.name,
+      workflowPath: event.workflow.path,
+      runId: event.workflow_run.id,
+      conclusion: event.workflow_run.conclusion,
+      htmlUrl: event.workflow_run.html_url,
+    });
+
     if (event.action !== "completed") {
+      log.info("[webhook/github] Ignoring non-completed action", {
+        action: event.action,
+        reason: "Only processing completed workflow runs",
+      });
       return NextResponse.json({
         message: `Ignoring action: ${event.action}`,
         ok: true,
@@ -319,16 +400,28 @@ export const POST = async (request: Request): Promise<Response> => {
     }
 
     if (!event.workflow.path.includes("symphony-dispatch")) {
+      log.info("[webhook/github] Ignoring non-symphony-dispatch workflow", {
+        workflowName: event.workflow.name,
+        workflowPath: event.workflow.path,
+        reason: "Not a symphony-dispatch workflow",
+      });
       return NextResponse.json({
         message: `Ignoring workflow: ${event.workflow.name}`,
         ok: true,
       });
     }
 
+    log.info("[webhook/github] Processing symphony-dispatch completion", {
+      runId: event.workflow_run.id,
+      conclusion: event.workflow_run.conclusion,
+    });
+
     return await processWorkflowCompletion(event, s3Configured);
   } catch (error) {
     const message = parseError(error);
-    log.error(`GitHub webhook error: ${message}`);
+    log.error("[webhook/github] Unhandled error processing webhook", {
+      error: message,
+    });
 
     return NextResponse.json(
       { message: "Something went wrong", ok: false },
