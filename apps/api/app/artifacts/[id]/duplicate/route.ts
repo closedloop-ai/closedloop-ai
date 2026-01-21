@@ -1,70 +1,65 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
-import type { ApiResult } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
-import type { NextResponse } from "next/server";
 import {
   buildArtifactScopeCondition,
   prepareArtifactVersion,
 } from "@/app/artifacts/artifact-utils";
+import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
-  type IdRouteParams,
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
 
-// TODO: Add org access verification once auth middleware provides organizationId
-export async function POST(
-  _request: Request,
-  { params }: IdRouteParams
-): Promise<NextResponse<ApiResult<Artifact>>> {
-  try {
-    const { id } = await params;
+export const POST = withAuth<Artifact, "/artifacts/[id]/duplicate">(
+  async ({ user }, _, params) => {
+    try {
+      const { id } = await params;
 
-    // Find the original artifact
-    const original = await database.artifact.findUnique({
-      where: { id },
-    });
-
-    if (!original) {
-      return notFoundResponse("Artifact");
-    }
-
-    // Create a duplicate with a new title, marking previous versions as not latest
-    const duplicate = await database.$transaction(async (tx) => {
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        workstreamId: original.workstreamId,
-        projectId: original.projectId,
-        type: original.type,
-        documentSlug: original.documentSlug,
+      const original = await database.artifact.findUnique({
+        where: { id, project: { organizationId: user.organizationId } },
       });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
-      // Create the new duplicate (preserving documentSlug to stay in same group)
-      return tx.artifact.create({
-        data: {
+      if (!original) {
+        return notFoundResponse("Artifact");
+      }
+
+      // Create a duplicate with a new title, marking previous versions as not latest
+      const duplicate = await database.$transaction(async (tx) => {
+        // Build scope and get next version (marks existing as not latest)
+        const scopeCondition = buildArtifactScopeCondition({
           workstreamId: original.workstreamId,
           projectId: original.projectId,
           type: original.type,
-          title: `${original.title} (Copy)`,
-          fileName: original.fileName
-            ? original.fileName.replace(".md", "-copy.md")
-            : null,
-          approver: original.approver,
-          status: "DRAFT",
-          content: original.content,
-          externalUrl: original.externalUrl,
-          generatedBy: original.generatedBy,
           documentSlug: original.documentSlug,
-          version: nextVersion,
-          isLatest: true,
-        },
-      });
-    });
+        });
+        const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
-    return successResponse(duplicate as Artifact);
-  } catch (error) {
-    return errorResponse("Failed to duplicate artifact", error);
+        // Create the new duplicate (preserving documentSlug to stay in same group)
+        return tx.artifact.create({
+          data: {
+            workstreamId: original.workstreamId,
+            projectId: original.projectId,
+            type: original.type,
+            title: `${original.title} (Copy)`,
+            fileName: original.fileName
+              ? original.fileName.replace(".md", "-copy.md")
+              : null,
+            approver: original.approver,
+            status: "DRAFT",
+            content: original.content,
+            externalUrl: original.externalUrl,
+            generatedBy: original.generatedBy,
+            documentSlug: original.documentSlug,
+            version: nextVersion,
+            isLatest: true,
+          },
+        });
+      });
+
+      return successResponse(duplicate as Artifact);
+    } catch (error) {
+      return errorResponse("Failed to duplicate artifact", error);
+    }
   }
-}
+);
