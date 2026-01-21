@@ -1,5 +1,7 @@
-import type { Project } from "@repo/api/src/types/organization";
-import { database, type Prisma } from "@repo/database";
+import type {
+  Project,
+  UpdateProjectInput,
+} from "@repo/api/src/types/organization";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -8,22 +10,21 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { updateProjectSchema } from "../schemas";
+import { projectsService } from "../service";
+import { updateProjectValidator } from "../validators";
 
 export const GET = withAuth<Project, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
 
-      const project = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const project = await projectsService.findById(id, user.organizationId);
 
       if (!project) {
         return notFoundResponse("Project");
       }
 
-      return successResponse(project as Project);
+      return successResponse(project);
     } catch (error) {
       return errorResponse("Failed to fetch project", error);
     }
@@ -35,9 +36,7 @@ export const PUT = withAuth<Project, "/projects/[id]">(
     try {
       const { id } = await params;
 
-      const existing = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const existing = await projectsService.findById(id, user.organizationId);
 
       if (!existing) {
         return notFoundResponse("Project");
@@ -45,24 +44,18 @@ export const PUT = withAuth<Project, "/projects/[id]">(
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        updateProjectSchema
+        updateProjectValidator
       );
       if (parseError) {
         return parseError;
       }
 
-      const data: Prisma.ProjectUpdateInput = {
-        name: body.name,
-        description: body.description,
-        settings: body.settings as Prisma.InputJsonValue,
-      };
+      const project = await projectsService.update(
+        id,
+        body as Omit<UpdateProjectInput, "id">
+      );
 
-      const project = await database.project.update({
-        where: { id },
-        data,
-      });
-
-      return successResponse(project as Project);
+      return successResponse(project);
     } catch (error) {
       return errorResponse("Failed to update project", error);
     }
@@ -74,15 +67,14 @@ export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
     try {
       const { id } = await params;
 
-      const existing = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const existing = await projectsService.findById(id, user.organizationId);
 
       if (!existing) {
         return notFoundResponse("Project");
       }
 
-      await database.project.delete({ where: { id } });
+      await projectsService.delete(id);
+
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete project", error);

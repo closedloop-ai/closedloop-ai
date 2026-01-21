@@ -6,8 +6,8 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { updateUserSchema } from "../schemas";
 import { usersService } from "../service";
+import { updateUserValidator } from "../validators";
 
 export const GET = withAuth<User, "/users/[id]">(
   async ({ user }, _, params) => {
@@ -41,7 +41,7 @@ export const PUT = withAuth<User, "/users/[id]">(
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        updateUserSchema
+        updateUserValidator
       );
       if (parseError) {
         return parseError;
