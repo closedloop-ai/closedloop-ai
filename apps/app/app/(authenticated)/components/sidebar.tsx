@@ -29,14 +29,16 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import {
-  AnchorIcon,
-  BookOpenIcon,
   ChevronRightIcon,
   ClipboardListIcon,
   FileTextIcon,
+  InboxIcon,
   LifeBuoyIcon,
+  LightbulbIcon,
+  MoreHorizontalIcon,
+  ScrollTextIcon,
   SendIcon,
-  Settings2Icon,
+  UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -52,79 +54,75 @@ const data = {
     email: "m@example.com",
     avatar: "/avatars/shadcn.jpg",
   },
-  navMain: [
+  // Workspace section - matches the design
+  workspace: [
+    {
+      title: "Inbox",
+      url: "/inbox",
+      icon: InboxIcon,
+      badge: 1, // notification count
+      disabled: true,
+    },
+    {
+      title: "Initiatives",
+      url: "/initiatives",
+      icon: LightbulbIcon,
+      disabled: true,
+    },
+    {
+      title: "My Documents",
+      url: "/my-documents",
+      icon: FileTextIcon,
+      disabled: true,
+    },
     {
       title: "PRD Library",
       url: "/prds",
-      icon: FileTextIcon,
+      icon: ScrollTextIcon,
+      disabled: false,
     },
     {
       title: "Implementation Plans",
       url: "/implementation-plans",
       icon: ClipboardListIcon,
+      disabled: false,
     },
     {
-      title: "Documentation",
-      url: "#",
-      icon: BookOpenIcon,
-      items: [
-        {
-          title: "Introduction",
-          url: "#",
-        },
-        {
-          title: "Get Started",
-          url: "#",
-        },
-        {
-          title: "Tutorials",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
-        },
-      ],
+      title: "Members",
+      url: "/members",
+      icon: UsersIcon,
+      disabled: true,
     },
     {
-      title: "Settings",
+      title: "More",
       url: "#",
-      icon: Settings2Icon,
+      icon: MoreHorizontalIcon,
       items: [
         {
-          title: "General",
-          url: "#",
+          title: "Webhooks",
+          url: "/webhooks",
+          disabled: false,
         },
         {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Billing",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
+          title: "Settings",
+          url: "/settings",
+          disabled: false,
         },
       ],
     },
   ],
   navSecondary: [
     {
-      title: "Webhooks",
-      url: "/webhooks",
-      icon: AnchorIcon,
-    },
-    {
       title: "Support",
       url: "#",
       icon: LifeBuoyIcon,
+      disabled: true,
     },
     {
       title: "Feedback",
       url: "#",
       icon: SendIcon,
+      disabled: true,
     },
   ],
 };
@@ -151,24 +149,48 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarHeader>
         <Search />
         <SidebarContent>
+          {/* Workspace Section */}
           <SidebarGroup>
-            <SidebarGroupLabel>Platform</SidebarGroupLabel>
+            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
-              {data.navMain.map((item, index) => (
+              {data.workspace.map((item, index) => (
                 <Collapsible
                   asChild
-                  defaultOpen={
-                    (item as { isActive?: boolean }).isActive ?? false
-                  }
-                  id={`nav-collapsible-${index}`}
+                  defaultOpen={false}
+                  id={`workspace-collapsible-${index}`}
                   key={item.title}
                 >
                   <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip={item.title}>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
+                    <SidebarMenuButton
+                      asChild={!item.disabled}
+                      className={cn(
+                        item.disabled
+                          ? "pointer-events-none cursor-not-allowed opacity-50"
+                          : ""
+                      )}
+                      tooltip={item.title}
+                    >
+                      {item.disabled ? (
+                        <span className="flex items-center gap-2">
+                          <item.icon />
+                          <span>{item.title}</span>
+                          {item.badge ? (
+                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
+                              {item.badge}
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <Link href={item.url}>
+                          <item.icon />
+                          <span>{item.title}</span>
+                          {item.badge ? (
+                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                              {item.badge}
+                            </span>
+                          ) : null}
+                        </Link>
+                      )}
                     </SidebarMenuButton>
                     {item.items?.length ? (
                       <>
@@ -182,10 +204,21 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
                           <SidebarMenuSub>
                             {item.items?.map((subItem) => (
                               <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton asChild>
-                                  <Link href={subItem.url}>
+                                <SidebarMenuSubButton
+                                  asChild={!subItem.disabled}
+                                  className={cn(
+                                    subItem.disabled
+                                      ? "pointer-events-none cursor-not-allowed opacity-50"
+                                      : ""
+                                  )}
+                                >
+                                  {subItem.disabled ? (
                                     <span>{subItem.title}</span>
-                                  </Link>
+                                  ) : (
+                                    <Link href={subItem.url}>
+                                      <span>{subItem.title}</span>
+                                    </Link>
+                                  )}
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>
                             ))}
@@ -198,16 +231,32 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
               ))}
             </SidebarMenu>
           </SidebarGroup>
+
+          {/* Secondary Navigation (pushed to bottom) */}
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
               <SidebarMenu>
                 {data.navSecondary.map((item) => (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
+                    <SidebarMenuButton
+                      asChild={!item.disabled}
+                      className={cn(
+                        item.disabled
+                          ? "pointer-events-none cursor-not-allowed opacity-50"
+                          : ""
+                      )}
+                    >
+                      {item.disabled ? (
+                        <span className="flex items-center gap-2">
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </span>
+                      ) : (
+                        <Link href={item.url}>
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </Link>
+                      )}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
