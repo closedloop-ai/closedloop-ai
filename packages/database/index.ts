@@ -11,26 +11,74 @@ import { keys } from "./keys";
 export * from "./generated/client";
 
 /**
- * Initialize the database client. This must be called on server startup.
+ * Ensures the database is initialized. Safe to call multiple times.
  */
-export async function initializeDatabase() {
-  globalForPrisma.prisma ??= await getDatabase();
+export async function ensureDatabase(): Promise<void> {
+  if (!globalForPrisma.prisma) {
+    globalForPrisma.prisma = await getDatabase();
+  }
 }
 
 /**
- * The database client.
+ * The database client with lazy initialization.
  *
- * This is a trick that allows use to lazily initialize the database client, but still access
- * it through a normal global constant.
+ * Auto-initializes on first use - no need to call ensureDatabase() manually.
+ * On Vercel, initialization is deferred until request time when OIDC token is available.
  */
 export const database = new Proxy({} as PrismaClient, {
   get(_target, prop) {
-    if (!globalForPrisma.prisma) {
-      throw new Error("Database not initialized");
+    // Fast path: if already initialized, return the real thing
+    if (globalForPrisma.prisma) {
+      return globalForPrisma.prisma[prop as keyof PrismaClient];
     }
-    return globalForPrisma.prisma[prop as keyof PrismaClient];
+
+    // For $ methods ($transaction, $queryRaw, etc.), return async wrapper
+    if (typeof prop === "string" && prop.startsWith("$")) {
+      // biome-ignore lint/complexity/noBannedTypes: Prisma methods have varying signatures
+      return async (...args: unknown[]) => {
+        await ensureDatabase();
+        // biome-ignore lint/style/noNonNullAssertion: ensureDatabase guarantees prisma is set
+        const method = globalForPrisma.prisma![prop as keyof PrismaClient];
+        // biome-ignore lint/complexity/noBannedTypes: Prisma methods have varying signatures
+        return (method as (...a: unknown[]) => unknown).apply(
+          globalForPrisma.prisma,
+          args
+        );
+      };
+    }
+
+    // For model delegates (artifact, user, etc.), return a proxy that wraps method calls
+    return new Proxy(
+      {},
+      {
+        get(_target2, method) {
+          return async (...args: unknown[]) => {
+            await ensureDatabase();
+            // biome-ignore lint/style/noNonNullAssertion: ensureDatabase guarantees prisma is set
+            const delegate =
+              globalForPrisma.prisma![prop as keyof PrismaClient];
+            return (
+              delegate as unknown as Record<
+                string,
+                (...a: unknown[]) => unknown
+              >
+            )[method as string](...args);
+          };
+        },
+      }
+    );
   },
 });
+
+// -----------------------------------------------------------------------------
+// Internal implementation
+// -----------------------------------------------------------------------------
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | null;
+  pool: pg.Pool | null;
+  signer: Signer | null;
+};
 
 /**
  * Gets or creates the Prisma Client.
@@ -48,12 +96,6 @@ async function getDatabase(): Promise<PrismaClient> {
 
   return globalForPrisma.prisma;
 }
-
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | null;
-  pool: pg.Pool | null;
-  signer: Signer | null;
-};
 
 /**
  * Gets or creates the RDS Signer for IAM authentication.
