@@ -58,6 +58,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Setup database schema
+        run: pnpm --filter=@repo/database prisma db push
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+
       - name: Run tests
         run: pnpm test --filter=api
         env:
