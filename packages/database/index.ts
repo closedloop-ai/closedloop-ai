@@ -10,29 +10,51 @@ import { keys } from "./keys";
 export * from "./generated/client";
 
 /**
- * The database client.
- *
- * This is a trick that allows use to lazily initialize the database client, but still access
- * it through a normal global constant. Requires ensureDatabase() to be called first.
- */
-export const database = new Proxy({} as PrismaClient, {
-  get(_target, prop) {
-    if (!globalForPrisma.prisma) {
-      throw new Error("Database not initialized. Call ensureDatabase() first.");
-    }
-    return globalForPrisma.prisma[prop as keyof PrismaClient];
-  },
-});
-
-/**
- * Ensures the database is initialized. Call this at the start of request handlers
- * that need database access. Safe to call multiple times.
+ * Ensures the database is initialized. Safe to call multiple times.
  */
 export async function ensureDatabase(): Promise<void> {
   if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = await getDatabase();
   }
 }
+
+/**
+ * The database client with lazy initialization.
+ *
+ * Auto-initializes on first use - no need to call ensureDatabase() manually.
+ * On Vercel, initialization is deferred until request time when OIDC token is available.
+ */
+export const database = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    // Fast path: if already initialized, return the real thing
+    if (globalForPrisma.prisma) {
+      return globalForPrisma.prisma[prop as keyof PrismaClient];
+    }
+
+    // For $ methods ($transaction, $queryRaw, etc.), return async wrapper
+    if (typeof prop === "string" && prop.startsWith("$")) {
+      return async (...args: unknown[]) => {
+        await ensureDatabase();
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma method invocation
+        return (globalForPrisma.prisma as any)[prop](...args);
+      };
+    }
+
+    // For model delegates (artifact, user, etc.), return a proxy that wraps method calls
+    return new Proxy(
+      {},
+      {
+        get(_target2, method) {
+          return async (...args: unknown[]) => {
+            await ensureDatabase();
+            // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma delegate method
+            return (globalForPrisma.prisma as any)[prop][method](...args);
+          };
+        },
+      }
+    );
+  },
+});
 
 // -----------------------------------------------------------------------------
 // Internal implementation
