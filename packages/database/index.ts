@@ -10,29 +10,54 @@ import { keys } from "./keys";
 export * from "./generated/client";
 
 /**
- * The database client.
- *
- * This is a trick that allows use to lazily initialize the database client, but still access
- * it through a normal global constant. Requires ensureDatabase() to be called first.
- */
-export const database = new Proxy({} as PrismaClient, {
-  get(_target, prop) {
-    if (!globalForPrisma.prisma) {
-      throw new Error("Database not initialized. Call ensureDatabase() first.");
-    }
-    return globalForPrisma.prisma[prop as keyof PrismaClient];
-  },
-});
-
-/**
- * Ensures the database is initialized. Call this at the start of request handlers
- * that need database access. Safe to call multiple times.
+ * Ensures the database is initialized. Safe to call multiple times.
  */
 export async function ensureDatabase(): Promise<void> {
   if (!globalForPrisma.prisma) {
     globalForPrisma.prisma = await getDatabase();
   }
 }
+
+/**
+ * The database client with lazy initialization.
+ *
+ * Auto-initializes on first use - no need to call ensureDatabase() manually.
+ * On Vercel, initialization is deferred until request time when OIDC token is available.
+ */
+export const database = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    // Fast path: if already initialized, return the real thing
+    if (globalForPrisma.prisma) {
+      return globalForPrisma.prisma[prop as keyof PrismaClient];
+    }
+
+    // For $ methods ($transaction, $queryRaw, etc.), return async wrapper
+    if (typeof prop === "string" && prop.startsWith("$")) {
+      return async (...args: unknown[]) => {
+        await ensureDatabase();
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma method invocation
+        return (globalForPrisma.prisma as any)[prop](...args);
+      };
+    }
+
+    // For model delegates (artifact, user, etc.), return a proxy that wraps method calls
+    return new Proxy(
+      {},
+      {
+        get(_target2, method) {
+          return async (...args: unknown[]) => {
+            await ensureDatabase();
+            // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma delegate method
+            const result = (globalForPrisma.prisma as any)[prop][method](
+              ...args
+            );
+            return result;
+          };
+        },
+      }
+    );
+  },
+});
 
 // -----------------------------------------------------------------------------
 // Internal implementation
@@ -101,7 +126,8 @@ async function getSigner(): Promise<Signer> {
 
 /**
  * Gets or creates the pg Pool.
- * For IAM auth, generates token upfront and embeds in connection string.
+ * For IAM auth, uses dynamic password generation to refresh tokens automatically.
+ * IAM tokens expire after 15 minutes, so we generate a fresh token for each new connection.
  * Cached globally to reuse connections.
  */
 async function getPool(): Promise<pg.Pool> {
@@ -134,21 +160,24 @@ async function getPool(): Promise<pg.Pool> {
     });
   } else {
     // Vercel/production with IAM authentication
+    // Use dynamic password function to generate fresh IAM token for each new connection.
+    // This is critical because IAM tokens expire after 15 minutes.
     const signer = await getSigner();
 
-    const token = await signer.getAuthToken();
-
-    // Build connection string with token (no sslmode in string - use ssl config instead)
-    const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
-      token
-    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}`;
-
     globalForPrisma.pool = new pg.Pool({
-      connectionString,
+      host: env.PGHOST,
+      port: Number(env.PGPORT || "5432"),
+      database: env.PGDATABASE || "app",
+      user: env.PGUSER,
+      // pg.Pool calls this function for each new connection, ensuring fresh tokens
+      password: async () => signer.getAuthToken(),
       ssl: { rejectUnauthorized: false },
       max: 20,
+      // How long to wait for connection handshake (network timeout)
       connectionTimeoutMillis: 30_000,
-      idleTimeoutMillis: 30_000,
+      // Close idle connections after 10 minutes (before 15-minute token expiry)
+      // Active connections remain valid for their entire session
+      idleTimeoutMillis: 10 * 60 * 1000,
     });
   }
 
