@@ -28,6 +28,7 @@ export const Testimonials = ({ cmsData, dictionary }: TestimonialsProps) => {
   // Use CMS data if available, otherwise fall back to dictionary
   const title = cmsData?.title ?? dictionary.web.home.testimonials.title;
   const items =
+    // @ts-expect-error - Types will be inferred once BaseHub schema is created
     cmsData?.items?.items?.map((item) => ({
       title: item.title,
       description: item.description,
@@ -62,6 +63,7 @@ export const Testimonials = ({ cmsData, dictionary }: TestimonialsProps) => {
           </h2>
           <Carousel className="w-full" setApi={setApi}>
             <CarouselContent>
+              {/* @ts-expect-error - Types will be inferred once BaseHub schema is created */}
               {items.map((item, index) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
                 <CarouselItem className="lg:basis-1/2" key={index}>

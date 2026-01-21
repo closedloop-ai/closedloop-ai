@@ -55,6 +55,7 @@ export const Cases = ({ cmsData, dictionary }: CasesProps) => {
           </h2>
           <Carousel className="w-full" setApi={setApi}>
             <CarouselContent>
+              {/* @ts-expect-error - Types will be inferred once BaseHub schema is created */}
               {logos.map((logo, index) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
                 <CarouselItem className="basis-1/4 lg:basis-1/6" key={index}>

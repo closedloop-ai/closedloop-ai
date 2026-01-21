@@ -47,6 +47,7 @@ export const FAQ = ({ cmsData, dictionary }: FAQProps) => {
             </div>
           </div>
           <Accordion className="w-full" collapsible type="single">
+            {/* @ts-expect-error - Types will be inferred once BaseHub schema is created */}
             {items.map((item, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
               <AccordionItem key={index} value={`index-${index}`}>

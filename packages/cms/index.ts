@@ -197,6 +197,7 @@ export const blog = {
 // See PR description for required schema structure
 
 const homePageQuery = fragmentOn("Query", {
+  // @ts-expect-error - homepage content type must be created in BaseHub first
   homepage: {
     _id: true,
     hero: {
@@ -275,14 +276,14 @@ const homePageQuery = fragmentOn("Query", {
 });
 
 type HomePageQueryResult = fragmentOn.infer<typeof homePageQuery>;
+// @ts-expect-error - homepage will exist once BaseHub content type is created
 export type HomePage = NonNullable<HomePageQueryResult["homepage"]>;
 
 export const marketing = {
   getHomePage: async () => {
     try {
-      const result = await basehub({
-        next: { revalidate: 60 },
-      }).query(homePageQuery);
+      const result = await basehub.query(homePageQuery);
+      // @ts-expect-error - homepage will exist once BaseHub content type is created
       return result.homepage;
     } catch (error) {
       console.warn(

@@ -30,6 +30,7 @@ export const Stats = ({ cmsData, dictionary }: StatsProps) => {
           </div>
           <div className="flex items-center justify-center">
             <div className="grid w-full grid-cols-1 gap-2 text-left sm:grid-cols-2 lg:grid-cols-2">
+              {/* @ts-expect-error - Types will be inferred once BaseHub schema is created */}
               {items.map((item, index) => (
                 <div
                   className="flex flex-col justify-between gap-0 rounded-md border p-6"
