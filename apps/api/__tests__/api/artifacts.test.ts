@@ -1,3 +1,4 @@
+import { v7 as uuidv7 } from "uuid";
 import { vi } from "vitest";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
@@ -243,7 +244,7 @@ describe("POST /api/artifacts", () => {
       body: {
         type: "PRD",
         title: "Test",
-        projectId: "non-existent-project",
+        projectId: uuidv7(),
       },
     });
     const routeContext = createMockRouteContext({});
