@@ -24,11 +24,11 @@ export type ParseBodyResult<T> =
  */
 export async function parseBody<T extends z.ZodType>(
   request: Request,
-  schema: T
+  validator: T
 ): Promise<ParseBodyResult<z.infer<T>>> {
   try {
     const rawBody = await request.json();
-    const parseResult = schema.safeParse(rawBody);
+    const parseResult = validator.safeParse(rawBody);
 
     if (!parseResult.success) {
       const errorMessage = parseResult.error.issues

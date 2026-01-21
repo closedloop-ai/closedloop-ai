@@ -1,5 +1,6 @@
 import type {
   CreateOrganizationInput,
+  Organization,
   UpdateOrganizationInput,
 } from "@repo/api/src/types/organization";
 import { database } from "@repo/database";
@@ -11,72 +12,78 @@ export const organizationsService = {
   /**
    * Find an organization by ID
    */
-  findById(id: string) {
-    return database.organization.findUnique({
+  async findById(id: string): Promise<Organization | null> {
+    return (await database.organization.findUnique({
       where: { id },
-    });
+    })) as Organization | null;
   },
 
   /**
    * Find an organization by Clerk ID
    */
-  findByClerkId(clerkId: string) {
-    return database.organization.findUnique({
+  async findByClerkId(clerkId: string): Promise<Organization | null> {
+    return (await database.organization.findUnique({
       where: { clerkId },
-    });
+    })) as Organization | null;
   },
 
   /**
    * Create a new organization
    */
-  create(input: CreateOrganizationInput) {
-    return database.organization.create({
+  async create(input: CreateOrganizationInput): Promise<Organization> {
+    return (await database.organization.create({
       data: {
         clerkId: input.clerkId,
         name: input.name,
         slug: input.slug,
         anthropicApiKey: input.anthropicApiKey,
       },
-    });
+    })) as Organization;
   },
 
   /**
    * Update an existing organization by ID
    */
-  update(id: string, input: Omit<UpdateOrganizationInput, "id">) {
-    return database.organization.update({
+  async update(
+    id: string,
+    input: Omit<UpdateOrganizationInput, "id">
+  ): Promise<Organization> {
+    return (await database.organization.update({
       where: { id },
       data: input,
-    });
+    })) as Organization;
   },
 
   /**
    * Update an existing organization by Clerk ID
    */
-  updateByClerkId(clerkId: string, input: Omit<UpdateOrganizationInput, "id">) {
-    return database.organization.update({
+  async updateByClerkId(
+    clerkId: string,
+    input: Omit<UpdateOrganizationInput, "id">
+  ): Promise<Organization> {
+    return (await database.organization.update({
       where: { clerkId },
       data: input,
-    });
+    })) as Organization;
   },
 
   /**
    * Deactivate an organization (soft delete)
    */
-  deactivate(id: string) {
-    return database.organization.update({
+  async deactivate(id: string): Promise<Organization> {
+    return (await database.organization.update({
       where: { id },
       data: { active: false },
-    });
+    })) as Organization;
   },
 
   /**
    * Deactivate an organization by Clerk ID (soft delete)
    */
-  deactivateByClerkId(clerkId: string) {
-    return database.organization.update({
+  async deactivateByClerkId(clerkId: string): Promise<Organization> {
+    return (await database.organization.update({
       where: { clerkId },
       data: { active: false },
-    });
+    })) as Organization;
   },
 };
