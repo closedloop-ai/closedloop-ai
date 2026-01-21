@@ -105,6 +105,9 @@ export const POST = withAuth<Artifact, "/artifacts">(
             documentSlug,
             version: nextVersion,
             isLatest: true,
+            targetRepo: body.targetRepo,
+            targetBranch:
+              body.targetBranch ?? (body.type === "PRD" ? "main" : undefined),
           },
         });
       });

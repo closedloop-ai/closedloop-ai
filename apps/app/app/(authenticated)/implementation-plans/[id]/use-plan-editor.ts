@@ -9,6 +9,8 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   deleteArtifact,
+  type GenerationStatus,
+  getGenerationStatus,
   regenerateArtifact,
   updateArtifact,
 } from "@/app/actions/artifacts";
@@ -32,6 +34,10 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
+  // Generation status (for showing GitHub action link in Details panel)
+  const [generationStatus, setGenerationStatus] =
+    useState<GenerationStatus | null>(null);
+
   // Sync state when plan prop changes (e.g., server refresh, navigation)
   useEffect(() => {
     setContent(plan.content ?? "");
@@ -39,6 +45,16 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     setStatus(plan.status);
     setApprover(plan.approver ?? "");
   }, [plan.content, plan.updatedAt, plan.status, plan.approver]);
+
+  // Fetch generation status on mount and when plan changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally re-fetch when plan.updatedAt changes (after generation completes)
+  useEffect(() => {
+    getGenerationStatus(plan.id).then((result) => {
+      if (result.success) {
+        setGenerationStatus(result.data);
+      }
+    });
+  }, [plan.id, plan.updatedAt]);
 
   const isDraft = status === "DRAFT";
 
@@ -161,6 +177,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     showDeleteDialog,
     setShowDeleteDialog,
     isDraft,
+    generationStatus,
 
     // Handlers
     handleSave,

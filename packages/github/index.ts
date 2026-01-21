@@ -6,7 +6,7 @@ import { log } from "@repo/observability/log";
 import { keys } from "./keys";
 
 // Top-level regex for performance
-const CORRELATION_ID_REGEX = /^(stage|prod):(.+)$/;
+const CORRELATION_ID_REGEX = /^(local|stage|prod)-(.+)$/;
 
 // Lazy config getter - only validates when actually called at runtime
 let _config: ReturnType<typeof keys> | null = null;
@@ -82,7 +82,7 @@ export async function triggerWorkflowDispatch(
   const [dispatchOwner, dispatchRepo] = getDispatchRepo();
 
   // Prefix correlation ID with environment
-  const prefixedCorrelationId = `${config.WEBAPP_ENV}:${opts.correlationId}`;
+  const prefixedCorrelationId = `${config.WEBAPP_ENV}-${opts.correlationId}`;
 
   // Log dispatch attempt (excluding context which can be verbose)
   log.info("[github/dispatch] Triggering workflow dispatch", {

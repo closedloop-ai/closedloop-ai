@@ -11,7 +11,7 @@ export const keys = () =>
       SYMPHONY_APP_PRIVATE_KEY: z.string().min(1),
       GITHUB_WEBHOOK_SECRET: z.string().min(1),
       SYMPHONY_DISPATCH_REPO: z.string().regex(OWNER_REPO_REGEX), // owner/repo format
-      WEBAPP_ENV: z.enum(["stage", "prod"]).default("stage"),
+      WEBAPP_ENV: z.enum(["local", "stage", "prod"]).default("stage"),
     },
     runtimeEnv: {
       SYMPHONY_APP_ID: process.env.SYMPHONY_APP_ID,

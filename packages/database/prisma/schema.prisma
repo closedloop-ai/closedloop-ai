@@ -117,6 +117,7 @@ enum GitHubPRState {
 
 enum GitHubActionStatus {
   PENDING
+  QUEUED
   RUNNING
   SUCCESS
   FAILURE
@@ -284,6 +285,8 @@ model Artifact {
   documentSlug String?        @map("document_slug")
   generatedBy  String?        @map("generated_by")
   tokenUsage   Json?          @map("token_usage")
+  targetRepo   String?        @map("target_repo")
+  targetBranch String?        @map("target_branch")
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
 
@@ -491,6 +494,8 @@ model GitHubActionRun {
   htmlUrl      String             @map("html_url")
   triggerEvent String             @map("trigger_event")
   triggerData  Json?              @map("trigger_data")
+  sessionId    String?            @map("session_id")
+  jobType      String?            @map("job_type")
   startedAt    DateTime?          @map("started_at")
   completedAt  DateTime?          @map("completed_at")
   createdAt    DateTime           @default(now()) @map("created_at")
