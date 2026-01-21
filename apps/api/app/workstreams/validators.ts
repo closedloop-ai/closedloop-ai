@@ -7,20 +7,20 @@ import { z } from "zod";
 const workstreamTypeEnum = z.enum(WORKSTREAM_TYPE_OPTIONS);
 const workstreamStateEnum = z.enum(WORKSTREAM_STATE_OPTIONS);
 
-export const createWorkstreamSchema = z.object({
-  projectId: z.string().min(1, "projectId is required"),
+export const createWorkstreamValidator = z.object({
+  projectId: z.uuidv7(),
   title: z.string().min(1, "Title is required"),
   description: z.string().optional(),
   type: workstreamTypeEnum.optional(),
-  assignedToId: z.string().optional(),
+  assignedToId: z.uuidv7().nullable().optional(),
   hasUIChanges: z.boolean().optional(),
 });
 
-export const updateWorkstreamSchema = z.object({
+export const updateWorkstreamValidator = z.object({
   title: z.string().min(1).optional(),
   description: z.string().optional(),
   state: workstreamStateEnum.optional(),
   type: workstreamTypeEnum.optional(),
-  assignedToId: z.string().nullable().optional(),
+  assignedToId: z.uuidv7().nullable().optional(),
   hasUIChanges: z.boolean().optional(),
 });

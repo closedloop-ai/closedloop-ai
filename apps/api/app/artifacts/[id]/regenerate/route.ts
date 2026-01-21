@@ -1,6 +1,5 @@
 import { createId } from "@paralleldrive/cuid2";
 import type { Artifact } from "@repo/api/src/types/artifact";
-import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { database } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
@@ -19,11 +18,7 @@ function isGitHubConfigured(): boolean {
 }
 
 export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
-  async (
-    { user },
-    _request,
-    params
-  ): Promise<NextResponse<ApiResult<Artifact>>> => {
+  async ({ user }, _request, params) => {
     const { id } = await params;
 
     try {

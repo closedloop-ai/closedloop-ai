@@ -102,10 +102,10 @@ export type UpdateArtifactInput = {
   id: string;
   title?: string;
   fileName?: string;
-  approver?: string;
+  approver?: string | null;
   status?: ArtifactStatus;
   content?: string;
-  externalUrl?: string;
+  externalUrl?: string | null;
 };
 
 export type Approval = {

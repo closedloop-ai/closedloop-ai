@@ -3,7 +3,7 @@ import { z } from "zod";
 
 const approverRoleEnum = z.enum(APPROVER_ROLE_OPTIONS);
 
-export const updateUserSchema = z.object({
+export const updateUserValidator = z.object({
   name: z.string().optional(),
   avatarUrl: z.url().optional(),
   role: approverRoleEnum.optional(),

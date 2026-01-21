@@ -106,19 +106,9 @@ export const projectsService = {
   /**
    * Find a project by ID with all details
    */
-  findById(id: string) {
+  findById(id: string, organizationId?: string) {
     return database.project.findUnique({
-      where: { id },
-      include: PROJECT_DETAIL_INCLUDE,
-    });
-  },
-
-  /**
-   * Find a project by ID with organization access check
-   */
-  findByIdWithAccess(id: string, organizationId: string) {
-    return database.project.findFirst({
-      where: { id, organizationId },
+      where: { id, ...(organizationId ? { organizationId } : {}) },
       include: PROJECT_DETAIL_INCLUDE,
     });
   },
@@ -126,11 +116,11 @@ export const projectsService = {
   /**
    * Create a new project
    */
-  create(input: CreateProjectInput) {
+  create(organizationId: string, input: CreateProjectInput) {
     return database.$transaction(async (tx) => {
       const project = await tx.project.create({
         data: {
-          organizationId: input.organizationId,
+          organizationId,
           name: input.name,
           description: input.description,
           priority: input.priority ?? "NOT_SET",

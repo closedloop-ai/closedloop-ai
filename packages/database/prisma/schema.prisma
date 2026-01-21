@@ -141,7 +141,7 @@ enum ProjectPriority {
 // =============================================================================
 
 model Organization {
-  id              String   @id @default(cuid())
+  id              String   @id @default(uuid(7)) @db.Uuid
   clerkId         String   @unique @map("clerk_id")
   active          Boolean  @default(true) @map("active")
   name            String
@@ -160,9 +160,9 @@ model Organization {
 }
 
 model User {
-  id             String       @id @default(cuid())
+  id             String       @id @default(uuid(7)) @db.Uuid
   clerkId        String       @unique @map("clerk_id")
-  organizationId String       @map("organization_id")
+  organizationId String       @map("organization_id") @db.Uuid
   active         Boolean      @default(true) @map("active")
   email          String
   firstName      String?      @map("first_name")
@@ -189,12 +189,12 @@ model User {
 }
 
 model Project {
-  id              String          @id @default(cuid())
-  organizationId  String          @map("organization_id")
+  id              String          @id @default(uuid(7)) @db.Uuid
+  organizationId  String          @map("organization_id") @db.Uuid
   name            String
   description     String?
   priority        ProjectPriority @default(NOT_SET)
-  ownerId         String?         @map("owner_id")
+  ownerId         String?         @map("owner_id") @db.Uuid
   targetDate      DateTime?       @map("target_date")
   codebaseSummary Json?           @map("codebase_summary")
   lastIndexedAt   DateTime?       @map("last_indexed_at")
@@ -216,8 +216,8 @@ model Project {
 }
 
 model Repository {
-  id            String   @id @default(cuid())
-  projectId     String   @map("project_id")
+  id            String   @id @default(uuid(7)) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
   githubId      Int      @unique @map("github_id")
   owner         String
   name          String
@@ -240,8 +240,8 @@ model Repository {
 // =============================================================================
 
 model Team {
-  id             String   @id @default(cuid())
-  organizationId String   @map("organization_id")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
   name           String
   slug           String
   createdAt      DateTime @default(now()) @map("created_at")
@@ -258,9 +258,9 @@ model Team {
 }
 
 model TeamMember {
-  id        String   @id @default(cuid())
-  teamId    String   @map("team_id")
-  userId    String   @map("user_id")
+  id        String   @id @default(uuid(7)) @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
   role      TeamRole @default(MEMBER)
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -275,9 +275,9 @@ model TeamMember {
 
 /// Many-to-many relationship for projects belonging to multiple teams
 model ProjectTeam {
-  id        String   @id @default(cuid())
-  projectId String   @map("project_id")
-  teamId    String   @map("team_id")
+  id        String   @id @default(uuid(7)) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
@@ -295,15 +295,15 @@ model ProjectTeam {
 
 /// Note: Displayed as "Initiative" in the UI
 model Workstream {
-  id             String          @id @default(cuid())
-  projectId      String          @map("project_id")
+  id             String          @id @default(uuid(7)) @db.Uuid
+  projectId      String          @map("project_id") @db.Uuid
   title          String
   description    String?
   type           WorkstreamType  @default(FEATURE_DELIVERY)
   state          WorkstreamState @default(INITIATED)
   stateChangedAt DateTime        @default(now()) @map("state_changed_at")
-  createdById    String          @map("created_by_id")
-  assignedToId   String?         @map("assigned_to_id")
+  createdById    String          @map("created_by_id") @db.Uuid
+  assignedToId   String?         @map("assigned_to_id") @db.Uuid
   hasUIChanges   Boolean         @default(false) @map("has_ui_changes")
   startedAt      DateTime        @default(now()) @map("started_at")
   completedAt    DateTime?       @map("completed_at")
@@ -323,12 +323,12 @@ model Workstream {
 }
 
 model WorkstreamEvent {
-  id           String              @id @default(cuid())
-  workstreamId String              @map("workstream_id")
+  id           String              @id @default(uuid(7)) @db.Uuid
+  workstreamId String              @map("workstream_id") @db.Uuid
   type         WorkstreamEventType
   fromState    WorkstreamState?    @map("from_state")
   toState      WorkstreamState?    @map("to_state")
-  actorId      String?             @map("actor_id")
+  actorId      String?             @map("actor_id") @db.Uuid
   actorType    String              @default("system") @map("actor_type")
   data         Json                @default("{}")
   createdAt    DateTime            @default(now()) @map("created_at")
@@ -344,9 +344,9 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id           String         @id @default(cuid())
-  workstreamId String?        @map("workstream_id")
-  projectId    String?        @map("project_id")
+  id           String         @id @default(uuid(7)) @db.Uuid
+  workstreamId String?        @map("workstream_id") @db.Uuid
+  projectId    String?        @map("project_id") @db.Uuid
   type         ArtifactType
   title        String
   fileName     String?        @map("file_name")
@@ -356,10 +356,10 @@ model Artifact {
   externalUrl  String?        @map("external_url")
   version      Int            @default(1)
   isLatest     Boolean        @default(true) @map("is_latest")
-  parentId     String?        @map("parent_id")
+  parentId     String?        @map("parent_id") @db.Uuid
   documentSlug String?        @map("document_slug")
-  generatedBy  String?        @map("generated_by")
-  sourcePrdId  String?        @map("source_prd_id")
+  generatedBy  String?        @map("generated_by") @db.Uuid
+  sourcePrdId  String?        @map("source_prd_id") @db.Uuid
   tokenUsage   Json?          @map("token_usage")
   createdAt    DateTime       @default(now()) @map("created_at")
   updatedAt    DateTime       @updatedAt @map("updated_at")
@@ -377,8 +377,8 @@ model Artifact {
 }
 
 model FileUpload {
-  id         String         @id @default(cuid())
-  artifactId String?        @map("artifact_id")
+  id         String         @id @default(uuid(7)) @db.Uuid
+  artifactId String?        @map("artifact_id") @db.Uuid
   type       FileUploadType
   bucket     String
   key        String
@@ -399,12 +399,12 @@ model FileUpload {
 // =============================================================================
 
 model Approval {
-  id           String         @id @default(cuid())
-  projectId    String         @map("project_id")
-  workstreamId String         @map("workstream_id")
-  artifactId   String         @map("artifact_id")
+  id           String         @id @default(uuid(7)) @db.Uuid
+  projectId    String         @map("project_id") @db.Uuid
+  workstreamId String         @map("workstream_id") @db.Uuid
+  artifactId   String         @map("artifact_id") @db.Uuid
   requiredRole ApproverRole   @map("required_role")
-  approverId   String?        @map("approver_id")
+  approverId   String?        @map("approver_id") @db.Uuid
   status       ApprovalStatus @default(PENDING)
   feedback     String?        @db.Text
   requestedAt  DateTime       @default(now()) @map("requested_at")
@@ -422,8 +422,8 @@ model Approval {
 // =============================================================================
 
 model Conversation {
-  id           String   @id @default(cuid())
-  workstreamId String   @map("workstream_id")
+  id           String   @id @default(uuid(7)) @db.Uuid
+  workstreamId String   @map("workstream_id") @db.Uuid
   agentType    String   @map("agent_type")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -433,8 +433,8 @@ model Conversation {
 }
 
 model Message {
-  id             String   @id @default(cuid())
-  conversationId String   @map("conversation_id")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  conversationId String   @map("conversation_id") @db.Uuid
   role           String
   content        String   @db.Text
   tokenUsage     Json?    @map("token_usage")
@@ -445,11 +445,11 @@ model Message {
 }
 
 model Comment {
-  id           String   @id @default(cuid())
-  workstreamId String   @map("workstream_id")
-  authorId     String   @map("author_id")
+  id           String   @id @default(uuid(7)) @db.Uuid
+  workstreamId String   @map("workstream_id") @db.Uuid
+  authorId     String   @map("author_id") @db.Uuid
   content      String   @db.Text
-  artifactId   String?  @map("artifact_id")
+  artifactId   String?  @map("artifact_id") @db.Uuid
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -464,8 +464,8 @@ model Comment {
 // =============================================================================
 
 model LinearIntegration {
-  id             String    @id @default(cuid())
-  organizationId String    @unique @map("organization_id")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
   accessToken    String    @map("access_token")
   refreshToken   String?   @map("refresh_token")
   tokenExpiresAt DateTime? @map("token_expires_at")
@@ -481,8 +481,8 @@ model LinearIntegration {
 }
 
 model LinearIssue {
-  id           String           @id @default(cuid())
-  workstreamId String           @unique @map("workstream_id")
+  id           String           @id @default(uuid(7)) @db.Uuid
+  workstreamId String           @unique @map("workstream_id") @db.Uuid
   linearId     String           @unique @map("linear_id")
   linearKey    String           @map("linear_key")
   linearUrl    String           @map("linear_url")
@@ -500,8 +500,8 @@ model LinearIssue {
 }
 
 model LinearSubtask {
-  id           String   @id @default(cuid())
-  workstreamId String   @map("workstream_id")
+  id           String   @id @default(uuid(7)) @db.Uuid
+  workstreamId String   @map("workstream_id") @db.Uuid
   linearId     String   @unique @map("linear_id")
   linearKey    String   @map("linear_key")
   linearUrl    String   @map("linear_url")
@@ -521,8 +521,8 @@ model LinearSubtask {
 // =============================================================================
 
 model GitHubInstallation {
-  id             String   @id @default(cuid())
-  organizationId String   @unique @map("organization_id")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @unique @map("organization_id") @db.Uuid
   installationId Int      @unique @map("installation_id")
   accountLogin   String   @map("account_login")
   accountType    String   @map("account_type")
@@ -533,9 +533,9 @@ model GitHubInstallation {
 }
 
 model GitHubPullRequest {
-  id             String        @id @default(cuid())
-  workstreamId   String        @map("workstream_id")
-  repositoryId   String        @map("repository_id")
+  id             String        @id @default(uuid(7)) @db.Uuid
+  workstreamId   String        @map("workstream_id") @db.Uuid
+  repositoryId   String        @map("repository_id") @db.Uuid
   githubId       Int           @map("github_id")
   number         Int
   title          String
@@ -557,9 +557,9 @@ model GitHubPullRequest {
 }
 
 model GitHubActionRun {
-  id           String             @id @default(cuid())
-  workstreamId String             @map("workstream_id")
-  repositoryId String             @map("repository_id")
+  id           String             @id @default(uuid(7)) @db.Uuid
+  workstreamId String             @map("workstream_id") @db.Uuid
+  repositoryId String             @map("repository_id") @db.Uuid
   runId        BigInt             @map("run_id")
   workflowName String             @map("workflow_name")
   status       GitHubActionStatus @default(PENDING)
@@ -583,8 +583,8 @@ model GitHubActionRun {
 // =============================================================================
 
 model SlackIntegration {
-  id                 String   @id @default(cuid())
-  organizationId     String   @unique @map("organization_id")
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  organizationId     String   @unique @map("organization_id") @db.Uuid
   accessToken        String   @map("access_token")
   botUserId          String   @map("bot_user_id")
   teamId             String   @map("team_id")

@@ -115,7 +115,6 @@ export type ProjectWithDetails = Project & {
 };
 
 export type CreateProjectInput = {
-  organizationId: string;
   name: string;
   description?: string;
   priority?: ProjectPriority;
