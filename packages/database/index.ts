@@ -34,16 +34,10 @@ export const database = new Proxy({} as PrismaClient, {
 
     // For $ methods ($transaction, $queryRaw, etc.), return async wrapper
     if (typeof prop === "string" && prop.startsWith("$")) {
-      // biome-ignore lint/complexity/noBannedTypes: Prisma methods have varying signatures
       return async (...args: unknown[]) => {
         await ensureDatabase();
-        // biome-ignore lint/style/noNonNullAssertion: ensureDatabase guarantees prisma is set
-        const method = globalForPrisma.prisma![prop as keyof PrismaClient];
-        // biome-ignore lint/complexity/noBannedTypes: Prisma methods have varying signatures
-        return (method as (...a: unknown[]) => unknown).apply(
-          globalForPrisma.prisma,
-          args
-        );
+        // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma method invocation
+        return (globalForPrisma.prisma as any)[prop](...args);
       };
     }
 
@@ -54,15 +48,8 @@ export const database = new Proxy({} as PrismaClient, {
         get(_target2, method) {
           return async (...args: unknown[]) => {
             await ensureDatabase();
-            // biome-ignore lint/style/noNonNullAssertion: ensureDatabase guarantees prisma is set
-            const delegate =
-              globalForPrisma.prisma![prop as keyof PrismaClient];
-            return (
-              delegate as unknown as Record<
-                string,
-                (...a: unknown[]) => unknown
-              >
-            )[method as string](...args);
+            // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma delegate method
+            return (globalForPrisma.prisma as any)[prop][method](...args);
           };
         },
       }
