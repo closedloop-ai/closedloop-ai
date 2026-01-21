@@ -97,7 +97,6 @@ export type ProjectWithOrganization = Project & {
 };
 
 export type CreateProjectInput = {
-  organizationId: string;
   name: string;
   description?: string;
 };

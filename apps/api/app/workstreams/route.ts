@@ -2,7 +2,6 @@ import type {
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
-import { database } from "@repo/database";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -11,7 +10,9 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { createWorkstreamSchema } from "./schemas";
+import { projectsService } from "../projects/service";
+import { workstreamsService } from "./service";
+import { createWorkstreamValidator } from "./validators";
 
 export const GET = withAuth<Workstream[], "/workstreams">(
   async ({ user }, request) => {
@@ -26,32 +27,23 @@ export const GET = withAuth<Workstream[], "/workstreams">(
         return badRequestResponse("projectId is required");
       }
 
-      const project = await database.project.findUnique({
-        where: { id: projectId, organizationId: user.organizationId },
-      });
+      const project = await projectsService.findById(
+        projectId,
+        user.organizationId
+      );
 
       if (!project) {
         return notFoundResponse("Project");
       }
 
-      const workstreams = await database.workstream.findMany({
-        where: {
-          projectId,
-          ...(state ? { state: state as WorkstreamState } : {}),
-          ...(search
-            ? {
-                OR: [
-                  { title: { contains: search, mode: "insensitive" } },
-                  { description: { contains: search, mode: "insensitive" } },
-                ],
-              }
-            : {}),
-        },
-        orderBy: { createdAt: "desc" },
-        ...(limit ? { take: Number.parseInt(limit, 10) } : {}),
+      const workstreams = await workstreamsService.findByProject({
+        projectId,
+        state: state as WorkstreamState | undefined,
+        search: search ?? undefined,
+        limit: limit ? Number.parseInt(limit, 10) : undefined,
       });
 
-      return successResponse(workstreams as Workstream[]);
+      return successResponse(workstreams);
     } catch (error) {
       return errorResponse("Failed to fetch workstreams", error);
     }
@@ -63,33 +55,24 @@ export const POST = withAuth<Workstream, "/workstreams">(
     try {
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        createWorkstreamSchema
+        createWorkstreamValidator
       );
       if (parseError) {
         return parseError;
       }
 
-      const project = await database.project.findUnique({
-        where: { id: body.projectId, organizationId: user.organizationId },
-      });
+      const project = await projectsService.findById(
+        body.projectId,
+        user.organizationId
+      );
 
       if (!project) {
         return notFoundResponse("Project");
       }
 
-      const workstream = await database.workstream.create({
-        data: {
-          projectId: body.projectId,
-          title: body.title,
-          description: body.description,
-          type: body.type ?? "FEATURE_DELIVERY",
-          createdById: user.id,
-          assignedToId: body.assignedToId,
-          hasUIChanges: body.hasUIChanges ?? false,
-        },
-      });
+      const workstream = await workstreamsService.create(user.id, body);
 
-      return successResponse(workstream as Workstream);
+      return successResponse(workstream);
     } catch (error) {
       return errorResponse("Failed to create workstream", error);
     }

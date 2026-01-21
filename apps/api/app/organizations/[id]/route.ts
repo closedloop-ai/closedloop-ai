@@ -7,8 +7,8 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { updateOrganizationSchema } from "../schemas";
 import { organizationsService } from "../service";
+import { updateOrganizationValidator } from "../validators";
 
 export const GET = withAuth<Organization, "/organizations/[id]">(
   async ({ user }, _, params) => {
@@ -26,7 +26,7 @@ export const GET = withAuth<Organization, "/organizations/[id]">(
         return notFoundResponse("Organization");
       }
 
-      return successResponse(organization as Organization);
+      return successResponse(organization);
     } catch (error) {
       return errorResponse("Failed to fetch organization", error);
     }
@@ -45,7 +45,7 @@ export const PUT = withAuth<Organization, "/organizations/[id]">(
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        updateOrganizationSchema
+        updateOrganizationValidator
       );
       if (parseError) {
         return parseError;
@@ -53,7 +53,7 @@ export const PUT = withAuth<Organization, "/organizations/[id]">(
 
       const organization = await organizationsService.update(id, body);
 
-      return successResponse(organization as Organization);
+      return successResponse(organization);
     } catch (error) {
       return errorResponse("Failed to update organization", error);
     }
