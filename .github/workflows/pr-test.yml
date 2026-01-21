@@ -60,6 +60,8 @@ jobs:
 
       - name: Generate Prisma Client
         run: cd packages/database && pnpm prisma generate
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
 
       - name: Setup database schema
         run: cd packages/database && pnpm prisma db push

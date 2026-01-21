@@ -328,5 +328,5 @@ describe.skipIf(!hasDatabase)("Artifact Transaction Integration", () => {
         { timeout: 5000 } // 5 second timeout
       )
     ).rejects.toThrow(TIMEOUT_REGEX);
-  });
+  }, 10_000); // Test timeout: 10 seconds (needs to be > 6000ms transaction delay)
 });
