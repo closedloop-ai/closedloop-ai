@@ -37,16 +37,6 @@ jobs:
           node-version: 20
           cache: 'pnpm'
 
-      # CRITICAL: Cache node_modules separately for faster installs
-      - name: Cache node_modules
-        uses: actions/cache@v4
-        with:
-          path: '**/node_modules'
-          key: ${{ runner.os }}-node-modules-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-node-modules-
-
-      # CRITICAL: Cache turbo build outputs
       - name: Cache turbo
         uses: actions/cache@v4
         with:
