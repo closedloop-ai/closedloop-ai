@@ -1,5 +1,6 @@
 "use client";
 
+import type { HomePage } from "@repo/cms";
 import {
   Avatar,
   AvatarFallback,
@@ -16,12 +17,25 @@ import { User } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type TestimonialsProps = {
+  cmsData?: HomePage["testimonials"] | null;
   dictionary: Dictionary;
 };
 
-export const Testimonials = ({ dictionary }: TestimonialsProps) => {
+export const Testimonials = ({ cmsData, dictionary }: TestimonialsProps) => {
   const [api, setApi] = useState<CarouselApi>();
   const [current, setCurrent] = useState(0);
+
+  // Use CMS data if available, otherwise fall back to dictionary
+  const title = cmsData?.title ?? dictionary.web.home.testimonials.title;
+  const items =
+    cmsData?.items?.items?.map((item) => ({
+      title: item.title,
+      description: item.description,
+      author: {
+        name: item.authorName,
+        image: item.authorImage?.url ?? "",
+      },
+    })) ?? dictionary.web.home.testimonials.items;
 
   useEffect(() => {
     if (!api) {
@@ -44,11 +58,12 @@ export const Testimonials = ({ dictionary }: TestimonialsProps) => {
       <div className="container mx-auto">
         <div className="flex flex-col gap-10">
           <h2 className="text-left font-regular text-3xl tracking-tighter md:text-5xl lg:max-w-xl">
-            {dictionary.web.home.testimonials.title}
+            {title}
           </h2>
           <Carousel className="w-full" setApi={setApi}>
             <CarouselContent>
-              {dictionary.web.home.testimonials.items.map((item, index) => (
+              {items.map((item, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
                 <CarouselItem className="lg:basis-1/2" key={index}>
                   <div className="flex aspect-video h-full flex-col justify-between rounded-md bg-muted p-6 lg:col-span-2">
                     <User className="h-8 w-8 stroke-1" />

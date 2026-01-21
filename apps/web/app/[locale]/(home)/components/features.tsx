@@ -1,72 +1,70 @@
+import type { HomePage } from "@repo/cms";
 import type { Dictionary } from "@repo/internationalization";
-import { User } from "lucide-react";
+// biome-ignore lint/performance/noNamespaceImport: Required for dynamic icon loading from CMS
+import * as Icons from "lucide-react";
 
 type FeaturesProps = {
+  cmsData?: HomePage["features"] | null;
   dictionary: Dictionary;
 };
 
-export const Features = ({ dictionary }: FeaturesProps) => (
-  <div className="w-full py-20 lg:py-40">
-    <div className="container mx-auto">
-      <div className="flex flex-col gap-10">
-        <div className="flex flex-col items-start gap-4">
-          <div className="flex flex-col gap-2">
-            <h2 className="max-w-xl text-left font-regular text-3xl tracking-tighter md:text-5xl">
-              {dictionary.web.home.features.title}
-            </h2>
-            <p className="max-w-xl text-left text-lg text-muted-foreground leading-relaxed tracking-tight lg:max-w-lg">
-              {dictionary.web.home.features.description}
-            </p>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
-          <div className="flex aspect-square h-full flex-col justify-between rounded-md bg-muted p-6 lg:col-span-2 lg:aspect-auto">
-            <User className="h-8 w-8 stroke-1" />
-            <div className="flex flex-col">
-              <h3 className="text-xl tracking-tight">
-                {dictionary.web.home.features.items[0].title}
-              </h3>
-              <p className="max-w-xs text-base text-muted-foreground">
-                {dictionary.web.home.features.items[0].description}
-              </p>
-            </div>
-          </div>
-          <div className="flex aspect-square flex-col justify-between rounded-md bg-muted p-6">
-            <User className="h-8 w-8 stroke-1" />
-            <div className="flex flex-col">
-              <h3 className="text-xl tracking-tight">
-                {dictionary.web.home.features.items[1].title}
-              </h3>
-              <p className="max-w-xs text-base text-muted-foreground">
-                {dictionary.web.home.features.items[1].description}
-              </p>
-            </div>
-          </div>
+export const Features = ({ cmsData, dictionary }: FeaturesProps) => {
+  // Use CMS data if available, otherwise fall back to dictionary
+  const title = cmsData?.title ?? dictionary.web.home.features.title;
+  const description =
+    cmsData?.description ?? dictionary.web.home.features.description;
+  const items = cmsData?.items?.items ?? dictionary.web.home.features.items;
 
-          <div className="flex aspect-square flex-col justify-between rounded-md bg-muted p-6">
-            <User className="h-8 w-8 stroke-1" />
-            <div className="flex flex-col">
-              <h3 className="text-xl tracking-tight">
-                {dictionary.web.home.features.items[2].title}
-              </h3>
-              <p className="max-w-xs text-base text-muted-foreground">
-                {dictionary.web.home.features.items[2].description}
+  // Helper to get icon component
+  const getIcon = (iconName?: string | null) => {
+    if (!iconName) {
+      return Icons.User;
+    }
+    // biome-ignore lint/performance/noDynamicNamespaceImportAccess: Icon name comes from CMS data
+    const IconComponent = Icons[iconName as keyof typeof Icons];
+    return IconComponent && typeof IconComponent !== "string"
+      ? (IconComponent as React.ComponentType<{ className?: string }>)
+      : Icons.User;
+  };
+
+  return (
+    <div className="w-full py-20 lg:py-40">
+      <div className="container mx-auto">
+        <div className="flex flex-col gap-10">
+          <div className="flex flex-col items-start gap-4">
+            <div className="flex flex-col gap-2">
+              <h2 className="max-w-xl text-left font-regular text-3xl tracking-tighter md:text-5xl">
+                {title}
+              </h2>
+              <p className="max-w-xl text-left text-lg text-muted-foreground leading-relaxed tracking-tight lg:max-w-lg">
+                {description}
               </p>
             </div>
           </div>
-          <div className="flex aspect-square h-full flex-col justify-between rounded-md bg-muted p-6 lg:col-span-2 lg:aspect-auto">
-            <User className="h-8 w-8 stroke-1" />
-            <div className="flex flex-col">
-              <h3 className="text-xl tracking-tight">
-                {dictionary.web.home.features.items[3].title}
-              </h3>
-              <p className="max-w-xs text-base text-muted-foreground">
-                {dictionary.web.home.features.items[3].description}
-              </p>
-            </div>
+          <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
+            {items.map((item, index) => {
+              const Icon = getIcon(item.icon);
+              const isWide = index === 0 || index === 3;
+
+              return (
+                <div
+                  className={`flex aspect-square ${isWide ? "h-full lg:col-span-2 lg:aspect-auto" : ""} flex-col justify-between rounded-md bg-muted p-6`}
+                  // biome-ignore lint/suspicious/noArrayIndexKey: Pre-existing pattern, items are static
+                  key={index}
+                >
+                  <Icon className="h-8 w-8 stroke-1" />
+                  <div className="flex flex-col">
+                    <h3 className="text-xl tracking-tight">{item.title}</h3>
+                    <p className="max-w-xs text-base text-muted-foreground">
+                      {item.description}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
