@@ -48,7 +48,10 @@ export const database = new Proxy({} as PrismaClient, {
           return async (...args: unknown[]) => {
             await ensureDatabase();
             // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma delegate method
-            return (globalForPrisma.prisma as any)[prop][method](...args);
+            const result = (globalForPrisma.prisma as any)[prop][method](
+              ...args
+            );
+            return result;
           };
         },
       }
