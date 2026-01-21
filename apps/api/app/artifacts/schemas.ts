@@ -19,6 +19,7 @@ export const createArtifactSchema = z.object({
   externalUrl: z.string().url().optional(),
   generatedBy: z.string().optional(),
   documentSlug: z.string().optional(),
+  sourcePrdId: z.string().optional(),
 });
 
 export const updateArtifactSchema = z.object({

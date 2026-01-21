@@ -102,6 +102,7 @@ export const POST = withAuth<Artifact, "/artifacts">(
             content: body.content,
             externalUrl: body.externalUrl,
             generatedBy: body.generatedBy,
+            sourcePrdId: body.sourcePrdId,
             documentSlug,
             version: nextVersion,
             isLatest: true,

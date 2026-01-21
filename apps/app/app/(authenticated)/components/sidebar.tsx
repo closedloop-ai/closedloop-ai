@@ -43,6 +43,7 @@ import {
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Search } from "./search";
+import { SidebarTeams } from "./sidebar-teams";
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -231,6 +232,9 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
               ))}
             </SidebarMenu>
           </SidebarGroup>
+
+          {/* Your Teams Section */}
+          <SidebarTeams />
 
           {/* Secondary Navigation (pushed to bottom) */}
           <SidebarGroup className="mt-auto">

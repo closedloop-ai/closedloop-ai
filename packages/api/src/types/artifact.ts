@@ -64,6 +64,7 @@ export type Artifact = {
   parentId: string | null;
   documentSlug: string | null;
   generatedBy: string | null;
+  sourcePrdId: string | null;
   tokenUsage: unknown;
   createdAt: Date;
   updatedAt: Date;
@@ -78,6 +79,7 @@ export type ArtifactWithWorkstream = Artifact & {
   project?: {
     id: string;
     name: string;
+    teams?: { id: string; name: string }[];
   } | null;
 };
 
@@ -93,6 +95,7 @@ export type CreateArtifactInput = {
   externalUrl?: string;
   generatedBy?: string;
   documentSlug?: string;
+  sourcePrdId?: string;
 };
 
 export type UpdateArtifactInput = {

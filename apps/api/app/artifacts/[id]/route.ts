@@ -19,8 +19,12 @@ export const GET = withAuth<ArtifactWithWorkstream, "/artifacts/[id]">(
     try {
       const { id } = await params;
 
-      const artifact = await database.artifact.findUnique({
-        where: { id, project: { organizationId: user.organizationId } },
+      const artifact = await database.artifact.findFirst({
+        where: {
+          id,
+          isLatest: true,
+          project: { organizationId: user.organizationId },
+        },
         include: artifactIncludeWithContext,
       });
 
@@ -40,8 +44,12 @@ export const PUT = withAuth<Artifact, "/artifacts/[id]">(
     try {
       const { id } = await params;
 
-      const existing = await database.artifact.findUnique({
-        where: { id, project: { organizationId: user.organizationId } },
+      const existing = await database.artifact.findFirst({
+        where: {
+          id,
+          isLatest: true,
+          project: { organizationId: user.organizationId },
+        },
       });
 
       if (!existing) {
@@ -57,7 +65,7 @@ export const PUT = withAuth<Artifact, "/artifacts/[id]">(
       }
 
       const artifact = await database.artifact.update({
-        where: { id, project: { organizationId: user.organizationId } },
+        where: { id },
         data: body,
       });
 
@@ -73,8 +81,21 @@ export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(
     try {
       const { id } = await params;
 
+      // Verify artifact exists and belongs to user's organization
+      const existing = await database.artifact.findFirst({
+        where: {
+          id,
+          isLatest: true,
+          project: { organizationId: user.organizationId },
+        },
+      });
+
+      if (!existing) {
+        return notFoundResponse("Artifact");
+      }
+
       await database.artifact.delete({
-        where: { id, project: { organizationId: user.organizationId } },
+        where: { id },
       });
 
       return deleteResponse();
