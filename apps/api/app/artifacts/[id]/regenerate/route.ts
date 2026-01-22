@@ -1,6 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { failure, success } from "@repo/api/src/types/common";
-import { log } from "@repo/observability/log";
+import { parseError } from "@repo/observability/error";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { artifactsService } from "../../service";
@@ -24,15 +24,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
 
       return NextResponse.json(success(result.artifact as Artifact));
     } catch (error) {
-      let message: string;
-      if (error instanceof Error) {
-        message = error.message;
-      } else if (typeof error === "object") {
-        message = JSON.stringify(error);
-      } else {
-        message = String(error);
-      }
-      log.error("Failed to regenerate implementation plan", { error: message });
+      const message = parseError(error);
       return NextResponse.json(failure(`Regeneration failed: ${message}`), {
         status: 500,
       });
