@@ -27,10 +27,11 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getTeamMembers } from "@/app/actions/teams";
 import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_COLORS, PRIORITY_LABELS } from "@/lib/project-constants";
-import { getUserDisplayName } from "@/lib/user-utils";
+import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type PropertiesPanelProps = {
   project: ProjectWithDetails;
@@ -47,15 +48,41 @@ export function PropertiesPanel({
   onUpdateTargetDate,
 }: PropertiesPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
+  const [teamMembers, setTeamMembers] = useState<
+    Array<{
+      id: string;
+      name: string;
+      email?: string;
+      avatarUrl?: string;
+      initials: string;
+    }>
+  >([]);
 
-  // TODO: Fetch team members from API when endpoint is available
-  const teamMembers: Array<{
-    id: string;
-    name: string;
-    email?: string;
-    avatarUrl?: string;
-    initials: string;
-  }> = [];
+  useEffect(() => {
+    async function fetchTeamMembers() {
+      const teamId = project.teams[0]?.id;
+      if (!teamId) {
+        return;
+      }
+
+      const result = await getTeamMembers(teamId);
+      if (result.success) {
+        const transformed = result.data.map((member) => ({
+          id: member.user.id,
+          name: getUserDisplayName(member.user),
+          email: member.user.email,
+          avatarUrl: member.user.avatarUrl || undefined,
+          initials: getUserInitials(
+            member.user.firstName,
+            member.user.lastName
+          ),
+        }));
+        setTeamMembers(transformed);
+      }
+    }
+
+    fetchTeamMembers();
+  }, [project.teams]);
 
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>
