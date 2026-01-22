@@ -1,5 +1,6 @@
 "use server";
 
+import type { ActivityResponse } from "@repo/api/src/types/activity";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
@@ -9,29 +10,6 @@ import type {
 } from "@repo/api/src/types/organization";
 import { revalidatePath } from "next/cache";
 import { apiClient } from "@/lib/api-client";
-
-// Activity types
-export type ActivityItem = {
-  id: string;
-  type: string;
-  actor?: {
-    id: string;
-    name: string;
-    avatarUrl?: string;
-  };
-  description: string;
-  metadata?: Record<string, unknown>;
-  timestamp: string;
-};
-
-export type ActivityResponse = {
-  activities: ActivityItem[];
-  pagination: {
-    page: number;
-    pageSize: number;
-    total: number;
-  };
-};
 
 /**
  * Get all projects, optionally filtered by team

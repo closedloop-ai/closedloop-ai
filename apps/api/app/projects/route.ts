@@ -1,8 +1,4 @@
-import type {
-  CreateProjectInput,
-  ProjectPriority,
-  ProjectWithDetails,
-} from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/organization";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { projectsService } from "./service";
@@ -20,7 +16,7 @@ export const GET = withAuth<ProjectWithDetails[], "/projects">(
       const teamId = url.searchParams.get("teamId");
 
       const projects = teamId
-        ? await projectsService.findByTeam(teamId)
+        ? await projectsService.findByTeam(teamId, user.organizationId)
         : await projectsService.findByOrganization(user.organizationId);
 
       return successResponse(
@@ -46,19 +42,13 @@ export const POST = withAuth<ProjectWithDetails, "/projects">(
         return parseError;
       }
 
-      const input: CreateProjectInput = {
-        name: body.name,
-        description: body.description,
-        priority: body.priority as ProjectPriority | undefined,
-        ownerId: body.ownerId,
-        targetDate: body.targetDate ? new Date(body.targetDate) : undefined,
-        teamIds: body.teamIds,
-      };
-
-      const project = await projectsService.create(user.organizationId, input);
+      const project = await projectsService.create(user.organizationId, body);
 
       // Fetch the full project with details
-      const projectWithDetails = await projectsService.findById(project.id);
+      const projectWithDetails = await projectsService.findById(
+        project.id,
+        user.organizationId
+      );
 
       if (!projectWithDetails) {
         return errorResponse(

@@ -152,16 +152,8 @@ export const artifactsService = {
 
       return tx.artifact.create({
         data: {
-          workstreamId: input.workstreamId,
+          ...input,
           projectId,
-          type: input.type,
-          title: input.title,
-          fileName: input.fileName,
-          approver: input.approver,
-          status: input.status ?? "DRAFT",
-          content: input.content,
-          externalUrl: input.externalUrl,
-          generatedBy: input.generatedBy,
           documentSlug,
           targetRepo: input.targetRepo,
           targetBranch: input.targetBranch,
@@ -195,15 +187,8 @@ export const artifactsService = {
 
       return tx.artifact.create({
         data: {
+          ...input,
           workstreamId,
-          type: input.type,
-          title: input.title,
-          fileName: input.fileName,
-          approver: input.approver,
-          status: input.status ?? "DRAFT",
-          content: input.content,
-          externalUrl: input.externalUrl,
-          generatedBy: input.generatedBy,
           documentSlug,
           targetRepo: input.targetRepo,
           targetBranch: input.targetBranch,

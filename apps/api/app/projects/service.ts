@@ -61,13 +61,14 @@ export const projectsService = {
   /**
    * Find projects by team ID
    */
-  findByTeam(teamId: string) {
+  findByTeam(teamId: string, organizationId: string) {
     return withDb((db) =>
       db.project.findMany({
         where: {
           teams: {
             some: { teamId },
           },
+          organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: { createdAt: "desc" },
@@ -78,10 +79,10 @@ export const projectsService = {
   /**
    * Find a project by ID with all details
    */
-  findById(id: string, organizationId?: string) {
+  findById(id: string, organizationId: string) {
     return withDb((db) =>
       db.project.findUnique({
-        where: { id, ...(organizationId ? { organizationId } : {}) },
+        where: { id, organizationId },
         include: PROJECT_DETAIL_INCLUDE,
       })
     );
@@ -164,11 +165,11 @@ export const projectsService = {
   /**
    * Delete a project
    */
-  delete(id: string) {
+  delete(id: string, organizationId: string) {
     return withDb.tx(async (tx) => {
       // Remove team associations first
       await tx.projectTeam.deleteMany({ where: { projectId: id } });
-      return tx.project.delete({ where: { id } });
+      return tx.project.delete({ where: { id, organizationId } });
     });
   },
 

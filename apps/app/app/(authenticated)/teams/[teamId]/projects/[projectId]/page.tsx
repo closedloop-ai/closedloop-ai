@@ -1,5 +1,6 @@
 "use client";
 
+import type { ActivityItem } from "@repo/api/src/types/activity";
 import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type {
   ProjectPriority,
@@ -36,7 +37,6 @@ import {
   updateArtifact,
 } from "@/app/actions/artifacts";
 import {
-  type ActivityItem,
   getProjectActivity,
   getProjectById,
   updateProjectOwner,

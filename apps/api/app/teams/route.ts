@@ -1,16 +1,8 @@
-import type {
-  CreateTeamInput,
-  TeamWithCounts,
-} from "@repo/api/src/types/teams";
-import { z } from "zod";
+import type { TeamWithCounts } from "@repo/api/src/types/teams";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
-import { teamsService } from "./service";
-
-const createTeamSchema = z.object({
-  name: z.string().min(1, "Team name is required"),
-  slug: z.string().optional(),
-});
+import { teamsService, toTeamWithCounts } from "./service";
+import { createTeamValidator } from "./validators";
 
 /**
  * GET /teams - List all teams for the current user's organization
@@ -18,19 +10,7 @@ const createTeamSchema = z.object({
 export const GET = withAuth<TeamWithCounts[], "/teams">(async ({ user }) => {
   try {
     const teams = await teamsService.findByOrganization(user.organizationId);
-
-    const teamsWithCounts: TeamWithCounts[] = teams.map((team) => ({
-      id: team.id,
-      organizationId: team.organizationId,
-      name: team.name,
-      slug: team.slug,
-      createdAt: team.createdAt,
-      updatedAt: team.updatedAt,
-      memberCount: team._count.members,
-      projectCount: team._count.projects,
-    }));
-
-    return successResponse(teamsWithCounts);
+    return successResponse(teams.map(toTeamWithCounts));
   } catch (error) {
     return errorResponse("Failed to fetch teams", error);
   }
@@ -44,24 +24,25 @@ export const POST = withAuth<TeamWithCounts, "/teams">(
     try {
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        createTeamSchema
+        createTeamValidator
       );
 
       if (parseError) {
         return parseError;
       }
 
-      const input: CreateTeamInput = {
-        organizationId: user.organizationId,
-        name: body.name,
-        slug: body.slug,
-      };
-
       // Create team and add creator as owner
-      const team = await teamsService.createWithOwner(input, user.id);
+      const team = await teamsService.createWithOwner(
+        user.organizationId,
+        user.id,
+        body
+      );
 
       // Fetch the team with counts for response
-      const teamWithCounts = await teamsService.findById(team.id);
+      const teamWithCounts = await teamsService.findById(
+        team.id,
+        user.organizationId
+      );
 
       if (!teamWithCounts) {
         return errorResponse(
@@ -70,18 +51,7 @@ export const POST = withAuth<TeamWithCounts, "/teams">(
         );
       }
 
-      const response: TeamWithCounts = {
-        id: teamWithCounts.id,
-        organizationId: teamWithCounts.organizationId,
-        name: teamWithCounts.name,
-        slug: teamWithCounts.slug,
-        createdAt: teamWithCounts.createdAt,
-        updatedAt: teamWithCounts.updatedAt,
-        memberCount: teamWithCounts._count.members,
-        projectCount: teamWithCounts._count.projects,
-      };
-
-      return successResponse(response);
+      return successResponse(toTeamWithCounts(teamWithCounts));
     } catch (error) {
       return errorResponse("Failed to create team", error);
     }

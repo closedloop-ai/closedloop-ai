@@ -13,7 +13,7 @@ export default defineConfig({
       dir: "../../node_modules/.vitest", // Share cache at monorepo root
     },
     // Enable parallel execution
-    pool: 'threads',
+    pool: "threads",
     poolOptions: {
       threads: {
         singleThread: false,
@@ -25,7 +25,10 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./"),
       "@repo": path.resolve(__dirname, "../../packages"),
       // Mock server-only package to prevent errors in tests
-      "server-only": path.resolve(__dirname, "./__tests__/utils/server-only-mock.ts"),
+      "server-only": path.resolve(
+        __dirname,
+        "./__tests__/utils/server-only-mock.ts"
+      ),
     },
   },
 });

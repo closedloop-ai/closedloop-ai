@@ -3,7 +3,7 @@ import "server-only";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
-import { auth, verifyToken } from "@repo/auth/server";
+import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import type { AppRouteHandlerRoutes } from "@/.next/types/routes";
@@ -79,7 +79,7 @@ export function withAuth<
     routeContext: RouteContext<TRoute>
   ): Promise<NextResponse<ApiResult<TResponse>>> => {
     try {
-      const { clerkUserId, clerkOrgId } = await getAuthCredentials(request);
+      const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
 
       if (!(clerkUserId && clerkOrgId)) {
         return unauthorizedResponse();
@@ -93,53 +93,6 @@ export function withAuth<
       return authErrorResponse("Authentication failed", error);
     }
   };
-}
-
-/**
- * Gets auth credentials from Clerk session or Bearer token.
- */
-async function getAuthCredentials(
-  request: NextRequest
-): Promise<{ clerkUserId?: string; clerkOrgId?: string }> {
-  // Try standard Clerk auth first (works with cookies/session)
-  const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
-
-  if (clerkUserId) {
-    return { clerkUserId, clerkOrgId };
-  }
-
-  // Fallback: try Bearer token from Authorization header
-  return verifyBearerToken(request);
-}
-
-/**
- * Verifies a Bearer token from the Authorization header.
- */
-async function verifyBearerToken(
-  request: NextRequest
-): Promise<{ clerkUserId?: string; clerkOrgId?: string }> {
-  const authHeader = request.headers.get("Authorization");
-
-  if (!authHeader?.startsWith("Bearer ")) {
-    return {};
-  }
-
-  const token = authHeader.slice(7);
-  const secretKey = process.env.CLERK_SECRET_KEY;
-
-  if (!secretKey) {
-    return {};
-  }
-
-  try {
-    const verifiedToken = await verifyToken(token, { secretKey });
-    return {
-      clerkUserId: verifiedToken.sub,
-      clerkOrgId: verifiedToken.org_id,
-    };
-  } catch {
-    return {};
-  }
 }
 
 async function findOrCreateUser(
