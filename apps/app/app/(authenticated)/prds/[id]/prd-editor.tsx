@@ -57,6 +57,8 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     isSaving,
     status,
     approver,
+    targetRepo,
+    targetBranch,
     showMetadataPanel,
     setShowMetadataPanel,
     showRenameDialog,
@@ -69,6 +71,10 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
+    handleTargetRepoChange,
+    handleTargetRepoBlur,
+    handleTargetBranchChange,
+    handleTargetBranchBlur,
     handleRename,
     handleDuplicate,
     handleExport,
@@ -212,6 +218,35 @@ export function PRDEditor({ prd }: PRDEditorProps) {
                   placeholder="Approver name"
                   value={approver}
                 />
+              </div>
+
+              <div className="space-y-4 border-t pt-4">
+                <h4 className="font-medium text-sm">Plan Generation</h4>
+
+                <div className="space-y-2">
+                  <Label>
+                    Target Repository{" "}
+                    <span className="text-muted-foreground text-xs">
+                      (owner/repo)
+                    </span>
+                  </Label>
+                  <Input
+                    onBlur={handleTargetRepoBlur}
+                    onChange={(e) => handleTargetRepoChange(e.target.value)}
+                    placeholder="owner/repo"
+                    value={targetRepo}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Target Branch</Label>
+                  <Input
+                    onBlur={handleTargetBranchBlur}
+                    onChange={(e) => handleTargetBranchChange(e.target.value)}
+                    placeholder="main"
+                    value={targetBranch}
+                  />
+                </div>
               </div>
 
               <div className="border-t pt-4">

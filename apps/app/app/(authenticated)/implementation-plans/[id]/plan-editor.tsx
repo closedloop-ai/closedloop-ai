@@ -27,13 +27,16 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  ExternalLinkIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   SettingsIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import {
   ArtifactStatusBadge,
   artifactStatusLabels,
@@ -46,6 +49,7 @@ type PlanEditorProps = {
 };
 
 export function PlanEditor({ plan }: PlanEditorProps) {
+  const router = useRouter();
   const {
     isPending,
     content,
@@ -59,6 +63,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     showDeleteDialog,
     setShowDeleteDialog,
     isDraft,
+    generationStatus,
     handleSave,
     handleStatusChange,
     handleApproverChange,
@@ -166,6 +171,12 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         </div>
       </div>
 
+      {/* Generation Status Banner */}
+      <GenerationStatusBanner
+        artifactId={plan.id}
+        onComplete={() => router.refresh()}
+      />
+
       {/* Content Area with Optional Metadata Panel */}
       <div className="flex flex-1 overflow-hidden">
         {/* Scrollable Editor */}
@@ -232,6 +243,26 @@ export function PlanEditor({ plan }: PlanEditorProps) {
                   </p>
                 </div>
               </div>
+
+              {/* GitHub Action Run Link */}
+              {generationStatus?.htmlUrl ? (
+                <div className="border-t pt-4">
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs">
+                      Generation
+                    </Label>
+                    <a
+                      className="flex items-center gap-1 text-blue-600 text-sm hover:underline dark:text-blue-400"
+                      href={generationStatus.htmlUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      View GitHub Workflow
+                      <ExternalLinkIcon className="h-3 w-3" />
+                    </a>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}

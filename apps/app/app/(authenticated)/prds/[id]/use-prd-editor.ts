@@ -28,6 +28,8 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
   // Metadata state
   const [status, setStatus] = useState(prd.status);
   const [approver, setApprover] = useState(prd.approver ?? "");
+  const [targetRepo, setTargetRepo] = useState(prd.targetRepo ?? "");
+  const [targetBranch, setTargetBranch] = useState(prd.targetBranch ?? "main");
 
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
@@ -41,7 +43,16 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
     setLastSaved(prd.updatedAt);
     setStatus(prd.status);
     setApprover(prd.approver ?? "");
-  }, [prd.content, prd.updatedAt, prd.status, prd.approver]);
+    setTargetRepo(prd.targetRepo ?? "");
+    setTargetBranch(prd.targetBranch ?? "main");
+  }, [
+    prd.content,
+    prd.updatedAt,
+    prd.status,
+    prd.approver,
+    prd.targetRepo,
+    prd.targetBranch,
+  ]);
 
   // Handlers
   const handleSave = useCallback(() => {
@@ -63,6 +74,8 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
       updates: Partial<{
         status: ArtifactStatus;
         approver: string;
+        targetRepo: string | null;
+        targetBranch: string | null;
       }>
     ) => {
       startTransition(async () => {
@@ -95,6 +108,26 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
       handleMetadataUpdate({ approver: approver || undefined });
     }
   }, [approver, prd.approver, handleMetadataUpdate]);
+
+  const handleTargetRepoChange = useCallback((newTargetRepo: string) => {
+    setTargetRepo(newTargetRepo);
+  }, []);
+
+  const handleTargetRepoBlur = useCallback(() => {
+    if (targetRepo !== (prd.targetRepo ?? "")) {
+      handleMetadataUpdate({ targetRepo: targetRepo || null });
+    }
+  }, [targetRepo, prd.targetRepo, handleMetadataUpdate]);
+
+  const handleTargetBranchChange = useCallback((newTargetBranch: string) => {
+    setTargetBranch(newTargetBranch);
+  }, []);
+
+  const handleTargetBranchBlur = useCallback(() => {
+    if (targetBranch !== (prd.targetBranch ?? "main")) {
+      handleMetadataUpdate({ targetBranch: targetBranch || null });
+    }
+  }, [targetBranch, prd.targetBranch, handleMetadataUpdate]);
 
   const handleRename = useCallback(
     (title: string, fileName: string) => {
@@ -144,6 +177,8 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
     isSaving,
     status,
     approver,
+    targetRepo,
+    targetBranch,
     showMetadataPanel,
     setShowMetadataPanel,
     showRenameDialog,
@@ -158,6 +193,10 @@ export function usePRDEditor(prd: ArtifactWithWorkstream) {
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
+    handleTargetRepoChange,
+    handleTargetRepoBlur,
+    handleTargetBranchChange,
+    handleTargetBranchBlur,
     handleRename,
     handleDuplicate,
     handleExport,

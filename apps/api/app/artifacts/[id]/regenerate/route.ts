@@ -17,12 +17,139 @@ function isGitHubConfigured(): boolean {
   );
 }
 
+/**
+ * Build context for plan generation from PRD content and optional initial instructions.
+ * Appends "assume defaults" instruction to skip Q&A flow.
+ */
+/**
+ * Build context for plan generation from PRD content and optional initial instructions.
+ * Appends "assume defaults" instruction to skip Q&A flow.
+ */
+function buildPlanContext(
+  prdContent: string,
+  initialInstructions: string | null
+): string {
+  let context = prdContent;
+
+  // Add initial instructions if provided and not a failure message
+  if (
+    initialInstructions?.trim() &&
+    !initialInstructions.startsWith("# Plan Generation Failed")
+  ) {
+    context += `
+
+---
+
+## Additional Instructions
+
+${initialInstructions.trim()}`;
+  }
+
+  // Always append "assume defaults" instruction
+  context += `
+
+---
+
+**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment.`;
+
+  return context;
+}
+
+/**
+ * Find or create a workstream for the artifact.
+ * If artifact has no workstream, finds PRD by title match and auto-creates one.
+ */
+async function findOrCreateWorkstream(
+  artifact: {
+    id: string;
+    title: string;
+    projectId: string | null;
+    parentId: string | null;
+    workstream: Awaited<
+      ReturnType<typeof database.workstream.findUnique>
+    > | null;
+  },
+  userId: string
+) {
+  // If workstream exists, fetch it with project relation
+  if (artifact.workstream) {
+    const workstream = await database.workstream.findUnique({
+      where: { id: artifact.workstream.id },
+      include: {
+        project: {
+          include: {
+            repositories: { where: { isPrimary: true }, take: 1 },
+          },
+        },
+        artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+      },
+    });
+
+    const prdArtifact = await database.artifact.findFirst({
+      where: {
+        workstreamId: artifact.workstream.id,
+        type: "PRD",
+        isLatest: true,
+      },
+    });
+    return { workstream, prdArtifact };
+  }
+
+  // Find PRD by parentId or matching title
+  const prdTitle = artifact.title.replace("Implementation Plan: ", "");
+  const foundPrd = await database.artifact.findFirst({
+    where: {
+      projectId: artifact.projectId,
+      type: "PRD",
+      isLatest: true,
+      OR: [{ id: artifact.parentId ?? undefined }, { title: prdTitle }],
+    },
+  });
+
+  if (!(foundPrd?.content && artifact.projectId)) {
+    return { workstream: null, prdArtifact: foundPrd };
+  }
+
+  // Auto-create workstream
+  const newWorkstream = await database.workstream.create({
+    data: {
+      projectId: artifact.projectId,
+      title: foundPrd.title,
+      description: `Auto-created for: ${foundPrd.title}`,
+      type: "FEATURE_DELIVERY",
+      createdById: userId,
+    },
+  });
+
+  // Link artifacts to workstream
+  await database.artifact.updateMany({
+    where: { id: { in: [foundPrd.id, artifact.id] } },
+    data: { workstreamId: newWorkstream.id },
+  });
+
+  // Fetch workstream with relations
+  const workstream = await database.workstream.findUnique({
+    where: { id: newWorkstream.id },
+    include: {
+      project: {
+        include: {
+          repositories: { where: { isPrimary: true }, take: 1 },
+        },
+      },
+      artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+    },
+  });
+
+  return { workstream, prdArtifact: foundPrd };
+}
+
 export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
   async ({ user }, _request, params) => {
     const { id } = await params;
 
     try {
       // Find the artifact with its workstream and project
+      // Include PRD's targetRepo/targetBranch for plan generation
       const artifact = await database.artifact.findUnique({
         where: { id, project: { organizationId: user.organizationId } },
         include: {
@@ -56,28 +183,37 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
         );
       }
 
-      if (!artifact.workstream) {
-        return NextResponse.json(
-          failure("Artifact must be linked to a workstream to regenerate"),
-          { status: 400 }
-        );
-      }
-
-      const { workstream } = artifact;
-      const project = workstream.project;
-      const repository = project.repositories[0];
-      const prdArtifact = workstream.artifacts[0];
-
-      if (!repository) {
-        return NextResponse.json(
-          failure("No repository configured for this project"),
-          { status: 400 }
-        );
-      }
+      // Find or create workstream with PRD
+      const { workstream, prdArtifact } = await findOrCreateWorkstream(
+        artifact,
+        user.id
+      );
 
       if (!prdArtifact?.content) {
         return NextResponse.json(
-          failure("No PRD found in this workstream to generate plan from"),
+          failure("No PRD found to generate plan from. Create a PRD first."),
+          { status: 400 }
+        );
+      }
+
+      if (!workstream) {
+        return NextResponse.json(
+          failure("Artifact must have a project to regenerate"),
+          { status: 400 }
+        );
+      }
+
+      const project = workstream.project;
+      const repository = project.repositories[0];
+
+      // Use PRD's target repo (fallback to project's primary)
+      const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+      const targetBranch =
+        prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+
+      if (!targetRepo) {
+        return NextResponse.json(
+          failure("No repository configured for this project or PRD"),
           { status: 400 }
         );
       }
@@ -104,7 +240,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
         where: {
           workstreamId: workstream.id,
           workflowName: "symphony-dispatch",
-          status: { in: ["PENDING", "RUNNING"] },
+          status: { in: ["PENDING", "QUEUED", "RUNNING"] },
         },
       });
 
@@ -120,13 +256,17 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
       // Generate correlation ID
       const correlationId = createId();
 
+      // Build context: PRD content + initial instructions (artifact.content) + "assume defaults"
+      const context = buildPlanContext(prdArtifact.content, artifact.content);
+
       // Trigger the workflow
       const result = await triggerWorkflowDispatch({
-        targetRepo: repository.fullName,
-        ref: repository.defaultBranch,
+        targetRepo,
+        ref: targetBranch,
         command: "plan",
-        context: prdArtifact.content,
+        context,
         correlationId,
+        sessionId: prdArtifact.id, // PRD ID for artifact naming
       });
 
       if (!result.success) {
@@ -140,17 +280,20 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
       await database.gitHubActionRun.create({
         data: {
           workstreamId: workstream.id,
-          repositoryId: repository.id,
+          repositoryId: repository?.id ?? "",
           runId: BigInt(0), // Will be updated when we get the actual run ID
           workflowName: "symphony-dispatch",
           status: "PENDING",
           htmlUrl: "",
           triggerEvent: "workflow_dispatch",
           triggerData: {
-            correlationId,
+            correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
             artifactId: artifact.id,
+            prdId: prdArtifact.id,
             command: "plan",
           },
+          sessionId: prdArtifact.id,
+          jobType: "generate",
           startedAt: new Date(),
         },
       });
@@ -176,6 +319,9 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
             command: "plan",
             correlationId,
             artifactId: artifact.id,
+            prdId: prdArtifact.id,
+            targetRepo,
+            targetBranch,
           },
         },
       });

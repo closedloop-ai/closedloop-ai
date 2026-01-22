@@ -10,6 +10,14 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { revalidatePath } from "next/cache";
 import { apiClient } from "@/lib/api-client";
 
+export type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
+};
+
 export async function getArtifacts(
   workstreamId: string,
   type?: string,
@@ -153,4 +161,53 @@ export async function regenerateArtifact(
   }
 
   return result;
+}
+
+/**
+ * Create an implementation plan artifact and immediately trigger workflow generation.
+ * This combines createArtifact + regenerateArtifact into a single action.
+ */
+export async function createAndGeneratePlan(
+  input: CreateArtifactInput
+): Promise<ApiResult<Artifact>> {
+  // First create the artifact
+  const createResult = await apiClient.post<Artifact>("/artifacts", input);
+
+  if (!createResult.success) {
+    return createResult;
+  }
+
+  // Then trigger regeneration (which dispatches to GitHub)
+  const regenerateResult = await apiClient.post<Artifact>(
+    `/artifacts/${createResult.data.id}/regenerate`,
+    {}
+  );
+
+  // Revalidate paths
+  if (input.workstreamId) {
+    revalidatePath(`/workstreams/${input.workstreamId}`);
+  }
+  revalidatePath("/prds");
+  revalidatePath("/implementation-plans");
+
+  // Return the regenerate result if successful (it has updated version/generatedBy)
+  // Otherwise return the original artifact so user can still navigate to it
+  if (regenerateResult.success) {
+    return regenerateResult;
+  }
+
+  // Return original artifact - status will show generation may have failed
+  return createResult;
+}
+
+/**
+ * Get the current generation status for an artifact.
+ * Used by the GenerationStatusBanner component for polling.
+ */
+export async function getGenerationStatus(
+  artifactId: string
+): Promise<ApiResult<GenerationStatus>> {
+  return await apiClient.get<GenerationStatus>(
+    `/artifacts/${artifactId}/generation-status`
+  );
 }
