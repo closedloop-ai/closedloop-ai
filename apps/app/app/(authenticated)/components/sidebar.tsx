@@ -4,11 +4,6 @@ import { UserButton } from "@repo/auth/client";
 import { ModeToggle } from "@repo/design-system/components/mode-toggle";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@repo/design-system/components/ui/collapsible";
-import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -18,26 +13,21 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   useSidebar,
 } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import {
-  ChevronRightIcon,
   ClipboardListIcon,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
   LightbulbIcon,
-  MoreHorizontalIcon,
   ScrollTextIcon,
   SendIcon,
+  SettingsIcon,
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -95,21 +85,10 @@ const data = {
       disabled: true,
     },
     {
-      title: "More",
-      url: "#",
-      icon: MoreHorizontalIcon,
-      items: [
-        {
-          title: "Webhooks",
-          url: "/webhooks",
-          disabled: false,
-        },
-        {
-          title: "Settings",
-          url: "/settings",
-          disabled: false,
-        },
-      ],
+      title: "Settings",
+      url: "/settings",
+      icon: SettingsIcon,
+      disabled: false,
     },
   ],
   navSecondary: [
@@ -150,91 +129,50 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarHeader>
         <Search />
         <SidebarContent>
+          {/* Your Teams Section */}
+          <SidebarTeams />
+
           {/* Workspace Section */}
           <SidebarGroup>
             <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
-              {data.workspace.map((item, index) => (
-                <Collapsible
-                  asChild
-                  defaultOpen={false}
-                  id={`workspace-collapsible-${index}`}
-                  key={item.title}
-                >
-                  <SidebarMenuItem>
-                    <SidebarMenuButton
-                      asChild={!item.disabled}
-                      className={cn(
-                        item.disabled
-                          ? "pointer-events-none cursor-not-allowed opacity-50"
-                          : ""
-                      )}
-                      tooltip={item.title}
-                    >
-                      {item.disabled ? (
-                        <span className="flex items-center gap-2">
-                          <item.icon />
-                          <span>{item.title}</span>
-                          {item.badge ? (
-                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
-                              {item.badge}
-                            </span>
-                          ) : null}
-                        </span>
-                      ) : (
-                        <Link href={item.url}>
-                          <item.icon />
-                          <span>{item.title}</span>
-                          {item.badge ? (
-                            <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
-                              {item.badge}
-                            </span>
-                          ) : null}
-                        </Link>
-                      )}
-                    </SidebarMenuButton>
-                    {item.items?.length ? (
-                      <>
-                        <CollapsibleTrigger asChild>
-                          <SidebarMenuAction className="data-[state=open]:rotate-90">
-                            <ChevronRightIcon />
-                            <span className="sr-only">Toggle</span>
-                          </SidebarMenuAction>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent>
-                          <SidebarMenuSub>
-                            {item.items?.map((subItem) => (
-                              <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton
-                                  asChild={!subItem.disabled}
-                                  className={cn(
-                                    subItem.disabled
-                                      ? "pointer-events-none cursor-not-allowed opacity-50"
-                                      : ""
-                                  )}
-                                >
-                                  {subItem.disabled ? (
-                                    <span>{subItem.title}</span>
-                                  ) : (
-                                    <Link href={subItem.url}>
-                                      <span>{subItem.title}</span>
-                                    </Link>
-                                  )}
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            ))}
-                          </SidebarMenuSub>
-                        </CollapsibleContent>
-                      </>
-                    ) : null}
-                  </SidebarMenuItem>
-                </Collapsible>
+              {data.workspace.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    asChild={!item.disabled}
+                    className={cn(
+                      item.disabled
+                        ? "pointer-events-none cursor-not-allowed opacity-50"
+                        : ""
+                    )}
+                    tooltip={item.title}
+                  >
+                    {item.disabled ? (
+                      <span className="flex items-center gap-2">
+                        <item.icon />
+                        <span>{item.title}</span>
+                        {item.badge ? (
+                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
+                            {item.badge}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <Link href={item.url}>
+                        <item.icon />
+                        <span>{item.title}</span>
+                        {item.badge ? (
+                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                            {item.badge}
+                          </span>
+                        ) : null}
+                      </Link>
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               ))}
             </SidebarMenu>
           </SidebarGroup>
-
-          {/* Your Teams Section */}
-          <SidebarTeams />
 
           {/* Secondary Navigation (pushed to bottom) */}
           <SidebarGroup className="mt-auto">
