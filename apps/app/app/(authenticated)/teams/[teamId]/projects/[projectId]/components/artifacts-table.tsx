@@ -153,7 +153,8 @@ export function ArtifactsTable({
             const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
             const route = getArtifactRoute(artifact);
             const isExternal =
-              artifact.type === "DESIGNS" && artifact.link?.startsWith("http");
+              artifact.type === "DESIGNS" &&
+              (artifact.link?.startsWith("http") ?? false);
 
             const isClickable =
               artifact.type === "PRD" ||
