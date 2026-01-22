@@ -8,10 +8,6 @@ inputs:
     description: 'Node.js version'
     required: false
     default: '20'
-  pnpm_version:
-    description: 'pnpm version (should match packageManager in package.json)'
-    required: false
-    default: '10'
   checkout_cross_repo:
     description: 'Whether to checkout cross-repo (e.g., backend service)'
     required: false
@@ -35,8 +31,6 @@ runs:
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
-      with:
-        version: ${{ inputs.pnpm_version }}
 
     - name: Get pnpm store directory
       id: pnpm-cache
