@@ -71,20 +71,8 @@ async function findOrCreateWorkstream(
   },
   userId: string
 ) {
-  // If workstream exists, fetch it with project relation
+  // If workstream exists, return it with PRD
   if (artifact.workstream) {
-    const workstream = await database.workstream.findUnique({
-      where: { id: artifact.workstream.id },
-      include: {
-        project: {
-          include: {
-            repositories: { where: { isPrimary: true }, take: 1 },
-          },
-        },
-        artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
-      },
-    });
-
     const prdArtifact = await database.artifact.findFirst({
       where: {
         workstreamId: artifact.workstream.id,
@@ -92,7 +80,7 @@ async function findOrCreateWorkstream(
         isLatest: true,
       },
     });
-    return { workstream, prdArtifact };
+    return { workstream: artifact.workstream, prdArtifact };
   }
 
   // Find PRD by parentId or matching title
@@ -203,6 +191,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
         );
       }
 
+      // @ts-expect-error - project is included in the initial query, TypeScript doesn't infer it
       const project = workstream.project;
       const repository = project.repositories[0];
 
