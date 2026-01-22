@@ -81,32 +81,23 @@ export async function getArtifactVersions(
 
   const artifact = artifactResult.data;
 
-  // Step 2: Strict null check for documentSlug
-  if (!artifact.documentSlug) {
+  // Step 2: Explicit null/undefined check for documentSlug
+  if (artifact.documentSlug === null || artifact.documentSlug === undefined) {
     return {
       success: false,
       error: "Artifact does not have a documentSlug",
     };
   }
 
-  // Step 3: Fetch all artifacts of the same type
-  const allArtifactsResult = await apiClient.get<ArtifactWithWorkstream[]>(
-    `/artifacts?type=${artifact.type}&latestOnly=false`
+  // Step 3: Fetch versions by documentSlug (server-side filtering)
+  const params = new URLSearchParams();
+  params.set("type", artifact.type);
+  params.set("documentSlug", artifact.documentSlug);
+  params.set("latestOnly", "false");
+
+  return await apiClient.get<ArtifactWithWorkstream[]>(
+    `/artifacts?${params.toString()}`
   );
-
-  if (!allArtifactsResult.success) {
-    return allArtifactsResult;
-  }
-
-  // Step 4: Filter client-side by documentSlug
-  const versions = allArtifactsResult.data.filter(
-    (a) => a.documentSlug === artifact.documentSlug
-  );
-
-  return {
-    success: true,
-    data: versions,
-  };
 }
 
 export async function createArtifact(
@@ -169,17 +160,21 @@ export async function duplicateArtifact(
   return result;
 }
 
+export type CreateNewVersionInput = {
+  id: string;
+  content: string;
+};
+
 export async function createNewVersion(
-  id: string,
-  content: string
+  input: CreateNewVersionInput
 ): Promise<ApiResult<Artifact>> {
+  const { id, content } = input;
   const result = await apiClient.post<Artifact>(
     `/artifacts/${id}/new-version`,
     { content }
   );
 
   if (result.success) {
-    revalidatePath(`/implementation-plans/${id}`);
     revalidatePath(`/implementation-plans/${result.data.id}`);
     revalidatePath("/implementation-plans");
   }

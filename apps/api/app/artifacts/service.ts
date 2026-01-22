@@ -9,8 +9,10 @@ import type {
 import { withDb } from "@repo/database";
 import { triggerWorkflowDispatch } from "@repo/github";
 import {
+  ArtifactNotFoundError,
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
+  createArtifactVersion,
   generateDocumentSlug,
   getOrCreateDefaultProject,
   prepareArtifactVersion,
@@ -27,6 +29,7 @@ export type FindArtifactsOptions = {
   latestOnly?: boolean;
   workstreamId?: string;
   projectId?: string;
+  documentSlug?: string;
 };
 
 export type FindWorkstreamArtifactsOptions = {
@@ -51,6 +54,7 @@ export const artifactsService = {
       latestOnly = true,
       workstreamId,
       projectId,
+      documentSlug,
     } = options;
 
     const artifacts = await withDb((db) =>
@@ -60,6 +64,7 @@ export const artifactsService = {
           ...(latestOnly ? { isLatest: true } : {}),
           ...(workstreamId ? { workstreamId } : {}),
           ...(projectId ? { projectId } : {}),
+          ...(documentSlug ? { documentSlug } : {}),
           project: { organizationId },
         },
         include: artifactIncludeWithContext,
@@ -524,45 +529,14 @@ ${initialInstructions.trim()}`;
     );
 
     if (!original) {
-      throw new Error("Artifact not found");
+      throw new ArtifactNotFoundError();
     }
 
-    return withDb.tx(async (tx) => {
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        workstreamId: original.workstreamId,
-        projectId: original.projectId,
-        type: original.type,
-        documentSlug: original.documentSlug,
-      });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
-
-      // Create the new version (preserving all metadata, updating content)
-      return tx.artifact.create({
-        data: {
-          workstreamId: original.workstreamId,
-          projectId: original.projectId,
-          type: original.type,
-          title: original.title,
-          fileName: original.fileName,
-          approver: original.approver,
-          status: "DRAFT",
-          content,
-          externalUrl: original.externalUrl,
-          generatedBy: original.generatedBy,
-          documentSlug: original.documentSlug,
-          targetRepo: original.targetRepo,
-          targetBranch: original.targetBranch,
-          sourcePrdId: original.sourcePrdId,
-          version: nextVersion,
-          isLatest: true,
-        },
-      });
-    });
+    return withDb.tx((tx) => createArtifactVersion(tx, original, { content }));
   },
 
   /**
-   * Duplicate an artifact (creates new version)
+   * Duplicate an artifact (creates new version with "(Copy)" suffix)
    */
   async duplicate(id: string, organizationId: string): Promise<Artifact> {
     const original = await withDb((db) =>
@@ -572,40 +546,17 @@ ${initialInstructions.trim()}`;
     );
 
     if (!original) {
-      throw new Error("Artifact not found");
+      throw new ArtifactNotFoundError();
     }
 
-    return withDb.tx(async (tx) => {
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        workstreamId: original.workstreamId,
-        projectId: original.projectId,
-        type: original.type,
-        documentSlug: original.documentSlug,
-      });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
-
-      // Create the new duplicate (preserving documentSlug to stay in same group)
-      return tx.artifact.create({
-        data: {
-          workstreamId: original.workstreamId,
-          projectId: original.projectId,
-          type: original.type,
-          title: `${original.title} (Copy)`,
-          fileName: original.fileName
-            ? original.fileName.replace(".md", "-copy.md")
-            : null,
-          approver: original.approver,
-          status: "DRAFT",
-          content: original.content,
-          externalUrl: original.externalUrl,
-          generatedBy: original.generatedBy,
-          documentSlug: original.documentSlug,
-          version: nextVersion,
-          isLatest: true,
-        },
-      });
-    });
+    return withDb.tx((tx) =>
+      createArtifactVersion(tx, original, {
+        title: `${original.title} (Copy)`,
+        fileName: original.fileName
+          ? original.fileName.replace(".md", "-copy.md")
+          : null,
+      })
+    );
   },
 
   /**

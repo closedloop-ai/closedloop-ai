@@ -42,21 +42,15 @@ export function VersionSelector({
     error: null,
   });
 
-  // Cache invalidation: reset when currentVersion changes
-  // Cache invalidation: reset when currentVersion changes
+  // Cache invalidation: reset when artifact or version changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally reset cache when props change
   useEffect(() => {
     setState({
       versions: [],
       isLoading: false,
       error: null,
     });
-  }, [currentVersion, artifactId]); // Reset when version or artifact changes
-    setState({
-      versions: [],
-      isLoading: false,
-      error: null,
-    });
-  }, []);
+  }, [artifactId, currentVersion]);
 
   // Lazy loading: fetch versions when dropdown opens
   useEffect(() => {

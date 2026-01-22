@@ -1,7 +1,13 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
+import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
 
 const newVersionValidator = z.object({
@@ -29,6 +35,9 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
 
       return successResponse(newVersion);
     } catch (error) {
+      if (error instanceof ArtifactNotFoundError) {
+        return notFoundResponse("Artifact");
+      }
       return errorResponse("Failed to create new version", error);
     }
   }

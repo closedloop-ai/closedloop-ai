@@ -48,7 +48,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   }, [plan.content, plan.updatedAt, plan.status, plan.approver]);
 
   // Fetch generation status on mount and when plan changes
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally re-fetch when plan.updatedAt changes (after generation completes)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: plan.updatedAt intentionally triggers re-fetch after generation completes
   useEffect(() => {
     getGenerationStatus(plan.id).then((result) => {
       if (result.success) {
@@ -65,7 +65,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     startTransition(async () => {
       // If viewing an old version, create a new version (preserves v5, v6, v7 etc.)
       if (!plan.isLatest) {
-        const result = await createNewVersion(plan.id, content);
+        const result = await createNewVersion({ id: plan.id, content });
         if (result.success) {
           toast.success(`Saved as v${result.data.version}`);
           router.push(`/implementation-plans/${result.data.id}`);

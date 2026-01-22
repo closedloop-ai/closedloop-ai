@@ -1,6 +1,11 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  notFoundResponse,
+  successResponse,
+} from "@/lib/route-utils";
+import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
 
 export const POST = withAuth<Artifact, "/artifacts/[id]/duplicate">(
@@ -15,6 +20,9 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/duplicate">(
 
       return successResponse(duplicate);
     } catch (error) {
+      if (error instanceof ArtifactNotFoundError) {
+        return notFoundResponse("Artifact");
+      }
       return errorResponse("Failed to duplicate artifact", error);
     }
   }
