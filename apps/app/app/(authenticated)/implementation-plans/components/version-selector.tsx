@@ -43,7 +43,14 @@ export function VersionSelector({
   });
 
   // Cache invalidation: reset when currentVersion changes
+  // Cache invalidation: reset when currentVersion changes
   useEffect(() => {
+    setState({
+      versions: [],
+      isLoading: false,
+      error: null,
+    });
+  }, [currentVersion, artifactId]); // Reset when version or artifact changes
     setState({
       versions: [],
       isLoading: false,
