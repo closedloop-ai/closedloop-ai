@@ -14,6 +14,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor";
 import {
   Select,
   SelectContent,
@@ -21,7 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   ArrowLeftIcon,
   CopyIcon,
@@ -82,9 +82,9 @@ export function PRDEditor({ prd }: PRDEditorProps) {
   } = usePRDEditor(prd);
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Sticky Header */}
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-4 py-3">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
         <div className="flex items-center gap-4">
           <Link
             href={
@@ -172,13 +172,12 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       </div>
 
       {/* Content Area with Optional Metadata Panel */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1">
         {/* Scrollable Editor */}
-        <div className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-4xl p-4">
-            <Textarea
-              className="min-h-[calc(100vh-200px)] resize-none border-0 p-0 font-mono text-sm shadow-none focus-visible:ring-0"
-              onChange={(e) => setContent(e.target.value)}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 w-full flex-1 flex-col">
+            <RichTextEditor
+              onChange={setContent}
               placeholder="Start writing your PRD..."
               value={content}
             />

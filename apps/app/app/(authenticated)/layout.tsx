@@ -34,12 +34,14 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
     <NotificationsProvider userId={user.id}>
       <SidebarProvider>
         <GlobalSidebar>
-          {!!betaFeature && (
-            <div className="m-4 rounded-full bg-blue-500 p-1.5 text-center text-sm text-white">
-              Beta feature now available
-            </div>
-          )}
-          {children}
+          <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
+            {!!betaFeature && (
+              <div className="m-4 shrink-0 rounded-full bg-blue-500 p-1.5 text-center text-sm text-white">
+                Beta feature now available
+              </div>
+            )}
+            {children}
+          </div>
         </GlobalSidebar>
       </SidebarProvider>
     </NotificationsProvider>

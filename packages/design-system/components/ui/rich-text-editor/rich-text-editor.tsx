@@ -1,0 +1,43 @@
+"use client";
+
+import dynamic from "next/dynamic";
+
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import { cn } from "@repo/design-system/lib/utils";
+
+import type { RichTextEditorProps } from "./types";
+
+const RichTextEditorCore = dynamic(
+  () =>
+    import("./rich-text-editor-core").then((mod) => mod.RichTextEditorCore),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex flex-col gap-4">
+        <Skeleton className="h-[calc(100vh-250px)] w-full" />
+        <div className="flex justify-center">
+          <Skeleton className="h-10 w-80" />
+        </div>
+      </div>
+    ),
+  }
+);
+
+export function RichTextEditor({
+  value,
+  onChange,
+  placeholder,
+  className,
+  readOnly,
+}: Readonly<RichTextEditorProps>) {
+  return (
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
+      <RichTextEditorCore
+        onChange={onChange}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        value={value}
+      />
+    </div>
+  );
+}
