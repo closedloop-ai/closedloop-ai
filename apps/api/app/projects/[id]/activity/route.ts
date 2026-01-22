@@ -1,6 +1,6 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { auth } from "@repo/auth/server";
-import { database } from "@repo/database";
+import { withDb } from "@repo/database";
 import type { NextResponse } from "next/server";
 import {
   errorResponse,
@@ -91,45 +91,53 @@ export async function GET(
     const skip = (page - 1) * pageSize;
 
     // Get workstream events for this project
-    const workstreamIds = await database.workstream.findMany({
-      where: { projectId },
-      select: { id: true },
-    });
+    const workstreamIds = await withDb((db) =>
+      db.workstream.findMany({
+        where: { projectId },
+        select: { id: true },
+      })
+    );
 
     const workstreamIdList = workstreamIds.map((w) => w.id);
 
     // Query workstream events
-    const [events, totalEvents] = await Promise.all([
-      database.workstreamEvent.findMany({
-        where: {
-          workstreamId: { in: workstreamIdList },
-        },
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: pageSize,
-      }),
-      database.workstreamEvent.count({
-        where: {
-          workstreamId: { in: workstreamIdList },
-        },
-      }),
-    ]);
+    const [events, totalEvents] = await withDb((db) =>
+      Promise.all([
+        db.workstreamEvent.findMany({
+          where: {
+            workstreamId: { in: workstreamIdList },
+          },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: pageSize,
+        }),
+        db.workstreamEvent.count({
+          where: {
+            workstreamId: { in: workstreamIdList },
+          },
+        }),
+      ])
+    );
 
     // Get user info for actors
     const actorIds = [
       ...new Set(
-        events.filter((e) => e.actorId).map((e) => e.actorId as string)
+        events
+          .filter((e: { actorId: string | null }) => e.actorId)
+          .map((e: { actorId: string | null }) => e.actorId as string)
       ),
     ];
-    const actors = await database.user.findMany({
-      where: { id: { in: actorIds } },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        avatarUrl: true,
-      },
-    });
+    const actors = await withDb((db) =>
+      db.user.findMany({
+        where: { id: { in: actorIds } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          avatarUrl: true,
+        },
+      })
+    );
 
     const actorMap = new Map(
       actors.map((a) => [

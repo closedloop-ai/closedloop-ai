@@ -5,40 +5,8 @@ import type {
   ProjectWithDetails,
   UpdateProjectInput,
 } from "@repo/api/src/types/organization";
-import { database, type Prisma } from "@repo/database";
-
-/**
- * Standard include pattern for project queries with owner, teams, and artifacts
- */
-const PROJECT_DETAIL_INCLUDE = {
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
-  teams: {
-    include: {
-      team: {
-        select: {
-          id: true,
-          name: true,
-        },
-      },
-    },
-  },
-  artifacts: {
-    where: { isLatest: true },
-    select: { status: true },
-  },
-} as const;
-
-/** Type for project returned from database with includes */
-type ProjectFromDb = Prisma.ProjectGetPayload<{
-  include: typeof PROJECT_DETAIL_INCLUDE;
-}>;
+import type { Prisma } from "@repo/database";
+import { withDb } from "@repo/database";
 
 /**
  * Projects service - handles database operations for project management
@@ -81,43 +49,49 @@ export const projectsService = {
    * Find all projects for an organization
    */
   findByOrganization(organizationId: string) {
-    return database.project.findMany({
-      where: { organizationId },
-      include: PROJECT_DETAIL_INCLUDE,
-      orderBy: { createdAt: "desc" },
-    });
+    return withDb((db) =>
+      db.project.findMany({
+        where: { organizationId },
+        include: PROJECT_DETAIL_INCLUDE,
+        orderBy: { createdAt: "desc" },
+      })
+    );
   },
 
   /**
    * Find projects by team ID
    */
   findByTeam(teamId: string) {
-    return database.project.findMany({
-      where: {
-        teams: {
-          some: { teamId },
+    return withDb((db) =>
+      db.project.findMany({
+        where: {
+          teams: {
+            some: { teamId },
+          },
         },
-      },
-      include: PROJECT_DETAIL_INCLUDE,
-      orderBy: { createdAt: "desc" },
-    });
+        include: PROJECT_DETAIL_INCLUDE,
+        orderBy: { createdAt: "desc" },
+      })
+    );
   },
 
   /**
    * Find a project by ID with all details
    */
   findById(id: string, organizationId?: string) {
-    return database.project.findUnique({
-      where: { id, ...(organizationId ? { organizationId } : {}) },
-      include: PROJECT_DETAIL_INCLUDE,
-    });
+    return withDb((db) =>
+      db.project.findUnique({
+        where: { id, ...(organizationId ? { organizationId } : {}) },
+        include: PROJECT_DETAIL_INCLUDE,
+      })
+    );
   },
 
   /**
    * Create a new project
    */
   create(organizationId: string, input: CreateProjectInput) {
-    return database.$transaction(async (tx) => {
+    return withDb.tx(async (tx) => {
       const project = await tx.project.create({
         data: {
           organizationId,
@@ -147,7 +121,7 @@ export const projectsService = {
    * Update a project
    */
   update(id: string, input: Omit<UpdateProjectInput, "id">) {
-    return database.$transaction(async (tx) => {
+    return withDb.tx(async (tx) => {
       const data: Prisma.ProjectUpdateInput = {
         ...(input.name !== undefined && { name: input.name }),
         ...(input.description !== undefined && {
@@ -191,7 +165,7 @@ export const projectsService = {
    * Delete a project
    */
   delete(id: string) {
-    return database.$transaction(async (tx) => {
+    return withDb.tx(async (tx) => {
       // Remove team associations first
       await tx.projectTeam.deleteMany({ where: { projectId: id } });
       return tx.project.delete({ where: { id } });
@@ -213,3 +187,36 @@ export const projectsService = {
     return Math.round((completedCount / artifacts.length) * 100);
   },
 };
+
+/**
+ * Standard include pattern for project queries with owner, teams, and artifacts
+ */
+const PROJECT_DETAIL_INCLUDE = {
+  owner: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+    },
+  },
+  teams: {
+    include: {
+      team: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  },
+  artifacts: {
+    where: { isLatest: true },
+    select: { status: true },
+  },
+} as const;
+
+/** Type for project returned from database with includes */
+type ProjectFromDb = Prisma.ProjectGetPayload<{
+  include: typeof PROJECT_DETAIL_INCLUDE;
+}>;

@@ -4,7 +4,7 @@ import type {
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
-import { database, ensureDatabase } from "@repo/database";
+import { withDb } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
   isCurrentEnvironment,
@@ -215,32 +215,34 @@ async function handleWorkflowSuccess(
   // For now, if we have questions but no plan, include them in the content
   const finalContent = planContent ?? questionsContent;
 
-  await database.artifact.update({
-    where: { id: artifactId },
-    data: {
-      status: "DRAFT",
-      content: finalContent || undefined,
-      externalUrl:
-        artifactKeys.length > 0
-          ? getArtifactUrl(`plans/${correlationId}/`)
-          : undefined,
-      generatedBy: `symphony-dispatch:${correlationId}:completed`,
-    },
-  });
-
-  await database.workstreamEvent.create({
-    data: {
-      workstreamId,
-      type: "GITHUB_ACTION_COMPLETED",
-      actorType: "system",
+  await withDb(async (db) => {
+    await db.artifact.update({
+      where: { id: artifactId },
       data: {
-        correlationId,
-        artifactId,
-        runId,
-        conclusion: "success",
-        artifactKeys,
+        status: "DRAFT",
+        content: finalContent || undefined,
+        externalUrl:
+          artifactKeys.length > 0
+            ? getArtifactUrl(`plans/${correlationId}/`)
+            : undefined,
+        generatedBy: `symphony-dispatch:${correlationId}:completed`,
       },
-    },
+    });
+
+    await db.workstreamEvent.create({
+      data: {
+        workstreamId,
+        type: "GITHUB_ACTION_COMPLETED",
+        actorType: "system",
+        data: {
+          correlationId,
+          artifactId,
+          runId,
+          conclusion: "success",
+          artifactKeys,
+        },
+      },
+    });
   });
 
   log.info(
@@ -257,11 +259,12 @@ async function handleWorkflowFailure(
 ): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId } = ctx;
 
-  await database.artifact.update({
-    where: { id: artifactId },
-    data: {
-      status: "DRAFT",
-      content: `# Plan Generation Failed
+  await withDb(async (db) => {
+    await db.artifact.update({
+      where: { id: artifactId },
+      data: {
+        status: "DRAFT",
+        content: `# Plan Generation Failed
 
 The automated plan generation encountered an error.
 
@@ -270,23 +273,24 @@ The automated plan generation encountered an error.
 
 Please check the workflow logs for more details, or try regenerating the plan.
 `,
-      generatedBy: `symphony-dispatch:${correlationId}:failed`,
-    },
-  });
-
-  await database.workstreamEvent.create({
-    data: {
-      workstreamId,
-      type: "GITHUB_ACTION_COMPLETED",
-      actorType: "system",
-      data: {
-        correlationId,
-        artifactId,
-        runId,
-        conclusion: "failure",
-        htmlUrl,
+        generatedBy: `symphony-dispatch:${correlationId}:failed`,
       },
-    },
+    });
+
+    await db.workstreamEvent.create({
+      data: {
+        workstreamId,
+        type: "GITHUB_ACTION_COMPLETED",
+        actorType: "system",
+        data: {
+          correlationId,
+          artifactId,
+          runId,
+          conclusion: "failure",
+          htmlUrl,
+        },
+      },
+    });
   });
 
   log.error(`Workflow run ${runId} failed for correlation ${correlationId}`);
@@ -330,16 +334,18 @@ async function findActionRunByCorrelationId(
   correlationId: string,
   activeOnly = true
 ) {
-  const actionRuns = await database.gitHubActionRun.findMany({
-    where: {
-      workflowName: "symphony-dispatch",
-      ...(activeOnly
-        ? { status: { in: ["PENDING", "QUEUED", "RUNNING"] } }
-        : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
+  const actionRuns = await withDb((db) =>
+    db.gitHubActionRun.findMany({
+      where: {
+        workflowName: "symphony-dispatch",
+        ...(activeOnly
+          ? { status: { in: ["PENDING", "QUEUED", "RUNNING"] } }
+          : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    })
+  );
 
   return actionRuns.find((run) => {
     const data = run.triggerData as { correlationId?: string } | null;
@@ -383,15 +389,17 @@ async function handleWorkflowStatusUpdate(
 
   const newStatus = action === "requested" ? "QUEUED" : "RUNNING";
 
-  await database.gitHubActionRun.update({
-    where: { id: actionRun.id },
-    data: {
-      runId: BigInt(runId),
-      status: newStatus,
-      htmlUrl,
-      ...(action === "in_progress" ? { startedAt: new Date() } : {}),
-    },
-  });
+  await withDb((db) =>
+    db.gitHubActionRun.update({
+      where: { id: actionRun.id },
+      data: {
+        runId: BigInt(runId),
+        status: newStatus,
+        htmlUrl,
+        ...(action === "in_progress" ? { startedAt: new Date() } : {}),
+      },
+    })
+  );
 
   log.info("[webhook/github] Updated GitHubActionRun status", {
     actionRunId: actionRun.id,
@@ -440,16 +448,18 @@ async function processWorkflowCompletion(
 
   // Update GitHubActionRun
   const conclusion = event.workflow_run.conclusion;
-  await database.gitHubActionRun.update({
-    where: { id: actionRun.id },
-    data: {
-      runId: BigInt(runId),
-      status: conclusion === "success" ? "SUCCESS" : "FAILURE",
-      conclusion,
-      htmlUrl: event.workflow_run.html_url,
-      completedAt: new Date(),
-    },
-  });
+  await withDb((db) =>
+    db.gitHubActionRun.update({
+      where: { id: actionRun.id },
+      data: {
+        runId: BigInt(runId),
+        status: conclusion === "success" ? "SUCCESS" : "FAILURE",
+        conclusion,
+        htmlUrl: event.workflow_run.html_url,
+        completedAt: new Date(),
+      },
+    })
+  );
 
   // Process the result
   const ctx: WorkflowContext = {
@@ -479,7 +489,6 @@ export const POST = async (request: Request): Promise<Response> => {
   const s3Configured = isS3Configured();
 
   try {
-    await ensureDatabase();
     const { body, signature, eventType } = await validateRequest(request);
 
     log.info("[webhook/github] Validating request", { eventType });

@@ -1,6 +1,6 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
-import { database } from "@repo/database";
+import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { notFoundResponse } from "@/lib/route-utils";
@@ -26,14 +26,16 @@ export const GET = withAuth<
 
     try {
       // Find the artifact with its workstream
-      const artifact = await database.artifact.findUnique({
-        where: { id, project: { organizationId: user.organizationId } },
-        select: {
-          id: true,
-          workstreamId: true,
-          generatedBy: true,
-        },
-      });
+      const artifact = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id, project: { organizationId: user.organizationId } },
+          select: {
+            id: true,
+            workstreamId: true,
+            generatedBy: true,
+          },
+        })
+      );
 
       if (!artifact) {
         return notFoundResponse("Artifact");
@@ -53,13 +55,15 @@ export const GET = withAuth<
       }
 
       // Find the latest GitHubActionRun for this workstream's symphony-dispatch workflow
-      const actionRun = await database.gitHubActionRun.findFirst({
-        where: {
-          workstreamId: artifact.workstreamId,
-          workflowName: "symphony-dispatch",
-        },
-        orderBy: { createdAt: "desc" },
-      });
+      const actionRun = await withDb((db) =>
+        db.gitHubActionRun.findFirst({
+          where: {
+            workstreamId: artifact.workstreamId as string,
+            workflowName: "symphony-dispatch",
+          },
+          orderBy: { createdAt: "desc" },
+        })
+      );
 
       if (!actionRun) {
         return NextResponse.json(
