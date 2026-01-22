@@ -84,14 +84,14 @@ const data = {
       icon: UsersIcon,
       disabled: true,
     },
+  ],
+  navSecondary: [
     {
       title: "Settings",
       url: "/settings",
       icon: SettingsIcon,
       disabled: false,
     },
-  ],
-  navSecondary: [
     {
       title: "Support",
       url: "#",
