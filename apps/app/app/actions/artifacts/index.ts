@@ -67,6 +67,48 @@ export async function getArtifactById(
   return await apiClient.get<ArtifactWithWorkstream>(`/artifacts/${id}`);
 }
 
+export async function getArtifactVersions(
+  id: string
+): Promise<ApiResult<ArtifactWithWorkstream[]>> {
+  // Step 1: Fetch the artifact to get its documentSlug
+  const artifactResult = await apiClient.get<ArtifactWithWorkstream>(
+    `/artifacts/${id}`
+  );
+
+  if (!artifactResult.success) {
+    return artifactResult;
+  }
+
+  const artifact = artifactResult.data;
+
+  // Step 2: Strict null check for documentSlug
+  if (!artifact.documentSlug) {
+    return {
+      success: false,
+      error: "Artifact does not have a documentSlug",
+    };
+  }
+
+  // Step 3: Fetch all artifacts of the same type
+  const allArtifactsResult = await apiClient.get<ArtifactWithWorkstream[]>(
+    `/artifacts?type=${artifact.type}&latestOnly=false`
+  );
+
+  if (!allArtifactsResult.success) {
+    return allArtifactsResult;
+  }
+
+  // Step 4: Filter client-side by documentSlug
+  const versions = allArtifactsResult.data.filter(
+    (a) => a.documentSlug === artifact.documentSlug
+  );
+
+  return {
+    success: true,
+    data: versions,
+  };
+}
+
 export async function createArtifact(
   input: CreateArtifactInput
 ): Promise<ApiResult<Artifact>> {
