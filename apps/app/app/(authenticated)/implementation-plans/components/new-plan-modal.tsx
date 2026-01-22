@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@repo/design-system/components/ui/dialog";
+import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import {
   Select,
@@ -80,14 +81,32 @@ function PrdSelector({
   );
 }
 
-function PlanPreview({ prd }: { prd: ArtifactWithWorkstream }) {
+function PlanPreview({
+  prd,
+  title,
+  fileName,
+}: {
+  prd: ArtifactWithWorkstream;
+  title: string;
+  fileName: string;
+}) {
   return (
     <div className="rounded-md border bg-muted/50 p-3 text-sm">
       <p className="mb-1 font-medium">Plan will be created with:</p>
       <ul className="space-y-1 text-muted-foreground">
         <li>
           <span className="font-medium text-foreground">Title:</span>{" "}
-          Implementation Plan: {prd.title}
+          {title || (
+            <span className="text-muted-foreground italic">
+              No title entered
+            </span>
+          )}
+        </li>
+        <li>
+          <span className="font-medium text-foreground">File name:</span>{" "}
+          {fileName || (
+            <span className="text-muted-foreground italic">Auto-generated</span>
+          )}
         </li>
         {prd.approver ? (
           <li>
@@ -117,6 +136,12 @@ export function NewPlanModal({
 
   // Form state
   const [selectedPrdId, setSelectedPrdId] = useState(sourcePrd?.id ?? "");
+  const [title, setTitle] = useState(() =>
+    sourcePrd ? `Implementation Plan: ${sourcePrd.title}` : ""
+  );
+  const [fileName, setFileName] = useState(() =>
+    sourcePrd ? generatePlanFileName(sourcePrd) : ""
+  );
   const [content, setContent] = useState("");
 
   // PRDs for dropdown (when not pre-selected)
@@ -140,8 +165,35 @@ export function NewPlanModal({
   // Get the selected PRD (either from prop or from dropdown)
   const selectedPrd = sourcePrd ?? prds.find((p) => p.id === selectedPrdId);
 
+  // Update title and filename when PRD is selected from dropdown
+  useEffect(() => {
+    if (selectedPrd && !sourcePrd) {
+      setTitle(`Implementation Plan: ${selectedPrd.title}`);
+      setFileName(generatePlanFileName(selectedPrd));
+    }
+  }, [selectedPrd, sourcePrd]);
+
+  const handleTitleChange = (value: string): void => {
+    setTitle(value);
+    // Auto-generate filename from custom title (simpler pattern than PRD-based generation)
+    // This allows users to get clean filenames from any title, not just PRD-formatted ones
+    if (value.trim()) {
+      const generatedFileName = value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, "-")
+        .concat("-impl-plan.md");
+      setFileName(generatedFileName);
+    } else {
+      // Reset filename when title is cleared
+      setFileName("");
+    }
+  };
+
   const resetForm = () => {
     setSelectedPrdId(sourcePrd?.id ?? "");
+    setTitle("");
+    setFileName("");
     setContent("");
     setError(null);
   };
@@ -154,13 +206,26 @@ export function NewPlanModal({
       return;
     }
 
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+
+    // Additional safety: Verify state is initialized (defensive programming)
+    // This catches edge cases where useEffect hasn't run yet
+    if (!fileName && selectedPrd) {
+      // Auto-initialize if somehow missed
+      const generatedFileName = generatePlanFileName(selectedPrd);
+      setFileName(generatedFileName);
+    }
+
     startTransition(async () => {
       try {
         // Use createAndGeneratePlan to create artifact AND trigger workflow
         const result = await createAndGeneratePlan({
           type: "IMPLEMENTATION_PLAN",
-          title: `Implementation Plan: ${selectedPrd.title}`,
-          fileName: generatePlanFileName(selectedPrd),
+          title: title.trim(),
+          fileName: fileName.trim() || generatePlanFileName(selectedPrd),
           approver: selectedPrd.approver ?? undefined,
           status: "DRAFT",
           // Pass content as initial instructions (not placeholder template)
@@ -218,10 +283,38 @@ export function NewPlanModal({
 
         <div className="space-y-4 py-4">
           {error ? (
-            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
+            <div
+              className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm"
+              id="title-error"
+              role="alert"
+            >
               {error}
             </div>
           ) : null}
+
+          <div className="space-y-2">
+            <Label htmlFor="new-title">
+              Title<span className="text-destructive">*</span>
+            </Label>
+            <Input
+              aria-describedby={error ? "title-error" : ""}
+              aria-invalid={error ? "true" : "false"}
+              id="new-title"
+              onChange={(e) => handleTitleChange(e.target.value)}
+              placeholder="Implementation Plan: Dashboard Redesign"
+              value={title}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-filename">File name</Label>
+            <Input
+              id="new-filename"
+              onChange={(e) => setFileName(e.target.value)}
+              placeholder={fileName || "dashboard-redesign-impl-plan.md"}
+              value={fileName}
+            />
+          </div>
 
           <div className="space-y-2">
             <Label htmlFor="source-prd">
@@ -241,7 +334,9 @@ export function NewPlanModal({
             )}
           </div>
 
-          {selectedPrd ? <PlanPreview prd={selectedPrd} /> : null}
+          {selectedPrd ? (
+            <PlanPreview fileName={fileName} prd={selectedPrd} title={title} />
+          ) : null}
 
           <div className="space-y-2">
             <Label htmlFor="new-content">
@@ -264,7 +359,10 @@ export function NewPlanModal({
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={isPending || !selectedPrd} onClick={handleSubmit}>
+          <Button
+            disabled={isPending || !selectedPrd || !title.trim()}
+            onClick={handleSubmit}
+          >
             {isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
