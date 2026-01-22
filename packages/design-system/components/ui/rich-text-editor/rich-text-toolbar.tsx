@@ -30,7 +30,6 @@ import {
   UnderlineIcon,
   UndoIcon,
 } from "lucide-react";
-import { useCallback, useMemo } from "react";
 
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -50,6 +49,7 @@ import { cn } from "@repo/design-system/lib/utils";
 import type { HeadingLevel } from "./types";
 import type { ListType } from "@lexical/list";
 import type { HeadingTagType } from "@lexical/rich-text";
+import type { LucideIcon } from "lucide-react";
 
 const HEADING_OPTIONS = [
   { level: null, label: "Body" },
@@ -57,6 +57,59 @@ const HEADING_OPTIONS = [
   { level: 2, label: "Heading 2" },
   { level: 3, label: "Heading 3" },
 ] as const;
+
+type ToolbarToggleProps = {
+  icon: LucideIcon;
+  label: string;
+  pressed: boolean;
+  disabled: boolean;
+  onPressedChange: () => void;
+};
+
+function ToolbarToggle({ icon: Icon, label, pressed, disabled, onPressedChange }: ToolbarToggleProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Toggle
+          aria-label={label}
+          disabled={disabled}
+          pressed={pressed}
+          size="sm"
+          onPressedChange={onPressedChange}
+        >
+          <Icon className="h-4 w-4" />
+        </Toggle>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+type ToolbarButtonProps = {
+  icon: LucideIcon;
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+};
+
+function ToolbarButton({ icon: Icon, label, disabled, onClick }: ToolbarButtonProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          aria-label={label}
+          disabled={disabled}
+          size="icon-sm"
+          variant="ghost"
+          onClick={onClick}
+        >
+          <Icon className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function RichTextToolbar() {
   const [format, blockType, listType, editor] = useCellValues(
@@ -70,40 +123,20 @@ export function RichTextToolbar() {
   const convertSelectionToNode = usePublisher(convertSelectionToNode$);
 
   const headingLevel = getHeadingLevel(blockType);
-  const boldActive = hasFormat(format, IS_BOLD);
-  const italicActive = hasFormat(format, IS_ITALIC);
-  const underlineActive = hasFormat(format, IS_UNDERLINE);
-  const bulletActive = listType === "bullet";
-  const orderedActive = listType === "number";
+  const currentHeadingLabel = headingLevel === null ? "Body" : `Heading ${headingLevel}`;
 
-  const toggleList = useCallback(
-    (type: ListType) => {
-      const nextType = listType === type ? "" : type;
-      publishListType(nextType);
-    },
-    [listType, publishListType]
-  );
+  function handleHeadingSelect(level: HeadingLevel | null) {
+    if (level === null || headingLevel === level) {
+      convertSelectionToNode(() => $createParagraphNode());
+      return;
+    }
+    const headingTag = `h${level}` as HeadingTagType;
+    convertSelectionToNode(() => $createHeadingNode(headingTag));
+  }
 
-  const handleHeadingSelect = useCallback(
-    (level: HeadingLevel | null) => {
-      if (level === null) {
-        convertSelectionToNode(() => $createParagraphNode());
-        return;
-      }
-      if (headingLevel === level) {
-        convertSelectionToNode(() => $createParagraphNode());
-        return;
-      }
-      const headingTag = `h${level}` as HeadingTagType;
-      convertSelectionToNode(() => $createHeadingNode(headingTag));
-    },
-    [convertSelectionToNode, headingLevel]
-  );
-
-  const currentHeadingLabel = useMemo(() => {
-    if (headingLevel === null) return "Body";
-    return `Heading ${headingLevel}`;
-  }, [headingLevel]);
+  function toggleList(type: ListType) {
+    publishListType(listType === type ? "" : type);
+  }
 
   return (
     <div className="flex items-center gap-1 rounded-lg border border-border bg-background p-1 shadow-sm text-foreground">
@@ -123,9 +156,7 @@ export function RichTextToolbar() {
           {HEADING_OPTIONS.map((option) => (
             <DropdownMenuItem
               key={option.label}
-              className={cn(
-                headingLevel === option.level && "bg-accent"
-              )}
+              className={cn(headingLevel === option.level && "bg-accent")}
               onClick={() => handleHeadingSelect(option.level)}
             >
               {option.label}
@@ -137,130 +168,67 @@ export function RichTextToolbar() {
       <div className="mx-1 h-6 w-px bg-border" />
 
       {/* Format Toggles */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle
-            aria-label="Bold"
-            disabled={!editor}
-            pressed={boldActive}
-            size="sm"
-            onPressedChange={() => publishFormat("bold")}
-          >
-            <BoldIcon className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Bold</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle
-            aria-label="Italic"
-            disabled={!editor}
-            pressed={italicActive}
-            size="sm"
-            onPressedChange={() => publishFormat("italic")}
-          >
-            <ItalicIcon className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Italic</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle
-            aria-label="Underline"
-            disabled={!editor}
-            pressed={underlineActive}
-            size="sm"
-            onPressedChange={() => publishFormat("underline")}
-          >
-            <UnderlineIcon className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Underline</TooltipContent>
-      </Tooltip>
+      <ToolbarToggle
+        icon={BoldIcon}
+        label="Bold"
+        pressed={(format & IS_BOLD) === IS_BOLD}
+        disabled={!editor}
+        onPressedChange={() => publishFormat("bold")}
+      />
+      <ToolbarToggle
+        icon={ItalicIcon}
+        label="Italic"
+        pressed={(format & IS_ITALIC) === IS_ITALIC}
+        disabled={!editor}
+        onPressedChange={() => publishFormat("italic")}
+      />
+      <ToolbarToggle
+        icon={UnderlineIcon}
+        label="Underline"
+        pressed={(format & IS_UNDERLINE) === IS_UNDERLINE}
+        disabled={!editor}
+        onPressedChange={() => publishFormat("underline")}
+      />
 
       <div className="mx-1 h-6 w-px bg-border" />
 
       {/* List Toggles */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle
-            aria-label="Bullet List"
-            disabled={!editor}
-            pressed={bulletActive}
-            size="sm"
-            onPressedChange={() => toggleList("bullet")}
-          >
-            <ListIcon className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Bullet List</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Toggle
-            aria-label="Numbered List"
-            disabled={!editor}
-            pressed={orderedActive}
-            size="sm"
-            onPressedChange={() => toggleList("number")}
-          >
-            <ListOrderedIcon className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
-        <TooltipContent>Numbered List</TooltipContent>
-      </Tooltip>
+      <ToolbarToggle
+        icon={ListIcon}
+        label="Bullet List"
+        pressed={listType === "bullet"}
+        disabled={!editor}
+        onPressedChange={() => toggleList("bullet")}
+      />
+      <ToolbarToggle
+        icon={ListOrderedIcon}
+        label="Numbered List"
+        pressed={listType === "number"}
+        disabled={!editor}
+        onPressedChange={() => toggleList("number")}
+      />
 
       <div className="mx-1 h-6 w-px bg-border" />
 
       {/* Undo/Redo */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            aria-label="Undo"
-            disabled={!editor}
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => editor?.dispatchCommand(UNDO_COMMAND, undefined)}
-          >
-            <UndoIcon className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Undo</TooltipContent>
-      </Tooltip>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            aria-label="Redo"
-            disabled={!editor}
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => editor?.dispatchCommand(REDO_COMMAND, undefined)}
-          >
-            <RedoIcon className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Redo</TooltipContent>
-      </Tooltip>
+      <ToolbarButton
+        icon={UndoIcon}
+        label="Undo"
+        disabled={!editor}
+        onClick={() => editor?.dispatchCommand(UNDO_COMMAND, undefined)}
+      />
+      <ToolbarButton
+        icon={RedoIcon}
+        label="Redo"
+        disabled={!editor}
+        onClick={() => editor?.dispatchCommand(REDO_COMMAND, undefined)}
+      />
     </div>
   );
 }
 
-function getHeadingLevel(
-  blockType: string | null | undefined
-): HeadingLevel | null {
+function getHeadingLevel(blockType: string | null | undefined): HeadingLevel | null {
   if (!blockType?.startsWith("h")) return null;
   const level = Number(blockType.slice(1));
-  return level === 1 || level === 2 || level === 3
-    ? (level as HeadingLevel)
-    : null;
-}
-
-function hasFormat(format: number, mask: number) {
-  return (format & mask) === mask;
+  return level === 1 || level === 2 || level === 3 ? (level as HeadingLevel) : null;
 }

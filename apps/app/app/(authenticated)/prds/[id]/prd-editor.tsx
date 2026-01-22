@@ -14,7 +14,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
-import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor";
+import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor/rich-text-editor";
 import {
   Select,
   SelectContent,

@@ -96,7 +96,6 @@
 .rich-text-editor-content p {
   display: block;
   margin: 0;
-  color: hsl(var(--foreground));
 }
 
 .rich-text-editor-content p + p {
@@ -109,7 +108,6 @@
   font-weight: 700;
   line-height: 1.2;
   margin: 1.5rem 0 0.75rem 0;
-  color: hsl(var(--foreground));
 }
 
 .rich-text-editor-content h2 {
@@ -117,7 +115,6 @@
   font-weight: 600;
   line-height: 1.3;
   margin: 1.25rem 0 0.625rem 0;
-  color: hsl(var(--foreground));
 }
 
 .rich-text-editor-content h3 {
@@ -125,7 +122,6 @@
   font-weight: 600;
   line-height: 1.4;
   margin: 1rem 0 0.5rem 0;
-  color: hsl(var(--foreground));
 }
 
 /* Remove top margin from first heading */
@@ -139,14 +135,12 @@
 .rich-text-editor-content ul {
   padding-inline-start: 2rem;
   margin: 0.5rem 0;
-  color: hsl(var(--foreground));
   list-style-type: disc;
 }
 
 .rich-text-editor-content ol {
   padding-inline-start: 2rem;
   margin: 0.5rem 0;
-  color: hsl(var(--foreground));
   list-style-type: decimal;
 }
 
@@ -170,7 +164,6 @@
   padding: 0.125rem 0.25rem;
   border-radius: 0.25rem;
   font-size: 0.875em;
-  color: hsl(var(--foreground));
 }
 
 /* Link Styles */
