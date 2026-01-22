@@ -8,6 +8,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import {
+  createNewVersion,
   deleteArtifact,
   type GenerationStatus,
   getGenerationStatus,
@@ -47,7 +48,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   }, [plan.content, plan.updatedAt, plan.status, plan.approver]);
 
   // Fetch generation status on mount and when plan changes
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally re-fetch when plan.updatedAt changes (after generation completes)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: plan.updatedAt intentionally triggers re-fetch after generation completes
   useEffect(() => {
     getGenerationStatus(plan.id).then((result) => {
       if (result.success) {
@@ -62,6 +63,20 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const handleSave = useCallback(() => {
     setIsSaving(true);
     startTransition(async () => {
+      // If viewing an old version, create a new version (preserves v5, v6, v7 etc.)
+      if (!plan.isLatest) {
+        const result = await createNewVersion({ id: plan.id, content });
+        if (result.success) {
+          toast.success(`Saved as v${result.data.version}`);
+          router.push(`/implementation-plans/${result.data.id}`);
+        } else {
+          toast.error("Failed to save");
+        }
+        setIsSaving(false);
+        return;
+      }
+
+      // Latest version: update in place (auto-increments version)
       const result = await updateArtifact({ id: plan.id, content });
       if (result.success) {
         setLastSaved(new Date());
@@ -71,7 +86,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
       }
       setIsSaving(false);
     });
-  }, [plan.id, content]);
+  }, [plan.id, plan.isLatest, content, router]);
 
   const handleMetadataUpdate = useCallback(
     (

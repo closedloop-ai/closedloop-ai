@@ -67,6 +67,39 @@ export async function getArtifactById(
   return await apiClient.get<ArtifactWithWorkstream>(`/artifacts/${id}`);
 }
 
+export async function getArtifactVersions(
+  id: string
+): Promise<ApiResult<ArtifactWithWorkstream[]>> {
+  // Step 1: Fetch the artifact to get its documentSlug
+  const artifactResult = await apiClient.get<ArtifactWithWorkstream>(
+    `/artifacts/${id}`
+  );
+
+  if (!artifactResult.success) {
+    return artifactResult;
+  }
+
+  const artifact = artifactResult.data;
+
+  // Step 2: Explicit null/undefined check for documentSlug
+  if (artifact.documentSlug === null || artifact.documentSlug === undefined) {
+    return {
+      success: false,
+      error: "Artifact does not have a documentSlug",
+    };
+  }
+
+  // Step 3: Fetch versions by documentSlug (server-side filtering)
+  const params = new URLSearchParams();
+  params.set("type", artifact.type);
+  params.set("documentSlug", artifact.documentSlug);
+  params.set("latestOnly", "false");
+
+  return await apiClient.get<ArtifactWithWorkstream[]>(
+    `/artifacts?${params.toString()}`
+  );
+}
+
 export async function createArtifact(
   input: CreateArtifactInput
 ): Promise<ApiResult<Artifact>> {
@@ -121,6 +154,28 @@ export async function duplicateArtifact(
 
   if (result.success) {
     revalidatePath("/prds");
+    revalidatePath("/implementation-plans");
+  }
+
+  return result;
+}
+
+export type CreateNewVersionInput = {
+  id: string;
+  content: string;
+};
+
+export async function createNewVersion(
+  input: CreateNewVersionInput
+): Promise<ApiResult<Artifact>> {
+  const { id, content } = input;
+  const result = await apiClient.post<Artifact>(
+    `/artifacts/${id}/new-version`,
+    { content }
+  );
+
+  if (result.success) {
+    revalidatePath(`/implementation-plans/${result.data.id}`);
     revalidatePath("/implementation-plans");
   }
 
