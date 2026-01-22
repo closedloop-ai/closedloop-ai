@@ -68,7 +68,7 @@ describe("GET /api/artifacts", () => {
       {
         id: "2",
         title: "PLAN 1",
-        project: "1234",
+        project: null,
         type: "PLAN",
         isLatest: true,
       },
