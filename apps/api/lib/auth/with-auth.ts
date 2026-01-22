@@ -4,7 +4,6 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { auth, verifyToken } from "@repo/auth/server";
-import { ensureDatabase } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import type { AppRouteHandlerRoutes } from "@/.next/types/routes";
@@ -80,8 +79,6 @@ export function withAuth<
     routeContext: RouteContext<TRoute>
   ): Promise<NextResponse<ApiResult<TResponse>>> => {
     try {
-      await ensureDatabase();
-
       const { clerkUserId, clerkOrgId } = await getAuthCredentials(request);
 
       if (!(clerkUserId && clerkOrgId)) {
