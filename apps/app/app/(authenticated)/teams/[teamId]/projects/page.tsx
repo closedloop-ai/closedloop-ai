@@ -103,7 +103,6 @@ export default function TeamProjectsPage() {
     teamIds: string[];
   }) => {
     const result = await createProject({
-      organizationId: team?.organizationId || "",
       name: projectData.name,
       description: projectData.description,
       priority: projectData.priority as
