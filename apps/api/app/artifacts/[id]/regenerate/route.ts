@@ -71,8 +71,20 @@ async function findOrCreateWorkstream(
   },
   userId: string
 ) {
-  // If workstream exists, return it with PRD
+  // If workstream exists, fetch it with project relation
   if (artifact.workstream) {
+    const workstream = await database.workstream.findUnique({
+      where: { id: artifact.workstream.id },
+      include: {
+        project: {
+          include: {
+            repositories: { where: { isPrimary: true }, take: 1 },
+          },
+        },
+        artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+      },
+    });
+
     const prdArtifact = await database.artifact.findFirst({
       where: {
         workstreamId: artifact.workstream.id,
@@ -80,7 +92,7 @@ async function findOrCreateWorkstream(
         isLatest: true,
       },
     });
-    return { workstream: artifact.workstream, prdArtifact };
+    return { workstream, prdArtifact };
   }
 
   // Find PRD by parentId or matching title
