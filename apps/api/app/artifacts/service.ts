@@ -282,42 +282,38 @@ export const artifactsService = {
    * If artifact has no workstream, finds PRD by title match and auto-creates one.
    */
   async findOrCreateWorkstream(
+    // TODO: use a real type here.
     artifact: {
       id: string;
       title: string;
       projectId: string | null;
       parentId: string | null;
-      workstream: { id: string } | null;
+      workstream: {
+        id: string;
+        project: {
+          id: string;
+          repositories: {
+            id: string;
+            fullName: string;
+            defaultBranch: string | null;
+          }[];
+        };
+      } | null;
     },
     userId: string
   ) {
     // If workstream exists, fetch it with project relation
     if (artifact.workstream) {
-      const workstreamId = artifact.workstream.id;
-      const workstream = await withDb((db) =>
-        db.workstream.findUnique({
-          where: { id: workstreamId },
-          include: {
-            project: {
-              include: {
-                repositories: { where: { isPrimary: true }, take: 1 },
-              },
-            },
-            artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
-          },
-        })
-      );
-
       const prdArtifact = await withDb((db) =>
         db.artifact.findFirst({
           where: {
-            workstreamId,
+            workstreamId: artifact.workstream?.id as string,
             type: "PRD",
             isLatest: true,
           },
         })
       );
-      return { workstream, prdArtifact };
+      return { workstream: artifact.workstream, prdArtifact };
     }
 
     // Find PRD by parentId or matching title
@@ -333,8 +329,7 @@ export const artifactsService = {
       })
     );
 
-    const projectId = artifact.projectId;
-    if (!(foundPrd?.content && projectId)) {
+    if (!(foundPrd?.content && artifact.projectId)) {
       return { workstream: null, prdArtifact: foundPrd };
     }
 
@@ -342,7 +337,7 @@ export const artifactsService = {
     return withDb.tx(async (tx) => {
       const newWorkstream = await tx.workstream.create({
         data: {
-          projectId,
+          projectId: artifact.projectId as string,
           title: foundPrd.title,
           description: `Auto-created for: ${foundPrd.title}`,
           type: "FEATURE_DELIVERY",
