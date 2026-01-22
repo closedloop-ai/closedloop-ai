@@ -1,5 +1,6 @@
 "use client";
 
+import type { ActivityItem } from "@repo/api/src/types/activity";
 import {
   Avatar,
   AvatarFallback,
@@ -13,7 +14,6 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { useState } from "react";
-import type { ActivityItem } from "@/app/actions/projects";
 
 type ActivityPanelProps = {
   activities: ActivityItem[];
@@ -28,11 +28,15 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
-function formatActivityTimestamp(timestamp: string): string {
+function formatActivityTimestamp(timestamp: Date | string): string {
   try {
-    return formatDistanceToNow(new Date(timestamp), { addSuffix: true });
+    const date =
+      typeof timestamp === "string" ? new Date(timestamp) : timestamp;
+    return formatDistanceToNow(date, { addSuffix: true });
   } catch {
-    return timestamp;
+    return typeof timestamp === "string"
+      ? timestamp
+      : timestamp.toLocaleDateString();
   }
 }
 

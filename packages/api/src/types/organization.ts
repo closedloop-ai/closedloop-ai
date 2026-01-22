@@ -76,7 +76,14 @@ export type UpdateUserInput = {
 };
 
 // Project types
-export type ProjectPriority = "NOT_SET" | "LOW" | "MEDIUM" | "HIGH";
+export const ProjectPriority = {
+  NotSet: "NOT_SET",
+  Low: "LOW",
+  Medium: "MEDIUM",
+  High: "HIGH",
+} as const;
+export type ProjectPriority =
+  (typeof ProjectPriority)[keyof typeof ProjectPriority];
 
 export type ProjectOwner = {
   id: string;

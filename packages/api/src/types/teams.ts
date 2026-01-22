@@ -1,7 +1,12 @@
 // Team types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
-export type TeamRole = "OWNER" | "ADMIN" | "MEMBER";
+export const TeamRole = {
+  Owner: "OWNER",
+  Admin: "ADMIN",
+  Member: "MEMBER",
+} as const;
+export type TeamRole = (typeof TeamRole)[keyof typeof TeamRole];
 
 export type Team = {
   id: string;
@@ -33,7 +38,6 @@ export type TeamMember = {
 };
 
 export type CreateTeamInput = {
-  organizationId: string;
   name: string;
   slug?: string; // Auto-generated if not provided
 };

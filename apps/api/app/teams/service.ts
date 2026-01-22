@@ -1,53 +1,21 @@
 import type {
   AddTeamMemberInput,
   CreateTeamInput,
-  TeamMember,
   TeamRole,
+  TeamWithCounts,
   UpdateTeamInput,
   UpdateTeamMemberInput,
 } from "@repo/api/src/types/teams";
 import { withDb } from "@repo/database";
 
 /**
- * Standard select pattern for user fields in team member queries
+ * Transform a database team to API TeamWithCounts format
  */
-const USER_SELECT = {
-  id: true,
-  firstName: true,
-  lastName: true,
-  email: true,
-  avatarUrl: true,
-} as const;
-
-/**
- * Standard include pattern for team member queries with user info
- */
-const MEMBER_WITH_USER_INCLUDE = {
-  user: { select: USER_SELECT },
-} as const;
-
-/** Type for team member returned from database with user include */
-type TeamMemberFromDb = NonNullable<
-  Awaited<ReturnType<typeof teamsService.getMember>>
->;
-
-/**
- * Transform a database team member to API TeamMember format
- */
-export function toTeamMemberApi(member: TeamMemberFromDb): TeamMember {
+export function toTeamWithCounts(team: TeamWithCountsFromDb): TeamWithCounts {
   return {
-    id: member.id,
-    teamId: member.teamId,
-    userId: member.userId,
-    role: member.role as TeamRole,
-    createdAt: member.createdAt,
-    user: {
-      id: member.user.id,
-      firstName: member.user.firstName,
-      lastName: member.user.lastName,
-      email: member.user.email,
-      avatarUrl: member.user.avatarUrl,
-    },
+    ...team,
+    memberCount: team._count.members,
+    projectCount: team._count.projects,
   };
 }
 
@@ -57,8 +25,8 @@ export function toTeamMemberApi(member: TeamMemberFromDb): TeamMember {
 function generateSlug(name: string): string {
   return name
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-|-$/g, "");
 }
 
 /**
@@ -83,10 +51,10 @@ export const teamsService = {
   /**
    * Find a team by ID
    */
-  findById(id: string) {
+  findById(id: string, organizationId: string) {
     return withDb((db) =>
       db.team.findUnique({
-        where: { id },
+        where: { id, organizationId },
         include: {
           members: {
             include: MEMBER_WITH_USER_INCLUDE,
@@ -100,7 +68,7 @@ export const teamsService = {
   /**
    * Find a team by organization and slug
    */
-  findByOrgAndSlug(organizationId: string, slug: string) {
+  findBySlug(slug: string, organizationId: string) {
     return withDb((db) =>
       db.team.findUnique({
         where: {
@@ -113,12 +81,12 @@ export const teamsService = {
   /**
    * Create a new team
    */
-  create(input: CreateTeamInput) {
+  create(organizationId: string, input: CreateTeamInput) {
     const slug = input.slug || generateSlug(input.name);
     return withDb((db) =>
       db.team.create({
         data: {
-          organizationId: input.organizationId,
+          organizationId,
           name: input.name,
           slug,
         },
@@ -129,13 +97,17 @@ export const teamsService = {
   /**
    * Create a team and add the creator as owner
    */
-  createWithOwner(input: CreateTeamInput, creatorUserId: string) {
+  createWithOwner(
+    organizationId: string,
+    ownerId: string,
+    input: CreateTeamInput
+  ) {
     const slug = input.slug || generateSlug(input.name);
 
     return withDb.tx(async (tx) => {
       const team = await tx.team.create({
         data: {
-          organizationId: input.organizationId,
+          organizationId,
           name: input.name,
           slug,
         },
@@ -144,7 +116,7 @@ export const teamsService = {
       await tx.teamMember.create({
         data: {
           teamId: team.id,
-          userId: creatorUserId,
+          userId: ownerId,
           role: "OWNER",
         },
       });
@@ -156,10 +128,14 @@ export const teamsService = {
   /**
    * Update a team
    */
-  update(id: string, input: Omit<UpdateTeamInput, "id">) {
+  update(
+    id: string,
+    organizationId: string,
+    input: Omit<UpdateTeamInput, "id">
+  ) {
     return withDb((db) =>
       db.team.update({
-        where: { id },
+        where: { id, organizationId },
         data: input,
       })
     );
@@ -168,12 +144,13 @@ export const teamsService = {
   /**
    * Delete a team
    */
-  delete(id: string) {
+  delete(id: string, organizationId: string) {
     // Delete team members first, then project associations, then the team
     return withDb.tx(async (tx) => {
+      // TODO: Cascading deletion
       await tx.teamMember.deleteMany({ where: { teamId: id } });
       await tx.projectTeam.deleteMany({ where: { teamId: id } });
-      return tx.team.delete({ where: { id } });
+      return tx.team.delete({ where: { id, organizationId } });
     });
   },
 
@@ -313,4 +290,33 @@ export const teamsService = {
       })
     );
   },
+};
+
+/**
+ * Standard select pattern for user fields in team member queries
+ */
+const USER_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  email: true,
+  avatarUrl: true,
+} as const;
+
+/**
+ * Standard include pattern for team member queries with user info
+ */
+const MEMBER_WITH_USER_INCLUDE = {
+  user: { select: USER_SELECT },
+} as const;
+
+/** Base type for team with counts (used by both findByOrganization and findById) */
+type TeamWithCountsFromDb = {
+  id: string;
+  organizationId: string;
+  name: string;
+  slug: string;
+  createdAt: Date;
+  updatedAt: Date;
+  _count: { members: number; projects: number };
 };

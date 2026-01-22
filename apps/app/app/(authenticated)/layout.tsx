@@ -3,7 +3,6 @@ import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
 import { showBetaFeature } from "@repo/feature-flags";
 import { secure } from "@repo/security";
 import type { ReactNode } from "react";
-import { syncUser } from "@/app/actions/auth";
 import { env } from "@/env";
 import { NotificationsProvider } from "./components/notifications-provider";
 import { GlobalSidebar } from "./components/sidebar";
@@ -23,11 +22,6 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
 
   if (!user) {
     return redirectToSignIn();
-  }
-
-  // Sync Clerk user to database (for local dev without webhooks)
-  if (process.env.NODE_ENV === "development") {
-    await syncUser();
   }
 
   return (
