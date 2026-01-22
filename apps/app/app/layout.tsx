@@ -12,7 +12,7 @@ type RootLayoutProperties = {
 
 const RootLayout = ({ children }: RootLayoutProperties) => (
   <html className={fonts} lang="en" suppressHydrationWarning>
-    <body>
+    <body className="overflow-hidden">
       <AnalyticsProvider>
         <DesignSystemProvider
           helpUrl={env.NEXT_PUBLIC_DOCS_URL}
