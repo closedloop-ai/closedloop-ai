@@ -1,8 +1,15 @@
+import { v7 as uuidv7 } from "uuid";
 import { vi } from "vitest";
+import { GET, POST } from "@/app/artifacts/route";
+import { artifactsService } from "@/app/artifacts/service";
+import { projectsService } from "@/app/projects/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
+import {
+  createMockRequest,
+  createMockRouteContext,
+  createTestAuthContext,
+} from "../utils/auth-helpers";
 
-// ===== MODULE-LEVEL MOCKS (MUST BE AT TOP BEFORE IMPORTS) =====
-// Create a mock authContext that tests can configure
 let mockAuthContext: AuthContext = {
   user: { id: "test-user", organizationId: "test-org" } as any,
   clerkUserId: "clerk_test",
@@ -13,43 +20,8 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
-vi.mock("@repo/database", () => ({
-  database: {
-    artifact: {
-      findMany: vi.fn(),
-      create: vi.fn(),
-      updateMany: vi.fn(),
-      findFirst: vi.fn(),
-    },
-    project: {
-      findFirst: vi.fn(),
-      findUnique: vi.fn(),
-      create: vi.fn(),
-    },
-    $transaction: vi.fn((callback) =>
-      callback({
-        artifact: {
-          updateMany: vi.fn(),
-          findFirst: vi.fn(),
-          create: vi.fn(),
-        },
-        project: {
-          findFirst: vi.fn(),
-          create: vi.fn(),
-        },
-      })
-    ),
-  },
-}));
-
-import { database } from "@repo/database";
-// ===== IMPORTS AFTER MOCKS =====
-import { GET, POST } from "@/app/artifacts/route";
-import {
-  createMockRequest,
-  createMockRouteContext,
-  createTestAuthContext,
-} from "../utils/auth-helpers";
+vi.mock("@/app/artifacts/service");
+vi.mock("@/app/projects/service");
 
 describe("GET /api/artifacts", () => {
   beforeEach(() => {
@@ -63,13 +35,11 @@ describe("GET /api/artifacts", () => {
 
   it("returns all latest artifacts for user org", async () => {
     const mockArtifacts = [
-      { id: "1", title: "PRD 1", type: "PRD", isLatest: true },
-      { id: "2", title: "PLAN 1", type: "PLAN", isLatest: true },
+      { id: "1", title: "PRD 1", project: null, type: "PRD", isLatest: true },
+      { id: "2", title: "PLAN 1", project: null, type: "PLAN", isLatest: true },
     ];
 
-    vi.mocked(database.artifact.findMany).mockResolvedValue(
-      mockArtifacts as any
-    );
+    vi.mocked(artifactsService.findAll).mockResolvedValue(mockArtifacts as any);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -84,7 +54,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("filters by type query param", async () => {
-    vi.mocked(database.artifact.findMany).mockResolvedValue([]);
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts?type=PRD",
@@ -92,15 +62,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(database.artifact.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ type: "PRD" }),
-      })
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "PRD" })
     );
   });
 
   it("includes all versions when latestOnly=false", async () => {
-    vi.mocked(database.artifact.findMany).mockResolvedValue([]);
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts?latestOnly=false",
@@ -108,12 +76,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    const callArgs = vi.mocked(database.artifact.findMany).mock.calls[0][0];
-    expect(callArgs?.where).not.toHaveProperty("isLatest");
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ latestOnly: false })
+    );
   });
 
   it("filters by workstreamId", async () => {
-    vi.mocked(database.artifact.findMany).mockResolvedValue([]);
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts?workstreamId=ws-123",
@@ -121,15 +90,13 @@ describe("GET /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
-    expect(database.artifact.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ workstreamId: "ws-123" }),
-      })
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ workstreamId: "ws-123" })
     );
   });
 
-  it("returns error response on database failure", async () => {
-    vi.mocked(database.artifact.findMany).mockRejectedValue(
+  it("returns error response on service failure", async () => {
+    vi.mocked(artifactsService.findAll).mockRejectedValue(
       new Error("Database connection failed")
     );
 
@@ -145,9 +112,8 @@ describe("GET /api/artifacts", () => {
     expect(json.error).toBe("Failed to fetch artifacts");
   });
 
-  // EDGE CASES (added per test-strategist feedback)
   it("returns empty array when no artifacts exist", async () => {
-    vi.mocked(database.artifact.findMany).mockResolvedValue([]);
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -161,7 +127,7 @@ describe("GET /api/artifacts", () => {
   });
 
   it("validates response includes correct Content-Type header", async () => {
-    vi.mocked(database.artifact.findMany).mockResolvedValue([]);
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts",
@@ -184,23 +150,15 @@ describe("POST /api/artifacts", () => {
   });
 
   it("creates artifact with valid data", async () => {
-    const mockArtifact = { id: "new-artifact-id", title: "New PRD" };
+    const mockArtifact = {
+      id: "new-artifact-id",
+      title: "New PRD",
+      type: "PRD",
+      version: 1,
+      isLatest: true,
+    };
 
-    // Mock the transaction callback
-    vi.mocked(database.$transaction).mockImplementation((callback: any) => {
-      const mockTx = {
-        artifact: {
-          create: vi.fn().mockResolvedValue(mockArtifact),
-          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-        project: {
-          findFirst: vi.fn().mockResolvedValue({ id: "default-proj-id" }),
-          create: vi.fn(),
-        },
-      };
-      return callback(mockTx);
-    });
+    vi.mocked(artifactsService.create).mockResolvedValue(mockArtifact as any);
 
     const request = createMockRequest({
       method: "POST",
@@ -236,14 +194,14 @@ describe("POST /api/artifacts", () => {
   });
 
   it("returns 404 when projectId does not exist", async () => {
-    vi.mocked(database.project.findUnique).mockResolvedValue(null);
+    vi.mocked(projectsService.findById).mockResolvedValue(null);
 
     const request = createMockRequest({
       method: "POST",
       body: {
         type: "PRD",
         title: "Test",
-        projectId: "non-existent-project",
+        projectId: uuidv7(),
       },
     });
     const routeContext = createMockRouteContext({});
@@ -255,21 +213,10 @@ describe("POST /api/artifacts", () => {
     expect(json.error).toBe("Project not found");
   });
 
-  it("generates documentSlug from fileName", async () => {
-    vi.mocked(database.$transaction).mockImplementation((callback: any) => {
-      const mockTx = {
-        artifact: {
-          create: vi.fn().mockResolvedValue({ id: "artifact-id" }),
-          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-        project: {
-          findFirst: vi.fn().mockResolvedValue({ id: "proj-id" }),
-          create: vi.fn(),
-        },
-      };
-      return callback(mockTx);
-    });
+  it("passes organizationId to service when creating artifact", async () => {
+    vi.mocked(artifactsService.create).mockResolvedValue({
+      id: "artifact-id",
+    } as any);
 
     const request = createMockRequest({
       method: "POST",
@@ -282,30 +229,21 @@ describe("POST /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await POST(request, routeContext);
 
-    // Verify documentSlug was generated correctly
-    // (Assertion depends on actual implementation)
+    expect(artifactsService.create).toHaveBeenCalledWith(
+      "test-org-id",
+      expect.objectContaining({
+        type: "PRD",
+        title: "Test PRD",
+        fileName: "my-prd.md",
+      })
+    );
   });
 
-  it("creates default project when no projectId or workstreamId", async () => {
-    let createdProject = false;
-
-    vi.mocked(database.$transaction).mockImplementation((callback: any) => {
-      const mockTx = {
-        artifact: {
-          create: vi.fn().mockResolvedValue({ id: "artifact-id" }),
-          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-        project: {
-          findFirst: vi.fn().mockResolvedValue(null),
-          create: vi.fn().mockImplementation((_data) => {
-            createdProject = true;
-            return Promise.resolve({ id: "default-proj-id" });
-          }),
-        },
-      };
-      return callback(mockTx);
-    });
+  it("creates artifact without projectId or workstreamId", async () => {
+    vi.mocked(artifactsService.create).mockResolvedValue({
+      id: "artifact-id",
+      version: 1,
+    } as any);
 
     const request = createMockRequest({
       method: "POST",
@@ -315,14 +253,20 @@ describe("POST /api/artifacts", () => {
       },
     });
     const routeContext = createMockRouteContext({});
-    await POST(request, routeContext);
+    const response = await POST(request, routeContext);
 
-    expect(createdProject).toBe(true);
+    expect(response.status).toBe(200);
+    expect(artifactsService.create).toHaveBeenCalledWith(
+      "test-org-id",
+      expect.objectContaining({
+        type: "PRD",
+        title: "Standalone PRD",
+      })
+    );
   });
 
-  // CRITICAL ERROR SCENARIOS (added per test-strategist feedback)
-  it("returns 500 when transaction fails", async () => {
-    vi.mocked(database.$transaction).mockRejectedValue(
+  it("returns 500 when service fails", async () => {
+    vi.mocked(artifactsService.create).mockRejectedValue(
       new Error("Transaction deadlock detected")
     );
 
@@ -342,37 +286,29 @@ describe("POST /api/artifacts", () => {
     expect(json.error).toBeDefined();
   });
 
-  it("creates new version when documentSlug already exists", async () => {
-    vi.mocked(database.$transaction).mockImplementation((callback: any) => {
-      const mockTx = {
-        artifact: {
-          create: vi
-            .fn()
-            .mockResolvedValue({ id: "v2-artifact-id", version: 2 }),
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }), // Marked old as not latest
-          findFirst: vi.fn().mockResolvedValue({ version: 1 }), // Found existing version
-        },
-        project: {
-          findFirst: vi.fn().mockResolvedValue({ id: "proj-id" }),
-          create: vi.fn(),
-        },
-      };
-      return callback(mockTx);
-    });
+  it("verifies project ownership before creating artifact", async () => {
+    const projectId = uuidv7();
+    vi.mocked(projectsService.findById).mockResolvedValue({
+      id: projectId,
+    } as any);
+    vi.mocked(artifactsService.create).mockResolvedValue({
+      id: "artifact-id",
+    } as any);
 
     const request = createMockRequest({
       method: "POST",
       body: {
         type: "PRD",
-        title: "Test PRD v2",
-        fileName: "existing-doc.md",
+        title: "Test PRD",
+        projectId,
       },
     });
     const routeContext = createMockRouteContext({});
-    const response = await POST(request, routeContext);
+    await POST(request, routeContext);
 
-    expect(response.status).toBe(200);
-    const json = await response.json();
-    expect(json.data.version).toBe(2);
+    expect(projectsService.findById).toHaveBeenCalledWith(
+      projectId,
+      "test-org-id"
+    );
   });
 });

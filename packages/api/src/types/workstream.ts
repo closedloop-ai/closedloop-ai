@@ -83,7 +83,7 @@ export type CreateWorkstreamInput = {
   title: string;
   description?: string;
   type?: WorkstreamType;
-  assignedToId?: string;
+  assignedToId?: string | null;
   hasUIChanges?: boolean;
 };
 

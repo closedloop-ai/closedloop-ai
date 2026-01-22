@@ -265,9 +265,7 @@ $RECYCLE.BIN/
 .github/copilot-instructions.md
 
 # Symphony
-.claude/.symphony
-.claude/runs/
-.claude/plan-docs/
+.symphony
 
 # Database
 packages/database/generated

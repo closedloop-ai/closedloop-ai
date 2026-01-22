@@ -2,8 +2,6 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { database } from "@repo/database";
-import { artifactIncludeWithContext } from "@/app/artifacts/artifact-utils";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -12,23 +10,21 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { updateArtifactSchema } from "../schemas";
+import { artifactsService } from "../service";
+import { updateArtifactValidator } from "../validators";
 
 export const GET = withAuth<ArtifactWithWorkstream, "/artifacts/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
 
-      const artifact = await database.artifact.findUnique({
-        where: { id, project: { organizationId: user.organizationId } },
-        include: artifactIncludeWithContext,
-      });
+      const artifact = await artifactsService.findById(id, user.organizationId);
 
       if (!artifact) {
         return notFoundResponse("Artifact");
       }
 
-      return successResponse(artifact as ArtifactWithWorkstream);
+      return successResponse(artifact);
     } catch (error) {
       return errorResponse("Failed to fetch artifact", error);
     }
@@ -40,9 +36,10 @@ export const PUT = withAuth<Artifact, "/artifacts/[id]">(
     try {
       const { id } = await params;
 
-      const existing = await database.artifact.findUnique({
-        where: { id, project: { organizationId: user.organizationId } },
-      });
+      const existing = await artifactsService.findByIdSimple(
+        id,
+        user.organizationId
+      );
 
       if (!existing) {
         return notFoundResponse("Artifact");
@@ -50,18 +47,19 @@ export const PUT = withAuth<Artifact, "/artifacts/[id]">(
 
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        updateArtifactSchema
+        updateArtifactValidator
       );
       if (parseError) {
         return parseError;
       }
 
-      const artifact = await database.artifact.update({
-        where: { id, project: { organizationId: user.organizationId } },
-        data: body,
-      });
+      const artifact = await artifactsService.update(
+        id,
+        user.organizationId,
+        body
+      );
 
-      return successResponse(artifact as Artifact);
+      return successResponse(artifact);
     } catch (error) {
       return errorResponse("Failed to update artifact", error);
     }
@@ -73,9 +71,7 @@ export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(
     try {
       const { id } = await params;
 
-      await database.artifact.delete({
-        where: { id, project: { organizationId: user.organizationId } },
-      });
+      await artifactsService.delete(id, user.organizationId);
 
       return deleteResponse();
     } catch (error) {

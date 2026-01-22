@@ -1,77 +1,57 @@
 import type { User } from "@repo/api/src/types/organization";
-import type { PrismaClient } from "@repo/database";
-import { database, ensureDatabase } from "@repo/database";
-
-// CRITICAL: Track if database is initialized for this test run (singleton pattern)
-let isDbInitialized = false;
+import { withDb, withImplicitTransaction } from "@repo/database";
+import type {
+  OrganizationCreateInput,
+  ProjectUncheckedCreateInput,
+  UserUncheckedCreateInput,
+} from "@repo/database/generated/models";
 
 /**
- * Setup test database connection (singleton pattern).
- * Call in beforeAll() hook - safe to call multiple times.
+ * Wrap test code in a transaction that automatically rolls back.
+ * Use this for integration tests to ensure test isolation without manual cleanup.
+ *
+ * @example
+ * it("creates a user", async () => {
+ *   await autoRollbackTransaction(async () => {
+ *     const orgId = await createTestOrganization();
+ *     const user = await usersService.create({ organizationId: orgId, ... });
+ *     expect(user.id).toBeDefined();
+ *   });
+ *   // Transaction rolled back - no data persists
+ * });
  */
-export async function setupTestDatabase(): Promise<void> {
-  if (!isDbInitialized) {
-    await ensureDatabase();
-    // Verify connection
-    await database.$queryRaw`SELECT 1`;
-    isDbInitialized = true;
+export async function autoRollbackTransaction<T>(
+  fn: () => Promise<T>
+): Promise<T> {
+  try {
+    return await withImplicitTransaction(async () => {
+      const result = await fn();
+      throw new TestTransactionRollback(result);
+    });
+  } catch (e) {
+    if (e instanceof TestTransactionRollback) {
+      return e.result as T;
+    }
+    throw e;
   }
 }
-
-/**
- * Clean up all test data from database.
- * DOES NOT disconnect - reuses connection pool.
- * Call in afterEach() hook.
- */
-export async function cleanupTestDatabase(): Promise<void> {
-  // Option 1: Transaction-based atomic cleanup (FASTEST)
-  await database.$transaction([
-    database.artifact.deleteMany({}),
-    database.workstream.deleteMany({}),
-    database.project.deleteMany({}),
-    database.user.deleteMany({}),
-    database.organization.deleteMany({}),
-  ]);
-
-  // Option 2: Disable foreign key checks for parallel cleanup (ALTERNATIVE)
-  // await database.$executeRaw`SET session_replication_role = 'replica';`;
-  // await Promise.all([
-  //   database.artifact.deleteMany({}),
-  //   database.workstream.deleteMany({}),
-  //   database.project.deleteMany({}),
-  //   database.user.deleteMany({}),
-  //   database.organization.deleteMany({}),
-  // ]);
-  // await database.$executeRaw`SET session_replication_role = 'origin';`;
-}
-
-/**
- * Disconnect database connection.
- * ONLY call once in global afterAll or process.on('exit').
- */
-export async function disconnectTestDatabase(): Promise<void> {
-  if (isDbInitialized) {
-    await database.$disconnect();
-    isDbInitialized = false;
-  }
-}
-
-// Note: Database cleanup should be done explicitly in test afterAll() hooks
-// using disconnectTestDatabase() to avoid async operations in sync handlers
 
 /**
  * Create test organization and return its ID.
  */
 export async function createTestOrganization(
-  overrides?: Partial<{ clerkId: string; name: string; slug: string }>
+  overrides?: Partial<OrganizationCreateInput>
 ): Promise<string> {
-  const org = await database.organization.create({
-    data: {
-      clerkId: overrides?.clerkId ?? "org_test",
-      name: overrides?.name ?? "Test Organization",
-      slug: overrides?.slug ?? "test-org",
-    },
-  });
+  const org = await withDb((db) =>
+    db.organization.create({
+      data: {
+        clerkId: "org_test",
+        name: "Test Organization",
+        slug: "test-org",
+        ...overrides,
+      },
+    })
+  );
   return org.id;
 }
 
@@ -81,19 +61,22 @@ export async function createTestOrganization(
  */
 export async function createTestUser(
   organizationId: string,
-  overrides?: Partial<{ clerkId: string; email: string }>
+  overrides?: Partial<UserUncheckedCreateInput>
 ): Promise<User> {
-  const user = await database.user.create({
-    data: {
-      organizationId,
-      clerkId: overrides?.clerkId ?? "clerk_test_user",
-      email: overrides?.email ?? "test@example.com",
-      firstName: "Test",
-      lastName: "User",
-      role: "ENGINEER",
-      active: true,
-    },
-  });
+  const user = await withDb((db) =>
+    db.user.create({
+      data: {
+        organizationId,
+        clerkId: "clerk_test_user",
+        email: "test@example.com",
+        firstName: "Test",
+        lastName: "User",
+        role: "ENGINEER",
+        active: true,
+        ...overrides,
+      },
+    })
+  );
 
   return user as User;
 }
@@ -103,44 +86,19 @@ export async function createTestUser(
  */
 export async function createTestProject(
   organizationId: string,
-  overrides?: Partial<{ name: string; description: string }>
+  overrides?: Partial<ProjectUncheckedCreateInput>
 ): Promise<string> {
-  const project = await database.project.create({
-    data: {
-      organizationId,
-      name: overrides?.name ?? "Test Project",
-      description: overrides?.description ?? "A test project",
-    },
-  });
-  return project.id;
-}
-
-/**
- * Transaction-based test isolation wrapper (RECOMMENDED for integration tests).
- * Wraps test in transaction and rolls back after test completes.
- * Faster and more reliable than deleteMany() cleanup.
- */
-export function withTestTransaction<T>(
-  testFn: (
-    tx: Omit<
-      PrismaClient,
-      "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
-    >
-  ) => Promise<T>
-): Promise<T> {
-  return database
-    .$transaction(async (tx) => {
-      const result = await testFn(tx);
-
-      // Rollback transaction after test by throwing
-      throw new TestTransactionRollback(result);
+  const project = await withDb((db) =>
+    db.project.create({
+      data: {
+        organizationId,
+        name: "Test Project",
+        description: "A test project",
+        ...overrides,
+      },
     })
-    .catch((error) => {
-      if (error instanceof TestTransactionRollback) {
-        return error.result as T;
-      }
-      throw error;
-    });
+  );
+  return project.id;
 }
 
 /**
@@ -148,11 +106,10 @@ export function withTestTransaction<T>(
  * Not a real error - used to exit transaction and trigger rollback.
  */
 class TestTransactionRollback extends Error {
-  result: any;
+  result: unknown;
 
-  constructor(result: any) {
-    super("Test transaction rollback");
-    this.name = "TestTransactionRollback";
+  constructor(result: unknown) {
+    super();
     this.result = result;
   }
 }

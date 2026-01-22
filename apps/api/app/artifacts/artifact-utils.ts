@@ -1,5 +1,5 @@
 import type { ArtifactType } from "@repo/api/src/types/artifact";
-import type { database } from "@repo/database";
+import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 
 // Regex patterns for slug generation (top-level for performance)
 const MD_EXTENSION_REGEX = /\.md$/;
@@ -22,16 +22,9 @@ export function generateDocumentSlug(
   return source
     .toLowerCase()
     .replace(MD_EXTENSION_REGEX, "")
-    .replace(NON_ALPHANUMERIC_REGEX, "-")
-    .replace(TRIM_HYPHENS_REGEX, "");
+    .replaceAll(NON_ALPHANUMERIC_REGEX, "-")
+    .replaceAll(TRIM_HYPHENS_REGEX, "");
 }
-
-/**
- * Type for Prisma transaction client.
- */
-export type TransactionClient = Parameters<
-  Parameters<typeof database.$transaction>[0]
->[0];
 
 /**
  * Get or create a default project for standalone artifacts in the user's organization.
@@ -78,6 +71,17 @@ export const artifactIncludeWithContext = {
       id: true,
       organizationId: true,
       name: true,
+      teams: {
+        select: {
+          team: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+        take: 1,
+      },
     },
   },
 } as const;

@@ -1,88 +1,128 @@
-import type { Project } from "@repo/api/src/types/organization";
-import { database, type Prisma } from "@repo/database";
+import type { JsonObject } from "@repo/api/src/types/common";
+import type {
+  ProjectPriority,
+  ProjectWithDetails,
+  UpdateProjectInput,
+} from "@repo/api/src/types/organization";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
   errorResponse,
+  forbiddenResponse,
   notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { updateProjectSchema } from "../schemas";
+import { projectsService } from "../service";
+import { updateProjectValidator } from "../validators";
 
-export const GET = withAuth<Project, "/projects/[id]">(
+/**
+ * GET /projects/:id - Get a single project by ID
+ */
+export const GET = withAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
-
-      const project = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const project = await projectsService.findById(id);
 
       if (!project) {
         return notFoundResponse("Project");
       }
 
-      return successResponse(project as Project);
+      // Check access - user must be in same org
+      if (project.organizationId !== user.organizationId) {
+        return forbiddenResponse();
+      }
+
+      return successResponse(projectsService.toProjectWithDetails(project));
     } catch (error) {
       return errorResponse("Failed to fetch project", error);
     }
   }
 );
 
-export const PUT = withAuth<Project, "/projects/[id]">(
+/**
+ * PUT /projects/:id - Update a project
+ */
+export const PUT = withAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
-
-      const existing = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const existing = await projectsService.findById(id);
 
       if (!existing) {
         return notFoundResponse("Project");
       }
 
+      // Check access - user must be in same org
+      if (existing.organizationId !== user.organizationId) {
+        return forbiddenResponse();
+      }
+
       const { body, errorResponse: parseError } = await parseBody(
         request,
-        updateProjectSchema
+        updateProjectValidator
       );
       if (parseError) {
         return parseError;
       }
 
-      const data: Prisma.ProjectUpdateInput = {
-        name: body.name,
-        description: body.description,
-        settings: body.settings as Prisma.InputJsonValue,
+      const input: Omit<UpdateProjectInput, "id"> = {
+        ...(body.name !== undefined && { name: body.name }),
+        ...(body.description !== undefined && {
+          description: body.description,
+        }),
+        ...(body.priority !== undefined && {
+          priority: body.priority as ProjectPriority,
+        }),
+        ...(body.ownerId !== undefined && { ownerId: body.ownerId }),
+        ...(body.targetDate !== undefined && {
+          targetDate: body.targetDate ? new Date(body.targetDate) : null,
+        }),
+        ...(body.teamIds !== undefined && { teamIds: body.teamIds }),
+        ...(body.settings !== undefined && {
+          settings: body.settings as JsonObject,
+        }),
       };
 
-      const project = await database.project.update({
-        where: { id },
-        data,
-      });
+      await projectsService.update(id, input);
 
-      return successResponse(project as Project);
+      // Fetch updated project with details
+      const project = await projectsService.findById(id);
+
+      if (!project) {
+        return errorResponse(
+          "Project updated but could not be retrieved",
+          new Error("Project not found")
+        );
+      }
+
+      return successResponse(projectsService.toProjectWithDetails(project));
     } catch (error) {
       return errorResponse("Failed to update project", error);
     }
   }
 );
 
+/**
+ * DELETE /projects/:id - Delete a project
+ */
 export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
-  async ({ user }, _request, params) => {
+  async ({ user }, _, params) => {
     try {
       const { id } = await params;
-
-      const existing = await database.project.findUnique({
-        where: { id, organizationId: user.organizationId },
-      });
+      const existing = await projectsService.findById(id);
 
       if (!existing) {
         return notFoundResponse("Project");
       }
 
-      await database.project.delete({ where: { id } });
+      // Check access - user must be in same org
+      if (existing.organizationId !== user.organizationId) {
+        return forbiddenResponse();
+      }
+
+      await projectsService.delete(id);
       return deleteResponse();
     } catch (error) {
       return errorResponse("Failed to delete project", error);

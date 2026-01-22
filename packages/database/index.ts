@@ -1,64 +1,113 @@
 import "server-only";
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Signer } from "@aws-sdk/rds-signer";
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "./generated/client";
+import type { TransactionClient } from "./generated/internal/prismaNamespace";
 import { keys } from "./keys";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting
 export * from "./generated/client";
 
 /**
- * Ensures the database is initialized. Safe to call multiple times.
+ * Execute a database operation with an initialized Prisma client.
+ *
+ * @param fn - Callback receiving the initialized PrismaClient. Can be sync or async.
+ * @returns The result of the callback function.
+ *
+ * @example
+ * // Simple query
+ * const users = await withDb(db => db.user.findMany());
+ *
+ * @example
+ * // Query with parameters
+ * const user = await withDb(db =>
+ *   db.user.findUnique({ where: { id: userId } })
+ * );
+ *
+ * @example
+ * // Multiple operations (not transactional - use withDb.tx for transactions)
+ * const [users, projects] = await withDb(async db => {
+ *   const users = await db.user.findMany();
+ *   const projects = await db.project.findMany();
+ *   return [users, projects];
+ * });
  */
-export async function ensureDatabase(): Promise<void> {
-  if (!globalForPrisma.prisma) {
-    globalForPrisma.prisma = await getDatabase();
+export async function withDb<T>(
+  fn: (db: TransactionClient) => Promise<T> | T
+): Promise<T> {
+  const tx = als.getStore()?.tx;
+  if (tx) {
+    return fn(tx);
   }
+
+  const db = await getDatabase();
+  return fn(db);
 }
 
 /**
- * The database client with lazy initialization.
+ * Execute multiple database operations within a transaction.
  *
- * Auto-initializes on first use - no need to call ensureDatabase() manually.
- * On Vercel, initialization is deferred until request time when OIDC token is available.
+ * Wraps operations in a Prisma interactive transaction, ensuring all operations
+ * either succeed together or roll back on failure.
+ *
+ * @param fn - Callback receiving a transaction client. Must be async.
+ * @returns The result of the callback function.
+ *
+ * @example
+ * // Create related records atomically
+ * const { user, profile } = await withDb.tx(async tx => {
+ *   const user = await tx.user.create({ data: { email } });
+ *   const profile = await tx.profile.create({
+ *     data: { userId: user.id, name }
+ *   });
+ *   return { user, profile };
+ * });
+ *
+ * @example
+ * // Update with optimistic locking pattern
+ * await withDb.tx(async tx => {
+ *   const artifact = await tx.artifact.findUniqueOrThrow({
+ *     where: { id }
+ *   });
+ *   await tx.artifact.update({
+ *     where: { id, version: artifact.version },
+ *     data: { content, version: artifact.version + 1 }
+ *   });
+ * });
  */
-export const database = new Proxy({} as PrismaClient, {
-  get(_target, prop) {
-    // Fast path: if already initialized, return the real thing
-    if (globalForPrisma.prisma) {
-      return globalForPrisma.prisma[prop as keyof PrismaClient];
-    }
+withDb.tx = async <T>(
+  fn: (tx: TransactionClient) => Promise<T>
+): Promise<T> => {
+  const db = await getDatabase();
+  return db.$transaction(fn);
+};
 
-    // For $ methods ($transaction, $queryRaw, etc.), return async wrapper
-    if (typeof prop === "string" && prop.startsWith("$")) {
-      return async (...args: unknown[]) => {
-        await ensureDatabase();
-        // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma method invocation
-        return (globalForPrisma.prisma as any)[prop](...args);
-      };
-    }
-
-    // For model delegates (artifact, user, etc.), return a proxy that wraps method calls
-    return new Proxy(
-      {},
-      {
-        get(_target2, method) {
-          return async (...args: unknown[]) => {
-            await ensureDatabase();
-            // biome-ignore lint/suspicious/noExplicitAny: dynamic Prisma delegate method
-            return (globalForPrisma.prisma as any)[prop][method](...args);
-          };
-        },
-      }
-    );
-  },
-});
+/**
+ * Execute a database operation within an implicit transaction.
+ *
+ * Wraps operations in a Prisma implicit transaction, ensuring all operations
+ * either succeed together or roll back on failure.
+ *
+ * This is designed to be used by tests.
+ *
+ * @param fn - Callback receiving a transaction client. Must be async.
+ * @returns The result of the callback function.
+ */
+export async function withImplicitTransaction<T>(
+  fn: () => Promise<T>
+): Promise<T> {
+  const db = await getDatabase();
+  return db.$transaction((tx) => als.run({ tx }, fn));
+}
 
 // -----------------------------------------------------------------------------
 // Internal implementation
 // -----------------------------------------------------------------------------
+
+const als = new AsyncLocalStorage<{ tx: TransactionClient }>();
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | null;
@@ -123,7 +172,8 @@ async function getSigner(): Promise<Signer> {
 
 /**
  * Gets or creates the pg Pool.
- * For IAM auth, generates token upfront and embeds in connection string.
+ * For IAM auth, uses dynamic password generation to refresh tokens automatically.
+ * IAM tokens expire after 15 minutes, so we generate a fresh token for each new connection.
  * Cached globally to reuse connections.
  */
 async function getPool(): Promise<pg.Pool> {
@@ -156,21 +206,24 @@ async function getPool(): Promise<pg.Pool> {
     });
   } else {
     // Vercel/production with IAM authentication
+    // Use dynamic password function to generate fresh IAM token for each new connection.
+    // This is critical because IAM tokens expire after 15 minutes.
     const signer = await getSigner();
 
-    const token = await signer.getAuthToken();
-
-    // Build connection string with token (no sslmode in string - use ssl config instead)
-    const connectionString = `postgresql://${env.PGUSER}:${encodeURIComponent(
-      token
-    )}@${env.PGHOST}:${env.PGPORT}/${env.PGDATABASE || "app"}`;
-
     globalForPrisma.pool = new pg.Pool({
-      connectionString,
+      host: env.PGHOST,
+      port: Number(env.PGPORT || "5432"),
+      database: env.PGDATABASE || "app",
+      user: env.PGUSER,
+      // pg.Pool calls this function for each new connection, ensuring fresh tokens
+      password: async () => signer.getAuthToken(),
       ssl: { rejectUnauthorized: false },
       max: 20,
+      // How long to wait for connection handshake (network timeout)
       connectionTimeoutMillis: 30_000,
-      idleTimeoutMillis: 30_000,
+      // Close idle connections after 10 minutes (before 15-minute token expiry)
+      // Active connections remain valid for their entire session
+      idleTimeoutMillis: 10 * 60 * 1000,
     });
   }
 

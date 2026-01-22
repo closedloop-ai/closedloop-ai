@@ -23,7 +23,10 @@ import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { createArtifact, getArtifactsByType } from "@/app/actions/artifacts";
+import {
+  createAndGeneratePlan,
+  getArtifactsByType,
+} from "@/app/actions/artifacts";
 
 type NewPlanModalProps = {
   // When sourcePrd is provided, the modal is used from a PRD page
@@ -40,44 +43,6 @@ function generatePlanFileName(prd: ArtifactWithWorkstream): string {
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, "-")}-impl-plan.md`;
-}
-
-function generateDefaultContent(prdTitle: string): string {
-  return `# Implementation Plan: ${prdTitle}
-
-## Overview
-This implementation plan outlines the technical approach for delivering the requirements specified in the PRD: **${prdTitle}**.
-
-## Scope
-- [ ] Task 1: Initial setup and scaffolding
-- [ ] Task 2: Core implementation
-- [ ] Task 3: Testing and validation
-- [ ] Task 4: Documentation and deployment
-
-## Technical Approach
-*Describe the technical strategy here...*
-
-## Dependencies
-- Dependency 1
-- Dependency 2
-
-## Timeline Estimates
-| Phase | Tasks | Notes |
-|-------|-------|-------|
-| Phase 1 | Setup | Initial scaffolding |
-| Phase 2 | Core | Main implementation |
-| Phase 3 | QA | Testing and fixes |
-
-## Risks and Mitigations
-| Risk | Mitigation |
-|------|------------|
-| Risk 1 | Mitigation strategy |
-
-## Success Criteria
-- [ ] All acceptance criteria from PRD are met
-- [ ] Code review completed
-- [ ] Tests passing
-`;
 }
 
 function PrdSelector({
@@ -191,13 +156,18 @@ export function NewPlanModal({
 
     startTransition(async () => {
       try {
-        const result = await createArtifact({
+        // Use createAndGeneratePlan to create artifact AND trigger workflow
+        const result = await createAndGeneratePlan({
           type: "IMPLEMENTATION_PLAN",
           title: `Implementation Plan: ${selectedPrd.title}`,
           fileName: generatePlanFileName(selectedPrd),
           approver: selectedPrd.approver ?? undefined,
           status: "DRAFT",
-          content: content.trim() || generateDefaultContent(selectedPrd.title),
+          // Pass content as initial instructions (not placeholder template)
+          // The regenerate endpoint will use this as additional context
+          content: content.trim() || "",
+          // Link to PRD's workstream for proper regenerate flow
+          workstreamId: selectedPrd.workstreamId ?? undefined,
         });
 
         if (!result.success) {

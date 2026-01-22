@@ -76,11 +76,23 @@ export type UpdateUserInput = {
 };
 
 // Project types
+export type ProjectPriority = "NOT_SET" | "LOW" | "MEDIUM" | "HIGH";
+
+export type ProjectOwner = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  avatarUrl: string | null;
+};
+
 export type Project = {
   id: string;
   organizationId: string;
   name: string;
   description: string | null;
+  priority: ProjectPriority;
+  ownerId: string | null;
+  targetDate: Date | null;
   codebaseSummary: JsonObject | null;
   lastIndexedAt: Date | null;
   settings: JsonObject;
@@ -96,16 +108,29 @@ export type ProjectWithOrganization = Project & {
   };
 };
 
+export type ProjectWithDetails = Project & {
+  owner?: ProjectOwner;
+  status: number; // 0-100 percentage
+  teams: Array<{ id: string; name: string }>;
+};
+
 export type CreateProjectInput = {
-  organizationId: string;
   name: string;
   description?: string;
+  priority?: ProjectPriority;
+  ownerId?: string | null;
+  targetDate?: Date | null;
+  teamIds?: string[];
 };
 
 export type UpdateProjectInput = {
   id: string;
   name?: string;
   description?: string;
+  priority?: ProjectPriority;
+  ownerId?: string | null;
+  targetDate?: Date | null;
+  teamIds?: string[];
   settings?: JsonObject;
 };
 

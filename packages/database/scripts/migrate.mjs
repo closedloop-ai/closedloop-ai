@@ -21,7 +21,9 @@ async function main() {
 
   // If DATABASE_URL is set (e.g., local dev with password), use it directly
   if (DATABASE_URL) {
-    console.log("✓ DATABASE_URL found, running migrations with password auth...");
+    console.log(
+      "✓ DATABASE_URL found, running migrations with password auth..."
+    );
     execSync("prisma format && prisma db push --accept-data-loss", {
       stdio: "inherit",
     });
@@ -29,10 +31,12 @@ async function main() {
   }
 
   // Otherwise, use IAM authentication
-  if (!AWS_ROLE_ARN || !AWS_REGION || !PGHOST || !PGUSER || !PGDATABASE) {
+  if (!(AWS_ROLE_ARN && AWS_REGION && PGHOST && PGUSER && PGDATABASE)) {
     console.log("⚠️  Database credentials not configured - skipping migrations");
     console.log("   Required: DATABASE_URL (with password) OR");
-    console.log("   AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER, PGDATABASE (for IAM auth)");
+    console.log(
+      "   AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER, PGDATABASE (for IAM auth)"
+    );
     process.exit(0);
   }
 
