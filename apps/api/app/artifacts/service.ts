@@ -216,7 +216,8 @@ export const artifactsService = {
   },
 
   /**
-   * Update an existing artifact
+   * Update an existing artifact.
+   * Auto-increments version when content is modified.
    */
   update(
     id: string,
@@ -226,7 +227,7 @@ export const artifactsService = {
     return withDb((db) =>
       db.artifact.update({
         where: { id, project: { organizationId } },
-        data: input,
+        data: input.content ? { ...input, version: { increment: 1 } } : input,
       })
     );
   },
