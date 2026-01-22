@@ -148,6 +148,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -319,6 +320,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -356,6 +358,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           prompt: |
             /symphony-core:plan --existing-run ${{ steps.download.outputs.run_dir }}
           claude_args: |
@@ -529,6 +532,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -797,6 +801,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -840,6 +845,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           prompt: |
               Read the conversation JSON at ${{ runner.temp }}/amend-conversation.json and write a human-readable summary of what was accomplished to ${{ runner.temp }}/amend-response.md.
 
@@ -923,6 +929,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
+          allowed_bots: symphony-cl
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
