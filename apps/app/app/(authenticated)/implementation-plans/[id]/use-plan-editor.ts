@@ -8,6 +8,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import {
+  createNewVersion,
   deleteArtifact,
   type GenerationStatus,
   getGenerationStatus,
@@ -62,6 +63,21 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const handleSave = useCallback(() => {
     setIsSaving(true);
     startTransition(async () => {
+      // If viewing an old version, create a new version instead of updating in place
+      if (!plan.isLatest) {
+        const result = await createNewVersion(plan.id, content);
+        if (result.success) {
+          toast.success(`Created new version v${result.data.version}`);
+          // Navigate to the new version
+          router.push(`/implementation-plans/${result.data.id}`);
+        } else {
+          toast.error("Failed to create new version");
+        }
+        setIsSaving(false);
+        return;
+      }
+
+      // Normal update for latest version
       const result = await updateArtifact({ id: plan.id, content });
       if (result.success) {
         setLastSaved(new Date());
@@ -71,7 +87,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
       }
       setIsSaving(false);
     });
-  }, [plan.id, content]);
+  }, [plan.id, plan.isLatest, content, router]);
 
   const handleMetadataUpdate = useCallback(
     (

@@ -169,6 +169,24 @@ export async function duplicateArtifact(
   return result;
 }
 
+export async function createNewVersion(
+  id: string,
+  content: string
+): Promise<ApiResult<Artifact>> {
+  const result = await apiClient.post<Artifact>(
+    `/artifacts/${id}/new-version`,
+    { content }
+  );
+
+  if (result.success) {
+    revalidatePath(`/implementation-plans/${id}`);
+    revalidatePath(`/implementation-plans/${result.data.id}`);
+    revalidatePath("/implementation-plans");
+  }
+
+  return result;
+}
+
 export async function renameArtifact(
   id: string,
   title: string,
