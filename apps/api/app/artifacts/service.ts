@@ -15,6 +15,35 @@ import {
   type TransactionClient,
 } from "./artifact-utils";
 
+// Type for raw Prisma result before transformation
+type RawArtifactWithContext = Artifact & {
+  workstream: { id: string; title: string; state: string } | null;
+  project: {
+    id: string;
+    organizationId: string;
+    name: string;
+    teams: { team: { id: string; name: string } }[];
+  } | null;
+};
+
+/**
+ * Transform Prisma result to flatten teams structure for API response
+ */
+function toArtifactWithWorkstream(
+  artifact: RawArtifactWithContext
+): ArtifactWithWorkstream {
+  return {
+    ...artifact,
+    project: artifact.project
+      ? {
+          id: artifact.project.id,
+          name: artifact.project.name,
+          teams: artifact.project.teams.map((pt) => pt.team),
+        }
+      : null,
+  };
+}
+
 export type FindArtifactsOptions = {
   organizationId: string;
   type?: ArtifactType;
@@ -47,7 +76,7 @@ export const artifactsService = {
       projectId,
     } = options;
 
-    return await database.artifact.findMany({
+    const artifacts = await database.artifact.findMany({
       where: {
         ...(type ? { type } : {}),
         ...(latestOnly ? { isLatest: true } : {}),
@@ -58,6 +87,10 @@ export const artifactsService = {
       include: artifactIncludeWithContext,
       orderBy: { createdAt: "desc" },
     });
+
+    return artifacts.map((a) =>
+      toArtifactWithWorkstream(a as RawArtifactWithContext)
+    );
   },
 
   /**
@@ -85,10 +118,16 @@ export const artifactsService = {
     id: string,
     organizationId: string
   ): Promise<ArtifactWithWorkstream | null> {
-    return await database.artifact.findUnique({
+    const artifact = await database.artifact.findUnique({
       where: { id, project: { organizationId } },
       include: artifactIncludeWithContext,
     });
+
+    if (!artifact) {
+      return null;
+    }
+
+    return toArtifactWithWorkstream(artifact as RawArtifactWithContext);
   },
 
   /**

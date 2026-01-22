@@ -19,6 +19,7 @@ export const createArtifactValidator = z.object({
   externalUrl: z.url().optional(),
   generatedBy: z.uuidv7().optional(),
   documentSlug: z.string().optional(),
+  sourcePrdId: z.string().optional(),
 });
 
 export const updateArtifactValidator = z.object({
