@@ -280,3 +280,5 @@ packages/database/generated
 .contentlayer
 .content-collections
 .source
+# Claude Code
+.claude/.token-stats/
