@@ -216,6 +216,18 @@ async function handleWorkflowSuccess(
   const finalContent = planContent ?? questionsContent;
 
   await withDb(async (db) => {
+    // Verify artifact exists before updating
+    const existingArtifact = await db.artifact.findUnique({
+      where: { id: artifactId },
+      select: { id: true },
+    });
+
+    if (!existingArtifact) {
+      throw new Error(
+        `Artifact ${artifactId} not found - cannot update with workflow results`
+      );
+    }
+
     await db.artifact.update({
       where: { id: artifactId },
       data: {
@@ -225,7 +237,6 @@ async function handleWorkflowSuccess(
           artifactKeys.length > 0
             ? getArtifactUrl(`plans/${correlationId}/`)
             : undefined,
-        generatedBy: `symphony-dispatch:${correlationId}:completed`,
       },
     });
 
@@ -273,7 +284,7 @@ The automated plan generation encountered an error.
 
 Please check the workflow logs for more details, or try regenerating the plan.
 `,
-        generatedBy: `symphony-dispatch:${correlationId}:failed`,
+        // Note: generatedBy is a UUID field, not free-form text
       },
     });
 

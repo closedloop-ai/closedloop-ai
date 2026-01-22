@@ -54,6 +54,7 @@
     },
     "onlyBuiltDependencies": [
       "@clerk/shared",
+      "es5-ext",
       "esbuild"
     ]
   },
