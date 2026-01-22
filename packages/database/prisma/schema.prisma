@@ -563,7 +563,7 @@ model GitHubActionRun {
   id           String             @id @default(uuid(7)) @db.Uuid
   workstreamId String             @map("workstream_id") @db.Uuid
   repositoryId String             @map("repository_id") @db.Uuid
-  runId        BigInt             @map("run_id")
+  runId        BigInt?            @map("run_id")
   workflowName String             @map("workflow_name")
   status       GitHubActionStatus @default(PENDING)
   conclusion   String?
