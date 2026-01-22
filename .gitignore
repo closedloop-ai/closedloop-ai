@@ -267,6 +267,9 @@ $RECYCLE.BIN/
 # Symphony
 .symphony
 
+# .Claude Runs
+.claude/runs
+
 # Database
 packages/database/generated
 
