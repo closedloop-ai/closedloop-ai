@@ -86,10 +86,18 @@ export function PRDEditor({ prd }: PRDEditorProps) {
       {/* Sticky Header */}
       <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-4 py-3">
         <div className="flex items-center gap-4">
-          <Link href="/prds">
+          <Link
+            href={
+              prd.project?.teams?.[0]?.id
+                ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
+                : "/prds"
+            }
+          >
             <Button size="sm" variant="ghost">
               <ArrowLeftIcon className="mr-2 h-4 w-4" />
-              Back to Library
+              {prd.project?.teams?.[0]?.id
+                ? "Back to Project"
+                : "Back to Library"}
             </Button>
           </Link>
 

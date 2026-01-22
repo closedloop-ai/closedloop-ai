@@ -124,6 +124,19 @@ enum GitHubActionStatus {
   CANCELLED
 }
 
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum ProjectPriority {
+  NOT_SET
+  LOW
+  MEDIUM
+  HIGH
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -142,6 +155,7 @@ model Organization {
   // Relations
   projects Project[]
   users    User[]
+  teams    Team[]
 
   @@map("organizations")
 }
@@ -164,7 +178,9 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
+  organization    Organization @relation(fields: [organizationId], references: [id])
+  teamMemberships TeamMember[]
+  ownedProjects   Project[]    @relation("ProjectOwner")
 
   @@unique([organizationId, email])
   @@index([linearId])
@@ -174,23 +190,29 @@ model User {
 }
 
 model Project {
-  id              String    @id @default(uuid(7)) @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
+  id              String          @id @default(uuid(7)) @db.Uuid
+  organizationId  String          @map("organization_id") @db.Uuid
   name            String
   description     String?
-  codebaseSummary Json?     @map("codebase_summary")
-  lastIndexedAt   DateTime? @map("last_indexed_at")
-  settings        Json      @default("{}")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  priority        ProjectPriority @default(NOT_SET)
+  ownerId         String?         @map("owner_id") @db.Uuid
+  targetDate      DateTime?       @map("target_date")
+  codebaseSummary Json?           @map("codebase_summary")
+  lastIndexedAt   DateTime?       @map("last_indexed_at")
+  settings        Json            @default("{}")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  owner        User?         @relation("ProjectOwner", fields: [ownerId], references: [id])
   workstreams  Workstream[]
   repositories Repository[]
   artifacts    Artifact[]
+  teams        ProjectTeam[]
 
   @@index([organizationId])
+  @@index([ownerId])
   @@map("projects")
 }
 
@@ -212,6 +234,60 @@ model Repository {
   @@unique([owner, name])
   @@index([projectId])
   @@map("repositories")
+}
+
+// =============================================================================
+// TEAMS
+// =============================================================================
+
+model Team {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  slug           String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  members      TeamMember[]
+  projects     ProjectTeam[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@map("teams")
+}
+
+model TeamMember {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  role      TeamRole @default(MEMBER)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  team Team @relation(fields: [teamId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([teamId, userId])
+  @@index([userId])
+  @@map("team_members")
+}
+
+/// Many-to-many relationship for projects belonging to multiple teams
+model ProjectTeam {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  teamId    String   @map("team_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id])
+  team    Team    @relation(fields: [teamId], references: [id])
+
+  @@unique([projectId, teamId])
+  @@index([teamId])
+  @@map("project_teams")
 }
 
 // =============================================================================
@@ -284,6 +360,7 @@ model Artifact {
   parentId     String?        @map("parent_id") @db.Uuid
   documentSlug String?        @map("document_slug")
   generatedBy  String?        @map("generated_by") @db.Uuid
+  sourcePrdId  String?        @map("source_prd_id") @db.Uuid
   tokenUsage   Json?          @map("token_usage")
   targetRepo   String?        @map("target_repo")
   targetBranch String?        @map("target_branch")
@@ -298,6 +375,7 @@ model Artifact {
   @@index([projectId])
   @@index([workstreamId, type, isLatest])
   @@index([workstreamId, type, documentSlug])
+  @@index([sourcePrdId])
   @@map("artifacts")
 }
 
@@ -419,7 +497,6 @@ model LinearIssue {
   createdAt    DateTime         @default(now()) @map("created_at")
   updatedAt    DateTime         @updatedAt @map("updated_at")
 
-  @@index([linearId])
   @@index([linearKey])
   @@index([syncStatus])
   @@map("linear_issues")
@@ -438,7 +515,6 @@ model LinearSubtask {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@index([workstreamId])
-  @@index([linearId])
   @@index([workstreamId, isCompleted])
   @@map("linear_subtasks")
 }
@@ -462,7 +538,7 @@ model GitHubInstallation {
 model GitHubPullRequest {
   id             String        @id @default(uuid(7)) @db.Uuid
   workstreamId   String        @map("workstream_id") @db.Uuid
-  repositoryId   String        @map("repository_id")
+  repositoryId   String        @map("repository_id") @db.Uuid
   githubId       Int           @map("github_id")
   number         Int
   title          String
@@ -486,7 +562,7 @@ model GitHubPullRequest {
 model GitHubActionRun {
   id           String             @id @default(uuid(7)) @db.Uuid
   workstreamId String             @map("workstream_id") @db.Uuid
-  repositoryId String             @map("repository_id")
+  repositoryId String             @map("repository_id") @db.Uuid
   runId        BigInt             @map("run_id")
   workflowName String             @map("workflow_name")
   status       GitHubActionStatus @default(PENDING)

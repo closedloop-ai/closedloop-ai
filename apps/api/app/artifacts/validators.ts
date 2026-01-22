@@ -27,6 +27,7 @@ export const createArtifactValidator = z.object({
     .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
     .optional(),
   targetBranch: z.string().optional(),
+  sourcePrdId: z.string().optional(),
 });
 
 export const updateArtifactValidator = z.object({

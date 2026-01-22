@@ -80,10 +80,18 @@ export function PlanEditor({ plan }: PlanEditorProps) {
       {/* Sticky Header */}
       <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-4 py-3">
         <div className="flex items-center gap-4">
-          <Link href="/implementation-plans">
+          <Link
+            href={
+              plan.project?.teams?.[0]?.id
+                ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
+                : "/implementation-plans"
+            }
+          >
             <Button size="sm" variant="ghost">
               <ArrowLeftIcon className="mr-2 h-4 w-4" />
-              Back to Plans
+              {plan.project?.teams?.[0]?.id
+                ? "Back to Project"
+                : "Back to Plans"}
             </Button>
           </Link>
 

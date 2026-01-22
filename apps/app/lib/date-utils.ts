@@ -25,9 +25,24 @@ export function parseDateLocal(dateString: string): Date {
 }
 
 /**
- * Ensure a value is a Date object
+ * Ensure a value is a Date object.
+ * Handles both string dates and Date objects.
+ * Returns null if input is null/undefined.
  */
-function ensureDate(date: Date | string): Date {
+export function ensureDate(
+  date: Date | string | null | undefined
+): Date | null {
+  if (!date) {
+    return null;
+  }
+  return typeof date === "string" ? parseDateLocal(date) : date;
+}
+
+/**
+ * Ensure a value is a Date object, throwing if null/undefined.
+ * Use this when you know the date is present.
+ */
+function ensureDateRequired(date: Date | string): Date {
   return typeof date === "string" ? parseDateLocal(date) : date;
 }
 
@@ -35,7 +50,7 @@ function ensureDate(date: Date | string): Date {
  * Format a date as a relative time string (e.g., "Just now", "5 min ago", "2 hours ago")
  */
 export function formatRelativeTime(date: Date | string): string {
-  const dateObj = ensureDate(date);
+  const dateObj = ensureDateRequired(date);
   const now = new Date();
   const minutes = differenceInMinutes(now, dateObj);
 
@@ -72,26 +87,26 @@ export function formatRelativeTime(date: Date | string): string {
  * Format a date as a short date string (e.g., "Jan 14, 2026")
  */
 export function formatDate(date: Date | string): string {
-  return format(ensureDate(date), "MMM d, yyyy");
+  return format(ensureDateRequired(date), "MMM d, yyyy");
 }
 
 /**
  * Format a date as a compact date string (e.g., "1/14/26")
  */
 export function formatDateCompact(date: Date | string): string {
-  return format(ensureDate(date), "M/d/yy");
+  return format(ensureDateRequired(date), "M/d/yy");
 }
 
 /**
  * Format a date with time (e.g., "Jan 14, 2026 at 3:30 PM")
  */
 export function formatDateTime(date: Date | string): string {
-  return format(ensureDate(date), "MMM d, yyyy 'at' h:mm a");
+  return format(ensureDateRequired(date), "MMM d, yyyy 'at' h:mm a");
 }
 
 /**
  * Format a date as ISO string for forms/inputs
  */
 export function formatDateForInput(date: Date | string): string {
-  return format(ensureDate(date), "yyyy-MM-dd");
+  return format(ensureDateRequired(date), "yyyy-MM-dd");
 }

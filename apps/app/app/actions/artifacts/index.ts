@@ -48,6 +48,19 @@ export async function getArtifactsByType(
   );
 }
 
+export async function getArtifactsByProject(
+  projectId: string,
+  latestOnly = true
+): Promise<ApiResult<ArtifactWithWorkstream[]>> {
+  const params = new URLSearchParams();
+  params.set("projectId", projectId);
+  params.set("latestOnly", String(latestOnly));
+
+  return await apiClient.get<ArtifactWithWorkstream[]>(
+    `/artifacts?${params.toString()}`
+  );
+}
+
 export async function getArtifactById(
   id: string
 ): Promise<ApiResult<ArtifactWithWorkstream>> {
