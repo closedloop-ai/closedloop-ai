@@ -64,8 +64,14 @@ describe("GET /api/artifacts", () => {
 
   it("returns all latest artifacts for user org", async () => {
     const mockArtifacts = [
-      { id: "1", title: "PRD 1", type: "PRD", isLatest: true },
-      { id: "2", title: "PLAN 1", type: "PLAN", isLatest: true },
+      { id: "1", title: "PRD 1", project: null, type: "PRD", isLatest: true },
+      {
+        id: "2",
+        title: "PLAN 1",
+        project: "1234",
+        type: "PLAN",
+        isLatest: true,
+      },
     ];
 
     vi.mocked(database.artifact.findMany).mockResolvedValue(
