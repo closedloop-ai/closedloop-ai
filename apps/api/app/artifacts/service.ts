@@ -7,7 +7,7 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
-import { triggerWorkflowDispatch } from "@repo/github";
+import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
 import {
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
@@ -131,9 +131,18 @@ export const artifactsService = {
     input: CreateArtifactInput
   ): Promise<Artifact> {
     return withDb.tx(async (tx) => {
-      // Auto-create default project if no projectId or workstreamId provided
+      // Ensure projectId is always set for proper org-scoped queries
       let projectId: string | undefined = input.projectId;
-      if (!(projectId || input.workstreamId)) {
+      if (!projectId && input.workstreamId) {
+        // Get projectId from workstream
+        const workstream = await tx.workstream.findUnique({
+          where: { id: input.workstreamId },
+          select: { projectId: true },
+        });
+        projectId = workstream?.projectId;
+      }
+      if (!projectId) {
+        // Auto-create default project if still no projectId
         projectId = await getOrCreateDefaultProject(tx, organizationId);
       }
 
@@ -181,6 +190,13 @@ export const artifactsService = {
     input: Omit<CreateArtifactInput, "workstreamId" | "projectId">
   ): Promise<Artifact> {
     return withDb.tx(async (tx) => {
+      // Get projectId from workstream for proper org-scoped queries
+      const workstream = await tx.workstream.findUnique({
+        where: { id: workstreamId },
+        select: { projectId: true },
+      });
+      const projectId = workstream?.projectId;
+
       // Auto-generate documentSlug if not provided (required for versioning)
       const documentSlug =
         input.documentSlug ?? generateDocumentSlug(input.fileName, input.title);
@@ -188,6 +204,7 @@ export const artifactsService = {
       // Build scope and get next version (marks existing as not latest)
       const scopeCondition = buildArtifactScopeCondition({
         workstreamId,
+        projectId,
         type: input.type,
         documentSlug,
       });
@@ -196,6 +213,7 @@ export const artifactsService = {
       return tx.artifact.create({
         data: {
           workstreamId,
+          projectId,
           type: input.type,
           title: input.title,
           fileName: input.fileName,
@@ -255,7 +273,6 @@ export const artifactsService = {
               project: {
                 include: {
                   repositories: {
-                    where: { isPrimary: true },
                     take: 1,
                   },
                 },
@@ -366,7 +383,7 @@ export const artifactsService = {
         include: {
           project: {
             include: {
-              repositories: { where: { isPrimary: true }, take: 1 },
+              repositories: { take: 1 },
             },
           },
           artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
@@ -441,7 +458,7 @@ ${initialInstructions.trim()}`;
           data: {
             workstreamId,
             repositoryId,
-            runId: BigInt(0),
+            runId: null, // Will be populated by webhook when GitHub provides the actual runId
             workflowName: "symphony-dispatch",
             status: "PENDING",
             htmlUrl: "",
@@ -604,7 +621,7 @@ ${initialInstructions.trim()}`;
     }
 
     const project = workstream.project;
-    const repository = project.repositories[0];
+    let repository = project.repositories[0];
 
     // Use PRD's target repo (fallback to project's primary)
     const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
@@ -617,6 +634,34 @@ ${initialInstructions.trim()}`;
         error: "No repository configured for this project or PRD",
         status: 400,
       };
+    }
+
+    // Auto-create repository if we have a targetRepo but no linked repository
+    if (!repository) {
+      const repoInfo = await getRepositoryInfo(targetRepo);
+      if (!repoInfo) {
+        return {
+          success: false,
+          error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
+          status: 400,
+        };
+      }
+
+      repository = await withDb((db) =>
+        db.repository.upsert({
+          where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
+          create: {
+            projectId: project.id,
+            githubId: repoInfo.githubId,
+            owner: repoInfo.owner,
+            name: repoInfo.name,
+            fullName: repoInfo.fullName,
+            defaultBranch: repoInfo.defaultBranch,
+            isPrimary: true,
+          },
+          update: {}, // If exists, just use it
+        })
+      );
     }
 
     // Fall back to placeholder content when GitHub is not configured
@@ -672,7 +717,7 @@ ${initialInstructions.trim()}`;
     // Create all workflow trigger records
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       workstreamId: workstream.id,
-      repositoryId: repository?.id ?? "",
+      repositoryId: repository.id,
       artifactId: artifact.id,
       prdId: prdArtifact.id,
       correlationId,

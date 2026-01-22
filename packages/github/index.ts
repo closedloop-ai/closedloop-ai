@@ -239,6 +239,42 @@ export async function downloadWorkflowArtifacts(
 }
 
 /**
+ * Fetch repository info from GitHub.
+ * Returns the repo data needed to create a Repository record.
+ */
+export async function getRepositoryInfo(fullName: string): Promise<{
+  githubId: number;
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+} | null> {
+  const [owner, name] = fullName.split("/");
+  if (!(owner && name)) {
+    return null;
+  }
+
+  try {
+    const octokit = await getAuthenticatedOctokit();
+    const { data: repo } = await octokit.repos.get({ owner, repo: name });
+
+    return {
+      githubId: repo.id,
+      owner: repo.owner.login,
+      name: repo.name,
+      fullName: repo.full_name,
+      defaultBranch: repo.default_branch,
+    };
+  } catch (error) {
+    log.error("[github/repo] Failed to fetch repository info", {
+      fullName,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    return null;
+  }
+}
+
+/**
  * Parse correlation ID to extract environment prefix and actual ID.
  */
 export function parseCorrelationId(correlationId: string): {
