@@ -1,9 +1,12 @@
-import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
+import type {
+  WorkflowRunCompletedEvent,
+  WorkflowRunInProgressEvent,
+  WorkflowRunRequestedEvent,
+} from "@octokit/webhooks-types";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
 import { withDb } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
-  getWorkflowRunInputs,
   isCurrentEnvironment,
   parseCorrelationId,
   verifyWebhookSignature,
@@ -21,37 +24,174 @@ type WorkflowContext = {
   runId: number;
 };
 
+type WorkflowRunEvent =
+  | WorkflowRunCompletedEvent
+  | WorkflowRunInProgressEvent
+  | WorkflowRunRequestedEvent;
+
+type ZipContent = {
+  planContent: string | null;
+  questionsContent: string | null;
+  entries: { name: string; data: Buffer }[];
+};
+
 /**
- * Download and upload workflow artifacts to S3.
+ * Search a zip for plan or questions files.
+ * Returns the content if found, null otherwise.
  */
-async function processArtifactUploads(
-  correlationId: string,
-  runId: number
-): Promise<{ planContent: string | null; artifactKeys: string[] }> {
-  const artifacts = await downloadWorkflowArtifacts(runId);
+function findPlanInZip(zip: AdmZip): ZipContent {
+  const entries: { name: string; data: Buffer }[] = [];
   let planContent: string | null = null;
-  const artifactKeys: string[] = [];
+  let questionsContent: string | null = null;
 
-  for (const artifact of artifacts) {
-    const zip = new AdmZip(artifact.data);
-    for (const entry of zip.getEntries()) {
-      if (entry.isDirectory) {
-        continue;
-      }
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) {
+      continue;
+    }
 
-      const content = entry.getData();
-      const s3Key = `plans/${correlationId}/${entry.entryName}`;
+    const content = entry.getData();
+    entries.push({ name: entry.entryName, data: content });
 
-      await uploadArtifact(s3Key, content);
-      artifactKeys.push(s3Key);
+    if (entry.entryName.endsWith("implementation-plan.md")) {
+      planContent = content.toString("utf-8");
+      log.info(
+        `Found implementation plan: ${entry.entryName} (${planContent.length} chars)`
+      );
+    }
 
-      if (entry.entryName.endsWith("implementation-plan.md")) {
-        planContent = content.toString("utf-8");
-      }
+    if (entry.entryName.endsWith("open-questions.md")) {
+      questionsContent = content.toString("utf-8");
+      log.info(
+        `Found questions file: ${entry.entryName} (${questionsContent.length} chars)`
+      );
     }
   }
 
-  return { planContent, artifactKeys };
+  return { planContent, questionsContent, entries };
+}
+
+/**
+ * Upload entries to S3, optionally filtering out certain file types.
+ */
+async function uploadEntriesToS3(
+  correlationId: string,
+  entries: { name: string; data: Buffer }[],
+  skipZips = false
+): Promise<string[]> {
+  const artifactKeys: string[] = [];
+  for (const entry of entries) {
+    if (skipZips && entry.name.endsWith(".zip")) {
+      continue;
+    }
+    const s3Key = `plans/${correlationId}/${entry.name}`;
+    await uploadArtifact(s3Key, entry.data);
+    artifactKeys.push(s3Key);
+  }
+  return artifactKeys;
+}
+
+/**
+ * Process a single artifact zip, handling nested zips.
+ */
+async function processArtifactZip(
+  correlationId: string,
+  artifactData: Buffer,
+  artifactName: string,
+  uploadToS3: boolean
+): Promise<ZipContent & { artifactKeys: string[] }> {
+  const outerZip = new AdmZip(artifactData);
+  const outerEntries = outerZip.getEntries();
+  const artifactKeys: string[] = [];
+
+  log.info(
+    `[processArtifactZip] "${artifactName}" contains ${outerEntries.length} files`
+  );
+
+  let planContent: string | null = null;
+  let questionsContent: string | null = null;
+
+  // Check for nested zips first (Symphony artifact structure)
+  for (const entry of outerEntries) {
+    if (!entry.entryName.endsWith(".zip") || entry.isDirectory) {
+      continue;
+    }
+
+    log.info(`[processArtifactZip] Found nested zip: ${entry.entryName}`);
+    const innerZip = new AdmZip(entry.getData());
+    const result = findPlanInZip(innerZip);
+
+    planContent = result.planContent ?? planContent;
+    questionsContent = result.questionsContent ?? questionsContent;
+
+    if (uploadToS3) {
+      const keys = await uploadEntriesToS3(correlationId, result.entries);
+      artifactKeys.push(...keys);
+    }
+  }
+
+  // Also check outer zip directly (in case it's not nested)
+  if (!planContent) {
+    const result = findPlanInZip(outerZip);
+    planContent = result.planContent ?? planContent;
+    questionsContent = result.questionsContent ?? questionsContent;
+
+    if (uploadToS3) {
+      const keys = await uploadEntriesToS3(correlationId, result.entries, true);
+      artifactKeys.push(...keys);
+    }
+  }
+
+  return { planContent, questionsContent, entries: [], artifactKeys };
+}
+
+/**
+ * Download and extract workflow artifacts, optionally upload to S3.
+ * Handles nested zips (GitHub wraps artifacts, Symphony may also zip).
+ */
+async function processArtifactUploads(
+  correlationId: string,
+  runId: number,
+  uploadToS3: boolean
+): Promise<{
+  planContent: string | null;
+  questionsContent: string | null;
+  artifactKeys: string[];
+}> {
+  log.info(
+    `[processArtifactUploads] Downloading artifacts for run ${runId}, uploadToS3=${uploadToS3}`
+  );
+
+  const artifacts = await downloadWorkflowArtifacts(runId);
+  let planContent: string | null = null;
+  let questionsContent: string | null = null;
+  const artifactKeys: string[] = [];
+
+  log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
+
+  for (const artifact of artifacts) {
+    const result = await processArtifactZip(
+      correlationId,
+      artifact.data,
+      artifact.name,
+      uploadToS3
+    );
+
+    planContent = result.planContent ?? planContent;
+    questionsContent = result.questionsContent ?? questionsContent;
+    artifactKeys.push(...result.artifactKeys);
+  }
+
+  if (planContent || questionsContent) {
+    log.info(
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}`
+    );
+  } else {
+    log.warn(
+      "[processArtifactUploads] No plan or questions found in artifacts"
+    );
+  }
+
+  return { planContent, questionsContent, artifactKeys };
 }
 
 /**
@@ -62,21 +202,25 @@ async function handleWorkflowSuccess(
   s3Configured: boolean
 ): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId } = ctx;
-  let planContent: string | null = null;
-  let artifactKeys: string[] = [];
 
-  if (s3Configured) {
-    const result = await processArtifactUploads(correlationId, runId);
-    planContent = result.planContent;
-    artifactKeys = result.artifactKeys;
-  }
+  // Always download and extract artifacts (we need the plan content regardless of S3)
+  const result = await processArtifactUploads(
+    correlationId,
+    runId,
+    s3Configured
+  );
+  const { planContent, questionsContent, artifactKeys } = result;
+
+  // TODO: Handle questionsContent with needs_answers status in future
+  // For now, if we have questions but no plan, include them in the content
+  const finalContent = planContent ?? questionsContent;
 
   await withDb(async (db) => {
     await db.artifact.update({
       where: { id: artifactId },
       data: {
         status: "DRAFT",
-        content: planContent || undefined,
+        content: finalContent || undefined,
         externalUrl:
           artifactKeys.length > 0
             ? getArtifactUrl(`plans/${correlationId}/`)
@@ -180,118 +324,62 @@ async function validateRequest(request: Request) {
   return { body, signature, eventType };
 }
 
-async function processWorkflowCompletion(
-  event: WorkflowRunCompletedEvent,
-  s3Configured: boolean
-): Promise<Response> {
-  const runId = event.workflow_run.id;
-
-  // Fetch workflow inputs to get correlation_id
-  let inputs: Record<string, string> | null;
-  try {
-    inputs = await getWorkflowRunInputs(runId);
-  } catch (error) {
-    const errorMessage = parseError(error);
-    log.error("[webhook/github] Failed to fetch workflow inputs", {
-      runId,
-      error: errorMessage,
-    });
-    // Acknowledge the webhook but log the error - don't return 500
-    return NextResponse.json({
-      message: "Failed to fetch workflow inputs",
-      ok: true,
-    });
-  }
-
-  if (!inputs) {
-    log.info("[webhook/github] No workflow inputs found", {
-      runId,
-      reason: "Manual run or no inputs - ignoring",
-    });
-    return NextResponse.json({
-      message: "No workflow inputs found (manual run)",
-      ok: true,
-    });
-  }
-
-  log.info("[webhook/github] Workflow inputs retrieved", {
-    runId,
-    targetRepo: inputs.target_repo,
-    command: inputs.command,
-    correlationId: inputs.correlation_id,
-    hasContext: !!inputs.context,
-  });
-
-  const correlationId = inputs.correlation_id;
-  if (!correlationId) {
-    log.info("[webhook/github] No correlation_id in inputs", {
-      runId,
-      reason: "Missing correlation_id - ignoring",
-    });
-    return NextResponse.json({
-      message: "No correlation_id in workflow inputs",
-      ok: true,
-    });
-  }
-
-  if (!isCurrentEnvironment(correlationId)) {
-    const parsed = parseCorrelationId(correlationId);
-    log.info("[webhook/github] Event for different environment", {
-      runId,
-      correlationId,
-      eventEnv: parsed?.env,
-      currentEnv: process.env.WEBAPP_ENV,
-      reason: "Environment mismatch - ignoring",
-    });
-    return NextResponse.json({
-      message: "Event for different environment, ignoring",
-      ok: true,
-    });
-  }
-
-  const parsed = parseCorrelationId(correlationId);
-  if (!parsed) {
-    log.warn("[webhook/github] Invalid correlation ID format", {
-      runId,
-      correlationId,
-      reason: "Could not parse correlation ID",
-    });
-    return NextResponse.json({
-      message: "Invalid correlation ID format",
-      ok: false,
-    });
-  }
-
-  log.info("[webhook/github] Looking up GitHubActionRun", {
-    correlationId: parsed.id,
-    env: parsed.env,
-  });
-
-  // Find the GitHubActionRun by correlation ID in triggerData
-  // We stored it as triggerData: { correlationId, artifactId, command }
+/**
+ * Find the GitHubActionRun by correlation ID in triggerData.
+ * @param correlationId - The correlation ID to search for
+ * @param activeOnly - If true, only find runs that are still in progress (PENDING, QUEUED, RUNNING)
+ *                     If false, find any run regardless of status (for replay support)
+ */
+async function findActionRunByCorrelationId(
+  correlationId: string,
+  activeOnly = true
+) {
   const actionRuns = await withDb((db) =>
     db.gitHubActionRun.findMany({
       where: {
         workflowName: "symphony-dispatch",
-        status: { in: ["PENDING", "RUNNING"] },
+        ...(activeOnly
+          ? { status: { in: ["PENDING", "QUEUED", "RUNNING"] } }
+          : {}),
       },
       orderBy: { createdAt: "desc" },
       take: 50,
     })
   );
 
-  // Find the one with matching correlation ID
-  const actionRun = actionRuns.find((run) => {
+  return actionRuns.find((run) => {
     const data = run.triggerData as { correlationId?: string } | null;
     return data?.correlationId === correlationId;
   });
+}
 
-  if (!actionRun) {
-    log.warn("[webhook/github] No GitHubActionRun found", {
+/**
+ * Handle workflow status updates (requested, in_progress).
+ */
+async function handleWorkflowStatusUpdate(
+  correlationId: string,
+  action: "requested" | "in_progress",
+  runId: number,
+  htmlUrl: string
+): Promise<Response> {
+  const parsed = parseCorrelationId(correlationId);
+  if (!parsed) {
+    log.warn("[webhook/github] Invalid correlation ID format", {
       correlationId,
+      action,
+    });
+    return NextResponse.json({
+      message: "Invalid correlation ID format",
+      ok: true,
+    });
+  }
+
+  const actionRun = await findActionRunByCorrelationId(correlationId);
+  if (!actionRun) {
+    log.info("[webhook/github] No GitHubActionRun found for status update", {
+      correlationId,
+      action,
       runId,
-      searchedCount: actionRuns.length,
-      reason: "No matching pending/running action run in database",
     });
     return NextResponse.json({
       message: `No matching action run found for correlation ${correlationId}`,
@@ -299,16 +387,64 @@ async function processWorkflowCompletion(
     });
   }
 
-  log.info("[webhook/github] Found matching GitHubActionRun", {
+  const newStatus = action === "requested" ? "QUEUED" : "RUNNING";
+
+  await withDb((db) =>
+    db.gitHubActionRun.update({
+      where: { id: actionRun.id },
+      data: {
+        runId: BigInt(runId),
+        status: newStatus,
+        htmlUrl,
+        ...(action === "in_progress" ? { startedAt: new Date() } : {}),
+      },
+    })
+  );
+
+  log.info("[webhook/github] Updated GitHubActionRun status", {
     actionRunId: actionRun.id,
-    workstreamId: actionRun.workstreamId,
     correlationId,
+    newStatus,
+    runId,
   });
+
+  return NextResponse.json({ result: "status_updated", ok: true });
+}
+
+async function processWorkflowCompletion(
+  event: WorkflowRunCompletedEvent,
+  correlationId: string,
+  s3Configured: boolean
+): Promise<Response> {
+  const runId = event.workflow_run.id;
+
+  // Find GitHubActionRun by correlation ID in triggerData
+  // Use activeOnly=false to support replay of completed events (idempotent processing)
+  const actionRun = await findActionRunByCorrelationId(correlationId, false);
+
+  if (!actionRun) {
+    log.info("[webhook/github] No GitHubActionRun found", {
+      runId,
+      correlationId,
+      reason:
+        "No matching action run in database - may be manual run or different environment",
+    });
+    return NextResponse.json({
+      message: "No matching action run found",
+      ok: true,
+    });
+  }
 
   const triggerData = actionRun.triggerData as {
     correlationId: string;
     artifactId: string;
   };
+
+  log.info("[webhook/github] Found matching GitHubActionRun", {
+    actionRunId: actionRun.id,
+    workstreamId: actionRun.workstreamId,
+    correlationId: triggerData.correlationId,
+  });
 
   // Update GitHubActionRun
   const conclusion = event.workflow_run.conclusion;
@@ -327,7 +463,7 @@ async function processWorkflowCompletion(
 
   // Process the result
   const ctx: WorkflowContext = {
-    correlationId,
+    correlationId: triggerData.correlationId,
     artifactId: triggerData.artifactId,
     workstreamId: actionRun.workstreamId,
     runId,
@@ -384,27 +520,19 @@ export const POST = async (request: Request): Promise<Response> => {
       });
     }
 
-    const event: WorkflowRunCompletedEvent = JSON.parse(body);
+    const event: WorkflowRunEvent = JSON.parse(body);
 
     log.info("[webhook/github] Parsed workflow_run event", {
       action: event.action,
       workflowName: event.workflow.name,
       workflowPath: event.workflow.path,
       runId: event.workflow_run.id,
-      conclusion: event.workflow_run.conclusion,
+      conclusion:
+        event.action === "completed"
+          ? (event as WorkflowRunCompletedEvent).workflow_run.conclusion
+          : null,
       htmlUrl: event.workflow_run.html_url,
     });
-
-    if (event.action !== "completed") {
-      log.info("[webhook/github] Ignoring non-completed action", {
-        action: event.action,
-        reason: "Only processing completed workflow runs",
-      });
-      return NextResponse.json({
-        message: `Ignoring action: ${event.action}`,
-        ok: true,
-      });
-    }
 
     if (!event.workflow.path.includes("symphony-dispatch")) {
       log.info("[webhook/github] Ignoring non-symphony-dispatch workflow", {
@@ -418,12 +546,66 @@ export const POST = async (request: Request): Promise<Response> => {
       });
     }
 
-    log.info("[webhook/github] Processing symphony-dispatch completion", {
+    // Extract correlation ID from run name (workflow YAML sets run-name: ${{ inputs.correlation_id }})
+    const correlationId = event.workflow_run.name;
+
+    log.info("[webhook/github] Extracted correlation ID from run name", {
+      runName: correlationId,
       runId: event.workflow_run.id,
-      conclusion: event.workflow_run.conclusion,
+      action: event.action,
     });
 
-    return await processWorkflowCompletion(event, s3Configured);
+    // Check if this is for our environment
+    if (!isCurrentEnvironment(correlationId)) {
+      log.info("[webhook/github] Event for different environment, ignoring", {
+        correlationId,
+        currentEnv: process.env.WEBAPP_ENV,
+        action: event.action,
+      });
+      return NextResponse.json({
+        message: "Event for different environment, ignoring",
+        ok: true,
+      });
+    }
+
+    // Route by action type
+    switch (event.action) {
+      case "requested":
+      case "in_progress": {
+        return await handleWorkflowStatusUpdate(
+          correlationId,
+          event.action,
+          event.workflow_run.id,
+          event.workflow_run.html_url
+        );
+      }
+
+      case "completed":
+        log.info("[webhook/github] Processing symphony-dispatch completion", {
+          runId: event.workflow_run.id,
+          correlationId,
+          conclusion: (event as WorkflowRunCompletedEvent).workflow_run
+            .conclusion,
+        });
+        return await processWorkflowCompletion(
+          event as WorkflowRunCompletedEvent,
+          correlationId,
+          s3Configured
+        );
+
+      default: {
+        // TypeScript exhaustiveness check - this should never happen
+        const unhandledAction = (event as { action: string }).action;
+        log.info("[webhook/github] Ignoring unhandled action", {
+          action: unhandledAction,
+          reason: "Not a tracked action type",
+        });
+        return NextResponse.json({
+          message: `Ignoring action: ${unhandledAction}`,
+          ok: true,
+        });
+      }
+    }
   } catch (error) {
     const message = parseError(error);
     log.error("[webhook/github] Unhandled error processing webhook", {

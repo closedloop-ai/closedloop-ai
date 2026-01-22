@@ -1,3 +1,4 @@
+import { createId } from "@paralleldrive/cuid2";
 import type {
   Artifact,
   ArtifactType,
@@ -6,6 +7,7 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
+import { triggerWorkflowDispatch } from "@repo/github";
 import {
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
@@ -13,6 +15,11 @@ import {
   getOrCreateDefaultProject,
   prepareArtifactVersion,
 } from "./artifact-utils";
+
+// Result types for service operations
+export type RegenerateResult =
+  | { success: true; artifact: Artifact }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 export type FindArtifactsOptions = {
   organizationId: string;
@@ -35,7 +42,9 @@ export const artifactsService = {
   /**
    * Find all artifacts with optional filters (org-scoped)
    */
-  findAll(options: FindArtifactsOptions): Promise<ArtifactWithWorkstream[]> {
+  async findAll(
+    options: FindArtifactsOptions
+  ): Promise<ArtifactWithWorkstream[]> {
     const {
       organizationId,
       type,
@@ -44,7 +53,7 @@ export const artifactsService = {
       projectId,
     } = options;
 
-    return withDb((db) =>
+    const artifacts = await withDb((db) =>
       db.artifact.findMany({
         where: {
           ...(type ? { type } : {}),
@@ -56,6 +65,9 @@ export const artifactsService = {
         include: artifactIncludeWithContext,
         orderBy: { createdAt: "desc" },
       })
+    );
+    return artifacts.map((a) =>
+      toArtifactWithWorkstream(a as RawArtifactWithContext)
     );
   },
 
@@ -82,16 +94,22 @@ export const artifactsService = {
   /**
    * Find an artifact by ID with context (org-scoped)
    */
-  findById(
+  async findById(
     id: string,
     organizationId: string
   ): Promise<ArtifactWithWorkstream | null> {
-    return withDb((db) =>
+    const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: { id, project: { organizationId } },
         include: artifactIncludeWithContext,
       })
     );
+
+    if (!artifact) {
+      return null;
+    }
+
+    return toArtifactWithWorkstream(artifact as RawArtifactWithContext);
   },
 
   /**
@@ -253,10 +271,140 @@ export const artifactsService = {
         where: {
           workstreamId,
           workflowName,
-          status: { in: ["PENDING", "RUNNING"] },
+          status: { in: ["PENDING", "QUEUED", "RUNNING"] },
         },
       })
     );
+  },
+
+  /**
+   * Find or create a workstream for the artifact.
+   * If artifact has no workstream, finds PRD by title match and auto-creates one.
+   */
+  async findOrCreateWorkstream(
+    artifact: {
+      id: string;
+      title: string;
+      projectId: string | null;
+      parentId: string | null;
+      workstream: { id: string } | null;
+    },
+    userId: string
+  ) {
+    // If workstream exists, fetch it with project relation
+    if (artifact.workstream) {
+      const workstreamId = artifact.workstream.id;
+      const workstream = await withDb((db) =>
+        db.workstream.findUnique({
+          where: { id: workstreamId },
+          include: {
+            project: {
+              include: {
+                repositories: { where: { isPrimary: true }, take: 1 },
+              },
+            },
+            artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+          },
+        })
+      );
+
+      const prdArtifact = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            workstreamId,
+            type: "PRD",
+            isLatest: true,
+          },
+        })
+      );
+      return { workstream, prdArtifact };
+    }
+
+    // Find PRD by parentId or matching title
+    const prdTitle = artifact.title.replace("Implementation Plan: ", "");
+    const foundPrd = await withDb((db) =>
+      db.artifact.findFirst({
+        where: {
+          projectId: artifact.projectId,
+          type: "PRD",
+          isLatest: true,
+          OR: [{ id: artifact.parentId ?? undefined }, { title: prdTitle }],
+        },
+      })
+    );
+
+    const projectId = artifact.projectId;
+    if (!(foundPrd?.content && projectId)) {
+      return { workstream: null, prdArtifact: foundPrd };
+    }
+
+    // Auto-create workstream and link artifacts
+    return withDb.tx(async (tx) => {
+      const newWorkstream = await tx.workstream.create({
+        data: {
+          projectId,
+          title: foundPrd.title,
+          description: `Auto-created for: ${foundPrd.title}`,
+          type: "FEATURE_DELIVERY",
+          createdById: userId,
+        },
+      });
+
+      // Link artifacts to workstream
+      await tx.artifact.updateMany({
+        where: { id: { in: [foundPrd.id, artifact.id] } },
+        data: { workstreamId: newWorkstream.id },
+      });
+
+      // Fetch workstream with relations
+      const workstream = await tx.workstream.findUnique({
+        where: { id: newWorkstream.id },
+        include: {
+          project: {
+            include: {
+              repositories: { where: { isPrimary: true }, take: 1 },
+            },
+          },
+          artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+        },
+      });
+
+      return { workstream, prdArtifact: foundPrd };
+    });
+  },
+
+  /**
+   * Build context for plan generation from PRD content and optional initial instructions.
+   * Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPlanContext(
+    prdContent: string,
+    initialInstructions: string | null
+  ): string {
+    let context = prdContent;
+
+    // Add initial instructions if provided and not a failure message
+    if (
+      initialInstructions?.trim() &&
+      !initialInstructions.startsWith("# Plan Generation Failed")
+    ) {
+      context += `
+
+---
+
+## Additional Instructions
+
+${initialInstructions.trim()}`;
+    }
+
+    // Always append "assume defaults" instruction
+    context += `
+
+---
+
+**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment.`;
+
+    return context;
   },
 
   /**
@@ -266,15 +414,21 @@ export const artifactsService = {
     workstreamId: string;
     repositoryId: string;
     artifactId: string;
+    prdId: string;
     correlationId: string;
     currentVersion: number;
+    targetRepo: string;
+    targetBranch: string;
   }): Promise<Artifact> {
     const {
       workstreamId,
       repositoryId,
       artifactId,
+      prdId,
       correlationId,
       currentVersion,
+      targetRepo,
+      targetBranch,
     } = params;
 
     return withDb(async (db) => {
@@ -289,10 +443,13 @@ export const artifactsService = {
             htmlUrl: "",
             triggerEvent: "workflow_dispatch",
             triggerData: {
-              correlationId,
+              correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
+              prdId,
               command: "plan",
             },
+            sessionId: prdId,
+            jobType: "generate",
             startedAt: new Date(),
           },
         }),
@@ -314,6 +471,9 @@ export const artifactsService = {
               command: "plan",
               correlationId,
               artifactId,
+              prdId,
+              targetRepo,
+              targetBranch,
             },
           },
         }),
@@ -389,4 +549,194 @@ export const artifactsService = {
       });
     });
   },
+
+  /**
+   * Regenerate an implementation plan artifact.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  async regenerateImplementationPlan(
+    artifactId: string,
+    organizationId: string,
+    userId: string
+  ): Promise<RegenerateResult> {
+    // Find artifact with regeneration context
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+
+    if (!artifact) {
+      return { success: false, error: "Artifact not found", status: 404 };
+    }
+
+    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+      return {
+        success: false,
+        error: "Only implementation plans can be regenerated",
+        status: 400,
+      };
+    }
+
+    // Find or create workstream with PRD
+    const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+      artifact,
+      userId
+    );
+
+    if (!prdArtifact?.content) {
+      return {
+        success: false,
+        error: "No PRD found to generate plan from. Create a PRD first.",
+        status: 400,
+      };
+    }
+
+    if (!workstream) {
+      return {
+        success: false,
+        error: "Artifact must have a project to regenerate",
+        status: 400,
+      };
+    }
+
+    const project = workstream.project;
+    const repository = project.repositories[0];
+
+    // Use PRD's target repo (fallback to project's primary)
+    const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+    const targetBranch =
+      prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+
+    if (!targetRepo) {
+      return {
+        success: false,
+        error: "No repository configured for this project or PRD",
+        status: 400,
+      };
+    }
+
+    // Fall back to placeholder content when GitHub is not configured
+    if (!isGitHubConfigured()) {
+      const updatedArtifact = await this.updateWithPlaceholder(
+        artifactId,
+        artifact.version,
+        getPlaceholderContent(artifact.title, artifact.version + 1)
+      );
+      return { success: true, artifact: updatedArtifact };
+    }
+
+    // Check for existing running job
+    const existingRun = await this.findPendingWorkflowRun(
+      workstream.id,
+      "symphony-dispatch"
+    );
+
+    if (existingRun) {
+      return {
+        success: false,
+        error: "Plan generation already in progress",
+        status: 409,
+      };
+    }
+
+    const correlationId = createId();
+
+    // Build context: PRD content + initial instructions + "assume defaults"
+    const context = this.buildPlanContext(
+      prdArtifact.content,
+      artifact.content
+    );
+
+    // Trigger the workflow
+    const result = await triggerWorkflowDispatch({
+      targetRepo,
+      ref: targetBranch,
+      command: "plan",
+      context,
+      correlationId,
+      sessionId: prdArtifact.id,
+    });
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to trigger plan generation: ${result.error}`,
+        status: 500,
+      };
+    }
+
+    // Create all workflow trigger records
+    const updatedArtifact = await this.createWorkflowTriggerRecords({
+      workstreamId: workstream.id,
+      repositoryId: repository?.id ?? "",
+      artifactId: artifact.id,
+      prdId: prdArtifact.id,
+      correlationId,
+      currentVersion: artifact.version,
+      targetRepo,
+      targetBranch,
+    });
+
+    return { success: true, artifact: updatedArtifact };
+  },
 };
+
+// Type for raw Prisma result before transformation
+type RawArtifactWithContext = Artifact & {
+  workstream: { id: string; title: string; state: string } | null;
+  project: {
+    id: string;
+    organizationId: string;
+    name: string;
+    teams: { team: { id: string; name: string } }[];
+  } | null;
+};
+
+/**
+ * Transform Prisma result to flatten teams structure for API response
+ */
+function toArtifactWithWorkstream(
+  artifact: RawArtifactWithContext
+): ArtifactWithWorkstream {
+  return {
+    ...artifact,
+    project: artifact.project
+      ? {
+          id: artifact.project.id,
+          name: artifact.project.name,
+          teams: artifact.project.teams.map((pt) => pt.team),
+        }
+      : null,
+  };
+}
+
+function isGitHubConfigured(): boolean {
+  return Boolean(
+    process.env.SYMPHONY_APP_ID &&
+      process.env.SYMPHONY_APP_PRIVATE_KEY &&
+      process.env.GITHUB_WEBHOOK_SECRET &&
+      process.env.SYMPHONY_DISPATCH_REPO
+  );
+}
+
+function getPlaceholderContent(title: string, version: number): string {
+  return `# Implementation Plan: ${title}
+
+## Overview
+
+This implementation plan outlines the technical approach for ${title}.
+
+**Version:** v${version}
+**Status:** Generating...
+
+## Note
+
+GitHub Actions integration is not configured. This is placeholder content.
+Configure the following environment variables to enable plan generation:
+- SYMPHONY_APP_ID
+- SYMPHONY_APP_PRIVATE_KEY
+- GITHUB_WEBHOOK_SECRET
+- SYMPHONY_DISPATCH_REPO
+- WEBAPP_ENV
+`;
+}

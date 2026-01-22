@@ -36,6 +36,8 @@ export function NewPRDModal() {
   const [approver, setApprover] = useState("");
   const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [content, setContent] = useState("");
+  const [targetRepo, setTargetRepo] = useState("");
+  const [targetBranch, setTargetBranch] = useState("main");
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -56,6 +58,8 @@ export function NewPRDModal() {
     setApprover("");
     setStatus("DRAFT");
     setContent("");
+    setTargetRepo("");
+    setTargetBranch("main");
     setError(null);
   };
 
@@ -76,6 +80,8 @@ export function NewPRDModal() {
           approver: approver.trim() || undefined,
           status,
           content: content.trim() || undefined,
+          targetRepo: targetRepo.trim() || undefined,
+          targetBranch: targetBranch.trim() || undefined,
         });
 
         if (!result.success) {
@@ -150,6 +156,31 @@ export function NewPRDModal() {
               onChange={(e) => setApprover(e.target.value)}
               placeholder="Approver name"
               value={approver}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-target-repo">
+              Target Repository{" "}
+              <span className="text-muted-foreground text-xs">
+                (for plan generation)
+              </span>
+            </Label>
+            <Input
+              id="new-target-repo"
+              onChange={(e) => setTargetRepo(e.target.value)}
+              placeholder="owner/repo"
+              value={targetRepo}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-target-branch">Target Branch</Label>
+            <Input
+              id="new-target-branch"
+              onChange={(e) => setTargetBranch(e.target.value)}
+              placeholder="main"
+              value={targetBranch}
             />
           </div>
 

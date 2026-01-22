@@ -1,0 +1,160 @@
+"use client";
+
+import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type GenerationStatus,
+  getGenerationStatus,
+} from "@/app/actions/artifacts";
+
+type GenerationStatusBannerProps = {
+  artifactId: string;
+  onComplete?: () => void;
+};
+
+const MIN_POLL_INTERVAL = 2000; // 2 seconds
+const MAX_POLL_INTERVAL = 30_000; // 30 seconds
+const BACKOFF_MULTIPLIER = 1.5;
+
+function getStatusMessage(status: GenerationStatus["status"]): string {
+  switch (status) {
+    case "PENDING":
+      return "Waiting to start...";
+    case "QUEUED":
+      return "Queued for generation...";
+    case "RUNNING":
+      return "Generating implementation plan...";
+    case "FAILURE":
+      return "Plan generation failed";
+    default:
+      return "";
+  }
+}
+
+export function GenerationStatusBanner({
+  artifactId,
+  onComplete,
+}: GenerationStatusBannerProps) {
+  const [status, setStatus] = useState<GenerationStatus | null>(null);
+  const [isPolling, setIsPolling] = useState(true);
+  const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const onCompleteRef = useRef(onComplete);
+
+  // Keep onComplete ref updated
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const result = await getGenerationStatus(artifactId);
+      if (result.success) {
+        setStatus(result.data);
+
+        // Handle completion
+        if (result.data.status === "SUCCESS") {
+          setIsPolling(false);
+          onCompleteRef.current?.();
+          return;
+        }
+
+        // Handle failure - stop polling but keep showing banner
+        if (result.data.status === "FAILURE") {
+          setIsPolling(false);
+          return;
+        }
+
+        // Handle no status - stop polling and hide
+        if (result.data.status === "NONE") {
+          setIsPolling(false);
+          return;
+        }
+
+        // Continue polling with backoff for active statuses
+        pollIntervalRef.current = Math.min(
+          pollIntervalRef.current * BACKOFF_MULTIPLIER,
+          MAX_POLL_INTERVAL
+        );
+      }
+    } catch (error) {
+      console.error("Failed to fetch generation status:", error);
+      // Continue polling on error, but with backoff
+      pollIntervalRef.current = Math.min(
+        pollIntervalRef.current * BACKOFF_MULTIPLIER,
+        MAX_POLL_INTERVAL
+      );
+    }
+  }, [artifactId]);
+
+  useEffect(() => {
+    // Initial fetch
+    fetchStatus();
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    if (!isPolling) {
+      return;
+    }
+
+    const poll = () => {
+      timeoutRef.current = setTimeout(() => {
+        fetchStatus().then(() => {
+          if (isPolling) {
+            poll();
+          }
+        });
+      }, pollIntervalRef.current);
+    };
+
+    poll();
+
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, [isPolling, fetchStatus]);
+
+  // Don't render if no status or status is NONE/SUCCESS
+  if (!status || status.status === "NONE" || status.status === "SUCCESS") {
+    return null;
+  }
+
+  const isActive =
+    status.status === "PENDING" ||
+    status.status === "QUEUED" ||
+    status.status === "RUNNING";
+  const isFailed = status.status === "FAILURE";
+
+  return (
+    <div
+      className={`flex items-center justify-between gap-4 px-4 py-3 text-sm ${
+        isFailed
+          ? "border-destructive/20 bg-destructive/10 text-destructive"
+          : "border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-300"
+      } border-b`}
+    >
+      <div className="flex items-center gap-2">
+        {isActive ? (
+          <LoaderIcon className="h-4 w-4 animate-spin" />
+        ) : (
+          <XCircleIcon className="h-4 w-4" />
+        )}
+        <span>{getStatusMessage(status.status)}</span>
+      </div>
+
+      {status.htmlUrl ? (
+        <a
+          className="flex items-center gap-1 text-xs underline hover:no-underline"
+          href={status.htmlUrl}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          View workflow
+          <ExternalLinkIcon className="h-3 w-3" />
+        </a>
+      ) : null}
+    </div>
+  );
+}

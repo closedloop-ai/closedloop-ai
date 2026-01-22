@@ -71,6 +71,17 @@ export const artifactIncludeWithContext = {
       id: true,
       organizationId: true,
       name: true,
+      teams: {
+        select: {
+          team: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+        take: 1,
+      },
     },
   },
 } as const;

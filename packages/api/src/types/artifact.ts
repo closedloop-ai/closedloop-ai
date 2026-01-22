@@ -64,7 +64,10 @@ export type Artifact = {
   parentId: string | null;
   documentSlug: string | null;
   generatedBy: string | null;
+  sourcePrdId: string | null;
   tokenUsage: unknown;
+  targetRepo: string | null;
+  targetBranch: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -78,6 +81,7 @@ export type ArtifactWithWorkstream = Artifact & {
   project?: {
     id: string;
     name: string;
+    teams?: { id: string; name: string }[];
   } | null;
 };
 
@@ -93,6 +97,9 @@ export type CreateArtifactInput = {
   externalUrl?: string;
   generatedBy?: string;
   documentSlug?: string;
+  targetRepo?: string;
+  targetBranch?: string;
+  sourcePrdId?: string;
 };
 
 export type UpdateArtifactInput = {
@@ -103,6 +110,8 @@ export type UpdateArtifactInput = {
   status?: ArtifactStatus;
   content?: string;
   externalUrl?: string | null;
+  targetRepo?: string | null;
+  targetBranch?: string | null;
 };
 
 export type Approval = {
