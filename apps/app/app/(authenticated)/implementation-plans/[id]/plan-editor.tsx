@@ -253,7 +253,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
                       Generation
                     </Label>
                     <a
-                      className="flex items-center gap-1 text-blue-600 text-sm hover:underline dark:text-blue-400"
+                      className="flex items-center gap-1 text-primary text-sm hover:underline"
                       href={generationStatus.htmlUrl}
                       rel="noopener noreferrer"
                       target="_blank"
