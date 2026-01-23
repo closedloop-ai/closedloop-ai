@@ -11,6 +11,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { LogOutIcon } from "lucide-react";
+import { LinearIntegrationCard } from "./components/linear-integration-card";
 
 export default function SettingsPage() {
   const { signOut } = useClerk();
@@ -31,6 +32,8 @@ export default function SettingsPage() {
       <Separator />
 
       <div className="grid gap-6">
+        <LinearIntegrationCard />
+
         <Card>
           <CardHeader>
             <CardTitle>Account</CardTitle>

@@ -34,6 +34,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showLinearExportDialog, setShowLinearExportDialog] = useState(false);
 
   // Generation status (for showing GitHub action link in Details panel)
   const [generationStatus, setGenerationStatus] =
@@ -142,7 +143,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     });
   }, [plan.id]);
 
-  const handleExport = useCallback(() => {
+  const handleDownloadMarkdown = useCallback(() => {
     downloadAsMarkdown(
       content,
       plan.fileName ?? `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
@@ -191,6 +192,8 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     setShowMetadataPanel,
     showDeleteDialog,
     setShowDeleteDialog,
+    showLinearExportDialog,
+    setShowLinearExportDialog,
     isDraft,
     generationStatus,
 
@@ -200,7 +203,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     handleApproverChange,
     handleApproverBlur,
     handleApprove,
-    handleExport,
+    handleDownloadMarkdown,
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,

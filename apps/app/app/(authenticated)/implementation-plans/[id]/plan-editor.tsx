@@ -25,6 +25,7 @@ import {
 import {
   ArrowLeftIcon,
   CheckIcon,
+  ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -42,6 +43,7 @@ import {
   artifactStatusLabels,
 } from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { LinearExportDialog } from "./components/linear-export-dialog";
 import { VersionSelector } from "../components/version-selector";
 import { usePlanEditor } from "./use-plan-editor";
 
@@ -63,6 +65,8 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     setShowMetadataPanel,
     showDeleteDialog,
     setShowDeleteDialog,
+    showLinearExportDialog,
+    setShowLinearExportDialog,
     isDraft,
     generationStatus,
     handleSave,
@@ -70,7 +74,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     handleApproverChange,
     handleApproverBlur,
     handleApprove,
-    handleExport,
+    handleDownloadMarkdown,
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,
@@ -135,10 +139,25 @@ export function PlanEditor({ plan }: PlanEditorProps) {
             </Button>
           ) : null}
 
-          <Button onClick={handleExport} size="sm" variant="outline">
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Export
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline">
+                <DownloadIcon className="mr-2 h-4 w-4" />
+                Export
+                <ChevronDownIcon className="ml-2 h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[180px]">
+              <DropdownMenuItem onClick={handleDownloadMarkdown}>
+                <DownloadIcon className="mr-2 h-4 w-4" />
+                Download Markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowLinearExportDialog(true)}>
+                <ExternalLinkIcon className="mr-2 h-4 w-4" />
+                Export to Linear
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Button onClick={handleCopyMarkdown} size="sm" variant="outline">
             <CopyIcon className="mr-2 h-4 w-4" />
@@ -277,6 +296,13 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Implementation Plan"
+      />
+
+      {/* Linear Export Dialog */}
+      <LinearExportDialog
+        artifactId={plan.id}
+        onOpenChange={setShowLinearExportDialog}
+        open={showLinearExportDialog}
       />
     </div>
   );
