@@ -432,32 +432,29 @@ Based on validated findings, set status label for the summary comment:
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
-### Find or Create Summary Comment (Dedup Required)
+### Delete Old Summaries, Then Post Fresh
 
 1. **List existing PR comments**:
 ```bash
 gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments
 ```
 
-2. **Find ALL existing bot summaries** - look for comments that:
+2. **Find previous symphony bot summaries** - look for comments that match BOTH:
    - Start with "## Code Review Summary"
-   - Were authored by the bot account (same author as this review)
+   - Were authored by the symphony bot account (`symphony-cl`) — do NOT delete summaries from other bots or users
 
-3. **If multiple bot summaries exist**: Delete all but the MOST RECENT one, then update that one. This prevents duplicate summaries from concurrent workflow runs.
+3. **Delete only the symphony bot's previous summaries**:
 
 ```bash
-# Delete older duplicate summaries (keep the most recent one)
-gh api -X DELETE repos/<OWNER>/<REPO_NAME>/issues/comments/<OLDER_COMMENT_ID>
+# Delete each previous symphony bot summary comment
+gh api -X DELETE repos/<OWNER>/<REPO_NAME>/issues/comments/<COMMENT_ID>
 ```
 
-4. **Update existing or create new**:
+This ensures the new summary always appears at the bottom of the PR conversation and there are no stale summaries lingering. Only delete comments authored by `symphony-cl`.
+
+4. **Post a fresh summary comment**:
 
 ```bash
-# Update the most recent existing summary
-gh api -X PATCH repos/<OWNER>/<REPO_NAME>/issues/comments/<COMMENT_ID> \
-  -f body="<summary>"
-
-# Or create new if none exists
 gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
   -f body="<summary>"
 ```
