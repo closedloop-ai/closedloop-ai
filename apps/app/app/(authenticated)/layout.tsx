@@ -1,6 +1,5 @@
 import { auth, currentUser } from "@repo/auth/server";
 import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
-import { showBetaFeature } from "@repo/feature-flags";
 import { secure } from "@repo/security";
 import type { ReactNode } from "react";
 import { env } from "@/env";
@@ -18,7 +17,6 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
 
   const user = await currentUser();
   const { redirectToSignIn } = await auth();
-  const betaFeature = await showBetaFeature();
 
   if (!user) {
     return redirectToSignIn();
@@ -29,11 +27,6 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
       <SidebarProvider>
         <GlobalSidebar>
           <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
-            {!!betaFeature && (
-              <div className="m-4 shrink-0 rounded-full bg-blue-500 p-1.5 text-center text-sm text-white">
-                Beta feature now available
-              </div>
-            )}
             {children}
           </div>
         </GlobalSidebar>

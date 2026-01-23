@@ -5,6 +5,7 @@ export default {
   "*.{js,jsx,ts,tsx,json,jsonc}": (filenames) => {
     // Quote each path to handle brackets (biome interprets [] as glob patterns)
     const quoted = filenames.map((f) => `"${f}"`);
-    return `npx biome check --write ${quoted.join(" ")}`;
+    // --no-errors-on-unmatched: Don't error when files are ignored by biome.jsonc
+    return `npx biome check --write --no-errors-on-unmatched ${quoted.join(" ")}`;
   },
 };

@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/date-utils";
 import { PlanRowActions } from "./plan-row-actions";
+import { VersionSelector } from "./version-selector";
 
 type PlanTableProps = {
   plans: ArtifactWithWorkstream[];
@@ -26,7 +27,11 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     key: "version",
     header: "Version",
     render: (plan) => (
-      <span className="font-mono text-sm">v{plan.version}</span>
+      <VersionSelector
+        artifactId={plan.id}
+        compact={true}
+        currentVersion={plan.version}
+      />
     ),
   },
   {
