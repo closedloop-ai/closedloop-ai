@@ -6,6 +6,8 @@
 // Cookie names for OAuth state and PKCE verification
 export const LINEAR_OAUTH_STATE_COOKIE = "linear_oauth_state";
 export const LINEAR_PKCE_VERIFIER_COOKIE = "linear_pkce_verifier";
+// Cookie to store auth context for callback (since Clerk cookies don't work cross-domain)
+export const LINEAR_AUTH_CONTEXT_COOKIE = "linear_auth_context";
 
 /**
  * Get the base app URL for redirects.

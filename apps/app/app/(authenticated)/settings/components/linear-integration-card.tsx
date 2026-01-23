@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   disconnectLinear,
   getLinearIntegrationStatus,
+  getLinearOAuthUrl,
 } from "@/app/actions/linear";
 
 export function LinearIntegrationCard() {
@@ -36,12 +37,21 @@ export function LinearIntegrationCard() {
     loadStatus();
   }, [loadStatus]);
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     setConnecting(true);
-    // Directly navigate to API OAuth endpoint
-    // This ensures cookies are set in the browser for the OAuth flow
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3002";
-    window.location.href = `${apiUrl}/integrations/linear/oauth`;
+    try {
+      // Get OAuth URL with signed auth token (needed for cross-domain auth)
+      const url = await getLinearOAuthUrl();
+      if (url) {
+        window.location.href = url;
+      } else {
+        toast.error("Not authenticated. Please sign in again.");
+        setConnecting(false);
+      }
+    } catch {
+      toast.error("Failed to initiate Linear connection");
+      setConnecting(false);
+    }
   };
 
   const handleDisconnect = async () => {

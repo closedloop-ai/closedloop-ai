@@ -1,14 +1,18 @@
+import { verifyOAuthToken } from "@repo/auth/server";
+import type { Organization } from "@repo/database";
+import { withDb } from "@repo/database";
 import { generatePKCE, getOAuthUrl, isLinearConfigured } from "@repo/linear";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { cookies } from "next/headers";
+import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
   getOAuthErrorRedirectUrl,
+  LINEAR_AUTH_CONTEXT_COOKIE,
   LINEAR_OAUTH_STATE_COOKIE,
   LINEAR_PKCE_VERIFIER_COOKIE,
 } from "./constants";
-import { getAuthenticatedOrganization } from "./helpers";
 
 /**
  * GET /integrations/linear/oauth
@@ -19,17 +23,44 @@ import { getAuthenticatedOrganization } from "./helpers";
  * Note: This route does NOT use withAuth middleware because:
  * 1. It must return HTTP redirects (not JSON responses)
  * 2. It needs to set cookies before redirecting to Linear's OAuth page
- * 3. Authentication is verified via Clerk session (using auth() directly)
+ * 3. Authentication is verified via signed token (Clerk cookies don't work cross-domain)
  */
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    // Authenticate and get organization
-    const orgResult = await getAuthenticatedOrganization("[linear/oauth]");
-    if (!orgResult.success) {
-      return orgResult.redirect;
+    // Verify signed auth token from query params (needed for cross-domain auth)
+    const authToken = request.nextUrl.searchParams.get("auth_token");
+    if (!authToken) {
+      log.warn("[linear/oauth] Missing auth_token parameter");
+      return NextResponse.redirect(
+        getOAuthErrorRedirectUrl("Not authenticated")
+      );
     }
 
-    const { organization, clerkUserId } = orgResult;
+    const tokenResult = verifyOAuthToken(authToken);
+    if (!tokenResult.valid) {
+      log.warn("[linear/oauth] Invalid auth token", {
+        error: tokenResult.error,
+      });
+      return NextResponse.redirect(
+        getOAuthErrorRedirectUrl("Authentication failed")
+      );
+    }
+
+    const { userId: clerkUserId, orgId: clerkOrgId } = tokenResult.payload;
+
+    // Find the organization in database
+    const organization = (await withDb((db) =>
+      db.organization.findUnique({
+        where: { clerkId: clerkOrgId },
+      })
+    )) as Organization | null;
+
+    if (!organization) {
+      log.warn("[linear/oauth] Organization not found", { clerkOrgId });
+      return NextResponse.redirect(
+        getOAuthErrorRedirectUrl("Organization not found")
+      );
+    }
 
     if (!isLinearConfigured()) {
       return NextResponse.redirect(
@@ -59,6 +90,15 @@ export async function GET(): Promise<NextResponse> {
     cookieStore.set(
       LINEAR_PKCE_VERIFIER_COOKIE,
       pkce.codeVerifier,
+      cookieOptions
+    );
+    // Store auth context for the callback (since Clerk cookies don't work cross-domain)
+    cookieStore.set(
+      LINEAR_AUTH_CONTEXT_COOKIE,
+      JSON.stringify({
+        organizationId: organization.id,
+        clerkUserId,
+      }),
       cookieOptions
     );
 

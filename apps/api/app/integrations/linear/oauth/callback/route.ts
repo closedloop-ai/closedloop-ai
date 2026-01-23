@@ -6,10 +6,10 @@ import { linearService } from "../../service";
 import {
   getOAuthErrorRedirectUrl,
   getOAuthSuccessRedirectUrl,
+  LINEAR_AUTH_CONTEXT_COOKIE,
   LINEAR_OAUTH_STATE_COOKIE,
   LINEAR_PKCE_VERIFIER_COOKIE,
 } from "../constants";
-import { getAuthenticatedOrganization } from "../helpers";
 
 type OAuthCallbackParams = {
   code: string;
@@ -94,12 +94,17 @@ async function validateOAuthCallback(
     return { valid: false, error: "Invalid authorization request" };
   }
 
-  // Clear the state and PKCE cookies
+  // Clear the state and PKCE cookies (auth context cleared after use in GET handler)
   cookieStore.delete(LINEAR_OAUTH_STATE_COOKIE);
   cookieStore.delete(LINEAR_PKCE_VERIFIER_COOKIE);
 
   return { valid: true, params: { code, codeVerifier } };
 }
+
+type AuthContext = {
+  organizationId: string;
+  clerkUserId: string;
+};
 
 /**
  * GET /integrations/linear/oauth/callback
@@ -110,7 +115,7 @@ async function validateOAuthCallback(
  * Note: This route does NOT use withAuth middleware because:
  * 1. It must return HTTP redirects (not JSON responses)
  * 2. It needs to handle browser-based OAuth flow with cookies
- * 3. Authentication is verified via Clerk session
+ * 3. Authentication is verified via auth context cookie (Clerk cookies don't work cross-domain)
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   // Validate OAuth callback parameters and cookies
@@ -121,21 +126,37 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
   const { code, codeVerifier } = validation.params;
 
-  // Authenticate and get organization
-  const orgResult = await getAuthenticatedOrganization(
-    "[linear/oauth/callback]"
-  );
-  if (!orgResult.success) {
-    return orgResult.redirect;
+  // Get auth context from cookie (set during OAuth initiation)
+  const cookieStore = await cookies();
+  const authContextCookie = cookieStore.get(LINEAR_AUTH_CONTEXT_COOKIE)?.value;
+
+  if (!authContextCookie) {
+    log.warn("[linear/oauth/callback] Missing auth context cookie");
+    return NextResponse.redirect(
+      getOAuthErrorRedirectUrl("Authentication expired. Please try again.")
+    );
   }
 
-  const { organization, clerkUserId } = orgResult;
+  let authContext: AuthContext;
+  try {
+    authContext = JSON.parse(authContextCookie) as AuthContext;
+  } catch {
+    log.warn("[linear/oauth/callback] Invalid auth context cookie");
+    return NextResponse.redirect(
+      getOAuthErrorRedirectUrl("Authentication error. Please try again.")
+    );
+  }
+
+  // Clear the auth context cookie
+  cookieStore.delete(LINEAR_AUTH_CONTEXT_COOKIE);
+
+  const { organizationId, clerkUserId } = authContext;
 
   // Complete OAuth callback via service layer
   const result = await linearService.completeOAuthCallback(
     code,
     codeVerifier,
-    organization.id,
+    organizationId,
     clerkUserId
   );
 
