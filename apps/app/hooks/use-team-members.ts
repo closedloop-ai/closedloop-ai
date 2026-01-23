@@ -77,7 +77,9 @@ export function useTeamMembers({
       setError(null);
 
       try {
-        const results = await Promise.all(teamIds.map(getTeamMembers));
+        const results = await Promise.all(
+          teamIds.map((teamId) => getTeamMembers(teamId))
+        );
 
         if (!cancelled) {
           setMembers(transformMembers(results));
