@@ -27,7 +27,7 @@ TodoWrite([
   { content: "Spawn reviewer agents in parallel", status: "pending", activeForm: "Spawning agents" },
   { content: "Collect and validate agent findings", status: "pending", activeForm: "Validating findings" },
   { content: "Clean up outdated inline comments", status: "pending", activeForm: "Cleaning up comments" },
-  { content: "Post inline comments for BLOCKING/HIGH findings", status: "pending", activeForm: "Posting comments" },
+  { content: "Post inline comments for validated findings", status: "pending", activeForm: "Posting comments" },
   { content: "Post summary comment with approval decision", status: "pending", activeForm: "Posting summary" }
 ])
 ```
@@ -70,6 +70,26 @@ Extract and store:
 - **FILES_TO_REVIEW**: Array of changed file paths from `files[].path`
 - **OWNER**: First part of REPO before `/`
 - **REPO_NAME**: Second part of REPO after `/`
+
+### Fetch File Patches (CRITICAL)
+
+**You MUST fetch the actual diff patches from GitHub API now**, before spawning any agents. This ensures agents can review the code even if the local checkout is incomplete (e.g., newly added files may not exist on disk).
+
+```bash
+# Fetch full patch data for all changed files
+gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files --paginate
+```
+
+**Rate Limit Handling**: If you receive a 403 or rate limit error:
+1. Wait 60 seconds and retry
+2. For very large PRs (300+ files), fetch in batches using `?per_page=100&page=N`
+
+Parse the response and store:
+- **FILE_PATCHES**: Map of `{ "path/file.ts": "<patch content>", ... }` from each file's `patch` field
+- **CHANGED_LINES**: Map of `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` parsed from patches (only lines starting with `+`)
+- **FILE_STATUSES**: Map of `{ "path/file.ts": "added" | "modified" | "removed", ... }` from each file's `status` field
+
+These will be used in Step 4 (agent prompts) and Step 5 (validation).
 
 Mark todo as `completed`.
 
@@ -125,18 +145,28 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 **Agent Prompt Template:**
 
 ```
-Review ONLY the changed code in these files. Return findings as JSON.
+Review ONLY the changed code in this PR. Return findings as JSON.
 
 **FILES CHANGED IN THIS PR**:
-- {filepath_1}
-- {filepath_2}
+- {filepath_1} ({status_1})
+- {filepath_2} ({status_2})
+...
+
+**DIFF/PATCH CONTENT** (this is the authoritative source of what changed):
+--- {filepath_1} ({status_1}) ---
+{patch_content_1}
+
+--- {filepath_2} ({status_2}) ---
+{patch_content_2}
 ...
 
 **CRITICAL RULES - READ CAREFULLY**:
-1. ONLY flag issues on lines that were ADDED or MODIFIED in this PR
-2. Do NOT flag pre-existing issues in unchanged code - even if you see problems
-3. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
-4. Focus on: new code introduced, modifications to existing code, new patterns being added
+1. Use the DIFF/PATCH CONTENT above as your primary source for reviewing code. Do NOT rely solely on reading local files (they may not exist for newly added files).
+2. ONLY flag issues on lines that were ADDED or MODIFIED in this PR (lines starting with + in the diff)
+3. Do NOT flag pre-existing issues in unchanged code - even if you see problems
+4. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
+5. Focus on: new code introduced, modifications to existing code, new patterns being added
+6. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
 
 **SEVERITY GUIDELINES - BE STRICT**:
 - BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
@@ -207,33 +237,19 @@ Mark todo "Collect and validate agent findings" as `in_progress`.
 
 Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 
-### CRITICAL: Build the Changed Lines Map FIRST
+### Use the Changed Lines Map from Step 2
 
-Before validating ANY findings, build a definitive map of what lines were actually changed:
+Use the **CHANGED_LINES** and **FILE_PATCHES** maps already built in Step 2. Do NOT re-fetch from the API.
 
-```bash
-# Get PR files with patches (handles pagination for large PRs)
-# For PRs with 100+ files, use pagination to avoid rate limits
-gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files --paginate
-```
-
-**Rate Limit Handling**: If you receive a 403 or rate limit error:
-1. Wait 60 seconds and retry
-2. For very large PRs (300+ files), fetch in batches using `?per_page=100&page=N`
-3. If still failing, report error and suggest running review on smaller scope
-
-Parse each file's `patch` field to extract changed line numbers:
-- **CHANGED_FILES**: Set of file paths that were modified
-- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }`
+- **CHANGED_FILES**: Set of all file paths in FILES_TO_REVIEW
+- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` (already parsed in Step 2)
 
 Only lines starting with `+` (additions) or lines adjacent to changes are valid targets.
 
-### Parse and Filter Findings
+### Parse Findings
 
 1. Parse JSON findings from each agent
-2. **Filter by severity** for inline comments:
-   - **Post inline comments**: BLOCKING and HIGH severity only
-   - **Summary only**: MEDIUM severity (no inline comment, just listed in summary)
+2. **All validated findings** (BLOCKING, HIGH, and MEDIUM) will receive inline comments AND appear in the summary
 
 ### Validate EVERY Finding
 
@@ -251,8 +267,9 @@ For each finding (all severities):
    - BLOCKING/HIGH claimed but it's hypothetical? **DOWNGRADE to MEDIUM**
    - Only keep BLOCKING/HIGH for issues that WILL cause production problems
 
-4. **Read the full file to confirm issue is real**:
-   - Verify the code snippet matches actual code
+4. **Verify the issue is real**:
+   - For **modified** files: Read the local file to verify code snippet matches
+   - For **added** files (status: "added" in FILE_STATUSES): Use the patch content from FILE_PATCHES as the source of truth. Do NOT try to Read added files from disk - they may not exist locally if the checkout is incomplete.
    - Check if issue is already handled elsewhere
    - If issue doesn't exist or is already handled: **DISCARD** (reason: "False positive")
 
@@ -266,7 +283,7 @@ For each finding (all severities):
 - **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code
 - **DISCARD_DUPLICATE**: Already reported by another agent
 
-**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. Only BLOCKING/HIGH get inline comments posted.
+**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. All validated findings (all severities) get inline comments posted.
 
 Track validated findings and discarded findings with specific reasons.
 
@@ -342,9 +359,9 @@ Mark todo as `completed`.
 
 ## Step 7: Post Inline Comments
 
-Mark todo "Post inline comments for BLOCKING/HIGH findings" as `in_progress`.
+Mark todo "Post inline comments for validated findings" as `in_progress`.
 
-For each validated BLOCKING/HIGH finding:
+For each validated finding (all severities):
 
 1. **Check dedup map**: If `file:line:category` already has comment, SKIP
 2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
@@ -415,23 +432,32 @@ Based on validated findings, set status label for the summary comment:
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
-### Find or Create Summary Comment
+### Find or Create Summary Comment (Dedup Required)
 
 1. **List existing PR comments**:
 ```bash
 gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments
 ```
 
-2. **Look for existing bot summary** (comment starting with "## Code Review Summary")
+2. **Find ALL existing bot summaries** - look for comments that:
+   - Start with "## Code Review Summary"
+   - Were authored by the bot account (same author as this review)
 
-3. **Update existing or create new**:
+3. **If multiple bot summaries exist**: Delete all but the MOST RECENT one, then update that one. This prevents duplicate summaries from concurrent workflow runs.
 
 ```bash
-# Update existing
+# Delete older duplicate summaries (keep the most recent one)
+gh api -X DELETE repos/<OWNER>/<REPO_NAME>/issues/comments/<OLDER_COMMENT_ID>
+```
+
+4. **Update existing or create new**:
+
+```bash
+# Update the most recent existing summary
 gh api -X PATCH repos/<OWNER>/<REPO_NAME>/issues/comments/<COMMENT_ID> \
   -f body="<summary>"
 
-# Or create new
+# Or create new if none exists
 gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
   -f body="<summary>"
 ```
