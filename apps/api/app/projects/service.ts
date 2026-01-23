@@ -1,7 +1,6 @@
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
-  ProjectPriority,
   ProjectWithDetails,
   UpdateProjectInput,
 } from "@repo/api/src/types/organization";
@@ -17,18 +16,8 @@ export const projectsService = {
    */
   toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
     return {
-      id: project.id,
-      organizationId: project.organizationId,
-      name: project.name,
-      description: project.description,
-      priority: project.priority as ProjectPriority,
-      ownerId: project.ownerId,
-      targetDate: project.targetDate,
-      codebaseSummary: project.codebaseSummary as JsonObject | null,
-      lastIndexedAt: project.lastIndexedAt,
+      ...project,
       settings: project.settings as JsonObject,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt,
       owner: project.owner
         ? {
             id: project.owner.id,
@@ -37,7 +26,7 @@ export const projectsService = {
             avatarUrl: project.owner.avatarUrl,
           }
         : undefined,
-      status: this.calculateStatus(project.artifacts),
+      status: projectsService.calculateStatus(project.artifacts),
       teams: project.teams.map((pt) => ({
         id: pt.team.id,
         name: pt.team.name,
@@ -121,33 +110,21 @@ export const projectsService = {
   /**
    * Update a project
    */
-  update(id: string, input: Omit<UpdateProjectInput, "id">) {
+  update(
+    id: string,
+    organizationId: string,
+    input: Omit<UpdateProjectInput, "id">
+  ) {
     return withDb.tx(async (tx) => {
-      const data: Prisma.ProjectUpdateInput = {
-        ...(input.name !== undefined && { name: input.name }),
-        ...(input.description !== undefined && {
-          description: input.description,
-        }),
-        ...(input.priority !== undefined && { priority: input.priority }),
-        ...(input.ownerId !== undefined && {
-          owner: input.ownerId
-            ? { connect: { id: input.ownerId } }
-            : { disconnect: true },
-        }),
-        ...(input.targetDate !== undefined && { targetDate: input.targetDate }),
-        ...(input.settings !== undefined && {
-          settings: input.settings as Prisma.InputJsonValue,
-        }),
-      };
-
       const project = await tx.project.update({
-        where: { id },
-        data,
+        where: { id, organizationId },
+        data: input,
       });
 
       // Update team associations if specified
-      if (input.teamIds !== undefined) {
+      if (project && input.teamIds !== undefined) {
         await tx.projectTeam.deleteMany({ where: { projectId: id } });
+
         if (input.teamIds.length > 0) {
           await tx.projectTeam.createMany({
             data: input.teamIds.map((teamId) => ({

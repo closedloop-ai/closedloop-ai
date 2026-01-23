@@ -199,7 +199,7 @@ model Project {
   priority        ProjectPriority @default(NOT_SET)
   ownerId         String?         @map("owner_id") @db.Uuid
   targetDate      DateTime?       @map("target_date")
-  codebaseSummary Json?           @map("codebase_summary")
+  codebaseSummary String?         @map("codebase_summary")
   lastIndexedAt   DateTime?       @map("last_indexed_at")
   settings        Json            @default("{}")
   createdAt       DateTime        @default(now()) @map("created_at")

@@ -69,10 +69,13 @@ export async function createProject(
 export async function updateProject(
   input: UpdateProjectInput
 ): Promise<ApiResult<ProjectWithDetails>> {
-  const { id, ...data } = input;
+  const { id, targetDate, lastIndexedAt, ...data } = input;
   const result = await apiClient.put<ProjectWithDetails>(`/projects/${id}`, {
     ...data,
-    targetDate: data.targetDate?.toISOString(),
+    ...(targetDate !== undefined && { targetDate: targetDate?.toISOString() }),
+    ...(lastIndexedAt !== undefined && {
+      lastIndexedAt: lastIndexedAt?.toISOString(),
+    }),
   });
   if (result.success) {
     revalidatePath("/projects");
@@ -135,4 +138,18 @@ export async function getProjectActivity(
   return await apiClient.get<ActivityResponse>(
     `/projects/${projectId}/activity?page=${page}&pageSize=${pageSize}`
   );
+}
+
+/**
+ * Upload codebase summary for a project
+ */
+export async function uploadCodebaseSummary(
+  projectId: string,
+  markdownContent: string
+): Promise<ApiResult<ProjectWithDetails>> {
+  return await updateProject({
+    id: projectId,
+    codebaseSummary: markdownContent,
+    lastIndexedAt: new Date(),
+  });
 }

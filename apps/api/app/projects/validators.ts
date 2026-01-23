@@ -30,4 +30,10 @@ export const updateProjectValidator = z.object({
     .transform(transformIsoDateTime),
   teamIds: z.array(z.uuidv7()).optional(),
   settings: jsonObjectValidator.optional(),
+  codebaseSummary: z.string().nullable().optional(),
+  lastIndexedAt: z.iso
+    .datetime()
+    .nullable()
+    .optional()
+    .transform(transformIsoDateTime),
 });

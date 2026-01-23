@@ -314,6 +314,9 @@ export default function ProjectDetailPage() {
           {/* Right Sidebar */}
           <div className="w-[300px] space-y-4 overflow-y-auto border-l p-4">
             <PropertiesPanel
+              onCodebaseSummaryUploaded={(lastIndexedAt) => {
+                setProject({ ...project, lastIndexedAt });
+              }}
               onUpdateOwner={handleUpdateOwner}
               onUpdatePriority={handleUpdatePriority}
               onUpdateTargetDate={handleUpdateTargetDate}
