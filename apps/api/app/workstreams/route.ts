@@ -37,6 +37,7 @@ export const GET = withAuth<Workstream[], "/workstreams">(
       }
 
       const workstreams = await workstreamsService.findByProject({
+        organizationId: user.organizationId,
         projectId,
         state: state as WorkstreamState | undefined,
         search: search ?? undefined,
@@ -70,7 +71,11 @@ export const POST = withAuth<Workstream, "/workstreams">(
         return notFoundResponse("Project");
       }
 
-      const workstream = await workstreamsService.create(user.id, body);
+      const workstream = await workstreamsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
 
       return successResponse(workstream);
     } catch (error) {

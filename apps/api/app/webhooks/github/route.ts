@@ -216,6 +216,7 @@ async function handleWorkflowSuccess(
   const finalContent = planContent ?? questionsContent;
 
   await withDb(async (db) => {
+    // TODO: These artifact queries need to include the organizationId for proper isolation!
     // Verify artifact exists before updating
     const existingArtifact = await db.artifact.findUnique({
       where: { id: artifactId },

@@ -6,6 +6,7 @@ import type {
 import { withDb } from "@repo/database";
 
 export type FindActivityOptions = {
+  organizationId: string;
   projectId: string;
   page?: number;
   pageSize?: number;
@@ -19,13 +20,13 @@ export const activityService = {
    * Find activity for a project with pagination
    */
   async findByProject(options: FindActivityOptions): Promise<ActivityResponse> {
-    const { projectId, page = 1, pageSize = 20 } = options;
+    const { organizationId, projectId, page = 1, pageSize = 20 } = options;
     const skip = (page - 1) * pageSize;
 
     // Get workstream IDs for this project
     const workstreamIds = await withDb((db) =>
       db.workstream.findMany({
-        where: { projectId },
+        where: { organizationId, projectId },
         select: { id: true },
       })
     );

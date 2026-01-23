@@ -28,7 +28,7 @@ export const GET = withAuth<
       // Find the artifact with its workstream
       const artifact = await withDb((db) =>
         db.artifact.findUnique({
-          where: { id, project: { organizationId: user.organizationId } },
+          where: { id, organizationId: user.organizationId },
           select: {
             id: true,
             workstreamId: true,

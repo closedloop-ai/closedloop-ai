@@ -52,6 +52,7 @@ export type Artifact = {
   id: string;
   workstreamId: string | null;
   projectId: string | null;
+  parentId: string | null;
   type: ArtifactType;
   title: string;
   fileName: string | null;
@@ -61,10 +62,8 @@ export type Artifact = {
   externalUrl: string | null;
   version: number;
   isLatest: boolean;
-  parentId: string | null;
   documentSlug: string | null;
   generatedBy: string | null;
-  sourcePrdId: string | null;
   tokenUsage: unknown;
   targetRepo: string | null;
   targetBranch: string | null;
@@ -88,6 +87,7 @@ export type ArtifactWithWorkstream = Artifact & {
 export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
+  parentId?: string;
   type: ArtifactType;
   title: string;
   fileName?: string;
@@ -99,7 +99,6 @@ export type CreateArtifactInput = {
   documentSlug?: string;
   targetRepo?: string;
   targetBranch?: string;
-  sourcePrdId?: string;
 };
 
 export type UpdateArtifactInput = {
