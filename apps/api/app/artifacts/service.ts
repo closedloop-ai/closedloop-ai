@@ -534,7 +534,7 @@ ${initialInstructions.trim()}`;
   ): Promise<Artifact> {
     const original = await withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
 
