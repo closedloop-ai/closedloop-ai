@@ -32,6 +32,7 @@ import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_COLORS, PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
+import { CodebaseSummaryUpload } from "./codebase-summary-upload";
 
 type PropertiesPanelProps = {
   project: ProjectWithDetails;
@@ -39,6 +40,7 @@ type PropertiesPanelProps = {
   onUpdateOwner?: (ownerId: string | null) => void;
   onUpdateTargetDate?: (date: Date | null) => void;
   onUpdateTeams?: (teamIds: string[]) => void;
+  onCodebaseSummaryUploaded?: (lastIndexedAt: Date) => void;
 };
 
 export function PropertiesPanel({
@@ -46,6 +48,7 @@ export function PropertiesPanel({
   onUpdatePriority,
   onUpdateOwner,
   onUpdateTargetDate,
+  onCodebaseSummaryUploaded,
 }: PropertiesPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
 
@@ -148,6 +151,15 @@ export function PropertiesPanel({
             onSelect={(date) => onUpdateTargetDate?.(date)}
             placeholder="Set target date"
             value={ensureDate(project.targetDate)}
+          />
+        </div>
+
+        {/* Codebase Summary Upload */}
+        <div className="pt-2">
+          <CodebaseSummaryUpload
+            lastIndexedAt={project.lastIndexedAt}
+            onUploadSuccess={onCodebaseSummaryUploaded}
+            projectId={project.id}
           />
         </div>
       </CollapsibleContent>

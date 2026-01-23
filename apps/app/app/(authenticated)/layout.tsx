@@ -11,12 +11,13 @@ type AppLayoutProperties = {
 };
 
 const AppLayout = async ({ children }: AppLayoutProperties) => {
-  if (env.ARCJET_KEY) {
-    await secure(["CATEGORY:PREVIEW"]);
-  }
-
-  const user = await currentUser();
-  const { redirectToSignIn } = await auth();
+  // Parallelize independent async operations to eliminate waterfalls
+  const [, { redirectToSignIn }, user] = await Promise.all([
+    // Security check runs in parallel (result unused but must complete)
+    env.ARCJET_KEY ? secure(["CATEGORY:PREVIEW"]) : Promise.resolve(),
+    auth(),
+    currentUser(),
+  ]);
 
   if (!user) {
     return redirectToSignIn();

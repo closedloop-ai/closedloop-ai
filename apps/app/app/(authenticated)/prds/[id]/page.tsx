@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getArtifactById } from "@/app/actions/artifacts";
+import { getCachedArtifactById } from "@/lib/cached-data";
 import { PRDEditor } from "./prd-editor";
 
 type PrdPageProps = {
@@ -11,7 +11,8 @@ export const generateMetadata = async ({
   params,
 }: PrdPageProps): Promise<Metadata> => {
   const { id } = await params;
-  const result = await getArtifactById(id);
+  // Uses React.cache() to deduplicate with page component fetch
+  const result = await getCachedArtifactById(id);
 
   return {
     title: result.success ? result.data.title : "PRD",
@@ -21,7 +22,8 @@ export const generateMetadata = async ({
 
 const PrdPage = async ({ params }: PrdPageProps) => {
   const { id } = await params;
-  const result = await getArtifactById(id);
+  // Uses React.cache() - deduplicates with generateMetadata fetch
+  const result = await getCachedArtifactById(id);
 
   if (!result.success || result.data.type !== "PRD") {
     notFound();
