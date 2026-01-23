@@ -179,12 +179,10 @@ Review ONLY the changed code in this PR. Return findings as JSON.
 4. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
 5. Focus on: new code introduced, modifications to existing code, new patterns being added
 6. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
-7. Do NOT flag type safety, testing, or mock implementation issues in test files (files matching: *test*, *Test*, *spec*, *mock*, *Mock*, __tests__/)
-8. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
-9. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
-10. Do NOT suggest overly defensive programming (unnecessary null checks, try-catch blocks) without evidence of actual errors
-11. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
-12. Before suggesting custom helper functions, check if utilities already exist in the codebase
+7. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
+8. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
+9. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
+10. Before suggesting custom helper functions, check if utilities already exist in the codebase
 
 **SEVERITY GUIDELINES - BE STRICT**:
 - BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
@@ -330,11 +328,9 @@ For each finding (all severities):
    f. **If all checks pass**: Keep the finding
    g. **If ANY check fails**: **DISCARD** (reason: "False positive") and log which check failed
 
-6. **Check for test files**: If the file path matches test patterns (`*test*`, `*Test*`, `*spec*`, `*mock*`, `*Mock*`, `test/`, `tests/`, `__tests__/`, `spec/`), **DISCARD** findings about type safety, implementation quality, or mock completeness
+6. **Check for inline justification comments**: If there are comments near the flagged line like `// Intentionally...`, `// Required for...`, `// This is fine because...` — **DISCARD** the finding (the developer has documented a deliberate choice)
 
-7. **Check for inline justification comments**: If there are comments near the flagged line like `// Intentionally...`, `// Required for...`, `// This is fine because...` — **DISCARD** the finding (the developer has documented a deliberate choice)
-
-8. **Deduplicate and consolidate by root cause**:
+7. **Deduplicate and consolidate by root cause**:
 
    Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
    - Keep the finding with the HIGHEST severity as the primary
@@ -364,7 +360,6 @@ For each finding (all severities):
 - **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
 - **DISCARD_OBSERVATION_NOT_BUG**: Finding just describes a change without proving it's wrong
 - **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code (verified against full file)
-- **DISCARD_TEST_FILE**: Finding about type safety/mock quality in a test file
 - **DISCARD_JUSTIFIED**: Developer has inline comment justifying the decision
 - **DISCARD_DUPLICATE**: Already reported by another agent / consolidated into root cause group
 
