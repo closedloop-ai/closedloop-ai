@@ -24,7 +24,8 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
 import { PlusIcon } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
+import { useTeamMembers } from "@/hooks/use-team-members";
 
 type CreateProjectInput = {
   name: string;
@@ -57,14 +58,9 @@ export function CreateProjectModal({
   } | null>(null);
   const [targetDate, setTargetDate] = useState<Date | null>(null);
 
-  // TODO: Fetch team members from API when endpoint is available
-  const teamMembers: Array<{
-    id: string;
-    name: string;
-    email?: string;
-    avatarUrl?: string;
-    initials: string;
-  }> = [];
+  // Memoize teamIds to avoid unnecessary re-fetches
+  const teamIds = useMemo(() => [teamId], [teamId]);
+  const { members: teamMembers } = useTeamMembers({ teamIds, enabled: open });
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
