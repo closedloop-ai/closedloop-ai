@@ -378,9 +378,9 @@ model Artifact {
   parent       Artifact?     @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children     Artifact[]    @relation("ArtifactSource")
 
-  @@unique([organizationId, workstreamId, type, isLatest])
-  @@unique([organizationId, projectId, type, isLatest])
-  @@unique([organizationId, parentId, type, isLatest])
+  @@index([organizationId, workstreamId, type, isLatest])
+  @@index([organizationId, projectId, type, isLatest])
+  @@index([organizationId, parentId, type, isLatest])
   @@index([workstreamId])
   @@index([projectId])
   @@index([parentId])
