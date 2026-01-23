@@ -24,9 +24,8 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
 import { PlusIcon } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
-import { getTeamMembers } from "@/app/actions/teams";
-import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
+import { type FormEvent, useMemo, useState } from "react";
+import { useTeamMembers } from "@/hooks/use-team-members";
 
 type CreateProjectInput = {
   name: string;
@@ -58,40 +57,10 @@ export function CreateProjectModal({
     avatarUrl?: string;
   } | null>(null);
   const [targetDate, setTargetDate] = useState<Date | null>(null);
-  const [teamMembers, setTeamMembers] = useState<
-    Array<{
-      id: string;
-      name: string;
-      email?: string;
-      avatarUrl?: string;
-      initials: string;
-    }>
-  >([]);
 
-  useEffect(() => {
-    async function fetchTeamMembers() {
-      const result = await getTeamMembers(teamId);
-      if (result.success) {
-        const transformed = result.data.map((member) => ({
-          id: member.user.id,
-          name: getUserDisplayName(member.user),
-          email: member.user.email,
-          avatarUrl: member.user.avatarUrl || undefined,
-          initials: getUserInitials(
-            member.user.firstName,
-            member.user.lastName
-          ),
-        }));
-        setTeamMembers(transformed);
-      }
-    }
-
-    if (open) {
-      fetchTeamMembers();
-    } else {
-      setTeamMembers([]);
-    }
-  }, [open, teamId]);
+  // Memoize teamIds to avoid unnecessary re-fetches
+  const teamIds = useMemo(() => [teamId], [teamId]);
+  const { members: teamMembers } = useTeamMembers({ teamIds, enabled: open });
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
