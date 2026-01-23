@@ -23,6 +23,7 @@ vi.mock("@mdxeditor/editor", () => ({
   thematicBreakPlugin: vi.fn(() => ({})),
   markdownShortcutPlugin: vi.fn(() => ({})),
   quotePlugin: vi.fn(() => ({})),
+  tablePlugin: vi.fn(() => ({})),
   toolbarPlugin: vi.fn(() => ({})),
   useCellValues: (...args: any[]) => mockUseCellValues(...args),
   usePublisher: (...args: any[]) => mockUsePublisher(...args),
@@ -33,6 +34,7 @@ vi.mock("@mdxeditor/editor", () => ({
   applyFormat$: "applyFormat$",
   applyListType$: "applyListType$",
   convertSelectionToNode$: "convertSelectionToNode$",
+  insertTable$: "insertTable$",
   IS_BOLD: 1,
   IS_ITALIC: 2,
   IS_UNDERLINE: 4,
@@ -46,6 +48,7 @@ describe("RichTextToolbar", () => {
   const mockPublishFormat = vi.fn();
   const mockPublishListType = vi.fn();
   const mockConvertSelectionToNode = vi.fn();
+  const mockInsertTable = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -68,6 +71,9 @@ describe("RichTextToolbar", () => {
       if (cell === "convertSelectionToNode$") {
         return mockConvertSelectionToNode;
       }
+      if (cell === "insertTable$") {
+        return mockInsertTable;
+      }
       return vi.fn();
     });
   });
@@ -80,6 +86,7 @@ describe("RichTextToolbar", () => {
     expect(screen.getByLabelText("Underline")).toBeDefined();
     expect(screen.getByLabelText("Bullet List")).toBeDefined();
     expect(screen.getByLabelText("Numbered List")).toBeDefined();
+    expect(screen.getByLabelText("Insert Table")).toBeDefined();
     expect(screen.getByLabelText("Undo")).toBeDefined();
     expect(screen.getByLabelText("Redo")).toBeDefined();
   });
@@ -232,6 +239,14 @@ describe("RichTextToolbar", () => {
     });
   });
 
+  describe("table insertion", () => {
+    test("inserts table with default dimensions when clicked", () => {
+      render(<RichTextToolbar />);
+      fireEvent.click(screen.getByLabelText("Insert Table"));
+      expect(mockInsertTable).toHaveBeenCalledWith({ rows: 3, columns: 3 });
+    });
+  });
+
   test("disables all interactive controls when editor is null", () => {
     mockUseCellValues.mockReturnValue([0, "paragraph", "", null]);
     render(<RichTextToolbar />);
@@ -242,6 +257,7 @@ describe("RichTextToolbar", () => {
       "Underline",
       "Bullet List",
       "Numbered List",
+      "Insert Table",
       "Undo",
       "Redo",
     ]) {

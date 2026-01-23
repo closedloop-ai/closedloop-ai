@@ -8,6 +8,7 @@ import {
   currentBlockType$,
   currentFormat$,
   currentListType$,
+  insertTable$,
   IS_BOLD,
   IS_ITALIC,
   IS_UNDERLINE,
@@ -27,6 +28,7 @@ import {
   ListIcon,
   ListOrderedIcon,
   RedoIcon,
+  TableIcon,
   UnderlineIcon,
   UndoIcon,
 } from "lucide-react";
@@ -121,6 +123,7 @@ export function RichTextToolbar() {
   const publishFormat = usePublisher(applyFormat$);
   const publishListType = usePublisher(applyListType$);
   const convertSelectionToNode = usePublisher(convertSelectionToNode$);
+  const insertTable = usePublisher(insertTable$);
 
   const headingLevel = getHeadingLevel(blockType);
   const currentHeadingLabel = headingLevel === null ? "Body" : `Heading ${headingLevel}`;
@@ -136,6 +139,10 @@ export function RichTextToolbar() {
 
   function toggleList(type: ListType) {
     publishListType(listType === type ? "" : type);
+  }
+
+  function handleInsertTable() {
+    insertTable({ rows: 3, columns: 3 });
   }
 
   return (
@@ -206,6 +213,16 @@ export function RichTextToolbar() {
         pressed={listType === "number"}
         disabled={!editor}
         onPressedChange={() => toggleList("number")}
+      />
+
+      <div className="mx-1 h-6 w-px bg-border" />
+
+      {/* Table */}
+      <ToolbarButton
+        icon={TableIcon}
+        label="Insert Table"
+        disabled={!editor}
+        onClick={handleInsertTable}
       />
 
       <div className="mx-1 h-6 w-px bg-border" />

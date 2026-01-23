@@ -196,3 +196,42 @@
 [class*="_toolbarToggle_"] svg {
   color: inherit !important;
 }
+
+/* ============================================================
+   Table Styles
+   ============================================================ */
+
+.rich-text-editor-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--background));
+}
+
+.rich-text-editor-content table th {
+  background-color: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  font-weight: 600;
+  text-align: left;
+  padding: 0.75rem;
+  border: 1px solid hsl(var(--border));
+}
+
+.rich-text-editor-content table td {
+  padding: 0.75rem;
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+
+.rich-text-editor-content table tr:hover {
+  background-color: hsl(var(--accent));
+}
+
+.rich-text-editor-content table tbody tr:nth-child(even) {
+  background-color: hsl(var(--muted) / 0.3);
+}
+
+.rich-text-editor-content table tbody tr:nth-child(even):hover {
+  background-color: hsl(var(--accent));
+}
