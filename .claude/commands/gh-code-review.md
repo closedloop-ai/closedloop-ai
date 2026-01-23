@@ -324,10 +324,12 @@ query($owner:String!, $name:String!, $number:Int!) {
 }' -f owner="<OWNER>" -f name="<REPO_NAME>" -F number=<PR_NUMBER>
 ```
 
-2. **For each unresolved thread from your bot**:
+2. **For each unresolved thread authored by `symphony-cl`**:
    - Check if `isResolved` is true: SKIP
-   - Read current state of file/line
-   - If issue is FIXED or line no longer exists: RESOLVE it
+   - Read current state of file/line (use FILE_PATCHES for added files)
+   - If issue is FIXED or line no longer exists: **RESOLVE** it
+
+**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Only symphony summary comments (Step 8) are deleted.
 
 3. **Resolve outdated threads** (with error handling):
 
@@ -443,14 +445,21 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments
    - Start with "## Code Review Summary"
    - Were authored by the symphony bot account (`symphony-cl`) — do NOT delete summaries from other bots or users
 
-3. **Delete only the symphony bot's previous summaries**:
+3. **Mark the symphony bot's previous summaries as outdated**:
 
 ```bash
-# Delete each previous symphony bot summary comment
-gh api -X DELETE repos/<OWNER>/<REPO_NAME>/issues/comments/<COMMENT_ID>
+# Minimize each previous symphony bot summary as outdated (preserves history)
+gh api graphql -f query='
+mutation($id:ID!) {
+  minimizeComment(input:{subjectId:$id, classifier:OUTDATED}) {
+    minimizedComment { isMinimized minimizedReason }
+  }
+}' -f id="<COMMENT_NODE_ID>"
 ```
 
-This ensures the new summary always appears at the bottom of the PR conversation and there are no stale summaries lingering. Only delete comments authored by `symphony-cl`.
+**NOTE**: The `minimizeComment` mutation requires the comment's **node ID** (starts with `IC_`), not the numeric REST ID. Get it from the `node_id` field in the REST API response.
+
+This collapses old summaries with "This comment was marked as outdated" while preserving review history. The new summary always appears at the bottom of the PR conversation.
 
 4. **Post a fresh summary comment**:
 
