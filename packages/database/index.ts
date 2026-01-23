@@ -81,6 +81,11 @@ export async function withDb<T>(
 withDb.tx = async <T>(
   fn: (tx: TransactionClient) => Promise<T>
 ): Promise<T> => {
+  const tx = als.getStore()?.tx;
+  if (tx) {
+    return fn(tx);
+  }
+
   const db = await getDatabase();
   return db.$transaction(fn);
 };

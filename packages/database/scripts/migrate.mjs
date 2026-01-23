@@ -24,7 +24,7 @@ async function main() {
     console.log(
       "✓ DATABASE_URL found, running migrations with password auth..."
     );
-    execSync("prisma format && prisma db push --accept-data-loss", {
+    execSync("prisma format && prisma db push", {
       stdio: "inherit",
     });
     return;

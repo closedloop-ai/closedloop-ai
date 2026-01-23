@@ -156,7 +156,7 @@ export function CreateArtifactModal({
           title: title.trim(),
           fileName: fileName.trim() || undefined,
           content: content.trim() || undefined,
-          sourcePrdId: isImplementationPlan ? selectedPrdId : undefined,
+          parentId: isImplementationPlan ? selectedPrdId : undefined,
         });
 
         if (!result.success) {

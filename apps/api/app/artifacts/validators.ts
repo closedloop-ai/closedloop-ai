@@ -13,6 +13,7 @@ const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
 export const createArtifactValidator = z.object({
   workstreamId: z.uuidv7().optional(),
   projectId: z.uuidv7().optional(),
+  parentId: z.uuidv7().optional(),
   type: artifactTypeEnum,
   title: z.string().min(1, "Title is required"),
   fileName: z.string().optional(),
@@ -27,7 +28,6 @@ export const createArtifactValidator = z.object({
     .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
     .optional(),
   targetBranch: z.string().optional(),
-  sourcePrdId: z.string().optional(),
 });
 
 export const updateArtifactValidator = z.object({

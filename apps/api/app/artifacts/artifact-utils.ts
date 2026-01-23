@@ -91,19 +91,24 @@ export const artifactIncludeWithContext = {
  * Used to determine which artifacts share the same version group.
  */
 export function buildArtifactScopeCondition(params: {
+  organizationId: string;
   workstreamId?: string | null;
   projectId?: string | null;
   type: ArtifactType;
   documentSlug?: string | null;
 }): {
+  organizationId: string;
   workstreamId?: string;
   projectId?: string;
   type: ArtifactType;
   documentSlug: string | null;
 } {
   return {
+    organizationId: params.organizationId,
     ...(params.workstreamId ? { workstreamId: params.workstreamId } : {}),
-    ...(params.projectId ? { projectId: params.projectId } : {}),
+    ...(!params.workstreamId && params.projectId
+      ? { projectId: params.projectId }
+      : {}),
     type: params.type,
     documentSlug: params.documentSlug ?? null,
   };

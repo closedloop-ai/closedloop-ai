@@ -39,6 +39,7 @@ export const GET = withAuth<ActivityResponse, "/projects/[id]/activity">(
       );
 
       const response = await activityService.findByProject({
+        organizationId: user.organizationId,
         projectId,
         page,
         pageSize,
