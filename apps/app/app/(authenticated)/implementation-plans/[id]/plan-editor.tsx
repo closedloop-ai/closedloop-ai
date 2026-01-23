@@ -28,13 +28,13 @@ import {
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   SettingsIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import {
@@ -42,6 +42,7 @@ import {
   artifactStatusLabels,
 } from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
 import { usePlanEditor } from "./use-plan-editor";
 
@@ -50,7 +51,6 @@ type PlanEditorProps = {
 };
 
 export function PlanEditor({ plan }: PlanEditorProps) {
-  const router = useRouter();
   const {
     isPending,
     content,
@@ -63,8 +63,12 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     setShowMetadataPanel,
     showDeleteDialog,
     setShowDeleteDialog,
+    showRequestChangesModal,
+    setShowRequestChangesModal,
+    isRequestingChanges,
     isDraft,
     generationStatus,
+    editorKey,
     handleSave,
     handleStatusChange,
     handleApproverChange,
@@ -74,6 +78,8 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,
+    handleRequestChanges,
+    handleGenerationComplete,
   } = usePlanEditor(plan);
 
   return (
@@ -135,6 +141,16 @@ export function PlanEditor({ plan }: PlanEditorProps) {
             </Button>
           ) : null}
 
+          <Button
+            disabled={isPending}
+            onClick={() => setShowRequestChangesModal(true)}
+            size="sm"
+            variant="outline"
+          >
+            <MessageSquareIcon className="mr-2 h-4 w-4" />
+            Request Changes
+          </Button>
+
           <Button onClick={handleExport} size="sm" variant="outline">
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export
@@ -176,7 +192,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
       {/* Generation Status Banner */}
       <GenerationStatusBanner
         artifactId={plan.id}
-        onComplete={() => router.refresh()}
+        onComplete={handleGenerationComplete}
       />
 
       {/* Content Area with Optional Metadata Panel */}
@@ -185,6 +201,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 w-full flex-1 flex-col">
             <RichTextEditor
+              key={editorKey}
               onChange={setContent}
               placeholder="Start writing your implementation plan..."
               value={content}
@@ -277,6 +294,14 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Implementation Plan"
+      />
+
+      {/* Request Changes Modal */}
+      <RequestChangesModal
+        isSubmitting={isRequestingChanges}
+        onOpenChange={setShowRequestChangesModal}
+        onSubmit={handleRequestChanges}
+        open={showRequestChangesModal}
       />
     </div>
   );

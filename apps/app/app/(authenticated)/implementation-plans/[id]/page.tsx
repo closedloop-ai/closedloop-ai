@@ -21,7 +21,8 @@ export const generateMetadata = async ({
 
 const ImplementationPlanPage = async ({ params }: PlanPageProps) => {
   const { id } = await params;
-  const result = await getArtifactById(id);
+  // noCache ensures router.refresh() fetches fresh data after generation completes
+  const result = await getArtifactById(id, { noCache: true });
 
   if (!result.success || result.data.type !== "IMPLEMENTATION_PLAN") {
     // notFound() throws a NEXT_NOT_FOUND error which triggers the not-found.tsx page

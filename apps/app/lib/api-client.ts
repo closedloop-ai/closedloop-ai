@@ -29,16 +29,32 @@ async function fetchApi<T>(
       },
     });
 
-    const result: ApiResult<T> = await response.json();
-    return result;
+    const result = await response.json();
+
+    // Ensure error is always a string if response indicates failure
+    if (
+      result.success === false &&
+      result.error &&
+      typeof result.error !== "string"
+    ) {
+      return {
+        success: false,
+        error: result.error.message || JSON.stringify(result.error),
+      };
+    }
+
+    return result as ApiResult<T>;
   } catch (error) {
     console.error(`API request failed: ${path}`, error);
-    return { success: false, error: "Network error" };
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Network error",
+    };
   }
 }
 
 export const apiClient = {
-  get: <T>(path: string) => fetchApi<T>(path),
+  get: <T>(path: string, options?: RequestInit) => fetchApi<T>(path, options),
 
   post: <T>(path: string, data: unknown) =>
     fetchApi<T>(path, {
