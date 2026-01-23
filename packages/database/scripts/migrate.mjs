@@ -61,7 +61,7 @@ async function main() {
 
     console.log("✓ Token generated, running migrations...");
 
-    execSync("prisma format && prisma db push --accept-data-loss", {
+    execSync("prisma format && prisma db push", {
       stdio: "inherit",
       env: {
         ...process.env,

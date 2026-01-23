@@ -316,8 +316,8 @@ model Workstream {
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization? @relation(fields: [organizationId], references: [id])
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id])
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   artifacts    Artifact[]
 
   @@index([organizationId])
@@ -372,11 +372,11 @@ model Artifact {
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization? @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?   @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parent       Artifact?     @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]    @relation("ArtifactSource")
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent       Artifact?    @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children     Artifact[]   @relation("ArtifactSource")
 
   @@index([organizationId, workstreamId, type, isLatest])
   @@index([organizationId, projectId, type, isLatest])

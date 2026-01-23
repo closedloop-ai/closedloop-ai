@@ -52,7 +52,7 @@ export const workstreamsService = {
   findById(id: string, organizationId: string): Promise<Workstream | null> {
     return withDb((db) =>
       db.workstream.findUnique({
-        where: { id, organizationId, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
   },
@@ -109,7 +109,7 @@ export const workstreamsService = {
   delete(id: string, organizationId: string): Promise<void> {
     return withDb(async (db) => {
       await db.workstream.delete({
-        where: { id, organizationId, project: { organizationId } },
+        where: { id, organizationId },
       });
     });
   },
