@@ -14,6 +14,18 @@ Run a multi-agent code review that posts inline comments and a summary to GitHub
 /gh-code-review 123          # Review specific PR number
 ```
 
+## Allowed Actions (Read-Only Review + Comment Management)
+
+- ✅ READ files and analyze the PR diff
+- ✅ Create inline review comments for new issues
+- ✅ RESOLVE outdated inline comment threads (authored by `symphony-cl`) when issues are fixed
+- ✅ Mark previous summary comments as outdated, post fresh summary
+- ❌ Do NOT checkout, switch branches, or modify any code
+- ❌ Do NOT create, edit, or modify any files in the repository
+- ❌ Do NOT delete inline comments (only resolve threads)
+- ❌ Do NOT merge, close, approve, or request changes on the PR
+- ❌ Do NOT suggest architectural refactoring without evidence of bugs
+
 ---
 
 ## Step 1: Create Todo List
@@ -167,6 +179,12 @@ Review ONLY the changed code in this PR. Return findings as JSON.
 4. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
 5. Focus on: new code introduced, modifications to existing code, new patterns being added
 6. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
+7. Do NOT flag type safety, testing, or mock implementation issues in test files (files matching: *test*, *Test*, *spec*, *mock*, *Mock*, __tests__/)
+8. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
+9. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
+10. Do NOT suggest overly defensive programming (unnecessary null checks, try-catch blocks) without evidence of actual errors
+11. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
+12. Before suggesting custom helper functions, check if utilities already exist in the codebase
 
 **SEVERITY GUIDELINES - BE STRICT**:
 - BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
@@ -262,26 +280,93 @@ For each finding (all severities):
    - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this PR")
    - Allow ±3 lines tolerance for immediate context
 
-3. **Verify severity is appropriate**:
-   - BLOCKING/HIGH claimed but it's a style preference? **DOWNGRADE to MEDIUM**
-   - BLOCKING/HIGH claimed but it's hypothetical? **DOWNGRADE to MEDIUM**
-   - Only keep BLOCKING/HIGH for issues that WILL cause production problems
+3. **Is this an observation or a bug?** Before checking severity, determine if the finding is even actionable:
 
-4. **Verify the issue is real**:
-   - For **modified** files: Read the local file to verify code snippet matches
-   - For **added** files (status: "added" in FILE_STATUSES): Use the patch content from FILE_PATCHES as the source of truth. Do NOT try to Read added files from disk - they may not exist locally if the checkout is incomplete.
-   - Check if issue is already handled elsewhere
-   - If issue doesn't exist or is already handled: **DISCARD** (reason: "False positive")
+   **DISCARD if it's just describing a change:**
+   - "Config changed from X to Y" — just change documentation, not a bug
+   - "Dependency updated" — unless proven incorrect, this is intentional
+   - "Feature flag removed" — unless proven to break code, this is intentional
+   - Uses weasel words: "could", "might", "may", "potentially", "risks", "verify that", "ensure that"
 
-5. **Check for duplicates**: Build dedup key `file:line:category`
+   **KEEP if it proves incorrectness:**
+   - Cites concrete evidence: specific errors, documentation violations, proven breakage
+   - Shows a specific crash path, attack vector, or data corruption scenario
+
+   **If a finding just describes what changed without proving it's wrong, DISCARD it.**
+
+4. **Verify severity with evidence requirements**:
+
+   **For BLOCKING findings, verify:**
+   - Is there concrete proof of a security vulnerability, runtime crash, data loss, or broken functionality?
+   - Does the agent cite specific evidence (error that WILL throw, attack vector, data corruption path)?
+   - **If no concrete proof**: Downgrade to HIGH or MEDIUM
+
+   **For HIGH findings, verify:**
+   - Does the agent provide measurable evidence (algorithm complexity, specific type mismatch)?
+   - For "broken pattern" claims: Did the agent find 2+ examples of the pattern in the codebase?
+   - For performance claims: Is there specific analysis (O(n²) vs O(n), unnecessary loops)?
+   - **If claims are subjective or unproven**: Downgrade to MEDIUM
+
+5. **Read the FULL file and verify the issue is real** (CRITICAL — this prevents false positives):
+
+   a. **Get file content**:
+      - For **modified** files: Read the ENTIRE local file (not just the changed lines)
+      - For **added** files (status: "added" in FILE_STATUSES): Use the patch content from FILE_PATCHES as the source of truth. Do NOT try to Read added files from disk.
+
+   b. **Verify the code snippet matches**: Check that the line exists and contains the code the agent referenced
+
+   c. **Check full-file context to avoid false positives**:
+      - Verify imports/dependencies/types exist (avoid "missing import" when it's at the top of the file)
+      - Check for error handling around the flagged code (try-catch, guards, validation)
+      - Look for type definitions, generics, or overloads that resolve claimed type issues
+
+   d. **Evidence checks by severity**:
+      - **For BLOCKING**: Confirm no error handling, guards, or validation exists that would prevent the claimed crash/vulnerability
+      - **For HIGH "broken pattern"**: Search the codebase (not just PR files) to find 2+ examples of the claimed established pattern — if you can't find them, **downgrade or discard** (the claim is unsubstantiated)
+      - **For HIGH "performance"**: Verify the agent provided concrete analysis (algorithm complexity, specific bottleneck), not just "might be slow"
+
+   e. **Ensure the criticism is not based on assumptions**: Discard findings that are theoretical ("what if...") without concrete proof of breakage
+
+   f. **If all checks pass**: Keep the finding
+   g. **If ANY check fails**: **DISCARD** (reason: "False positive") and log which check failed
+
+6. **Check for test files**: If the file path matches test patterns (`*test*`, `*Test*`, `*spec*`, `*mock*`, `*Mock*`, `test/`, `tests/`, `__tests__/`, `spec/`), **DISCARD** findings about type safety, implementation quality, or mock completeness
+
+7. **Check for inline justification comments**: If there are comments near the flagged line like `// Intentionally...`, `// Required for...`, `// This is fine because...` — **DISCARD** the finding (the developer has documented a deliberate choice)
+
+8. **Deduplicate and consolidate by root cause**:
+
+   Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
+   - Keep the finding with the HIGHEST severity as the primary
+   - Include all other occurrences as "Other Locations"
+   - Post a SINGLE inline comment on the primary location that lists all affected locations
+
+   **Inline comment format for consolidated findings:**
+
+   ````markdown
+   **[SEVERITY]** Category
+
+   Issue description
+
+   **Other Locations** (N more):
+   - `path/file.ts:87` - same pattern in `functionName()`
+   - `path/file.ts:124` - same pattern in `otherFunction()`
+
+   **Recommendation:** How to fix
+   ````
+
+   For single-location findings, use the standard format (no "Other Locations" section).
 
 ### Discard or Downgrade Reasons
 
 - **DOWNGRADE_TO_MEDIUM**: Claimed HIGH/BLOCKING but it's a style preference or hypothetical
 - **DISCARD_FILE_NOT_CHANGED**: Finding is in a file not modified by this PR
 - **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
-- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code
-- **DISCARD_DUPLICATE**: Already reported by another agent
+- **DISCARD_OBSERVATION_NOT_BUG**: Finding just describes a change without proving it's wrong
+- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code (verified against full file)
+- **DISCARD_TEST_FILE**: Finding about type safety/mock quality in a test file
+- **DISCARD_JUSTIFIED**: Developer has inline comment justifying the decision
+- **DISCARD_DUPLICATE**: Already reported by another agent / consolidated into root cause group
 
 **IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. All validated findings (all severities) get inline comments posted.
 
@@ -329,7 +414,7 @@ query($owner:String!, $name:String!, $number:Int!) {
    - Read current state of file/line (use FILE_PATCHES for added files)
    - If issue is FIXED or line no longer exists: **RESOLVE** it
 
-**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Only symphony summary comments (Step 8) are deleted.
+**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Symphony summary comments (Step 8) are marked as outdated, not deleted.
 
 3. **Resolve outdated threads** (with error handling):
 
@@ -434,7 +519,7 @@ Based on validated findings, set status label for the summary comment:
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
-### Delete Old Summaries, Then Post Fresh
+### Mark Old Summaries as Outdated, Then Post Fresh
 
 1. **List existing PR comments**:
 ```bash
@@ -501,6 +586,12 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 
 **Recommendation:** [Approve this PR | Address blocking issues before merge | Consider high-priority items]
 ```
+
+**Summary constraints:**
+- Keep it CONCISE (max 500 words) — no multi-paragraph explanations or lengthy prose
+- Do NOT repeat what inline comments already say — just reference file:line
+- Focus on actionable findings only
+- **NO FOOTER**: Do NOT add any signature, attribution, or footer like "Automated review by Claude Code"
 
 ### Submit Review
 
