@@ -25,6 +25,7 @@ import {
 import {
   ArrowLeftIcon,
   CheckIcon,
+  ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -44,6 +45,7 @@ import {
 import { formatRelativeTime } from "@/lib/date-utils";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
+import { LinearExportDialog } from "./components/linear-export-dialog";
 import { usePlanEditor } from "./use-plan-editor";
 
 type PlanEditorProps = {
@@ -66,6 +68,8 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     showRequestChangesModal,
     setShowRequestChangesModal,
     isRequestingChanges,
+    showLinearExportDialog,
+    setShowLinearExportDialog,
     isDraft,
     generationStatus,
     editorKey,
@@ -74,7 +78,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     handleApproverChange,
     handleApproverBlur,
     handleApprove,
-    handleExport,
+    handleDownloadMarkdown,
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,
@@ -151,10 +155,25 @@ export function PlanEditor({ plan }: PlanEditorProps) {
             Request Changes
           </Button>
 
-          <Button onClick={handleExport} size="sm" variant="outline">
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Export
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline">
+                <DownloadIcon className="mr-2 h-4 w-4" />
+                Export
+                <ChevronDownIcon className="ml-2 h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-[180px]">
+              <DropdownMenuItem onClick={handleDownloadMarkdown}>
+                <DownloadIcon className="mr-2 h-4 w-4" />
+                Download Markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setShowLinearExportDialog(true)}>
+                <ExternalLinkIcon className="mr-2 h-4 w-4" />
+                Export to Linear
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Button onClick={handleCopyMarkdown} size="sm" variant="outline">
             <CopyIcon className="mr-2 h-4 w-4" />
@@ -302,6 +321,13 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         onOpenChange={setShowRequestChangesModal}
         onSubmit={handleRequestChanges}
         open={showRequestChangesModal}
+      />
+
+      {/* Linear Export Dialog */}
+      <LinearExportDialog
+        artifactId={plan.id}
+        onOpenChange={setShowLinearExportDialog}
+        open={showLinearExportDialog}
       />
     </div>
   );

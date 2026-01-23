@@ -29,6 +29,7 @@ export const GET = withAuth<Artifact[], "/workstreams/[id]/artifacts">(
       const latestOnly = searchParams.get("latestOnly") === "true";
 
       const artifacts = await artifactsService.findByWorkstream({
+        organizationId: user.organizationId,
         workstreamId,
         type: type as ArtifactType | undefined,
         latestOnly,
@@ -64,6 +65,7 @@ export const POST = withAuth<Artifact, "/workstreams/[id]/artifacts">(
       }
 
       const artifact = await artifactsService.createForWorkstream(
+        user.organizationId,
         workstreamId,
         body
       );

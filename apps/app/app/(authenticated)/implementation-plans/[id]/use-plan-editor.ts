@@ -38,6 +38,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showRequestChangesModal, setShowRequestChangesModal] = useState(false);
   const [isRequestingChanges, setIsRequestingChanges] = useState(false);
+  const [showLinearExportDialog, setShowLinearExportDialog] = useState(false);
 
   // Editor refresh key - increment to force MDXEditor remount
   const [editorKey, setEditorKey] = useState(0);
@@ -149,7 +150,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     });
   }, [plan.id]);
 
-  const handleExport = useCallback(() => {
+  const handleDownloadMarkdown = useCallback(() => {
     downloadAsMarkdown(
       content,
       plan.fileName ?? `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
@@ -242,6 +243,8 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     showRequestChangesModal,
     setShowRequestChangesModal,
     isRequestingChanges,
+    showLinearExportDialog,
+    setShowLinearExportDialog,
     isDraft,
     generationStatus,
     editorKey,
@@ -252,7 +255,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     handleApproverChange,
     handleApproverBlur,
     handleApprove,
-    handleExport,
+    handleDownloadMarkdown,
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,

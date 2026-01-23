@@ -27,7 +27,8 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_COLORS, PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
@@ -48,14 +49,12 @@ export function PropertiesPanel({
 }: PropertiesPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
 
-  // TODO: Fetch team members from API when endpoint is available
-  const teamMembers: Array<{
-    id: string;
-    name: string;
-    email?: string;
-    avatarUrl?: string;
-    initials: string;
-  }> = [];
+  // Fetch members from all teams associated with the project
+  const teamIds = useMemo(
+    () => project.teams.map((team) => team.id),
+    [project.teams]
+  );
+  const { members: teamMembers } = useTeamMembers({ teamIds });
 
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>

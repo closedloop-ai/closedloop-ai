@@ -19,12 +19,16 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
       const testUser = await createTestUser(testOrgId);
 
       // Create workstream with initial state
-      const workstream = await workstreamsService.create(testUser.id, {
-        projectId: testProjectId,
-        title: "Test Workstream",
-        description: "Test description",
-        type: "FEATURE_DELIVERY",
-      });
+      const workstream = await workstreamsService.create(
+        testOrgId,
+        testUser.id,
+        {
+          projectId: testProjectId,
+          title: "Test Workstream",
+          description: "Test description",
+          type: "FEATURE_DELIVERY",
+        }
+      );
 
       const originalStateChangedAt = workstream.stateChangedAt;
       expect(workstream.state).toBe("INITIATED"); // Default state
@@ -33,9 +37,13 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Update state to trigger stateChangedAt update
-      const updated = await workstreamsService.update(workstream.id, {
-        state: "IMPLEMENTATION_IN_PROGRESS",
-      });
+      const updated = await workstreamsService.update(
+        workstream.id,
+        testOrgId,
+        {
+          state: "IMPLEMENTATION_IN_PROGRESS",
+        }
+      );
 
       expect(updated.state).toBe("IMPLEMENTATION_IN_PROGRESS");
       expect(updated.stateChangedAt).not.toEqual(originalStateChangedAt);
@@ -52,11 +60,15 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
       const testUser = await createTestUser(testOrgId);
 
       // Create workstream
-      const workstream = await workstreamsService.create(testUser.id, {
-        projectId: testProjectId,
-        title: "Test Workstream",
-        description: "Original description",
-      });
+      const workstream = await workstreamsService.create(
+        testOrgId,
+        testUser.id,
+        {
+          projectId: testProjectId,
+          title: "Test Workstream",
+          description: "Original description",
+        }
+      );
 
       const originalStateChangedAt = workstream.stateChangedAt;
 
@@ -64,10 +76,14 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Update other fields but not state
-      const updated = await workstreamsService.update(workstream.id, {
-        title: "Updated Title",
-        description: "Updated description",
-      });
+      const updated = await workstreamsService.update(
+        workstream.id,
+        testOrgId,
+        {
+          title: "Updated Title",
+          description: "Updated description",
+        }
+      );
 
       expect(updated.title).toBe("Updated Title");
       expect(updated.description).toBe("Updated description");
@@ -85,24 +101,24 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
       const testUser = await createTestUser(testOrgId);
 
       // Create multiple workstreams
-      await workstreamsService.create(testUser.id, {
+      await workstreamsService.create(testOrgId, testUser.id, {
         projectId: testProjectId,
         title: "Feature A",
         description: "First feature",
       });
 
-      const ws2 = await workstreamsService.create(testUser.id, {
+      const ws2 = await workstreamsService.create(testOrgId, testUser.id, {
         projectId: testProjectId,
         title: "Feature B",
         description: "Second feature",
       });
 
       // Update one to IMPLEMENTATION_IN_PROGRESS state
-      await workstreamsService.update(ws2.id, {
+      await workstreamsService.update(ws2.id, testOrgId, {
         state: "IMPLEMENTATION_IN_PROGRESS",
       });
 
-      await workstreamsService.create(testUser.id, {
+      await workstreamsService.create(testOrgId, testUser.id, {
         projectId: testProjectId,
         title: "Bug Fix C",
         description: "Third item",
@@ -110,12 +126,14 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
 
       // Find all workstreams
       const all = await workstreamsService.findByProject({
+        organizationId: testOrgId,
         projectId: testProjectId,
       });
       expect(all).toHaveLength(3);
 
       // Find only IMPLEMENTATION_IN_PROGRESS workstreams
       const inProgress = await workstreamsService.findByProject({
+        organizationId: testOrgId,
         projectId: testProjectId,
         state: "IMPLEMENTATION_IN_PROGRESS",
       });
@@ -124,6 +142,7 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
 
       // Search by title
       const searchResults = await workstreamsService.findByProject({
+        organizationId: testOrgId,
         projectId: testProjectId,
         search: "Feature",
       });
@@ -134,6 +153,7 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
 
       // Limit results
       const limited = await workstreamsService.findByProject({
+        organizationId: testOrgId,
         projectId: testProjectId,
         limit: 2,
       });

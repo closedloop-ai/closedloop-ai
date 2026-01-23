@@ -1,5 +1,6 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
+import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import type { z } from "zod";
@@ -44,8 +45,7 @@ export async function parseBody<T extends z.ZodType>(
 
     return { body: parseResult.data, errorResponse: null };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    const errorMessage = parseError(error);
     log.error("Failed to parse request body:", { error: errorMessage });
     return {
       body: null,
@@ -64,7 +64,7 @@ export function errorResponse(
   error: unknown,
   status = 500
 ): NextResponse<ApiResult<never>> {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorMessage = parseError(error);
   log.error(message, { error: errorMessage });
   return NextResponse.json(failure(message), { status });
 }

@@ -7,6 +7,11 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+# Cancel in-progress runs for the same PR to prevent duplicate reviews
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   claude-review:
     # Filter by PR author or allow bot actors like Dependabot
@@ -47,6 +52,21 @@ jobs:
           # Dependabot PRs need full history (fetch-depth: 0) to analyze dependency changes
           # Regular PRs only need the latest commit (fetch-depth: 1) for faster checkout
           fetch-depth: ${{ contains(github.head_ref || github.ref_name, 'dependabot/') && '0' || '1' }}
+
+      - name: Verify checkout matches PR head
+        if: github.event.pull_request.head.sha != ''
+        shell: bash
+        run: |
+          EXPECTED_SHA="${{ github.event.pull_request.head.sha }}"
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::warning::Checkout mismatch: expected $EXPECTED_SHA, got $ACTUAL_SHA. Re-fetching..."
+            git fetch origin "$EXPECTED_SHA" --depth=1
+            git checkout "$EXPECTED_SHA"
+            echo "HEAD is now: $(git rev-parse HEAD)"
+          else
+            echo "Checkout verified: HEAD is $ACTUAL_SHA"
+          fi
 
       - name: Configure Git for Private Marketplace
         shell: bash

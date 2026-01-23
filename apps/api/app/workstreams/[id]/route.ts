@@ -53,7 +53,11 @@ export const PUT = withAuth<Workstream, "/workstreams/[id]">(
         return parseError;
       }
 
-      const workstream = await workstreamsService.update(id, body);
+      const workstream = await workstreamsService.update(
+        id,
+        user.organizationId,
+        body
+      );
 
       return successResponse(workstream);
     } catch (error) {

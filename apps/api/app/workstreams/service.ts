@@ -8,6 +8,7 @@ import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
 
 export type FindWorkstreamsOptions = {
+  organizationId: string;
   projectId: string;
   state?: WorkstreamState;
   search?: string;
@@ -22,11 +23,12 @@ export const workstreamsService = {
    * Find all workstreams for a project with optional filters
    */
   findByProject(options: FindWorkstreamsOptions): Promise<Workstream[]> {
-    const { projectId, state, search, limit } = options;
+    const { organizationId, projectId, state, search, limit } = options;
 
     return withDb((db) =>
       db.workstream.findMany({
         where: {
+          organizationId,
           projectId,
           ...(state ? { state } : {}),
           ...(search
@@ -50,7 +52,7 @@ export const workstreamsService = {
   findById(id: string, organizationId: string): Promise<Workstream | null> {
     return withDb((db) =>
       db.workstream.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
   },
@@ -59,12 +61,14 @@ export const workstreamsService = {
    * Create a new workstream
    */
   create(
+    organizationId: string,
     createdById: string,
     input: CreateWorkstreamInput
   ): Promise<Workstream> {
     return withDb((db) =>
       db.workstream.create({
         data: {
+          organizationId,
           projectId: input.projectId,
           title: input.title,
           description: input.description,
@@ -82,6 +86,7 @@ export const workstreamsService = {
    */
   update(
     id: string,
+    organizationId: string,
     input: Omit<UpdateWorkstreamInput, "id">
   ): Promise<Workstream> {
     // If state is being changed, update stateChangedAt
@@ -92,7 +97,7 @@ export const workstreamsService = {
 
     return withDb((db) =>
       db.workstream.update({
-        where: { id },
+        where: { id, organizationId },
         data,
       })
     );
@@ -104,7 +109,7 @@ export const workstreamsService = {
   delete(id: string, organizationId: string): Promise<void> {
     return withDb(async (db) => {
       await db.workstream.delete({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       });
     });
   },

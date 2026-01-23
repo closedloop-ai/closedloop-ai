@@ -1,10 +1,22 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { keys } from "../keys";
 
-const anthropic = createAnthropic({
-  apiKey: keys().ANTHROPIC_API_KEY,
-});
+// Lazy initialization to avoid validating env vars at module load time
+let _anthropic: ReturnType<typeof createAnthropic> | null = null;
+function getAnthropic() {
+  if (!_anthropic) {
+    _anthropic = createAnthropic({
+      apiKey: keys().ANTHROPIC_API_KEY,
+    });
+  }
+  return _anthropic;
+}
 
 export const models = {
-  opus: anthropic("claude-opus-4-5"),
+  get opus() {
+    return getAnthropic()("claude-opus-4-5");
+  },
+  get sonnet() {
+    return getAnthropic()("claude-sonnet-4-5-20250929");
+  },
 } as const;

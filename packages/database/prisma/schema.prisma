@@ -153,9 +153,11 @@ model Organization {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   // Relations
-  projects Project[]
-  users    User[]
-  teams    Team[]
+  users       User[]
+  teams       Team[]
+  projects    Project[]
+  workstreams Workstream[]
+  artifacts   Artifact[]
 
   @@map("organizations")
 }
@@ -229,7 +231,7 @@ model Repository {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   // Relations
-  project Project @relation(fields: [projectId], references: [id])
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([owner, name])
   @@index([projectId])
@@ -266,7 +268,7 @@ model TeamMember {
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
-  team Team @relation(fields: [teamId], references: [id])
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
   user User @relation(fields: [userId], references: [id])
 
   @@unique([teamId, userId])
@@ -282,7 +284,7 @@ model ProjectTeam {
   createdAt DateTime @default(now()) @map("created_at")
 
   // Relations
-  project Project @relation(fields: [projectId], references: [id])
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   team    Team    @relation(fields: [teamId], references: [id])
 
   @@unique([projectId, teamId])
@@ -297,6 +299,7 @@ model ProjectTeam {
 /// Note: Displayed as "Initiative" in the UI
 model Workstream {
   id             String          @id @default(uuid(7)) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
   projectId      String          @map("project_id") @db.Uuid
   title          String
   description    String?
@@ -313,13 +316,14 @@ model Workstream {
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  project   Project    @relation(fields: [projectId], references: [id])
-  artifacts Artifact[]
+  organization Organization @relation(fields: [organizationId], references: [id])
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  artifacts    Artifact[]
 
-  @@index([projectId, state])
-  @@index([state])
-  @@index([createdById])
-  @@index([assignedToId])
+  @@index([organizationId])
+  @@index([organizationId, projectId, state])
+  @@index([organizationId, assignedToId])
+  @@index([projectId])
   @@map("workstreams")
 }
 
@@ -345,37 +349,41 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id           String         @id @default(uuid(7)) @db.Uuid
-  workstreamId String?        @map("workstream_id") @db.Uuid
-  projectId    String?        @map("project_id") @db.Uuid
-  type         ArtifactType
-  title        String
-  fileName     String?        @map("file_name")
-  approver     String?
-  status       ArtifactStatus @default(DRAFT)
-  content      String?        @db.Text
-  externalUrl  String?        @map("external_url")
-  version      Int            @default(1)
-  isLatest     Boolean        @default(true) @map("is_latest")
-  parentId     String?        @map("parent_id") @db.Uuid
-  documentSlug String?        @map("document_slug")
-  generatedBy  String?        @map("generated_by") @db.Uuid
-  sourcePrdId  String?        @map("source_prd_id") @db.Uuid
-  tokenUsage   Json?          @map("token_usage")
-  targetRepo   String?        @map("target_repo")
-  targetBranch String?        @map("target_branch")
-  createdAt    DateTime       @default(now()) @map("created_at")
-  updatedAt    DateTime       @updatedAt @map("updated_at")
+  id             String         @id @default(uuid(7)) @db.Uuid
+  organizationId String         @map("organization_id") @db.Uuid
+  workstreamId   String?        @map("workstream_id") @db.Uuid
+  projectId      String?        @map("project_id") @db.Uuid
+  parentId       String?        @map("parent_id") @db.Uuid
+  type           ArtifactType
+  title          String
+  fileName       String?        @map("file_name")
+  approver       String?
+  status         ArtifactStatus @default(DRAFT)
+  content        String?        @db.Text
+  externalUrl    String?        @map("external_url")
+  version        Int            @default(1)
+  isLatest       Boolean        @default(true) @map("is_latest")
+  documentSlug   String?        @map("document_slug")
+  generatedBy    String?        @map("generated_by") @db.Uuid
+  tokenUsage     Json?          @map("token_usage")
+  targetRepo     String?        @map("target_repo")
+  targetBranch   String?        @map("target_branch")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
 
   // Relations
-  workstream Workstream? @relation(fields: [workstreamId], references: [id])
-  project    Project?    @relation(fields: [projectId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent       Artifact?    @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children     Artifact[]   @relation("ArtifactSource")
 
-  @@unique([workstreamId, projectId, type, documentSlug, version])
+  @@index([organizationId, workstreamId, type, isLatest])
+  @@index([organizationId, projectId, type, isLatest])
+  @@index([organizationId, parentId, type, isLatest])
+  @@index([workstreamId])
   @@index([projectId])
-  @@index([workstreamId, type, isLatest])
-  @@index([workstreamId, type, documentSlug])
-  @@index([sourcePrdId])
+  @@index([parentId])
   @@map("artifacts")
 }
 

@@ -6,7 +6,7 @@ import type {
   CreateArtifactInput,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
-import { withDb } from "@repo/database";
+import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
 import {
   ArtifactNotFoundError,
@@ -33,6 +33,7 @@ export type FindArtifactsOptions = {
 };
 
 export type FindWorkstreamArtifactsOptions = {
+  organizationId: string;
   workstreamId: string;
   type?: ArtifactType;
   latestOnly?: boolean;
@@ -60,12 +61,12 @@ export const artifactsService = {
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
         where: {
+          organizationId,
+          ...(workstreamId ? { workstreamId } : {}),
+          ...(!workstreamId && projectId ? { projectId } : {}),
           ...(type ? { type } : {}),
           ...(latestOnly ? { isLatest: true } : {}),
-          ...(workstreamId ? { workstreamId } : {}),
-          ...(projectId ? { projectId } : {}),
           ...(documentSlug ? { documentSlug } : {}),
-          project: { organizationId },
         },
         include: artifactIncludeWithContext,
         orderBy: { createdAt: "desc" },
@@ -82,11 +83,12 @@ export const artifactsService = {
   findByWorkstream(
     options: FindWorkstreamArtifactsOptions
   ): Promise<Artifact[]> {
-    const { workstreamId, type, latestOnly = false } = options;
+    const { organizationId, workstreamId, type, latestOnly = false } = options;
 
     return withDb((db) =>
       db.artifact.findMany({
         where: {
+          organizationId,
           workstreamId,
           ...(type ? { type } : {}),
           ...(latestOnly ? { isLatest: true } : {}),
@@ -105,7 +107,7 @@ export const artifactsService = {
   ): Promise<ArtifactWithWorkstream | null> {
     const artifact = await withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
         include: artifactIncludeWithContext,
       })
     );
@@ -123,7 +125,7 @@ export const artifactsService = {
   findByIdSimple(id: string, organizationId: string): Promise<Artifact | null> {
     return withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
   },
@@ -141,7 +143,7 @@ export const artifactsService = {
       if (!projectId && input.workstreamId) {
         // Get projectId from workstream
         const workstream = await tx.workstream.findUnique({
-          where: { id: input.workstreamId },
+          where: { id: input.workstreamId, organizationId },
           select: { projectId: true },
         });
         projectId = workstream?.projectId;
@@ -157,6 +159,7 @@ export const artifactsService = {
 
       // Build scope and get next version (marks existing as not latest)
       const scopeCondition = buildArtifactScopeCondition({
+        organizationId,
         workstreamId: input.workstreamId,
         projectId,
         type: input.type,
@@ -167,11 +170,9 @@ export const artifactsService = {
       return tx.artifact.create({
         data: {
           ...input,
+          organizationId,
           projectId,
           documentSlug,
-          targetRepo: input.targetRepo,
-          targetBranch: input.targetBranch,
-          sourcePrdId: input.sourcePrdId,
           version: nextVersion,
           isLatest: true,
         },
@@ -183,13 +184,14 @@ export const artifactsService = {
    * Create an artifact for a workstream (handles versioning)
    */
   createForWorkstream(
+    organizationId: string,
     workstreamId: string,
     input: Omit<CreateArtifactInput, "workstreamId" | "projectId">
   ): Promise<Artifact> {
     return withDb.tx(async (tx) => {
       // Get projectId from workstream for proper org-scoped queries
       const workstream = await tx.workstream.findUnique({
-        where: { id: workstreamId },
+        where: { id: workstreamId, organizationId },
         select: { projectId: true },
       });
       const projectId = workstream?.projectId;
@@ -200,6 +202,7 @@ export const artifactsService = {
 
       // Build scope and get next version (marks existing as not latest)
       const scopeCondition = buildArtifactScopeCondition({
+        organizationId,
         workstreamId,
         projectId,
         type: input.type,
@@ -210,12 +213,10 @@ export const artifactsService = {
       return tx.artifact.create({
         data: {
           ...input,
+          organizationId,
           workstreamId,
           projectId,
           documentSlug,
-          targetRepo: input.targetRepo,
-          targetBranch: input.targetBranch,
-          sourcePrdId: input.sourcePrdId,
           version: nextVersion,
           isLatest: true,
         },
@@ -234,7 +235,7 @@ export const artifactsService = {
   ): Promise<Artifact> {
     return withDb((db) =>
       db.artifact.update({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
         data: input.content ? { ...input, version: { increment: 1 } } : input,
       })
     );
@@ -246,7 +247,7 @@ export const artifactsService = {
   delete(id: string, organizationId: string): Promise<void> {
     return withDb(async (db) => {
       await db.artifact.delete({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       });
     });
   },
@@ -257,7 +258,7 @@ export const artifactsService = {
   findWithRegenerationContext(id: string, organizationId: string) {
     return withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
         include: {
           workstream: {
             include: {
@@ -299,6 +300,7 @@ export const artifactsService = {
    * If artifact has no workstream, finds PRD by title match and auto-creates one.
    */
   async findOrCreateWorkstream(
+    organizationId: string,
     // TODO: use a real type here.
     artifact: {
       id: string;
@@ -324,6 +326,7 @@ export const artifactsService = {
       const prdArtifact = await withDb((db) =>
         db.artifact.findFirst({
           where: {
+            organizationId,
             workstreamId: artifact.workstream?.id as string,
             type: "PRD",
             isLatest: true,
@@ -338,6 +341,7 @@ export const artifactsService = {
     const foundPrd = await withDb((db) =>
       db.artifact.findFirst({
         where: {
+          organizationId,
           projectId: artifact.projectId,
           type: "PRD",
           isLatest: true,
@@ -354,6 +358,7 @@ export const artifactsService = {
     return withDb.tx(async (tx) => {
       const newWorkstream = await tx.workstream.create({
         data: {
+          organizationId,
           projectId: artifact.projectId as string,
           title: foundPrd.title,
           description: `Auto-created for: ${foundPrd.title}`,
@@ -364,13 +369,13 @@ export const artifactsService = {
 
       // Link artifacts to workstream
       await tx.artifact.updateMany({
-        where: { id: { in: [foundPrd.id, artifact.id] } },
+        where: { id: { in: [foundPrd.id, artifact.id] }, organizationId },
         data: { workstreamId: newWorkstream.id },
       });
 
       // Fetch workstream with relations
       const workstream = await tx.workstream.findUnique({
-        where: { id: newWorkstream.id },
+        where: { id: newWorkstream.id, organizationId },
         include: {
           project: {
             include: {
@@ -423,6 +428,7 @@ ${initialInstructions.trim()}`;
    * Create records for a triggered workflow (action run, artifact update, event)
    */
   createWorkflowTriggerRecords(params: {
+    organizationId: string;
     workstreamId: string;
     repositoryId: string;
     artifactId: string;
@@ -433,6 +439,7 @@ ${initialInstructions.trim()}`;
     targetBranch: string;
   }): Promise<Artifact> {
     const {
+      organizationId,
       workstreamId,
       repositoryId,
       artifactId,
@@ -466,7 +473,7 @@ ${initialInstructions.trim()}`;
           },
         }),
         db.artifact.update({
-          where: { id: artifactId },
+          where: { id: artifactId, organizationId },
           data: {
             version: currentVersion + 1,
             status: "DRAFT",
@@ -500,12 +507,13 @@ ${initialInstructions.trim()}`;
    */
   updateWithPlaceholder(
     id: string,
+    organizationId: string,
     currentVersion: number,
     content: string
   ): Promise<Artifact> {
     return withDb((db) =>
       db.artifact.update({
-        where: { id },
+        where: { id, organizationId },
         data: {
           version: currentVersion + 1,
           status: "DRAFT",
@@ -526,7 +534,7 @@ ${initialInstructions.trim()}`;
   ): Promise<Artifact> {
     const original = await withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
 
@@ -543,7 +551,7 @@ ${initialInstructions.trim()}`;
   async duplicate(id: string, organizationId: string): Promise<Artifact> {
     const original = await withDb((db) =>
       db.artifact.findUnique({
-        where: { id, project: { organizationId } },
+        where: { id, organizationId },
       })
     );
 
@@ -590,6 +598,7 @@ ${initialInstructions.trim()}`;
 
     // Find or create workstream with PRD
     const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
       artifact,
       userId
     );
@@ -658,6 +667,7 @@ ${initialInstructions.trim()}`;
     if (!isGitHubConfigured()) {
       const updatedArtifact = await this.updateWithPlaceholder(
         artifactId,
+        organizationId,
         artifact.version,
         getPlaceholderContent(artifact.title, artifact.version + 1)
       );
@@ -706,6 +716,7 @@ ${initialInstructions.trim()}`;
 
     // Create all workflow trigger records
     const updatedArtifact = await this.createWorkflowTriggerRecords({
+      organizationId,
       workstreamId: workstream.id,
       repositoryId: repository.id,
       artifactId: artifact.id,
@@ -749,6 +760,7 @@ ${initialInstructions.trim()}`;
 
     // Find or create workstream with PRD
     const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
       artifact,
       userId
     );
@@ -851,7 +863,7 @@ ${initialInstructions.trim()}`;
     const newArtifact = await this.createChatWorkflowTriggerRecords({
       workstreamId: workstream.id,
       repositoryId: repository.id,
-      artifact: artifactForVersion as Artifact,
+      artifact: artifactForVersion as PrismaArtifact,
       prdId: prdArtifact.id,
       correlationId,
       targetRepo,
@@ -910,12 +922,12 @@ Please try again or contact support if the issue persists.`,
   createChatWorkflowTriggerRecords(params: {
     workstreamId: string;
     repositoryId: string;
-    artifact: Artifact;
+    artifact: PrismaArtifact;
     prdId: string;
     correlationId: string;
     targetRepo: string;
     targetBranch: string;
-  }): Promise<Artifact> {
+  }): Promise<PrismaArtifact> {
     const {
       workstreamId,
       repositoryId,

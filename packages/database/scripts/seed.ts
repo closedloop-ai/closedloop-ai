@@ -140,19 +140,17 @@ async function main() {
       },
     });
 
-    if (!project1) {
-      project1 = await prisma.project.create({
-        data: {
-          organizationId,
-          name: "User Authentication System",
-          description:
-            "Implement secure authentication with OAuth2, MFA, and session management",
-          priority: "HIGH",
-          ownerId: userId,
-          targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
-        },
-      });
-    }
+    project1 ??= await prisma.project.create({
+      data: {
+        organizationId,
+        name: "User Authentication System",
+        description:
+          "Implement secure authentication with OAuth2, MFA, and session management",
+        priority: "HIGH",
+        ownerId: userId,
+        targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      },
+    });
     console.log(`   ✓ Project: ${project1.name}`);
 
     let project2 = await prisma.project.findFirst({
@@ -162,19 +160,17 @@ async function main() {
       },
     });
 
-    if (!project2) {
-      project2 = await prisma.project.create({
-        data: {
-          organizationId,
-          name: "Analytics Dashboard",
-          description:
-            "Build a real-time analytics dashboard with customizable widgets",
-          priority: "MEDIUM",
-          ownerId: userId,
-          targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
-        },
-      });
-    }
+    project2 ??= await prisma.project.create({
+      data: {
+        organizationId,
+        name: "Analytics Dashboard",
+        description:
+          "Build a real-time analytics dashboard with customizable widgets",
+        priority: "MEDIUM",
+        ownerId: userId,
+        targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
+      },
+    });
     console.log(`   ✓ Project: ${project2.name}`);
 
     // 5. Link projects to teams
@@ -338,6 +334,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
       } else {
         await prisma.artifact.create({
           data: {
+            organizationId,
             projectId: data.projectId,
             type: data.type,
             title: data.title,

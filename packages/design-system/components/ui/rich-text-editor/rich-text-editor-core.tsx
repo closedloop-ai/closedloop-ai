@@ -6,6 +6,7 @@ import {
   markdownShortcutPlugin,
   MDXEditor,
   quotePlugin,
+  tablePlugin,
   thematicBreakPlugin,
   toolbarPlugin,
 } from "@mdxeditor/editor";
@@ -29,6 +30,7 @@ const plugins = [
   thematicBreakPlugin(),
   markdownShortcutPlugin(),
   quotePlugin(),
+  tablePlugin(),
   toolbarPlugin({
     toolbarClassName: "rich-text-editor-toolbar",
     toolbarPosition: "bottom",

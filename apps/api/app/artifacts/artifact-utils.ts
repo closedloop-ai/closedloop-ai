@@ -1,4 +1,4 @@
-import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import type { Artifact, ArtifactType } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 
 /**
@@ -34,6 +34,7 @@ export async function createArtifactVersion(
   options: CreateVersionOptions = {}
 ): Promise<Artifact> {
   const scopeCondition = buildArtifactScopeCondition({
+    organizationId: original.organizationId,
     workstreamId: original.workstreamId,
     projectId: original.projectId,
     type: original.type,
@@ -43,26 +44,27 @@ export async function createArtifactVersion(
 
   return tx.artifact.create({
     data: {
+      organizationId: original.organizationId,
       workstreamId: original.workstreamId,
       projectId: original.projectId,
+      parentId: original.parentId,
       type: original.type,
       title: options.title ?? original.title,
       fileName:
-        options.fileName !== undefined ? options.fileName : original.fileName,
+        options.fileName === undefined ? original.fileName : options.fileName,
       approver: original.approver,
       status: "DRAFT",
       content:
-        options.content !== undefined ? options.content : original.content,
+        options.content === undefined ? original.content : options.content,
       externalUrl: original.externalUrl,
       generatedBy: original.generatedBy,
       documentSlug: original.documentSlug,
       targetRepo: original.targetRepo,
       targetBranch: original.targetBranch,
-      sourcePrdId: original.sourcePrdId,
       version: nextVersion,
       isLatest: true,
     },
-  }) as Promise<Artifact>;
+  });
 }
 
 // Regex patterns for slug generation (top-level for performance)
@@ -155,19 +157,24 @@ export const artifactIncludeWithContext = {
  * Used to determine which artifacts share the same version group.
  */
 export function buildArtifactScopeCondition(params: {
+  organizationId: string;
   workstreamId?: string | null;
   projectId?: string | null;
   type: ArtifactType;
   documentSlug?: string | null;
 }): {
+  organizationId: string;
   workstreamId?: string;
   projectId?: string;
   type: ArtifactType;
   documentSlug: string | null;
 } {
   return {
+    organizationId: params.organizationId,
     ...(params.workstreamId ? { workstreamId: params.workstreamId } : {}),
-    ...(params.projectId ? { projectId: params.projectId } : {}),
+    ...(!params.workstreamId && params.projectId
+      ? { projectId: params.projectId }
+      : {}),
     type: params.type,
     documentSlug: params.documentSlug ?? null,
   };
