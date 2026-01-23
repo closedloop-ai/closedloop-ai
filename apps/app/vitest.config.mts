@@ -6,11 +6,14 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    setupFiles: ["./vitest.setup.ts"],
+    envPrefix: "NEXT_PUBLIC_",
   },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./"),
       "@repo": path.resolve(__dirname, "../../packages"),
+      "server-only": path.resolve(__dirname, "./vitest-mocks/server-only.ts"),
     },
   },
 });

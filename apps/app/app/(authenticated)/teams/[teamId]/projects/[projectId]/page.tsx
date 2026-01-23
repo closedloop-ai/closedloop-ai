@@ -44,6 +44,7 @@ import {
   updateProjectTargetDate,
 } from "@/app/actions/projects";
 import { getTeamById } from "@/app/actions/teams";
+import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   mapArtifactStatusToDisplay,
   mapDisplayStatusToArtifact,
@@ -289,7 +290,14 @@ export default function ProjectDetailPage() {
           {/* Main Content Area */}
           <div className="flex-1 p-6">
             <div className="mb-6">
-              <h1 className="font-semibold text-2xl">{project.name}</h1>
+              <EditableProjectTitle
+                initialTitle={project.name}
+                onTitleChange={(newTitle) => {
+                  // Update local project state for immediate consistency
+                  setProject({ ...project, name: newTitle });
+                }}
+                projectId={project.id}
+              />
               {project.description ? (
                 <p className="mt-1 text-muted-foreground">
                   {project.description}
