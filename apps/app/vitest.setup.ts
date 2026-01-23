@@ -1,0 +1,16 @@
+// Tell t3-env we're in a test environment to allow server-side env vars
+process.env.SKIP_ENV_VALIDATION = "true";
+
+// Set required environment variables for tests
+// This must run before any imports that depend on env vars
+process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test_key";
+process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://test.posthog.com";
+process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
+process.env.NEXT_PUBLIC_WEB_URL = "http://localhost:3001";
+process.env.NEXT_PUBLIC_DOCS_URL = "http://localhost:3004";
+process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_key";
+process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL = "/sign-in";
+process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up";
+process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = "/";
+process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = "/";
+process.env.API_URL = "http://localhost:3002";

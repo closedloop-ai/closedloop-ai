@@ -22,6 +22,7 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
       const latestOnly = searchParams.get("latestOnly") !== "false";
       const workstreamId = searchParams.get("workstreamId");
       const projectId = searchParams.get("projectId");
+      const documentSlug = searchParams.get("documentSlug");
 
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
@@ -29,6 +30,7 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
         latestOnly,
         workstreamId: workstreamId ?? undefined,
         projectId: projectId ?? undefined,
+        documentSlug: documentSlug ?? undefined,
       });
 
       return successResponse(artifacts);

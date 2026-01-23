@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    setupFiles: ["./vitest.setup.ts"],
+    envPrefix: "NEXT_PUBLIC_",
   },
   resolve: {
     alias: {
@@ -30,6 +32,7 @@ export default defineConfig({
         "./__tests__/__mocks__/lexical-list.ts"
       ),
       lexical: path.resolve(__dirname, "./__tests__/__mocks__/lexical.ts"),
+      "server-only": path.resolve(__dirname, "./vitest-mocks/server-only.ts"),
     },
   },
 });

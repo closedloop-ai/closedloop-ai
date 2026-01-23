@@ -9,8 +9,10 @@ import type {
 import { withDb } from "@repo/database";
 import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
 import {
+  ArtifactNotFoundError,
   artifactIncludeWithContext,
   buildArtifactScopeCondition,
+  createArtifactVersion,
   generateDocumentSlug,
   getOrCreateDefaultProject,
   prepareArtifactVersion,
@@ -27,6 +29,7 @@ export type FindArtifactsOptions = {
   latestOnly?: boolean;
   workstreamId?: string;
   projectId?: string;
+  documentSlug?: string;
 };
 
 export type FindWorkstreamArtifactsOptions = {
@@ -51,6 +54,7 @@ export const artifactsService = {
       latestOnly = true,
       workstreamId,
       projectId,
+      documentSlug,
     } = options;
 
     const artifacts = await withDb((db) =>
@@ -60,6 +64,7 @@ export const artifactsService = {
           ...(latestOnly ? { isLatest: true } : {}),
           ...(workstreamId ? { workstreamId } : {}),
           ...(projectId ? { projectId } : {}),
+          ...(documentSlug ? { documentSlug } : {}),
           project: { organizationId },
         },
         include: artifactIncludeWithContext,
@@ -219,7 +224,8 @@ export const artifactsService = {
   },
 
   /**
-   * Update an existing artifact
+   * Update an existing artifact.
+   * Auto-increments version when content is modified.
    */
   update(
     id: string,
@@ -229,7 +235,7 @@ export const artifactsService = {
     return withDb((db) =>
       db.artifact.update({
         where: { id, project: { organizationId } },
-        data: input,
+        data: input.content ? { ...input, version: { increment: 1 } } : input,
       })
     );
   },
@@ -510,7 +516,29 @@ ${initialInstructions.trim()}`;
   },
 
   /**
-   * Duplicate an artifact (creates new version)
+   * Create a new version of an artifact with updated content.
+   * Used when saving edits from an older version - creates v(max+1) with the new content.
+   */
+  async createNewVersion(
+    id: string,
+    organizationId: string,
+    content: string
+  ): Promise<Artifact> {
+    const original = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id, project: { organizationId } },
+      })
+    );
+
+    if (!original) {
+      throw new ArtifactNotFoundError();
+    }
+
+    return withDb.tx((tx) => createArtifactVersion(tx, original, { content }));
+  },
+
+  /**
+   * Duplicate an artifact (creates new version with "(Copy)" suffix)
    */
   async duplicate(id: string, organizationId: string): Promise<Artifact> {
     const original = await withDb((db) =>
@@ -520,40 +548,17 @@ ${initialInstructions.trim()}`;
     );
 
     if (!original) {
-      throw new Error("Artifact not found");
+      throw new ArtifactNotFoundError();
     }
 
-    return withDb.tx(async (tx) => {
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        workstreamId: original.workstreamId,
-        projectId: original.projectId,
-        type: original.type,
-        documentSlug: original.documentSlug,
-      });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
-
-      // Create the new duplicate (preserving documentSlug to stay in same group)
-      return tx.artifact.create({
-        data: {
-          workstreamId: original.workstreamId,
-          projectId: original.projectId,
-          type: original.type,
-          title: `${original.title} (Copy)`,
-          fileName: original.fileName
-            ? original.fileName.replace(".md", "-copy.md")
-            : null,
-          approver: original.approver,
-          status: "DRAFT",
-          content: original.content,
-          externalUrl: original.externalUrl,
-          generatedBy: original.generatedBy,
-          documentSlug: original.documentSlug,
-          version: nextVersion,
-          isLatest: true,
-        },
-      });
-    });
+    return withDb.tx((tx) =>
+      createArtifactVersion(tx, original, {
+        title: `${original.title} (Copy)`,
+        fileName: original.fileName
+          ? original.fileName.replace(".md", "-copy.md")
+          : null,
+      })
+    );
   },
 
   /**

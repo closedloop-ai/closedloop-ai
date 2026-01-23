@@ -42,6 +42,7 @@ import {
   artifactStatusLabels,
 } from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { VersionSelector } from "../components/version-selector";
 import { usePlanEditor } from "./use-plan-editor";
 
 type PlanEditorProps = {
@@ -97,9 +98,10 @@ export function PlanEditor({ plan }: PlanEditorProps) {
 
           <div className="flex items-center gap-2">
             <span className="font-medium">{plan.title}</span>
-            <span className="font-mono text-muted-foreground text-sm">
-              v{plan.version}
-            </span>
+            <VersionSelector
+              artifactId={plan.id}
+              currentVersion={plan.version}
+            />
             <ArtifactStatusBadge status={status} />
           </div>
 

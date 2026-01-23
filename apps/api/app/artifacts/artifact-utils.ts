@@ -1,5 +1,69 @@
-import type { ArtifactType } from "@repo/api/src/types/artifact";
+import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
+
+/**
+ * Typed error for artifact not found - maps to 404 HTTP status.
+ */
+export class ArtifactNotFoundError extends Error {
+  readonly status = 404;
+  constructor(message = "Artifact not found") {
+    super(message);
+    this.name = "ArtifactNotFoundError";
+  }
+}
+
+/**
+ * Options for creating a new artifact version from an existing one.
+ */
+export type CreateVersionOptions = {
+  /** Override the title (e.g., append "(Copy)") */
+  title?: string;
+  /** Override the fileName */
+  fileName?: string | null;
+  /** Override the content */
+  content?: string | null;
+};
+
+/**
+ * Create a new version of an artifact within a transaction.
+ * Handles scope building, version preparation, and artifact creation.
+ */
+export async function createArtifactVersion(
+  tx: TransactionClient,
+  original: Artifact,
+  options: CreateVersionOptions = {}
+): Promise<Artifact> {
+  const scopeCondition = buildArtifactScopeCondition({
+    workstreamId: original.workstreamId,
+    projectId: original.projectId,
+    type: original.type,
+    documentSlug: original.documentSlug,
+  });
+  const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
+
+  return tx.artifact.create({
+    data: {
+      workstreamId: original.workstreamId,
+      projectId: original.projectId,
+      type: original.type,
+      title: options.title ?? original.title,
+      fileName:
+        options.fileName !== undefined ? options.fileName : original.fileName,
+      approver: original.approver,
+      status: "DRAFT",
+      content:
+        options.content !== undefined ? options.content : original.content,
+      externalUrl: original.externalUrl,
+      generatedBy: original.generatedBy,
+      documentSlug: original.documentSlug,
+      targetRepo: original.targetRepo,
+      targetBranch: original.targetBranch,
+      sourcePrdId: original.sourcePrdId,
+      version: nextVersion,
+      isLatest: true,
+    },
+  }) as Promise<Artifact>;
+}
 
 // Regex patterns for slug generation (top-level for performance)
 const MD_EXTENSION_REGEX = /\.md$/;
