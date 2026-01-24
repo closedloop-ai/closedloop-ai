@@ -62,9 +62,13 @@ export async function getArtifactsByProject(
 }
 
 export async function getArtifactById(
-  id: string
+  id: string,
+  options?: { noCache?: boolean }
 ): Promise<ApiResult<ArtifactWithWorkstream>> {
-  return await apiClient.get<ArtifactWithWorkstream>(`/artifacts/${id}`);
+  return await apiClient.get<ArtifactWithWorkstream>(
+    `/artifacts/${id}`,
+    options?.noCache ? { cache: "no-store" } : undefined
+  );
 }
 
 export async function getArtifactVersions(
@@ -265,4 +269,28 @@ export async function getGenerationStatus(
   return await apiClient.get<GenerationStatus>(
     `/artifacts/${artifactId}/generation-status`
   );
+}
+
+/**
+ * Request changes to an implementation plan.
+ * Triggers the chat workflow which routes to /symphony-core:amend-plan.
+ */
+export async function requestPlanChanges(
+  artifactId: string,
+  changes: string
+): Promise<ApiResult<{ success: true; message: string; artifactId: string }>> {
+  const result = await apiClient.post<{
+    success: true;
+    message: string;
+    artifactId: string;
+  }>(`/artifacts/${artifactId}/request-changes`, { changes });
+
+  if (result.success) {
+    // Revalidate both the original and new artifact pages
+    revalidatePath(`/implementation-plans/${artifactId}`);
+    revalidatePath(`/implementation-plans/${result.data.artifactId}`);
+    revalidatePath("/implementation-plans");
+  }
+
+  return result;
 }

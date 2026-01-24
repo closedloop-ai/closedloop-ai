@@ -11,8 +11,10 @@ import {
   createNewVersion,
   deleteArtifact,
   type GenerationStatus,
+  getArtifactById,
   getGenerationStatus,
   regenerateArtifact,
+  requestPlanChanges,
   updateArtifact,
 } from "@/app/actions/artifacts";
 import { copyToClipboard } from "@/lib/clipboard-utils";
@@ -34,7 +36,12 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   // UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showRequestChangesModal, setShowRequestChangesModal] = useState(false);
+  const [isRequestingChanges, setIsRequestingChanges] = useState(false);
   const [showLinearExportDialog, setShowLinearExportDialog] = useState(false);
+
+  // Editor refresh key - increment to force MDXEditor remount
+  const [editorKey, setEditorKey] = useState(0);
 
   // Generation status (for showing GitHub action link in Details panel)
   const [generationStatus, setGenerationStatus] =
@@ -179,6 +186,47 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     });
   }, [plan.id]);
 
+  const handleRequestChanges = useCallback(
+    async (changes: string) => {
+      setIsRequestingChanges(true);
+      try {
+        const result = await requestPlanChanges(plan.id, changes);
+        if (result.success) {
+          setShowRequestChangesModal(false);
+          toast.success(
+            "Change request submitted - generating updated plan..."
+          );
+          // Navigate to the new artifact version
+          router.push(`/implementation-plans/${result.data.artifactId}`);
+        } else {
+          // Ensure error is a string
+          const errorMessage =
+            typeof result.error === "string"
+              ? result.error
+              : (result.error as { message?: string })?.message ||
+                "Failed to submit change request";
+          throw new Error(errorMessage);
+        }
+      } finally {
+        setIsRequestingChanges(false);
+      }
+    },
+    [plan.id, router]
+  );
+
+  const handleGenerationComplete = useCallback(async () => {
+    // Refetch the artifact to get the updated content
+    const result = await getArtifactById(plan.id, { noCache: true });
+    if (result.success) {
+      setContent(result.data.content ?? "");
+      setLastSaved(result.data.updatedAt);
+      setStatus(result.data.status);
+      // Increment key to force MDXEditor remount with new content
+      setEditorKey((k) => k + 1);
+      toast.success("Plan generation complete");
+    }
+  }, [plan.id]);
+
   return {
     // State
     isPending,
@@ -192,10 +240,14 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     setShowMetadataPanel,
     showDeleteDialog,
     setShowDeleteDialog,
+    showRequestChangesModal,
+    setShowRequestChangesModal,
+    isRequestingChanges,
     showLinearExportDialog,
     setShowLinearExportDialog,
     isDraft,
     generationStatus,
+    editorKey,
 
     // Handlers
     handleSave,
@@ -207,5 +259,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     handleCopyMarkdown,
     handleDelete,
     handleRegenerate,
+    handleRequestChanges,
+    handleGenerationComplete,
   };
 }

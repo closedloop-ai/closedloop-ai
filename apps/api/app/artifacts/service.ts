@@ -6,7 +6,7 @@ import type {
   CreateArtifactInput,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
-import { withDb } from "@repo/database";
+import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
 import {
   ArtifactNotFoundError,
@@ -477,7 +477,7 @@ ${initialInstructions.trim()}`;
           data: {
             version: currentVersion + 1,
             status: "DRAFT",
-            generatedBy: `symphony-dispatch:${correlationId}`,
+            // Correlation tracked via GitHubActionRun.triggerData.correlationId
           },
         }),
         db.workstreamEvent.create({
@@ -729,7 +729,274 @@ ${initialInstructions.trim()}`;
 
     return { success: true, artifact: updatedArtifact };
   },
+
+  /**
+   * Request changes to an implementation plan.
+   * Triggers the chat workflow which routes to /symphony-core:amend-plan.
+   */
+  async requestPlanChanges(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    changes: string
+  ): Promise<RequestChangesResult> {
+    // Find artifact with context
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+
+    if (!artifact) {
+      return { success: false, error: "Artifact not found", status: 404 };
+    }
+
+    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+      return {
+        success: false,
+        error: "Only implementation plans can be amended",
+        status: 400,
+      };
+    }
+
+    // Find or create workstream with PRD
+    const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!prdArtifact) {
+      return {
+        success: false,
+        error: "No PRD found for this plan. Cannot request changes.",
+        status: 400,
+      };
+    }
+
+    if (!workstream) {
+      return {
+        success: false,
+        error: "Artifact must have a project to request changes",
+        status: 400,
+      };
+    }
+
+    const project = workstream.project;
+    let repository = project.repositories[0];
+
+    // Use PRD's target repo (fallback to project's primary)
+    const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+    const targetBranch =
+      prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+
+    if (!targetRepo) {
+      return {
+        success: false,
+        error: "No repository configured for this project or PRD",
+        status: 400,
+      };
+    }
+
+    // Auto-create repository if we have a targetRepo but no linked repository
+    if (!repository) {
+      const repoInfo = await getRepositoryInfo(targetRepo);
+      if (!repoInfo) {
+        return {
+          success: false,
+          error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
+          status: 400,
+        };
+      }
+
+      repository = await withDb((db) =>
+        db.repository.upsert({
+          where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
+          create: {
+            projectId: project.id,
+            githubId: repoInfo.githubId,
+            owner: repoInfo.owner,
+            name: repoInfo.name,
+            fullName: repoInfo.fullName,
+            defaultBranch: repoInfo.defaultBranch,
+            isPrimary: true,
+          },
+          update: {}, // If exists, just use it
+        })
+      );
+    }
+
+    // Fall back to error when GitHub is not configured (no placeholder for chat)
+    if (!isGitHubConfigured()) {
+      return {
+        success: false,
+        error:
+          "GitHub Actions integration is not configured. Cannot process change requests.",
+        status: 500,
+      };
+    }
+
+    // Check for existing running job
+    const existingRun = await this.findPendingWorkflowRun(
+      workstream.id,
+      "symphony-dispatch"
+    );
+
+    if (existingRun) {
+      return {
+        success: false,
+        error: "A workflow is already in progress for this plan",
+        status: 409,
+      };
+    }
+
+    const correlationId = createId();
+
+    // Update artifact with current workstream ID (may have been set by findOrCreateWorkstream)
+    const artifactForVersion = {
+      ...artifact,
+      workstreamId: workstream.id,
+      projectId: artifact.projectId ?? workstream.project.id,
+    };
+
+    // IMPORTANT: Create GitHubActionRun and new artifact version BEFORE triggering workflow
+    // This prevents race condition where webhook fires before records exist
+    const newArtifact = await this.createChatWorkflowTriggerRecords({
+      workstreamId: workstream.id,
+      repositoryId: repository.id,
+      artifact: artifactForVersion as PrismaArtifact,
+      prdId: prdArtifact.id,
+      correlationId,
+      targetRepo,
+      targetBranch,
+    });
+
+    // Build the context with a clear instruction prefix
+    const context = `Amend the implementation plan with the following changes:
+
+${changes}`;
+
+    // Now trigger the workflow - records already exist for webhook to find
+    const result = await triggerWorkflowDispatch({
+      targetRepo,
+      ref: targetBranch,
+      command: "chat",
+      context,
+      correlationId,
+      sessionId: prdArtifact.id, // Same session for artifact continuity
+    });
+
+    if (!result.success) {
+      // Workflow trigger failed - update the artifact with error status
+      // The GitHubActionRun will remain in PENDING but that's acceptable
+      await withDb((db) =>
+        db.artifact.update({
+          where: { id: newArtifact.id },
+          data: {
+            content: `# Change Request Failed
+
+Failed to trigger the workflow: ${result.error}
+
+Please try again or contact support if the issue persists.`,
+          },
+        })
+      );
+
+      return {
+        success: false,
+        error: `Failed to trigger change request: ${result.error}`,
+        status: 500,
+      };
+    }
+
+    return {
+      success: true,
+      message: "Change request submitted",
+      artifactId: newArtifact.id,
+    };
+  },
+
+  /**
+   * Create records for a chat/amend workflow trigger.
+   * Creates a NEW artifact version to preserve the original content.
+   */
+  createChatWorkflowTriggerRecords(params: {
+    workstreamId: string;
+    repositoryId: string;
+    artifact: PrismaArtifact;
+    prdId: string;
+    correlationId: string;
+    targetRepo: string;
+    targetBranch: string;
+  }): Promise<PrismaArtifact> {
+    const {
+      workstreamId,
+      repositoryId,
+      artifact,
+      prdId,
+      correlationId,
+      targetRepo,
+      targetBranch,
+    } = params;
+
+    return withDb.tx(async (tx) => {
+      // Create a NEW artifact version (preserves original content in previous version)
+      const newArtifact = await createArtifactVersion(tx, artifact, {
+        // Content starts empty - will be populated by webhook when workflow completes
+        // This ensures original content is preserved in the previous version
+        content: "# Generating...\n\nYour change request is being processed.",
+      });
+
+      // Note: Correlation tracked via GitHubActionRun.triggerData.correlationId
+      // No need to update generatedBy (it's a UUID field, not for correlation strings)
+
+      // Create workflow tracking records
+      await Promise.all([
+        tx.gitHubActionRun.create({
+          data: {
+            workstreamId,
+            repositoryId,
+            runId: null, // Will be populated by webhook when GitHub provides the actual runId
+            workflowName: "symphony-dispatch",
+            status: "PENDING",
+            htmlUrl: "",
+            triggerEvent: "workflow_dispatch",
+            triggerData: {
+              correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
+              artifactId: newArtifact.id, // Reference the NEW version
+              prdId,
+              command: "chat",
+            },
+            sessionId: prdId,
+            jobType: "amend",
+            startedAt: new Date(),
+          },
+        }),
+        tx.workstreamEvent.create({
+          data: {
+            workstreamId,
+            type: "GITHUB_ACTION_TRIGGERED",
+            actorType: "system",
+            data: {
+              workflowName: "symphony-dispatch",
+              command: "chat",
+              correlationId,
+              artifactId: newArtifact.id,
+              prdId,
+              targetRepo,
+              targetBranch,
+            },
+          },
+        }),
+      ]);
+
+      return newArtifact;
+    });
+  },
 };
+
+export type RequestChangesResult =
+  | { success: true; message: string; artifactId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 // Type for raw Prisma result before transformation
 type RawArtifactWithContext = Artifact & {

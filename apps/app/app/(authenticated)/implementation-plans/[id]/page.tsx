@@ -23,6 +23,7 @@ export const generateMetadata = async ({
 const ImplementationPlanPage = async ({ params }: PlanPageProps) => {
   const { id } = await params;
   // Uses React.cache() - deduplicates with generateMetadata fetch
+  // Post-generation refresh handled by handleGenerationComplete in the client component
   const result = await getCachedArtifactById(id);
 
   if (!result.success || result.data.type !== "IMPLEMENTATION_PLAN") {
