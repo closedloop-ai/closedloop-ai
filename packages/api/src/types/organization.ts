@@ -100,7 +100,7 @@ export type Project = {
   priority: ProjectPriority;
   ownerId: string | null;
   targetDate: Date | null;
-  codebaseSummary: JsonObject | null;
+  codebaseSummary: string | null;
   lastIndexedAt: Date | null;
   settings: JsonObject;
   createdAt: Date;
@@ -139,6 +139,8 @@ export type UpdateProjectInput = {
   targetDate?: Date | null;
   teamIds?: string[];
   settings?: JsonObject;
+  codebaseSummary?: string | null;
+  lastIndexedAt?: Date | null;
 };
 
 // Repository types

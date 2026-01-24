@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getArtifactById } from "@/app/actions/artifacts";
+import { getCachedArtifactById } from "@/lib/cached-data";
 import { PlanEditor } from "./plan-editor";
 
 type PlanPageProps = {
@@ -11,7 +11,8 @@ export const generateMetadata = async ({
   params,
 }: PlanPageProps): Promise<Metadata> => {
   const { id } = await params;
-  const result = await getArtifactById(id);
+  // Uses React.cache() to deduplicate with page component fetch
+  const result = await getCachedArtifactById(id);
 
   return {
     title: result.success ? result.data.title : "Implementation Plan",
@@ -21,8 +22,9 @@ export const generateMetadata = async ({
 
 const ImplementationPlanPage = async ({ params }: PlanPageProps) => {
   const { id } = await params;
-  // noCache ensures router.refresh() fetches fresh data after generation completes
-  const result = await getArtifactById(id, { noCache: true });
+  // Uses React.cache() - deduplicates with generateMetadata fetch
+  // Post-generation refresh handled by handleGenerationComplete in the client component
+  const result = await getCachedArtifactById(id);
 
   if (!result.success || result.data.type !== "IMPLEMENTATION_PLAN") {
     // notFound() throws a NEXT_NOT_FOUND error which triggers the not-found.tsx page

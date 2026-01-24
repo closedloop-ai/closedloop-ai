@@ -24,11 +24,15 @@ export const metadata: Metadata = {
 };
 
 const App = async () => {
-  const result = await getRecentWorkstreams(6);
+  // Parallelize independent async operations to eliminate waterfalls
+  const [result, { orgId }] = await Promise.all([
+    getRecentWorkstreams(6),
+    auth(),
+  ]);
   const workstreams = result.success ? result.data : [];
-  const { orgId } = await auth();
 
   // Fallback home page when no organization is set up
+  // TODO: I believe this is not needed anymore.
   if (!orgId) {
     return (
       <>

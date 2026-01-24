@@ -45,7 +45,11 @@ export const PUT = withAuth<ProjectWithDetails, "/projects/[id]">(
         return parseError;
       }
 
-      const updated = await projectsService.update(id, body);
+      const updated = await projectsService.update(
+        id,
+        user.organizationId,
+        body
+      );
 
       if (!updated) {
         return notFoundResponse("Project");
