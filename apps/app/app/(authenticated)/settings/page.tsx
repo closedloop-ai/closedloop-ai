@@ -23,6 +23,25 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
 
+// Shared appearance config for Clerk components to match design system
+const clerkAppearance = {
+  elements: {
+    rootBox: "w-full",
+    cardBox: "bg-transparent shadow-none border rounded-lg border-border",
+    navbar: "border-r border-border",
+    navbarButton: "text-foreground hover:bg-muted",
+    navbarButtonIcon: "text-muted-foreground",
+    pageScrollBox: "p-4",
+    formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
+    formFieldInput: "bg-background border-border",
+    profileSectionPrimaryButton:
+      "bg-primary text-primary-foreground hover:bg-primary/90",
+    badge: "bg-muted text-muted-foreground",
+    membersPageInviteButton:
+      "bg-primary text-primary-foreground hover:bg-primary/90",
+  },
+};
+
 export default function SettingsPage() {
   const { membership } = useOrganization();
   const isAdmin = membership?.role === "org:admin";
@@ -39,54 +58,41 @@ export default function SettingsPage() {
       <Separator />
 
       <Tabs className="flex-1" defaultValue="profile">
-        <TabsList>
-          <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="organization">Organization</TabsTrigger>
-          {isAdmin ? <TabsTrigger value="admin">Admin</TabsTrigger> : null}
-          <TabsTrigger value="integrations">Integrations</TabsTrigger>
+        <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="profile"
+          >
+            Profile
+          </TabsTrigger>
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="organization"
+          >
+            Organization
+          </TabsTrigger>
+          {isAdmin ? (
+            <TabsTrigger
+              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+              value="admin"
+            >
+              Admin
+            </TabsTrigger>
+          ) : null}
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="integrations"
+          >
+            Integrations
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent className="mt-6 space-y-6" value="profile">
-          <Card>
-            <CardHeader>
-              <CardTitle>User Profile</CardTitle>
-              <CardDescription>
-                Manage your personal account settings, security, and profile
-                information.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <UserProfile
-                appearance={{
-                  elements: {
-                    rootBox: "w-full",
-                    cardBox: "shadow-none border-0",
-                  },
-                }}
-              />
-            </CardContent>
-          </Card>
+          <UserProfile appearance={clerkAppearance} />
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="organization">
-          <Card>
-            <CardHeader>
-              <CardTitle>Organization Settings</CardTitle>
-              <CardDescription>
-                Manage organization information, members, and roles.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <OrganizationProfile
-                appearance={{
-                  elements: {
-                    rootBox: "w-full",
-                    cardBox: "shadow-none border-0",
-                  },
-                }}
-              />
-            </CardContent>
-          </Card>
+          <OrganizationProfile appearance={clerkAppearance} />
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="admin">
