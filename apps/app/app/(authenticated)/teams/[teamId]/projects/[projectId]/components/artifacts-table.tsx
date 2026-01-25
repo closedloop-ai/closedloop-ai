@@ -36,7 +36,9 @@ import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
+  ARTIFACT_TYPE_COLORS,
   ARTIFACT_TYPE_ICONS,
+  ARTIFACT_TYPE_LABELS,
 } from "@/lib/project-constants";
 import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
 
@@ -143,6 +145,7 @@ export function ArtifactsTable({
         <TableHeader>
           <TableRow>
             <TableHead>Artifact</TableHead>
+            <TableHead>Type</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Link</TableHead>
             <TableHead className="w-[50px]" />
@@ -173,6 +176,23 @@ export function ArtifactsTable({
                     <Icon className="h-4 w-4 text-muted-foreground" />
                     <span className="font-medium">{artifact.name}</span>
                   </div>
+                </TableCell>
+                <TableCell>
+                  {(() => {
+                    const typeColors = ARTIFACT_TYPE_COLORS[artifact.type] ?? {
+                      bg: "bg-gray-100 dark:bg-gray-800",
+                      text: "text-gray-700 dark:text-gray-300",
+                    };
+                    const typeLabel =
+                      ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type;
+                    return (
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 font-medium text-xs ${typeColors.bg} ${typeColors.text}`}
+                      >
+                        {typeLabel}
+                      </span>
+                    );
+                  })()}
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <Select
