@@ -41,6 +41,13 @@ export const AuthProvider = ({
     organizationSwitcherTriggerIcon: "text-muted-foreground",
     organizationPreview__organizationSwitcherTrigger: "gap-2",
     organizationPreviewAvatarContainer: "shrink-0",
+    // Embedded profile component styling
+    rootBox: "w-full",
+    cardBox: "shadow-none border-0",
+    profileSectionPrimaryButton:
+      "bg-primary text-primary-foreground hover:bg-primary/90",
+    formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
+    badge: "bg-muted text-muted-foreground",
   };
 
   const layout: Theme["layout"] = {

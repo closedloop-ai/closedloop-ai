@@ -1,7 +1,12 @@
 "use client";
 
-import { useClerk } from "@repo/auth/client";
-import { Button } from "@repo/design-system/components/ui/button";
+import {
+  OrganizationProfile,
+  OrganizationSwitcher,
+  Protect,
+  UserProfile,
+  useOrganization,
+} from "@repo/auth/client";
 import {
   Card,
   CardContent,
@@ -10,15 +15,36 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { Separator } from "@repo/design-system/components/ui/separator";
-import { LogOutIcon } from "lucide-react";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@repo/design-system/components/ui/tabs";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
 
-export default function SettingsPage() {
-  const { signOut } = useClerk();
+// Shared appearance config for Clerk components to match design system
+const clerkAppearance = {
+  elements: {
+    rootBox: "w-full",
+    cardBox: "bg-transparent shadow-none border rounded-lg border-border",
+    navbar: "border-r border-border",
+    navbarButton: "text-foreground hover:bg-muted",
+    navbarButtonIcon: "text-muted-foreground",
+    pageScrollBox: "p-4",
+    formButtonPrimary: "bg-primary text-primary-foreground hover:bg-primary/90",
+    formFieldInput: "bg-background border-border",
+    profileSectionPrimaryButton:
+      "bg-primary text-primary-foreground hover:bg-primary/90",
+    badge: "bg-muted text-muted-foreground",
+    membersPageInviteButton:
+      "bg-primary text-primary-foreground hover:bg-primary/90",
+  },
+};
 
-  const handleLogout = async () => {
-    await signOut({ redirectUrl: "/" });
-  };
+export default function SettingsPage() {
+  const { membership } = useOrganization();
+  const isAdmin = membership?.role === "org:admin";
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">
@@ -31,32 +57,110 @@ export default function SettingsPage() {
 
       <Separator />
 
-      <div className="grid gap-6">
-        <LinearIntegrationCard />
+      <Tabs className="flex-1" defaultValue="profile">
+        <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="profile"
+          >
+            Profile
+          </TabsTrigger>
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="organization"
+          >
+            Organization
+          </TabsTrigger>
+          {isAdmin ? (
+            <TabsTrigger
+              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+              value="admin"
+            >
+              Admin
+            </TabsTrigger>
+          ) : null}
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="integrations"
+          >
+            Integrations
+          </TabsTrigger>
+        </TabsList>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Account</CardTitle>
-            <CardDescription>
-              Manage your account settings and sign out.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Sign out</p>
+        <TabsContent className="mt-6 space-y-6" value="profile">
+          <UserProfile appearance={clerkAppearance} />
+        </TabsContent>
+
+        <TabsContent className="mt-6 space-y-6" value="organization">
+          <OrganizationProfile appearance={clerkAppearance} />
+        </TabsContent>
+
+        <TabsContent className="mt-6 space-y-6" value="admin">
+          {/* biome-ignore lint/a11y/useValidAriaRole: This is a Clerk role prop, not an ARIA role */}
+          <Protect
+            fallback={
+              <Card>
+                <CardHeader>
+                  <CardTitle>Access Denied</CardTitle>
+                  <CardDescription>
+                    You must be an organization admin to view this section.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            }
+            role="org:admin"
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle>Organization Switcher</CardTitle>
+                <CardDescription>
+                  Switch between organizations you manage.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <OrganizationSwitcher
+                  appearance={{
+                    elements: {
+                      rootBox: "w-full",
+                      organizationSwitcherTrigger: "w-full justify-between",
+                    },
+                  }}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Advanced Organization Management</CardTitle>
+                <CardDescription>
+                  Admin-only controls for organization configuration.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
                 <p className="text-muted-foreground text-sm">
-                  Sign out of your account on this device.
+                  Additional admin controls can be added here in the future. For
+                  now, use the Organization tab to manage members, roles, and
+                  settings.
                 </p>
-              </div>
-              <Button onClick={handleLogout} variant="destructive">
-                <LogOutIcon className="mr-2 h-4 w-4" />
-                Sign out
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+              </CardContent>
+            </Card>
+          </Protect>
+        </TabsContent>
+
+        <TabsContent className="mt-6 space-y-6" value="integrations">
+          <LinearIntegrationCard />
+
+          <Card>
+            <CardHeader>
+              <CardTitle>More Integrations</CardTitle>
+              <CardDescription>
+                Additional integrations will appear here as they become
+                available.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -82,7 +82,7 @@ const data = {
       title: "Members",
       url: "/members",
       icon: UsersIcon,
-      disabled: true,
+      disabled: false,
     },
   ],
   navSecondary: [
