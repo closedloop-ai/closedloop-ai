@@ -7,14 +7,12 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
+import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/date-utils";
 import { PRDRowActions } from "./prd-row-actions";
-
-type PRDTableProps = {
-  prds: ArtifactWithWorkstream[];
-};
 
 const columns: Column<ArtifactWithWorkstream>[] = [
   {
@@ -73,12 +71,30 @@ const filterOptions: FilterOption[] = [
   { label: "Archived", value: "ARCHIVED" },
 ];
 
-export function PRDTable({ prds }: PRDTableProps) {
+export function PRDTable() {
   const router = useRouter();
+  const { data: result, isLoading } = useArtifactsByType("PRD");
+  const prds = result?.success ? result.data : [];
 
   const handleRowClick = (prd: ArtifactWithWorkstream) => {
     router.push(`/prds/${prd.id}`);
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!result?.success) {
+    return (
+      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+        {result?.error ?? "Failed to load PRDs"}
+      </div>
+    );
+  }
 
   return (
     <DataTable

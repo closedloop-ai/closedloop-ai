@@ -38,8 +38,8 @@ import {
   UserIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { getOrganizationUsers } from "@/app/actions/users";
+import { useMemo } from "react";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
@@ -62,31 +62,26 @@ export function ProjectsTable({
   onDelete,
 }: ProjectsTableProps) {
   const router = useRouter();
-  const [orgUsers, setOrgUsers] = useState<PopoverUser[]>([]);
+  const { data: usersResult } = useOrganizationUsers();
 
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => Promise.resolve()),
     getId: (project: ProjectWithDetails) => project.id,
   });
 
-  // Fetch organization users for owner selection
-  useEffect(() => {
-    async function fetchUsers() {
-      const result = await getOrganizationUsers();
-      if (result.success) {
-        setOrgUsers(
-          result.data.map((user) => ({
-            id: user.id,
-            name: getUserDisplayName(user),
-            email: user.email,
-            avatarUrl: user.avatarUrl ?? undefined,
-            initials: getUserInitials(user.firstName, user.lastName),
-          }))
-        );
-      }
+  // Transform organization users for the popover
+  const orgUsers: PopoverUser[] = useMemo(() => {
+    if (!usersResult?.success) {
+      return [];
     }
-    fetchUsers();
-  }, []);
+    return usersResult.data.map((user) => ({
+      id: user.id,
+      name: getUserDisplayName(user),
+      email: user.email,
+      avatarUrl: user.avatarUrl ?? undefined,
+      initials: getUserInitials(user.firstName, user.lastName),
+    }));
+  }, [usersResult]);
 
   const handleRowClick = (project: ProjectWithDetails) => {
     router.push(`/teams/${teamId}/projects/${project.id}`);

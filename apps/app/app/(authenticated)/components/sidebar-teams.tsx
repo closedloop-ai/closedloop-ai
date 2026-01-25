@@ -1,6 +1,5 @@
 "use client";
 
-import type { TeamWithCounts } from "@repo/api/src/types/teams";
 import {
   Collapsible,
   CollapsibleContent,
@@ -25,30 +24,19 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { getTeams } from "@/app/actions/teams";
+import { useTeams } from "@/hooks/queries/use-teams";
 import { TeamModal } from "./team-modal";
 
 export function SidebarTeams() {
-  const [teams, setTeams] = useState<TeamWithCounts[]>([]);
-
-  const fetchTeams = useCallback(async () => {
-    const result = await getTeams();
-    if (result.success) {
-      setTeams(result.data);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchTeams();
-  }, [fetchTeams]);
+  const { data: result, refetch } = useTeams();
+  const teams = result?.success ? result.data : [];
 
   return (
     <SidebarGroup>
       <SidebarGroupLabel className="flex items-center justify-between pr-2">
         <span>Your Teams</span>
         <TeamModal
-          onSuccess={fetchTeams}
+          onSuccess={refetch}
           trigger={
             <button
               className="flex h-5 w-5 items-center justify-center rounded-md hover:bg-sidebar-accent"
@@ -88,7 +76,7 @@ export function SidebarTeams() {
                   </SidebarMenuSubItem>
                   <SidebarMenuSubItem>
                     <TeamModal
-                      onSuccess={fetchTeams}
+                      onSuccess={refetch}
                       team={team}
                       trigger={
                         <SidebarMenuSubButton>
@@ -106,7 +94,7 @@ export function SidebarTeams() {
         {teams.length === 0 && (
           <SidebarMenuItem>
             <TeamModal
-              onSuccess={fetchTeams}
+              onSuccess={refetch}
               trigger={
                 <SidebarMenuButton className="text-muted-foreground text-sm">
                   <PlusIcon className="h-4 w-4" />

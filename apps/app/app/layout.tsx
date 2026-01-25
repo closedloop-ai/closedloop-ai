@@ -1,4 +1,5 @@
 import { env } from "@/env";
+import { QueryProvider } from "@/lib/query-client";
 import "./styles.css";
 import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
@@ -13,18 +14,23 @@ type RootLayoutProperties = {
 const RootLayout = ({ children }: RootLayoutProperties) => (
   <html className={fonts} lang="en" suppressHydrationWarning>
     <body className="overflow-hidden">
-      <AnalyticsProvider>
-        <DesignSystemProvider
-          helpUrl={env.NEXT_PUBLIC_DOCS_URL}
-          privacyUrl={new URL(
-            "/legal/privacy",
-            env.NEXT_PUBLIC_WEB_URL
-          ).toString()}
-          termsUrl={new URL("/legal/terms", env.NEXT_PUBLIC_WEB_URL).toString()}
-        >
-          {children}
-        </DesignSystemProvider>
-      </AnalyticsProvider>
+      <QueryProvider>
+        <AnalyticsProvider>
+          <DesignSystemProvider
+            helpUrl={env.NEXT_PUBLIC_DOCS_URL}
+            privacyUrl={new URL(
+              "/legal/privacy",
+              env.NEXT_PUBLIC_WEB_URL
+            ).toString()}
+            termsUrl={new URL(
+              "/legal/terms",
+              env.NEXT_PUBLIC_WEB_URL
+            ).toString()}
+          >
+            {children}
+          </DesignSystemProvider>
+        </AnalyticsProvider>
+      </QueryProvider>
       <Toolbar />
     </body>
   </html>

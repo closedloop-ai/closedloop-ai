@@ -53,6 +53,11 @@ async function fetchApi<T>(
   }
 }
 
+/**
+ * TODO: Delete me.
+ * 
+ * @deprecated Use useApiClient hook from a client component instead.
+ */
 export const apiClient = {
   get: <T>(path: string, options?: RequestInit) => fetchApi<T>(path, options),
 

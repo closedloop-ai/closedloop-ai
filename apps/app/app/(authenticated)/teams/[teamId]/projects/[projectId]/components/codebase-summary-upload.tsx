@@ -2,8 +2,8 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { UploadIcon } from "lucide-react";
-import { useRef, useState } from "react";
-import { uploadCodebaseSummary } from "@/app/actions/projects";
+import { useRef } from "react";
+import { useUploadCodebaseSummary } from "@/hooks/queries/use-projects";
 
 type CodebaseSummaryUploadProps = {
   projectId: string;
@@ -16,7 +16,7 @@ export function CodebaseSummaryUpload({
   lastIndexedAt,
   onUploadSuccess,
 }: CodebaseSummaryUploadProps) {
-  const [isUploading, setIsUploading] = useState(false);
+  const uploadMutation = useUploadCodebaseSummary();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleButtonClick = () => {
@@ -31,25 +31,28 @@ export function CodebaseSummaryUpload({
       return;
     }
 
-    setIsUploading(true);
-    try {
-      const content = await file.text();
-      const result = await uploadCodebaseSummary(projectId, content);
-
-      if (result.success && result.data.lastIndexedAt) {
-        onUploadSuccess?.(new Date(result.data.lastIndexedAt));
-      } else if (!result.success) {
-        console.error("Failed to upload codebase summary:", result.error);
+    const content = await file.text();
+    uploadMutation.mutate(
+      { projectId, markdownContent: content },
+      {
+        onSuccess: (result) => {
+          if (result.success && result.data.lastIndexedAt) {
+            onUploadSuccess?.(new Date(result.data.lastIndexedAt));
+          } else if (!result.success) {
+            console.error("Failed to upload codebase summary:", result.error);
+          }
+        },
+        onError: (error) => {
+          console.error("Error uploading file:", error);
+        },
+        onSettled: () => {
+          // Reset the input so the same file can be selected again
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        },
       }
-    } catch (error) {
-      console.error("Error reading file:", error);
-    } finally {
-      setIsUploading(false);
-      // Reset the input so the same file can be selected again
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
+    );
   };
 
   const formatDate = (date: Date) =>
@@ -70,12 +73,12 @@ export function CodebaseSummaryUpload({
       />
       <Button
         className="w-full"
-        disabled={isUploading}
+        disabled={uploadMutation.isPending}
         onClick={handleButtonClick}
         variant="outline"
       >
         <UploadIcon className="mr-2 h-4 w-4" />
-        {isUploading ? "Uploading..." : "Upload Codebase Summary"}
+        {uploadMutation.isPending ? "Uploading..." : "Upload Codebase Summary"}
       </Button>
       {lastIndexedAt ? (
         <p className="text-muted-foreground text-xs">

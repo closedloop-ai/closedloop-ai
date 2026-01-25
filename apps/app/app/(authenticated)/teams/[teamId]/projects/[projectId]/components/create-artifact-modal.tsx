@@ -26,8 +26,11 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon } from "lucide-react";
-import { useEffect, useState, useTransition } from "react";
-import { createArtifact, getArtifactsByProject } from "@/app/actions/artifacts";
+import { useEffect, useMemo, useState } from "react";
+import {
+  useArtifactsByProject,
+  useCreateArtifact,
+} from "@/hooks/queries/use-artifacts";
 
 const ARTIFACT_TYPE_LABELS: Record<string, string> = {
   PRD: "PRD",
@@ -81,7 +84,6 @@ export function CreateArtifactModal({
   projectId,
   onSuccess,
 }: CreateArtifactModalProps) {
-  const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
@@ -95,26 +97,28 @@ export function CreateArtifactModal({
   const [targetBranch, setTargetBranch] = useState("main");
 
   // PRD selection for implementation plans
-  const [prds, setPrds] = useState<ArtifactWithWorkstream[]>([]);
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
-  const [loadingPrds, setLoadingPrds] = useState(false);
 
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
 
   // Fetch PRDs when modal opens for implementation plan
-  useEffect(() => {
-    if (open && isImplementationPlan) {
-      setLoadingPrds(true);
-      getArtifactsByProject(projectId).then((result) => {
-        if (result.success) {
-          const projectPrds = result.data.filter((a) => a.type === "PRD");
-          setPrds(projectPrds);
-        }
-        setLoadingPrds(false);
-      });
+  const { data: artifactsResult, isLoading: loadingPrds } = useArtifactsByProject(
+    projectId,
+    true,
+    { enabled: open && isImplementationPlan }
+  );
+
+  // Filter to get only PRDs
+  const prds = useMemo(() => {
+    if (!artifactsResult?.success) {
+      return [];
     }
-  }, [open, isImplementationPlan, projectId]);
+    return artifactsResult.data.filter((a) => a.type === "PRD");
+  }, [artifactsResult]);
+
+  // Create artifact mutation
+  const createArtifact = useCreateArtifact();
 
   // Pre-populate fields from selected PRD for implementation plans
   useEffect(() => {
@@ -172,34 +176,35 @@ export function CreateArtifactModal({
       return;
     }
 
-    startTransition(async () => {
-      try {
-        const result = await createArtifact({
-          projectId,
-          type: artifactType,
-          title: title.trim(),
-          fileName: fileName.trim() || undefined,
-          content: content.trim() || undefined,
-          parentId: isImplementationPlan ? selectedPrdId : undefined,
-          // Common fields for PRD and Implementation Plan
-          approver: approver.trim() || undefined,
-          status,
-          targetRepo: targetRepo.trim() || undefined,
-          targetBranch: targetBranch.trim() || undefined,
-        });
-
-        if (!result.success) {
-          setError(result.error);
-          return;
-        }
-
-        handleClose();
-        onSuccess?.(result.data);
-      } catch (err) {
-        console.error(`Failed to create ${typeLabel}:`, err);
-        setError("An unexpected error occurred");
+    createArtifact.mutate(
+      {
+        projectId,
+        type: artifactType,
+        title: title.trim(),
+        fileName: fileName.trim() || undefined,
+        content: content.trim() || undefined,
+        parentId: isImplementationPlan ? selectedPrdId : undefined,
+        // Common fields for PRD and Implementation Plan
+        approver: approver.trim() || undefined,
+        status,
+        targetRepo: targetRepo.trim() || undefined,
+        targetBranch: targetBranch.trim() || undefined,
+      },
+      {
+        onSuccess: (result) => {
+          if (!result.success) {
+            setError(result.error);
+            return;
+          }
+          handleClose();
+          onSuccess?.(result.data);
+        },
+        onError: (err) => {
+          console.error(`Failed to create ${typeLabel}:`, err);
+          setError("An unexpected error occurred");
+        },
       }
-    });
+    );
   };
 
   return (
@@ -345,13 +350,13 @@ export function CreateArtifactModal({
           </Button>
           <Button
             disabled={
-              isPending ||
+              createArtifact.isPending ||
               !title.trim() ||
               (isImplementationPlan ? !selectedPrdId : false)
             }
             onClick={handleSubmit}
           >
-            {isPending ? (
+            {createArtifact.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...

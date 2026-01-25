@@ -1,11 +1,7 @@
 "use client";
 
-import type { ActivityItem } from "@repo/api/src/types/activity";
 import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
-import type {
-  ProjectPriority,
-  ProjectWithDetails,
-} from "@repo/api/src/types/organization";
+import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -30,20 +26,20 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  deleteArtifact,
-  getArtifactsByProject,
-  updateArtifact,
-} from "@/app/actions/artifacts";
+  useArtifactsByProject,
+  useDeleteArtifact,
+  useUpdateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import {
-  getProjectActivity,
-  getProjectById,
-  updateProjectOwner,
-  updateProjectPriority,
-  updateProjectTargetDate,
-} from "@/app/actions/projects";
-import { getTeamById } from "@/app/actions/teams";
+  useProject,
+  useProjectActivity,
+  useUpdateProjectOwner,
+  useUpdateProjectPriority,
+  useUpdateProjectTargetDate,
+} from "@/hooks/queries/use-projects";
+import { useTeam } from "@/hooks/queries/use-teams";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   mapArtifactStatusToDisplay,
@@ -64,142 +60,115 @@ export default function ProjectDetailPage() {
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
-  const [project, setProject] = useState<ProjectWithDetails | null>(null);
-  const [artifacts, setArtifacts] = useState<ProjectArtifact[]>([]);
-  const [activities, setActivities] = useState<ActivityItem[]>([]);
-  const [team, setTeam] = useState<{ id: string; name: string } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
     useState<ArtifactType>("PRD");
 
-  // Load initial data
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true);
-      setError(null);
+  // Queries
+  const { data: teamResult, isLoading: loadingTeam } = useTeam(teamId);
+  const { data: projectResult, isLoading: loadingProject } =
+    useProject(projectId);
+  const { data: activityResult, isLoading: loadingActivity } =
+    useProjectActivity(projectId);
+  const { data: artifactsResult, isLoading: loadingArtifacts } =
+    useArtifactsByProject(projectId);
 
-      const [teamResult, projectResult, activityResult, artifactsResult] =
-        await Promise.all([
-          getTeamById(teamId),
-          getProjectById(projectId),
-          getProjectActivity(projectId),
-          getArtifactsByProject(projectId),
-        ]);
+  const team = teamResult?.success
+    ? { id: teamResult.data.id, name: teamResult.data.name }
+    : null;
+  const project = projectResult?.success ? projectResult.data : null;
+  const activities = activityResult?.success
+    ? activityResult.data.activities
+    : [];
 
-      if (teamResult.success) {
-        setTeam({ id: teamResult.data.id, name: teamResult.data.name });
-      } else {
-        setError(teamResult.error);
-      }
-
-      if (projectResult.success) {
-        setProject(projectResult.data);
-      } else {
-        setError(projectResult.error);
-      }
-
-      if (activityResult.success) {
-        setActivities(activityResult.data.activities);
-      }
-
-      if (artifactsResult.success) {
-        // Map API artifacts to ProjectArtifact format
-        const mappedArtifacts: ProjectArtifact[] = artifactsResult.data.map(
-          (artifact) => ({
-            id: artifact.id,
-            name: artifact.title,
-            type: artifact.type as ProjectArtifactType,
-            status: mapArtifactStatusToDisplay(artifact.status),
-            link: artifact.externalUrl || undefined,
-          })
-        );
-        setArtifacts(mappedArtifacts);
-      }
-
-      setLoading(false);
+  // Map API artifacts to ProjectArtifact format
+  const artifacts: ProjectArtifact[] = useMemo(() => {
+    if (!artifactsResult?.success) {
+      return [];
     }
-    fetchData();
-  }, [teamId, projectId]);
+    return artifactsResult.data.map((artifact) => ({
+      id: artifact.id,
+      name: artifact.title,
+      type: artifact.type as ProjectArtifactType,
+      status: mapArtifactStatusToDisplay(artifact.status),
+      link: artifact.externalUrl || undefined,
+    }));
+  }, [artifactsResult]);
 
-  const handleUpdatePriority = async (priority: ProjectPriority) => {
+  const loading =
+    loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
+  const error =
+    (teamResult && !teamResult.success ? teamResult.error : null) ||
+    (projectResult && !projectResult.success ? projectResult.error : null);
+
+  // Mutations
+  const updatePriorityMutation = useUpdateProjectPriority();
+  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateTargetDateMutation = useUpdateProjectTargetDate();
+  const updateArtifactMutation = useUpdateArtifact();
+  const deleteArtifactMutation = useDeleteArtifact();
+
+  const handleUpdatePriority = (priority: ProjectPriority) => {
     if (!project) {
       return;
     }
 
-    // Optimistic update
-    setProject({ ...project, priority });
-
-    const result = await updateProjectPriority(project.id, priority);
-    if (result.success) {
-      setProject(result.data);
-    } else {
-      // Revert on error
-      setProject(project);
-      console.error("Failed to update priority:", result.error);
-    }
+    updatePriorityMutation.mutate(
+      { projectId: project.id, priority },
+      {
+        onError: (err) => {
+          console.error("Failed to update priority:", err);
+        },
+      }
+    );
   };
 
-  const handleUpdateOwner = async (ownerId: string | null) => {
+  const handleUpdateOwner = (ownerId: string | null) => {
     if (!project) {
       return;
     }
 
-    const result = await updateProjectOwner(project.id, ownerId);
-    if (result.success) {
-      setProject(result.data);
-    } else {
-      console.error("Failed to update owner:", result.error);
-    }
+    updateOwnerMutation.mutate(
+      { projectId: project.id, ownerId },
+      {
+        onError: (err) => {
+          console.error("Failed to update owner:", err);
+        },
+      }
+    );
   };
 
-  const handleUpdateTargetDate = async (date: Date | null) => {
+  const handleUpdateTargetDate = (date: Date | null) => {
     if (!project) {
       return;
     }
 
-    const result = await updateProjectTargetDate(project.id, date);
-    if (result.success) {
-      setProject(result.data);
-    } else {
-      console.error("Failed to update target date:", result.error);
-    }
+    updateTargetDateMutation.mutate(
+      { projectId: project.id, targetDate: date },
+      {
+        onError: (err) => {
+          console.error("Failed to update target date:", err);
+        },
+      }
+    );
   };
 
-  const handleArtifactStatusChange = async (
+  const handleArtifactStatusChange = (
     artifactId: string,
     status: ArtifactDisplayStatus
   ) => {
-    // Optimistic update
-    setArtifacts((prev) =>
-      prev.map((a) => (a.id === artifactId ? { ...a, status } : a))
-    );
-
-    // Save to API
     const apiStatus = mapDisplayStatusToArtifact(status);
-    const result = await updateArtifact({
-      id: artifactId,
-      status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
-    });
-
-    if (!result.success) {
-      // Revert on error - refetch to get correct state
-      const artifactsResult = await getArtifactsByProject(projectId);
-      if (artifactsResult.success) {
-        const mappedArtifacts: ProjectArtifact[] = artifactsResult.data.map(
-          (artifact) => ({
-            id: artifact.id,
-            name: artifact.title,
-            type: artifact.type as ProjectArtifactType,
-            status: mapArtifactStatusToDisplay(artifact.status),
-            link: artifact.externalUrl || undefined,
-          })
-        );
-        setArtifacts(mappedArtifacts);
+    updateArtifactMutation.mutate(
+      {
+        id: artifactId,
+        status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
+      },
+      {
+        onError: (err) => {
+          console.error("Failed to update artifact status:", err);
+        },
       }
-      console.error("Failed to update artifact status:", result.error);
-    }
+    );
   };
 
   const handleCreateArtifact = (type: ArtifactType) => {
@@ -207,25 +176,18 @@ export default function ProjectDetailPage() {
     setCreateModalOpen(true);
   };
 
-  const handleArtifactCreated = (artifact: Artifact) => {
-    // Add the new artifact to the list
-    const newArtifact: ProjectArtifact = {
-      id: artifact.id,
-      name: artifact.title,
-      type: artifact.type as ProjectArtifactType,
-      status: mapArtifactStatusToDisplay(artifact.status),
-      link: artifact.externalUrl || undefined,
-    };
-    setArtifacts((prev) => [newArtifact, ...prev]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const handleArtifactCreated = (_artifact: Artifact) => {
+    // TanStack Query will automatically refetch the artifacts list
+    // due to cache invalidation in useCreateArtifact
   };
 
   const handleDeleteArtifact = async (artifactId: string) => {
-    const result = await deleteArtifact(artifactId);
-    if (result.success) {
-      setArtifacts((prev) => prev.filter((a) => a.id !== artifactId));
-    } else {
-      console.error("Failed to delete artifact:", result.error);
-    }
+    deleteArtifactMutation.mutate(artifactId, {
+      onError: (err) => {
+        console.error("Failed to delete artifact:", err);
+      },
+    });
   };
 
   if (loading) {
@@ -292,10 +254,6 @@ export default function ProjectDetailPage() {
             <div className="mb-6">
               <EditableProjectTitle
                 initialTitle={project.name}
-                onTitleChange={(newTitle) => {
-                  // Update local project state for immediate consistency
-                  setProject({ ...project, name: newTitle });
-                }}
                 projectId={project.id}
               />
               {project.description ? (
@@ -314,9 +272,6 @@ export default function ProjectDetailPage() {
           {/* Right Sidebar */}
           <div className="w-[300px] space-y-4 overflow-y-auto border-l p-4">
             <PropertiesPanel
-              onCodebaseSummaryUploaded={(lastIndexedAt) => {
-                setProject({ ...project, lastIndexedAt });
-              }}
               onUpdateOwner={handleUpdateOwner}
               onUpdatePriority={handleUpdatePriority}
               onUpdateTargetDate={handleUpdateTargetDate}
