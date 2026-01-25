@@ -1,9 +1,10 @@
 "use client";
 
-import type {
-  Artifact,
-  ArtifactType,
-  ArtifactWithWorkstream,
+import {
+  type Artifact,
+  ArtifactStatus,
+  type ArtifactType,
+  type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -87,6 +88,12 @@ export function CreateArtifactModal({
   const [fileName, setFileName] = useState("");
   const [content, setContent] = useState("");
 
+  // PRD-specific fields
+  const [approver, setApprover] = useState("");
+  const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
+  const [targetRepo, setTargetRepo] = useState("");
+  const [targetBranch, setTargetBranch] = useState("main");
+
   // PRD selection for implementation plans
   const [prds, setPrds] = useState<ArtifactWithWorkstream[]>([]);
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
@@ -109,6 +116,19 @@ export function CreateArtifactModal({
     }
   }, [open, isImplementationPlan, projectId]);
 
+  // Pre-populate fields from selected PRD for implementation plans
+  useEffect(() => {
+    if (isImplementationPlan && selectedPrdId) {
+      const selectedPrd = prds.find((p) => p.id === selectedPrdId);
+      if (selectedPrd) {
+        setApprover(selectedPrd.approver ?? "");
+        setStatus(selectedPrd.status ?? "DRAFT");
+        setTargetRepo(selectedPrd.targetRepo ?? "");
+        setTargetBranch(selectedPrd.targetBranch ?? "main");
+      }
+    }
+  }, [isImplementationPlan, selectedPrdId, prds]);
+
   const handleTitleChange = (value: string) => {
     setTitle(value);
     // Auto-generate filename from title
@@ -126,6 +146,10 @@ export function CreateArtifactModal({
     setTitle("");
     setFileName("");
     setContent("");
+    setApprover("");
+    setStatus("DRAFT");
+    setTargetRepo("");
+    setTargetBranch("main");
     setSelectedPrdId("");
     setError(null);
   };
@@ -157,6 +181,11 @@ export function CreateArtifactModal({
           fileName: fileName.trim() || undefined,
           content: content.trim() || undefined,
           parentId: isImplementationPlan ? selectedPrdId : undefined,
+          // Common fields for PRD and Implementation Plan
+          approver: approver.trim() || undefined,
+          status,
+          targetRepo: targetRepo.trim() || undefined,
+          targetBranch: targetBranch.trim() || undefined,
         });
 
         if (!result.success) {
@@ -184,7 +213,7 @@ export function CreateArtifactModal({
       }}
       open={open}
     >
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[500px]">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>Create {typeLabel}</DialogTitle>
           <DialogDescription>
@@ -238,6 +267,61 @@ export function CreateArtifactModal({
               placeholder="auto-generated-from-title.md"
               value={fileName}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="artifact-approver">Approver</Label>
+            <Input
+              id="artifact-approver"
+              onChange={(e) => setApprover(e.target.value)}
+              placeholder="Approver name"
+              value={approver}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="artifact-target-repo">
+              Target Repository{" "}
+              <span className="text-muted-foreground text-xs">
+                (for code generation)
+              </span>
+            </Label>
+            <Input
+              id="artifact-target-repo"
+              onChange={(e) => setTargetRepo(e.target.value)}
+              placeholder="owner/repo"
+              value={targetRepo}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="artifact-target-branch">Target Branch</Label>
+            <Input
+              id="artifact-target-branch"
+              onChange={(e) => setTargetBranch(e.target.value)}
+              placeholder="main"
+              value={targetBranch}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Status</Label>
+            <Select
+              onValueChange={(v) => setStatus(v as ArtifactStatus)}
+              value={status}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.values(ArtifactStatus).map((statusOption) => (
+                  <SelectItem key={statusOption} value={statusOption}>
+                    {statusOption.charAt(0) +
+                      statusOption.slice(1).toLowerCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">
