@@ -114,6 +114,18 @@ function PlanPreview({
             {prd.approver}
           </li>
         ) : null}
+        {prd.targetRepo ? (
+          <li>
+            <span className="font-medium text-foreground">Target Repo:</span>{" "}
+            {prd.targetRepo}
+          </li>
+        ) : null}
+        {prd.targetBranch ? (
+          <li>
+            <span className="font-medium text-foreground">Target Branch:</span>{" "}
+            {prd.targetBranch}
+          </li>
+        ) : null}
       </ul>
     </div>
   );
@@ -231,8 +243,13 @@ export function NewPlanModal({
           // Pass content as initial instructions (not placeholder template)
           // The regenerate endpoint will use this as additional context
           content: content.trim() || "",
-          // Link to PRD's workstream for proper regenerate flow
+          // Link to PRD for proper regenerate flow
+          parentId: selectedPrd.id,
+          projectId: selectedPrd.projectId ?? undefined,
           workstreamId: selectedPrd.workstreamId ?? undefined,
+          // Inherit target repo and branch from PRD
+          targetRepo: selectedPrd.targetRepo ?? undefined,
+          targetBranch: selectedPrd.targetBranch ?? undefined,
         });
 
         if (!result.success) {
