@@ -36,11 +36,10 @@ import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
-  ARTIFACT_TYPE_COLORS,
   ARTIFACT_TYPE_ICONS,
-  ARTIFACT_TYPE_LABELS,
 } from "@/lib/project-constants";
 import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
+import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
@@ -178,21 +177,7 @@ export function ArtifactsTable({
                   </div>
                 </TableCell>
                 <TableCell>
-                  {(() => {
-                    const typeColors = ARTIFACT_TYPE_COLORS[artifact.type] ?? {
-                      bg: "bg-gray-100 dark:bg-gray-800",
-                      text: "text-gray-700 dark:text-gray-300",
-                    };
-                    const typeLabel =
-                      ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type;
-                    return (
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 font-medium text-xs ${typeColors.bg} ${typeColors.text}`}
-                      >
-                        {typeLabel}
-                      </span>
-                    );
-                  })()}
+                  <ArtifactTypeBadge type={artifact.type} />
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <Select
