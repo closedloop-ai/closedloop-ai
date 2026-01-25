@@ -39,6 +39,7 @@ import {
   ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
+import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
@@ -143,6 +144,7 @@ export function ArtifactsTable({
         <TableHeader>
           <TableRow>
             <TableHead>Artifact</TableHead>
+            <TableHead>Type</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Link</TableHead>
             <TableHead className="w-[50px]" />
@@ -173,6 +175,9 @@ export function ArtifactsTable({
                     <Icon className="h-4 w-4 text-muted-foreground" />
                     <span className="font-medium">{artifact.name}</span>
                   </div>
+                </TableCell>
+                <TableCell>
+                  <ArtifactTypeBadge type={artifact.type} />
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <Select
