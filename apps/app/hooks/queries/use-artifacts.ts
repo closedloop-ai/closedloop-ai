@@ -278,6 +278,14 @@ export function useRegenerateArtifact() {
   });
 }
 
+export function onRegenerateArtifactSuccess(id: string) {
+  const queryClient = useQueryClient();
+  queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
+  queryClient.invalidateQueries({
+    queryKey: artifactKeys.generationStatus(id),
+  });
+}
+
 export function useRequestPlanChanges() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
@@ -301,6 +309,45 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
+    },
+  });
+}
+
+export function onRequestPlanChangesSuccess(artifactId: string) {
+  const queryClient = useQueryClient();
+  queryClient.invalidateQueries({ queryKey: artifactKeys.detail(artifactId) });
+  queryClient.invalidateQueries({
+    queryKey: artifactKeys.generationStatus(artifactId),
+  });
+}
+
+/**
+ * Create an artifact and immediately trigger generation workflow.
+ * Used for implementation plans that need to be generated from a PRD.
+ */
+export function useCreateAndGenerateArtifact() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async (input: CreateArtifactInput) => {
+      // First create the artifact
+      const artifact = await apiClient.post<Artifact>("/artifacts", input);
+
+      // Then trigger regeneration (which dispatches to GitHub)
+      try {
+        const regenerated = await apiClient.post<Artifact>(
+          `/artifacts/${artifact.id}/regenerate`,
+          {}
+        );
+        return regenerated;
+      } catch {
+        // Return original artifact if regeneration fails - user can still navigate to it
+        return artifact;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }

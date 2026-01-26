@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { Loader2Icon } from "lucide-react";
-import { useRecentWorkstreams } from "@/hooks/queries/use-workstreams";
+import Link from "next/link";
 import { WorkstreamStateBadge } from "@/components/status-badge";
+import { useRecentWorkstreams } from "@/hooks/queries/use-workstreams";
 
 export function RecentWorkstreamsGrid() {
   const { data: workstreams = [], isLoading } = useRecentWorkstreams(6);

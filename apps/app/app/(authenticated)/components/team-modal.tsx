@@ -122,9 +122,11 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   // Queries - only fetch when modal is open
-  const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers({
-    enabled: open,
-  });
+  const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers(
+    {
+      enabled: open,
+    }
+  );
 
   const { data: members = [], isLoading: loadingMembers } = useTeamMembers(
     team?.id ?? "",
@@ -160,14 +162,11 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
 
     if (isEditMode && team) {
       // In edit mode, add directly via API
-      addMemberMutation.mutate(
-        { teamId: team.id, userId: selectedUserId, role: selectedRole },
-        {
-          onError: () => {
-            setError("Failed to add member");
-          },
-        }
-      );
+      addMemberMutation.mutate({
+        teamId: team.id,
+        userId: selectedUserId,
+        role: selectedRole,
+      });
     } else {
       // In create mode, add to pending list
       setPendingMembers((prev) => [...prev, { user, role: selectedRole }]);
@@ -182,14 +181,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       return;
     }
 
-    removeMemberMutation.mutate(
-      { teamId: team.id, userId: member.userId },
-      {
-        onError: () => {
-          setError("Failed to remove member");
-        },
-      }
-    );
+    removeMemberMutation.mutate({ teamId: team.id, userId: member.userId });
   };
 
   const handleRemovePendingMember = (userId: string) => {
@@ -201,14 +193,11 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       return;
     }
 
-    updateRoleMutation.mutate(
-      { teamId: team.id, userId: member.userId, role: newRole },
-      {
-        onError: () => {
-          setError("Failed to update role");
-        },
-      }
-    );
+    updateRoleMutation.mutate({
+      teamId: team.id,
+      userId: member.userId,
+      role: newRole,
+    });
   };
 
   const handlePendingRoleChange = (userId: string, newRole: TeamRole) => {

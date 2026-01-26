@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
+import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   useArtifactsByProject,
   useDeleteArtifact,
@@ -40,7 +41,6 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
-import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   mapArtifactStatusToDisplay,
   mapDisplayStatusToArtifact,
@@ -65,29 +65,36 @@ export default function ProjectDetailPage() {
     useState<ArtifactType>("PRD");
 
   // Queries
-  const { data: teamData, isLoading: loadingTeam, error: teamError } = useTeam(teamId);
-  const { data: project, isLoading: loadingProject, error: projectError } =
-    useProject(projectId);
+  const {
+    data: teamData,
+    isLoading: loadingTeam,
+    error: teamError,
+  } = useTeam(teamId);
+  const {
+    data: project,
+    isLoading: loadingProject,
+    error: projectError,
+  } = useProject(projectId);
   const { data: activityData, isLoading: loadingActivity } =
     useProjectActivity(projectId);
   const { data: artifactsData = [], isLoading: loadingArtifacts } =
     useArtifactsByProject(projectId);
 
-  const team = teamData
-    ? { id: teamData.id, name: teamData.name }
-    : null;
+  const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
 
   // Map API artifacts to ProjectArtifact format
-  const artifacts: ProjectArtifact[] = useMemo(() => {
-    return artifactsData.map((artifact) => ({
-      id: artifact.id,
-      name: artifact.title,
-      type: artifact.type as ProjectArtifactType,
-      status: mapArtifactStatusToDisplay(artifact.status),
-      link: artifact.externalUrl || undefined,
-    }));
-  }, [artifactsData]);
+  const artifacts: ProjectArtifact[] = useMemo(
+    () =>
+      artifactsData.map((artifact) => ({
+        id: artifact.id,
+        name: artifact.title,
+        type: artifact.type as ProjectArtifactType,
+        status: mapArtifactStatusToDisplay(artifact.status),
+        link: artifact.externalUrl || undefined,
+      })),
+    [artifactsData]
+  );
 
   const loading =
     loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
@@ -105,14 +112,7 @@ export default function ProjectDetailPage() {
       return;
     }
 
-    updatePriorityMutation.mutate(
-      { projectId: project.id, priority },
-      {
-        onError: (err) => {
-          console.error("Failed to update priority:", err);
-        },
-      }
-    );
+    updatePriorityMutation.mutate({ projectId: project.id, priority });
   };
 
   const handleUpdateOwner = (ownerId: string | null) => {
@@ -120,14 +120,7 @@ export default function ProjectDetailPage() {
       return;
     }
 
-    updateOwnerMutation.mutate(
-      { projectId: project.id, ownerId },
-      {
-        onError: (err) => {
-          console.error("Failed to update owner:", err);
-        },
-      }
-    );
+    updateOwnerMutation.mutate({ projectId: project.id, ownerId });
   };
 
   const handleUpdateTargetDate = (date: Date | null) => {
@@ -135,14 +128,10 @@ export default function ProjectDetailPage() {
       return;
     }
 
-    updateTargetDateMutation.mutate(
-      { projectId: project.id, targetDate: date },
-      {
-        onError: (err) => {
-          console.error("Failed to update target date:", err);
-        },
-      }
-    );
+    updateTargetDateMutation.mutate({
+      projectId: project.id,
+      targetDate: date,
+    });
   };
 
   const handleArtifactStatusChange = (
@@ -150,17 +139,10 @@ export default function ProjectDetailPage() {
     status: ArtifactDisplayStatus
   ) => {
     const apiStatus = mapDisplayStatusToArtifact(status);
-    updateArtifactMutation.mutate(
-      {
-        id: artifactId,
-        status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
-      },
-      {
-        onError: (err) => {
-          console.error("Failed to update artifact status:", err);
-        },
-      }
-    );
+    updateArtifactMutation.mutate({
+      id: artifactId,
+      status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
+    });
   };
 
   const handleCreateArtifact = (type: ArtifactType) => {
@@ -169,11 +151,7 @@ export default function ProjectDetailPage() {
   };
 
   const handleDeleteArtifact = (artifactId: string) => {
-    deleteArtifactMutation.mutate(artifactId, {
-      onError: (err) => {
-        console.error("Failed to delete artifact:", err);
-      },
-    });
+    deleteArtifactMutation.mutate(artifactId);
   };
 
   if (loading) {

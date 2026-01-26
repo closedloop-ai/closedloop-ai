@@ -1,19 +1,29 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  type Mock,
-  vi,
-} from "vitest";
-import { getTeamMembers } from "@/app/actions/teams";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectModal } from "../create-project-modal";
 
-// Mock dependencies
-vi.mock("@/app/actions/teams", () => ({
-  getTeamMembers: vi.fn(),
+// Mock team members data
+const mockMembers = vi.fn();
+
+// Mock the useTeamMembers hook
+vi.mock("@/hooks/use-team-members", () => ({
+  useTeamMembers: ({
+    teamIds,
+    enabled,
+  }: {
+    teamIds: string[];
+    enabled?: boolean;
+  }) => {
+    // Only call mockMembers when enabled (modal is open)
+    if (enabled) {
+      mockMembers(teamIds[0]);
+    }
+    return {
+      members: mockMembers.mock.results[0]?.value ?? [],
+      isLoading: false,
+      error: null,
+    };
+  },
 }));
 
 // Regex constants for testing
@@ -27,6 +37,8 @@ describe("CreateProjectModal", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default to returning empty members
+    mockMembers.mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -35,41 +47,24 @@ describe("CreateProjectModal", () => {
 
   describe("Team Member Fetching", () => {
     it("should fetch team members when modal is opened", async () => {
-      const mockTeamMembers = [
+      const mockTeamMembersData = [
         {
-          id: "tm-1",
-          teamId: mockTeamId,
-          userId: "user-1",
-          role: "MEMBER" as const,
-          createdAt: new Date(),
-          user: {
-            id: "user-1",
-            firstName: "John",
-            lastName: "Doe",
-            email: "john@example.com",
-            avatarUrl: "https://example.com/avatar1.jpg",
-          },
+          id: "user-1",
+          name: "John Doe",
+          email: "john@example.com",
+          avatarUrl: "https://example.com/avatar1.jpg",
+          initials: "JD",
         },
         {
-          id: "tm-2",
-          teamId: mockTeamId,
-          userId: "user-2",
-          role: "ADMIN" as const,
-          createdAt: new Date(),
-          user: {
-            id: "user-2",
-            firstName: "Jane",
-            lastName: "Smith",
-            email: "jane@example.com",
-            avatarUrl: null,
-          },
+          id: "user-2",
+          name: "Jane Smith",
+          email: "jane@example.com",
+          avatarUrl: undefined,
+          initials: "JS",
         },
       ];
 
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: mockTeamMembers,
-      });
+      mockMembers.mockReturnValue(mockTeamMembersData);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -83,32 +78,22 @@ describe("CreateProjectModal", () => {
 
       // Wait for team members to be fetched
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalledWith(mockTeamId);
+        expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
       });
     });
 
     it("should transform team member data correctly for the user select", async () => {
-      const mockTeamMembers = [
+      const mockTeamMembersData = [
         {
-          id: "tm-1",
-          teamId: mockTeamId,
-          userId: "user-1",
-          role: "MEMBER" as const,
-          createdAt: new Date(),
-          user: {
-            id: "user-1",
-            firstName: "Alice",
-            lastName: "Johnson",
-            email: "alice@example.com",
-            avatarUrl: "https://example.com/alice.jpg",
-          },
+          id: "user-1",
+          name: "Alice Johnson",
+          email: "alice@example.com",
+          avatarUrl: "https://example.com/alice.jpg",
+          initials: "AJ",
         },
       ];
 
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: mockTeamMembers,
-      });
+      mockMembers.mockReturnValue(mockTeamMembersData);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -120,21 +105,18 @@ describe("CreateProjectModal", () => {
       });
       triggerButton.click();
 
-      // Wait for API call
+      // Wait for hook to be called
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalledWith(mockTeamId);
+        expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
       });
 
       // The transformed data should be used internally
-      // We verify the API was called with correct params
-      expect(getTeamMembers).toHaveBeenCalledTimes(1);
+      // We verify the hook was called with correct params
+      expect(mockMembers).toHaveBeenCalledTimes(1);
     });
 
-    it("should handle API failure gracefully", async () => {
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: false,
-        error: "Failed to fetch team members",
-      });
+    it("should handle empty members gracefully", async () => {
+      mockMembers.mockReturnValue([]);
 
       const { container } = render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -146,20 +128,17 @@ describe("CreateProjectModal", () => {
       });
       triggerButton.click();
 
-      // Wait for API call
+      // Wait for hook to be called
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalledWith(mockTeamId);
+        expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
       });
 
-      // Modal should still render (silent failure)
+      // Modal should still render
       expect(container.querySelector("[role='dialog']")).toBeDefined();
     });
 
     it("should reset team members when modal is closed", async () => {
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: [],
-      });
+      mockMembers.mockReturnValue([]);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -172,41 +151,30 @@ describe("CreateProjectModal", () => {
       triggerButton.click();
 
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalled();
+        expect(mockMembers).toHaveBeenCalled();
       });
 
       // Close the modal by clicking Cancel
       const cancelButton = screen.getByRole("button", { name: CANCEL_REGEX });
       cancelButton.click();
 
-      // Team members should be reset when closed
-      // This is verified by the implementation which sets empty array on modal close
+      // Team members hook will be disabled when closed (enabled: false)
     });
   });
 
   describe("User Initials Transformation", () => {
-    it("should generate correct initials from first and last name", async () => {
-      const mockTeamMembers = [
+    it("should receive correct initials from hook", async () => {
+      const mockTeamMembersData = [
         {
-          id: "tm-1",
-          teamId: mockTeamId,
-          userId: "user-1",
-          role: "MEMBER" as const,
-          createdAt: new Date(),
-          user: {
-            id: "user-1",
-            firstName: "Bob",
-            lastName: "Wilson",
-            email: "bob@example.com",
-            avatarUrl: null,
-          },
+          id: "user-1",
+          name: "Bob Wilson",
+          email: "bob@example.com",
+          avatarUrl: undefined,
+          initials: "BW",
         },
       ];
 
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: mockTeamMembers,
-      });
+      mockMembers.mockReturnValue(mockTeamMembersData);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -219,36 +187,25 @@ describe("CreateProjectModal", () => {
       triggerButton.click();
 
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalled();
+        expect(mockMembers).toHaveBeenCalled();
       });
 
-      // The initials "BW" should be generated internally
-      // Verified by checking the API was called
-      expect(getTeamMembers).toHaveBeenCalledWith(mockTeamId);
+      // The initials "BW" should be provided by the hook
+      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
     });
 
-    it("should handle null names when generating initials", async () => {
-      const mockTeamMembers = [
+    it("should handle fallback initials from hook", async () => {
+      const mockTeamMembersData = [
         {
-          id: "tm-1",
-          teamId: mockTeamId,
-          userId: "user-1",
-          role: "MEMBER" as const,
-          createdAt: new Date(),
-          user: {
-            id: "user-1",
-            firstName: null,
-            lastName: null,
-            email: "noname@example.com",
-            avatarUrl: null,
-          },
+          id: "user-1",
+          name: "noname@example.com",
+          email: "noname@example.com",
+          avatarUrl: undefined,
+          initials: "?",
         },
       ];
 
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: mockTeamMembers,
-      });
+      mockMembers.mockReturnValue(mockTeamMembersData);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />
@@ -261,11 +218,11 @@ describe("CreateProjectModal", () => {
       triggerButton.click();
 
       await waitFor(() => {
-        expect(getTeamMembers).toHaveBeenCalled();
+        expect(mockMembers).toHaveBeenCalled();
       });
 
-      // Should handle null names gracefully and generate "?" as fallback
-      expect(getTeamMembers).toHaveBeenCalledWith(mockTeamId);
+      // Should handle "?" fallback initials from the hook
+      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
     });
   });
 
@@ -280,10 +237,7 @@ describe("CreateProjectModal", () => {
     });
 
     it("should display the team name in the modal description", async () => {
-      (getTeamMembers as Mock).mockResolvedValue({
-        success: true,
-        data: [],
-      });
+      mockMembers.mockReturnValue([]);
 
       render(
         <CreateProjectModal teamId={mockTeamId} teamName={mockTeamName} />

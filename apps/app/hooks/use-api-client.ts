@@ -1,10 +1,10 @@
 "use client";
 
+import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useCallback, useMemo } from "react";
 import { env } from "@/env";
 import { ApiError } from "@/lib/api-error";
-import { ApiResult } from "@repo/api/src/types/common";
 
 const API_URL = env.NEXT_PUBLIC_API_URL;
 
@@ -46,7 +46,8 @@ export function useApiClient() {
 
         if (!result.success) {
           throw new ApiError(result.error, response.status);
-        } else if (response.status >= 400) {
+        }
+        if (response.status >= 400) {
           throw new ApiError("An unexpected error occurred", response.status);
         }
 

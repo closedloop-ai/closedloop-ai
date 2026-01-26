@@ -88,9 +88,6 @@ export function NewPRDModal() {
           resetForm();
           router.push(`/prds/${artifact.id}`);
         },
-        onError: (err) => {
-          setError(err.message);
-        },
       }
     );
   };
@@ -221,7 +218,10 @@ export function NewPRDModal() {
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={createArtifact.isPending || !title.trim()} onClick={handleSubmit}>
+          <Button
+            disabled={createArtifact.isPending || !title.trim()}
+            onClick={handleSubmit}
+          >
             {createArtifact.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />

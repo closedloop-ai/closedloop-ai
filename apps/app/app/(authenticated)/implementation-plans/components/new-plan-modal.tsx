@@ -23,11 +23,11 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import {
-  createAndGeneratePlan,
-  getArtifactsByType,
-} from "@/app/actions/artifacts";
+  useArtifactsByType,
+  useCreateAndGenerateArtifact,
+} from "@/hooks/queries/use-artifacts";
 
 type NewPlanModalProps = {
   // When sourcePrd is provided, the modal is used from a PRD page
@@ -42,23 +42,23 @@ function generatePlanFileName(prd: ArtifactWithWorkstream): string {
   }
   return `${prd.title
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, "-")}-impl-plan.md`;
+    .replaceAll(/[^a-z0-9\s]/g, "")
+    .replaceAll(/\s+/g, "-")}-impl-plan.md`;
 }
 
 function PrdSelector({
   prds,
-  loadingPrds,
+  isLoading,
   selectedPrdId,
   onSelect,
 }: {
   prds: ArtifactWithWorkstream[];
-  loadingPrds: boolean;
+  isLoading: boolean;
   selectedPrdId: string;
   onSelect: (id: string) => void;
 }) {
-  const placeholder = loadingPrds ? "Loading PRDs..." : "Select a PRD";
-  const isEmpty = prds.length === 0 && !loadingPrds;
+  const placeholder = isLoading ? "Loading PRDs..." : "Select a PRD";
+  const isEmpty = prds.length === 0 && !isLoading;
 
   return (
     <Select onValueChange={onSelect} value={selectedPrdId}>
@@ -137,7 +137,7 @@ export function NewPlanModal({
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const createAndGeneratePlan = useCreateAndGenerateArtifact();
   const [internalOpen, setInternalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -156,23 +156,14 @@ export function NewPlanModal({
   );
   const [content, setContent] = useState("");
 
-  // PRDs for dropdown (when not pre-selected)
-  const [prds, setPrds] = useState<ArtifactWithWorkstream[]>([]);
-  const [loadingPrds, setLoadingPrds] = useState(false);
-
-  // Load PRDs when modal opens (skip if we have a source PRD)
-  useEffect(() => {
-    if (!open || sourcePrd) {
-      return;
+  // Fetch PRDs when modal opens (skip if we have a source PRD)
+  const { data: prds = [], isLoading: loadingPrds } = useArtifactsByType(
+    "PRD",
+    true,
+    {
+      enabled: open && !sourcePrd,
     }
-    setLoadingPrds(true);
-    getArtifactsByType("PRD").then((result) => {
-      if (result.success) {
-        setPrds(result.data);
-      }
-      setLoadingPrds(false);
-    });
-  }, [open, sourcePrd]);
+  );
 
   // Get the selected PRD (either from prop or from dropdown)
   const selectedPrd = sourcePrd ?? prds.find((p) => p.id === selectedPrdId);
@@ -192,8 +183,8 @@ export function NewPlanModal({
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat("-impl-plan.md");
       setFileName(generatedFileName);
     } else {
@@ -225,46 +216,34 @@ export function NewPlanModal({
 
     // Additional safety: Verify state is initialized (defensive programming)
     // This catches edge cases where useEffect hasn't run yet
-    if (!fileName && selectedPrd) {
-      // Auto-initialize if somehow missed
-      const generatedFileName = generatePlanFileName(selectedPrd);
-      setFileName(generatedFileName);
-    }
+    const finalFileName = fileName.trim() || generatePlanFileName(selectedPrd);
 
-    startTransition(async () => {
-      try {
-        // Use createAndGeneratePlan to create artifact AND trigger workflow
-        const result = await createAndGeneratePlan({
-          type: "IMPLEMENTATION_PLAN",
-          title: title.trim(),
-          fileName: fileName.trim() || generatePlanFileName(selectedPrd),
-          approver: selectedPrd.approver ?? undefined,
-          status: "DRAFT",
-          // Pass content as initial instructions (not placeholder template)
-          // The regenerate endpoint will use this as additional context
-          content: content.trim() || "",
-          // Link to PRD for proper regenerate flow
-          parentId: selectedPrd.id,
-          projectId: selectedPrd.projectId ?? undefined,
-          workstreamId: selectedPrd.workstreamId ?? undefined,
-          // Inherit target repo and branch from PRD
-          targetRepo: selectedPrd.targetRepo ?? undefined,
-          targetBranch: selectedPrd.targetBranch ?? undefined,
-        });
-
-        if (!result.success) {
-          setError(result.error);
-          return;
-        }
-
-        setOpen(false);
-        resetForm();
-        router.push(`/implementation-plans/${result.data.id}`);
-      } catch (err) {
-        console.error("Failed to create implementation plan:", err);
-        setError("An unexpected error occurred");
+    createAndGeneratePlan.mutate(
+      {
+        type: "IMPLEMENTATION_PLAN",
+        title: title.trim(),
+        fileName: finalFileName,
+        approver: selectedPrd.approver ?? undefined,
+        status: "DRAFT",
+        // Pass content as initial instructions (not placeholder template)
+        // The regenerate endpoint will use this as additional context
+        content: content.trim() || "",
+        // Link to PRD for proper regenerate flow
+        parentId: selectedPrd.id,
+        projectId: selectedPrd.projectId ?? undefined,
+        workstreamId: selectedPrd.workstreamId ?? undefined,
+        // Inherit target repo and branch from PRD
+        targetRepo: selectedPrd.targetRepo ?? undefined,
+        targetBranch: selectedPrd.targetBranch ?? undefined,
+      },
+      {
+        onSuccess: (artifact) => {
+          setOpen(false);
+          resetForm();
+          router.push(`/implementation-plans/${artifact.id}`);
+        },
       }
-    });
+    );
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -343,7 +322,7 @@ export function NewPlanModal({
               </div>
             ) : (
               <PrdSelector
-                loadingPrds={loadingPrds}
+                isLoading={loadingPrds}
                 onSelect={setSelectedPrdId}
                 prds={prds}
                 selectedPrdId={selectedPrdId}
@@ -377,10 +356,12 @@ export function NewPlanModal({
             Cancel
           </Button>
           <Button
-            disabled={isPending || !selectedPrd || !title.trim()}
+            disabled={
+              createAndGeneratePlan.isPending || !selectedPrd || !title.trim()
+            }
             onClick={handleSubmit}
           >
-            {isPending ? (
+            {createAndGeneratePlan.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...

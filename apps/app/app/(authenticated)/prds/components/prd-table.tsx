@@ -9,8 +9,8 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { ArtifactStatusBadge } from "@/components/status-badge";
+import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
