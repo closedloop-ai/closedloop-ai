@@ -31,6 +31,13 @@ function getStatusMessage(status: GenerationStatus["status"]): string {
   }
 }
 
+/** Terminal statuses that should stop polling */
+function isTerminalStatus(
+  status: GenerationStatus["status"]
+): status is "SUCCESS" | "FAILURE" | "NONE" {
+  return status === "SUCCESS" || status === "FAILURE" || status === "NONE";
+}
+
 export function GenerationStatusBanner({
   artifactId,
   onComplete,
@@ -40,52 +47,62 @@ export function GenerationStatusBanner({
   const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const onCompleteRef = useRef(onComplete);
+  // Track if we've seen an active generation state - only call onComplete
+  // if we transition FROM active TO success (not if already success on load)
+  const sawActiveStateRef = useRef(false);
+  const completedRef = useRef(false);
 
   // Keep onComplete ref updated
   useEffect(() => {
     onCompleteRef.current = onComplete;
   }, [onComplete]);
 
+  const applyBackoff = useCallback(() => {
+    pollIntervalRef.current = Math.min(
+      pollIntervalRef.current * BACKOFF_MULTIPLIER,
+      MAX_POLL_INTERVAL
+    );
+  }, []);
+
+  const handleStatusResult = useCallback(
+    (data: GenerationStatus) => {
+      setStatus(data);
+
+      // Terminal statuses stop polling
+      if (isTerminalStatus(data.status)) {
+        setIsPolling(false);
+        // Only call onComplete for SUCCESS if we saw an active state first
+        // (i.e., generation actually happened during this session, not already done on page load)
+        const shouldNotify =
+          data.status === "SUCCESS" &&
+          sawActiveStateRef.current &&
+          !completedRef.current;
+        if (shouldNotify) {
+          completedRef.current = true;
+          onCompleteRef.current?.();
+        }
+        return;
+      }
+
+      // Active statuses (PENDING, QUEUED, RUNNING) - track and continue polling
+      sawActiveStateRef.current = true;
+      completedRef.current = false;
+      applyBackoff();
+    },
+    [applyBackoff]
+  );
+
   const fetchStatus = useCallback(async () => {
     try {
       const result = await getGenerationStatus(artifactId);
       if (result.success) {
-        setStatus(result.data);
-
-        // Handle completion
-        if (result.data.status === "SUCCESS") {
-          setIsPolling(false);
-          onCompleteRef.current?.();
-          return;
-        }
-
-        // Handle failure - stop polling but keep showing banner
-        if (result.data.status === "FAILURE") {
-          setIsPolling(false);
-          return;
-        }
-
-        // Handle no status - stop polling and hide
-        if (result.data.status === "NONE") {
-          setIsPolling(false);
-          return;
-        }
-
-        // Continue polling with backoff for active statuses
-        pollIntervalRef.current = Math.min(
-          pollIntervalRef.current * BACKOFF_MULTIPLIER,
-          MAX_POLL_INTERVAL
-        );
+        handleStatusResult(result.data);
       }
     } catch (error) {
       console.error("Failed to fetch generation status:", error);
-      // Continue polling on error, but with backoff
-      pollIntervalRef.current = Math.min(
-        pollIntervalRef.current * BACKOFF_MULTIPLIER,
-        MAX_POLL_INTERVAL
-      );
+      applyBackoff();
     }
-  }, [artifactId]);
+  }, [artifactId, handleStatusResult, applyBackoff]);
 
   useEffect(() => {
     // Initial fetch
