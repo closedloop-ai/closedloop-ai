@@ -2,12 +2,24 @@ import { authMiddleware } from "@repo/auth/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-// Allowed origins for CORS
-// TODO: migrate this to environment variables.
-const allowedOrigins = new Set([
-  "http://localhost:3000",
-  "https://symphony-alpha-app-stage.vercel.app",
-]);
+const TRAILING_SLASH_REGEX = /\/$/;
+
+// Allowed origins for CORS - built from environment variables
+function getAllowedOrigins(): Set<string> {
+  const origins = new Set<string>(["http://localhost:3000"]);
+
+  // Add the configured app URL (works for staging, production, or preview)
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  if (appUrl) {
+    origins.add(appUrl);
+    // Also add without trailing slash in case of mismatch
+    origins.add(appUrl.replace(TRAILING_SLASH_REGEX, ""));
+  }
+
+  return origins;
+}
+
+const allowedOrigins = getAllowedOrigins();
 
 function isOriginAllowed(origin: string | null): boolean {
   return !!origin && allowedOrigins.has(origin);
