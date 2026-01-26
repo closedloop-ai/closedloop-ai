@@ -247,20 +247,22 @@ function useArtifactEditorInternal(config: BaseConfig) {
   }, [artifact.id, regenerateArtifact]);
 
   const handleRequestChanges = useCallback(
-    (changes: string) => {
-      requestPlanChanges.mutate(
-        { artifactId: artifact.id, changes },
-        {
-          onSuccess: (result) => {
-            setShowRequestChangesModal(false);
-            toast.success(
-              "Change request submitted - generating updated plan..."
-            );
-            router.push(`${redirectPath}/${result.artifactId}`);
-          },
-        }
-      );
-    },
+    (changes: string) =>
+      requestPlanChanges
+        .mutateAsync(
+          { artifactId: artifact.id, changes },
+          {
+            onSuccess: (result) => {
+              setShowRequestChangesModal(false);
+              toast.success(
+                "Change request submitted - generating updated plan..."
+              );
+              router.push(`${redirectPath}/${result.artifactId}`);
+            },
+          }
+        )
+        .then((result) => result.success)
+        .catch(() => false),
     [artifact.id, requestPlanChanges, redirectPath, router]
   );
 
