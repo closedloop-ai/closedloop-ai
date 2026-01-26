@@ -2,6 +2,7 @@ import { failure, success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
+import { errorResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 const requestChangesSchema = z.object({
@@ -45,29 +46,6 @@ export const POST = withAuth<
       })
     );
   } catch (error) {
-    // Log full error structure for debugging
-    console.error("Request changes error:", error);
-    if (error && typeof error === "object" && !(error instanceof Error)) {
-      console.error("Error object structure:", JSON.stringify(error, null, 2));
-    }
-
-    // Extract message from various error formats
-    let message: string;
-    if (error instanceof Error) {
-      message = error.message;
-    } else if (error && typeof error === "object") {
-      // Handle Prisma/other errors that may have nested message
-      const errObj = error as Record<string, unknown>;
-      message =
-        (errObj.message as string) ??
-        (errObj.error as string) ??
-        JSON.stringify(error);
-    } else {
-      message = String(error);
-    }
-
-    return NextResponse.json(failure(`Request changes failed: ${message}`), {
-      status: 500,
-    });
+    return errorResponse("Failed to request changes", error);
   }
 });

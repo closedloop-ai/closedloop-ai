@@ -1,8 +1,8 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { failure, success } from "@repo/api/src/types/common";
-import { parseError } from "@repo/observability/error";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
+import { errorResponse } from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 
 export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
@@ -24,10 +24,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
 
       return NextResponse.json(success(result.artifact as Artifact));
     } catch (error) {
-      const message = parseError(error);
-      return NextResponse.json(failure(`Regeneration failed: ${message}`), {
-        status: 500,
-      });
+      return errorResponse("Failed to regenerate artifact", error);
     }
   }
 );

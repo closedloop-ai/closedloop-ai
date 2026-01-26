@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render } from "@testing-library/react";
 import { useRouter } from "next/navigation";
+import type { ReactNode } from "react";
 import {
   afterEach,
   beforeEach,
@@ -9,7 +11,6 @@ import {
   type Mock,
   vi,
 } from "vitest";
-import { getArtifactVersions } from "@/app/actions/artifacts";
 import { VersionSelector } from "./version-selector";
 
 // Mock dependencies
@@ -17,9 +18,37 @@ vi.mock("next/navigation", () => ({
   useRouter: vi.fn(),
 }));
 
-vi.mock("@/app/actions/artifacts", () => ({
-  getArtifactVersions: vi.fn(),
+const mockGet = vi.fn();
+vi.mock("@/hooks/use-api-client", () => ({
+  useApiClient: () => ({
+    get: mockGet,
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+  }),
 }));
+
+// Test wrapper with QueryClientProvider
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+}
+
+function TestWrapper({ children }: { children: ReactNode }) {
+  const queryClient = createTestQueryClient();
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+
+function renderWithClient(ui: ReactNode) {
+  return render(<TestWrapper>{ui}</TestWrapper>);
+}
 
 describe("VersionSelector", () => {
   const mockRouter = {
@@ -38,7 +67,7 @@ describe("VersionSelector", () => {
 
   describe("Rendering", () => {
     it("should render version button with current version", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="test-id" currentVersion={2} />
       );
 
@@ -50,7 +79,7 @@ describe("VersionSelector", () => {
     });
 
     it("should render in compact mode when compact prop is true", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector
           artifactId="test-id"
           compact={true}
@@ -67,7 +96,7 @@ describe("VersionSelector", () => {
     });
 
     it("should render in normal mode when compact prop is false", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector
           artifactId="test-id"
           compact={false}
@@ -86,34 +115,36 @@ describe("VersionSelector", () => {
 
   describe("Lazy Loading", () => {
     it("should not load versions until dropdown is opened", () => {
-      render(<VersionSelector artifactId="test-id" currentVersion={2} />);
+      renderWithClient(
+        <VersionSelector artifactId="test-id" currentVersion={2} />
+      );
 
-      expect(getArtifactVersions).not.toHaveBeenCalled();
+      expect(mockGet).not.toHaveBeenCalled();
     });
   });
 
   describe("Component Props", () => {
     it("should accept and display different version numbers", () => {
-      const { container: container1 } = render(
+      const { container: container1 } = renderWithClient(
         <VersionSelector artifactId="test-1" currentVersion={1} />
       );
       expect(container1.textContent).toContain("v1");
       cleanup();
 
-      const { container: container2 } = render(
+      const { container: container2 } = renderWithClient(
         <VersionSelector artifactId="test-2" currentVersion={5} />
       );
       expect(container2.textContent).toContain("v5");
       cleanup();
 
-      const { container: container3 } = render(
+      const { container: container3 } = renderWithClient(
         <VersionSelector artifactId="test-3" currentVersion={10} />
       );
       expect(container3.textContent).toContain("v10");
     });
 
     it("should render with different artifact IDs", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="unique-artifact-id" currentVersion={2} />
       );
 
@@ -126,7 +157,7 @@ describe("VersionSelector", () => {
 
   describe("Accessibility", () => {
     it("should have proper ARIA label for the button", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="test-id" currentVersion={2} />
       );
 
@@ -137,7 +168,7 @@ describe("VersionSelector", () => {
     });
 
     it("should have proper button role", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="test-id" currentVersion={2} />
       );
 
@@ -150,7 +181,7 @@ describe("VersionSelector", () => {
 
   describe("Styling", () => {
     it("should apply correct base classes", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="test-id" currentVersion={2} />
       );
 
@@ -162,7 +193,7 @@ describe("VersionSelector", () => {
     });
 
     it("should have muted-foreground text style for version number", () => {
-      const { container } = render(
+      const { container } = renderWithClient(
         <VersionSelector artifactId="test-id" currentVersion={2} />
       );
 

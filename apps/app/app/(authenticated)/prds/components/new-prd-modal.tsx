@@ -22,12 +22,12 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { createArtifact } from "@/app/actions/artifacts";
+import { useState } from "react";
+import { useCreateArtifact } from "@/hooks/queries/use-artifacts";
 
 export function NewPRDModal() {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const createArtifact = useCreateArtifact();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,32 +71,28 @@ export function NewPRDModal() {
       return;
     }
 
-    startTransition(async () => {
-      try {
-        const result = await createArtifact({
-          type: "PRD",
-          title: title.trim(),
-          fileName: fileName.trim() || undefined,
-          approver: approver.trim() || undefined,
-          status,
-          content: content.trim() || undefined,
-          targetRepo: targetRepo.trim() || undefined,
-          targetBranch: targetBranch.trim() || undefined,
-        });
-
-        if (!result.success) {
-          setError(result.error);
-          return;
-        }
-
-        setOpen(false);
-        resetForm();
-        router.push(`/prds/${result.data.id}`);
-      } catch (err) {
-        console.error("Failed to create PRD:", err);
-        setError("An unexpected error occurred");
+    createArtifact.mutate(
+      {
+        type: "PRD",
+        title: title.trim(),
+        fileName: fileName.trim() || undefined,
+        approver: approver.trim() || undefined,
+        status,
+        content: content.trim() || undefined,
+        targetRepo: targetRepo.trim() || undefined,
+        targetBranch: targetBranch.trim() || undefined,
+      },
+      {
+        onSuccess: (artifact) => {
+          setOpen(false);
+          resetForm();
+          router.push(`/prds/${artifact.id}`);
+        },
+        onError: (err) => {
+          setError(err.message);
+        },
       }
-    });
+    );
   };
 
   return (
@@ -225,8 +221,8 @@ export function NewPRDModal() {
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={isPending || !title.trim()} onClick={handleSubmit}>
-            {isPending ? (
+          <Button disabled={createArtifact.isPending || !title.trim()} onClick={handleSubmit}>
+            {createArtifact.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...

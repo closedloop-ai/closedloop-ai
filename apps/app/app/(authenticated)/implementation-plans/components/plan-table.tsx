@@ -7,15 +7,13 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
+import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { formatDate } from "@/lib/date-utils";
 import { PlanRowActions } from "./plan-row-actions";
 import { VersionSelector } from "./version-selector";
-
-type PlanTableProps = {
-  plans: ArtifactWithWorkstream[];
-};
 
 const columns: Column<ArtifactWithWorkstream>[] = [
   {
@@ -73,12 +71,29 @@ const filterOptions: FilterOption[] = [
   { label: "Archived", value: "ARCHIVED" },
 ];
 
-export function PlanTable({ plans }: PlanTableProps) {
+export function PlanTable() {
   const router = useRouter();
+  const { data: plans = [], isLoading, error } = useArtifactsByType("IMPLEMENTATION_PLAN");
 
   const handleRowClick = (plan: ArtifactWithWorkstream) => {
     router.push(`/implementation-plans/${plan.id}`);
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+        {error.message ?? "Failed to load implementation plans"}
+      </div>
+    );
+  }
 
   return (
     <DataTable

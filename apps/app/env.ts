@@ -25,10 +25,13 @@ export const env = createEnv({
     webhooks(),
   ],
   server: {
-    API_URL: z.string().url().default("http://localhost:3002"),
+    API_URL: z.url().default("http://localhost:3002"),
   },
-  client: {},
+  client: {
+    NEXT_PUBLIC_API_URL: z.url().default("http://localhost:3002"),
+  },
   runtimeEnv: {
     API_URL: process.env.API_URL,
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
   },
 });
