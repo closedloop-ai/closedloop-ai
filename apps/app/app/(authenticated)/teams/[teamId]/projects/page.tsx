@@ -1,10 +1,6 @@
 "use client";
 
-import type {
-  ProjectOwner,
-  ProjectWithDetails,
-} from "@repo/api/src/types/organization";
-import type { TeamWithCounts } from "@repo/api/src/types/teams";
+import type { ProjectOwner } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -17,15 +13,14 @@ import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { Loader2Icon } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
 import {
-  createProject,
-  deleteProject,
-  getProjectsByTeam,
-  updateProjectOwner,
-  updateProjectTargetDate,
-} from "@/app/actions/projects";
-import { getTeamById } from "@/app/actions/teams";
+  useCreateProject,
+  useDeleteProject,
+  useProjectsByTeam,
+  useUpdateProjectOwner,
+  useUpdateProjectTargetDate,
+} from "@/hooks/queries/use-projects";
+import { useTeam } from "@/hooks/queries/use-teams";
 import { CreateProjectModal } from "./components/create-project-modal";
 import { ProjectsTable } from "./components/projects-table";
 
@@ -33,68 +28,43 @@ export default function TeamProjectsPage() {
   const params = useParams();
   const teamId = params.teamId as string;
 
-  const [projects, setProjects] = useState<ProjectWithDetails[]>([]);
-  const [team, setTeam] = useState<TeamWithCounts | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Queries
+  const { data: team, isLoading: loadingTeam, error: teamError } = useTeam(teamId);
+  const { data: projects = [], isLoading: loadingProjects, error: projectsError } =
+    useProjectsByTeam(teamId);
 
-  // Load initial data
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true);
-      setError(null);
+  const loading = loadingTeam || loadingProjects;
+  const error = teamError?.message || projectsError?.message || null;
 
-      const [teamResult, projectsResult] = await Promise.all([
-        getTeamById(teamId),
-        getProjectsByTeam(teamId),
-      ]);
+  // Mutations
+  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateTargetDateMutation = useUpdateProjectTargetDate();
+  const createProjectMutation = useCreateProject();
+  const deleteProjectMutation = useDeleteProject();
 
-      if (teamResult.success) {
-        setTeam(teamResult.data);
-      } else {
-        setError(teamResult.error);
+  const handleUpdateOwner = (projectId: string, owner: ProjectOwner | null) => {
+    updateOwnerMutation.mutate(
+      { projectId, ownerId: owner?.id || null },
+      {
+        onError: (err) => {
+          console.error("Failed to update owner:", err);
+        },
       }
-
-      if (projectsResult.success) {
-        setProjects(projectsResult.data);
-      } else {
-        setError(projectsResult.error);
-      }
-
-      setLoading(false);
-    }
-    fetchData();
-  }, [teamId]);
-
-  const handleUpdateOwner = async (
-    projectId: string,
-    owner: ProjectOwner | null
-  ) => {
-    const result = await updateProjectOwner(projectId, owner?.id || null);
-    if (result.success) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectId ? result.data : p))
-      );
-    } else {
-      console.error("Failed to update owner:", result.error);
-    }
+    );
   };
 
-  const handleUpdateTargetDate = async (
-    projectId: string,
-    date: Date | null
-  ) => {
-    const result = await updateProjectTargetDate(projectId, date);
-    if (result.success) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectId ? result.data : p))
-      );
-    } else {
-      console.error("Failed to update target date:", result.error);
-    }
+  const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
+    updateTargetDateMutation.mutate(
+      { projectId, targetDate: date },
+      {
+        onError: (err) => {
+          console.error("Failed to update target date:", err);
+        },
+      }
+    );
   };
 
-  const handleCreateProject = async (projectData: {
+  const handleCreateProject = (projectData: {
     name: string;
     description?: string;
     priority?: string;
@@ -102,36 +72,36 @@ export default function TeamProjectsPage() {
     targetDate?: string;
     teamIds: string[];
   }) => {
-    const result = await createProject({
-      name: projectData.name,
-      description: projectData.description,
-      priority: projectData.priority as
-        | "NOT_SET"
-        | "LOW"
-        | "MEDIUM"
-        | "HIGH"
-        | undefined,
-      ownerId: projectData.ownerId || null,
-      targetDate: projectData.targetDate
-        ? new Date(projectData.targetDate)
-        : null,
-      teamIds: projectData.teamIds,
-    });
-
-    if (result.success) {
-      setProjects((prev) => [result.data, ...prev]);
-    } else {
-      console.error("Failed to create project:", result.error);
-    }
+    createProjectMutation.mutate(
+      {
+        name: projectData.name,
+        description: projectData.description,
+        priority: projectData.priority as
+          | "NOT_SET"
+          | "LOW"
+          | "MEDIUM"
+          | "HIGH"
+          | undefined,
+        ownerId: projectData.ownerId || null,
+        targetDate: projectData.targetDate
+          ? new Date(projectData.targetDate)
+          : null,
+        teamIds: projectData.teamIds,
+      },
+      {
+        onError: (err) => {
+          console.error("Failed to create project:", err);
+        },
+      }
+    );
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    const result = await deleteProject(projectId);
-    if (result.success) {
-      setProjects((prev) => prev.filter((p) => p.id !== projectId));
-    } else {
-      console.error("Failed to delete project:", result.error);
-    }
+    deleteProjectMutation.mutate(projectId, {
+      onError: (err) => {
+        console.error("Failed to delete project:", err);
+      },
+    });
   };
 
   if (loading) {

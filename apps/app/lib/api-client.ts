@@ -4,6 +4,32 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { auth } from "@repo/auth/server";
 import { env } from "@/env";
 
+/**
+ * TODO: Delete me.
+ *
+ * @deprecated Use useApiClient hook from a client component instead.
+ */
+export const apiClient = {
+  get: <T>(path: string, options?: RequestInit) => fetchApi<T>(path, options),
+
+  post: <T>(path: string, data: unknown) =>
+    fetchApi<T>(path, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  put: <T>(path: string, data: unknown) =>
+    fetchApi<T>(path, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  delete: <T>(path: string) =>
+    fetchApi<T>(path, {
+      method: "DELETE",
+    }),
+};
+
 const API_BASE = env.API_URL;
 
 async function fetchApi<T>(
@@ -52,24 +78,3 @@ async function fetchApi<T>(
     };
   }
 }
-
-export const apiClient = {
-  get: <T>(path: string, options?: RequestInit) => fetchApi<T>(path, options),
-
-  post: <T>(path: string, data: unknown) =>
-    fetchApi<T>(path, {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  put: <T>(path: string, data: unknown) =>
-    fetchApi<T>(path, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    }),
-
-  delete: <T>(path: string) =>
-    fetchApi<T>(path, {
-      method: "DELETE",
-    }),
-};

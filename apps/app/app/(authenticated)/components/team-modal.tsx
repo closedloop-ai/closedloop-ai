@@ -32,25 +32,18 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { LoaderIcon, PlusIcon, TrashIcon, XIcon } from "lucide-react";
-import {
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import {
-  addTeamMember,
-  createTeam,
-  deleteTeam,
-  getTeamMembers,
-  removeTeamMember,
-  updateTeam,
-  updateTeamMemberRole,
-} from "@/app/actions/teams";
-import { getOrganizationUsers } from "@/app/actions/users";
+import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import {
+  useAddTeamMember,
+  useCreateTeam,
+  useDeleteTeam,
+  useRemoveTeamMember,
+  useTeamMembers,
+  useUpdateTeam,
+  useUpdateTeamMemberRole,
+} from "@/hooks/queries/use-teams";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type TeamModalProps = {
@@ -114,19 +107,11 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
 
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(team?.name || "");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Members state
-  const [members, setMembers] = useState<TeamMember[]>([]);
-  const [orgUsers, setOrgUsers] = useState<User[]>([]);
-  const [loadingMembers, setLoadingMembers] = useState(false);
-  const [loadingUsers, setLoadingUsers] = useState(false);
 
   // For adding new members
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedRole, setSelectedRole] = useState<TeamRole>("MEMBER");
-  const [addingMember, setAddingMember] = useState(false);
 
   // Pending members for create mode (not yet saved)
   const [pendingMembers, setPendingMembers] = useState<
@@ -135,43 +120,24 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
 
   // Delete team state
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
-  const loadOrgUsers = useCallback(async () => {
-    setLoadingUsers(true);
-    const result = await getOrganizationUsers();
-    if (result.success) {
-      setOrgUsers(result.data);
-    } else {
-      console.error("Failed to load organization users:", result.error);
-    }
-    setLoadingUsers(false);
-  }, []);
+  // Queries - only fetch when modal is open
+  const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers({
+    enabled: open,
+  });
 
-  const loadMembers = useCallback(async (teamId: string) => {
-    setLoadingMembers(true);
-    const result = await getTeamMembers(teamId);
-    if (result.success) {
-      setMembers(result.data);
-    }
-    setLoadingMembers(false);
-  }, []);
+  const { data: members = [], isLoading: loadingMembers } = useTeamMembers(
+    team?.id ?? "",
+    { enabled: open && isEditMode && !!team?.id }
+  );
 
-  // Load data when modal opens
-  useEffect(() => {
-    if (open) {
-      setName(team?.name || "");
-      setError(null);
-      loadOrgUsers();
-
-      if (isEditMode && team) {
-        loadMembers(team.id);
-      } else {
-        setMembers([]);
-        setPendingMembers([]);
-      }
-    }
-  }, [open, team, isEditMode, loadMembers, loadOrgUsers]);
+  // Mutations
+  const createTeamMutation = useCreateTeam();
+  const updateTeamMutation = useUpdateTeam();
+  const deleteTeamMutation = useDeleteTeam();
+  const addMemberMutation = useAddTeamMember();
+  const removeMemberMutation = useRemoveTeamMember();
+  const updateRoleMutation = useUpdateTeamMemberRole();
 
   // Get users that are not already members
   const availableUsers = useMemo(() => {
@@ -182,7 +148,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     );
   }, [orgUsers, members, pendingMembers]);
 
-  const handleAddMember = async () => {
+  const handleAddMember = () => {
     if (!selectedUserId) {
       return;
     }
@@ -194,14 +160,14 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
 
     if (isEditMode && team) {
       // In edit mode, add directly via API
-      setAddingMember(true);
-      const result = await addTeamMember(team.id, selectedUserId, selectedRole);
-      if (result.success) {
-        setMembers((prev) => [...prev, result.data]);
-      } else {
-        setError(result.error || "Failed to add member");
-      }
-      setAddingMember(false);
+      addMemberMutation.mutate(
+        { teamId: team.id, userId: selectedUserId, role: selectedRole },
+        {
+          onError: () => {
+            setError("Failed to add member");
+          },
+        }
+      );
     } else {
       // In create mode, add to pending list
       setPendingMembers((prev) => [...prev, { user, role: selectedRole }]);
@@ -211,36 +177,38 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     setSelectedRole("MEMBER");
   };
 
-  const handleRemoveMember = async (member: TeamMember) => {
+  const handleRemoveMember = (member: TeamMember) => {
     if (!team) {
       return;
     }
 
-    const result = await removeTeamMember(team.id, member.userId);
-    if (result.success) {
-      setMembers((prev) => prev.filter((m) => m.id !== member.id));
-    } else {
-      setError(result.error || "Failed to remove member");
-    }
+    removeMemberMutation.mutate(
+      { teamId: team.id, userId: member.userId },
+      {
+        onError: () => {
+          setError("Failed to remove member");
+        },
+      }
+    );
   };
 
   const handleRemovePendingMember = (userId: string) => {
     setPendingMembers((prev) => prev.filter((m) => m.user.id !== userId));
   };
 
-  const handleRoleChange = async (member: TeamMember, newRole: TeamRole) => {
+  const handleRoleChange = (member: TeamMember, newRole: TeamRole) => {
     if (!team) {
       return;
     }
 
-    const result = await updateTeamMemberRole(team.id, member.userId, newRole);
-    if (result.success) {
-      setMembers((prev) =>
-        prev.map((m) => (m.id === member.id ? { ...m, role: newRole } : m))
-      );
-    } else {
-      setError(result.error || "Failed to update role");
-    }
+    updateRoleMutation.mutate(
+      { teamId: team.id, userId: member.userId, role: newRole },
+      {
+        onError: () => {
+          setError("Failed to update role");
+        },
+      }
+    );
   };
 
   const handlePendingRoleChange = (userId: string, newRole: TeamRole) => {
@@ -249,76 +217,91 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     );
   };
 
-  const submitUpdate = async (teamId: string): Promise<boolean> => {
-    const result = await updateTeam(teamId, { name: name.trim() });
-    if (!result.success) {
-      setError(result.error || "Failed to update team");
-      return false;
-    }
-    return true;
-  };
-
-  const submitCreate = async (): Promise<boolean> => {
-    const result = await createTeam({ name: name.trim() });
-    if (!result.success) {
-      setError(result.error || "Failed to create team");
-      return false;
-    }
-    for (const pending of pendingMembers) {
-      await addTeamMember(result.data.id, pending.user.id, pending.role);
-    }
-    return true;
-  };
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) {
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError(null);
-
-    const success =
-      isEditMode && team ? await submitUpdate(team.id) : await submitCreate();
-
-    if (success) {
-      handleClose();
-      onSuccess?.();
-    }
-
-    setIsSubmitting(false);
-  };
-
   const handleClose = () => {
     setOpen(false);
     setName("");
     setError(null);
-    setMembers([]);
     setPendingMembers([]);
     setSelectedUserId("");
     setSelectedRole("MEMBER");
   };
 
-  const handleDeleteTeam = async () => {
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      return;
+    }
+
+    setError(null);
+
+    if (isEditMode && team) {
+      // Update existing team
+      updateTeamMutation.mutate(
+        { id: team.id, input: { name: name.trim() } },
+        {
+          onSuccess: () => {
+            handleClose();
+            onSuccess?.();
+          },
+        }
+      );
+    } else {
+      // Create new team
+      createTeamMutation.mutate(
+        { name: name.trim() },
+        {
+          onSuccess: async (newTeam) => {
+            // Add pending members
+            await Promise.all(
+              pendingMembers.map(async (pending) => {
+                await addMemberMutation.mutateAsync({
+                  teamId: newTeam.id,
+                  userId: pending.user.id,
+                  role: pending.role,
+                });
+              })
+            );
+            handleClose();
+            onSuccess?.();
+          },
+        }
+      );
+    }
+  };
+
+  const handleDeleteTeam = () => {
     if (!team) {
       return;
     }
 
-    setIsDeleting(true);
-    const result = await deleteTeam(team.id);
-    if (result.success) {
-      setShowDeleteDialog(false);
-      handleClose();
-      onSuccess?.();
-    } else {
-      setError(result.error || "Failed to delete team");
+    deleteTeamMutation.mutate(team.id, {
+      onSuccess: () => {
+        setShowDeleteDialog(false);
+        handleClose();
+        onSuccess?.();
+      },
+    });
+  };
+
+  const isSubmitting =
+    createTeamMutation.isPending || updateTeamMutation.isPending;
+  const isDeleting = deleteTeamMutation.isPending;
+  const addingMember = addMemberMutation.isPending;
+
+  const handleOpenChange = (newOpen: boolean) => {
+    setOpen(newOpen);
+    if (newOpen) {
+      // Reset form state when opening
+      setName(team?.name || "");
+      setError(null);
+      setPendingMembers([]);
+      setSelectedUserId("");
+      setSelectedRole("MEMBER");
     }
-    setIsDeleting(false);
   };
 
   return (
-    <Dialog onOpenChange={setOpen} open={open}>
+    <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogTrigger asChild>
         {trigger || (
           <Button>

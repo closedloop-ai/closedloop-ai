@@ -216,7 +216,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
 
   const handleGenerationComplete = useCallback(async () => {
     // Refetch the artifact to get the updated content
-    const result = await getArtifactById(plan.id, { noCache: true });
+    const result = await getArtifactById(plan.id);
     if (result.success) {
       setContent(result.data.content ?? "");
       setLastSaved(result.data.updatedAt);

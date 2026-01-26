@@ -1,10 +1,7 @@
 import { Header } from "@/app/(authenticated)/components/header";
-import { getWorkstreams } from "@/app/actions/workstreams";
 import { WorkstreamsList } from "./components/workstreams-list";
 
-export default async function WorkstreamsPage() {
-  const result = await getWorkstreams();
-
+export default function WorkstreamsPage() {
   return (
     <>
       <Header page="Workstreams" pages={["Workstreams"]} />
@@ -17,14 +14,7 @@ export default async function WorkstreamsPage() {
             </p>
           </div>
         </div>
-
-        {result.success ? (
-          <WorkstreamsList workstreams={result.data} />
-        ) : (
-          <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-            {result.error}
-          </div>
-        )}
+        <WorkstreamsList />
       </main>
     </>
   );
