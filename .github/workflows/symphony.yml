@@ -65,6 +65,7 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-actions: write
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -282,6 +283,7 @@ jobs:
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: read
           permission-issues: write
+          permission-actions: write
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -715,6 +717,7 @@ jobs:
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: write
           permission-issues: write
+          permission-actions: write
 
       - name: Checkout repository
         uses: actions/checkout@v6
