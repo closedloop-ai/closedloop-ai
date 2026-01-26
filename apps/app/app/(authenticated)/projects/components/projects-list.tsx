@@ -4,7 +4,7 @@ import { Loader2Icon } from "lucide-react";
 import { useProjects } from "@/hooks/queries/use-projects";
 
 export function ProjectsList() {
-  const { data: result, isLoading } = useProjects();
+  const { data: projects = [], isLoading, error } = useProjects();
 
   if (isLoading) {
     return (
@@ -14,15 +14,15 @@ export function ProjectsList() {
     );
   }
 
-  if (!result?.success) {
+  if (error) {
     return (
       <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {result?.error ?? "Failed to load projects"}
+        {error.message}
       </div>
     );
   }
 
-  if (result.data.length === 0) {
+  if (projects.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-12 text-center">
         <h3 className="mb-2 font-semibold text-lg">No projects yet</h3>
@@ -35,7 +35,7 @@ export function ProjectsList() {
 
   return (
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-      {result.data.map((project) => (
+      {projects.map((project) => (
         <div className="rounded-lg border p-4" key={project.id}>
           <h3 className="font-medium">{project.name}</h3>
           {project.description ? (

@@ -10,8 +10,7 @@ export function SearchResults() {
   const searchParams = useSearchParams();
   const query = searchParams.get("q") ?? "";
 
-  const { data: result, isLoading } = useSearchWorkstreams(query);
-  const workstreams = result?.success ? result.data : [];
+  const { data: workstreams = [], isLoading } = useSearchWorkstreams(query);
 
   if (isLoading) {
     return (

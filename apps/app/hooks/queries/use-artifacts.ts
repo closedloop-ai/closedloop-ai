@@ -6,7 +6,6 @@ import type {
   CreateArtifactInput,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
-import type { ApiResult } from "@repo/api/src/types/common";
 import {
   type UseQueryOptions,
   useMutation,
@@ -14,6 +13,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { ApiError } from "@/lib/api-error";
 
 // Query keys
 export const artifactKeys = {
@@ -42,7 +42,7 @@ export function useArtifacts(
   type?: string,
   latestOnly = true,
   options?: Omit<
-    UseQueryOptions<ApiResult<ArtifactWithWorkstream[]>>,
+    UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -69,7 +69,7 @@ export function useArtifactsByType(
   type: string,
   latestOnly = true,
   options?: Omit<
-    UseQueryOptions<ApiResult<ArtifactWithWorkstream[]>>,
+    UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -93,7 +93,7 @@ export function useArtifactsByProject(
   projectId: string,
   latestOnly = true,
   options?: Omit<
-    UseQueryOptions<ApiResult<ArtifactWithWorkstream[]>>,
+    UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -116,7 +116,7 @@ export function useArtifactsByProject(
 export function useArtifact(
   id: string,
   options?: Omit<
-    UseQueryOptions<ApiResult<ArtifactWithWorkstream>>,
+    UseQueryOptions<ArtifactWithWorkstream>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -132,10 +132,7 @@ export function useArtifact(
 
 export function useArtifactGenerationStatus(
   artifactId: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<GenerationStatus>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -153,7 +150,7 @@ export function useArtifactGenerationStatus(
 export function useArtifactVersions(
   id: string,
   options?: Omit<
-    UseQueryOptions<ApiResult<ArtifactWithWorkstream[]>>,
+    UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -163,23 +160,15 @@ export function useArtifactVersions(
     queryKey: artifactKeys.versions(id),
     queryFn: async () => {
       // First fetch the artifact to get its documentSlug
-      const artifactResult =
-        await apiClient.get<ArtifactWithWorkstream>(`/artifacts/${id}`);
-
-      if (!artifactResult.success) {
-        return artifactResult;
-      }
-
-      const artifact = artifactResult.data;
+      const artifact = await apiClient.get<ArtifactWithWorkstream>(
+        `/artifacts/${id}`
+      );
 
       if (
         artifact.documentSlug === null ||
         artifact.documentSlug === undefined
       ) {
-        return {
-          success: false as const,
-          error: "Artifact does not have a documentSlug",
-        };
+        throw new ApiError("Artifact does not have a documentSlug", 400);
       }
 
       const params = new URLSearchParams();
@@ -219,9 +208,9 @@ export function useUpdateArtifact() {
       const { id, ...body } = input;
       return apiClient.put<Artifact>(`/artifacts/${id}`, body);
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(variables.id),
+        queryKey: artifactKeys.detail(id),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
@@ -236,7 +225,7 @@ export function useDeleteArtifact() {
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/artifacts/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.all });
     },
   });
 }

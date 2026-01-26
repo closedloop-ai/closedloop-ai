@@ -83,18 +83,13 @@ export function NewPRDModal() {
         targetBranch: targetBranch.trim() || undefined,
       },
       {
-        onSuccess: (result) => {
-          if (!result.success) {
-            setError(result.error);
-            return;
-          }
+        onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/prds/${result.data.id}`);
+          router.push(`/prds/${artifact.id}`);
         },
         onError: (err) => {
-          console.error("Failed to create PRD:", err);
-          setError("An unexpected error occurred");
+          setError(err.message);
         },
       }
     );

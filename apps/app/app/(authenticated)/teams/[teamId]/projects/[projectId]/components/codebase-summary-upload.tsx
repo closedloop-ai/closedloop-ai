@@ -35,15 +35,10 @@ export function CodebaseSummaryUpload({
     uploadMutation.mutate(
       { projectId, markdownContent: content },
       {
-        onSuccess: (result) => {
-          if (result.success && result.data.lastIndexedAt) {
-            onUploadSuccess?.(new Date(result.data.lastIndexedAt));
-          } else if (!result.success) {
-            console.error("Failed to upload codebase summary:", result.error);
+        onSuccess: (project) => {
+          if (project.lastIndexedAt) {
+            onUploadSuccess?.(new Date(project.lastIndexedAt));
           }
-        },
-        onError: (error) => {
-          console.error("Error uploading file:", error);
         },
         onSettled: () => {
           // Reset the input so the same file can be selected again

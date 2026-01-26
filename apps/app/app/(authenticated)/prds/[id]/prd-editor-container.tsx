@@ -10,7 +10,7 @@ type PRDEditorContainerProps = {
 };
 
 export function PRDEditorContainer({ id }: PRDEditorContainerProps) {
-  const { data: result, isLoading } = useArtifact(id);
+  const { data: prd, isLoading, error } = useArtifact(id);
 
   if (isLoading) {
     return (
@@ -20,9 +20,9 @@ export function PRDEditorContainer({ id }: PRDEditorContainerProps) {
     );
   }
 
-  if (!result?.success || result.data.type !== "PRD") {
+  if (error || !prd || prd.type !== "PRD") {
     notFound();
   }
 
-  return <PRDEditor prd={result.data} />;
+  return <PRDEditor prd={prd} />;
 }

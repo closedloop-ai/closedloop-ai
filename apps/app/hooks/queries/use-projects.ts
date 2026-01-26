@@ -1,7 +1,6 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
-import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
   ProjectPriority,
@@ -31,10 +30,7 @@ export const projectKeys = {
 // Queries
 export function useProjects(
   teamId?: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<ProjectWithDetails[]>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -50,10 +46,7 @@ export function useProjects(
 
 export function useProjectsByTeam(
   teamId: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<ProjectWithDetails[]>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -68,10 +61,7 @@ export function useProjectsByTeam(
 
 export function useProject(
   id: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<ProjectWithDetails>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<ProjectWithDetails>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -87,10 +77,7 @@ export function useProjectActivity(
   projectId: string,
   page = 1,
   pageSize = 20,
-  options?: Omit<
-    UseQueryOptions<ApiResult<ActivityResponse>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<ActivityResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 

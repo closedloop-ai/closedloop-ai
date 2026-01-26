@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 type UseDeleteConfirmationOptions<T> = {
-  onDelete: (id: string) => Promise<void>;
+  onDelete: (id: string) => void;
   getId: (item: T) => string;
 };
 

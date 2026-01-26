@@ -1,27 +1,27 @@
 "use client";
 
-import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useCallback, useMemo } from "react";
 import { env } from "@/env";
+import { ApiError } from "@/lib/api-error";
+import { ApiResult } from "@repo/api/src/types/common";
 
 const API_URL = env.NEXT_PUBLIC_API_URL;
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
+ *
+ * Unlike the previous implementation, this throws ApiError on failures
+ * instead of returning { success: false, error }. This allows TanStack Query
+ * to handle errors natively via its error state and global error handlers.
  */
 export function useApiClient() {
   const { getToken } = useAuth();
 
   const fetchApi = useCallback(
-    async <T>(path: string, options?: RequestInit): Promise<ApiResult<T>> => {
-      console.debug("API request: ", API_URL, path);
-
+    async <T>(path: string, options?: RequestInit): Promise<T> => {
       if (!API_URL) {
-        return {
-          success: false,
-          error: "API URL not configured (NEXT_PUBLIC_API_URL)",
-        };
+        throw new ApiError("API URL not configured (NEXT_PUBLIC_API_URL)", 0);
       }
 
       const url = `${API_URL}${path}`;
@@ -42,13 +42,26 @@ export function useApiClient() {
           },
         });
 
-        return (await response.json()) as ApiResult<T>;
+        const result: ApiResult<T> = await response.json();
+
+        if (!result.success) {
+          throw new ApiError(result.error, response.status);
+        } else if (response.status >= 400) {
+          throw new ApiError("An unexpected error occurred", response.status);
+        }
+
+        return result.data;
       } catch (error) {
-        console.error(`Client API request failed: ${path}`, error);
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : "Network error",
-        };
+        // Re-throw ApiError as-is
+        if (error instanceof ApiError) {
+          throw error;
+        }
+
+        // Wrap other errors (network errors, JSON parse errors, etc.)
+        throw new ApiError(
+          error instanceof Error ? error.message : "Network error",
+          0
+        );
       }
     },
     [getToken]

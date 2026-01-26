@@ -10,7 +10,7 @@ type PlanEditorContainerProps = {
 };
 
 export function PlanEditorContainer({ id }: PlanEditorContainerProps) {
-  const { data: result, isLoading } = useArtifact(id);
+  const { data: plan, isLoading, error } = useArtifact(id);
 
   if (isLoading) {
     return (
@@ -20,9 +20,9 @@ export function PlanEditorContainer({ id }: PlanEditorContainerProps) {
     );
   }
 
-  if (!result?.success || result.data.type !== "IMPLEMENTATION_PLAN") {
+  if (error || !plan || plan.type !== "IMPLEMENTATION_PLAN") {
     notFound();
   }
 
-  return <PlanEditor plan={result.data} />;
+  return <PlanEditor plan={plan} />;
 }

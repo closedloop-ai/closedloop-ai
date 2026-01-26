@@ -103,7 +103,7 @@ export function CreateArtifactModal({
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
 
   // Fetch PRDs when modal opens for implementation plan
-  const { data: artifactsResult, isLoading: loadingPrds } = useArtifactsByProject(
+  const { data: artifacts = [], isLoading: loadingPrds } = useArtifactsByProject(
     projectId,
     true,
     { enabled: open && isImplementationPlan }
@@ -111,11 +111,8 @@ export function CreateArtifactModal({
 
   // Filter to get only PRDs
   const prds = useMemo(() => {
-    if (!artifactsResult?.success) {
-      return [];
-    }
-    return artifactsResult.data.filter((a) => a.type === "PRD");
-  }, [artifactsResult]);
+    return artifacts.filter((a) => a.type === "PRD");
+  }, [artifacts]);
 
   // Create artifact mutation
   const createArtifact = useCreateArtifact();
@@ -191,17 +188,9 @@ export function CreateArtifactModal({
         targetBranch: targetBranch.trim() || undefined,
       },
       {
-        onSuccess: (result) => {
-          if (!result.success) {
-            setError(result.error);
-            return;
-          }
+        onSuccess: (artifact) => {
           handleClose();
-          onSuccess?.(result.data);
-        },
-        onError: (err) => {
-          console.error(`Failed to create ${typeLabel}:`, err);
-          setError("An unexpected error occurred");
+          onSuccess?.(artifact);
         },
       }
     );

@@ -1,14 +1,18 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { type ReactNode, useRef } from "react";
+import { ApiError } from "./api-error";
 
 type QueryProviderProps = {
   children: ReactNode;
 };
 
 export function QueryProvider({ children }: Readonly<QueryProviderProps>) {
-  const queryClient = useRef(getQueryClient());
+  const queryClient = useRef<QueryClient | null>(null);
+
+  queryClient.current ??= getQueryClient();
 
   return (
     <QueryClientProvider client={queryClient.current}>
@@ -17,12 +21,27 @@ export function QueryProvider({ children }: Readonly<QueryProviderProps>) {
   );
 }
 
+/**
+ * Get a user-friendly error message from an error object.
+ */
+function getErrorMessage(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) {
+    return error.message;
+  }
+  return "An unexpected error occurred";
+}
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: 60 * 1000, // 1 minute
-        refetchOnWindowFocus: false,
+      },
+      mutations: {
+        onError: (error) => {
+          const message = getErrorMessage(error);
+          toast.error(message);
+        },
       },
     },
   });

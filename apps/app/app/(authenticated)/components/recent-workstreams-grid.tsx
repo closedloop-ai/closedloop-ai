@@ -6,8 +6,7 @@ import { useRecentWorkstreams } from "@/hooks/queries/use-workstreams";
 import { WorkstreamStateBadge } from "@/components/status-badge";
 
 export function RecentWorkstreamsGrid() {
-  const { data: result, isLoading } = useRecentWorkstreams(6);
-  const workstreams = result?.success ? result.data : [];
+  const { data: workstreams = [], isLoading } = useRecentWorkstreams(6);
 
   if (isLoading) {
     return (

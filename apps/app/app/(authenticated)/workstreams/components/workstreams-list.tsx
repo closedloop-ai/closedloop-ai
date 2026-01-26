@@ -18,8 +18,7 @@ import {
 import { formatRelativeTime } from "@/lib/date-utils";
 
 export function WorkstreamsList() {
-  const { data: result, isLoading } = useWorkstreams();
-  const workstreams = result?.success ? result.data : [];
+  const { data: workstreams = [], isLoading, error } = useWorkstreams();
 
   if (isLoading) {
     return (
@@ -29,10 +28,10 @@ export function WorkstreamsList() {
     );
   }
 
-  if (!result?.success) {
+  if (error) {
     return (
       <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {result?.error ?? "Failed to load workstreams"}
+        {error.message}
       </div>
     );
   }

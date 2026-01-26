@@ -1,6 +1,5 @@
 "use client";
 
-import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   CreateOrganizationInput,
   Organization,
@@ -24,10 +23,7 @@ export const organizationKeys = {
 
 // Queries
 export function useOrganizations(
-  options?: Omit<
-    UseQueryOptions<ApiResult<Organization[]>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<Organization[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -40,10 +36,7 @@ export function useOrganizations(
 
 export function useOrganization(
   id: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<Organization>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<Organization>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 

@@ -1,6 +1,5 @@
 "use client";
 
-import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
@@ -14,7 +13,7 @@ export const userKeys = {
 
 // Queries
 export function useOrganizationUsers(
-  options?: Omit<UseQueryOptions<ApiResult<User[]>>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<User[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 

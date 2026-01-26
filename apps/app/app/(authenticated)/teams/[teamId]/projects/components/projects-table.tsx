@@ -71,10 +71,10 @@ export function ProjectsTable({
 
   // Transform organization users for the popover
   const orgUsers: PopoverUser[] = useMemo(() => {
-    if (!usersResult?.success) {
+    if (!usersResult) {
       return [];
     }
-    return usersResult.data.map((user) => ({
+    return usersResult.map((user) => ({
       id: user.id,
       name: getUserDisplayName(user),
       email: user.email,

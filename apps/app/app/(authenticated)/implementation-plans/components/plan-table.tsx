@@ -73,8 +73,7 @@ const filterOptions: FilterOption[] = [
 
 export function PlanTable() {
   const router = useRouter();
-  const { data: result, isLoading } = useArtifactsByType("IMPLEMENTATION_PLAN");
-  const plans = result?.success ? result.data : [];
+  const { data: plans = [], isLoading, error } = useArtifactsByType("IMPLEMENTATION_PLAN");
 
   const handleRowClick = (plan: ArtifactWithWorkstream) => {
     router.push(`/implementation-plans/${plan.id}`);
@@ -88,10 +87,10 @@ export function PlanTable() {
     );
   }
 
-  if (!result?.success) {
+  if (error) {
     return (
       <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {result?.error ?? "Failed to load implementation plans"}
+        {error.message ?? "Failed to load implementation plans"}
       </div>
     );
   }

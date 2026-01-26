@@ -28,8 +28,7 @@ import { useTeams } from "@/hooks/queries/use-teams";
 import { TeamModal } from "./team-modal";
 
 export function SidebarTeams() {
-  const { data: result, refetch } = useTeams();
-  const teams = result?.success ? result.data : [];
+  const { data: teams = [], refetch } = useTeams();
 
   return (
     <SidebarGroup>

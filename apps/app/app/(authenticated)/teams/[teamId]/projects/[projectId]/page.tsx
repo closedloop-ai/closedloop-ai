@@ -1,6 +1,6 @@
 "use client";
 
-import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -65,41 +65,33 @@ export default function ProjectDetailPage() {
     useState<ArtifactType>("PRD");
 
   // Queries
-  const { data: teamResult, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: projectResult, isLoading: loadingProject } =
+  const { data: teamData, isLoading: loadingTeam, error: teamError } = useTeam(teamId);
+  const { data: project, isLoading: loadingProject, error: projectError } =
     useProject(projectId);
-  const { data: activityResult, isLoading: loadingActivity } =
+  const { data: activityData, isLoading: loadingActivity } =
     useProjectActivity(projectId);
-  const { data: artifactsResult, isLoading: loadingArtifacts } =
+  const { data: artifactsData = [], isLoading: loadingArtifacts } =
     useArtifactsByProject(projectId);
 
-  const team = teamResult?.success
-    ? { id: teamResult.data.id, name: teamResult.data.name }
+  const team = teamData
+    ? { id: teamData.id, name: teamData.name }
     : null;
-  const project = projectResult?.success ? projectResult.data : null;
-  const activities = activityResult?.success
-    ? activityResult.data.activities
-    : [];
+  const activities = activityData?.activities ?? [];
 
   // Map API artifacts to ProjectArtifact format
   const artifacts: ProjectArtifact[] = useMemo(() => {
-    if (!artifactsResult?.success) {
-      return [];
-    }
-    return artifactsResult.data.map((artifact) => ({
+    return artifactsData.map((artifact) => ({
       id: artifact.id,
       name: artifact.title,
       type: artifact.type as ProjectArtifactType,
       status: mapArtifactStatusToDisplay(artifact.status),
       link: artifact.externalUrl || undefined,
     }));
-  }, [artifactsResult]);
+  }, [artifactsData]);
 
   const loading =
     loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
-  const error =
-    (teamResult && !teamResult.success ? teamResult.error : null) ||
-    (projectResult && !projectResult.success ? projectResult.error : null);
+  const error = teamError?.message || projectError?.message || null;
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
@@ -176,13 +168,7 @@ export default function ProjectDetailPage() {
     setCreateModalOpen(true);
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const handleArtifactCreated = (_artifact: Artifact) => {
-    // TanStack Query will automatically refetch the artifacts list
-    // due to cache invalidation in useCreateArtifact
-  };
-
-  const handleDeleteArtifact = async (artifactId: string) => {
+  const handleDeleteArtifact = (artifactId: string) => {
     deleteArtifactMutation.mutate(artifactId, {
       onError: (err) => {
         console.error("Failed to delete artifact:", err);
@@ -285,7 +271,6 @@ export default function ProjectDetailPage() {
       <CreateArtifactModal
         artifactType={selectedArtifactType}
         onOpenChange={setCreateModalOpen}
-        onSuccess={handleArtifactCreated}
         open={createModalOpen}
         projectId={projectId}
       />

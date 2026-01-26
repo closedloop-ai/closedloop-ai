@@ -73,8 +73,7 @@ const filterOptions: FilterOption[] = [
 
 export function PRDTable() {
   const router = useRouter();
-  const { data: result, isLoading } = useArtifactsByType("PRD");
-  const prds = result?.success ? result.data : [];
+  const { data: prds = [], isLoading, error } = useArtifactsByType("PRD");
 
   const handleRowClick = (prd: ArtifactWithWorkstream) => {
     router.push(`/prds/${prd.id}`);
@@ -88,10 +87,10 @@ export function PRDTable() {
     );
   }
 
-  if (!result?.success) {
+  if (error) {
     return (
       <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {result?.error ?? "Failed to load PRDs"}
+        {error.message}
       </div>
     );
   }

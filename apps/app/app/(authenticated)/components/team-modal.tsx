@@ -122,16 +122,14 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   // Queries - only fetch when modal is open
-  const { data: usersResult, isLoading: loadingUsers } = useOrganizationUsers({
+  const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers({
     enabled: open,
   });
-  const orgUsers = usersResult?.success ? usersResult.data : [];
 
-  const { data: membersResult, isLoading: loadingMembers } = useTeamMembers(
+  const { data: members = [], isLoading: loadingMembers } = useTeamMembers(
     team?.id ?? "",
     { enabled: open && isEditMode && !!team?.id }
   );
-  const members = membersResult?.success ? membersResult.data : [];
 
   // Mutations
   const createTeamMutation = useCreateTeam();
@@ -241,16 +239,9 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       updateTeamMutation.mutate(
         { id: team.id, input: { name: name.trim() } },
         {
-          onSuccess: (result) => {
-            if (!result.success) {
-              setError(result.error || "Failed to update team");
-              return;
-            }
+          onSuccess: () => {
             handleClose();
             onSuccess?.();
-          },
-          onError: () => {
-            setError("Failed to update team");
           },
         }
       );
@@ -259,24 +250,19 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       createTeamMutation.mutate(
         { name: name.trim() },
         {
-          onSuccess: async (result) => {
-            if (!result.success) {
-              setError(result.error || "Failed to create team");
-              return;
-            }
+          onSuccess: async (newTeam) => {
             // Add pending members
-            for (const pending of pendingMembers) {
-              await addMemberMutation.mutateAsync({
-                teamId: result.data.id,
-                userId: pending.user.id,
-                role: pending.role,
-              });
-            }
+            await Promise.all(
+              pendingMembers.map(async (pending) => {
+                await addMemberMutation.mutateAsync({
+                  teamId: newTeam.id,
+                  userId: pending.user.id,
+                  role: pending.role,
+                });
+              })
+            );
             handleClose();
             onSuccess?.();
-          },
-          onError: () => {
-            setError("Failed to create team");
           },
         }
       );
@@ -289,17 +275,10 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     }
 
     deleteTeamMutation.mutate(team.id, {
-      onSuccess: (result) => {
-        if (result.success) {
-          setShowDeleteDialog(false);
-          handleClose();
-          onSuccess?.();
-        } else {
-          setError(result.error || "Failed to delete team");
-        }
-      },
-      onError: () => {
-        setError("Failed to delete team");
+      onSuccess: () => {
+        setShowDeleteDialog(false);
+        handleClose();
+        onSuccess?.();
       },
     });
   };

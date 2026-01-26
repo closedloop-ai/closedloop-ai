@@ -13,9 +13,9 @@ type WorkstreamDetailContainerProps = {
 export function WorkstreamDetailContainer({
   id,
 }: WorkstreamDetailContainerProps) {
-  const { data: workstreamResult, isLoading: isLoadingWorkstream } =
+  const { data: workstream, isLoading: isLoadingWorkstream, error } =
     useWorkstream(id);
-  const { data: artifactsResult, isLoading: isLoadingArtifacts } = useArtifacts(
+  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts(
     id,
     undefined,
     true
@@ -31,12 +31,9 @@ export function WorkstreamDetailContainer({
     );
   }
 
-  if (!workstreamResult?.success) {
+  if (error || !workstream) {
     notFound();
   }
-
-  const workstream = workstreamResult.data;
-  const artifacts = artifactsResult?.success ? artifactsResult.data : [];
 
   return <WorkstreamDetail artifacts={artifacts} workstream={workstream} />;
 }

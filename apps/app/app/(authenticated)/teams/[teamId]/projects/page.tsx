@@ -29,16 +29,12 @@ export default function TeamProjectsPage() {
   const teamId = params.teamId as string;
 
   // Queries
-  const { data: teamResult, isLoading: loadingTeam } = useTeam(teamId);
-  const { data: projectsResult, isLoading: loadingProjects } =
+  const { data: team, isLoading: loadingTeam, error: teamError } = useTeam(teamId);
+  const { data: projects = [], isLoading: loadingProjects, error: projectsError } =
     useProjectsByTeam(teamId);
 
-  const team = teamResult?.success ? teamResult.data : null;
-  const projects = projectsResult?.success ? projectsResult.data : [];
   const loading = loadingTeam || loadingProjects;
-  const error =
-    (teamResult && !teamResult.success ? teamResult.error : null) ||
-    (projectsResult && !projectsResult.success ? projectsResult.error : null);
+  const error = teamError?.message || projectsError?.message || null;
 
   // Mutations
   const updateOwnerMutation = useUpdateProjectOwner();

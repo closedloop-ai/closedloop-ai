@@ -1,6 +1,5 @@
 "use client";
 
-import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   CreateWorkstreamInput,
   UpdateWorkstreamInput,
@@ -29,7 +28,7 @@ export const workstreamKeys = {
 export function useWorkstreams(
   projectId?: string,
   options?: Omit<
-    UseQueryOptions<ApiResult<WorkstreamWithProject[]>>,
+    UseQueryOptions<WorkstreamWithProject[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -54,7 +53,7 @@ export function useWorkstreams(
 export function useRecentWorkstreams(
   limit = 6,
   options?: Omit<
-    UseQueryOptions<ApiResult<WorkstreamWithProject[]>>,
+    UseQueryOptions<WorkstreamWithProject[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -71,7 +70,7 @@ export function useRecentWorkstreams(
 export function useSearchWorkstreams(
   query: string,
   options?: Omit<
-    UseQueryOptions<ApiResult<WorkstreamWithProject[]>>,
+    UseQueryOptions<WorkstreamWithProject[]>,
     "queryKey" | "queryFn"
   >
 ) {
@@ -90,7 +89,7 @@ export function useSearchWorkstreams(
 
 export function useWorkstream(
   id: string,
-  options?: Omit<UseQueryOptions<ApiResult<Workstream>>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<Workstream>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 

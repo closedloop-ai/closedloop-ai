@@ -1,6 +1,5 @@
 "use client";
 
-import type { ApiResult } from "@repo/api/src/types/common";
 import type {
   Team,
   TeamMember,
@@ -28,10 +27,7 @@ export const teamKeys = {
 
 // Queries
 export function useTeams(
-  options?: Omit<
-    UseQueryOptions<ApiResult<TeamWithCounts[]>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<TeamWithCounts[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -44,10 +40,7 @@ export function useTeams(
 
 export function useTeam(
   id: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<TeamWithCounts>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<TeamWithCounts>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -61,10 +54,7 @@ export function useTeam(
 
 export function useTeamMembers(
   teamId: string,
-  options?: Omit<
-    UseQueryOptions<ApiResult<TeamMember[]>>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<TeamMember[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
@@ -102,9 +92,9 @@ export function useUpdateTeam() {
       id: string;
       input: { name?: string; slug?: string };
     }) => apiClient.put<Team>(`/teams/${id}`, input),
-    onSuccess: (_, variables) => {
+    onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({
-        queryKey: teamKeys.detail(variables.id),
+        queryKey: teamKeys.detail(id),
       });
       queryClient.invalidateQueries({ queryKey: teamKeys.lists() });
     },
@@ -119,7 +109,7 @@ export function useDeleteTeam() {
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/teams/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: teamKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: teamKeys.all });
     },
   });
 }
@@ -140,12 +130,12 @@ export function useAddTeamMember() {
       role?: TeamRole;
     }) =>
       apiClient.post<TeamMember>(`/teams/${teamId}/members`, { userId, role }),
-    onSuccess: (_, variables) => {
+    onSuccess: (_, { teamId }) => {
       queryClient.invalidateQueries({
-        queryKey: teamKeys.members(variables.teamId),
+        queryKey: teamKeys.members(teamId),
       });
       queryClient.invalidateQueries({
-        queryKey: teamKeys.detail(variables.teamId),
+        queryKey: teamKeys.detail(teamId),
       });
     },
   });
@@ -166,9 +156,12 @@ export function useUpdateTeamMemberRole() {
       role: TeamRole;
     }) =>
       apiClient.put<TeamMember>(`/teams/${teamId}/members/${userId}`, { role }),
-    onSuccess: (_, variables) => {
+    onSuccess: (_, { teamId }) => {
       queryClient.invalidateQueries({
-        queryKey: teamKeys.members(variables.teamId),
+        queryKey: teamKeys.members(teamId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: teamKeys.detail(teamId),
       });
     },
   });
@@ -181,12 +174,12 @@ export function useRemoveTeamMember() {
   return useMutation({
     mutationFn: ({ teamId, userId }: { teamId: string; userId: string }) =>
       apiClient.delete<{ deleted: true }>(`/teams/${teamId}/members/${userId}`),
-    onSuccess: (_, variables) => {
+    onSuccess: (_, { teamId }) => {
       queryClient.invalidateQueries({
-        queryKey: teamKeys.members(variables.teamId),
+        queryKey: teamKeys.members(teamId),
       });
       queryClient.invalidateQueries({
-        queryKey: teamKeys.detail(variables.teamId),
+        queryKey: teamKeys.detail(teamId),
       });
     },
   });

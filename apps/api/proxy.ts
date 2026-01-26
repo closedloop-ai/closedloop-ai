@@ -6,7 +6,7 @@ import { NextResponse } from "next/server";
 // TODO: migrate this to environment variables.
 const allowedOrigins = new Set([
   "http://localhost:3000",
-  "https://symphony-alpha-app-stage.vercel.app/",
+  "https://symphony-alpha-app-stage.vercel.app",
 ]);
 
 function isOriginAllowed(origin: string | null): boolean {
