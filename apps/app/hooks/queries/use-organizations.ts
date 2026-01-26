@@ -86,16 +86,3 @@ export function useUpdateOrganization() {
     },
   });
 }
-
-export function useDeleteOrganization() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.delete<{ deleted: true }>(`/organizations/${id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: organizationKeys.lists() });
-    },
-  });
-}

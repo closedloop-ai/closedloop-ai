@@ -19,7 +19,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const mockGet = vi.fn();
-vi.mock("@/lib/client-api", () => ({
+vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => ({
     get: mockGet,
     post: vi.fn(),
