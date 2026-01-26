@@ -10,9 +10,12 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   createNewVersion,
   deleteArtifact,
+  executeImplementationPlan,
   type GenerationStatus,
   getArtifactById,
+  getArtifactPullRequest,
   getGenerationStatus,
+  type PullRequestInfo,
   regenerateArtifact,
   requestPlanChanges,
   updateArtifact,
@@ -28,6 +31,8 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const [content, setContent] = useState(plan.content ?? "");
   const [lastSaved, setLastSaved] = useState<Date>(plan.updatedAt);
   const [isSaving, setIsSaving] = useState(false);
+  // Track if user has unsaved local changes - prevents server sync from overwriting edits
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   // Metadata state
   const [status, setStatus] = useState(plan.status);
@@ -39,21 +44,38 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
   const [showRequestChangesModal, setShowRequestChangesModal] = useState(false);
   const [isRequestingChanges, setIsRequestingChanges] = useState(false);
   const [showLinearExportDialog, setShowLinearExportDialog] = useState(false);
+  const [showExecuteModal, setShowExecuteModal] = useState(false);
+  const [isExecuting, setIsExecuting] = useState(false);
 
   // Editor refresh key - increment to force MDXEditor remount
   const [editorKey, setEditorKey] = useState(0);
+
+  // Status banner key - increment to force banner remount (restart polling)
+  const [statusBannerKey, setStatusBannerKey] = useState(0);
 
   // Generation status (for showing GitHub action link in Details panel)
   const [generationStatus, setGenerationStatus] =
     useState<GenerationStatus | null>(null);
 
+  // Pull request info (for showing PR link when execution completes)
+  const [pullRequest, setPullRequest] = useState<PullRequestInfo | null>(null);
+
   // Sync state when plan prop changes (e.g., server refresh, navigation)
+  // IMPORTANT: Don't sync content if user has unsaved local changes
   useEffect(() => {
-    setContent(plan.content ?? "");
+    if (!hasUnsavedChanges) {
+      setContent(plan.content ?? "");
+    }
     setLastSaved(plan.updatedAt);
     setStatus(plan.status);
     setApprover(plan.approver ?? "");
-  }, [plan.content, plan.updatedAt, plan.status, plan.approver]);
+  }, [
+    plan.content,
+    plan.updatedAt,
+    plan.status,
+    plan.approver,
+    hasUnsavedChanges,
+  ]);
 
   // Fetch generation status on mount and when plan changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: plan.updatedAt intentionally triggers re-fetch after generation completes
@@ -65,7 +87,23 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     });
   }, [plan.id, plan.updatedAt]);
 
+  // Fetch PR info on mount and when plan changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: plan.updatedAt intentionally triggers re-fetch after execution completes
+  useEffect(() => {
+    getArtifactPullRequest(plan.id).then((result) => {
+      if (result.success) {
+        setPullRequest(result.data);
+      }
+    });
+  }, [plan.id, plan.updatedAt]);
+
   const isDraft = status === "DRAFT";
+
+  // Content change handler - tracks unsaved changes
+  const handleContentChange = useCallback((newContent: string) => {
+    setContent(newContent);
+    setHasUnsavedChanges(true);
+  }, []);
 
   // Handlers
   const handleSave = useCallback(() => {
@@ -88,6 +126,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
       const result = await updateArtifact({ id: plan.id, content });
       if (result.success) {
         setLastSaved(new Date());
+        setHasUnsavedChanges(false);
         toast.success("Changes saved");
       } else {
         toast.error("Failed to save changes");
@@ -179,6 +218,7 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
       if (result.success) {
         setContent(result.data.content ?? "");
         setLastSaved(new Date());
+        setHasUnsavedChanges(false); // Server content is now source of truth
         toast.success("Plan regeneration started");
       } else {
         toast.error(result.error || "Failed to regenerate plan");
@@ -221,17 +261,46 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
       setContent(result.data.content ?? "");
       setLastSaved(result.data.updatedAt);
       setStatus(result.data.status);
+      setHasUnsavedChanges(false); // Server content is now source of truth
       // Increment key to force MDXEditor remount with new content
       setEditorKey((k) => k + 1);
       toast.success("Plan generation complete");
     }
   }, [plan.id]);
 
+  const handleExecute = useCallback(async () => {
+    setIsExecuting(true);
+    try {
+      const result = await executeImplementationPlan(plan.id);
+      if (result.success) {
+        setShowExecuteModal(false);
+        // Restart status banner polling by forcing remount
+        setStatusBannerKey((k) => k + 1);
+        toast.success("Plan execution started - a PR will be created shortly");
+      } else {
+        const errorMessage =
+          typeof result.error === "string"
+            ? result.error
+            : "Failed to execute plan";
+        toast.error(errorMessage);
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to execute plan"
+      );
+    } finally {
+      setIsExecuting(false);
+    }
+  }, [plan.id]);
+
+  // Computed values
+  const isApproved = status === "APPROVED";
+
   return {
     // State
     isPending,
     content,
-    setContent,
+    setContent: handleContentChange, // Use tracked version that marks unsaved changes
     lastSaved,
     isSaving,
     status,
@@ -245,9 +314,15 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     isRequestingChanges,
     showLinearExportDialog,
     setShowLinearExportDialog,
+    showExecuteModal,
+    setShowExecuteModal,
+    isExecuting,
     isDraft,
+    isApproved,
     generationStatus,
+    pullRequest,
     editorKey,
+    statusBannerKey,
 
     // Handlers
     handleSave,
@@ -261,5 +336,6 @@ export function usePlanEditor(plan: ArtifactWithWorkstream) {
     handleRegenerate,
     handleRequestChanges,
     handleGenerationComplete,
+    handleExecute,
   };
 }

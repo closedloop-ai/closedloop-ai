@@ -16,16 +16,22 @@ const MIN_POLL_INTERVAL = 2000; // 2 seconds
 const MAX_POLL_INTERVAL = 30_000; // 30 seconds
 const BACKOFF_MULTIPLIER = 1.5;
 
-function getStatusMessage(status: GenerationStatus["status"]): string {
+function getStatusMessage(
+  status: GenerationStatus["status"],
+  command: GenerationStatus["command"]
+): string {
+  const isExecute = command === "execute";
   switch (status) {
     case "PENDING":
       return "Waiting to start...";
     case "QUEUED":
-      return "Queued for generation...";
+      return isExecute ? "Queued for execution..." : "Queued for generation...";
     case "RUNNING":
-      return "Generating implementation plan...";
+      return isExecute
+        ? "Executing plan and creating PR..."
+        : "Generating implementation plan...";
     case "FAILURE":
-      return "Plan generation failed";
+      return isExecute ? "Plan execution failed" : "Plan generation failed";
     default:
       return "";
   }
@@ -158,7 +164,7 @@ export function GenerationStatusBanner({
         ) : (
           <XCircleIcon className="h-4 w-4" />
         )}
-        <span>{getStatusMessage(status.status)}</span>
+        <span>{getStatusMessage(status.status, status.command)}</span>
       </div>
 
       {status.htmlUrl ? (

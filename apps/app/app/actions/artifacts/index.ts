@@ -12,6 +12,7 @@ import { apiClient } from "@/lib/api-client";
 
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -293,4 +294,51 @@ export async function requestPlanChanges(
   }
 
   return result;
+}
+
+export type ExecuteResult = {
+  success: true;
+  correlationId: string;
+};
+
+/**
+ * Execute an approved implementation plan.
+ * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
+ */
+export async function executeImplementationPlan(
+  artifactId: string
+): Promise<ApiResult<ExecuteResult>> {
+  const result = await apiClient.post<ExecuteResult>(
+    `/artifacts/${artifactId}/execute`,
+    {}
+  );
+
+  if (result.success) {
+    revalidatePath(`/implementation-plans/${artifactId}`);
+    revalidatePath("/implementation-plans");
+  }
+
+  return result;
+}
+
+export type PullRequestInfo = {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+};
+
+/**
+ * Get the pull request associated with an artifact's workstream.
+ */
+export async function getArtifactPullRequest(
+  artifactId: string
+): Promise<ApiResult<PullRequestInfo | null>> {
+  return await apiClient.get<PullRequestInfo | null>(
+    `/artifacts/${artifactId}/pull-request`
+  );
 }
