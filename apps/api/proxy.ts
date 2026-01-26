@@ -1,21 +1,18 @@
 import { authMiddleware } from "@repo/auth/proxy";
-import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
 // Allowed origins for CORS
-const allowedOrigins = [
+// TODO: migrate this to environment variables.
+const allowedOrigins = new Set([
   "http://localhost:3000",
-  "https://app.symphony.dev", // Production app domain - update as needed
-];
+  "https://symphony-alpha-app-stage.vercel.app/",
+]);
 
-// Check if origin is allowed
 function isOriginAllowed(origin: string | null): boolean {
-  return origin ? allowedOrigins.some(
-    (allowed) => origin === allowed || origin.startsWith(allowed)
-  ) : false;
+  return !!origin && allowedOrigins.has(origin);
 }
 
-// CORS headers
 function getCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -27,12 +24,12 @@ function getCorsHeaders(origin: string | null): Record<string, string> {
   if (origin && isOriginAllowed(origin)) {
     headers["Access-Control-Allow-Origin"] = origin;
     headers["Access-Control-Allow-Credentials"] = "true";
+    headers.Vary = "Origin"; // important with CDN caching
   }
 
   return headers;
 }
 
-// Add CORS headers to response
 function addCorsHeaders(response: NextResponse, origin: string | null) {
   const corsHeaders = getCorsHeaders(origin);
   for (const [key, value] of Object.entries(corsHeaders)) {
@@ -41,7 +38,6 @@ function addCorsHeaders(response: NextResponse, origin: string | null) {
   return response;
 }
 
-// Clerk middleware with CORS support
 export default authMiddleware((_auth, request: NextRequest) => {
   const origin = request.headers.get("origin");
 

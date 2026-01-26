@@ -1,15 +1,14 @@
 "use client";
 
-import { env } from "@/env";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useCallback, useMemo } from "react";
+import { env } from "@/env";
 
 const API_URL = env.NEXT_PUBLIC_API_URL;
 
 /**
- * Hook that creates a client-side API client for use with TanStack Query.
- * Handles authentication by getting the token from Clerk.
+ * This hook provides an HTTP client for interacting with the REST API.
  */
 export function useApiClient() {
   const { getToken } = useAuth();
@@ -43,20 +42,7 @@ export function useApiClient() {
           },
         });
 
-        const result = await response.json();
-
-        if (
-          result.success === false &&
-          result.error &&
-          typeof result.error !== "string"
-        ) {
-          return {
-            success: false,
-            error: result.error.message || JSON.stringify(result.error),
-          };
-        }
-
-        return result as ApiResult<T>;
+        return (await response.json()) as ApiResult<T>;
       } catch (error) {
         console.error(`Client API request failed: ${path}`, error);
         return {
