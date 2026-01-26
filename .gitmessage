@@ -9,8 +9,6 @@
 # Testing: <Manual testing performed>
 # Risks: <Risk assessment of changes>
 #
-# Ticket: <Branch name>
-#
 # Guidelines:
 # - Short description: TICKET-NUMBER: description (TICKET-NUMBER from branch name), max 50 chars total, no period, imperative mood
 # - Long description: bullet points with dashes, wrap at 72 chars
