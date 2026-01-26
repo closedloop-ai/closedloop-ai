@@ -6,6 +6,9 @@ import type {
   CreateArtifactInput,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
+
+export type { PullRequestInfo } from "@repo/api/src/types/artifact";
+
 import type { ApiResult } from "@repo/api/src/types/common";
 import { revalidatePath } from "next/cache";
 import { apiClient } from "@/lib/api-client";
@@ -320,17 +323,6 @@ export async function executeImplementationPlan(
 
   return result;
 }
-
-export type PullRequestInfo = {
-  id: string;
-  number: number;
-  title: string;
-  htmlUrl: string;
-  state: "OPEN" | "MERGED" | "CLOSED";
-  headBranch: string;
-  baseBranch: string;
-  createdAt: Date;
-};
 
 /**
  * Get the pull request associated with an artifact's workstream.

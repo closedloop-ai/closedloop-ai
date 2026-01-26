@@ -4,6 +4,7 @@ import type {
   ArtifactType,
   ArtifactWithWorkstream,
   CreateArtifactInput,
+  PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
@@ -128,6 +129,52 @@ export const artifactsService = {
         where: { id, organizationId },
       })
     );
+  },
+
+  /**
+   * Get the most recent pull request for an artifact's workstream.
+   * Returns null if artifact has no workstream or no PR exists.
+   */
+  async getArtifactPullRequest(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PullRequestInfo | null> {
+    // Get the artifact to find its workstreamId
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { workstreamId: true },
+      })
+    );
+
+    if (!artifact?.workstreamId) {
+      return null;
+    }
+
+    // Find the most recent PR for this workstream, selecting only the fields we need
+    const pr = await withDb((db) =>
+      db.gitHubPullRequest.findFirst({
+        where: { workstreamId: artifact.workstreamId as string },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          number: true,
+          title: true,
+          htmlUrl: true,
+          state: true,
+          headBranch: true,
+          baseBranch: true,
+          createdAt: true,
+        },
+      })
+    );
+
+    if (!pr) {
+      return null;
+    }
+
+    // Cast state enum to literal union type
+    return pr as PullRequestInfo;
   },
 
   /**
@@ -620,12 +667,12 @@ ${initialInstructions.trim()}`;
     }
 
     const project = workstream.project;
-    let repository = project.repositories[0];
+    const existingRepository = project.repositories[0];
 
     // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
 
     if (!targetRepo) {
       return {
@@ -635,33 +682,16 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Auto-create repository if we have a targetRepo but no linked repository
-    if (!repository) {
-      const repoInfo = await getRepositoryInfo(targetRepo);
-      if (!repoInfo) {
-        return {
-          success: false,
-          error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-          status: 400,
-        };
-      }
-
-      repository = await withDb((db) =>
-        db.repository.upsert({
-          where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-          create: {
-            projectId: project.id,
-            githubId: repoInfo.githubId,
-            owner: repoInfo.owner,
-            name: repoInfo.name,
-            fullName: repoInfo.fullName,
-            defaultBranch: repoInfo.defaultBranch,
-            isPrimary: true,
-          },
-          update: {}, // If exists, just use it
-        })
-      );
+    // Ensure repository record exists
+    const repoResult = await ensureRepository(
+      targetRepo,
+      project.id,
+      existingRepository
+    );
+    if (!repoResult.success) {
+      return { success: false, error: repoResult.error, status: 400 };
     }
+    const repository = repoResult.repository;
 
     // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
@@ -782,12 +812,12 @@ ${initialInstructions.trim()}`;
     }
 
     const project = workstream.project;
-    let repository = project.repositories[0];
+    const existingRepository = project.repositories[0];
 
     // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
 
     if (!targetRepo) {
       return {
@@ -797,33 +827,16 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Auto-create repository if we have a targetRepo but no linked repository
-    if (!repository) {
-      const repoInfo = await getRepositoryInfo(targetRepo);
-      if (!repoInfo) {
-        return {
-          success: false,
-          error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-          status: 400,
-        };
-      }
-
-      repository = await withDb((db) =>
-        db.repository.upsert({
-          where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-          create: {
-            projectId: project.id,
-            githubId: repoInfo.githubId,
-            owner: repoInfo.owner,
-            name: repoInfo.name,
-            fullName: repoInfo.fullName,
-            defaultBranch: repoInfo.defaultBranch,
-            isPrimary: true,
-          },
-          update: {}, // If exists, just use it
-        })
-      );
+    // Ensure repository record exists
+    const repoResult = await ensureRepository(
+      targetRepo,
+      project.id,
+      existingRepository
+    );
+    if (!repoResult.success) {
+      return { success: false, error: repoResult.error, status: 400 };
     }
+    const repository = repoResult.repository;
 
     // Fall back to error when GitHub is not configured (no placeholder for chat)
     if (!isGitHubConfigured()) {
@@ -1002,6 +1015,16 @@ Please try again or contact support if the issue persists.`,
     organizationId: string,
     userId: string
   ): Promise<ExecuteResult> {
+    // Check GitHub configuration first to avoid unnecessary DB operations
+    if (!isGitHubConfigured()) {
+      return {
+        success: false,
+        error:
+          "GitHub Actions integration is not configured. Cannot execute plan.",
+        status: 500,
+      };
+    }
+
     // Find artifact with context
     const artifact = await this.findWithRegenerationContext(
       artifactId,
@@ -1052,12 +1075,12 @@ Please try again or contact support if the issue persists.`,
     }
 
     const project = workstream.project;
-    let repository = project.repositories[0];
+    const existingRepository = project.repositories[0];
 
     // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? repository?.fullName;
+    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? repository?.defaultBranch ?? "main";
+      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
 
     if (!targetRepo) {
       return {
@@ -1067,43 +1090,16 @@ Please try again or contact support if the issue persists.`,
       };
     }
 
-    // Auto-create repository if we have a targetRepo but no linked repository
-    if (!repository) {
-      const repoInfo = await getRepositoryInfo(targetRepo);
-      if (!repoInfo) {
-        return {
-          success: false,
-          error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-          status: 400,
-        };
-      }
-
-      repository = await withDb((db) =>
-        db.repository.upsert({
-          where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-          create: {
-            projectId: project.id,
-            githubId: repoInfo.githubId,
-            owner: repoInfo.owner,
-            name: repoInfo.name,
-            fullName: repoInfo.fullName,
-            defaultBranch: repoInfo.defaultBranch,
-            isPrimary: true,
-          },
-          update: {}, // If exists, just use it
-        })
-      );
+    // Ensure repository record exists
+    const repoResult = await ensureRepository(
+      targetRepo,
+      project.id,
+      existingRepository
+    );
+    if (!repoResult.success) {
+      return { success: false, error: repoResult.error, status: 400 };
     }
-
-    // GitHub must be configured for execution
-    if (!isGitHubConfigured()) {
-      return {
-        success: false,
-        error:
-          "GitHub Actions integration is not configured. Cannot execute plan.",
-        status: 500,
-      };
-    }
+    const repository = repoResult.repository;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
@@ -1235,6 +1231,55 @@ function isGitHubConfigured(): boolean {
       process.env.GITHUB_WEBHOOK_SECRET &&
       process.env.SYMPHONY_DISPATCH_REPO
   );
+}
+
+type RepositoryRecord = {
+  id: string;
+  fullName: string;
+  defaultBranch: string | null;
+};
+
+/**
+ * Ensures a repository record exists for the given target repo.
+ * Creates one if it doesn't exist by fetching info from GitHub.
+ */
+async function ensureRepository(
+  targetRepo: string,
+  projectId: string,
+  existingRepository?: RepositoryRecord
+): Promise<
+  | { success: true; repository: RepositoryRecord }
+  | { success: false; error: string }
+> {
+  if (existingRepository) {
+    return { success: true, repository: existingRepository };
+  }
+
+  const repoInfo = await getRepositoryInfo(targetRepo);
+  if (!repoInfo) {
+    return {
+      success: false,
+      error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
+    };
+  }
+
+  const repository = await withDb((db) =>
+    db.repository.upsert({
+      where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
+      create: {
+        projectId,
+        githubId: repoInfo.githubId,
+        owner: repoInfo.owner,
+        name: repoInfo.name,
+        fullName: repoInfo.fullName,
+        defaultBranch: repoInfo.defaultBranch,
+        isPrimary: true,
+      },
+      update: {},
+    })
+  );
+
+  return { success: true, repository };
 }
 
 function getPlaceholderContent(title: string, version: number): string {
