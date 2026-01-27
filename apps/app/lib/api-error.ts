@@ -3,13 +3,14 @@
  * Thrown by useApiClient when the API returns an error response.
  */
 export class ApiError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly code?: string
-  ) {
+  readonly name = "ApiError";
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
     super(message);
-    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
   }
 
   /**
