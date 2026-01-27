@@ -12,9 +12,10 @@ import {
   tablePlugin,
   thematicBreakPlugin,
   toolbarPlugin,
+  type MDXEditorMethods,
 } from "@mdxeditor/editor";
 import "@mdxeditor/editor/style.css";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { RichTextToolbar } from "./rich-text-toolbar";
 import "./styles.css";
@@ -62,12 +63,24 @@ export function RichTextEditorCore({
   placeholder = "Start writing...",
   readOnly = false,
 }: Readonly<RichTextEditorProps>) {
+  const editorRef = useRef<MDXEditorMethods>(null);
+
   // Escape content for display in MDXEditor
   const displayValue = useMemo(() => escapeForEditor(value ?? ""), [value]);
+
+  // Update editor content when value changes externally (e.g., after generation completes)
+  const lastSetValueRef = useRef<string>(displayValue);
+  useEffect(() => {
+    if (editorRef.current && displayValue !== lastSetValueRef.current) {
+      lastSetValueRef.current = displayValue;
+      editorRef.current.setMarkdown(displayValue);
+    }
+  }, [displayValue]);
 
   // Wrap onChange to unescape content before passing to parent
   const handleChange = useCallback(
     (newValue: string) => {
+      lastSetValueRef.current = newValue; // Track what we set to avoid loops
       onChange(unescapeFromEditor(newValue));
     },
     [onChange]
@@ -112,6 +125,7 @@ export function RichTextEditorCore({
 
   return (
     <MDXEditor
+      ref={editorRef}
       className="rich-text-editor-root"
       contentEditableClassName="rich-text-editor-content"
       markdown={displayValue}

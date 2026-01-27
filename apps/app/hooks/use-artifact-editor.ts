@@ -8,6 +8,7 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  useArtifact,
   useArtifactGenerationStatus,
   useArtifactPullRequest,
   useCreateNewVersion,
@@ -31,8 +32,14 @@ type BaseConfig = {
  * Use usePRDEditorHook or usePlanEditorHook for typed returns.
  */
 function useArtifactEditorInternal(config: BaseConfig) {
-  const { artifact, redirectPath } = config;
+  const { artifact: initialArtifact, redirectPath } = config;
   const router = useRouter();
+
+  // Fetch artifact reactively - uses initial prop for SSR, then stays in sync via query
+  const { data: queriedArtifact } = useArtifact(initialArtifact.id, {
+    initialData: initialArtifact,
+  });
+  const artifact = queriedArtifact ?? initialArtifact;
 
   // TanStack Query mutations
   const createNewVersion = useCreateNewVersion();

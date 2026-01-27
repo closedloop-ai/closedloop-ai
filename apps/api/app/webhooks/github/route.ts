@@ -638,22 +638,7 @@ async function processWorkflowCompletion(
     command: triggerData.command,
   });
 
-  // Update GitHubActionRun
   const conclusion = event.workflow_run.conclusion;
-  await withDb((db) =>
-    db.gitHubActionRun.update({
-      where: { id: actionRun.id },
-      data: {
-        runId: BigInt(runId),
-        status: conclusion === "success" ? "SUCCESS" : "FAILURE",
-        conclusion,
-        htmlUrl: event.workflow_run.html_url,
-        completedAt: new Date(),
-      },
-    })
-  );
-
-  // Process the result
   const ctx: WorkflowContext = {
     correlationId: triggerData.correlationId,
     artifactId: triggerData.artifactId,
@@ -663,11 +648,28 @@ async function processWorkflowCompletion(
     runId,
   };
 
-  if (conclusion === "success") {
-    await handleWorkflowSuccess(ctx, s3Configured);
-  } else {
-    await handleWorkflowFailure(ctx, event.workflow_run.html_url);
-  }
+  // Use transaction to ensure artifact content and status are updated atomically.
+  // This prevents race condition where frontend sees SUCCESS before content is ready.
+  await withDb.tx(async (tx) => {
+    // 1. Process the result (updates artifact content)
+    if (conclusion === "success") {
+      await handleWorkflowSuccess(ctx, s3Configured);
+    } else {
+      await handleWorkflowFailure(ctx, event.workflow_run.html_url);
+    }
+
+    // 2. Update GitHubActionRun status (done last so frontend sees content first)
+    await tx.gitHubActionRun.update({
+      where: { id: actionRun.id },
+      data: {
+        runId: BigInt(runId),
+        status: conclusion === "success" ? "SUCCESS" : "FAILURE",
+        conclusion,
+        htmlUrl: event.workflow_run.html_url,
+        completedAt: new Date(),
+      },
+    });
+  });
 
   return NextResponse.json({ result: "processed", ok: true });
 }
