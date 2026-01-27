@@ -1,5 +1,5 @@
-import type { ApiResult } from "@repo/api/src/types/common";
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+"use client";
+
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   cleanup,
@@ -9,12 +9,17 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { updateProject } from "@/app/actions/projects";
 import { EditableProjectTitle } from "../editable-project-title";
 
-// Mock the entire actions module to avoid api-client import issues
-vi.mock("@/app/actions/projects", () => ({
-  updateProject: vi.fn(),
+// Mock mutate function
+const mockMutate = vi.fn();
+
+// Mock the useUpdateProject hook
+vi.mock("@/hooks/queries/use-projects", () => ({
+  useUpdateProject: () => ({
+    mutate: mockMutate,
+    isPending: false,
+  }),
 }));
 
 // Mock the toast module
@@ -24,8 +29,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   },
 }));
 
-// Get typed mock references
-const mockUpdateProject = vi.mocked(updateProject);
+// Get typed mock reference
 const mockToast = vi.mocked(toast);
 
 describe("EditableProjectTitle", () => {
@@ -74,10 +78,11 @@ describe("EditableProjectTitle", () => {
   });
 
   it("saves on blur with changed value", async () => {
-    mockUpdateProject.mockResolvedValue({
-      success: true,
-      data: {} as ProjectWithDetails,
-    } as ApiResult<ProjectWithDetails>);
+    // Configure mock to simulate successful mutation
+    mockMutate.mockImplementation((_input, options) => {
+      options?.onSuccess?.();
+    });
+
     render(
       <EditableProjectTitle initialTitle="Old Title" projectId="proj-123" />
     );
@@ -88,18 +93,21 @@ describe("EditableProjectTitle", () => {
     fireEvent.blur(input);
 
     await waitFor(() => {
-      expect(mockUpdateProject).toHaveBeenCalledWith({
-        id: "proj-123",
-        name: "New Title",
-      });
+      expect(mockMutate).toHaveBeenCalledWith(
+        {
+          id: "proj-123",
+          name: "New Title",
+        },
+        expect.any(Object)
+      );
     });
   });
 
   it("saves on Enter key with changed value", async () => {
-    mockUpdateProject.mockResolvedValue({
-      success: true,
-      data: {} as ProjectWithDetails,
-    } as ApiResult<ProjectWithDetails>);
+    mockMutate.mockImplementation((_input, options) => {
+      options?.onSuccess?.();
+    });
+
     render(
       <EditableProjectTitle initialTitle="Old Title" projectId="proj-123" />
     );
@@ -110,18 +118,21 @@ describe("EditableProjectTitle", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
-      expect(mockUpdateProject).toHaveBeenCalledWith({
-        id: "proj-123",
-        name: "New Title",
-      });
+      expect(mockMutate).toHaveBeenCalledWith(
+        {
+          id: "proj-123",
+          name: "New Title",
+        },
+        expect.any(Object)
+      );
     });
   });
 
   it("calls onTitleChange callback on successful save", async () => {
-    mockUpdateProject.mockResolvedValue({
-      success: true,
-      data: {} as ProjectWithDetails,
-    } as ApiResult<ProjectWithDetails>);
+    mockMutate.mockImplementation((_input, options) => {
+      options?.onSuccess?.();
+    });
+
     const onTitleChange = vi.fn();
     render(
       <EditableProjectTitle
@@ -153,7 +164,7 @@ describe("EditableProjectTitle", () => {
 
     const button = screen.getByRole("button");
     expect(button.textContent).toBe("My Project");
-    expect(mockUpdateProject).not.toHaveBeenCalled();
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
   it("exits edit mode without API call when value unchanged on blur", () => {
@@ -167,7 +178,7 @@ describe("EditableProjectTitle", () => {
 
     const button = screen.getByRole("button");
     expect(button.textContent).toBe("My Project");
-    expect(mockUpdateProject).not.toHaveBeenCalled();
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
   it("shows error toast for empty title", async () => {
@@ -184,7 +195,7 @@ describe("EditableProjectTitle", () => {
       expect(mockToast.error).toHaveBeenCalledWith(
         "Project title cannot be empty"
       );
-      expect(mockUpdateProject).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
     });
   });
 
@@ -202,7 +213,7 @@ describe("EditableProjectTitle", () => {
       expect(mockToast.error).toHaveBeenCalledWith(
         "Project title cannot be empty"
       );
-      expect(mockUpdateProject).not.toHaveBeenCalled();
+      expect(mockMutate).not.toHaveBeenCalled();
     });
   });
 
@@ -223,10 +234,11 @@ describe("EditableProjectTitle", () => {
   });
 
   it("reverts on API error", async () => {
-    mockUpdateProject.mockResolvedValue({
-      success: false,
-      error: "Network error",
-    } as ApiResult<ProjectWithDetails>);
+    // Configure mock to simulate error
+    mockMutate.mockImplementation((_input, options) => {
+      options?.onError?.();
+    });
+
     render(
       <EditableProjectTitle initialTitle="Old Title" projectId="proj-123" />
     );
@@ -246,19 +258,11 @@ describe("EditableProjectTitle", () => {
   });
 
   it("displays updated title optimistically before API response", async () => {
-    mockUpdateProject.mockImplementation(
-      () =>
-        new Promise((resolve) =>
-          setTimeout(
-            () =>
-              resolve({
-                success: true,
-                data: {} as ProjectWithDetails,
-              } as ApiResult<ProjectWithDetails>),
-            100
-          )
-        )
-    );
+    // Configure mock to delay response
+    mockMutate.mockImplementation((_input, options) => {
+      setTimeout(() => options?.onSuccess?.(), 100);
+    });
+
     render(
       <EditableProjectTitle initialTitle="Old Title" projectId="proj-123" />
     );
@@ -276,10 +280,10 @@ describe("EditableProjectTitle", () => {
   });
 
   it("trims whitespace from title before saving", async () => {
-    mockUpdateProject.mockResolvedValue({
-      success: true,
-      data: {} as ProjectWithDetails,
-    } as ApiResult<ProjectWithDetails>);
+    mockMutate.mockImplementation((_input, options) => {
+      options?.onSuccess?.();
+    });
+
     render(
       <EditableProjectTitle initialTitle="Old Title" projectId="proj-123" />
     );
@@ -290,10 +294,13 @@ describe("EditableProjectTitle", () => {
     fireEvent.blur(input);
 
     await waitFor(() => {
-      expect(mockUpdateProject).toHaveBeenCalledWith({
-        id: "proj-123",
-        name: "New Title",
-      });
+      expect(mockMutate).toHaveBeenCalledWith(
+        {
+          id: "proj-123",
+          name: "New Title",
+        },
+        expect.any(Object)
+      );
     });
   });
 

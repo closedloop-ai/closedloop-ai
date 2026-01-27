@@ -236,7 +236,7 @@ export const artifactsService = {
     return withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
-        data: input.content ? { ...input, version: { increment: 1 } } : input,
+        data: input,
       })
     );
   },

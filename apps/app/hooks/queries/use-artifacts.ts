@@ -135,16 +135,26 @@ export function useArtifactGenerationStatus(
   options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
+  const queryClient = useQueryClient();
 
-  return useQuery({
-    queryKey: artifactKeys.generationStatus(artifactId),
-    queryFn: () =>
-      apiClient.get<GenerationStatus>(
-        `/artifacts/${artifactId}/generation-status`
-      ),
-    enabled: !!artifactId,
-    ...options,
-  });
+  return {
+    ...useQuery({
+      queryKey: artifactKeys.generationStatus(artifactId),
+      queryFn: () =>
+        apiClient.get<GenerationStatus>(
+          `/artifacts/${artifactId}/generation-status`
+        ),
+      enabled: !!artifactId,
+      ...options,
+    }),
+    // Once the artifact is generated, we need to invalidate the cache so that the new
+    // artifact is fetched.
+    invalidateCache: () => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+    },
+  };
 }
 
 export function useArtifactVersions(
@@ -301,6 +311,37 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
+    },
+  });
+}
+
+/**
+ * Create an artifact and immediately trigger generation workflow.
+ * Used for implementation plans that need to be generated from a PRD.
+ */
+export function useCreateAndGenerateArtifact() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async (input: CreateArtifactInput) => {
+      // First create the artifact
+      const artifact = await apiClient.post<Artifact>("/artifacts", input);
+
+      // Then trigger regeneration (which dispatches to GitHub)
+      try {
+        const regenerated = await apiClient.post<Artifact>(
+          `/artifacts/${artifact.id}/regenerate`,
+          {}
+        );
+        return regenerated;
+      } catch {
+        // Return original artifact if regeneration fails - user can still navigate to it
+        return artifact;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }

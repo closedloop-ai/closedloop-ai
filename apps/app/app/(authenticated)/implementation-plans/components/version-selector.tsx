@@ -32,19 +32,25 @@ export function VersionSelector({
   const [isOpen, setIsOpen] = useState(false);
 
   // Fetch versions only when dropdown is open
-  const { data: artifactVersions = [], isLoading, error } = useArtifactVersions(artifactId, {
+  const {
+    data: artifactVersions = [],
+    isLoading,
+    error,
+  } = useArtifactVersions(artifactId, {
     enabled: isOpen,
   });
 
   // Sort versions in descending order (newest first)
-  const versions: VersionOption[] = useMemo(() => {
-    return artifactVersions
-      .map((artifact) => ({
-        id: artifact.id,
-        version: artifact.version,
-      }))
-      .sort((a, b) => b.version - a.version);
-  }, [artifactVersions]);
+  const versions: VersionOption[] = useMemo(
+    () =>
+      artifactVersions
+        .map((artifact) => ({
+          id: artifact.id,
+          version: artifact.version,
+        }))
+        .sort((a, b) => b.version - a.version),
+    [artifactVersions]
+  );
 
   const handleVersionSelect = (versionId: string) => {
     router.push(`/implementation-plans/${versionId}`);
@@ -73,7 +79,9 @@ export function VersionSelector({
         ) : null}
 
         {!!error && !isLoading ? (
-          <div className="px-2 py-3 text-muted-foreground text-sm">{error.message}</div>
+          <div className="px-2 py-3 text-muted-foreground text-sm">
+            {error.message}
+          </div>
         ) : null}
 
         {!(isLoading || error) && versions.length === 0 && isOpen && (

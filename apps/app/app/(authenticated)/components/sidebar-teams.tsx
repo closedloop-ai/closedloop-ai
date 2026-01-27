@@ -28,14 +28,13 @@ import { useTeams } from "@/hooks/queries/use-teams";
 import { TeamModal } from "./team-modal";
 
 export function SidebarTeams() {
-  const { data: teams = [], refetch } = useTeams();
+  const { data: teams = [] } = useTeams();
 
   return (
     <SidebarGroup>
       <SidebarGroupLabel className="flex items-center justify-between pr-2">
         <span>Your Teams</span>
         <TeamModal
-          onSuccess={refetch}
           trigger={
             <button
               className="flex h-5 w-5 items-center justify-center rounded-md hover:bg-sidebar-accent"
@@ -75,7 +74,6 @@ export function SidebarTeams() {
                   </SidebarMenuSubItem>
                   <SidebarMenuSubItem>
                     <TeamModal
-                      onSuccess={refetch}
                       team={team}
                       trigger={
                         <SidebarMenuSubButton>
@@ -93,7 +91,6 @@ export function SidebarTeams() {
         {teams.length === 0 && (
           <SidebarMenuItem>
             <TeamModal
-              onSuccess={refetch}
               trigger={
                 <SidebarMenuButton className="text-muted-foreground text-sm">
                   <PlusIcon className="h-4 w-4" />

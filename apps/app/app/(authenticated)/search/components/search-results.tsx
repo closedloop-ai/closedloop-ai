@@ -1,10 +1,10 @@
 "use client";
 
+import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Loader2Icon } from "lucide-react";
-import { useSearchWorkstreams } from "@/hooks/queries/use-workstreams";
 import { WorkstreamStateBadge } from "@/components/status-badge";
+import { useSearchWorkstreams } from "@/hooks/queries/use-workstreams";
 
 export function SearchResults() {
   const searchParams = useSearchParams();

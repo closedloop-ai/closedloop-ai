@@ -1,8 +1,10 @@
 "use client";
 
+import type { TeamMember } from "@repo/api/src/types/teams";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
-import { useEffect, useState } from "react";
-import { getTeamMembers } from "@/app/actions/teams";
+import { useQueries } from "@tanstack/react-query";
+import { teamKeys } from "@/hooks/queries/use-teams";
+import { useApiClient } from "@/hooks/use-api-client";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type UseTeamMembersOptions = {
@@ -24,17 +26,11 @@ type UseTeamMembersResult = {
 /**
  * Transform API team members to User format for UserSelectPopover.
  */
-function transformMembers(
-  results: Awaited<ReturnType<typeof getTeamMembers>>[]
-): User[] {
+function transformMembers(memberArrays: TeamMember[][]): User[] {
   const memberMap = new Map<string, User>();
 
-  for (const result of results) {
-    if (!result.success) {
-      continue;
-    }
-
-    for (const member of result.data) {
+  for (const members of memberArrays) {
+    for (const member of members) {
       if (memberMap.has(member.user.id)) {
         continue;
       }
@@ -60,48 +56,25 @@ export function useTeamMembers({
   teamIds,
   enabled = true,
 }: UseTeamMembersOptions): UseTeamMembersResult {
-  const [members, setMembers] = useState<User[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const apiClient = useApiClient();
 
-  useEffect(() => {
-    if (!enabled || teamIds.length === 0) {
-      setMembers([]);
-      return;
-    }
+  const queries = useQueries({
+    queries: teamIds.map((teamId) => ({
+      queryKey: teamKeys.members(teamId),
+      queryFn: () => apiClient.get<TeamMember[]>(`/teams/${teamId}/members`),
+      enabled: enabled && teamIds.length > 0,
+    })),
+  });
 
-    let cancelled = false;
+  const isLoading = queries.some((q) => q.isLoading);
+  const hasError = queries.some((q) => q.isError);
+  const allData = queries
+    .filter((q) => q.data)
+    .map((q) => q.data as TeamMember[]);
 
-    async function fetchMembers() {
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const results = await Promise.all(
-          teamIds.map((teamId) => getTeamMembers(teamId))
-        );
-
-        if (!cancelled) {
-          setMembers(transformMembers(results));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError("Failed to fetch team members");
-          console.error("Error fetching team members:", err);
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    fetchMembers();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, teamIds]);
-
-  return { members, isLoading, error };
+  return {
+    members: transformMembers(allData),
+    isLoading,
+    error: hasError ? "Failed to fetch team members" : null,
+  };
 }

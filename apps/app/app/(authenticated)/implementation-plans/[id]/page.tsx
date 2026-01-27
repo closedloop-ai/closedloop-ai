@@ -10,7 +10,9 @@ export const metadata: Metadata = {
   description: "Implementation Plan",
 };
 
-export default async function ImplementationPlanPage({ params }: PlanPageProps) {
+export default async function ImplementationPlanPage({
+  params,
+}: PlanPageProps) {
   const { id } = await params;
 
   return <PlanEditorContainer id={id} />;

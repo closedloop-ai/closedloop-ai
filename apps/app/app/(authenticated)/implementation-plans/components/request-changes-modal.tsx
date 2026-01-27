@@ -16,7 +16,7 @@ import { useState } from "react";
 type RequestChangesModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (changes: string) => Promise<void>;
+  onSubmit: (changes: string) => Promise<boolean>;
   isSubmitting: boolean;
 };
 
@@ -36,13 +36,10 @@ export function RequestChangesModal({
     }
 
     setError(null);
-    try {
-      await onSubmit(changes.trim());
+
+    const result = await onSubmit(changes.trim());
+    if (result) {
       setChanges("");
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to submit change request"
-      );
     }
   };
 

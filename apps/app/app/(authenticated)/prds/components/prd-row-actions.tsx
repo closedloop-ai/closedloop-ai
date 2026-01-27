@@ -17,14 +17,14 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import {
-  deleteArtifact,
-  duplicateArtifact,
-  renameArtifact,
-} from "@/app/actions/artifacts";
+import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
+import {
+  useDeleteArtifact,
+  useDuplicateArtifact,
+  useUpdateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type PRDRowActionsProps = {
@@ -33,23 +33,33 @@ type PRDRowActionsProps = {
 
 export function PRDRowActions({ prd }: PRDRowActionsProps) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const updateArtifact = useUpdateArtifact();
+  const duplicateArtifact = useDuplicateArtifact();
+  const deleteArtifact = useDeleteArtifact();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
+  const isPending =
+    updateArtifact.isPending ||
+    duplicateArtifact.isPending ||
+    deleteArtifact.isPending;
+
   const handleRename = (newTitle: string, newFileName: string) => {
-    startTransition(async () => {
-      await renameArtifact(prd.id, newTitle, newFileName);
-      setShowRenameDialog(false);
-    });
+    updateArtifact.mutate(
+      { id: prd.id, title: newTitle, fileName: newFileName },
+      {
+        onSuccess: () => {
+          setShowRenameDialog(false);
+        },
+      }
+    );
   };
 
   const handleDuplicate = () => {
-    startTransition(async () => {
-      const result = await duplicateArtifact(prd.id);
-      if (result.success) {
-        router.push(`/prds/${result.data.id}`);
-      }
+    duplicateArtifact.mutate(prd.id, {
+      onSuccess: (artifact) => {
+        router.push(`/prds/${artifact.id}`);
+      },
     });
   };
 
@@ -58,9 +68,10 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
   };
 
   const handleDelete = () => {
-    startTransition(async () => {
-      await deleteArtifact(prd.id);
-      setShowDeleteDialog(false);
+    deleteArtifact.mutate(prd.id, {
+      onSuccess: () => {
+        setShowDeleteDialog(false);
+      },
     });
   };
 

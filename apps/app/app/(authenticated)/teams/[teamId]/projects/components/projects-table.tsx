@@ -39,9 +39,9 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { ensureDate, formatDateCompact } from "@/lib/date-utils";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";

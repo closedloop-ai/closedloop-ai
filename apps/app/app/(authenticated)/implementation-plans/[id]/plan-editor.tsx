@@ -72,8 +72,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     setShowLinearExportDialog,
     isDraft,
     generationStatus,
-    editorKey,
-    handleSave,
+    handleSaveContent,
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
@@ -83,7 +82,6 @@ export function PlanEditor({ plan }: PlanEditorProps) {
     handleDelete,
     handleRegenerate,
     handleRequestChanges,
-    handleGenerationComplete,
   } = usePlanEditor(plan);
 
   return (
@@ -180,7 +178,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
             Copy MD
           </Button>
 
-          <Button disabled={isPending} onClick={handleSave}>
+          <Button disabled={isPending} onClick={handleSaveContent}>
             {isSaving ? "Saving..." : "Save"}
           </Button>
 
@@ -209,10 +207,7 @@ export function PlanEditor({ plan }: PlanEditorProps) {
       </div>
 
       {/* Generation Status Banner */}
-      <GenerationStatusBanner
-        artifactId={plan.id}
-        onComplete={handleGenerationComplete}
-      />
+      <GenerationStatusBanner artifactId={plan.id} />
 
       {/* Content Area with Optional Metadata Panel */}
       <div className="flex min-h-0 flex-1">
@@ -220,7 +215,6 @@ export function PlanEditor({ plan }: PlanEditorProps) {
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 w-full flex-1 flex-col">
             <RichTextEditor
-              key={editorKey}
               onChange={setContent}
               placeholder="Start writing your implementation plan..."
               value={content}

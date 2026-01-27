@@ -1,9 +1,6 @@
 "use client";
 
-import type {
-  LinearIntegrationStatus,
-  LinearTeam,
-} from "@repo/api/src/types/linear";
+import type { LinearTeam } from "@repo/api/src/types/linear";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -29,11 +26,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  exportToLinear,
-  getLinearIntegrationStatus,
-} from "@/app/actions/linear";
+  useExportToLinear,
+  useLinearIntegrationStatus,
+} from "@/hooks/queries/use-linear";
 
 type LinearExportDialogProps = {
   artifactId: string;
@@ -47,30 +44,28 @@ export function LinearExportDialog({
   open,
 }: LinearExportDialogProps) {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState(false);
-  const [status, setStatus] = useState<LinearIntegrationStatus | null>(null);
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [exportResult, setExportResult] = useState<{
     issuesCreated: number;
     issues: Array<{ identifier: string; url: string; title: string }>;
   } | null>(null);
 
-  const loadStatus = useCallback(async () => {
-    setLoading(true);
-    const result = await getLinearIntegrationStatus();
-    if (result.success) {
-      setStatus(result.data);
-    }
-    setLoading(false);
-  }, []);
+  const {
+    data: status,
+    isLoading: loading,
+    refetch,
+  } = useLinearIntegrationStatus({
+    enabled: open,
+  });
+
+  const exportToLinear = useExportToLinear();
 
   useEffect(() => {
     if (open) {
-      loadStatus();
+      refetch();
       setExportResult(null);
     }
-  }, [open, loadStatus]);
+  }, [open, refetch]);
 
   // Auto-select default team or first team
   useEffect(() => {
@@ -89,25 +84,25 @@ export function LinearExportDialog({
       return;
     }
 
-    setExporting(true);
-    const result = await exportToLinear({
-      artifactId,
-      teamId: selectedTeamId,
-    });
+    try {
+      const result = await exportToLinear.mutateAsync({
+        artifactId,
+        teamId: selectedTeamId,
+      });
 
-    if (result.success) {
       setExportResult({
-        issuesCreated: result.data.issuesCreated,
-        issues: result.data.issues,
+        issuesCreated: result.issuesCreated,
+        issues: result.issues,
       });
       toast.success(
-        `Successfully exported ${result.data.issuesCreated} issue${result.data.issuesCreated === 1 ? "" : "s"} to Linear`
+        `Successfully exported ${result.issuesCreated} issue${result.issuesCreated === 1 ? "" : "s"} to Linear`
       );
       router.refresh();
-    } else {
-      toast.error(result.error || "Failed to export to Linear");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to export to Linear"
+      );
     }
-    setExporting(false);
   };
 
   if (loading) {
@@ -237,10 +232,10 @@ export function LinearExportDialog({
             Cancel
           </Button>
           <Button
-            disabled={!selectedTeamId || exporting}
+            disabled={!selectedTeamId || exportToLinear.isPending}
             onClick={handleExport}
           >
-            {exporting ? (
+            {exportToLinear.isPending ? (
               <>
                 <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
                 Exporting...

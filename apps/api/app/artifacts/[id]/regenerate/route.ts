@@ -22,7 +22,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/regenerate">(
         });
       }
 
-      return NextResponse.json(success(result.artifact as Artifact));
+      return NextResponse.json(success(result.artifact));
     } catch (error) {
       return errorResponse("Failed to regenerate artifact", error);
     }
