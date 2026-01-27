@@ -119,7 +119,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: 'Generating plan...'
+          message: "Generating plan..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Prepare Issue Content
@@ -146,7 +146,7 @@ jobs:
         id: symphony
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -304,7 +304,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: 'Processing user answers...'
+          message: "Processing user answers..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Download Previous Run Artifact
@@ -319,7 +319,7 @@ jobs:
       - name: Parse Answers
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -357,7 +357,7 @@ jobs:
         id: symphony
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -375,7 +375,7 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ steps.token.outputs.token }}
           comment_url: ${{ steps.status_comment.outputs.comment_url }}
-          delete_old_comment: 'true'
+          delete_old_comment: "true"
 
       - name: Update Status Comment on Failure
         if: failure()
@@ -400,7 +400,7 @@ jobs:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
           github_token: ${{ steps.token.outputs.token }}
-          overwrite: 'true'
+          overwrite: "true"
 
       - name: Build Slack Message
         if: success()
@@ -482,7 +482,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: 'Symphony is orchestrating agents to implement the plan...'
+          message: "Symphony is orchestrating agents to implement the plan..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Download Run Artifact
@@ -531,7 +531,7 @@ jobs:
         id: symphony
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -738,7 +738,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: 'Symphony is processing your request...'
+          message: "Symphony is processing your request..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Try Download Previous Run Artifact
@@ -801,7 +801,7 @@ jobs:
         if: steps.context.outputs.has_plan == 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -845,24 +845,24 @@ jobs:
         if: steps.context.outputs.has_plan == 'true' && success() && steps.prepare_amend_response.outputs.has_conversation == 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
           prompt: |
-              Read the conversation JSON at ${{ runner.temp }}/amend-conversation.json and write a human-readable summary of what was accomplished to ${{ runner.temp }}/amend-response.md.
+            Read the conversation JSON at ${{ runner.temp }}/amend-conversation.json and write a human-readable summary of what was accomplished to ${{ runner.temp }}/amend-response.md.
 
-              The summary should:
-              - Be concise and suitable for a GitHub issue comment
-              - Highlight the key changes or actions taken
-              - Use markdown formatting
-              - NOT include raw JSON or technical details about tool calls
-              - Be written from the perspective of reporting what Symphony did
+            The summary should:
+            - Be concise and suitable for a GitHub issue comment
+            - Highlight the key changes or actions taken
+            - Use markdown formatting
+            - NOT include raw JSON or technical details about tool calls
+            - Be written from the perspective of reporting what Symphony did
 
-              Write ONLY the summary file, no other output.
+            Write ONLY the summary file, no other output.
           claude_args: |
-              --max-turns 100
-              --allowedTools "Read,Write"
+            --max-turns 100
+            --allowedTools "Read,Write"
 
       - name: Upload Updated Artifact (Amend)
         id: upload_amend
@@ -873,7 +873,7 @@ jobs:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
           github_token: ${{ steps.token.outputs.token }}
-          overwrite: 'true'
+          overwrite: "true"
 
       - name: Mark Old Plan Comments
         if: steps.context.outputs.has_plan == 'true' && success()
@@ -929,7 +929,7 @@ jobs:
         if: steps.context.outputs.has_plan != 'true'
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
           allowed_bots: symphony-cl
@@ -939,30 +939,30 @@ jobs:
             symphony-core@closedloop
             symphony-fe@closedloop
           prompt: |
-              You are Symphony, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
+            You are Symphony, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
 
-              Issue Title: ${{ steps.context.outputs.title }}
-              Issue Body: ${{ steps.context.outputs.body }}
+            Issue Title: ${{ steps.context.outputs.title }}
+            Issue Body: ${{ steps.context.outputs.body }}
 
-              User's message: ${{ steps.context.outputs.comment }}
+            User's message: ${{ steps.context.outputs.comment }}
 
-              ${{ steps.context.outputs.has_context == 'true' && format('Previous planning context is available at: {0}', steps.context.outputs.run_dir) || 'No previous planning context exists for this issue.' }}
+            ${{ steps.context.outputs.has_context == 'true' && format('Previous planning context is available at: {0}', steps.context.outputs.run_dir) || 'No previous planning context exists for this issue.' }}
 
-              Instructions:
-              1. If previous context exists, read the relevant files (implementation-plan.md, investigation-questions.md, investigation-log.md) to understand the current state
-              2. Respond helpfully to the user's message/question
-              3. Write your response to a file at .claude/chat-response.md
-              4. Keep your response focused and actionable
+            Instructions:
+            1. If previous context exists, read the relevant files (implementation-plan.md, investigation-questions.md, investigation-log.md) to understand the current state
+            2. Respond helpfully to the user's message/question
+            3. Write your response to a file at .claude/chat-response.md
+            4. Keep your response focused and actionable
 
-              Available commands the user can use:
-              - @symphony-cl plan - Generate an implementation plan from the issue
-              - @symphony-cl answer - Provide answers to open questions
-              - @symphony-cl execute - Implement the plan and create a PR
+            Available commands the user can use:
+            - @symphony-cl plan - Generate an implementation plan from the issue
+            - @symphony-cl answer - Provide answers to open questions
+            - @symphony-cl execute - Implement the plan and create a PR
 
-              If the user seems to want one of these actions, suggest the appropriate command.
+            If the user seems to want one of these actions, suggest the appropriate command.
           claude_args: |
-              --max-turns 200
-              --allowedTools "Bash(find:*),Bash(ls:*),Glob,Grep,Read,Write,TodoWrite"
+            --max-turns 200
+            --allowedTools "Bash(find:*),Bash(ls:*),Glob,Grep,Read,Write,TodoWrite"
 
       - name: Post Response
         id: post_response
