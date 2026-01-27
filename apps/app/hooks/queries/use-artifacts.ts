@@ -14,7 +14,6 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
-import { useCallback } from "react";
 
 // Query keys
 export const artifactKeys = {
@@ -136,16 +135,26 @@ export function useArtifactGenerationStatus(
   options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
+  const queryClient = useQueryClient();
 
-  return useQuery({
-    queryKey: artifactKeys.generationStatus(artifactId),
-    queryFn: () =>
-      apiClient.get<GenerationStatus>(
-        `/artifacts/${artifactId}/generation-status`
-      ),
-    enabled: !!artifactId,
-    ...options,
-  });
+  return {
+    ...useQuery({
+      queryKey: artifactKeys.generationStatus(artifactId),
+      queryFn: () =>
+        apiClient.get<GenerationStatus>(
+          `/artifacts/${artifactId}/generation-status`
+        ),
+      enabled: !!artifactId,
+      ...options,
+    }),
+    // Once the artifact is generated, we need to invalidate the cache so that the new
+    // artifact is fetched.
+    invalidateCache: () => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+    },
+  };
 }
 
 export function useArtifactVersions(
@@ -279,17 +288,6 @@ export function useRegenerateArtifact() {
   });
 }
 
-export function useArtifactGenerationCacheInvalidation() {
-  const queryClient = useQueryClient();
-
-  return useCallback((id: string) => {
-    queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
-    queryClient.invalidateQueries({
-      queryKey: artifactKeys.generationStatus(id),
-    });
-  }, [queryClient]);
-}
-
 export function useRequestPlanChanges() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
@@ -315,17 +313,6 @@ export function useRequestPlanChanges() {
       });
     },
   });
-}
-
-export function usePlanChangesCacheInvalidation() {
-  const queryClient = useQueryClient();
-
-  return useCallback((artifactId: string) => {
-    queryClient.invalidateQueries({ queryKey: artifactKeys.detail(artifactId) });
-    queryClient.invalidateQueries({
-      queryKey: artifactKeys.generationStatus(artifactId),
-    });
-  }, [queryClient]);
 }
 
 /**

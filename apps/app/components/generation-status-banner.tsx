@@ -3,10 +3,7 @@
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import {
-  useArtifactGenerationCacheInvalidation,
-  useArtifactGenerationStatus,
-} from "@/hooks/queries/use-artifacts";
+import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 
 type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
@@ -46,10 +43,13 @@ export function GenerationStatusBanner({
   const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const { data: generationStatus, isLoading, refetch } =
-    useArtifactGenerationStatus(artifactId);
-  const invalidateArtifactCache = useArtifactGenerationCacheInvalidation();
-  const invalidateArtifactCacheEvent = useEffectEvent(invalidateArtifactCache);
+  const {
+    data: generationStatus,
+    isLoading,
+    refetch,
+    invalidateCache,
+  } = useArtifactGenerationStatus(artifactId);
+  const handleGenerationSuccess = useEffectEvent(invalidateCache);
 
   useEffect(() => {
     if (isLoading) {
@@ -59,7 +59,7 @@ export function GenerationStatusBanner({
     // Handle completion
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
-      invalidateArtifactCacheEvent(artifactId);
+      handleGenerationSuccess();
       toast.success("Plan generation completed successfully");
       return;
     }
@@ -81,7 +81,7 @@ export function GenerationStatusBanner({
       pollIntervalRef.current * BACKOFF_MULTIPLIER,
       MAX_POLL_INTERVAL
     );
-  }, [generationStatus, artifactId, isLoading]);
+  }, [isLoading, generationStatus]);
 
   useEffect(() => {
     if (!isPolling) {
@@ -93,7 +93,7 @@ export function GenerationStatusBanner({
         await refetch();
 
         if (isPolling) {
-          poll()
+          poll();
         }
       }, pollIntervalRef.current);
     };
