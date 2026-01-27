@@ -137,3 +137,15 @@ export type UpdateApprovalInput = {
   feedback?: string;
   approverId?: string;
 };
+
+// Pull Request info returned when an implementation plan is executed
+export type PullRequestInfo = {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+};

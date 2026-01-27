@@ -22,6 +22,8 @@ type WorkflowContext = {
   artifactId: string;
   workstreamId: string;
   runId: number;
+  command?: string;
+  repositoryId?: string;
 };
 
 type WorkflowRunEvent =
@@ -32,17 +34,50 @@ type WorkflowRunEvent =
 type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
+  executionResult: ExecutionResult | null;
   entries: { name: string; data: Buffer }[];
 };
 
+type ExecutionResult = {
+  has_changes: boolean;
+  pr_url: string;
+  pr_number: string | number; // GitHub Actions outputs as string
+  pr_title?: string; // Optional - may not be in workflow output
+  branch_name: string;
+  base_ref?: string; // Workflow uses base_ref, not base_branch
+  base_branch?: string; // Legacy/alternative field name
+  github_id?: number;
+  commit_sha?: string;
+};
+
 /**
- * Search a zip for plan or questions files.
+ * Parse execution result JSON safely.
+ */
+function parseExecutionResult(
+  content: Buffer,
+  entryName: string
+): ExecutionResult | null {
+  try {
+    const jsonContent = content.toString("utf-8");
+    const result = JSON.parse(jsonContent) as ExecutionResult;
+    log.info(`Found execution result: ${entryName}, PR #${result.pr_number}`);
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error(`Failed to parse execution-result.json: ${message}`);
+    return null;
+  }
+}
+
+/**
+ * Search a zip for plan, questions, or execution result files.
  * Returns the content if found, null otherwise.
  */
 function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
   let planContent: string | null = null;
   let questionsContent: string | null = null;
+  let executionResult: ExecutionResult | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
@@ -50,24 +85,25 @@ function findPlanInZip(zip: AdmZip): ZipContent {
     }
 
     const content = entry.getData();
-    entries.push({ name: entry.entryName, data: content });
+    const name = entry.entryName;
+    entries.push({ name, data: content });
 
-    if (entry.entryName.endsWith("implementation-plan.md")) {
+    if (name.endsWith("implementation-plan.md")) {
       planContent = content.toString("utf-8");
       log.info(
-        `Found implementation plan: ${entry.entryName} (${planContent.length} chars)`
+        `Found implementation plan: ${name} (${planContent.length} chars)`
       );
-    }
-
-    if (entry.entryName.endsWith("open-questions.md")) {
+    } else if (name.endsWith("open-questions.md")) {
       questionsContent = content.toString("utf-8");
       log.info(
-        `Found questions file: ${entry.entryName} (${questionsContent.length} chars)`
+        `Found questions file: ${name} (${questionsContent.length} chars)`
       );
+    } else if (name.endsWith("execution-result.json")) {
+      executionResult = parseExecutionResult(content, name);
     }
   }
 
-  return { planContent, questionsContent, entries };
+  return { planContent, questionsContent, executionResult, entries };
 }
 
 /**
@@ -91,6 +127,20 @@ async function uploadEntriesToS3(
 }
 
 /**
+ * Merge zip content results, preferring non-null values from new result.
+ */
+function mergeZipContent(
+  current: Omit<ZipContent, "entries">,
+  result: ZipContent
+): Omit<ZipContent, "entries"> {
+  return {
+    planContent: result.planContent ?? current.planContent,
+    questionsContent: result.questionsContent ?? current.questionsContent,
+    executionResult: result.executionResult ?? current.executionResult,
+  };
+}
+
+/**
  * Process a single artifact zip, handling nested zips.
  */
 async function processArtifactZip(
@@ -107,21 +157,23 @@ async function processArtifactZip(
     `[processArtifactZip] "${artifactName}" contains ${outerEntries.length} files`
   );
 
-  let planContent: string | null = null;
-  let questionsContent: string | null = null;
+  let content: Omit<ZipContent, "entries"> = {
+    planContent: null,
+    questionsContent: null,
+    executionResult: null,
+  };
 
   // Check for nested zips first (Symphony artifact structure)
   for (const entry of outerEntries) {
-    if (!entry.entryName.endsWith(".zip") || entry.isDirectory) {
+    const isNestedZip = entry.entryName.endsWith(".zip") && !entry.isDirectory;
+    if (!isNestedZip) {
       continue;
     }
 
     log.info(`[processArtifactZip] Found nested zip: ${entry.entryName}`);
     const innerZip = new AdmZip(entry.getData());
     const result = findPlanInZip(innerZip);
-
-    planContent = result.planContent ?? planContent;
-    questionsContent = result.questionsContent ?? questionsContent;
+    content = mergeZipContent(content, result);
 
     if (uploadToS3) {
       const keys = await uploadEntriesToS3(correlationId, result.entries);
@@ -130,10 +182,10 @@ async function processArtifactZip(
   }
 
   // Also check outer zip directly (in case it's not nested)
-  if (!planContent) {
+  const needsDirectCheck = !(content.planContent || content.executionResult);
+  if (needsDirectCheck) {
     const result = findPlanInZip(outerZip);
-    planContent = result.planContent ?? planContent;
-    questionsContent = result.questionsContent ?? questionsContent;
+    content = mergeZipContent(content, result);
 
     if (uploadToS3) {
       const keys = await uploadEntriesToS3(correlationId, result.entries, true);
@@ -141,7 +193,7 @@ async function processArtifactZip(
     }
   }
 
-  return { planContent, questionsContent, entries: [], artifactKeys };
+  return { ...content, entries: [], artifactKeys };
 }
 
 /**
@@ -155,6 +207,7 @@ async function processArtifactUploads(
 ): Promise<{
   planContent: string | null;
   questionsContent: string | null;
+  executionResult: ExecutionResult | null;
   artifactKeys: string[];
 }> {
   log.info(
@@ -164,6 +217,7 @@ async function processArtifactUploads(
   const artifacts = await downloadWorkflowArtifacts(runId);
   let planContent: string | null = null;
   let questionsContent: string | null = null;
+  let executionResult: ExecutionResult | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -178,20 +232,115 @@ async function processArtifactUploads(
 
     planContent = result.planContent ?? planContent;
     questionsContent = result.questionsContent ?? questionsContent;
+    executionResult = result.executionResult ?? executionResult;
     artifactKeys.push(...result.artifactKeys);
   }
 
-  if (planContent || questionsContent) {
+  if (planContent || questionsContent || executionResult) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}`
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}`
     );
   } else {
     log.warn(
-      "[processArtifactUploads] No plan or questions found in artifacts"
+      "[processArtifactUploads] No plan, questions, or execution result found in artifacts"
     );
   }
 
-  return { planContent, questionsContent, artifactKeys };
+  return { planContent, questionsContent, executionResult, artifactKeys };
+}
+
+/**
+ * Handle successful execution workflow - creates a PR record if changes were made.
+ */
+async function handleExecutionSuccess(
+  ctx: WorkflowContext,
+  executionResult: ExecutionResult
+): Promise<void> {
+  const { correlationId, workstreamId, repositoryId, runId } = ctx;
+
+  // Check if execution actually produced changes and a PR
+  if (!(executionResult.has_changes && executionResult.pr_url)) {
+    log.info(
+      `Execution completed with no changes for workflow run ${runId}, correlation ${correlationId}`
+    );
+    // Create event to indicate execution completed but no PR was needed
+    await withDb((db) =>
+      db.workstreamEvent.create({
+        data: {
+          workstreamId,
+          type: "GITHUB_ACTION_COMPLETED",
+          actorType: "system",
+          data: {
+            correlationId,
+            runId,
+            command: "execute",
+            conclusion: "success",
+            hasChanges: false,
+            message: "Execution completed - no changes to commit",
+          },
+        },
+      })
+    );
+    return;
+  }
+
+  if (!repositoryId) {
+    log.error(
+      `[handleExecutionSuccess] No repositoryId in context for correlation ${correlationId}`
+    );
+    return;
+  }
+
+  // Convert pr_number from string to number (GitHub Actions outputs strings)
+  const prNumber =
+    typeof executionResult.pr_number === "string"
+      ? Number.parseInt(executionResult.pr_number, 10)
+      : executionResult.pr_number;
+
+  // Provide defaults for optional fields
+  const prTitle =
+    executionResult.pr_title ||
+    `Symphony: ${executionResult.branch_name || `PR #${prNumber}`}`;
+  const baseBranch =
+    executionResult.base_branch || executionResult.base_ref || "main";
+
+  await withDb(async (db) => {
+    // Create GitHubPullRequest record
+    await db.gitHubPullRequest.create({
+      data: {
+        workstreamId,
+        repositoryId,
+        githubId: executionResult.github_id ?? prNumber,
+        number: prNumber,
+        title: prTitle,
+        htmlUrl: executionResult.pr_url,
+        headBranch: executionResult.branch_name,
+        baseBranch,
+        state: "OPEN",
+      },
+    });
+
+    // Create workstream event
+    await db.workstreamEvent.create({
+      data: {
+        workstreamId,
+        type: "GITHUB_PR_CREATED",
+        actorType: "system",
+        data: {
+          correlationId,
+          prNumber,
+          prUrl: executionResult.pr_url,
+          prTitle,
+          branch: executionResult.branch_name,
+          runId,
+        },
+      },
+    });
+  });
+
+  log.info(
+    `Successfully created PR record for workflow run ${runId}, PR #${prNumber}`
+  );
 }
 
 /**
@@ -201,7 +350,7 @@ async function handleWorkflowSuccess(
   ctx: WorkflowContext,
   s3Configured: boolean
 ): Promise<void> {
-  const { correlationId, artifactId, workstreamId, runId } = ctx;
+  const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
   // Always download and extract artifacts (we need the plan content regardless of S3)
   const result = await processArtifactUploads(
@@ -209,18 +358,44 @@ async function handleWorkflowSuccess(
     runId,
     s3Configured
   );
-  const { planContent, questionsContent, artifactKeys } = result;
+  const { planContent, questionsContent, executionResult, artifactKeys } =
+    result;
+
+  // Handle execute command differently - create PR record instead of updating artifact
+  if (command === "execute" && executionResult) {
+    await handleExecutionSuccess(ctx, executionResult);
+    return;
+  }
 
   // TODO: Handle questionsContent with needs_answers status in future
   // For now, if we have questions but no plan, include them in the content
   const finalContent = planContent ?? questionsContent;
+
+  log.info("[handleWorkflowSuccess] Updating artifact", {
+    artifactId,
+    hasContent: !!finalContent,
+    contentLength: finalContent?.length ?? 0,
+    command,
+  });
+
+  if (!artifactId) {
+    log.error(
+      "[handleWorkflowSuccess] No artifactId in context - cannot update artifact",
+      {
+        correlationId,
+        workstreamId,
+        command,
+      }
+    );
+    return;
+  }
 
   await withDb(async (db) => {
     // TODO: These artifact queries need to include the organizationId for proper isolation!
     // Verify artifact exists before updating
     const existingArtifact = await db.artifact.findUnique({
       where: { id: artifactId },
-      select: { id: true },
+      select: { id: true, content: true },
     });
 
     if (!existingArtifact) {
@@ -228,6 +403,12 @@ async function handleWorkflowSuccess(
         `Artifact ${artifactId} not found - cannot update with workflow results`
       );
     }
+
+    log.info("[handleWorkflowSuccess] Found existing artifact", {
+      artifactId,
+      hasExistingContent: !!existingArtifact.content,
+      existingContentLength: existingArtifact.content?.length ?? 0,
+    });
 
     await db.artifact.update({
       where: { id: artifactId },
@@ -239,6 +420,11 @@ async function handleWorkflowSuccess(
             ? getArtifactUrl(`plans/${correlationId}/`)
             : undefined,
       },
+    });
+
+    log.info("[handleWorkflowSuccess] Artifact updated successfully", {
+      artifactId,
+      newContentLength: finalContent?.length ?? 0,
     });
 
     await db.workstreamEvent.create({
@@ -264,31 +450,18 @@ async function handleWorkflowSuccess(
 
 /**
  * Handle failed workflow completion.
+ * IMPORTANT: We NEVER overwrite artifact content with error messages.
+ * Errors are tracked via GitHubActionRun status and workstream events.
+ * The UI shows failures via the status banner.
  */
 async function handleWorkflowFailure(
   ctx: WorkflowContext,
   htmlUrl: string
 ): Promise<void> {
-  const { correlationId, artifactId, workstreamId, runId } = ctx;
+  const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
   await withDb(async (db) => {
-    await db.artifact.update({
-      where: { id: artifactId },
-      data: {
-        status: "DRAFT",
-        content: `# Plan Generation Failed
-
-The automated plan generation encountered an error.
-
-**Workflow Run:** [View on GitHub](${htmlUrl})
-**Correlation ID:** ${correlationId}
-
-Please check the workflow logs for more details, or try regenerating the plan.
-`,
-        // Note: generatedBy is a UUID field, not free-form text
-      },
-    });
-
+    // Only create the event - NEVER overwrite artifact content with error messages
     await db.workstreamEvent.create({
       data: {
         workstreamId,
@@ -298,6 +471,7 @@ Please check the workflow logs for more details, or try regenerating the plan.
           correlationId,
           artifactId,
           runId,
+          command,
           conclusion: "failure",
           htmlUrl,
         },
@@ -305,7 +479,11 @@ Please check the workflow logs for more details, or try regenerating the plan.
     });
   });
 
-  log.error(`Workflow run ${runId} failed for correlation ${correlationId}`);
+  log.error(`Workflow run ${runId} failed for correlation ${correlationId}`, {
+    htmlUrl,
+    artifactId,
+    command,
+  });
 }
 
 function isGitHubConfigured(): boolean {
@@ -450,18 +628,38 @@ async function processWorkflowCompletion(
   const triggerData = actionRun.triggerData as {
     correlationId: string;
     artifactId: string;
+    command?: string;
   };
 
   log.info("[webhook/github] Found matching GitHubActionRun", {
     actionRunId: actionRun.id,
     workstreamId: actionRun.workstreamId,
     correlationId: triggerData.correlationId,
+    command: triggerData.command,
   });
 
-  // Update GitHubActionRun
   const conclusion = event.workflow_run.conclusion;
-  await withDb((db) =>
-    db.gitHubActionRun.update({
+  const ctx: WorkflowContext = {
+    correlationId: triggerData.correlationId,
+    artifactId: triggerData.artifactId,
+    workstreamId: actionRun.workstreamId,
+    repositoryId: actionRun.repositoryId,
+    command: triggerData.command,
+    runId,
+  };
+
+  // Use transaction to ensure artifact content and status are updated atomically.
+  // This prevents race condition where frontend sees SUCCESS before content is ready.
+  await withDb.tx(async (tx) => {
+    // 1. Process the result (updates artifact content)
+    if (conclusion === "success") {
+      await handleWorkflowSuccess(ctx, s3Configured);
+    } else {
+      await handleWorkflowFailure(ctx, event.workflow_run.html_url);
+    }
+
+    // 2. Update GitHubActionRun status (done last so frontend sees content first)
+    await tx.gitHubActionRun.update({
       where: { id: actionRun.id },
       data: {
         runId: BigInt(runId),
@@ -470,22 +668,8 @@ async function processWorkflowCompletion(
         htmlUrl: event.workflow_run.html_url,
         completedAt: new Date(),
       },
-    })
-  );
-
-  // Process the result
-  const ctx: WorkflowContext = {
-    correlationId: triggerData.correlationId,
-    artifactId: triggerData.artifactId,
-    workstreamId: actionRun.workstreamId,
-    runId,
-  };
-
-  if (conclusion === "success") {
-    await handleWorkflowSuccess(ctx, s3Configured);
-  } else {
-    await handleWorkflowFailure(ctx, event.workflow_run.html_url);
-  }
+    });
+  });
 
   return NextResponse.json({ result: "processed", ok: true });
 }

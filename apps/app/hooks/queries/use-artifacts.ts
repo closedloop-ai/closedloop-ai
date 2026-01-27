@@ -30,6 +30,7 @@ export const artifactKeys = {
 
 type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -343,5 +344,63 @@ export function useCreateAndGenerateArtifact() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
+  });
+}
+
+type ExecuteResult = {
+  success: true;
+  correlationId: string;
+};
+
+/**
+ * Execute an approved implementation plan.
+ * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
+ */
+export function useExecuteImplementationPlan() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (artifactId: string) =>
+      apiClient.post<ExecuteResult>(`/artifacts/${artifactId}/execute`, {}),
+    onSuccess: (_, artifactId) => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.generationStatus(artifactId),
+      });
+    },
+  });
+}
+
+export type PullRequestInfo = {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+};
+
+/**
+ * Fetch the pull request associated with an artifact's workstream.
+ */
+export function useArtifactPullRequest(
+  artifactId: string,
+  options?: Omit<UseQueryOptions<PullRequestInfo | null>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: [...artifactKeys.detail(artifactId), "pull-request"] as const,
+    queryFn: () =>
+      apiClient.get<PullRequestInfo | null>(
+        `/artifacts/${artifactId}/pull-request`
+      ),
+    enabled: !!artifactId,
+    ...options,
   });
 }

@@ -8,10 +8,13 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  useArtifact,
   useArtifactGenerationStatus,
+  useArtifactPullRequest,
   useCreateNewVersion,
   useDeleteArtifact,
   useDuplicateArtifact,
+  useExecuteImplementationPlan,
   useRegenerateArtifact,
   useRequestPlanChanges,
   useUpdateArtifact,
@@ -29,8 +32,14 @@ type BaseConfig = {
  * Use usePRDEditorHook or usePlanEditorHook for typed returns.
  */
 function useArtifactEditorInternal(config: BaseConfig) {
-  const { artifact, redirectPath } = config;
+  const { artifact: initialArtifact, redirectPath } = config;
   const router = useRouter();
+
+  // Fetch artifact reactively - uses initial prop for SSR, then stays in sync via query
+  const { data: queriedArtifact } = useArtifact(initialArtifact.id, {
+    initialData: initialArtifact,
+  });
+  const artifact = queriedArtifact ?? initialArtifact;
 
   // TanStack Query mutations
   const createNewVersion = useCreateNewVersion();
@@ -39,9 +48,13 @@ function useArtifactEditorInternal(config: BaseConfig) {
   const duplicateArtifact = useDuplicateArtifact();
   const regenerateArtifact = useRegenerateArtifact();
   const requestPlanChanges = useRequestPlanChanges();
+  const executeImplementationPlan = useExecuteImplementationPlan();
 
   // Generation status (for plans)
   const { data: generationStatus } = useArtifactGenerationStatus(artifact.id);
+
+  // Pull request info (for plans that have been executed)
+  const { data: pullRequest } = useArtifactPullRequest(artifact.id);
 
   // Content state
   const [content, setContent] = useState(artifact.content ?? "");
@@ -66,15 +79,19 @@ function useArtifactEditorInternal(config: BaseConfig) {
   // UI state - Plan specific
   const [showRequestChangesModal, setShowRequestChangesModal] = useState(false);
   const [showLinearExportDialog, setShowLinearExportDialog] = useState(false);
+  const [showExecuteModal, setShowExecuteModal] = useState(false);
 
   // Derived state
   const isDraft = status === "DRAFT";
+  const isApproved = status === "APPROVED";
   const isSaving = createNewVersion.isPending;
+  const isExecuting = executeImplementationPlan.isPending;
   const isPending =
     updateArtifact.isPending ||
     deleteArtifact.isPending ||
     duplicateArtifact.isPending ||
-    regenerateArtifact.isPending;
+    regenerateArtifact.isPending ||
+    executeImplementationPlan.isPending;
 
   // Sync state when artifact prop changes (e.g., server refresh, navigation)
   useEffect(() => {
@@ -266,6 +283,20 @@ function useArtifactEditorInternal(config: BaseConfig) {
     [artifact.id, requestPlanChanges, redirectPath, router]
   );
 
+  const handleExecute = useCallback(() => {
+    executeImplementationPlan.mutate(artifact.id, {
+      onSuccess: () => {
+        setShowExecuteModal(false);
+        toast.success("Plan execution started - a PR will be created shortly");
+      },
+      onError: (error) => {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to execute plan"
+        );
+      },
+    });
+  }, [artifact.id, executeImplementationPlan]);
+
   return {
     // Common state
     isPending,
@@ -312,13 +343,19 @@ function useArtifactEditorInternal(config: BaseConfig) {
     isRequestingChanges: requestPlanChanges.isPending,
     showLinearExportDialog,
     setShowLinearExportDialog,
+    showExecuteModal,
+    setShowExecuteModal,
+    isExecuting,
     isDraft,
+    isApproved,
     generationStatus,
+    pullRequest,
 
     // Plan-specific handlers
     handleApprove,
     handleRegenerate,
     handleRequestChanges,
+    handleExecute,
   };
 }
 

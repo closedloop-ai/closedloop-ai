@@ -31,7 +31,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
 
@@ -109,6 +109,9 @@ const data = {
 
 export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
   const sidebar = useSidebar();
+  // Prevent hydration mismatch from Clerk UserButton by only rendering after mount
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   return (
     <>
@@ -209,16 +212,20 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem className="flex items-center gap-2">
-              <UserButton
-                appearance={{
-                  elements: {
-                    rootBox: "flex overflow-hidden w-full",
-                    userButtonBox: "flex-row-reverse",
-                    userButtonOuterIdentifier: "truncate pl-0",
-                  },
-                }}
-                showName
-              />
+              {mounted ? (
+                <UserButton
+                  appearance={{
+                    elements: {
+                      rootBox: "flex overflow-hidden w-full",
+                      userButtonBox: "flex-row-reverse",
+                      userButtonOuterIdentifier: "truncate pl-0",
+                    },
+                  }}
+                  showName
+                />
+              ) : (
+                <div className="h-8 w-full" /> // Placeholder during SSR
+              )}
               <div className="flex shrink-0 items-center gap-px">
                 <ModeToggle />
                 <Button
