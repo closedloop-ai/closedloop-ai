@@ -61,6 +61,7 @@ export const CollaborationProvider = ({
   );
 };
 
+/** biome-ignore-start lint/suspicious/noBitwiseOperators: bitwise operators are used for hashing */
 // Generate a consistent color based on user ID
 function getUserColor(userId: string): string {
   const colors = [
@@ -87,3 +88,4 @@ function getUserColor(userId: string): string {
   }
   return colors[Math.abs(hash) % colors.length];
 }
+/** biome-ignore-end lint/suspicious/noBitwiseOperators: bitwise operators are used for hashing */
