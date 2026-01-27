@@ -67,7 +67,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     setShowDeleteDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
-    handleSave,
+    handleSaveContent,
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
@@ -135,7 +135,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
             Generate Implementation Plan
           </Button>
 
-          <Button disabled={isPending} onClick={handleSave}>
+          <Button disabled={isPending} onClick={handleSaveContent}>
             {isSaving ? "Saving..." : "Save"}
           </Button>
 

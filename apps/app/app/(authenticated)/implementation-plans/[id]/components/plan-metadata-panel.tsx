@@ -14,10 +14,16 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
-import type {
-  GenerationStatus,
-  PullRequestInfo,
-} from "@/app/actions/artifacts";
+import type { PullRequestInfo } from "@/hooks/queries/use-artifacts";
+
+type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
+};
 import { artifactStatusLabels } from "@/components/status-badge";
 
 const PR_STATE_STYLES: Record<string, string> = {

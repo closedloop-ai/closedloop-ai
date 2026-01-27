@@ -1,15 +1,21 @@
 "use client";
 
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  type GenerationStatus,
-  getGenerationStatus,
-} from "@/app/actions/artifacts";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+
+type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
+};
 
 type GenerationStatusBannerProps = {
   artifactId: string;
-  onComplete?: () => void;
 };
 
 const MIN_POLL_INTERVAL = 2000; // 2 seconds
@@ -37,83 +43,52 @@ function getStatusMessage(
   }
 }
 
-/** Terminal statuses that should stop polling */
-function isTerminalStatus(
-  status: GenerationStatus["status"]
-): status is "SUCCESS" | "FAILURE" | "NONE" {
-  return status === "SUCCESS" || status === "FAILURE" || status === "NONE";
-}
-
 export function GenerationStatusBanner({
   artifactId,
-  onComplete,
-}: GenerationStatusBannerProps) {
-  const [status, setStatus] = useState<GenerationStatus | null>(null);
+}: Readonly<GenerationStatusBannerProps>) {
   const [isPolling, setIsPolling] = useState(true);
   const pollIntervalRef = useRef(MIN_POLL_INTERVAL);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const onCompleteRef = useRef(onComplete);
-  // Track if we've seen an active generation state - only call onComplete
-  // if we transition FROM active TO success (not if already success on load)
-  const sawActiveStateRef = useRef(false);
-  const completedRef = useRef(false);
 
-  // Keep onComplete ref updated
+  const {
+    data: generationStatus,
+    isLoading,
+    refetch,
+    invalidateCache,
+  } = useArtifactGenerationStatus(artifactId);
+  const handleGenerationSuccess = useEffectEvent(invalidateCache);
+
   useEffect(() => {
-    onCompleteRef.current = onComplete;
-  }, [onComplete]);
+    if (isLoading) {
+      return;
+    }
 
-  const applyBackoff = useCallback(() => {
+    // Handle completion
+    if (generationStatus?.status === "SUCCESS") {
+      setIsPolling(false);
+      handleGenerationSuccess();
+      toast.success("Plan generation completed successfully");
+      return;
+    }
+
+    // Handle failure - stop polling but keep showing banner
+    if (generationStatus?.status === "FAILURE") {
+      setIsPolling(false);
+      return;
+    }
+
+    // Handle no status - stop polling and hide
+    if (generationStatus?.status === "NONE") {
+      setIsPolling(false);
+      return;
+    }
+
+    // Continue polling with backoff for active statuses
     pollIntervalRef.current = Math.min(
       pollIntervalRef.current * BACKOFF_MULTIPLIER,
       MAX_POLL_INTERVAL
     );
-  }, []);
-
-  const handleStatusResult = useCallback(
-    (data: GenerationStatus) => {
-      setStatus(data);
-
-      // Terminal statuses stop polling
-      if (isTerminalStatus(data.status)) {
-        setIsPolling(false);
-        // Only call onComplete for SUCCESS if we saw an active state first
-        // (i.e., generation actually happened during this session, not already done on page load)
-        const shouldNotify =
-          data.status === "SUCCESS" &&
-          sawActiveStateRef.current &&
-          !completedRef.current;
-        if (shouldNotify) {
-          completedRef.current = true;
-          onCompleteRef.current?.();
-        }
-        return;
-      }
-
-      // Active statuses (PENDING, QUEUED, RUNNING) - track and continue polling
-      sawActiveStateRef.current = true;
-      completedRef.current = false;
-      applyBackoff();
-    },
-    [applyBackoff]
-  );
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const result = await getGenerationStatus(artifactId);
-      if (result.success) {
-        handleStatusResult(result.data);
-      }
-    } catch (error) {
-      console.error("Failed to fetch generation status:", error);
-      applyBackoff();
-    }
-  }, [artifactId, handleStatusResult, applyBackoff]);
-
-  useEffect(() => {
-    // Initial fetch
-    fetchStatus();
-  }, [fetchStatus]);
+  }, [isLoading, generationStatus]);
 
   useEffect(() => {
     if (!isPolling) {
@@ -121,12 +96,12 @@ export function GenerationStatusBanner({
     }
 
     const poll = () => {
-      timeoutRef.current = setTimeout(() => {
-        fetchStatus().then(() => {
-          if (isPolling) {
-            poll();
-          }
-        });
+      timeoutRef.current = setTimeout(async () => {
+        await refetch();
+
+        if (isPolling) {
+          poll();
+        }
       }, pollIntervalRef.current);
     };
 
@@ -137,18 +112,22 @@ export function GenerationStatusBanner({
         clearTimeout(timeoutRef.current);
       }
     };
-  }, [isPolling, fetchStatus]);
+  }, [isPolling, refetch]);
 
   // Don't render if no status or status is NONE/SUCCESS
-  if (!status || status.status === "NONE" || status.status === "SUCCESS") {
+  if (
+    !generationStatus ||
+    generationStatus.status === "NONE" ||
+    generationStatus.status === "SUCCESS"
+  ) {
     return null;
   }
 
   const isActive =
-    status.status === "PENDING" ||
-    status.status === "QUEUED" ||
-    status.status === "RUNNING";
-  const isFailed = status.status === "FAILURE";
+    generationStatus.status === "PENDING" ||
+    generationStatus.status === "QUEUED" ||
+    generationStatus.status === "RUNNING";
+  const isFailed = generationStatus.status === "FAILURE";
 
   return (
     <div
@@ -164,13 +143,13 @@ export function GenerationStatusBanner({
         ) : (
           <XCircleIcon className="h-4 w-4" />
         )}
-        <span>{getStatusMessage(status.status, status.command)}</span>
+        <span>{getStatusMessage(generationStatus.status, generationStatus.command)}</span>
       </div>
 
-      {status.htmlUrl ? (
+      {generationStatus.htmlUrl ? (
         <a
           className="flex items-center gap-1 text-xs underline hover:no-underline"
-          href={status.htmlUrl}
+          href={generationStatus.htmlUrl}
           rel="noopener noreferrer"
           target="_blank"
         >

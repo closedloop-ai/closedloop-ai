@@ -29,9 +29,16 @@ export default function TeamProjectsPage() {
   const teamId = params.teamId as string;
 
   // Queries
-  const { data: team, isLoading: loadingTeam, error: teamError } = useTeam(teamId);
-  const { data: projects = [], isLoading: loadingProjects, error: projectsError } =
-    useProjectsByTeam(teamId);
+  const {
+    data: team,
+    isLoading: loadingTeam,
+    error: teamError,
+  } = useTeam(teamId);
+  const {
+    data: projects = [],
+    isLoading: loadingProjects,
+    error: projectsError,
+  } = useProjectsByTeam(teamId);
 
   const loading = loadingTeam || loadingProjects;
   const error = teamError?.message || projectsError?.message || null;
@@ -43,25 +50,11 @@ export default function TeamProjectsPage() {
   const deleteProjectMutation = useDeleteProject();
 
   const handleUpdateOwner = (projectId: string, owner: ProjectOwner | null) => {
-    updateOwnerMutation.mutate(
-      { projectId, ownerId: owner?.id || null },
-      {
-        onError: (err) => {
-          console.error("Failed to update owner:", err);
-        },
-      }
-    );
+    updateOwnerMutation.mutate({ projectId, ownerId: owner?.id || null });
   };
 
   const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
-    updateTargetDateMutation.mutate(
-      { projectId, targetDate: date },
-      {
-        onError: (err) => {
-          console.error("Failed to update target date:", err);
-        },
-      }
-    );
+    updateTargetDateMutation.mutate({ projectId, targetDate: date });
   };
 
   const handleCreateProject = (projectData: {
@@ -72,36 +65,25 @@ export default function TeamProjectsPage() {
     targetDate?: string;
     teamIds: string[];
   }) => {
-    createProjectMutation.mutate(
-      {
-        name: projectData.name,
-        description: projectData.description,
-        priority: projectData.priority as
-          | "NOT_SET"
-          | "LOW"
-          | "MEDIUM"
-          | "HIGH"
-          | undefined,
-        ownerId: projectData.ownerId || null,
-        targetDate: projectData.targetDate
-          ? new Date(projectData.targetDate)
-          : null,
-        teamIds: projectData.teamIds,
-      },
-      {
-        onError: (err) => {
-          console.error("Failed to create project:", err);
-        },
-      }
-    );
+    createProjectMutation.mutate({
+      name: projectData.name,
+      description: projectData.description,
+      priority: projectData.priority as
+        | "NOT_SET"
+        | "LOW"
+        | "MEDIUM"
+        | "HIGH"
+        | undefined,
+      ownerId: projectData.ownerId || null,
+      targetDate: projectData.targetDate
+        ? new Date(projectData.targetDate)
+        : null,
+      teamIds: projectData.teamIds,
+    });
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    deleteProjectMutation.mutate(projectId, {
-      onError: (err) => {
-        console.error("Failed to delete project:", err);
-      },
-    });
+    deleteProjectMutation.mutate(projectId);
   };
 
   if (loading) {

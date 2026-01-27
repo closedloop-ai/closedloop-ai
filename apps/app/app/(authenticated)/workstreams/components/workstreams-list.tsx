@@ -10,11 +10,11 @@ import {
 } from "@repo/design-system/components/ui/table";
 import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
-import { useWorkstreams } from "@/hooks/queries/use-workstreams";
 import {
   WorkstreamStateBadge,
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
+import { useWorkstreams } from "@/hooks/queries/use-workstreams";
 import { formatRelativeTime } from "@/lib/date-utils";
 
 export function WorkstreamsList() {

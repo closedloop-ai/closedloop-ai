@@ -107,7 +107,6 @@ export type UpdateArtifactInput = {
   fileName?: string;
   approver?: string | null;
   status?: ArtifactStatus;
-  content?: string;
   externalUrl?: string | null;
   targetRepo?: string | null;
   targetBranch?: string | null;
