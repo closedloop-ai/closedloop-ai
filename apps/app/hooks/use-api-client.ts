@@ -47,8 +47,11 @@ export function useApiClient() {
         if (!result.success) {
           throw new ApiError(result.error, response.status);
         }
-        if (response.status >= 400) {
-          throw new ApiError("An unexpected error occurred", response.status);
+        if (!response.ok) {
+          throw new ApiError(
+            'API contract violation: success=true but HTTP error status',
+            response.status
+          );
         }
 
         return result.data;

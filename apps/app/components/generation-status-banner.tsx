@@ -2,9 +2,9 @@
 
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
-  onRegenerateArtifactSuccess,
+  useArtifactGenerationCacheInvalidation,
   useArtifactGenerationStatus,
 } from "@/hooks/queries/use-artifacts";
 
@@ -48,6 +48,8 @@ export function GenerationStatusBanner({
 
   const { data: generationStatus, isLoading, refetch } =
     useArtifactGenerationStatus(artifactId);
+  const invalidateArtifactCache = useArtifactGenerationCacheInvalidation();
+  const invalidateArtifactCacheEvent = useEffectEvent(invalidateArtifactCache);
 
   useEffect(() => {
     if (isLoading) {
@@ -57,7 +59,7 @@ export function GenerationStatusBanner({
     // Handle completion
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
-      onRegenerateArtifactSuccess(artifactId);
+      invalidateArtifactCacheEvent(artifactId);
       toast.success("Plan generation completed successfully");
       return;
     }

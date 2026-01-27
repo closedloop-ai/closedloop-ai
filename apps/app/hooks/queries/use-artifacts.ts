@@ -14,6 +14,7 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
+import { useCallback } from "react";
 
 // Query keys
 export const artifactKeys = {
@@ -278,12 +279,15 @@ export function useRegenerateArtifact() {
   });
 }
 
-export function onRegenerateArtifactSuccess(id: string) {
+export function useArtifactGenerationCacheInvalidation() {
   const queryClient = useQueryClient();
-  queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
-  queryClient.invalidateQueries({
-    queryKey: artifactKeys.generationStatus(id),
-  });
+
+  return useCallback((id: string) => {
+    queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
+    queryClient.invalidateQueries({
+      queryKey: artifactKeys.generationStatus(id),
+    });
+  }, [queryClient]);
 }
 
 export function useRequestPlanChanges() {
@@ -313,12 +317,15 @@ export function useRequestPlanChanges() {
   });
 }
 
-export function onRequestPlanChangesSuccess(artifactId: string) {
+export function usePlanChangesCacheInvalidation() {
   const queryClient = useQueryClient();
-  queryClient.invalidateQueries({ queryKey: artifactKeys.detail(artifactId) });
-  queryClient.invalidateQueries({
-    queryKey: artifactKeys.generationStatus(artifactId),
-  });
+
+  return useCallback((artifactId: string) => {
+    queryClient.invalidateQueries({ queryKey: artifactKeys.detail(artifactId) });
+    queryClient.invalidateQueries({
+      queryKey: artifactKeys.generationStatus(artifactId),
+    });
+  }, [queryClient]);
 }
 
 /**
