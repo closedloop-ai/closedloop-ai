@@ -4,6 +4,8 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
   CreateArtifactInput,
+  GenerationStatus,
+  PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import {
@@ -26,15 +28,6 @@ export const artifactKeys = {
   versions: (id: string) => [...artifactKeys.detail(id), "versions"] as const,
   generationStatus: (id: string) =>
     [...artifactKeys.detail(id), "generation-status"] as const,
-};
-
-type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
 };
 
 // Queries
@@ -374,23 +367,15 @@ export function useExecuteImplementationPlan() {
   });
 }
 
-export type PullRequestInfo = {
-  id: string;
-  number: number;
-  title: string;
-  htmlUrl: string;
-  state: string;
-  headBranch: string;
-  baseBranch: string;
-  createdAt: Date;
-};
-
 /**
  * Fetch the pull request associated with an artifact's workstream.
  */
 export function useArtifactPullRequest(
   artifactId: string,
-  options?: Omit<UseQueryOptions<PullRequestInfo | null>, "queryKey" | "queryFn">
+  options?: Omit<
+    UseQueryOptions<PullRequestInfo | null>,
+    "queryKey" | "queryFn"
+  >
 ) {
   const apiClient = useApiClient();
 

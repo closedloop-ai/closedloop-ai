@@ -1,18 +1,10 @@
+import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { notFoundResponse } from "@/lib/route-utils";
-
-export type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-};
 
 export const GET = withAuth<
   GenerationStatus,

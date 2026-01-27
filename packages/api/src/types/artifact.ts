@@ -149,3 +149,13 @@ export type PullRequestInfo = {
   baseBranch: string;
   createdAt: Date;
 };
+
+// Generation status for artifacts being processed by GitHub Actions
+export type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
+};
