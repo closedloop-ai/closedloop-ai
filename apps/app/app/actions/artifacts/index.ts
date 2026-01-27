@@ -4,6 +4,7 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
   CreateArtifactInput,
+  PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 
