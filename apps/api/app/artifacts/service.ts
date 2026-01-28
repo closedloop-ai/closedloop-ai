@@ -39,7 +39,19 @@ export const artifactsService = {
       workstreamId,
       projectId,
       documentSlug,
+      version,
     } = options;
+
+    // Build version filter: specific version takes precedence over latestOnly
+    function getVersionFilter() {
+      if (version !== undefined) {
+        return { version };
+      }
+      if (latestOnly) {
+        return { isLatest: true };
+      }
+      return {};
+    }
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -47,9 +59,9 @@ export const artifactsService = {
           organizationId,
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
-          ...(type ? { type } : {}),
-          ...(latestOnly ? { isLatest: true } : {}),
           ...(documentSlug ? { documentSlug } : {}),
+          ...(type ? { type } : {}),
+          ...getVersionFilter(),
         },
         include: artifactIncludeWithContext,
         orderBy: { createdAt: "desc" },
@@ -142,6 +154,7 @@ export const artifactsService = {
    */
   create(
     organizationId: string,
+    userId: string,
     input: CreateArtifactInput
   ): Promise<Artifact | null> {
     // This should never happen, but we'll handle it anyway.
@@ -170,10 +183,10 @@ export const artifactsService = {
         data: {
           ...input,
           organizationId,
-          projectId: input.projectId,
           documentSlug,
           version: 1,
           isLatest: true,
+          generatedBy: userId,
         },
       });
     });

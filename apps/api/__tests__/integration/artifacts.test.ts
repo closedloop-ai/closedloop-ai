@@ -17,9 +17,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create artifact without documentSlug - should auto-generate from title
-      const artifact = await artifactsService.create(testOrgId, {
+      const artifact = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Requirements",
@@ -37,9 +38,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
   it("returns null when no project/workstream provided", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
+      const testUserId = uuidv7();
 
       // Create artifact without projectId or workstreamId - should return null
-      const artifact = await artifactsService.create(testOrgId, {
+      const artifact = await artifactsService.create(testOrgId, testUserId, {
         type: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
@@ -53,9 +55,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create first artifact (v1)
-      const v1 = await artifactsService.create(testOrgId, {
+      const v1 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature",
@@ -67,7 +70,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       expect(v1!.isLatest).toBe(true);
 
       // Create second artifact - also v1 (versioning removed)
-      const v2 = await artifactsService.create(testOrgId, {
+      const v2 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Updated",
@@ -91,9 +94,10 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create original artifact
-      const original = await artifactsService.create(testOrgId, {
+      const original = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "IMPLEMENTATION_PLAN",
         title: "Original Plan",

@@ -214,7 +214,11 @@ describe("POST /api/artifacts", () => {
     expect(json.error).toBe("Failed to create artifact");
   });
 
-  it("passes organizationId to service when creating artifact", async () => {
+  it("passes organizationId and userId to service when creating artifact", async () => {
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-123", organizationId: "test-org-id" } as any,
+    });
+
     vi.mocked(artifactsService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
@@ -233,6 +237,7 @@ describe("POST /api/artifacts", () => {
 
     expect(artifactsService.create).toHaveBeenCalledWith(
       "test-org-id",
+      "user-123",
       expect.objectContaining({
         type: "PRD",
         title: "Test PRD",
@@ -304,6 +309,10 @@ describe("POST /api/artifacts", () => {
 
   it("creates artifact without checking project ownership", async () => {
     const projectId = uuidv7();
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-123", organizationId: "test-org-id" } as any,
+    });
+
     vi.mocked(artifactsService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
@@ -323,6 +332,7 @@ describe("POST /api/artifacts", () => {
     expect(projectsService.findById).not.toHaveBeenCalled();
     expect(artifactsService.create).toHaveBeenCalledWith(
       "test-org-id",
+      "user-123",
       expect.objectContaining({
         type: "PRD",
         title: "Test PRD",

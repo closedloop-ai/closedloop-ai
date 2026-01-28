@@ -22,6 +22,10 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
       const workstreamId = searchParams.get("workstreamId") ?? undefined;
       const projectId = searchParams.get("projectId") ?? undefined;
       const documentSlug = searchParams.get("documentSlug") ?? undefined;
+      const versionParam = searchParams.get("version");
+      const version = versionParam
+        ? Number.parseInt(versionParam, 10)
+        : undefined;
 
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
@@ -30,6 +34,7 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
         type,
         latestOnly,
         documentSlug,
+        version,
       });
 
       return successResponse(artifacts);
@@ -50,7 +55,11 @@ export const POST = withAuth<Artifact, "/artifacts">(
         return parseError;
       }
 
-      const artifact = await artifactsService.create(user.organizationId, body);
+      const artifact = await artifactsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
       if (!artifact) {
         return badRequestResponse("Failed to create artifact");
       }

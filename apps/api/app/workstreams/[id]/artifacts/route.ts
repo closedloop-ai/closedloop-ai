@@ -46,7 +46,11 @@ export const POST = withAuth<Artifact, "/workstreams/[id]/artifacts">(
 
       body.workstreamId = workstreamId;
 
-      const artifact = await artifactsService.create(user.organizationId, body);
+      const artifact = await artifactsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
       if (!artifact) {
         return badRequestResponse("Failed to create artifact");
       }

@@ -90,6 +90,7 @@ export type FindArtifactsOptions = {
   workstreamId?: string;
   projectId?: string;
   documentSlug?: string;
+  version?: number;
 };
 
 export type CreateArtifactInput = {
