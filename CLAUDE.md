@@ -75,17 +75,61 @@ Each app has its own `.env.local`. Key patterns:
 
 All database access must go through the BFF API (`apps/api`):
 
-1. **API routes** (`apps/api/app/api/`) - Handle database operations, import `@repo/database`
-2. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
-3. **Frontend actions** (`apps/app/app/actions/`) - Call API routes via `apiClient`, never touch database directly
+1. **Frontend hooks** (`apps/app/hooks/queries/`) - TanStack Query hooks for data fetching. Use `useApiClient()` hook.
+2. **API routes** (`apps/api/app/*/route.ts`) - HTTP layer only: authentication, request parsing, response formatting. Delegate business logic to services.
+3. **Services** (`apps/api/app/*/service.ts`) - Business logic and database operations. Import `@repo/database` here, NOT in routes.
+4. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
 
 ```
-apps/app (frontend)  →  apps/api (BFF)  →  @repo/database
-     ↑                       ↑
-     └── @repo/api types ────┘
+apps/app (frontend)
+    │
+    ├── hooks/queries/use-*.ts (TanStack Query)
+    │       ↓ useApiClient()
+    │
+    └──→ apps/api routes  →  services  →  @repo/database
+              ↑
+              └── @repo/api types
 ```
 
-This separation ensures the frontend never has direct database access.
+**Layer responsibilities:**
+- **Frontend hooks**: `useQuery`/`useMutation`, cache invalidation, loading/error states
+- **Route**: `withAuth()`, parse params/body, call service, return `NextResponse.json()`
+- **Service**: Validation, business logic, database queries, external API calls
+
+This separation ensures the frontend never has direct database access and keeps routes thin.
+
+### Type Definitions (IMPORTANT)
+
+**Single source of truth for types.** Never duplicate type definitions across files.
+
+- **API types** → `packages/api/src/types/` - Request/response types, enums, shared interfaces
+- **Database types** → Generated from Prisma schema in `packages/database/generated/`
+
+When creating a new type:
+1. Check if it already exists in `packages/api/src/types/`
+2. If not, add it there and import from `@repo/api/src/types/<file>`
+3. Never define the same type in multiple files
+
+```typescript
+// ✅ GOOD - import from shared types
+import type { GenerationStatus, PullRequestInfo } from "@repo/api/src/types/artifact";
+
+// ❌ BAD - duplicating types locally
+type GenerationStatus = {
+  status: "NONE" | "PENDING" | ...
+};
+```
+
+## Self-Improving CLAUDE.md
+
+When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
+
+- A code review catches a repeated mistake (e.g., duplicating types, wrong import path) → add a rule so it doesn't happen again
+- You hit a non-obvious framework behavior (e.g., MDXEditor requiring `setMarkdown` ref) → document it
+- A build/lint/test failure reveals a convention not captured here → add it
+- You notice an architectural pattern being followed but not written down → write it down
+
+The goal is that every PR makes future sessions smarter. CLAUDE.md files are living documents — treat them like code.
 
 ## Key Files
 - `turbo.json` - Turborepo task configuration
