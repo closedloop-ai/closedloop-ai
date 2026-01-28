@@ -112,6 +112,7 @@ export async function triggerWorkflowDispatch(
         context: opts.context,
         correlation_id: prefixedCorrelationId,
         session_id: opts.sessionId || "",
+        environment: config.WEBAPP_ENV === "prod" ? "prod" : "stage",
       },
     });
 
