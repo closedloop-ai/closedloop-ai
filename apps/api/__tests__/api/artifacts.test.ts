@@ -166,6 +166,7 @@ describe("POST /api/artifacts", () => {
         type: "PRD",
         title: "New PRD",
         content: "# Content",
+        projectId: uuidv7(),
       },
     });
     const routeContext = createMockRouteContext({});
@@ -193,8 +194,8 @@ describe("POST /api/artifacts", () => {
     expect(json.success).toBe(false);
   });
 
-  it("returns 404 when projectId does not exist", async () => {
-    vi.mocked(projectsService.findById).mockResolvedValue(null);
+  it("returns null when projectId does not exist", async () => {
+    vi.mocked(artifactsService.create).mockResolvedValue(null);
 
     const request = createMockRequest({
       method: "POST",
@@ -207,13 +208,17 @@ describe("POST /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     const response = await POST(request, routeContext);
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(json.error).toBe("Project not found");
+    expect(json.error).toBe("Failed to create artifact");
   });
 
-  it("passes organizationId to service when creating artifact", async () => {
+  it("passes organizationId and userId to service when creating artifact", async () => {
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-123", organizationId: "test-org-id" } as any,
+    });
+
     vi.mocked(artifactsService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
@@ -224,6 +229,7 @@ describe("POST /api/artifacts", () => {
         type: "PRD",
         title: "Test PRD",
         fileName: "my-prd.md",
+        projectId: uuidv7(),
       },
     });
     const routeContext = createMockRouteContext({});
@@ -231,6 +237,7 @@ describe("POST /api/artifacts", () => {
 
     expect(artifactsService.create).toHaveBeenCalledWith(
       "test-org-id",
+      "user-123",
       expect.objectContaining({
         type: "PRD",
         title: "Test PRD",
@@ -239,12 +246,7 @@ describe("POST /api/artifacts", () => {
     );
   });
 
-  it("creates artifact without projectId or workstreamId", async () => {
-    vi.mocked(artifactsService.create).mockResolvedValue({
-      id: "artifact-id",
-      version: 1,
-    } as any);
-
+  it("returns 400 when missing projectId or workstreamId", async () => {
     const request = createMockRequest({
       method: "POST",
       body: {
@@ -255,17 +257,35 @@ describe("POST /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     const response = await POST(request, routeContext);
 
-    expect(response.status).toBe(200);
-    expect(artifactsService.create).toHaveBeenCalledWith(
-      "test-org-id",
-      expect.objectContaining({
-        type: "PRD",
-        title: "Standalone PRD",
-      })
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toContain(
+      "Either workstreamId or projectId is required"
     );
   });
 
-  it("returns 500 when service fails", async () => {
+  it("returns 400 when service returns null", async () => {
+    vi.mocked(artifactsService.create).mockResolvedValue(null);
+
+    const request = createMockRequest({
+      method: "POST",
+      body: {
+        type: "PRD",
+        title: "Test PRD",
+        projectId: uuidv7(),
+      },
+    });
+    const routeContext = createMockRouteContext({});
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Failed to create artifact");
+  });
+
+  it("returns 500 when service throws error", async () => {
     vi.mocked(artifactsService.create).mockRejectedValue(
       new Error("Transaction deadlock detected")
     );
@@ -275,6 +295,7 @@ describe("POST /api/artifacts", () => {
       body: {
         type: "PRD",
         title: "Test PRD",
+        projectId: uuidv7(),
       },
     });
     const routeContext = createMockRouteContext({});
@@ -286,11 +307,12 @@ describe("POST /api/artifacts", () => {
     expect(json.error).toBeDefined();
   });
 
-  it("verifies project ownership before creating artifact", async () => {
+  it("creates artifact without checking project ownership", async () => {
     const projectId = uuidv7();
-    vi.mocked(projectsService.findById).mockResolvedValue({
-      id: projectId,
-    } as any);
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-123", organizationId: "test-org-id" } as any,
+    });
+
     vi.mocked(artifactsService.create).mockResolvedValue({
       id: "artifact-id",
     } as any);
@@ -306,9 +328,16 @@ describe("POST /api/artifacts", () => {
     const routeContext = createMockRouteContext({});
     await POST(request, routeContext);
 
-    expect(projectsService.findById).toHaveBeenCalledWith(
-      projectId,
-      "test-org-id"
+    // Project ownership verification was removed - service handles validation
+    expect(projectsService.findById).not.toHaveBeenCalled();
+    expect(artifactsService.create).toHaveBeenCalledWith(
+      "test-org-id",
+      "user-123",
+      expect.objectContaining({
+        type: "PRD",
+        title: "Test PRD",
+        projectId,
+      })
     );
   });
 });

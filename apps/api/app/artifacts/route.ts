@@ -5,32 +5,36 @@ import type {
 } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
+  badRequestResponse,
   errorResponse,
-  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { projectsService } from "../projects/service";
 import { artifactsService } from "./service";
 import { createArtifactValidator } from "./validators";
 
 export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
   async ({ user }, request) => {
     try {
-      const { searchParams } = new URL(request.url);
-      const type = searchParams.get("type");
+      const searchParams = request.nextUrl.searchParams;
+      const type = (searchParams.get("type") as ArtifactType) ?? undefined;
       const latestOnly = searchParams.get("latestOnly") !== "false";
-      const workstreamId = searchParams.get("workstreamId");
-      const projectId = searchParams.get("projectId");
-      const documentSlug = searchParams.get("documentSlug");
+      const workstreamId = searchParams.get("workstreamId") ?? undefined;
+      const projectId = searchParams.get("projectId") ?? undefined;
+      const documentSlug = searchParams.get("documentSlug") ?? undefined;
+      const versionParam = searchParams.get("version");
+      const version = versionParam
+        ? Number.parseInt(versionParam, 10)
+        : undefined;
 
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
-        type: type as ArtifactType | undefined,
+        workstreamId,
+        projectId,
+        type,
         latestOnly,
-        workstreamId: workstreamId ?? undefined,
-        projectId: projectId ?? undefined,
-        documentSlug: documentSlug ?? undefined,
+        documentSlug,
+        version,
       });
 
       return successResponse(artifacts);
@@ -51,18 +55,14 @@ export const POST = withAuth<Artifact, "/artifacts">(
         return parseError;
       }
 
-      // Verify project exists and belongs to user's organization if specified
-      if (body.projectId) {
-        const project = await projectsService.findById(
-          body.projectId,
-          user.organizationId
-        );
-        if (!project) {
-          return notFoundResponse("Project");
-        }
+      const artifact = await artifactsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
+      if (!artifact) {
+        return badRequestResponse("Failed to create artifact");
       }
-
-      const artifact = await artifactsService.create(user.organizationId, body);
 
       return successResponse(artifact);
     } catch (error) {

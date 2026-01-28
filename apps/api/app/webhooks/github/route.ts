@@ -489,10 +489,10 @@ async function handleWorkflowFailure(
 function isGitHubConfigured(): boolean {
   // Check env vars directly to avoid build-time validation errors
   return Boolean(
-    process.env.SYMPHONY_APP_ID &&
-      process.env.SYMPHONY_APP_PRIVATE_KEY &&
-      process.env.GITHUB_WEBHOOK_SECRET &&
-      process.env.SYMPHONY_DISPATCH_REPO
+    process.env.GITHUB_APP_ID &&
+      process.env.GITHUB_APP_PRIVATE_KEY &&
+      process.env.GITHUB_APP_WEBHOOK_SECRET &&
+      process.env.GITHUB_APP_DISPATCH_REPO
   );
 }
 

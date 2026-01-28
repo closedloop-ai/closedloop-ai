@@ -1,6 +1,7 @@
+import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
+import { v7 as uuidv7 } from "uuid";
 import { artifactsService } from "@/app/artifacts/service";
-import { projectsService } from "@/app/projects/service";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -16,133 +17,270 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create artifact without documentSlug - should auto-generate from title
-      const artifact = await artifactsService.create(testOrgId, {
+      const artifact = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Requirements",
         content: "Feature details...",
       });
 
-      expect(artifact.version).toBe(1);
-      expect(artifact.isLatest).toBe(true);
-      expect(artifact.documentSlug).toBe("my-feature-requirements");
-      expect(artifact.title).toBe("My Feature Requirements");
+      expect(artifact).not.toBeNull();
+      expect(artifact!.version).toBe(1);
+      expect(artifact!.isLatest).toBe(true);
+      expect(artifact!.documentSlug).toBeDefined();
+      expect(artifact!.title).toBe("My Feature Requirements");
     });
   });
 
-  it("creates artifact with default project when no project/workstream provided", async () => {
+  it("returns null when no project/workstream provided", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
+      const testUserId = uuidv7();
 
-      // Create artifact without projectId or workstreamId
-      const artifact = await artifactsService.create(testOrgId, {
+      // Create artifact without projectId or workstreamId - should return null
+      const artifact = await artifactsService.create(testOrgId, testUserId, {
         type: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
       });
 
-      expect(artifact.projectId).toBeDefined();
-      expect(artifact.projectId).not.toBeNull();
-      expect(artifact.version).toBe(1);
-      expect(artifact.isLatest).toBe(true);
-
-      // Verify the default project was created
-      const projects = await projectsService.findByOrganization(testOrgId);
-      const defaultProject = projects.find((p) => p.name === "Default Project");
-      expect(defaultProject).toBeDefined();
-      expect(artifact.projectId).toBe(defaultProject?.id);
+      expect(artifact).toBeNull();
     });
   });
 
-  it("increments version when creating artifact with same scope", async () => {
+  it("creates multiple artifacts with version 1", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create first artifact (v1)
-      const v1 = await artifactsService.create(testOrgId, {
+      const v1 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature",
-        documentSlug: "my-feature",
         content: "Version 1 content",
       });
 
-      expect(v1.version).toBe(1);
-      expect(v1.isLatest).toBe(true);
+      expect(v1).not.toBeNull();
+      expect(v1!.version).toBe(1);
+      expect(v1!.isLatest).toBe(true);
 
-      // Create second artifact with same scope (v2)
-      const v2 = await artifactsService.create(testOrgId, {
+      // Create second artifact - also v1 (versioning removed)
+      const v2 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "PRD",
         title: "My Feature Updated",
-        documentSlug: "my-feature",
         content: "Version 2 content",
       });
 
-      expect(v2.version).toBe(2);
-      expect(v2.isLatest).toBe(true);
+      expect(v2).not.toBeNull();
+      expect(v2!.version).toBe(1);
+      expect(v2!.isLatest).toBe(true);
 
-      // Verify v1 is no longer latest
-      const v1Updated = await artifactsService.findByIdSimple(v1.id, testOrgId);
-      expect(v1Updated?.isLatest).toBe(false);
+      // Both artifacts exist independently
+      const v1Unchanged = await artifactsService.findByIdSimple(
+        v1!.id,
+        testOrgId
+      );
+      expect(v1Unchanged?.isLatest).toBe(true);
     });
   });
 
-  it("duplicates artifact with correct versioning", async () => {
+  it("createNewVersion creates linked version of artifact", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
       // Create original artifact
-      const original = await artifactsService.create(testOrgId, {
+      const original = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
         type: "IMPLEMENTATION_PLAN",
         title: "Original Plan",
-        fileName: "plan.md",
-        documentSlug: "plan",
-        content: "Original content",
+        content: "# Original Content\n\nOriginal implementation details",
         status: "APPROVED",
       });
 
-      expect(original.version).toBe(1);
-      expect(original.isLatest).toBe(true);
+      expect(original).not.toBeNull();
 
-      // Duplicate the artifact
-      const duplicate = await artifactsService.duplicate(
-        original.id,
-        testOrgId
+      // Create new version with updated content
+      const newVersion = await artifactsService.createNewVersion(
+        original!.id,
+        testOrgId,
+        "# Updated Content\n\nUpdated implementation details"
       );
 
-      // Verify duplicate has correct properties
-      expect(duplicate.version).toBe(2);
-      expect(duplicate.isLatest).toBe(true);
-      expect(duplicate.title).toBe("Original Plan (Copy)");
-      expect(duplicate.fileName).toBe("plan-copy.md");
-      expect(duplicate.documentSlug).toBe("plan"); // Same slug = same version group
-      expect(duplicate.content).toBe("Original content");
-      expect(duplicate.status).toBe("DRAFT"); // Status reset to DRAFT
-      expect(duplicate.projectId).toBe(original.projectId);
+      expect(newVersion).toBeDefined();
+      expect(newVersion.version).toBe(2); // Versioned via createArtifactVersion
+      expect(newVersion.isLatest).toBe(true);
+      expect(newVersion.content).toBe(
+        "# Updated Content\n\nUpdated implementation details"
+      );
+      expect(newVersion.title).toBe(original!.title);
+      expect(newVersion.projectId).toBe(original!.projectId);
+      expect(newVersion.type).toBe(original!.type);
 
-      // Verify original is no longer latest
-      const originalUpdated = await artifactsService.findByIdSimple(
-        original.id,
+      // Original should still exist and be marked as not latest
+      const originalAfter = await artifactsService.findByIdSimple(
+        original!.id,
         testOrgId
       );
-      expect(originalUpdated?.isLatest).toBe(false);
+      expect(originalAfter).not.toBeNull();
+      expect(originalAfter!.isLatest).toBe(false);
     });
   });
 
-  it("duplicate throws error when artifact not found", async () => {
-    const testOrgId = await autoRollbackTransaction(() =>
-      createTestOrganization()
-    );
+  it("findOrCreateWorkstream finds existing workstream", async () => {
+    await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
+      const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
 
-    // Try to duplicate non-existent artifact - should throw error
-    await expect(
-      artifactsService.duplicate("non-existent-id", testOrgId)
-    ).rejects.toThrow();
+      // Create a workstream manually
+      const workstream = await withDb((db) =>
+        db.workstream.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            title: "Test Workstream",
+            description: "Test description",
+            createdById: testUserId,
+          },
+        })
+      );
+
+      // Create PRD artifact linked to workstream
+      const prd = await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            workstreamId: workstream.id,
+            type: "PRD",
+            title: "Feature PRD",
+            content: "PRD content here",
+            version: 1,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Create implementation plan linked to same workstream
+      const plan = await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            workstreamId: workstream.id,
+            type: "IMPLEMENTATION_PLAN",
+            title: "Implementation Plan: Feature PRD",
+            content: "Plan content",
+            version: 1,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Fetch plan with workstream context
+      const planWithContext = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id: plan.id },
+          include: {
+            workstream: {
+              include: {
+                project: {
+                  include: {
+                    repositories: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+      );
+
+      // Find or create workstream should return existing
+      const result = await artifactsService.findOrCreateWorkstream(
+        testOrgId,
+        planWithContext as any,
+        testUserId
+      );
+
+      expect(result.workstream).not.toBeNull();
+      expect(result.workstream?.id).toBe(workstream.id);
+      expect(result.prdArtifact).not.toBeNull();
+      expect(result.prdArtifact?.id).toBe(prd.id);
+    });
+  });
+
+  it("findOrCreateWorkstream creates workstream from PRD title match", async () => {
+    await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
+      const testProjectId = await createTestProject(testOrgId);
+      const testUserId = uuidv7();
+
+      // Create PRD artifact (no workstream)
+      const prd = await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "PRD",
+            title: "User Authentication",
+            content: "PRD content for auth feature",
+            version: 1,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Create plan without workstream, but with title matching PRD
+      const plan = await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "IMPLEMENTATION_PLAN",
+            title: "Implementation Plan: User Authentication",
+            content: "Implementation details",
+            version: 1,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Call findOrCreateWorkstream
+      const result = await artifactsService.findOrCreateWorkstream(
+        testOrgId,
+        {
+          id: plan.id,
+          title: plan.title,
+          projectId: plan.projectId,
+          parentId: null,
+          workstream: null,
+        } as any,
+        testUserId
+      );
+
+      // Should auto-create workstream and link artifacts
+      expect(result.workstream).not.toBeNull();
+      expect(result.prdArtifact).not.toBeNull();
+      expect(result.prdArtifact?.id).toBe(prd.id);
+
+      // Verify artifacts were linked to new workstream
+      const updatedPlan = await withDb((db) =>
+        db.artifact.findUnique({ where: { id: plan.id } })
+      );
+      const updatedPrd = await withDb((db) =>
+        db.artifact.findUnique({ where: { id: prd.id } })
+      );
+
+      expect(updatedPlan?.workstreamId).toBe(result.workstream?.id);
+      expect(updatedPrd?.workstreamId).toBe(result.workstream?.id);
+    });
   });
 });

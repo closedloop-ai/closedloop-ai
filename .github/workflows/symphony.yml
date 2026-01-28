@@ -149,7 +149,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -322,7 +322,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -360,7 +360,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           prompt: |
             /symphony-core:plan --existing-run ${{ steps.download.outputs.run_dir }}
           claude_args: |
@@ -534,7 +534,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -804,7 +804,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
@@ -848,7 +848,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           prompt: |
             Read the conversation JSON at ${{ runner.temp }}/amend-conversation.json and write a human-readable summary of what was accomplished to ${{ runner.temp }}/amend-response.md.
 
@@ -932,7 +932,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           github_token: ${{ steps.token.outputs.token }}
           show_full_output: true
-          allowed_bots: symphony-cl
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
