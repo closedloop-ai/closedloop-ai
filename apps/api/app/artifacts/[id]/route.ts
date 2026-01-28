@@ -35,16 +35,6 @@ export const PUT = withAuth<Artifact, "/artifacts/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
-
-      const existing = await artifactsService.findByIdSimple(
-        id,
-        user.organizationId
-      );
-
-      if (!existing) {
-        return notFoundResponse("Artifact");
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         updateArtifactValidator

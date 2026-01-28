@@ -1,37 +1,27 @@
 import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
+  badRequestResponse,
   errorResponse,
-  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
 import { artifactsService } from "../../../artifacts/service";
 import { createArtifactValidator } from "../../../artifacts/validators";
-import { workstreamsService } from "../../service";
 
 export const GET = withAuth<Artifact[], "/workstreams/[id]/artifacts">(
   async ({ user }, request, params) => {
     try {
       const { id: workstreamId } = await params;
 
-      const workstream = await workstreamsService.findById(
-        workstreamId,
-        user.organizationId
-      );
-
-      if (!workstream) {
-        return notFoundResponse("Workstream");
-      }
-
-      const { searchParams } = new URL(request.url);
-      const type = searchParams.get("type");
+      const searchParams = request.nextUrl.searchParams;
+      const type = (searchParams.get("type") as ArtifactType) ?? undefined;
       const latestOnly = searchParams.get("latestOnly") === "true";
 
-      const artifacts = await artifactsService.findByWorkstream({
+      const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
         workstreamId,
-        type: type as ArtifactType | undefined,
+        type,
         latestOnly,
       });
 
@@ -46,16 +36,6 @@ export const POST = withAuth<Artifact, "/workstreams/[id]/artifacts">(
   async ({ user }, request, params) => {
     try {
       const { id: workstreamId } = await params;
-
-      const workstream = await workstreamsService.findById(
-        workstreamId,
-        user.organizationId
-      );
-
-      if (!workstream) {
-        return notFoundResponse("Workstream");
-      }
-
       const { body, errorResponse: parseError } = await parseBody(
         request,
         createArtifactValidator
@@ -64,11 +44,12 @@ export const POST = withAuth<Artifact, "/workstreams/[id]/artifacts">(
         return parseError;
       }
 
-      const artifact = await artifactsService.createForWorkstream(
-        user.organizationId,
-        workstreamId,
-        body
-      );
+      body.workstreamId = workstreamId;
+
+      const artifact = await artifactsService.create(user.organizationId, body);
+      if (!artifact) {
+        return badRequestResponse("Failed to create artifact");
+      }
 
       return successResponse(artifact);
     } catch (error) {

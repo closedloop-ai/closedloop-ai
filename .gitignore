@@ -270,6 +270,8 @@ $RECYCLE.BIN/
 
 # .Claude Runs
 .claude/runs
+.claude/plan-memory
+
 
 # Database
 packages/database/generated

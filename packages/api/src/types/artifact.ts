@@ -84,6 +84,14 @@ export type ArtifactWithWorkstream = Artifact & {
   } | null;
 };
 
+export type FindArtifactsOptions = {
+  type?: ArtifactType;
+  latestOnly?: boolean;
+  workstreamId?: string;
+  projectId?: string;
+  documentSlug?: string;
+};
+
 export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
@@ -95,8 +103,6 @@ export type CreateArtifactInput = {
   status?: ArtifactStatus;
   content?: string;
   externalUrl?: string;
-  generatedBy?: string;
-  documentSlug?: string;
   targetRepo?: string;
   targetBranch?: string;
 };
