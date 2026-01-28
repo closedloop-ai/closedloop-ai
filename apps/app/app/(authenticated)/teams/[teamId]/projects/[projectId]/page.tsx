@@ -88,6 +88,7 @@ export default function ProjectDetailPage() {
     () =>
       artifactsData.map((artifact) => ({
         id: artifact.id,
+        documentSlug: artifact.documentSlug,
         name: artifact.title,
         type: artifact.type as ProjectArtifactType,
         status: mapArtifactStatusToDisplay(artifact.status),

@@ -240,7 +240,7 @@ export function NewPlanModal({
         onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/implementation-plans/${artifact.id}`);
+          router.push(`/implementation-plans/${artifact.documentSlug}`);
         },
       }
     );

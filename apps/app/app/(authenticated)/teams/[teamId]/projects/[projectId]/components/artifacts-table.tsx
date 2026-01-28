@@ -49,14 +49,16 @@ type ArtifactsTableProps = {
 
 /**
  * Get the route to navigate to for viewing/editing an artifact
- * PRDs and Implementation Plans link to their existing editor pages
+ * PRDs and Implementation Plans link to their existing editor pages using documentSlug
  */
 function getArtifactRoute(artifact: ProjectArtifact): string | null {
   switch (artifact.type) {
     case "PRD":
-      return `/prds/${artifact.id}`;
+      return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
     case "IMPLEMENTATION_PLAN":
-      return `/implementation-plans/${artifact.id}`;
+      return artifact.documentSlug
+        ? `/implementation-plans/${artifact.documentSlug}`
+        : null;
     case "DESIGNS":
       return artifact.link || null;
     default:

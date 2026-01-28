@@ -76,7 +76,7 @@ export function PRDTable() {
   const { data: prds = [], isLoading, error } = useArtifactsByType("PRD");
 
   const handleRowClick = (prd: ArtifactWithWorkstream) => {
-    router.push(`/prds/${prd.id}`);
+    router.push(`/prds/${prd.documentSlug}`);
   };
 
   if (isLoading) {

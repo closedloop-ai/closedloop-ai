@@ -39,9 +39,17 @@ import { usePlanEditor } from "./use-plan-editor";
 
 type PlanEditorProps = {
   plan: ArtifactWithWorkstream;
+  currentVersion: number;
+  latestVersion: number;
+  onVersionChange: (version: number) => void;
 };
 
-export function PlanEditor({ plan }: PlanEditorProps) {
+export function PlanEditor({
+  plan,
+  currentVersion,
+  latestVersion,
+  onVersionChange,
+}: PlanEditorProps) {
   const {
     isPending,
     content,
@@ -101,8 +109,9 @@ export function PlanEditor({ plan }: PlanEditorProps) {
           <div className="flex items-center gap-2">
             <span className="font-medium">{plan.title}</span>
             <VersionSelector
-              artifactId={plan.id}
-              currentVersion={plan.version}
+              currentVersion={currentVersion}
+              latestVersion={latestVersion}
+              onVersionChange={onVersionChange}
             />
             <ArtifactStatusBadge status={status} />
           </div>

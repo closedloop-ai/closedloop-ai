@@ -45,8 +45,8 @@ export function NewPRDModal() {
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat(".md");
       setFileName(generatedFileName);
     }
@@ -86,7 +86,7 @@ export function NewPRDModal() {
         onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/prds/${artifact.id}`);
+          router.push(`/prds/${artifact.documentSlug}`);
         },
       }
     );

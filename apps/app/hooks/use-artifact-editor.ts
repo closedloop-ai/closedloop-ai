@@ -13,7 +13,6 @@ import {
   useArtifactPullRequest,
   useCreateNewVersion,
   useDeleteArtifact,
-  useDuplicateArtifact,
   useExecuteImplementationPlan,
   useRegenerateArtifact,
   useRequestPlanChanges,
@@ -45,7 +44,6 @@ function useArtifactEditorInternal(config: BaseConfig) {
   const createNewVersion = useCreateNewVersion();
   const updateArtifact = useUpdateArtifact();
   const deleteArtifact = useDeleteArtifact();
-  const duplicateArtifact = useDuplicateArtifact();
   const regenerateArtifact = useRegenerateArtifact();
   const requestPlanChanges = useRequestPlanChanges();
   const executeImplementationPlan = useExecuteImplementationPlan();
@@ -89,7 +87,6 @@ function useArtifactEditorInternal(config: BaseConfig) {
   const isPending =
     updateArtifact.isPending ||
     deleteArtifact.isPending ||
-    duplicateArtifact.isPending ||
     regenerateArtifact.isPending ||
     executeImplementationPlan.isPending;
 
@@ -118,14 +115,12 @@ function useArtifactEditorInternal(config: BaseConfig) {
     createNewVersion.mutate(
       { id: artifact.id, content },
       {
-        onSuccess: (newArtifact) => {
+        onSuccess: () => {
           toast.success("New version created");
-          // Navigate to the new version
-          router.push(`${redirectPath}/${newArtifact.id}`);
         },
       }
     );
-  }, [artifact.id, content, createNewVersion, redirectPath, router]);
+  }, [artifact.id, content, createNewVersion]);
 
   // ============================================
   // Metadata Handlers (updates current record)
@@ -204,14 +199,6 @@ function useArtifactEditorInternal(config: BaseConfig) {
     [handleMetadataUpdate]
   );
 
-  const handleDuplicate = useCallback(() => {
-    duplicateArtifact.mutate(artifact.id, {
-      onSuccess: (newArtifact) => {
-        router.push(`${redirectPath}/${newArtifact.id}`);
-      },
-    });
-  }, [artifact.id, duplicateArtifact, redirectPath, router]);
-
   const handleDelete = useCallback(() => {
     deleteArtifact.mutate(artifact.id, {
       onSuccess: () => {
@@ -269,18 +256,19 @@ function useArtifactEditorInternal(config: BaseConfig) {
         .mutateAsync(
           { artifactId: artifact.id, changes },
           {
-            onSuccess: (result) => {
+            onSuccess: () => {
               setShowRequestChangesModal(false);
               toast.success(
                 "Change request submitted - generating updated plan..."
               );
-              router.push(`${redirectPath}/${result.artifactId}`);
+              // No navigation needed - the slug stays the same and the query
+              // will be invalidated to fetch the new version
             },
           }
         )
         .then((result) => result.success)
         .catch(() => false),
-    [artifact.id, requestPlanChanges, redirectPath, router]
+    [artifact.id, requestPlanChanges]
   );
 
   const handleExecute = useCallback(() => {
@@ -334,7 +322,6 @@ function useArtifactEditorInternal(config: BaseConfig) {
     handleTargetBranchChange,
     handleTargetBranchBlur,
     handleRename,
-    handleDuplicate,
     handleExport: handleDownloadMarkdown,
 
     // Plan-specific state

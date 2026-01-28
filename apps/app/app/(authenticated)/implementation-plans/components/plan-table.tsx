@@ -13,7 +13,6 @@ import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { PlanRowActions } from "./plan-row-actions";
-import { VersionSelector } from "./version-selector";
 
 const columns: Column<ArtifactWithWorkstream>[] = [
   {
@@ -25,11 +24,7 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     key: "version",
     header: "Version",
     render: (plan) => (
-      <VersionSelector
-        artifactId={plan.id}
-        compact={true}
-        currentVersion={plan.version}
-      />
+      <span className="font-mono text-sm">v{plan.version}</span>
     ),
   },
   {
@@ -80,7 +75,7 @@ export function PlanTable() {
   } = useArtifactsByType("IMPLEMENTATION_PLAN");
 
   const handleRowClick = (plan: ArtifactWithWorkstream) => {
-    router.push(`/implementation-plans/${plan.id}`);
+    router.push(`/implementation-plans/${plan.documentSlug}`);
   };
 
   if (isLoading) {
