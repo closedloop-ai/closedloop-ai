@@ -58,8 +58,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: write
@@ -277,8 +277,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: read
@@ -454,8 +454,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: write
@@ -711,8 +711,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: write
