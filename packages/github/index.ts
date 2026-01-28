@@ -20,7 +20,7 @@ function getConfig() {
 // Lazy dispatch repo parser
 function getDispatchRepo() {
   const config = getConfig();
-  return config.SYMPHONY_DISPATCH_REPO.split("/") as [string, string];
+  return config.GITHUB_APP_DISPATCH_REPO.split("/") as [string, string];
 }
 
 /**
@@ -32,16 +32,16 @@ async function getAuthenticatedOctokit(): Promise<Octokit> {
   const [dispatchOwner, dispatchRepo] = getDispatchRepo();
 
   const auth = createAppAuth({
-    appId: config.SYMPHONY_APP_ID,
-    privateKey: config.SYMPHONY_APP_PRIVATE_KEY,
+    appId: config.GITHUB_APP_ID,
+    privateKey: config.GITHUB_APP_PRIVATE_KEY,
   });
 
   // Get installation ID for the dispatch repo
   const appOctokit = new Octokit({
     authStrategy: createAppAuth,
     auth: {
-      appId: config.SYMPHONY_APP_ID,
-      privateKey: config.SYMPHONY_APP_PRIVATE_KEY,
+      appId: config.GITHUB_APP_ID,
+      privateKey: config.GITHUB_APP_PRIVATE_KEY,
     },
   });
 
@@ -150,7 +150,10 @@ export function verifyWebhookSignature(
   }
 
   const config = getConfig();
-  const expectedSignature = createHmac("sha256", config.GITHUB_WEBHOOK_SECRET)
+  const expectedSignature = createHmac(
+    "sha256",
+    config.GITHUB_APP_WEBHOOK_SECRET
+  )
     .update(payload)
     .digest("hex");
 

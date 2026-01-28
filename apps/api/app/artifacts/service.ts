@@ -1226,10 +1226,10 @@ function toArtifactWithWorkstream(
 
 function isGitHubConfigured(): boolean {
   return Boolean(
-    process.env.SYMPHONY_APP_ID &&
-      process.env.SYMPHONY_APP_PRIVATE_KEY &&
-      process.env.GITHUB_WEBHOOK_SECRET &&
-      process.env.SYMPHONY_DISPATCH_REPO
+    process.env.GITHUB_APP_ID &&
+      process.env.GITHUB_APP_PRIVATE_KEY &&
+      process.env.GITHUB_APP_WEBHOOK_SECRET &&
+      process.env.GITHUB_APP_DISPATCH_REPO
   );
 }
 
@@ -1296,10 +1296,10 @@ This implementation plan outlines the technical approach for ${title}.
 
 GitHub Actions integration is not configured. This is placeholder content.
 Configure the following environment variables to enable plan generation:
-- SYMPHONY_APP_ID
-- SYMPHONY_APP_PRIVATE_KEY
-- GITHUB_WEBHOOK_SECRET
-- SYMPHONY_DISPATCH_REPO
+- GITHUB_APP_ID
+- GITHUB_APP_PRIVATE_KEY
+- GITHUB_APP_WEBHOOK_SECRET
+- GITHUB_APP_DISPATCH_REPO
 - WEBAPP_ENV
 `;
 }
