@@ -1,44 +1,26 @@
 import { createId } from "@paralleldrive/cuid2";
-import type {
-  Artifact,
+import {
+  type Artifact,
   ArtifactType,
-  ArtifactWithWorkstream,
-  CreateArtifactInput,
-  PullRequestInfo,
-  UpdateArtifactInput,
+  type ArtifactWithWorkstream,
+  type CreateArtifactInput,
+  type FindArtifactsOptions,
+  type PullRequestInfo,
+  type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
-  buildArtifactScopeCondition,
   createArtifactVersion,
   generateDocumentSlug,
-  getOrCreateDefaultProject,
-  prepareArtifactVersion,
 } from "./artifact-utils";
 
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type FindArtifactsOptions = {
-  organizationId: string;
-  type?: ArtifactType;
-  latestOnly?: boolean;
-  workstreamId?: string;
-  projectId?: string;
-  documentSlug?: string;
-};
-
-export type FindWorkstreamArtifactsOptions = {
-  organizationId: string;
-  workstreamId: string;
-  type?: ArtifactType;
-  latestOnly?: boolean;
-};
 
 /**
  * Artifacts service - handles database operations for artifact management
@@ -48,7 +30,7 @@ export const artifactsService = {
    * Find all artifacts with optional filters (org-scoped)
    */
   async findAll(
-    options: FindArtifactsOptions
+    options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
     const {
       organizationId,
@@ -57,7 +39,19 @@ export const artifactsService = {
       workstreamId,
       projectId,
       documentSlug,
+      version,
     } = options;
+
+    // Build version filter: specific version takes precedence over latestOnly
+    function getVersionFilter() {
+      if (version !== undefined) {
+        return { version };
+      }
+      if (latestOnly) {
+        return { isLatest: true };
+      }
+      return {};
+    }
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -65,38 +59,16 @@ export const artifactsService = {
           organizationId,
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
-          ...(type ? { type } : {}),
-          ...(latestOnly ? { isLatest: true } : {}),
           ...(documentSlug ? { documentSlug } : {}),
+          ...(type ? { type } : {}),
+          ...getVersionFilter(),
         },
         include: artifactIncludeWithContext,
         orderBy: { createdAt: "desc" },
       })
     );
-    return artifacts.map((a) =>
-      toArtifactWithWorkstream(a as RawArtifactWithContext)
-    );
-  },
 
-  /**
-   * Find artifacts for a specific workstream
-   */
-  findByWorkstream(
-    options: FindWorkstreamArtifactsOptions
-  ): Promise<Artifact[]> {
-    const { organizationId, workstreamId, type, latestOnly = false } = options;
-
-    return withDb((db) =>
-      db.artifact.findMany({
-        where: {
-          organizationId,
-          workstreamId,
-          ...(type ? { type } : {}),
-          ...(latestOnly ? { isLatest: true } : {}),
-        },
-        orderBy: { createdAt: "desc" },
-      })
-    );
+    return artifacts.map((a) => toArtifactWithWorkstream(a));
   },
 
   /**
@@ -117,7 +89,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact as RawArtifactWithContext);
+    return toArtifactWithWorkstream(artifact);
   },
 
   /**
@@ -182,90 +154,39 @@ export const artifactsService = {
    */
   create(
     organizationId: string,
+    userId: string,
     input: CreateArtifactInput
-  ): Promise<Artifact> {
+  ): Promise<Artifact | null> {
+    // This should never happen, but we'll handle it anyway.
+    if (!(input.projectId || input.workstreamId)) {
+      return Promise.resolve(null);
+    }
+
     return withDb.tx(async (tx) => {
-      // Ensure projectId is always set for proper org-scoped queries
-      let projectId: string | undefined = input.projectId;
-      if (!projectId && input.workstreamId) {
-        // Get projectId from workstream
+      if (!input.projectId) {
         const workstream = await tx.workstream.findUnique({
           where: { id: input.workstreamId, organizationId },
-          select: { projectId: true },
         });
-        projectId = workstream?.projectId;
-      }
-      if (!projectId) {
-        // Auto-create default project if still no projectId
-        projectId = await getOrCreateDefaultProject(tx, organizationId);
+        if (!workstream) {
+          return null;
+        }
+        input.projectId = workstream.projectId;
       }
 
-      // Auto-generate documentSlug if not provided (required for versioning)
       const documentSlug =
-        input.documentSlug ?? generateDocumentSlug(input.fileName, input.title);
-
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        organizationId,
-        workstreamId: input.workstreamId,
-        projectId,
-        type: input.type,
-        documentSlug,
-      });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
+        input.type === ArtifactType.Prd ||
+        input.type === ArtifactType.ImplementationPlan
+          ? generateDocumentSlug()
+          : null;
 
       return tx.artifact.create({
         data: {
           ...input,
           organizationId,
-          projectId,
           documentSlug,
-          version: nextVersion,
+          version: 1,
           isLatest: true,
-        },
-      });
-    });
-  },
-
-  /**
-   * Create an artifact for a workstream (handles versioning)
-   */
-  createForWorkstream(
-    organizationId: string,
-    workstreamId: string,
-    input: Omit<CreateArtifactInput, "workstreamId" | "projectId">
-  ): Promise<Artifact> {
-    return withDb.tx(async (tx) => {
-      // Get projectId from workstream for proper org-scoped queries
-      const workstream = await tx.workstream.findUnique({
-        where: { id: workstreamId, organizationId },
-        select: { projectId: true },
-      });
-      const projectId = workstream?.projectId;
-
-      // Auto-generate documentSlug if not provided (required for versioning)
-      const documentSlug =
-        input.documentSlug ?? generateDocumentSlug(input.fileName, input.title);
-
-      // Build scope and get next version (marks existing as not latest)
-      const scopeCondition = buildArtifactScopeCondition({
-        organizationId,
-        workstreamId,
-        projectId,
-        type: input.type,
-        documentSlug,
-      });
-      const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
-
-      return tx.artifact.create({
-        data: {
-          ...input,
-          organizationId,
-          workstreamId,
-          projectId,
-          documentSlug,
-          version: nextVersion,
-          isLatest: true,
+          generatedBy: userId,
         },
       });
     });
@@ -590,30 +511,6 @@ ${initialInstructions.trim()}`;
     }
 
     return withDb.tx((tx) => createArtifactVersion(tx, original, { content }));
-  },
-
-  /**
-   * Duplicate an artifact (creates new version with "(Copy)" suffix)
-   */
-  async duplicate(id: string, organizationId: string): Promise<Artifact> {
-    const original = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id, organizationId },
-      })
-    );
-
-    if (!original) {
-      throw new ArtifactNotFoundError();
-    }
-
-    return withDb.tx((tx) =>
-      createArtifactVersion(tx, original, {
-        title: `${original.title} (Copy)`,
-        fileName: original.fileName
-          ? original.fileName.replace(".md", "-copy.md")
-          : null,
-      })
-    );
   },
 
   /**

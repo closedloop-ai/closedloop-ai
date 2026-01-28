@@ -1,0 +1,161 @@
+import { v7 as uuidv7 } from "uuid";
+import { vi } from "vitest";
+import { POST } from "@/app/artifacts/[id]/regenerate/route";
+import { artifactsService } from "@/app/artifacts/service";
+import type { AuthContext } from "@/lib/auth/with-auth";
+import {
+  createMockRequest,
+  createMockRouteContext,
+  createTestAuthContext,
+} from "../utils/auth-helpers";
+
+let mockAuthContext: AuthContext = {
+  user: { id: "test-user", organizationId: "test-org" } as any,
+  clerkUserId: "clerk_test",
+  clerkOrgId: "org_test",
+};
+
+vi.mock("@/lib/auth/with-auth", () => ({
+  withAuth: (handler: any) => async (request: any, context: any) =>
+    handler(mockAuthContext, request, context.params),
+}));
+vi.mock("@/app/artifacts/service");
+
+describe("POST /api/artifacts/[id]/regenerate", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    mockAuthContext = createTestAuthContext({
+      user: { id: "user-123", organizationId: "org-123" } as any,
+    });
+  });
+
+  it("regenerates implementation plan successfully", async () => {
+    const artifactId = uuidv7();
+    const mockArtifact = {
+      id: artifactId,
+      title: "Implementation Plan",
+      type: "IMPLEMENTATION_PLAN",
+      status: "DRAFT",
+    };
+
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: true,
+      artifact: mockArtifact as any,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: artifactId });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual(mockArtifact);
+    expect(artifactsService.regenerateImplementationPlan).toHaveBeenCalledWith(
+      artifactId,
+      "org-123",
+      "user-123"
+    );
+  });
+
+  it("returns 404 when artifact not found", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: false,
+      error: "Artifact not found",
+      status: 404,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(404);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Artifact not found");
+  });
+
+  it("returns 400 when artifact is not an implementation plan", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: false,
+      error: "Only implementation plans can be regenerated",
+      status: 400,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Only implementation plans can be regenerated");
+  });
+
+  it("returns 400 when PRD is missing", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: false,
+      error: "PRD not found or missing content",
+      status: 400,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("PRD not found or missing content");
+  });
+
+  it("returns 400 when repository is not configured", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: false,
+      error: "No repository configured for project",
+      status: 400,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("No repository configured for project");
+  });
+
+  it("returns 409 when workflow is already running", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
+      success: false,
+      error: "Regeneration already in progress",
+      status: 409,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(409);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Regeneration already in progress");
+  });
+
+  it("returns 500 on service exception", async () => {
+    vi.mocked(artifactsService.regenerateImplementationPlan).mockRejectedValue(
+      new Error("GitHub API timeout")
+    );
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBeDefined();
+  });
+});

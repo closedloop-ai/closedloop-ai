@@ -1,5 +1,4 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
-import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
@@ -9,10 +8,7 @@ import {
 } from "@/lib/route-utils";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
-
-const newVersionValidator = z.object({
-  content: z.string(),
-});
+import { newVersionValidator } from "../../validators";
 
 export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
   async ({ user }, request, params) => {

@@ -1,5 +1,6 @@
 import type { Artifact, ArtifactType } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
+import { nanoid } from "nanoid";
 
 /**
  * Typed error for artifact not found - maps to 404 HTTP status.
@@ -67,58 +68,11 @@ export async function createArtifactVersion(
   });
 }
 
-// Regex patterns for slug generation (top-level for performance)
-const MD_EXTENSION_REGEX = /\.md$/;
-const NON_ALPHANUMERIC_REGEX = /[^a-z0-9]+/g;
-const TRIM_HYPHENS_REGEX = /^-+|-+$/g;
-
 /**
- * Generate a document slug from fileName or title.
- * Used to uniquely identify a document for versioning purposes.
+ * Generates a unique slug that can be used to identify a document artifact across versions.
  */
-export function generateDocumentSlug(
-  fileName?: string | null,
-  title?: string | null
-): string | null {
-  const source = fileName || title;
-  if (!source) {
-    return null;
-  }
-
-  return source
-    .toLowerCase()
-    .replace(MD_EXTENSION_REGEX, "")
-    .replaceAll(NON_ALPHANUMERIC_REGEX, "-")
-    .replaceAll(TRIM_HYPHENS_REGEX, "");
-}
-
-/**
- * Get or create a default project for standalone artifacts in the user's organization.
- */
-export async function getOrCreateDefaultProject(
-  tx: TransactionClient,
-  organizationId: string
-): Promise<string> {
-  const DEFAULT_PROJECT_NAME = "Default Project";
-
-  // Try to find existing default project in user's org
-  let project = await tx.project.findFirst({
-    where: {
-      organizationId,
-      name: DEFAULT_PROJECT_NAME,
-    },
-  });
-
-  // Create default project if it doesn't exist
-  project ??= await tx.project.create({
-    data: {
-      organizationId,
-      name: DEFAULT_PROJECT_NAME,
-      description: "Default project for standalone PRDs and artifacts",
-    },
-  });
-
-  return project.id;
+export function generateDocumentSlug(): string {
+  return nanoid(14);
 }
 
 /**
@@ -160,13 +114,13 @@ export function buildArtifactScopeCondition(params: {
   organizationId: string;
   workstreamId?: string | null;
   projectId?: string | null;
-  type: ArtifactType;
+  type?: ArtifactType;
   documentSlug?: string | null;
 }): {
   organizationId: string;
   workstreamId?: string;
   projectId?: string;
-  type: ArtifactType;
+  type?: ArtifactType;
   documentSlug: string | null;
 } {
   return {
@@ -175,7 +129,7 @@ export function buildArtifactScopeCondition(params: {
     ...(!params.workstreamId && params.projectId
       ? { projectId: params.projectId }
       : {}),
-    type: params.type,
+    ...(params.type ? { type: params.type } : {}),
     documentSlug: params.documentSlug ?? null,
   };
 }

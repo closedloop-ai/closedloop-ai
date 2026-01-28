@@ -9,7 +9,8 @@
           "options": {
             "style": "type"
           }
-        }
+        },
+        "noNonNullAssertion": "off"
       },
       "suspicious": {
         "noEmptyBlockStatements": "off"
