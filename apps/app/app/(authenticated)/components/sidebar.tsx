@@ -20,12 +20,10 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import {
-  ClipboardListIcon,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
   LightbulbIcon,
-  ScrollTextIcon,
   SendIcon,
   SettingsIcon,
   UsersIcon,
@@ -45,13 +43,12 @@ const data = {
     email: "m@example.com",
     avatar: "/avatars/shadcn.jpg",
   },
-  // Workspace section - matches the design
   workspace: [
     {
       title: "Inbox",
       url: "/inbox",
       icon: InboxIcon,
-      badge: 1, // notification count
+      badge: 1,
       disabled: true,
     },
     {
@@ -65,18 +62,6 @@ const data = {
       url: "/my-documents",
       icon: FileTextIcon,
       disabled: true,
-    },
-    {
-      title: "PRD Library",
-      url: "/prds",
-      icon: ScrollTextIcon,
-      disabled: false,
-    },
-    {
-      title: "Implementation Plans",
-      url: "/implementation-plans",
-      icon: ClipboardListIcon,
-      disabled: false,
     },
     {
       title: "Members",
@@ -107,9 +92,8 @@ const data = {
   ],
 };
 
-export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
+export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const sidebar = useSidebar();
-  // Prevent hydration mismatch from Clerk UserButton by only rendering after mount
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -132,10 +116,6 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         </SidebarHeader>
         <Search />
         <SidebarContent>
-          {/* Your Teams Section */}
-          <SidebarTeams />
-
-          {/* Workspace Section */}
           <SidebarGroup>
             <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
@@ -177,7 +157,8 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
             </SidebarMenu>
           </SidebarGroup>
 
-          {/* Secondary Navigation (pushed to bottom) */}
+          <SidebarTeams />
+
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
               <SidebarMenu>
@@ -224,7 +205,7 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
                   showName
                 />
               ) : (
-                <div className="h-8 w-full" /> // Placeholder during SSR
+                <div className="h-8 w-full" />
               )}
               <div className="flex shrink-0 items-center gap-px">
                 <ModeToggle />
@@ -246,4 +227,4 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
       <SidebarInset>{children}</SidebarInset>
     </>
   );
-};
+}

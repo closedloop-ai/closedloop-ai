@@ -288,3 +288,4 @@ packages/database/generated
 .source
 # Claude Code
 .claude/.token-stats/
+.claude/work/
