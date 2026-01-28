@@ -3,6 +3,8 @@
 import {
   ArtifactStatus,
   type ArtifactWithWorkstream,
+  type GenerationStatus,
+  type PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
@@ -14,16 +16,6 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
-import type { PullRequestInfo } from "@/hooks/queries/use-artifacts";
-
-type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-};
 import { artifactStatusLabels } from "@/components/status-badge";
 
 const PR_STATE_STYLES: Record<string, string> = {

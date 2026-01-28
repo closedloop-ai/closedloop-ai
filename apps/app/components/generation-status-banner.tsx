@@ -1,18 +1,10 @@
 "use client";
 
+import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
-
-type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-};
 
 type GenerationStatusBannerProps = {
   artifactId: string;
@@ -143,7 +135,9 @@ export function GenerationStatusBanner({
         ) : (
           <XCircleIcon className="h-4 w-4" />
         )}
-        <span>{getStatusMessage(generationStatus.status, generationStatus.command)}</span>
+        <span>
+          {getStatusMessage(generationStatus.status, generationStatus.command)}
+        </span>
       </div>
 
       {generationStatus.htmlUrl ? (
