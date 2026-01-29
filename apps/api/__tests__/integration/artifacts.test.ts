@@ -283,4 +283,143 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       expect(updatedPrd?.workstreamId).toBe(result.workstream?.id);
     });
   });
+
+  it("findAll filters by documentSlug and returns all versions", async () => {
+    await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
+      const testProjectId = await createTestProject(testOrgId);
+      const documentSlug = "my-feature-prd";
+
+      // Create v1 (not latest)
+      await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "PRD",
+            title: "My Feature PRD",
+            documentSlug,
+            content: "Version 1 content",
+            version: 1,
+            isLatest: false,
+          },
+        })
+      );
+
+      // Create v2 (latest)
+      await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "PRD",
+            title: "My Feature PRD",
+            documentSlug,
+            content: "Version 2 content",
+            version: 2,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Find all versions by documentSlug
+      const allVersions = await artifactsService.findAll({
+        organizationId: testOrgId,
+        documentSlug,
+        latestOnly: false,
+      });
+
+      expect(allVersions).toHaveLength(2);
+      expect(allVersions.map((a) => a.version).sort((a, b) => a - b)).toEqual([
+        1, 2,
+      ]);
+    });
+  });
+
+  it("findAll filters by documentSlug and specific version", async () => {
+    await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
+      const testProjectId = await createTestProject(testOrgId);
+      const documentSlug = "versioned-plan";
+
+      // Create multiple versions
+      for (let version = 1; version <= 3; version++) {
+        await withDb((db) =>
+          db.artifact.create({
+            data: {
+              organizationId: testOrgId,
+              projectId: testProjectId,
+              type: "IMPLEMENTATION_PLAN",
+              title: "Versioned Plan",
+              documentSlug,
+              content: `Version ${version} content`,
+              version,
+              isLatest: version === 3,
+            },
+          })
+        );
+      }
+
+      // Find specific version
+      const v2Only = await artifactsService.findAll({
+        organizationId: testOrgId,
+        documentSlug,
+        version: 2,
+      });
+
+      expect(v2Only).toHaveLength(1);
+      expect(v2Only[0].version).toBe(2);
+      expect(v2Only[0].content).toBe("Version 2 content");
+    });
+  });
+
+  it("findAll with latestOnly returns only latest version for documentSlug", async () => {
+    await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
+      const testProjectId = await createTestProject(testOrgId);
+      const documentSlug = "latest-only-test";
+
+      // Create v1 and v2
+      await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "PRD",
+            title: "Latest Only Test",
+            documentSlug,
+            content: "Old content",
+            version: 1,
+            isLatest: false,
+          },
+        })
+      );
+
+      await withDb((db) =>
+        db.artifact.create({
+          data: {
+            organizationId: testOrgId,
+            projectId: testProjectId,
+            type: "PRD",
+            title: "Latest Only Test",
+            documentSlug,
+            content: "Latest content",
+            version: 2,
+            isLatest: true,
+          },
+        })
+      );
+
+      // Find with latestOnly
+      const latestOnly = await artifactsService.findAll({
+        organizationId: testOrgId,
+        documentSlug,
+        latestOnly: true,
+      });
+
+      expect(latestOnly).toHaveLength(1);
+      expect(latestOnly[0].version).toBe(2);
+      expect(latestOnly[0].isLatest).toBe(true);
+    });
+  });
 });

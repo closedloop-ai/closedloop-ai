@@ -137,6 +137,69 @@ describe("GET /api/artifacts", () => {
 
     expect(response.headers.get("Content-Type")).toContain("application/json");
   });
+
+  it("filters by documentSlug query param", async () => {
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/artifacts?documentSlug=my-feature-prd",
+    });
+    const routeContext = createMockRouteContext({});
+    await GET(request, routeContext);
+
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ documentSlug: "my-feature-prd" })
+    );
+  });
+
+  it("filters by specific version number", async () => {
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/artifacts?documentSlug=my-prd&version=2",
+    });
+    const routeContext = createMockRouteContext({});
+    await GET(request, routeContext);
+
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ documentSlug: "my-prd", version: 2 })
+    );
+  });
+
+  it("ignores invalid version parameter (non-numeric)", async () => {
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/artifacts?documentSlug=my-prd&version=abc",
+    });
+    const routeContext = createMockRouteContext({});
+    await GET(request, routeContext);
+
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({ documentSlug: "my-prd" })
+    );
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.not.objectContaining({ version: expect.anything() })
+    );
+  });
+
+  it("combines documentSlug, type, and version filters", async () => {
+    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/artifacts?type=IMPLEMENTATION_PLAN&documentSlug=auth-feature&version=3",
+    });
+    const routeContext = createMockRouteContext({});
+    await GET(request, routeContext);
+
+    expect(artifactsService.findAll).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "IMPLEMENTATION_PLAN",
+        documentSlug: "auth-feature",
+        version: 3,
+      })
+    );
+  });
 });
 
 describe("POST /api/artifacts", () => {

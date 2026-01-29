@@ -10,19 +10,16 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import {
   useDeleteArtifact,
-  useDuplicateArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { downloadAsMarkdown } from "@/lib/download-utils";
@@ -32,17 +29,12 @@ type PRDRowActionsProps = {
 };
 
 export function PRDRowActions({ prd }: PRDRowActionsProps) {
-  const router = useRouter();
   const updateArtifact = useUpdateArtifact();
-  const duplicateArtifact = useDuplicateArtifact();
   const deleteArtifact = useDeleteArtifact();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  const isPending =
-    updateArtifact.isPending ||
-    duplicateArtifact.isPending ||
-    deleteArtifact.isPending;
+  const isPending = updateArtifact.isPending || deleteArtifact.isPending;
 
   const handleRename = (newTitle: string, newFileName: string) => {
     updateArtifact.mutate(
@@ -53,14 +45,6 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
         },
       }
     );
-  };
-
-  const handleDuplicate = () => {
-    duplicateArtifact.mutate(prd.id, {
-      onSuccess: (artifact) => {
-        router.push(`/prds/${artifact.id}`);
-      },
-    });
   };
 
   const handleExport = () => {
@@ -88,10 +72,6 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
           <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
             <PencilIcon className="mr-2 h-4 w-4" />
             Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={isPending} onClick={handleDuplicate}>
-            <CopyIcon className="mr-2 h-4 w-4" />
-            Duplicate
           </DropdownMenuItem>
           <DropdownMenuItem onClick={handleExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />

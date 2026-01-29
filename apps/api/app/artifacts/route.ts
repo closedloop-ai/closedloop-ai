@@ -23,9 +23,14 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
       const projectId = searchParams.get("projectId") ?? undefined;
       const documentSlug = searchParams.get("documentSlug") ?? undefined;
       const versionParam = searchParams.get("version");
-      const version = versionParam
+      const parsedVersion = versionParam
         ? Number.parseInt(versionParam, 10)
         : undefined;
+      // Ignore invalid version parameters (non-numeric values result in NaN)
+      const version =
+        parsedVersion !== undefined && !Number.isNaN(parsedVersion)
+          ? parsedVersion
+          : undefined;
 
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,

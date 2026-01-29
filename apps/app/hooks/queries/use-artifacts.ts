@@ -4,6 +4,7 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
   CreateArtifactInput,
+  FindArtifactsOptions,
   GenerationStatus,
   PullRequestInfo,
   UpdateArtifactInput,
@@ -32,9 +33,7 @@ export const artifactKeys = {
 
 // Queries
 export function useArtifacts(
-  workstreamId: string,
-  type?: string,
-  latestOnly = true,
+  searchParams: FindArtifactsOptions,
   options?: Omit<
     UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
@@ -43,14 +42,12 @@ export function useArtifacts(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: artifactKeys.list({ workstreamId, type, latestOnly }),
+    queryKey: artifactKeys.list(searchParams),
     queryFn: () => {
       const params = new URLSearchParams();
-      params.set("workstreamId", workstreamId);
-      if (type) {
-        params.set("type", type);
+      for (const [key, value] of Object.entries(searchParams)) {
+        params.set(key, value.toString());
       }
-      params.set("latestOnly", String(latestOnly));
       return apiClient.get<ArtifactWithWorkstream[]>(
         `/artifacts?${params.toString()}`
       );
@@ -234,19 +231,6 @@ export function useDeleteArtifact() {
   });
 }
 
-export function useDuplicateArtifact() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/duplicate`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-    },
-  });
-}
-
 export function useCreateNewVersion() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
@@ -305,6 +289,8 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
+      // Invalidate list queries so slug-based containers refetch the latest version
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }

@@ -61,6 +61,7 @@ export type ProjectArtifactType =
 
 export type ProjectArtifact = {
   id: string;
+  documentSlug: string | null;
   name: string;
   type: ProjectArtifactType;
   status: ArtifactDisplayStatus;

@@ -18,11 +18,9 @@ export function WorkstreamDetailContainer({
     isLoading: isLoadingWorkstream,
     error,
   } = useWorkstream(id);
-  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts(
-    id,
-    undefined,
-    true
-  );
+  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts({
+    workstreamId: id,
+  });
 
   const isLoading = isLoadingWorkstream || isLoadingArtifacts;
 
