@@ -31,29 +31,18 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
+import {
+  type AppEnvironment,
+  appEnvironment,
+  envIconPath,
+} from "@/lib/environment";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
 
-function getEnvironment(): "local" | "stage" | "prod" {
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "";
-  if (appUrl.includes("localhost")) {
-    return "local";
-  }
-  if (appUrl.includes("stage")) {
-    return "stage";
-  }
-  return "prod";
-}
-
-const appEnv = getEnvironment();
-
-const envIconPath: Record<string, string> = {
-  local: "/loop_icon_local.png",
-  stage: "/loop_icon_staging.png",
-  prod: "/loop_icon.png",
-};
-
-const envBadge: Record<string, { label: string; className: string } | null> = {
+const envBadge: Record<
+  AppEnvironment,
+  { label: string; className: string } | null
+> = {
   local: {
     label: "DEV",
     className:
@@ -153,9 +142,9 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                       unoptimized
                       width={160}
                     />
-                    {envBadge[appEnv] && (
-                      <span className={envBadge[appEnv].className}>
-                        {envBadge[appEnv].label}
+                    {envBadge[appEnvironment] && (
+                      <span className={envBadge[appEnvironment].className}>
+                        {envBadge[appEnvironment].label}
                       </span>
                     )}
                   </div>
@@ -165,7 +154,7 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                     className="h-7 w-7"
                     height={28}
                     priority
-                    src={envIconPath[appEnv]}
+                    src={envIconPath[appEnvironment]}
                     width={28}
                   />
                 )}
