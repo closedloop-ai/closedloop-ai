@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: read
+      issues: write
       actions: read
       id-token: write
 
@@ -103,10 +103,93 @@ jobs:
 
           claude_args: |
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
-            --allowedTools "Read,Task,TodoWrite,Grep,Glob,mcp__github_inline_comment__create_inline_comment,mcp__context7__resolve-library-id,mcp__context7__get-library-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
+            --allowedTools "Read,Write,Task,TodoWrite,Grep,Glob,mcp__github_inline_comment__create_inline_comment,mcp__context7__resolve-library-id,mcp__context7__get-library-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(mkdir:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
 
           # Sticky comments disabled - was causing streaming mode errors
           use_sticky_comment: false
+
+      - name: Mark old summary comments as outdated
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        shell: bash
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number available (workflow_dispatch without PR context). Skipping."
+            exit 0
+          fi
+
+          # List all issue comments on the PR
+          COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate 2>/dev/null || echo "[]")
+
+          # Find comments authored by the bot that start with "## Code Review Summary"
+          echo "$COMMENTS" | jq -r '.[] | select(.user.login == "closedloop-ai-stage[bot]" or .user.login == "closedloop-ai[bot]" or .user.login == "symphony-cl") | select(.body | startswith("## Code Review Summary")) | .node_id' | while read -r NODE_ID; do
+            if [ -n "$NODE_ID" ]; then
+              echo "Minimizing old summary comment: $NODE_ID"
+              gh api graphql -f query='
+                mutation($id: ID!) {
+                  minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+                    minimizedComment { isMinimized minimizedReason }
+                  }
+                }' -f id="$NODE_ID" 2>/dev/null || echo "Warning: Failed to minimize $NODE_ID"
+            fi
+          done
+
+          echo "Old summary cleanup complete."
+
+      - name: Post code review summary
+        id: post-summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        shell: bash
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO="${{ github.repository }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR number available (workflow_dispatch without PR context). Skipping."
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SUMMARY_FILE=".claude/code-review-summary.md"
+
+          if [ -f "$SUMMARY_FILE" ]; then
+            SUMMARY=$(cat "$SUMMARY_FILE")
+            echo "Found summary file, posting to PR..."
+          else
+            echo "No summary file found. Posting fallback message."
+            SUMMARY="## Code Review Summary"$'\n\n'"**Status:** Completed"$'\n\n'"Review completed but no summary was generated. Check the workflow logs for details."
+          fi
+
+          # Post the summary as a PR comment
+          RESPONSE=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="$SUMMARY" 2>&1)
+
+          COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url // empty')
+          if [ -n "$COMMENT_URL" ]; then
+            echo "Summary posted: $COMMENT_URL"
+            echo "posted=true" >> "$GITHUB_OUTPUT"
+            echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
+          else
+            echo "Warning: Failed to post summary comment"
+            echo "$RESPONSE"
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Submit PR review comment
+        if: always() && steps.post-summary.outputs.posted == 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        shell: bash
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr review "$PR_NUMBER" --comment --body "See summary comment above for details." || echo "Warning: Failed to submit PR review comment"
 
       - name: Review completed
         if: always()

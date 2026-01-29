@@ -19,9 +19,9 @@ Run a multi-agent code review that posts inline comments and a summary to GitHub
 - ✅ READ files and analyze the PR diff
 - ✅ Create inline review comments for new issues
 - ✅ RESOLVE outdated inline comment threads (authored by `symphony-cl`) when issues are fixed
-- ✅ Mark previous summary comments as outdated, post fresh summary
+- ✅ Write review summary to `.claude/code-review-summary.md` (workflow handles posting)
 - ❌ Do NOT checkout, switch branches, or modify any code
-- ❌ Do NOT create, edit, or modify any files in the repository
+- ❌ Do NOT create, edit, or modify any files in the repository (except `.claude/code-review-summary.md`)
 - ❌ Do NOT delete inline comments (only resolve threads)
 - ❌ Do NOT merge, close, approve, or request changes on the PR
 - ❌ Do NOT suggest architectural refactoring without evidence of bugs
@@ -40,7 +40,7 @@ TodoWrite([
   { content: "Collect and validate agent findings", status: "pending", activeForm: "Validating findings" },
   { content: "Clean up outdated inline comments", status: "pending", activeForm: "Cleaning up comments" },
   { content: "Post inline comments for validated findings", status: "pending", activeForm: "Posting comments" },
-  { content: "Post summary comment with approval decision", status: "pending", activeForm: "Posting summary" }
+  { content: "Write summary to .claude/code-review-summary.md", status: "pending", activeForm: "Writing summary" }
 ])
 ```
 
@@ -409,7 +409,7 @@ query($owner:String!, $name:String!, $number:Int!) {
    - Read current state of file/line (use FILE_PATCHES for added files)
    - If issue is FIXED or line no longer exists: **RESOLVE** it
 
-**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Symphony summary comments (Step 8) are marked as outdated, not deleted.
+**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Symphony summary comments are marked as outdated by the CI workflow, not deleted.
 
 3. **Resolve outdated threads** (with error handling):
 
@@ -499,9 +499,9 @@ Mark todo as `completed`.
 
 ---
 
-## Step 8: Post Summary Comment with Approval Decision
+## Step 8: Write Summary to File
 
-Mark todo "Post summary comment with approval decision" as `in_progress`.
+Mark todo "Write summary to .claude/code-review-summary.md" as `in_progress`.
 
 **CRITICAL**: This step is MANDATORY, even if there are no findings.
 
@@ -514,39 +514,18 @@ Based on validated findings, set status label for the summary comment:
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
-### Mark Old Summaries as Outdated, Then Post Fresh
+### Write Summary to File
 
-1. **List existing PR comments**:
-```bash
-gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments
-```
-
-2. **Find previous symphony bot summaries** - look for comments that match BOTH:
-   - Start with "## Code Review Summary"
-   - Were authored by the symphony bot account (`symphony-cl`) — do NOT delete summaries from other bots or users
-
-3. **Mark the symphony bot's previous summaries as outdated**:
+Write the summary to `.claude/code-review-summary.md`. The CI workflow will handle marking old summaries as outdated and posting the new one deterministically.
 
 ```bash
-# Minimize each previous symphony bot summary as outdated (preserves history)
-gh api graphql -f query='
-mutation($id:ID!) {
-  minimizeComment(input:{subjectId:$id, classifier:OUTDATED}) {
-    minimizedComment { isMinimized minimizedReason }
-  }
-}' -f id="<COMMENT_NODE_ID>"
+# Write the summary content to the file
+cat > .claude/code-review-summary.md << 'SUMMARY_EOF'
+<summary content here>
+SUMMARY_EOF
 ```
 
-**NOTE**: The `minimizeComment` mutation requires the comment's **node ID** (starts with `IC_`), not the numeric REST ID. Get it from the `node_id` field in the REST API response.
-
-This collapses old summaries with "This comment was marked as outdated" while preserving review history. The new summary always appears at the bottom of the PR conversation.
-
-4. **Post a fresh summary comment**:
-
-```bash
-gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
-  -f body="<summary>"
-```
+**Do NOT** post the summary to GitHub directly. Do NOT use `gh api` to create comments or `gh pr review` to submit a review. The workflow handles all GitHub posting after Claude exits.
 
 ### Summary Format
 
@@ -587,37 +566,6 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 - Do NOT repeat what inline comments already say — just reference file:line
 - Focus on actionable findings only
 - **NO FOOTER**: Do NOT add any signature, attribution, or footer like "Automated review by Claude Code"
-
-### Submit Review
-
-**ENFORCEMENT**: Before executing ANY `gh pr review` command, validate it does not contain forbidden flags:
-
-```bash
-# Validation function - MUST be used before any gh pr review command
-validate_review_command() {
-  local cmd="$1"
-  if echo "$cmd" | grep -qE -- '--(approve|request-changes)'; then
-    echo "ERROR: Forbidden flag detected. This workflow only posts comments."
-    echo "Remove --approve or --request-changes and use --comment instead."
-    return 1
-  fi
-  return 0
-}
-
-# Example usage:
-REVIEW_CMD="gh pr review <PR_NUMBER> --comment --body \"See summary comment above.\""
-validate_review_command "$REVIEW_CMD" && eval "$REVIEW_CMD"
-```
-
-```bash
-# Submit review as comment only - never approve or request changes automatically
-gh pr review <PR_NUMBER> --comment \
-  --body "See summary comment above for details."
-```
-
-**CRITICAL**: Always use `--comment` only. Never use `--approve` or `--request-changes`. Humans make the final approval decision.
-
-**Why no API-level enforcement?** The GitHub App token requires `pull-requests: write` permission to post inline comments, which also grants approval rights. The validation function above provides defense-in-depth at the command level.
 
 Mark todo as `completed`.
 
