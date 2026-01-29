@@ -151,8 +151,9 @@ export default function ProjectDetailPage() {
     setCreateModalOpen(true);
   };
 
-  const handleDeleteArtifact = (artifactId: string) => {
-    deleteArtifactMutation.mutate(artifactId);
+  const handleDeleteArtifact = async (artifactId: string): Promise<boolean> => {
+    const result = await deleteArtifactMutation.mutateAsync(artifactId);
+    return result.deleted ?? false;
   };
 
   if (loading) {

@@ -51,7 +51,7 @@ type ProjectsTableProps = {
   teamId: string;
   onUpdateOwner?: (projectId: string, owner: ProjectOwner | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
-  onDelete?: (projectId: string) => Promise<void>;
+  onDelete?: (projectId: string) => Promise<boolean>;
 };
 
 export function ProjectsTable({
@@ -65,7 +65,7 @@ export function ProjectsTable({
   const { data: usersResult } = useOrganizationUsers();
 
   const deleteConfirmation = useDeleteConfirmation({
-    onDelete: onDelete ?? (async () => Promise.resolve()),
+    onDelete: onDelete ?? (async () => false),
     getId: (project: ProjectWithDetails) => project.id,
   });
 

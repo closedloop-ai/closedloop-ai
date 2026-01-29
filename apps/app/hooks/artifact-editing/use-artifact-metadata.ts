@@ -1,0 +1,165 @@
+"use client";
+
+import type {
+  ArtifactStatus,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useCallback, useEffect, useState } from "react";
+import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
+
+type UseArtifactMetadataConfig = {
+  artifact: ArtifactWithWorkstream;
+};
+
+/**
+ * Hook to manage artifact metadata updates (status, approver, targetRepo, targetBranch).
+ *
+ * **Use this hook when:** Your component needs to display/edit artifact metadata (metadata panel, status badge).
+ *
+ * **What it provides:**
+ * - Local state management with optimistic updates
+ * - Debounced saves on blur (for text inputs like approver, targetRepo, targetBranch)
+ * - Immediate saves on change (for selects like status)
+ * - State synchronization when artifact changes
+ *
+ * **Example usage:**
+ * ```tsx
+ * const { status, handleStatusChange, approver, handleApproverChange, handleApproverBlur } =
+ *   useArtifactMetadata({ artifact });
+ *
+ * <Select value={status} onValueChange={handleStatusChange}>...</Select>
+ * <Input value={approver} onChange={handleApproverChange} onBlur={handleApproverBlur} />
+ * ```
+ *
+ * **Important:** Text input changes are local until blur event triggers save. Select changes save immediately.
+ */
+export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
+  const { artifact } = config;
+
+  // TanStack Query mutation for updating artifact
+  const updateArtifact = useUpdateArtifact();
+
+  // Metadata state - tracks local edits
+  const [status, setStatus] = useState(artifact.status);
+  const [approver, setApprover] = useState(artifact.approver ?? "");
+  const [targetRepo, setTargetRepo] = useState(artifact.targetRepo ?? "");
+  const [targetBranch, setTargetBranch] = useState(
+    artifact.targetBranch ?? "main"
+  );
+
+  // Derived state
+  const isUpdating = updateArtifact.isPending;
+
+  // Sync state when artifact prop changes (e.g., after update, navigation)
+  useEffect(() => {
+    setStatus(artifact.status);
+    setApprover(artifact.approver ?? "");
+    setTargetRepo(artifact.targetRepo ?? "");
+    setTargetBranch(artifact.targetBranch ?? "main");
+  }, [
+    artifact.status,
+    artifact.approver,
+    artifact.targetRepo,
+    artifact.targetBranch,
+  ]);
+
+  /**
+   * Generic metadata update handler.
+   * Triggers mutation to update artifact on the server.
+   */
+  const handleMetadataUpdate = useCallback(
+    (
+      updates: Partial<{
+        status: ArtifactStatus;
+        approver: string | null;
+        targetRepo: string | null;
+        targetBranch: string | null;
+      }>
+    ) => {
+      updateArtifact.mutate(
+        { id: artifact.id, ...updates },
+        {
+          onSuccess: () => {
+            toast.success("Changes saved");
+          },
+        }
+      );
+    },
+    [artifact.id, updateArtifact]
+  );
+
+  /**
+   * Handle status change.
+   * Updates local state and immediately saves to server.
+   */
+  const handleStatusChange = useCallback(
+    (newStatus: ArtifactStatus) => {
+      setStatus(newStatus);
+      handleMetadataUpdate({ status: newStatus });
+    },
+    [handleMetadataUpdate]
+  );
+
+  /**
+   * Handle approver blur event.
+   * Saves to server only if value has changed.
+   */
+  const handleApproverBlur = useCallback(() => {
+    if (approver !== (artifact.approver ?? "")) {
+      handleMetadataUpdate({
+        approver: approver.trim() === "" ? null : approver,
+      });
+    }
+  }, [approver, artifact.approver, handleMetadataUpdate]);
+
+  /**
+   * Handle target repository blur event.
+   * Saves to server only if value has changed.
+   */
+  const handleTargetRepoBlur = useCallback(() => {
+    if (targetRepo !== (artifact.targetRepo ?? "")) {
+      handleMetadataUpdate({
+        targetRepo: targetRepo.trim() === "" ? null : targetRepo,
+      });
+    }
+  }, [targetRepo, artifact.targetRepo, handleMetadataUpdate]);
+
+  /**
+   * Handle target branch blur event.
+   * Saves to server only if value has changed.
+   */
+  const handleTargetBranchBlur = useCallback(() => {
+    if (targetBranch !== (artifact.targetBranch ?? "main")) {
+      handleMetadataUpdate({
+        targetBranch: targetBranch.trim() === "" ? null : targetBranch,
+      });
+    }
+  }, [targetBranch, artifact.targetBranch, handleMetadataUpdate]);
+
+  return {
+    // Metadata state
+    status,
+    approver,
+    targetRepo,
+    targetBranch,
+
+    // Status handlers
+    handleStatusChange,
+
+    // Approver handlers (setApprover is stable, no useCallback needed)
+    handleApproverChange: setApprover,
+    handleApproverBlur,
+
+    // Target repository handlers (setTargetRepo is stable, no useCallback needed)
+    handleTargetRepoChange: setTargetRepo,
+    handleTargetRepoBlur,
+
+    // Target branch handlers (setTargetBranch is stable, no useCallback needed)
+    handleTargetBranchChange: setTargetBranch,
+    handleTargetBranchBlur,
+
+    // Loading state
+    isUpdating,
+  };
+}
