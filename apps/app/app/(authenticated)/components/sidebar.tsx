@@ -142,11 +142,12 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                       unoptimized
                       width={160}
                     />
-                    {envBadge[appEnvironment] && (
-                      <span className={envBadge[appEnvironment].className}>
-                        {envBadge[appEnvironment].label}
-                      </span>
-                    )}
+                    {(() => {
+                      const badge = envBadge[appEnvironment];
+                      return badge ? (
+                        <span className={badge.className}>{badge.label}</span>
+                      ) : null;
+                    })()}
                   </div>
                 ) : (
                   <Image
