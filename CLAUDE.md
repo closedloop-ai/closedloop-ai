@@ -75,17 +75,78 @@ Each app has its own `.env.local`. Key patterns:
 
 All database access must go through the BFF API (`apps/api`):
 
-1. **API routes** (`apps/api/app/api/`) - Handle database operations, import `@repo/database`
-2. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
-3. **Frontend actions** (`apps/app/app/actions/`) - Call API routes via `apiClient`, never touch database directly
+1. **Frontend hooks** (`apps/app/hooks/queries/`) - TanStack Query hooks for data fetching. Use `useApiClient()` hook.
+2. **API routes** (`apps/api/app/*/route.ts`) - HTTP layer only: authentication, request parsing, response formatting. Delegate business logic to services.
+3. **Services** (`apps/api/app/*/service.ts`) - Business logic and database operations. Import `@repo/database` here, NOT in routes.
+4. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
 
 ```
-apps/app (frontend)  →  apps/api (BFF)  →  @repo/database
-     ↑                       ↑
-     └── @repo/api types ────┘
+apps/app (frontend)
+    │
+    ├── hooks/queries/use-*.ts (TanStack Query)
+    │       ↓ useApiClient()
+    │
+    └──→ apps/api routes  →  services  →  @repo/database
+              ↑
+              └── @repo/api types
 ```
 
-This separation ensures the frontend never has direct database access.
+**Layer responsibilities:**
+- **Frontend hooks**: `useQuery`/`useMutation`, cache invalidation, loading/error states
+- **Route**: `withAuth()`, parse params/body, call service, return `NextResponse.json()`
+- **Service**: Validation, business logic, database queries, external API calls
+
+This separation ensures the frontend never has direct database access and keeps routes thin.
+
+### Type Definitions (IMPORTANT)
+
+**Never duplicate type definitions.** If a type is used in more than one file, it must live in one canonical location and be imported everywhere else.
+
+**Where types belong:**
+
+| Type category | Location | Example |
+|---|---|---|
+| **Shared API types** (used by both frontend and backend) | `packages/api/src/types/` | Entity types, request/response types, enums shared across layers |
+| **Database types** | Generated from Prisma schema in `packages/database/generated/` | Prisma model types, enums |
+| **Backend-only types** | Co-located in `apps/api/` (e.g., `lib/`, route `validators.ts`) | Route params, Zod schemas, service internals |
+| **Frontend-only types** | Co-located in `apps/app/` (e.g., `types/`, component files) | Component props, UI state, display-only models |
+
+**Rules:**
+1. `packages/api/src/types/` is **only** for types consumed by both `apps/api` and `apps/app`. Don't put backend-only or frontend-only types here.
+2. Backend-only types (route params, validation schemas, service internals) stay in `apps/api/`.
+3. Frontend-only types (component props, UI state) stay in `apps/app/`.
+4. If a type is used in multiple files within the same app, extract it to a shared location within that app — don't inline it in every file that needs it.
+5. Never define the same type in multiple files.
+
+```typescript
+// ✅ GOOD - shared API type imported from canonical location
+import type { GenerationStatus, PullRequestInfo } from "@repo/api/src/types/artifact";
+
+// ✅ GOOD - backend-only type stays in the API app
+// apps/api/lib/route-utils.ts
+export type IdRouteParams<T extends string = "id"> = { params: Promise<Record<T, string>> };
+
+// ✅ GOOD - frontend-only type stays in the app
+// apps/app/types/teams.ts
+export type ArtifactDisplayStatus = "active" | "archived";
+
+// ❌ BAD - duplicating a shared type locally instead of importing
+type GenerationStatus = { status: "NONE" | "PENDING" | ... };
+
+// ❌ BAD - putting a backend-only type in packages/api/src/types/
+// (Zod validators and route params don't belong in the shared package)
+```
+
+## Self-Improving CLAUDE.md
+
+When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
+
+- A code review catches a repeated mistake (e.g., duplicating types, wrong import path) → add a rule so it doesn't happen again
+- You hit a non-obvious framework behavior (e.g., MDXEditor requiring `setMarkdown` ref) → document it
+- A build/lint/test failure reveals a convention not captured here → add it
+- You notice an architectural pattern being followed but not written down → write it down
+
+The goal is that every PR makes future sessions smarter. CLAUDE.md files are living documents — treat them like code.
 
 ## Key Files
 - `turbo.json` - Turborepo task configuration
