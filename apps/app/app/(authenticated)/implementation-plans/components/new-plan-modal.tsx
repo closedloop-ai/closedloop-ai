@@ -335,17 +335,11 @@ export function NewPlanModal({
           ) : null}
 
           <div className="space-y-2">
-            <Label htmlFor="new-content">
-              Initial Content{" "}
-              <span className="text-muted-foreground text-xs">
-                (optional - paste or write markdown)
-              </span>
-            </Label>
+            <Label htmlFor="new-content">Additional context</Label>
             <Textarea
               className="min-h-[150px] font-mono text-sm"
               id="new-content"
               onChange={(e) => setContent(e.target.value)}
-              placeholder="# Implementation Plan&#10;&#10;## Overview&#10;&#10;Describe the implementation approach..."
               value={content}
             />
           </div>
