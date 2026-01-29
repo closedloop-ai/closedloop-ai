@@ -52,7 +52,7 @@ export const AvatarStack = () => {
         />
       )}
 
-      {self && <PresenceAvatar info={self.info} />}
+      {!!self && <PresenceAvatar info={self.info} />}
     </div>
   );
 };

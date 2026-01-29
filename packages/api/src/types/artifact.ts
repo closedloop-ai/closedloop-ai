@@ -84,6 +84,15 @@ export type ArtifactWithWorkstream = Artifact & {
   } | null;
 };
 
+export type FindArtifactsOptions = {
+  type?: ArtifactType;
+  latestOnly?: boolean;
+  workstreamId?: string;
+  projectId?: string;
+  documentSlug?: string;
+  version?: number;
+};
+
 export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
@@ -95,8 +104,6 @@ export type CreateArtifactInput = {
   status?: ArtifactStatus;
   content?: string;
   externalUrl?: string;
-  generatedBy?: string;
-  documentSlug?: string;
   targetRepo?: string;
   targetBranch?: string;
 };
@@ -107,7 +114,6 @@ export type UpdateArtifactInput = {
   fileName?: string;
   approver?: string | null;
   status?: ArtifactStatus;
-  content?: string;
   externalUrl?: string | null;
   targetRepo?: string | null;
   targetBranch?: string | null;
@@ -137,4 +143,26 @@ export type UpdateApprovalInput = {
   status: ApprovalStatus;
   feedback?: string;
   approverId?: string;
+};
+
+// Pull Request info returned when an implementation plan is executed
+export type PullRequestInfo = {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+};
+
+// Generation status for artifacts being processed by GitHub Actions
+export type GenerationStatus = {
+  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
+  command: "plan" | "execute" | "chat" | null;
+  htmlUrl: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  correlationId: string | null;
 };

@@ -103,16 +103,16 @@ export function CreateArtifactModal({
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
 
   // Fetch PRDs when modal opens for implementation plan
-  const { data: artifacts = [], isLoading: loadingPrds } = useArtifactsByProject(
-    projectId,
-    true,
-    { enabled: open && isImplementationPlan }
-  );
+  const { data: artifacts = [], isLoading: loadingPrds } =
+    useArtifactsByProject(projectId, true, {
+      enabled: open && isImplementationPlan,
+    });
 
   // Filter to get only PRDs
-  const prds = useMemo(() => {
-    return artifacts.filter((a) => a.type === "PRD");
-  }, [artifacts]);
+  const prds = useMemo(
+    () => artifacts.filter((a) => a.type === "PRD"),
+    [artifacts]
+  );
 
   // Create artifact mutation
   const createArtifact = useCreateArtifact();

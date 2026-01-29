@@ -6,9 +6,9 @@ import type {
 } from "@repo/api/src/types/linear";
 import { useCallback, useReducer } from "react";
 import {
-  exportToLinear,
-  getLinearIntegrationStatus,
-} from "@/app/actions/linear";
+  useExportToLinear,
+  useLinearIntegrationStatus,
+} from "@/hooks/queries/use-linear";
 
 /**
  * State for Linear integration connection
@@ -121,17 +121,22 @@ function reducer(state: State, action: Action): State {
  */
 export function useLinearExport(artifactId: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const exportToLinearMutation = useExportToLinear();
 
   /**
    * Check the Linear integration status for the current organization.
    */
+  const { refetch: refetchStatus } = useLinearIntegrationStatus({
+    enabled: false, // Manual control
+  });
+
   const checkConnection = useCallback(async () => {
     dispatch({ type: "CHECK_START" });
 
     try {
-      const result = await getLinearIntegrationStatus();
+      const result = await refetchStatus();
 
-      if (result.success) {
+      if (result.data) {
         dispatch({
           type: "CHECK_SUCCESS",
           payload: {
@@ -141,8 +146,14 @@ export function useLinearExport(artifactId: string) {
             defaultTeamId: result.data.defaultTeamId,
           },
         });
-      } else {
-        dispatch({ type: "CHECK_ERROR", payload: result.error });
+      } else if (result.error) {
+        dispatch({
+          type: "CHECK_ERROR",
+          payload:
+            result.error instanceof Error
+              ? result.error.message
+              : "Failed to check connection",
+        });
       }
     } catch (err) {
       dispatch({
@@ -151,7 +162,7 @@ export function useLinearExport(artifactId: string) {
           err instanceof Error ? err.message : "Failed to check connection",
       });
     }
-  }, []);
+  }, [refetchStatus]);
 
   /**
    * Export the implementation plan to Linear.
@@ -163,13 +174,11 @@ export function useLinearExport(artifactId: string) {
       dispatch({ type: "EXPORT_START" });
 
       try {
-        const result = await exportToLinear({ artifactId, teamId });
-
-        if (result.success) {
-          dispatch({ type: "EXPORT_SUCCESS", payload: result.data });
-        } else {
-          dispatch({ type: "EXPORT_ERROR", payload: result.error });
-        }
+        const result = await exportToLinearMutation.mutateAsync({
+          artifactId,
+          teamId,
+        });
+        dispatch({ type: "EXPORT_SUCCESS", payload: result });
       } catch (err) {
         dispatch({
           type: "EXPORT_ERROR",
@@ -178,7 +187,7 @@ export function useLinearExport(artifactId: string) {
         });
       }
     },
-    [artifactId]
+    [artifactId, exportToLinearMutation]
   );
 
   /**

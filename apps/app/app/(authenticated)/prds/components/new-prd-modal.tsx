@@ -45,8 +45,8 @@ export function NewPRDModal() {
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat(".md");
       setFileName(generatedFileName);
     }
@@ -86,10 +86,7 @@ export function NewPRDModal() {
         onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/prds/${artifact.id}`);
-        },
-        onError: (err) => {
-          setError(err.message);
+          router.push(`/prds/${artifact.documentSlug}`);
         },
       }
     );
@@ -221,7 +218,10 @@ export function NewPRDModal() {
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={createArtifact.isPending || !title.trim()} onClick={handleSubmit}>
+          <Button
+            disabled={createArtifact.isPending || !title.trim()}
+            onClick={handleSubmit}
+          >
             {createArtifact.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />

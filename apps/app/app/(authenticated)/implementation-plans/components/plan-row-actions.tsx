@@ -17,8 +17,8 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { useState } from "react";
-import { useDeleteArtifact } from "@/hooks/queries/use-artifacts";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { useDeleteArtifact } from "@/hooks/queries/use-artifacts";
 import { copyToClipboard } from "@/lib/clipboard-utils";
 import { downloadAsMarkdown } from "@/lib/download-utils";
 

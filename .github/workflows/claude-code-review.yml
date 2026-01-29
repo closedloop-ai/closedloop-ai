@@ -35,8 +35,8 @@ jobs:
         id: generate_token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           # Access to claude_code repo required for private plugin marketplace (symphony-core, symphony-fe plugins)
           repositories: ${{ github.event.repository.name }},claude_code
@@ -87,7 +87,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.generate_token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           show_full_output: true
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
@@ -96,7 +96,7 @@ jobs:
             symphony-fe@closedloop
 
           # Allow bot actors like Dependabot to trigger Claude code review
-          allowed_bots: "dependabot"
+          allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
 
           # Direct prompt for automated review
           prompt: "${{ steps.determine-command.outputs.command }}"

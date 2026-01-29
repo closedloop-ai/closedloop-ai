@@ -1,9 +1,10 @@
 "use client";
 
+import type { User } from "@repo/api/src/types/organization";
 import { Room } from "@repo/collaboration/room";
 import type { ReactNode } from "react";
-import { getUsers } from "@/app/actions/users/get";
-import { searchUsers } from "@/app/actions/users/search";
+import { useCallback } from "react";
+import { useApiClient } from "@/hooks/use-api-client";
 
 export const CollaborationProvider = ({
   orgId,
@@ -12,25 +13,38 @@ export const CollaborationProvider = ({
   orgId: string;
   children: ReactNode;
 }) => {
-  const resolveUsers = async ({ userIds }: { userIds: string[] }) => {
-    const response = await getUsers(userIds);
+  const apiClient = useApiClient();
 
-    if ("error" in response) {
-      throw new Error("Problem resolving users");
-    }
+  const resolveUsers = useCallback(
+    async ({ userIds }: { userIds: string[] }) => {
+      // TODO: The /users endpoint does not support ids as a query parameter.
+      const users = await apiClient.get<User[]>(
+        `/users?ids=${userIds.join(",")}`
+      );
+      // Transform to Liveblocks UserMeta["info"] format
+      return users.map((user) => ({
+        name:
+          user.firstName && user.lastName
+            ? `${user.firstName} ${user.lastName}`
+            : user.email,
+        avatar: user.avatarUrl ?? undefined,
+        color: getUserColor(user.id),
+      }));
+    },
+    [apiClient]
+  );
 
-    return response.data;
-  };
-
-  const resolveMentionSuggestions = async ({ text }: { text: string }) => {
-    const response = await searchUsers(text);
-
-    if ("error" in response) {
-      throw new Error("Problem resolving mention suggestions");
-    }
-
-    return response.data;
-  };
+  const resolveMentionSuggestions = useCallback(
+    async ({ text }: { text: string }) => {
+      // TODO: The /users endpoint does not support search as a query parameter.
+      const users = await apiClient.get<User[]>(
+        `/users/search?q=${encodeURIComponent(text)}`
+      );
+      // Return user IDs for mention suggestions
+      return users.map((user) => user.id);
+    },
+    [apiClient]
+  );
 
   return (
     <Room
@@ -46,3 +60,32 @@ export const CollaborationProvider = ({
     </Room>
   );
 };
+
+/** biome-ignore-start lint/suspicious/noBitwiseOperators: bitwise operators are used for hashing */
+// Generate a consistent color based on user ID
+function getUserColor(userId: string): string {
+  const colors = [
+    "#E57373",
+    "#F06292",
+    "#BA68C8",
+    "#9575CD",
+    "#7986CB",
+    "#64B5F6",
+    "#4FC3F7",
+    "#4DD0E1",
+    "#4DB6AC",
+    "#81C784",
+    "#AED581",
+    "#DCE775",
+    "#FFD54F",
+    "#FFB74D",
+    "#FF8A65",
+  ];
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash << 5) - hash + userId.charCodeAt(i);
+    hash &= hash;
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+/** biome-ignore-end lint/suspicious/noBitwiseOperators: bitwise operators are used for hashing */

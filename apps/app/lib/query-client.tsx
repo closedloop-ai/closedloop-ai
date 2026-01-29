@@ -1,7 +1,7 @@
 "use client";
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "@repo/design-system/components/ui/sonner";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
 import { ApiError } from "./api-error";
 
@@ -36,6 +36,7 @@ function makeQueryClient() {
     defaultOptions: {
       queries: {
         staleTime: 60 * 1000, // 1 minute
+        retry: false,
       },
       mutations: {
         onError: (error) => {

@@ -13,13 +13,14 @@ type WorkstreamDetailContainerProps = {
 export function WorkstreamDetailContainer({
   id,
 }: WorkstreamDetailContainerProps) {
-  const { data: workstream, isLoading: isLoadingWorkstream, error } =
-    useWorkstream(id);
-  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts(
-    id,
-    undefined,
-    true
-  );
+  const {
+    data: workstream,
+    isLoading: isLoadingWorkstream,
+    error,
+  } = useWorkstream(id);
+  const { data: artifacts = [], isLoading: isLoadingArtifacts } = useArtifacts({
+    workstreamId: id,
+  });
 
   const isLoading = isLoadingWorkstream || isLoadingArtifacts;
 

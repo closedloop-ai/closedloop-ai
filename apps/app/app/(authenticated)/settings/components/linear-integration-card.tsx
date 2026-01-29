@@ -1,6 +1,5 @@
 "use client";
 
-import type { LinearIntegrationStatus } from "@repo/api/src/types/linear";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -11,39 +10,26 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { CheckCircleIcon, ExternalLinkIcon, Loader2Icon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
-  disconnectLinear,
-  getLinearIntegrationStatus,
-  getLinearOAuthUrl,
-} from "@/app/actions/linear";
+  useDisconnectLinear,
+  useGetLinearOAuthUrl,
+  useLinearIntegrationStatus,
+} from "@/hooks/queries/use-linear";
 
 export function LinearIntegrationCard() {
-  const [status, setStatus] = useState<LinearIntegrationStatus | null>(null);
-  const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
-
-  const loadStatus = useCallback(async () => {
-    setLoading(true);
-    const result = await getLinearIntegrationStatus();
-    if (result.success) {
-      setStatus(result.data);
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    loadStatus();
-  }, [loadStatus]);
+  const { data: status, isLoading: loading } = useLinearIntegrationStatus();
+  const disconnectLinear = useDisconnectLinear();
+  const getOAuthUrl = useGetLinearOAuthUrl();
 
   const handleConnect = async () => {
     setConnecting(true);
     try {
       // Get OAuth URL with signed auth token (needed for cross-domain auth)
-      const url = await getLinearOAuthUrl();
-      if (url) {
-        window.location.href = url;
+      const result = await getOAuthUrl.mutateAsync();
+      if (result.url) {
+        window.location.href = result.url;
       } else {
         toast.error("Not authenticated. Please sign in again.");
         setConnecting(false);
@@ -60,15 +46,12 @@ export function LinearIntegrationCard() {
       return;
     }
 
-    setDisconnecting(true);
-    const result = await disconnectLinear();
-    if (result.success) {
+    try {
+      await disconnectLinear.mutateAsync();
       toast.success("Linear disconnected successfully");
-      setStatus({ connected: false });
-    } else {
+    } catch {
       toast.error("Failed to disconnect Linear");
     }
-    setDisconnecting(false);
   };
 
   if (loading) {
@@ -130,11 +113,11 @@ export function LinearIntegrationCard() {
 
           {status?.connected ? (
             <Button
-              disabled={disconnecting}
+              disabled={disconnectLinear.isPending}
               onClick={handleDisconnect}
               variant="outline"
             >
-              {disconnecting ? (
+              {disconnectLinear.isPending ? (
                 <>
                   <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
                   Disconnecting...

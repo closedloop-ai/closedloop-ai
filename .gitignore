@@ -270,6 +270,8 @@ $RECYCLE.BIN/
 
 # .Claude Runs
 .claude/runs
+.claude/plan-memory
+
 
 # Database
 packages/database/generated
@@ -286,3 +288,4 @@ packages/database/generated
 .source
 # Claude Code
 .claude/.token-stats/
+.claude/work/

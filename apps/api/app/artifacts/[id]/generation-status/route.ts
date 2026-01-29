@@ -1,17 +1,10 @@
+import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { notFoundResponse } from "@/lib/route-utils";
-
-export type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-};
 
 export const GET = withAuth<
   GenerationStatus,
@@ -46,6 +39,7 @@ export const GET = withAuth<
         return NextResponse.json(
           success({
             status: "NONE",
+            command: null,
             htmlUrl: null,
             startedAt: null,
             completedAt: null,
@@ -69,6 +63,7 @@ export const GET = withAuth<
         return NextResponse.json(
           success({
             status: "NONE",
+            command: null,
             htmlUrl: null,
             startedAt: null,
             completedAt: null,
@@ -77,10 +72,11 @@ export const GET = withAuth<
         );
       }
 
-      // Extract correlation ID from triggerData
+      // Extract correlation ID and command from triggerData
       const triggerData = actionRun.triggerData as {
         correlationId?: string;
         artifactId?: string;
+        command?: "plan" | "execute" | "chat";
       } | null;
 
       // Only return status if this run is for the requested artifact
@@ -88,6 +84,7 @@ export const GET = withAuth<
         return NextResponse.json(
           success({
             status: "NONE",
+            command: null,
             htmlUrl: null,
             startedAt: null,
             completedAt: null,
@@ -99,6 +96,7 @@ export const GET = withAuth<
       return NextResponse.json(
         success({
           status: actionRun.status as GenerationStatus["status"],
+          command: triggerData?.command ?? null,
           htmlUrl: actionRun.htmlUrl || null,
           startedAt: actionRun.startedAt,
           completedAt: actionRun.completedAt,

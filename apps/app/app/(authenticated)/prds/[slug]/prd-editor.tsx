@@ -24,7 +24,6 @@ import {
 } from "@repo/design-system/components/ui/select";
 import {
   ArrowLeftIcon,
-  CopyIcon,
   DownloadIcon,
   FileTextIcon,
   MoreHorizontalIcon,
@@ -35,6 +34,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
+import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import {
@@ -46,9 +46,17 @@ import { usePRDEditor } from "./use-prd-editor";
 
 type PRDEditorProps = {
   prd: ArtifactWithWorkstream;
+  currentVersion: number;
+  latestVersion: number;
+  onVersionChange: (version: number) => void;
 };
 
-export function PRDEditor({ prd }: PRDEditorProps) {
+export function PRDEditor({
+  prd,
+  currentVersion,
+  latestVersion,
+  onVersionChange,
+}: PRDEditorProps) {
   const {
     isPending,
     content,
@@ -67,7 +75,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     setShowDeleteDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
-    handleSave,
+    handleSaveContent,
     handleStatusChange,
     handleApproverChange,
     handleApproverBlur,
@@ -76,7 +84,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
     handleTargetBranchChange,
     handleTargetBranchBlur,
     handleRename,
-    handleDuplicate,
     handleExport,
     handleDelete,
   } = usePRDEditor(prd);
@@ -104,7 +111,11 @@ export function PRDEditor({ prd }: PRDEditorProps) {
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <FileTextIcon className="h-4 w-4" />
             <span>{prd.fileName ?? prd.title}</span>
-            <span className="font-mono">v{prd.version}</span>
+            <VersionSelector
+              currentVersion={currentVersion}
+              latestVersion={latestVersion}
+              onVersionChange={onVersionChange}
+            />
           </div>
 
           <ArtifactStatusBadge status={status} />
@@ -135,7 +146,7 @@ export function PRDEditor({ prd }: PRDEditorProps) {
             Generate Implementation Plan
           </Button>
 
-          <Button disabled={isPending} onClick={handleSave}>
+          <Button disabled={isPending} onClick={handleSaveContent}>
             {isSaving ? "Saving..." : "Save"}
           </Button>
 
@@ -149,10 +160,6 @@ export function PRDEditor({ prd }: PRDEditorProps) {
               <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
                 <PencilIcon className="mr-2 h-4 w-4" />
                 Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={isPending} onClick={handleDuplicate}>
-                <CopyIcon className="mr-2 h-4 w-4" />
-                Duplicate
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleExport}>
                 <DownloadIcon className="mr-2 h-4 w-4" />

@@ -4,6 +4,9 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
   CreateArtifactInput,
+  FindArtifactsOptions,
+  GenerationStatus,
+  PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import {
@@ -28,19 +31,9 @@ export const artifactKeys = {
     [...artifactKeys.detail(id), "generation-status"] as const,
 };
 
-type GenerationStatus = {
-  status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  htmlUrl: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  correlationId: string | null;
-};
-
 // Queries
 export function useArtifacts(
-  workstreamId: string,
-  type?: string,
-  latestOnly = true,
+  searchParams: FindArtifactsOptions,
   options?: Omit<
     UseQueryOptions<ArtifactWithWorkstream[]>,
     "queryKey" | "queryFn"
@@ -49,14 +42,12 @@ export function useArtifacts(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: artifactKeys.list({ workstreamId, type, latestOnly }),
+    queryKey: artifactKeys.list(searchParams),
     queryFn: () => {
       const params = new URLSearchParams();
-      params.set("workstreamId", workstreamId);
-      if (type) {
-        params.set("type", type);
+      for (const [key, value] of Object.entries(searchParams)) {
+        params.set(key, value.toString());
       }
-      params.set("latestOnly", String(latestOnly));
       return apiClient.get<ArtifactWithWorkstream[]>(
         `/artifacts?${params.toString()}`
       );
@@ -135,16 +126,26 @@ export function useArtifactGenerationStatus(
   options?: Omit<UseQueryOptions<GenerationStatus>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
+  const queryClient = useQueryClient();
 
-  return useQuery({
-    queryKey: artifactKeys.generationStatus(artifactId),
-    queryFn: () =>
-      apiClient.get<GenerationStatus>(
-        `/artifacts/${artifactId}/generation-status`
-      ),
-    enabled: !!artifactId,
-    ...options,
-  });
+  return {
+    ...useQuery({
+      queryKey: artifactKeys.generationStatus(artifactId),
+      queryFn: () =>
+        apiClient.get<GenerationStatus>(
+          `/artifacts/${artifactId}/generation-status`
+        ),
+      enabled: !!artifactId,
+      ...options,
+    }),
+    // Once the artifact is generated, we need to invalidate the cache so that the new
+    // artifact is fetched.
+    invalidateCache: () => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+    },
+  };
 }
 
 export function useArtifactVersions(
@@ -230,19 +231,6 @@ export function useDeleteArtifact() {
   });
 }
 
-export function useDuplicateArtifact() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/duplicate`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-    },
-  });
-}
-
 export function useCreateNewVersion() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
@@ -301,6 +289,89 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
+      // Invalidate list queries so slug-based containers refetch the latest version
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
+  });
+}
+
+/**
+ * Create an artifact and immediately trigger generation workflow.
+ * Used for implementation plans that need to be generated from a PRD.
+ */
+export function useCreateAndGenerateArtifact() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async (input: CreateArtifactInput) => {
+      // First create the artifact
+      const artifact = await apiClient.post<Artifact>("/artifacts", input);
+
+      // Then trigger regeneration (which dispatches to GitHub)
+      try {
+        const regenerated = await apiClient.post<Artifact>(
+          `/artifacts/${artifact.id}/regenerate`,
+          {}
+        );
+        return regenerated;
+      } catch {
+        // Return original artifact if regeneration fails - user can still navigate to it
+        return artifact;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+  });
+}
+
+type ExecuteResult = {
+  success: true;
+  correlationId: string;
+};
+
+/**
+ * Execute an approved implementation plan.
+ * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
+ */
+export function useExecuteImplementationPlan() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (artifactId: string) =>
+      apiClient.post<ExecuteResult>(`/artifacts/${artifactId}/execute`, {}),
+    onSuccess: (_, artifactId) => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.generationStatus(artifactId),
+      });
+    },
+  });
+}
+
+/**
+ * Fetch the pull request associated with an artifact's workstream.
+ */
+export function useArtifactPullRequest(
+  artifactId: string,
+  options?: Omit<
+    UseQueryOptions<PullRequestInfo | null>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: [...artifactKeys.detail(artifactId), "pull-request"] as const,
+    queryFn: () =>
+      apiClient.get<PullRequestInfo | null>(
+        `/artifacts/${artifactId}/pull-request`
+      ),
+    enabled: !!artifactId,
+    ...options,
   });
 }

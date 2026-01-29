@@ -3,7 +3,7 @@
 import { Input } from "@repo/design-system/components/ui/input";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useEffect, useRef, useState } from "react";
-import { updateProject } from "@/app/actions/projects";
+import { useUpdateProject } from "@/hooks/queries/use-projects";
 
 type EditableProjectTitleProps = {
   projectId: string;
@@ -19,8 +19,8 @@ export function EditableProjectTitle({
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(initialTitle);
   const [inputValue, setInputValue] = useState(initialTitle);
-  const [isPending, setIsPending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const updateProject = useUpdateProject();
 
   // Sync with prop changes (e.g., from server updates)
   useEffect(() => {
@@ -36,7 +36,7 @@ export function EditableProjectTitle({
     }
   }, [isEditing]);
 
-  const handleSave = async () => {
+  const handleSave = () => {
     const trimmedValue = inputValue.trim();
 
     // Validation: prevent empty titles
@@ -59,25 +59,26 @@ export function EditableProjectTitle({
     // Optimistic update
     setTitle(trimmedValue);
     setIsEditing(false);
-    setIsPending(true);
 
-    // Call server action
-    const result = await updateProject({
-      id: projectId,
-      name: trimmedValue,
-    });
-
-    setIsPending(false);
-
-    if (result.success) {
-      // Notify parent if callback provided
-      onTitleChange?.(trimmedValue);
-    } else {
-      // Revert on error using captured previous value
-      setTitle(previousTitle);
-      setInputValue(previousTitle);
-      toast.error("Failed to update project title. Please try again.");
-    }
+    // Call mutation
+    updateProject.mutate(
+      {
+        id: projectId,
+        name: trimmedValue,
+      },
+      {
+        onSuccess: () => {
+          // Notify parent if callback provided
+          onTitleChange?.(trimmedValue);
+        },
+        onError: () => {
+          // Revert on error using captured previous value
+          setTitle(previousTitle);
+          setInputValue(previousTitle);
+          toast.error("Failed to update project title. Please try again.");
+        },
+      }
+    );
   };
 
   const handleCancel = () => {
@@ -99,7 +100,7 @@ export function EditableProjectTitle({
     return (
       <Input
         className="h-auto border-none px-0 py-0 font-semibold text-2xl shadow-none focus-visible:ring-0"
-        disabled={isPending}
+        disabled={updateProject.isPending}
         onBlur={handleSave}
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={handleKeyDown}
