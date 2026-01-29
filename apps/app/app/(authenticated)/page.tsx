@@ -7,8 +7,8 @@ import { Cursors } from "./components/cursors";
 import { Header } from "./components/header";
 import { RecentWorkstreamsGrid } from "./components/recent-workstreams-grid";
 
-const title = "Symphony";
-const description = "Welcome to Symphony.";
+const title = "ClosedLoop.ai";
+const description = "Welcome to ClosedLoop.ai.";
 
 const CollaborationProvider = dynamic(() =>
   import("./components/collaboration-provider").then(
