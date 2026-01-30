@@ -182,15 +182,6 @@ jobs:
             echo "posted=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Submit PR review comment
-        if: always() && steps.post-summary.outputs.posted == 'true'
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
-        shell: bash
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          gh pr review "$PR_NUMBER" --comment --body "See summary comment above for details." || echo "Warning: Failed to submit PR review comment"
-
       - name: Review completed
         if: always()
         run: |
