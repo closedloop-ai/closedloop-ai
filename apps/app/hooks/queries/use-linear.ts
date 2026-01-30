@@ -29,7 +29,8 @@ export function useLinearIntegrationStatus(
 
   return useQuery({
     queryKey: linearKeys.status(),
-    queryFn: () => apiClient.get<LinearIntegrationStatus>("/linear/status"),
+    queryFn: () =>
+      apiClient.get<LinearIntegrationStatus>("/integrations/linear"),
     ...options,
   });
 }
@@ -46,7 +47,7 @@ export function useExportToLinear() {
       artifactId: string;
       teamId: string;
     }) =>
-      apiClient.post<ExportToLinearResult>("/linear/export", {
+      apiClient.post<ExportToLinearResult>("/integrations/linear/export", {
         artifactId,
         teamId,
       }),
@@ -59,7 +60,7 @@ export function useDisconnectLinear() {
 
   return useMutation({
     mutationFn: () =>
-      apiClient.post<{ success: true }>("/linear/disconnect", {}),
+      apiClient.delete<{ disconnected: true }>("/integrations/linear"),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: linearKeys.status() });
     },
@@ -68,12 +69,10 @@ export function useDisconnectLinear() {
 
 /**
  * Get the Linear OAuth URL for connecting.
- * This is a simple fetch that returns the URL string.
+ * Now returns the app's OAuth route directly (no API call needed).
+ * The OAuth flow is handled entirely by the app, which then sends
+ * tokens to the API for storage.
  */
-export function useGetLinearOAuthUrl() {
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: () => apiClient.get<{ url: string }>("/linear/oauth-url"),
-  });
+export function getLinearOAuthUrl(): string {
+  return "/api/integrations/linear";
 }

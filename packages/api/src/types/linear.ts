@@ -48,3 +48,13 @@ export type LinearOAuthUrlResponse = {
 export type LinearDisconnectResponse = {
   disconnected: true;
 };
+
+export type ConnectLinearInput = {
+  code: string;
+  codeVerifier: string;
+};
+
+export type ConnectLinearResponse = {
+  connected: true;
+  organizationName: string;
+};
