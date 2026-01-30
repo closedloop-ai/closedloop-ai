@@ -1,11 +1,20 @@
 import { env } from "@/env";
+import { appEnvironment, envIconPath } from "@/lib/environment";
 import { QueryProvider } from "@/lib/query-client";
 import "./styles.css";
 import { AnalyticsProvider } from "@repo/analytics/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
 import { Toolbar } from "@repo/feature-flags/components/toolbar";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
+
+export const metadata: Metadata = {
+  title: "ClosedLoop.ai",
+  icons: {
+    icon: envIconPath[appEnvironment],
+  },
+};
 
 type RootLayoutProperties = {
   readonly children: ReactNode;
