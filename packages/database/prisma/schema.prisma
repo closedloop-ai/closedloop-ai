@@ -44,6 +44,7 @@ enum WorkstreamState {
 
 enum ArtifactType {
   PRD
+  ISSUE
   FIGMA_DESIGN
   IMPLEMENTATION_PLAN
   CODE_REVIEW_REPORT
