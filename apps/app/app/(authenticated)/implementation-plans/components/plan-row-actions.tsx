@@ -33,7 +33,7 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
   const handleExport = () => {
     downloadAsMarkdown(
       plan.content ?? "",
-      plan.fileName ?? `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
+      plan.fileName ?? `${plan.title.toLowerCase().replaceAll(/\s+/g, "-")}.md`
     );
   };
 
@@ -46,10 +46,11 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
     }
   };
 
-  const handleDelete = () => {
-    deleteArtifact.mutate(plan.id, {
+  const handleDelete = async (): Promise<boolean> => {
+    const result = await deleteArtifact.mutateAsync(plan.id, {
       onSuccess: () => setShowDeleteDialog(false),
     });
+    return result.deleted ?? false;
   };
 
   return (

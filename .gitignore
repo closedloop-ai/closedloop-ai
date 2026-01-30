@@ -267,6 +267,7 @@ $RECYCLE.BIN/
 
 # Symphony
 .symphony
+.agent-types
 
 # .Claude Runs
 .claude/runs

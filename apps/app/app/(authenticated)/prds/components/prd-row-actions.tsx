@@ -36,8 +36,11 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
 
   const isPending = updateArtifact.isPending || deleteArtifact.isPending;
 
-  const handleRename = (newTitle: string, newFileName: string) => {
-    updateArtifact.mutate(
+  const handleRename = async (
+    newTitle: string,
+    newFileName: string
+  ): Promise<boolean> => {
+    const result = await updateArtifact.mutateAsync(
       { id: prd.id, title: newTitle, fileName: newFileName },
       {
         onSuccess: () => {
@@ -45,18 +48,20 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
         },
       }
     );
+    return !!result;
   };
 
   const handleExport = () => {
     downloadAsMarkdown(prd.content ?? "", prd.fileName ?? `${prd.title}.md`);
   };
 
-  const handleDelete = () => {
-    deleteArtifact.mutate(prd.id, {
+  const handleDelete = async (): Promise<boolean> => {
+    const result = await deleteArtifact.mutateAsync(prd.id, {
       onSuccess: () => {
         setShowDeleteDialog(false);
       },
     });
+    return result.deleted ?? false;
   };
 
   return (

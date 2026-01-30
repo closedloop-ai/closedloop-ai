@@ -29,6 +29,14 @@ export function RequestChangesModal({
   const [changes, setChanges] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  const handleOpenChange = (newOpen: boolean) => {
+    onOpenChange(newOpen);
+    if (!newOpen) {
+      setChanges("");
+      setError(null);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!changes.trim()) {
       setError("Please describe the changes you want to make");
@@ -39,15 +47,7 @@ export function RequestChangesModal({
 
     const result = await onSubmit(changes.trim());
     if (result) {
-      setChanges("");
-    }
-  };
-
-  const handleOpenChange = (newOpen: boolean) => {
-    onOpenChange(newOpen);
-    if (!newOpen) {
-      setChanges("");
-      setError(null);
+      handleOpenChange(false);
     }
   };
 
