@@ -80,6 +80,10 @@ const ARTIFACT_SECTIONS: {
   },
 ];
 
+function isNavigableArtifact(type: ProjectArtifactType): boolean {
+  return type === "PRD" || type === "IMPLEMENTATION_PLAN";
+}
+
 /**
  * Get the route to navigate to for viewing/editing an artifact.
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
@@ -170,9 +174,7 @@ function ArtifactSection({
               const isExternal =
                 artifact.type === "DESIGNS" &&
                 (artifact.link?.startsWith("http") ?? false);
-              const isClickable =
-                artifact.type === "PRD" ||
-                artifact.type === "IMPLEMENTATION_PLAN";
+              const isClickable = isNavigableArtifact(artifact.type);
 
               return (
                 <TableRow
@@ -286,7 +288,7 @@ export function ArtifactsTable({
   );
 
   function handleRowClick(artifact: ProjectArtifact): void {
-    if (artifact.type === "PRD" || artifact.type === "IMPLEMENTATION_PLAN") {
+    if (isNavigableArtifact(artifact.type)) {
       const route = getArtifactRoute(artifact);
       if (route) {
         router.push(route);
