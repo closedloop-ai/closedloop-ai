@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 
 type UseDeleteConfirmationOptions<T> = {
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => Promise<boolean>;
   getId: (item: T) => string;
 };
 
@@ -17,7 +17,7 @@ type UseDeleteConfirmationReturn<T> = {
   /** Call this when user clicks delete button on an item */
   requestDelete: (item: T) => void;
   /** Call this when user confirms deletion in dialog */
-  confirmDelete: () => Promise<void>;
+  confirmDelete: () => Promise<boolean>;
   /** Setter for dialog open state (for dialog's onOpenChange) */
   setOpen: (open: boolean) => void;
 };
@@ -60,16 +60,17 @@ export function useDeleteConfirmation<T>({
     setIsOpen(true);
   }, []);
 
-  const confirmDelete = useCallback(async () => {
+  const confirmDelete = useCallback(async (): Promise<boolean> => {
     if (!itemToDelete) {
-      return;
+      return false;
     }
 
     setIsPending(true);
     try {
-      await onDelete(getId(itemToDelete));
+      const result = await onDelete(getId(itemToDelete));
       setIsOpen(false);
       setItemToDelete(null);
+      return result ?? false;
     } finally {
       setIsPending(false);
     }

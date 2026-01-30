@@ -14,7 +14,7 @@ import { LoaderIcon, PlayIcon } from "lucide-react";
 type ExecutePlanModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onConfirm: () => void | Promise<void>;
+  onConfirm: () => Promise<boolean>;
   isLoading: boolean;
 };
 
@@ -25,7 +25,10 @@ export function ExecutePlanModal({
   isLoading,
 }: ExecutePlanModalProps) {
   const handleConfirm = async () => {
-    await onConfirm();
+    const success = await onConfirm();
+    if (success) {
+      onOpenChange(false);
+    }
   };
 
   return (

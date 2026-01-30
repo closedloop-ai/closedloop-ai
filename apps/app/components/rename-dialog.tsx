@@ -20,7 +20,7 @@ type RenameDialogProps = {
   description: string;
   currentTitle: string;
   currentFileName: string;
-  onRename: (newTitle: string, newFileName: string) => void;
+  onRename: (newTitle: string, newFileName: string) => Promise<boolean>;
   isPending?: boolean;
 };
 
@@ -33,7 +33,7 @@ export function RenameDialog({
   currentFileName,
   onRename,
   isPending = false,
-}: RenameDialogProps) {
+}: Readonly<RenameDialogProps>) {
   const [newTitle, setNewTitle] = useState(currentTitle);
   const [newFileName, setNewFileName] = useState(currentFileName);
 
@@ -45,8 +45,11 @@ export function RenameDialog({
     }
   }, [open, currentTitle, currentFileName]);
 
-  const handleSubmit = () => {
-    onRename(newTitle, newFileName);
+  const handleSubmit = async () => {
+    const success = await onRename(newTitle, newFileName);
+    if (success) {
+      onOpenChange(false);
+    }
   };
 
   return (

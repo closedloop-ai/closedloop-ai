@@ -44,7 +44,7 @@ import { ArtifactTypeBadge } from "./artifact-type-badge";
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
   onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
-  onDelete?: (artifactId: string) => void;
+  onDelete?: (artifactId: string) => Promise<boolean>;
 };
 
 /**
@@ -108,7 +108,7 @@ export function ArtifactsTable({
 }: ArtifactsTableProps) {
   const router = useRouter();
   const deleteConfirmation = useDeleteConfirmation({
-    onDelete: onDelete ?? (() => {}),
+    onDelete: onDelete ?? (async () => false),
     getId: (artifact: ProjectArtifact) => artifact.id,
   });
 

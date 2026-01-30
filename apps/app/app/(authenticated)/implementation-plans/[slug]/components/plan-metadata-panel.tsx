@@ -1,22 +1,18 @@
 "use client";
 
-import {
+import type {
   ArtifactStatus,
-  type ArtifactWithWorkstream,
-  type GenerationStatus,
-  type PullRequestInfo,
+  ArtifactWithWorkstream,
+  GenerationStatus,
+  PullRequestInfo,
 } from "@repo/api/src/types/artifact";
-import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
-import { artifactStatusLabels } from "@/components/status-badge";
+import {
+  MetadataPanel,
+  MetadataSection,
+} from "@/components/artifact-editor/metadata-panel";
+import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 
 const PR_STATE_STYLES: Record<string, string> = {
   OPEN: "bg-green-100 text-green-700",
@@ -25,16 +21,58 @@ const PR_STATE_STYLES: Record<string, string> = {
 };
 
 type PlanMetadataPanelProps = {
+  /**
+   * Plan artifact with workstream data
+   */
   plan: ArtifactWithWorkstream;
+  /**
+   * Current artifact status
+   */
   status: ArtifactStatus;
+  /**
+   * Current approver value
+   */
   approver: string;
+  /**
+   * Generation status information (GitHub Actions workflow)
+   */
   generationStatus: GenerationStatus | null;
+  /**
+   * Pull request information if plan has been executed
+   */
   pullRequest: PullRequestInfo | null;
+  /**
+   * Handler called when status is changed
+   */
   onStatusChange: (status: ArtifactStatus) => void;
+  /**
+   * Handler called when approver input value changes
+   */
   onApproverChange: (approver: string) => void;
+  /**
+   * Handler called when approver input loses focus
+   */
   onApproverBlur: () => void;
 };
 
+/**
+ * Metadata panel for Plan editor.
+ * Displays status, approver, generation workflow link, pull request info, and artifact metadata.
+ *
+ * Usage:
+ * ```tsx
+ * <PlanMetadataPanel
+ *   plan={plan}
+ *   status={status}
+ *   approver={approver}
+ *   generationStatus={generationStatus}
+ *   pullRequest={pullRequest}
+ *   onStatusChange={handleStatusChange}
+ *   onApproverChange={handleApproverChange}
+ *   onApproverBlur={handleApproverBlur}
+ * />
+ * ```
+ */
 export function PlanMetadataPanel({
   plan,
   status,
@@ -46,108 +84,75 @@ export function PlanMetadataPanel({
   onApproverBlur,
 }: PlanMetadataPanelProps) {
   return (
-    <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
-      <h3 className="mb-4 font-semibold">Plan Details</h3>
+    <MetadataPanel title="Plan Details">
+      <StatusMetadataSection
+        approver={approver}
+        onApproverBlur={onApproverBlur}
+        onApproverChange={onApproverChange}
+        onStatusChange={onStatusChange}
+        status={status}
+      />
 
-      <div className="space-y-4">
-        <div className="space-y-2">
-          <Label>Status</Label>
-          <Select
-            onValueChange={(v) => onStatusChange(v as ArtifactStatus)}
-            value={status}
+      <MetadataSection separator>
+        <div className="space-y-1 text-muted-foreground text-sm">
+          <p>Version: v{plan.version}</p>
+          <p>
+            Created:{" "}
+            {new Intl.DateTimeFormat("en-US", {
+              dateStyle: "medium",
+            }).format(new Date(plan.createdAt))}
+          </p>
+          <p>
+            Updated:{" "}
+            {new Intl.DateTimeFormat("en-US", {
+              dateStyle: "medium",
+            }).format(new Date(plan.updatedAt))}
+          </p>
+        </div>
+      </MetadataSection>
+
+      {/* GitHub Action Run Link */}
+      {generationStatus?.htmlUrl ? (
+        <MetadataSection separator>
+          <Label className="text-muted-foreground text-xs">Generation</Label>
+          <a
+            className="flex items-center gap-1 text-primary text-sm hover:underline"
+            href={generationStatus.htmlUrl}
+            rel="noopener noreferrer"
+            target="_blank"
           >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.values(ArtifactStatus).map((statusOption) => (
-                <SelectItem key={statusOption} value={statusOption}>
-                  {artifactStatusLabels[statusOption] ?? statusOption}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+            View GitHub Workflow
+            <ExternalLinkIcon className="h-3 w-3" />
+          </a>
+        </MetadataSection>
+      ) : null}
 
-        <div className="space-y-2">
-          <Label>Approver</Label>
-          <Input
-            onBlur={onApproverBlur}
-            onChange={(e) => onApproverChange(e.target.value)}
-            placeholder="Approver name"
-            value={approver}
-          />
-        </div>
-
-        <div className="border-t pt-4">
-          <div className="space-y-1 text-muted-foreground text-sm">
-            <p>Version: v{plan.version}</p>
-            <p>
-              Created:{" "}
-              {new Intl.DateTimeFormat("en-US", {
-                dateStyle: "medium",
-              }).format(new Date(plan.createdAt))}
-            </p>
-            <p>
-              Updated:{" "}
-              {new Intl.DateTimeFormat("en-US", {
-                dateStyle: "medium",
-              }).format(new Date(plan.updatedAt))}
-            </p>
+      {/* Pull Request Link */}
+      {pullRequest ? (
+        <MetadataSection separator>
+          <Label className="text-muted-foreground text-xs">Pull Request</Label>
+          <a
+            className="flex items-center gap-1 text-primary text-sm hover:underline"
+            href={pullRequest.htmlUrl}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <GitPullRequestIcon className="h-3 w-3" />#{pullRequest.number}:{" "}
+            {pullRequest.title}
+            <ExternalLinkIcon className="h-3 w-3" />
+          </a>
+          <div className="flex items-center gap-2 text-muted-foreground text-xs">
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
+            >
+              {pullRequest.state}
+            </span>
+            <span>
+              {pullRequest.headBranch} → {pullRequest.baseBranch}
+            </span>
           </div>
-        </div>
-
-        {/* GitHub Action Run Link */}
-        {generationStatus?.htmlUrl ? (
-          <div className="border-t pt-4">
-            <div className="space-y-2">
-              <Label className="text-muted-foreground text-xs">
-                Generation
-              </Label>
-              <a
-                className="flex items-center gap-1 text-primary text-sm hover:underline"
-                href={generationStatus.htmlUrl}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                View GitHub Workflow
-                <ExternalLinkIcon className="h-3 w-3" />
-              </a>
-            </div>
-          </div>
-        ) : null}
-
-        {/* Pull Request Link */}
-        {pullRequest ? (
-          <div className="border-t pt-4">
-            <div className="space-y-2">
-              <Label className="text-muted-foreground text-xs">
-                Pull Request
-              </Label>
-              <a
-                className="flex items-center gap-1 text-primary text-sm hover:underline"
-                href={pullRequest.htmlUrl}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                <GitPullRequestIcon className="h-3 w-3" />#{pullRequest.number}:{" "}
-                {pullRequest.title}
-                <ExternalLinkIcon className="h-3 w-3" />
-              </a>
-              <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
-                >
-                  {pullRequest.state}
-                </span>
-                <span>
-                  {pullRequest.headBranch} → {pullRequest.baseBranch}
-                </span>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
+        </MetadataSection>
+      ) : null}
+    </MetadataPanel>
   );
 }

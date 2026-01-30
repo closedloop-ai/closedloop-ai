@@ -83,7 +83,8 @@ export default function TeamProjectsPage() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    deleteProjectMutation.mutate(projectId);
+    const result = await deleteProjectMutation.mutateAsync(projectId);
+    return result.deleted ?? false;
   };
 
   if (loading) {

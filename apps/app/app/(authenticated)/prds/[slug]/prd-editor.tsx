@@ -1,48 +1,17 @@
 "use client";
 
-import {
-  ArtifactStatus,
-  type ArtifactWithWorkstream,
-} from "@repo/api/src/types/artifact";
-import { Button } from "@repo/design-system/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
-import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor/rich-text-editor";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
-import {
-  ArrowLeftIcon,
-  DownloadIcon,
-  FileTextIcon,
-  MoreHorizontalIcon,
-  PencilIcon,
-  SettingsIcon,
-  SparklesIcon,
-  TrashIcon,
-} from "lucide-react";
-import Link from "next/link";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
+import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import {
-  ArtifactStatusBadge,
-  artifactStatusLabels,
-} from "@/components/status-badge";
-import { formatRelativeTime } from "@/lib/date-utils";
-import { usePRDEditor } from "./use-prd-editor";
+import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
+import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
+import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
+import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { PRDEditorHeader } from "./components/prd-editor-header";
+import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
 type PRDEditorProps = {
   prd: ArtifactWithWorkstream;
@@ -57,223 +26,101 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
+  // Use focused hooks instead of monolithic usePRDEditor
+  const content = useArtifactContent({
+    artifact: prd,
+  });
+
+  const metadata = useArtifactMetadata({
+    artifact: prd,
+  });
+
+  const actions = useArtifactActions({
+    artifact: prd,
+    redirectPath: prd.project?.teams?.[0]?.id
+      ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
+      : "/prds",
+  });
+
+  const uiState = useArtifactUIState({
+    artifactType: "PRD",
+  });
+
+  // Type assertion for PRD-specific UI state
+  // Since useArtifactUIState returns a union type based on artifactType,
+  // TypeScript can't narrow it automatically. We assert the PRD type here.
   const {
-    isPending,
-    content,
-    setContent,
-    lastSaved,
-    isSaving,
-    status,
-    approver,
-    targetRepo,
-    targetBranch,
-    showMetadataPanel,
-    setShowMetadataPanel,
     showRenameDialog,
     setShowRenameDialog,
-    showDeleteDialog,
-    setShowDeleteDialog,
+    openRenameDialog,
     showGeneratePlanModal,
     setShowGeneratePlanModal,
-    handleSaveContent,
-    handleStatusChange,
-    handleApproverChange,
-    handleApproverBlur,
-    handleTargetRepoChange,
-    handleTargetRepoBlur,
-    handleTargetBranchChange,
-    handleTargetBranchBlur,
-    handleRename,
-    handleExport,
-    handleDelete,
-  } = usePRDEditor(prd);
+    openGeneratePlanModal,
+  } = uiState as Extract<
+    ReturnType<typeof useArtifactUIState>,
+    { showRenameDialog: boolean }
+  >;
+
+  // Determine if any operation is pending
+  const isPending =
+    content.isSaving ||
+    metadata.isUpdating ||
+    actions.isDeleting ||
+    actions.isRenaming;
+
+  // Create version display component for header
+  const versionDisplay = (
+    <VersionSelector
+      currentVersion={currentVersion}
+      latestVersion={latestVersion}
+      onVersionChange={onVersionChange}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
-        <div className="flex items-center gap-4">
-          <Link
-            href={
-              prd.project?.teams?.[0]?.id
-                ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
-                : "/prds"
-            }
-          >
-            <Button size="sm" variant="ghost">
-              <ArrowLeftIcon className="mr-2 h-4 w-4" />
-              {prd.project?.teams?.[0]?.id
-                ? "Back to Project"
-                : "Back to Library"}
-            </Button>
-          </Link>
-
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <FileTextIcon className="h-4 w-4" />
-            <span>{prd.fileName ?? prd.title}</span>
-            <VersionSelector
-              currentVersion={currentVersion}
-              latestVersion={latestVersion}
-              onVersionChange={onVersionChange}
-            />
-          </div>
-
-          <ArtifactStatusBadge status={status} />
-
-          <span className="text-muted-foreground text-sm">
-            {isSaving
-              ? "Saving..."
-              : `Last saved: ${formatRelativeTime(lastSaved)}`}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setShowMetadataPanel(!showMetadataPanel)}
-            size="sm"
-            variant={showMetadataPanel ? "secondary" : "outline"}
-          >
-            <SettingsIcon className="mr-2 h-4 w-4" />
-            Details
-          </Button>
-
-          <Button
-            onClick={() => setShowGeneratePlanModal(true)}
-            size="sm"
-            variant="default"
-          >
-            <SparklesIcon className="mr-2 h-4 w-4" />
-            Generate Implementation Plan
-          </Button>
-
-          <Button disabled={isPending} onClick={handleSaveContent}>
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost">
-                <MoreHorizontalIcon className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[160px]">
-              <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
-                <PencilIcon className="mr-2 h-4 w-4" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleExport}>
-                <DownloadIcon className="mr-2 h-4 w-4" />
-                Export .md
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <TrashIcon className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
+      <PRDEditorHeader
+        isPending={isPending}
+        isSaving={content.isSaving}
+        lastSaved={content.lastSaved}
+        onDelete={uiState.openDeleteDialog}
+        onExport={actions.handleDownload}
+        onGeneratePlan={openGeneratePlanModal}
+        onRename={openRenameDialog}
+        onSave={content.saveContent}
+        onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        prd={prd}
+        showMetadataPanel={uiState.showMetadataPanel}
+        status={metadata.status}
+        versionDisplay={versionDisplay}
+      />
 
       {/* Content Area with Optional Metadata Panel */}
       <div className="flex min-h-0 flex-1">
         {/* Scrollable Editor */}
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex min-h-0 w-full flex-1 flex-col">
-            <RichTextEditor
-              onChange={setContent}
-              placeholder="Start writing your PRD..."
-              value={content}
-            />
-          </div>
-        </div>
+        <EditorContent
+          onChange={content.updateContent}
+          placeholder="Start writing your PRD..."
+          value={content.content}
+        />
 
         {/* Metadata Panel */}
-        {showMetadataPanel ? (
-          <div className="w-80 overflow-auto border-l bg-muted/30 p-4">
-            <h3 className="mb-4 font-semibold">PRD Details</h3>
-
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Status</Label>
-                <Select
-                  onValueChange={(v) => handleStatusChange(v as ArtifactStatus)}
-                  value={status}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.values(ArtifactStatus).map((statusOption) => (
-                      <SelectItem key={statusOption} value={statusOption}>
-                        {artifactStatusLabels[statusOption] ?? statusOption}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Approver</Label>
-                <Input
-                  onBlur={handleApproverBlur}
-                  onChange={(e) => handleApproverChange(e.target.value)}
-                  placeholder="Approver name"
-                  value={approver}
-                />
-              </div>
-
-              <div className="space-y-4 border-t pt-4">
-                <h4 className="font-medium text-sm">Plan Generation</h4>
-
-                <div className="space-y-2">
-                  <Label>
-                    Target Repository{" "}
-                    <span className="text-muted-foreground text-xs">
-                      (owner/repo)
-                    </span>
-                  </Label>
-                  <Input
-                    onBlur={handleTargetRepoBlur}
-                    onChange={(e) => handleTargetRepoChange(e.target.value)}
-                    placeholder="owner/repo"
-                    value={targetRepo}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Target Branch</Label>
-                  <Input
-                    onBlur={handleTargetBranchBlur}
-                    onChange={(e) => handleTargetBranchChange(e.target.value)}
-                    placeholder="main"
-                    value={targetBranch}
-                  />
-                </div>
-              </div>
-
-              <div className="border-t pt-4">
-                <div className="space-y-1 text-muted-foreground text-sm">
-                  <p>Version: v{prd.version}</p>
-                  <p>
-                    Created:{" "}
-                    {new Intl.DateTimeFormat("en-US", {
-                      dateStyle: "medium",
-                    }).format(new Date(prd.createdAt))}
-                  </p>
-                  <p>
-                    Updated:{" "}
-                    {new Intl.DateTimeFormat("en-US", {
-                      dateStyle: "medium",
-                    }).format(new Date(prd.updatedAt))}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+        {uiState.showMetadataPanel ? (
+          <PRDMetadataPanel
+            approver={metadata.approver}
+            onApproverBlur={metadata.handleApproverBlur}
+            onApproverChange={metadata.handleApproverChange}
+            onStatusChange={metadata.handleStatusChange}
+            onTargetBranchBlur={metadata.handleTargetBranchBlur}
+            onTargetBranchChange={metadata.handleTargetBranchChange}
+            onTargetRepoBlur={metadata.handleTargetRepoBlur}
+            onTargetRepoChange={metadata.handleTargetRepoChange}
+            prd={prd}
+            status={metadata.status}
+            targetBranch={metadata.targetBranch}
+            targetRepo={metadata.targetRepo}
+          />
         ) : null}
       </div>
 
@@ -284,7 +131,7 @@ export function PRDEditor({
         description="Update the title and file name for this PRD."
         isPending={isPending}
         onOpenChange={setShowRenameDialog}
-        onRename={handleRename}
+        onRename={actions.handleRename}
         open={showRenameDialog}
         title="Rename PRD"
       />
@@ -293,9 +140,9 @@ export function PRDEditor({
       <DeleteConfirmationDialog
         isPending={isPending}
         itemName={prd.title}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
+        onConfirm={actions.handleDelete}
+        onOpenChange={uiState.setShowDeleteDialog}
+        open={uiState.showDeleteDialog}
         title="PRD"
       />
 
