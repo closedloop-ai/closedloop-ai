@@ -143,10 +143,13 @@ export function PlanEditor({
             generationStatus={generationStatus ?? null}
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
             onStatusChange={metadata.handleStatusChange}
+            owner={metadata.owner}
             plan={plan}
             pullRequest={pullRequest ?? null}
             status={metadata.status}
+            teamMembers={metadata.teamMembers}
           />
         ) : null}
       </div>

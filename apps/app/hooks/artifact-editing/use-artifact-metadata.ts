@@ -5,12 +5,31 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useCallback, useEffect, useState } from "react";
+import type { User } from "@repo/design-system/components/ui/user-select-popover";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
+import { useTeamMembers } from "@/hooks/use-team-members";
+import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type UseArtifactMetadataConfig = {
   artifact: ArtifactWithWorkstream;
 };
+
+/**
+ * Convert a ProjectOwner (from the API) to the User shape expected by UserSelectPopover.
+ * Returns null if no owner is provided.
+ */
+function ownerToUser(owner: ArtifactWithWorkstream["owner"]): User | null {
+  if (!owner) {
+    return null;
+  }
+  return {
+    id: owner.id,
+    name: getUserDisplayName(owner),
+    avatarUrl: owner.avatarUrl ?? undefined,
+    initials: getUserInitials(owner.firstName, owner.lastName),
+  };
+}
 
 /**
  * Hook to manage artifact metadata updates (status, approver, targetRepo, targetBranch).
@@ -47,6 +66,16 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   const [targetBranch, setTargetBranch] = useState(
     artifact.targetBranch ?? "main"
   );
+  const [owner, setOwner] = useState<User | null>(() =>
+    ownerToUser(artifact.owner)
+  );
+
+  // Fetch team members from artifact's project teams
+  const teamIds = useMemo(
+    () => artifact.project?.teams?.map((team) => team.id) ?? [],
+    [artifact.project?.teams]
+  );
+  const { members: teamMembers } = useTeamMembers({ teamIds });
 
   // Derived state
   const isUpdating = updateArtifact.isPending;
@@ -57,11 +86,13 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     setApprover(artifact.approver ?? "");
     setTargetRepo(artifact.targetRepo ?? "");
     setTargetBranch(artifact.targetBranch ?? "main");
+    setOwner(ownerToUser(artifact.owner));
   }, [
     artifact.status,
     artifact.approver,
     artifact.targetRepo,
     artifact.targetBranch,
+    artifact.owner,
   ]);
 
   /**
@@ -75,6 +106,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
         approver: string | null;
         targetRepo: string | null;
         targetBranch: string | null;
+        ownerId: string | null;
       }>
     ) => {
       updateArtifact.mutate(
@@ -137,12 +169,26 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     }
   }, [targetBranch, artifact.targetBranch, handleMetadataUpdate]);
 
+  /**
+   * Handle owner change.
+   * Updates local state and immediately saves to server.
+   */
+  const handleOwnerChange = useCallback(
+    (user: User | null) => {
+      setOwner(user);
+      handleMetadataUpdate({ ownerId: user?.id ?? null });
+    },
+    [handleMetadataUpdate]
+  );
+
   return {
     // Metadata state
     status,
     approver,
     targetRepo,
     targetBranch,
+    owner,
+    teamMembers,
 
     // Status handlers
     handleStatusChange,
@@ -158,6 +204,9 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     // Target branch handlers (setTargetBranch is stable, no useCallback needed)
     handleTargetBranchChange: setTargetBranch,
     handleTargetBranchBlur,
+
+    // Owner handlers
+    handleOwnerChange,
 
     // Loading state
     isUpdating,

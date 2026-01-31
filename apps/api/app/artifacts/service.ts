@@ -17,6 +17,25 @@ import {
   generateDocumentSlug,
 } from "./artifact-utils";
 
+/**
+ * Validate that a user belongs to the given organization.
+ * Throws if the user does not exist within the org.
+ */
+async function validateOwnerInOrg(
+  ownerId: string,
+  organizationId: string
+): Promise<void> {
+  const owner = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: ownerId, organizationId },
+      select: { id: true },
+    })
+  );
+  if (!owner) {
+    throw new Error("Invalid owner ID: user not found in this organization");
+  }
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -173,13 +192,16 @@ export const artifactsService = {
         input.projectId = workstream.projectId;
       }
 
+      const resolvedOwnerId = input.ownerId ?? userId;
+      await validateOwnerInOrg(resolvedOwnerId, organizationId);
+
       const documentSlug =
         input.type === ArtifactType.Prd ||
         input.type === ArtifactType.ImplementationPlan
           ? generateDocumentSlug()
           : null;
 
-      return tx.artifact.create({
+      return await tx.artifact.create({
         data: {
           ...input,
           organizationId,
@@ -187,6 +209,7 @@ export const artifactsService = {
           version: 1,
           isLatest: true,
           generatedBy: userId,
+          ownerId: resolvedOwnerId,
         },
       });
     });
@@ -196,12 +219,16 @@ export const artifactsService = {
    * Update an existing artifact.
    * Auto-increments version when content is modified.
    */
-  update(
+  async update(
     id: string,
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    return withDb((db) =>
+    if (input.ownerId) {
+      await validateOwnerInOrg(input.ownerId, organizationId);
+    }
+
+    return await withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: input,
@@ -1092,7 +1119,8 @@ export type RequestChangesResult =
   | { success: true; message: string; artifactId: string }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
-// Type for raw Prisma result before transformation
+// Type for raw Prisma result before transformation.
+// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
 type RawArtifactWithContext = Artifact & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1100,6 +1128,12 @@ type RawArtifactWithContext = Artifact & {
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
+  } | null;
+  owner: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
   } | null;
 };
 

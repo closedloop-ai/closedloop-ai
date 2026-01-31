@@ -59,6 +59,7 @@ export async function createArtifactVersion(
         options.content === undefined ? original.content : options.content,
       externalUrl: original.externalUrl,
       generatedBy: original.generatedBy,
+      ownerId: original.ownerId,
       documentSlug: original.documentSlug,
       targetRepo: original.targetRepo,
       targetBranch: original.targetBranch,
@@ -102,6 +103,14 @@ export const artifactIncludeWithContext = {
         },
         take: 1,
       },
+    },
+  },
+  owner: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
     },
   },
 } as const;

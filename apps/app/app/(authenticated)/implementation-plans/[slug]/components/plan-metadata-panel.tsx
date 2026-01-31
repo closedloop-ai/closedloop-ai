@@ -7,6 +7,7 @@ import type {
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import { Label } from "@repo/design-system/components/ui/label";
+import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
 import {
   MetadataPanel,
@@ -34,6 +35,14 @@ type PlanMetadataPanelProps = {
    */
   approver: string;
   /**
+   * Current owner (User or null if not selected)
+   */
+  owner: User | null;
+  /**
+   * List of team members to choose from for owner selection
+   */
+  teamMembers: User[];
+  /**
    * Generation status information (GitHub Actions workflow)
    */
   generationStatus: GenerationStatus | null;
@@ -53,6 +62,10 @@ type PlanMetadataPanelProps = {
    * Handler called when approver input loses focus
    */
   onApproverBlur: () => void;
+  /**
+   * Handler called when owner is changed
+   */
+  onOwnerChange: (user: User | null) => void;
 };
 
 /**
@@ -65,11 +78,14 @@ type PlanMetadataPanelProps = {
  *   plan={plan}
  *   status={status}
  *   approver={approver}
+ *   owner={owner}
+ *   teamMembers={teamMembers}
  *   generationStatus={generationStatus}
  *   pullRequest={pullRequest}
  *   onStatusChange={handleStatusChange}
  *   onApproverChange={handleApproverChange}
  *   onApproverBlur={handleApproverBlur}
+ *   onOwnerChange={handleOwnerChange}
  * />
  * ```
  */
@@ -77,11 +93,14 @@ export function PlanMetadataPanel({
   plan,
   status,
   approver,
+  owner,
+  teamMembers,
   generationStatus,
   pullRequest,
   onStatusChange,
   onApproverChange,
   onApproverBlur,
+  onOwnerChange,
 }: PlanMetadataPanelProps) {
   return (
     <MetadataPanel title="Plan Details">
@@ -89,8 +108,11 @@ export function PlanMetadataPanel({
         approver={approver}
         onApproverBlur={onApproverBlur}
         onApproverChange={onApproverChange}
+        onOwnerChange={onOwnerChange}
         onStatusChange={onStatusChange}
+        owner={owner}
         status={status}
+        teamMembers={teamMembers}
       />
 
       <MetadataSection separator>
