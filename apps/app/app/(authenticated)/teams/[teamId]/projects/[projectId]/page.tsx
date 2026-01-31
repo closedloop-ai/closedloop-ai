@@ -55,6 +55,17 @@ import { ArtifactsTable } from "./components/artifacts-table";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { PropertiesPanel } from "./components/properties-panel";
 
+/**
+ * Map backend ArtifactType to frontend ProjectArtifactType.
+ * PULL_REQUEST artifacts are displayed under the FEATURE_BRANCHES section.
+ */
+function toProjectArtifactType(type: string): ProjectArtifactType {
+  if (type === "PULL_REQUEST") {
+    return "FEATURE_BRANCHES";
+  }
+  return type as ProjectArtifactType;
+}
+
 export default function ProjectDetailPage() {
   const params = useParams();
   const teamId = params.teamId as string;
@@ -90,7 +101,7 @@ export default function ProjectDetailPage() {
         id: artifact.id,
         documentSlug: artifact.documentSlug,
         name: artifact.title,
-        type: artifact.type as ProjectArtifactType,
+        type: toProjectArtifactType(artifact.type),
         status: mapArtifactStatusToDisplay(artifact.status),
         link: artifact.externalUrl || undefined,
       })),

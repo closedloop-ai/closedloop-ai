@@ -3,6 +3,7 @@ import type {
   WorkflowRunInProgressEvent,
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
 import { withDb } from "@repo/database";
 import {
@@ -304,9 +305,25 @@ async function handleExecutionSuccess(
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 
-  await withDb(async (db) => {
+  await withDb.tx(async (tx) => {
+    // Query plan artifact for organizationId, projectId, generatedBy
+    const planArtifact = await tx.artifact.findUnique({
+      where: { id: ctx.artifactId },
+      select: {
+        organizationId: true,
+        projectId: true,
+        generatedBy: true,
+      },
+    });
+
+    if (!planArtifact) {
+      throw new Error(
+        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found for correlation ${correlationId}`
+      );
+    }
+
     // Create GitHubPullRequest record
-    await db.gitHubPullRequest.create({
+    await tx.gitHubPullRequest.create({
       data: {
         workstreamId,
         repositoryId,
@@ -320,8 +337,22 @@ async function handleExecutionSuccess(
       },
     });
 
+    // Create Artifact record for the PR
+    await tx.artifact.create({
+      data: {
+        organizationId: planArtifact.organizationId,
+        workstreamId,
+        projectId: planArtifact.projectId,
+        type: ArtifactType.PullRequest,
+        title: prTitle,
+        externalUrl: executionResult.pr_url,
+        status: ArtifactStatus.Review,
+        generatedBy: planArtifact.generatedBy,
+      },
+    });
+
     // Create workstream event
-    await db.workstreamEvent.create({
+    await tx.workstreamEvent.create({
       data: {
         workstreamId,
         type: "GITHUB_PR_CREATED",
