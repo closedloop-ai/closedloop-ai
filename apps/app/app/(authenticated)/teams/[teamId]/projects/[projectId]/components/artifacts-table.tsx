@@ -84,6 +84,17 @@ function isNavigableArtifact(type: ProjectArtifactType): boolean {
   return type === "PRD" || type === "IMPLEMENTATION_PLAN";
 }
 
+function isExternalLink(artifact: ProjectArtifact): boolean {
+  switch (artifact.type) {
+    case "DESIGNS":
+      return artifact.link?.startsWith("http") ?? false;
+    case "FEATURE_BRANCHES":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /**
  * Get the route to navigate to for viewing/editing an artifact.
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
@@ -97,6 +108,7 @@ function getArtifactRoute(artifact: ProjectArtifact): string | null {
         ? `/implementation-plans/${artifact.documentSlug}`
         : null;
     case "DESIGNS":
+    case "FEATURE_BRANCHES":
       return artifact.link || null;
     default:
       return null;
@@ -171,9 +183,7 @@ function ArtifactSection({
             {artifacts.map((artifact) => {
               const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
               const route = getArtifactRoute(artifact);
-              const isExternal =
-                artifact.type === "DESIGNS" &&
-                (artifact.link?.startsWith("http") ?? false);
+              const isExternal = isExternalLink(artifact);
               const isClickable = isNavigableArtifact(artifact.type);
 
               return (

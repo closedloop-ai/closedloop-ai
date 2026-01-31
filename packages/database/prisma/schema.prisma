@@ -52,6 +52,7 @@ enum ArtifactType {
   ACCESSIBILITY_REPORT
   TEST_REPORT
   COMPLETION_SUMMARY
+  PULL_REQUEST
 }
 
 enum ArtifactStatus {
