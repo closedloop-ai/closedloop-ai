@@ -6,6 +6,7 @@ import {
   autoRollbackTransaction,
   createTestOrganization,
   createTestProject,
+  createTestUser,
 } from "../utils/db-helpers";
 
 // Skip integration tests if no DATABASE_URL is configured
@@ -17,7 +18,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
-      const testUserId = uuidv7();
+      const testUser = await createTestUser(testOrgId);
+      const testUserId = testUser.id;
 
       // Create artifact without documentSlug - should auto-generate from title
       const artifact = await artifactsService.create(testOrgId, testUserId, {
@@ -55,7 +57,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
-      const testUserId = uuidv7();
+      const testUser = await createTestUser(testOrgId);
+      const testUserId = testUser.id;
 
       // Create first artifact (v1)
       const v1 = await artifactsService.create(testOrgId, testUserId, {
@@ -94,7 +97,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
       const testProjectId = await createTestProject(testOrgId);
-      const testUserId = uuidv7();
+      const testUser = await createTestUser(testOrgId);
+      const testUserId = testUser.id;
 
       // Create original artifact
       const original = await artifactsService.create(testOrgId, testUserId, {
