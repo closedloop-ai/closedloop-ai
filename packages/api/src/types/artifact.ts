@@ -4,6 +4,7 @@
 // Artifact Type
 export const ArtifactType = {
   Prd: "PRD",
+  Issue: "ISSUE",
   FigmaDesign: "FIGMA_DESIGN",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
   CodeReviewReport: "CODE_REVIEW_REPORT",
