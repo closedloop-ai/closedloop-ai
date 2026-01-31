@@ -30,9 +30,12 @@ pnpm turbo test --filter=app                # Test specific app
 
 # Database (Prisma)
 pnpm migrate                                # Format, generate, and push schema
-cd packages/database && pnpm prisma studio  # Open Prisma Studio
-cd packages/database && pnpm prisma db push # Push schema changes
+cd packages/database && pnpm prisma generate # Regenerate client after schema changes
+cd packages/database && pnpm prisma studio   # Open Prisma Studio
+cd packages/database && pnpm prisma db push  # Push schema changes
 ```
+
+**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations), you **must** run `cd packages/database && pnpm prisma generate` to regenerate the TypeScript client in `packages/database/generated/`. Without this, the generated types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
 
 ## Architecture
 

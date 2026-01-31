@@ -17,6 +17,25 @@ import {
   generateDocumentSlug,
 } from "./artifact-utils";
 
+/**
+ * Validate that a user belongs to the given organization.
+ * Throws if the user does not exist within the org.
+ */
+async function validateOwnerInOrg(
+  ownerId: string,
+  organizationId: string
+): Promise<void> {
+  const owner = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: ownerId, organizationId },
+      select: { id: true },
+    })
+  );
+  if (!owner) {
+    throw new Error("Invalid owner ID: user not found in this organization");
+  }
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -173,36 +192,26 @@ export const artifactsService = {
         input.projectId = workstream.projectId;
       }
 
+      const resolvedOwnerId = input.ownerId ?? userId;
+      await validateOwnerInOrg(resolvedOwnerId, organizationId);
+
       const documentSlug =
         input.type === ArtifactType.Prd ||
         input.type === ArtifactType.ImplementationPlan
           ? generateDocumentSlug()
           : null;
 
-      try {
-        return await tx.artifact.create({
-          data: {
-            ...input,
-            organizationId,
-            documentSlug,
-            version: 1,
-            isLatest: true,
-            generatedBy: userId,
-            ownerId: input.ownerId ?? userId,
-          },
-        });
-      } catch (error) {
-        // Handle Prisma foreign key violation for invalid owner ID
-        if (
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === "P2003"
-        ) {
-          throw new Error("Invalid owner ID: user does not exist");
-        }
-        throw error;
-      }
+      return await tx.artifact.create({
+        data: {
+          ...input,
+          organizationId,
+          documentSlug,
+          version: 1,
+          isLatest: true,
+          generatedBy: userId,
+          ownerId: resolvedOwnerId,
+        },
+      });
     });
   },
 
@@ -215,25 +224,16 @@ export const artifactsService = {
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    try {
-      return await withDb((db) =>
-        db.artifact.update({
-          where: { id, organizationId },
-          data: input,
-        })
-      );
-    } catch (error) {
-      // Handle Prisma foreign key violation for invalid owner ID
-      if (
-        error &&
-        typeof error === "object" &&
-        "code" in error &&
-        error.code === "P2003"
-      ) {
-        throw new Error("Invalid owner ID: user does not exist");
-      }
-      throw error;
+    if (input.ownerId) {
+      await validateOwnerInOrg(input.ownerId, organizationId);
     }
+
+    return await withDb((db) =>
+      db.artifact.update({
+        where: { id, organizationId },
+        data: input,
+      })
+    );
   },
 
   /**
