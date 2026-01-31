@@ -184,6 +184,7 @@ model User {
   organization    Organization @relation(fields: [organizationId], references: [id])
   teamMemberships TeamMember[]
   ownedProjects   Project[]    @relation("ProjectOwner")
+  ownedArtifacts  Artifact[]   @relation("ArtifactOwner")
 
   @@unique([organizationId, email])
   @@index([linearId])
@@ -366,6 +367,7 @@ model Artifact {
   isLatest       Boolean        @default(true) @map("is_latest")
   documentSlug   String?        @map("document_slug")
   generatedBy    String?        @map("generated_by") @db.Uuid
+  ownerId        String?        @map("owner_id") @db.Uuid
   tokenUsage     Json?          @map("token_usage")
   targetRepo     String?        @map("target_repo")
   targetBranch   String?        @map("target_branch")
@@ -376,6 +378,7 @@ model Artifact {
   organization Organization @relation(fields: [organizationId], references: [id])
   workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner        User?        @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   parent       Artifact?    @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children     Artifact[]   @relation("ArtifactSource")
 
@@ -385,6 +388,7 @@ model Artifact {
   @@index([workstreamId])
   @@index([projectId])
   @@index([parentId])
+  @@index([ownerId])
   @@map("artifacts")
 }
 

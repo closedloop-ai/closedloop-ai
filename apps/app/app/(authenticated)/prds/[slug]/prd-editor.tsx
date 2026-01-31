@@ -111,15 +111,18 @@ export function PRDEditor({
             approver={metadata.approver}
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
             onStatusChange={metadata.handleStatusChange}
             onTargetBranchBlur={metadata.handleTargetBranchBlur}
             onTargetBranchChange={metadata.handleTargetBranchChange}
             onTargetRepoBlur={metadata.handleTargetRepoBlur}
             onTargetRepoChange={metadata.handleTargetRepoChange}
+            owner={metadata.owner}
             prd={prd}
             status={metadata.status}
             targetBranch={metadata.targetBranch}
             targetRepo={metadata.targetRepo}
+            teamMembers={metadata.teamMembers}
           />
         ) : null}
       </div>

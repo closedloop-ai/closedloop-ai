@@ -179,16 +179,30 @@ export const artifactsService = {
           ? generateDocumentSlug()
           : null;
 
-      return tx.artifact.create({
-        data: {
-          ...input,
-          organizationId,
-          documentSlug,
-          version: 1,
-          isLatest: true,
-          generatedBy: userId,
-        },
-      });
+      try {
+        return await tx.artifact.create({
+          data: {
+            ...input,
+            organizationId,
+            documentSlug,
+            version: 1,
+            isLatest: true,
+            generatedBy: userId,
+            ownerId: input.ownerId ?? userId,
+          },
+        });
+      } catch (error) {
+        // Handle Prisma foreign key violation for invalid owner ID
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "P2003"
+        ) {
+          throw new Error("Invalid owner ID: user does not exist");
+        }
+        throw error;
+      }
     });
   },
 
@@ -196,17 +210,30 @@ export const artifactsService = {
    * Update an existing artifact.
    * Auto-increments version when content is modified.
    */
-  update(
+  async update(
     id: string,
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    return withDb((db) =>
-      db.artifact.update({
-        where: { id, organizationId },
-        data: input,
-      })
-    );
+    try {
+      return await withDb((db) =>
+        db.artifact.update({
+          where: { id, organizationId },
+          data: input,
+        })
+      );
+    } catch (error) {
+      // Handle Prisma foreign key violation for invalid owner ID
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "P2003"
+      ) {
+        throw new Error("Invalid owner ID: user does not exist");
+      }
+      throw error;
+    }
   },
 
   /**
@@ -1092,7 +1119,8 @@ export type RequestChangesResult =
   | { success: true; message: string; artifactId: string }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
-// Type for raw Prisma result before transformation
+// Type for raw Prisma result before transformation.
+// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
 type RawArtifactWithContext = Artifact & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1100,6 +1128,12 @@ type RawArtifactWithContext = Artifact & {
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
+  } | null;
+  owner: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
   } | null;
 };
 

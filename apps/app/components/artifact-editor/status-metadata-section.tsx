@@ -13,10 +13,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import {
+  type User,
+  UserSelectPopover,
+} from "@repo/design-system/components/ui/user-select-popover";
 import { artifactStatusLabels } from "@/components/status-badge";
 import { MetadataSection } from "./metadata-panel";
 
-type StatusMetadataSectionProps = {
+export type StatusMetadataSectionProps = {
   /**
    * Current artifact status
    */
@@ -25,6 +29,14 @@ type StatusMetadataSectionProps = {
    * Current approver value
    */
   approver: string;
+  /**
+   * Current owner (User or null if not selected)
+   */
+  owner: User | null;
+  /**
+   * List of team members to choose from for owner selection
+   */
+  teamMembers: User[];
   /**
    * Handler called when status is changed
    */
@@ -38,6 +50,10 @@ type StatusMetadataSectionProps = {
    */
   onApproverBlur: () => void;
   /**
+   * Handler called when owner is changed
+   */
+  onOwnerChange: (user: User | null) => void;
+  /**
    * Optional className for custom styling
    */
   className?: string;
@@ -45,25 +61,31 @@ type StatusMetadataSectionProps = {
 
 /**
  * Shared metadata section for PRD and Plan editors.
- * Provides status select and approver input fields with consistent styling.
+ * Provides status select, owner selection, and approver input fields with consistent styling.
  *
  * Usage:
  * ```tsx
  * <StatusMetadataSection
  *   status={status}
  *   approver={approver}
+ *   owner={owner}
+ *   teamMembers={teamMembers}
  *   onStatusChange={handleStatusChange}
  *   onApproverChange={handleApproverChange}
  *   onApproverBlur={handleApproverBlur}
+ *   onOwnerChange={handleOwnerChange}
  * />
  * ```
  */
 export function StatusMetadataSection({
   status,
   approver,
+  owner,
+  teamMembers,
   onStatusChange,
   onApproverChange,
   onApproverBlur,
+  onOwnerChange,
   className,
 }: Readonly<StatusMetadataSectionProps>) {
   return (
@@ -85,6 +107,17 @@ export function StatusMetadataSection({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Owner</Label>
+        <UserSelectPopover
+          disabled={teamMembers.length === 0}
+          onSelect={onOwnerChange}
+          placeholder="Select owner..."
+          users={teamMembers}
+          value={owner}
+        />
       </div>
 
       <div className="space-y-2">

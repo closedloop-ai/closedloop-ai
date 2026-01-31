@@ -6,6 +6,7 @@ import type {
 } from "@repo/api/src/types/artifact";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import {
   MetadataPanel,
   MetadataSection,
@@ -26,6 +27,14 @@ type PRDMetadataPanelProps = {
    */
   approver: string;
   /**
+   * Current owner (User or null if not selected)
+   */
+  owner: User | null;
+  /**
+   * List of team members to choose from for owner selection
+   */
+  teamMembers: User[];
+  /**
    * Current target repository value
    */
   targetRepo: string;
@@ -45,6 +54,10 @@ type PRDMetadataPanelProps = {
    * Handler called when approver input loses focus
    */
   onApproverBlur: () => void;
+  /**
+   * Handler called when owner is changed
+   */
+  onOwnerChange: (user: User | null) => void;
   /**
    * Handler called when target repository input value changes
    */
@@ -73,11 +86,14 @@ type PRDMetadataPanelProps = {
  *   prd={prd}
  *   status={status}
  *   approver={approver}
+ *   owner={owner}
+ *   teamMembers={teamMembers}
  *   targetRepo={targetRepo}
  *   targetBranch={targetBranch}
  *   onStatusChange={handleStatusChange}
  *   onApproverChange={handleApproverChange}
  *   onApproverBlur={handleApproverBlur}
+ *   onOwnerChange={handleOwnerChange}
  *   onTargetRepoChange={handleTargetRepoChange}
  *   onTargetRepoBlur={handleTargetRepoBlur}
  *   onTargetBranchChange={handleTargetBranchChange}
@@ -89,11 +105,14 @@ export function PRDMetadataPanel({
   prd,
   status,
   approver,
+  owner,
+  teamMembers,
   targetRepo,
   targetBranch,
   onStatusChange,
   onApproverChange,
   onApproverBlur,
+  onOwnerChange,
   onTargetRepoChange,
   onTargetRepoBlur,
   onTargetBranchChange,
@@ -105,8 +124,11 @@ export function PRDMetadataPanel({
         approver={approver}
         onApproverBlur={onApproverBlur}
         onApproverChange={onApproverChange}
+        onOwnerChange={onOwnerChange}
         onStatusChange={onStatusChange}
+        owner={owner}
         status={status}
+        teamMembers={teamMembers}
       />
 
       <MetadataSection separator>
