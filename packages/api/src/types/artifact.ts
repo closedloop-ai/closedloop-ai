@@ -14,6 +14,7 @@ export const ArtifactType = {
   AccessibilityReport: "ACCESSIBILITY_REPORT",
   TestReport: "TEST_REPORT",
   CompletionSummary: "COMPLETION_SUMMARY",
+  PullRequest: "PULL_REQUEST",
 } as const;
 export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
 export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
