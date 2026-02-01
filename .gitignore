@@ -290,3 +290,4 @@ packages/database/generated
 # Claude Code
 .claude/.token-stats/
 .claude/work/
+.claude/symphony-loop.local.md

@@ -30,8 +30,7 @@ import {
 } from "@/hooks/queries/use-artifacts";
 
 type NewPlanModalProps = {
-  // When sourcePrd is provided, the modal is used from a PRD page
-  sourcePrd?: ArtifactWithWorkstream;
+  sourceArtifact?: ArtifactWithWorkstream;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
@@ -132,7 +131,7 @@ function PlanPreview({
 }
 
 export function NewPlanModal({
-  sourcePrd,
+  sourceArtifact,
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
@@ -147,39 +146,40 @@ export function NewPlanModal({
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
 
   // Form state
-  const [selectedPrdId, setSelectedPrdId] = useState(sourcePrd?.id ?? "");
+  const [selectedSourceId, setSelectedSourceId] = useState(
+    sourceArtifact?.id ?? ""
+  );
   const [title, setTitle] = useState(() =>
-    sourcePrd ? `Implementation Plan: ${sourcePrd.title}` : ""
+    sourceArtifact ? `Implementation Plan: ${sourceArtifact.title}` : ""
   );
   const [fileName, setFileName] = useState(() =>
-    sourcePrd ? generatePlanFileName(sourcePrd) : ""
+    sourceArtifact ? generatePlanFileName(sourceArtifact) : ""
   );
   const [content, setContent] = useState("");
 
-  // Fetch PRDs when modal opens (skip if we have a source PRD)
+  // Fetch PRDs when modal opens (skip if we have a source artifact)
   const { data: prds = [], isLoading: loadingPrds } = useArtifactsByType(
     "PRD",
     true,
     {
-      enabled: open && !sourcePrd,
+      enabled: open && !sourceArtifact,
     }
   );
 
-  // Get the selected PRD (either from prop or from dropdown)
-  const selectedPrd = sourcePrd ?? prds.find((p) => p.id === selectedPrdId);
+  // Get the selected source (either from prop or from dropdown)
+  const selectedSource =
+    sourceArtifact ?? prds.find((p) => p.id === selectedSourceId);
 
-  // Update title and filename when PRD is selected from dropdown
+  // Update title and filename when source is selected from dropdown
   useEffect(() => {
-    if (selectedPrd && !sourcePrd) {
-      setTitle(`Implementation Plan: ${selectedPrd.title}`);
-      setFileName(generatePlanFileName(selectedPrd));
+    if (selectedSource && !sourceArtifact) {
+      setTitle(`Implementation Plan: ${selectedSource.title}`);
+      setFileName(generatePlanFileName(selectedSource));
     }
-  }, [selectedPrd, sourcePrd]);
+  }, [selectedSource, sourceArtifact]);
 
   const handleTitleChange = (value: string): void => {
     setTitle(value);
-    // Auto-generate filename from custom title (simpler pattern than PRD-based generation)
-    // This allows users to get clean filenames from any title, not just PRD-formatted ones
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
@@ -188,13 +188,12 @@ export function NewPlanModal({
         .concat("-impl-plan.md");
       setFileName(generatedFileName);
     } else {
-      // Reset filename when title is cleared
       setFileName("");
     }
   };
 
   const resetForm = () => {
-    setSelectedPrdId(sourcePrd?.id ?? "");
+    setSelectedSourceId(sourceArtifact?.id ?? "");
     setTitle("");
     setFileName("");
     setContent("");
@@ -204,7 +203,7 @@ export function NewPlanModal({
   const handleSubmit = () => {
     setError(null);
 
-    if (!selectedPrd) {
+    if (!selectedSource) {
       setError("Please select a source PRD");
       return;
     }
@@ -214,27 +213,23 @@ export function NewPlanModal({
       return;
     }
 
-    // Additional safety: Verify state is initialized (defensive programming)
-    // This catches edge cases where useEffect hasn't run yet
-    const finalFileName = fileName.trim() || generatePlanFileName(selectedPrd);
+    // Fallback fileName in case useEffect hasn't populated it yet
+    const finalFileName =
+      fileName.trim() || generatePlanFileName(selectedSource);
 
     createAndGeneratePlan.mutate(
       {
         type: "IMPLEMENTATION_PLAN",
         title: title.trim(),
         fileName: finalFileName,
-        approver: selectedPrd.approver ?? undefined,
+        approver: selectedSource.approver ?? undefined,
         status: "DRAFT",
-        // Pass content as initial instructions (not placeholder template)
-        // The regenerate endpoint will use this as additional context
         content: content.trim() || "",
-        // Link to PRD for proper regenerate flow
-        parentId: selectedPrd.id,
-        projectId: selectedPrd.projectId ?? undefined,
-        workstreamId: selectedPrd.workstreamId ?? undefined,
-        // Inherit target repo and branch from PRD
-        targetRepo: selectedPrd.targetRepo ?? undefined,
-        targetBranch: selectedPrd.targetBranch ?? undefined,
+        parentId: selectedSource.id,
+        projectId: selectedSource.projectId ?? undefined,
+        workstreamId: selectedSource.workstreamId ?? undefined,
+        targetRepo: selectedSource.targetRepo ?? undefined,
+        targetBranch: selectedSource.targetBranch ?? undefined,
       },
       {
         onSuccess: (artifact) => {
@@ -272,8 +267,7 @@ export function NewPlanModal({
             </div>
           </DialogTitle>
           <DialogDescription>
-            Create an implementation plan from a PRD. The plan will inherit the
-            title and approver from the selected PRD.
+            Create an implementation plan from a PRD or Issue.
           </DialogDescription>
         </DialogHeader>
 
@@ -314,24 +308,29 @@ export function NewPlanModal({
 
           <div className="space-y-2">
             <Label htmlFor="source-prd">
-              Source PRD<span className="text-destructive">*</span>
+              Source{sourceArtifact ? "" : " PRD"}
+              <span className="text-destructive">*</span>
             </Label>
-            {sourcePrd ? (
+            {sourceArtifact ? (
               <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted px-3 py-2 text-sm">
-                {sourcePrd.title}
+                {sourceArtifact.title}
               </div>
             ) : (
               <PrdSelector
                 isLoading={loadingPrds}
-                onSelect={setSelectedPrdId}
+                onSelect={setSelectedSourceId}
                 prds={prds}
-                selectedPrdId={selectedPrdId}
+                selectedPrdId={selectedSourceId}
               />
             )}
           </div>
 
-          {selectedPrd ? (
-            <PlanPreview fileName={fileName} prd={selectedPrd} title={title} />
+          {selectedSource ? (
+            <PlanPreview
+              fileName={fileName}
+              prd={selectedSource}
+              title={title}
+            />
           ) : null}
 
           <div className="space-y-2">
@@ -351,7 +350,9 @@ export function NewPlanModal({
           </Button>
           <Button
             disabled={
-              createAndGeneratePlan.isPending || !selectedPrd || !title.trim()
+              createAndGeneratePlan.isPending ||
+              !selectedSource ||
+              !title.trim()
             }
             onClick={handleSubmit}
           >
