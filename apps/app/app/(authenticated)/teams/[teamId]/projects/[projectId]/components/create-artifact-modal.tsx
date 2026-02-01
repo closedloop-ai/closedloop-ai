@@ -31,11 +31,7 @@ import {
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
-
-const ARTIFACT_TYPE_LABELS: Record<string, string> = {
-  PRD: "PRD",
-  IMPLEMENTATION_PLAN: "Implementation Plan",
-};
+import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
 function PrdSelectContent({
   loading,
@@ -191,6 +187,11 @@ export function CreateArtifactModal({
         onSuccess: (artifact) => {
           handleClose();
           onSuccess?.(artifact);
+        },
+        onError: (err) => {
+          setError(
+            err instanceof Error ? err.message : "Failed to create artifact"
+          );
         },
       }
     );

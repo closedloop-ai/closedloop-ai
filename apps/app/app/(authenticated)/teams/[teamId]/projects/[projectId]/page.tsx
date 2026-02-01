@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -20,6 +20,7 @@ import {
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
+  AlertCircleIcon,
   ChevronDownIcon,
   FileTextIcon,
   ListTodoIcon,
@@ -83,7 +84,7 @@ export default function ProjectDetailPage() {
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
-    useState<ArtifactType>("PRD");
+    useState<ArtifactType>(ArtifactType.Prd);
 
   // Queries
   const {
@@ -237,15 +238,25 @@ export default function ProjectDetailPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleCreateArtifact("PRD")}>
+              <DropdownMenuItem
+                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+              >
                 <FileTextIcon className="mr-2 h-4 w-4" />
                 PRD
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact("IMPLEMENTATION_PLAN")}
+                onClick={() =>
+                  handleCreateArtifact(ArtifactType.ImplementationPlan)
+                }
               >
                 <ListTodoIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => handleCreateArtifact(ArtifactType.Issue)}
+              >
+                <AlertCircleIcon className="mr-2 h-4 w-4" />
+                Issue
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

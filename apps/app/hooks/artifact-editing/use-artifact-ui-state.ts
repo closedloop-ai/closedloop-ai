@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 
-type ArtifactType = "PRD" | "IMPLEMENTATION_PLAN";
+type ArtifactType = "PRD" | "IMPLEMENTATION_PLAN" | "ISSUE";
 
 type UseArtifactUIStateConfig = {
   artifactType: ArtifactType;
@@ -94,6 +94,16 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
       setShowExecuteModal,
       openExecuteModal: () => setShowExecuteModal(true),
       closeExecuteModal: () => setShowExecuteModal(false),
+    };
+  }
+
+  if (artifactType === "ISSUE") {
+    return {
+      ...commonState,
+      showRenameDialog,
+      setShowRenameDialog,
+      openRenameDialog: () => setShowRenameDialog(true),
+      closeRenameDialog: () => setShowRenameDialog(false),
     };
   }
 
