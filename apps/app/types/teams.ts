@@ -53,7 +53,7 @@ export const ProjectArtifactType = {
   Prd: "PRD",
   Designs: "DESIGNS",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
-  Issues: "ISSUES",
+  Issue: "ISSUE",
   FeatureBranches: "FEATURE_BRANCHES",
 } as const;
 export type ProjectArtifactType =

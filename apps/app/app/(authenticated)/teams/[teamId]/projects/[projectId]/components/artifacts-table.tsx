@@ -68,11 +68,15 @@ const ARTIFACT_SECTIONS: {
 }[] = [
   {
     title: "Documents",
-    types: new Set<ProjectArtifactType>(["PROJECT_BRIEF", "PRD", "ISSUES"]),
+    types: new Set<ProjectArtifactType>(["PROJECT_BRIEF", "PRD", "ISSUE"]),
   },
   {
     title: "Implementation Plans",
     types: new Set<ProjectArtifactType>(["IMPLEMENTATION_PLAN"]),
+  },
+  {
+    title: "Issues",
+    types: new Set<ProjectArtifactType>(["ISSUE"]),
   },
   {
     title: "Feature Branches",
@@ -81,7 +85,7 @@ const ARTIFACT_SECTIONS: {
 ];
 
 function isNavigableArtifact(type: ProjectArtifactType): boolean {
-  return type === "PRD" || type === "IMPLEMENTATION_PLAN";
+  return type === "PRD" || type === "IMPLEMENTATION_PLAN" || type === "ISSUE";
 }
 
 /**
@@ -96,6 +100,8 @@ function getArtifactRoute(artifact: ProjectArtifact): string | null {
       return artifact.documentSlug
         ? `/implementation-plans/${artifact.documentSlug}`
         : null;
+    case "ISSUE":
+      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
       return artifact.link || null;
     default:
@@ -152,7 +158,7 @@ function ArtifactSection({
 }: ArtifactSectionProps) {
   return (
     <Collapsible defaultOpen>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 border-b bg-muted/30 px-4 py-3 text-left font-medium hover:bg-muted/50">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-0 py-3 text-left font-semibold text-lg hover:opacity-80">
         <ChevronDown className="h-4 w-4 transition-transform group-data-[state=closed]:-rotate-90" />
         {title}
       </CollapsibleTrigger>
@@ -308,7 +314,7 @@ export function ArtifactsTable({
   }
 
   return (
-    <div className="rounded-md border">
+    <div className="space-y-6">
       {sections.map((section) => (
         <ArtifactSection
           artifacts={section.artifacts}

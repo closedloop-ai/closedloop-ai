@@ -174,3 +174,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 **The insight:** AI can now generate high-quality first drafts of every artifact in the software delivery process—but only if it has deep context about the codebase, the product, and the decisions already made. And it should only act with human approval at critical junctures.
 
 **The product:** A platform where AI agents produce artifacts, humans approve and refine them, and the entire workflow is orchestrated toward shipping software faster—with better quality and more alignment across the team.
+## Learned Patterns
+
+- **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases, (4) ARTIFACT_SECTIONS dual placement. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
+- **[mistake]**: When using ArtifactType constants (ArtifactType.Issue, ArtifactType.Prd, etc.) use regular `import { ArtifactType }` not `import type { ArtifactType }` - the const object is a runtime value that cannot be accessed through a type-only import. (context: typescript|import-type|ArtifactType|runtime-value)

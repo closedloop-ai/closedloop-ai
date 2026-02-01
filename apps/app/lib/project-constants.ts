@@ -46,7 +46,7 @@ export const ARTIFACT_TYPE_ICONS: Record<string, React.ElementType> = {
   PRD: FileTextIcon,
   DESIGNS: PaintbrushIcon,
   IMPLEMENTATION_PLAN: ClipboardListIcon,
-  ISSUES: AlertCircleIcon,
+  ISSUE: AlertCircleIcon,
   FEATURE_BRANCHES: GitBranchIcon,
 };
 
@@ -56,7 +56,7 @@ export const ARTIFACT_TYPE_LABELS: Record<string, string> = {
   PRD: "PRD",
   DESIGNS: "Designs",
   IMPLEMENTATION_PLAN: "Impl Plan",
-  ISSUES: "Issues",
+  ISSUE: "Issue",
   FEATURE_BRANCHES: "Branches",
 };
 
@@ -81,7 +81,7 @@ export const ARTIFACT_TYPE_COLORS: Record<
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     text: "text-emerald-700 dark:text-emerald-300",
   },
-  ISSUES: {
+  ISSUE: {
     bg: "bg-orange-100 dark:bg-orange-900/50",
     text: "text-orange-700 dark:text-orange-300",
   },

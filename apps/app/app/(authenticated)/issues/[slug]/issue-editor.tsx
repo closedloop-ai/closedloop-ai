@@ -1,7 +1,6 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
@@ -10,57 +9,47 @@ import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-action
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
-import { PRDEditorHeader } from "./components/prd-editor-header";
-import { PRDMetadataPanel } from "./components/prd-metadata-panel";
+import { IssueEditorHeader } from "./components/issue-editor-header";
+import { IssueMetadataPanel } from "./components/issue-metadata-panel";
 
-type PRDEditorProps = {
-  prd: ArtifactWithWorkstream;
+type IssueEditorProps = {
+  issue: ArtifactWithWorkstream;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
 };
 
-export function PRDEditor({
-  prd,
+export function IssueEditor({
+  issue,
   currentVersion,
   latestVersion,
   onVersionChange,
-}: PRDEditorProps) {
-  // Use focused hooks instead of monolithic usePRDEditor
+}: IssueEditorProps) {
   const content = useArtifactContent({
-    artifact: prd,
+    artifact: issue,
   });
 
   const metadata = useArtifactMetadata({
-    artifact: prd,
+    artifact: issue,
   });
 
   const actions = useArtifactActions({
-    artifact: prd,
-    redirectPath: prd.project?.teams?.[0]?.id
-      ? `/teams/${prd.project.teams[0].id}/projects/${prd.project.id}`
-      : "/prds",
+    artifact: issue,
+    redirectPath: issue.project?.teams?.[0]?.id
+      ? `/teams/${issue.project.teams[0].id}/projects/${issue.project.id}`
+      : "/",
   });
 
   const uiState = useArtifactUIState({
-    artifactType: "PRD",
+    artifactType: "ISSUE",
   });
 
-  // Type assertion for PRD-specific UI state
-  // Since useArtifactUIState returns a union type based on artifactType,
-  // TypeScript can't narrow it automatically. We assert the PRD type here
-  // using showGeneratePlanModal which is unique to the PRD branch.
-  const {
-    showRenameDialog,
-    setShowRenameDialog,
-    openRenameDialog,
-    showGeneratePlanModal,
-    setShowGeneratePlanModal,
-    openGeneratePlanModal,
-  } = uiState as Extract<
-    ReturnType<typeof useArtifactUIState>,
-    { showGeneratePlanModal: boolean }
-  >;
+  // Type assertion for ISSUE-specific UI state
+  const { showRenameDialog, setShowRenameDialog, openRenameDialog } =
+    uiState as Extract<
+      ReturnType<typeof useArtifactUIState>,
+      { showRenameDialog: boolean }
+    >;
 
   // Determine if any operation is pending
   const isPending =
@@ -81,17 +70,16 @@ export function PRDEditor({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
-      <PRDEditorHeader
+      <IssueEditorHeader
         isPending={isPending}
         isSaving={content.isSaving}
+        issue={issue}
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
         onExport={actions.handleDownload}
-        onGeneratePlan={openGeneratePlanModal}
         onRename={openRenameDialog}
         onSave={content.saveContent}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
         status={metadata.status}
         versionDisplay={versionDisplay}
@@ -102,14 +90,15 @@ export function PRDEditor({
         {/* Scrollable Editor */}
         <EditorContent
           onChange={content.updateContent}
-          placeholder="Start writing your PRD..."
+          placeholder="Start writing your issue..."
           value={content.content}
         />
 
         {/* Metadata Panel */}
         {uiState.showMetadataPanel ? (
-          <PRDMetadataPanel
+          <IssueMetadataPanel
             approver={metadata.approver}
+            issue={issue}
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
             onOwnerChange={metadata.handleOwnerChange}
@@ -119,7 +108,6 @@ export function PRDEditor({
             onTargetRepoBlur={metadata.handleTargetRepoBlur}
             onTargetRepoChange={metadata.handleTargetRepoChange}
             owner={metadata.owner}
-            prd={prd}
             status={metadata.status}
             targetBranch={metadata.targetBranch}
             targetRepo={metadata.targetRepo}
@@ -130,31 +118,24 @@ export function PRDEditor({
 
       {/* Rename Dialog */}
       <RenameDialog
-        currentFileName={prd.fileName ?? ""}
-        currentTitle={prd.title}
-        description="Update the title and file name for this PRD."
+        currentFileName={issue.fileName ?? ""}
+        currentTitle={issue.title}
+        description="Update the title and file name for this issue."
         isPending={isPending}
         onOpenChange={setShowRenameDialog}
         onRename={actions.handleRename}
         open={showRenameDialog}
-        title="Rename PRD"
+        title="Rename Issue"
       />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
         isPending={isPending}
-        itemName={prd.title}
+        itemName={issue.title}
         onConfirm={actions.handleDelete}
         onOpenChange={uiState.setShowDeleteDialog}
         open={uiState.showDeleteDialog}
-        title="PRD"
-      />
-
-      {/* Generate Implementation Plan Modal */}
-      <NewPlanModal
-        onOpenChange={setShowGeneratePlanModal}
-        open={showGeneratePlanModal}
-        sourcePrd={prd}
+        title="Issue"
       />
     </div>
   );
