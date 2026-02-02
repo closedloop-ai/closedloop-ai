@@ -24,22 +24,6 @@ export function useExecutionLog(
       apiClient.get<ExecutionTrace>(`/artifacts/${artifactId}/execution-log`),
     enabled: !!artifactId,
     staleTime: 10 * 60 * 1000, // 10 minutes
-    gcTime: 30 * 60 * 1000, // 30 minutes
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    retry: (failureCount, error) => {
-      // Skip retries for 404 (execution log doesn't exist yet)
-      if (
-        error &&
-        typeof error === "object" &&
-        "status" in error &&
-        error.status === 404
-      ) {
-        return false;
-      }
-      // Retry max 2 times for other errors
-      return failureCount < 2;
-    },
     ...options,
   });
 }
