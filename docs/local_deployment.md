@@ -61,7 +61,7 @@ touch apps/api/.env.local
 touch apps/web/.env.local
 ```
 
-Paste the secrets into each file. All three apps use the same set of variables.
+Paste the secrets from `localhost/env-secrets` into these files. The secrets are organized by file—look for the `# apps/app/.env.local` and `# apps/api/.env.local` comment headers to identify which secrets belong in each file.
 
 ### 4. Update DATABASE_URL for Local PostgreSQL
 
@@ -91,7 +91,7 @@ pnpm migrate
 ### 7. Start the Application
 
 ```bash
-pnpm dev
+pnpm start-apps
 ```
 
 | App | Port | URL |
