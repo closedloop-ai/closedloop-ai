@@ -13,7 +13,7 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { MermaidExtension } from "./mermaid-extension";
 import { mermaidMarkdownConfig } from "./markdown-mermaid-config";
 import { cn } from "@repo/design-system/lib/utils";
-import type { TiptapEditorProps } from "./types";
+import type { RichTextEditorProps } from "./types";
 import { TiptapToolbar } from "./tiptap-toolbar";
 import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
 
@@ -39,7 +39,7 @@ export function TiptapEditorCore({
   onEditorReady,
   contentResetKey,
   contentResetValue,
-}: Readonly<TiptapEditorProps>) {
+}: Readonly<RichTextEditorProps>) {
   const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
 
   const editor = useEditor({
