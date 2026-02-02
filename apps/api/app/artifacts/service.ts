@@ -8,8 +8,18 @@ import {
   type PullRequestInfo,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
+import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
-import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
+import {
+  downloadWorkflowArtifacts,
+  getRepositoryInfo,
+  triggerWorkflowDispatch,
+} from "@repo/github";
+import { log } from "@repo/observability/log";
+import {
+  createEmptyExecutionTrace,
+  parseExecutionLogs,
+} from "@/lib/execution-log-parser";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -943,6 +953,55 @@ Please try again or contact support if the issue persists.`,
 
       return newArtifact;
     });
+  },
+
+  /**
+   * Get execution logs for an artifact from its associated GitHub Action run.
+   * Downloads workflow artifacts and parses agent conversation logs.
+   */
+  async getExecutionLog(
+    artifactId: string,
+    organizationId: string
+  ): Promise<ExecutionTrace> {
+    try {
+      const artifact = await this.findByIdSimple(artifactId, organizationId);
+      if (!artifact) {
+        return createEmptyExecutionTrace();
+      }
+
+      const actionRun = await withDb((db) =>
+        db.gitHubActionRun.findFirst({
+          where: {
+            triggerData: {
+              path: ["artifactId"],
+              equals: artifactId,
+            },
+            status: "SUCCESS",
+          },
+          orderBy: { completedAt: "desc" },
+        })
+      );
+
+      if (!actionRun?.runId) {
+        return createEmptyExecutionTrace();
+      }
+
+      const artifacts = await downloadWorkflowArtifacts(
+        Number(actionRun.runId),
+        "execution-logs"
+      );
+
+      if (artifacts.length === 0 || !artifacts[0]) {
+        return createEmptyExecutionTrace();
+      }
+
+      return parseExecutionLogs(artifacts[0].data);
+    } catch (error) {
+      log.error("[artifacts-service] Failed to get execution log", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return createEmptyExecutionTrace();
+    }
   },
 
   /**
