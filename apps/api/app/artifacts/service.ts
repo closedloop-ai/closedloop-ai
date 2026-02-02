@@ -197,7 +197,8 @@ export const artifactsService = {
 
       const documentSlug =
         input.type === ArtifactType.Prd ||
-        input.type === ArtifactType.ImplementationPlan
+        input.type === ArtifactType.ImplementationPlan ||
+        input.type === ArtifactType.Issue
           ? generateDocumentSlug()
           : null;
 
