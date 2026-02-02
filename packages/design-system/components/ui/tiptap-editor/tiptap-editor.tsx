@@ -5,11 +5,11 @@ import dynamic from "next/dynamic";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
 
-import type { RichTextEditorProps } from "./types";
+import type { TiptapEditorProps } from "./types";
 
-const RichTextEditorCore = dynamic(
+const TiptapEditorCore = dynamic(
   () =>
-    import("./rich-text-editor-core").then((mod) => mod.RichTextEditorCore),
+    import("./tiptap-editor-core").then((mod) => mod.TiptapEditorCore),
   {
     ssr: false,
     loading: () => (
@@ -23,20 +23,28 @@ const RichTextEditorCore = dynamic(
   }
 );
 
-export function RichTextEditor({
+export function TiptapEditor({
   value,
   onChange,
   placeholder,
   className,
   readOnly,
-}: Readonly<RichTextEditorProps>) {
+  liveblocksExtension,
+  onEditorReady,
+  contentResetKey,
+  contentResetValue,
+}: Readonly<TiptapEditorProps>) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
-      <RichTextEditorCore
-        onChange={onChange}
+      <TiptapEditorCore
+        value={value}
         placeholder={placeholder}
         readOnly={readOnly}
-        value={value}
+        liveblocksExtension={liveblocksExtension}
+        onChange={onChange}
+        onEditorReady={onEditorReady}
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
       />
     </div>
   );
