@@ -326,6 +326,8 @@ export const artifactsService = {
             workstreamId: artifact.workstream?.id as string,
             type: { in: ["PRD", "ISSUE"] },
             isLatest: true,
+            // Prefer the explicit parent when set; fall back to any PRD/Issue in the workstream.
+            ...(artifact.parentId ? { id: artifact.parentId } : {}),
           },
         })
       );
