@@ -25,7 +25,6 @@
     "@repo/security": "workspace:*",
     "@repo/seo": "workspace:*",
     "@repo/webhooks": "workspace:*",
-    "@sentry/nextjs": "^10.29.0",
     "@t3-oss/env-nextjs": "^0.13.8",
     "@tanstack/react-query": "^5.90.20",
     "@tiptap/react": "^3.18.0",
