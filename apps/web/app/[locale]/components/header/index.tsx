@@ -1,7 +1,7 @@
 "use client";
 
-import { ModeToggle } from "@repo/design-system/components/mode-toggle";
 import { Button } from "@repo/design-system/components/ui/button";
+import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import {
   NavigationMenu,
   NavigationMenuContent,
@@ -21,7 +21,9 @@ type HeaderProps = {
   dictionary: Dictionary;
 };
 
-export const Header = ({ dictionary }: HeaderProps) => {
+export function Header({ dictionary }: HeaderProps) {
+  const [isOpen, setIsOpen] = useState(false);
+
   const navigationItems = [
     {
       title: dictionary.web.header.home,
@@ -48,7 +50,6 @@ export const Header = ({ dictionary }: HeaderProps) => {
     });
   }
 
-  const [isOpen, setOpen] = useState(false);
   return (
     <header className="sticky top-0 left-0 z-40 w-full border-b bg-background">
       <div className="container relative mx-auto flex min-h-20 flex-row items-center gap-4 lg:grid lg:grid-cols-3">
@@ -143,7 +144,7 @@ export const Header = ({ dictionary }: HeaderProps) => {
           </Button>
         </div>
         <div className="flex w-12 shrink items-end justify-end lg:hidden">
-          <Button onClick={() => setOpen(!isOpen)} variant="ghost">
+          <Button onClick={() => setIsOpen(!isOpen)} variant="ghost">
             {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
           {isOpen ? (
@@ -189,4 +190,4 @@ export const Header = ({ dictionary }: HeaderProps) => {
       </div>
     </header>
   );
-};
+}

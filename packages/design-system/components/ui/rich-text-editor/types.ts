@@ -1,4 +1,4 @@
-export type HeadingLevel = 1 | 2 | 3;
+import type { AnyExtension, Editor } from "@tiptap/react";
 
 export type RichTextEditorProps = {
   value: string;
@@ -6,4 +6,8 @@ export type RichTextEditorProps = {
   placeholder?: string;
   className?: string;
   readOnly?: boolean;
+  liveblocksExtension?: AnyExtension;
+  onEditorReady?: (editor: Editor | null) => void;
+  contentResetKey?: number;
+  contentResetValue?: string;
 };
