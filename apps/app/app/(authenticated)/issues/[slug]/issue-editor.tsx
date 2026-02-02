@@ -1,6 +1,7 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
@@ -44,21 +45,25 @@ export function IssueEditor({
     artifactType: "ISSUE",
   });
 
-  // Type assertion for ISSUE-specific UI state
-  const { showRenameDialog, setShowRenameDialog, openRenameDialog } =
-    uiState as Extract<
-      ReturnType<typeof useArtifactUIState>,
-      { showRenameDialog: boolean }
-    >;
+  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch
+  const {
+    showRenameDialog,
+    setShowRenameDialog,
+    openRenameDialog,
+    showGeneratePlanModal,
+    setShowGeneratePlanModal,
+    openGeneratePlanModal,
+  } = uiState as Extract<
+    ReturnType<typeof useArtifactUIState>,
+    { showGeneratePlanModal: boolean }
+  >;
 
-  // Determine if any operation is pending
   const isPending =
     content.isSaving ||
     metadata.isUpdating ||
     actions.isDeleting ||
     actions.isRenaming;
 
-  // Create version display component for header
   const versionDisplay = (
     <VersionSelector
       currentVersion={currentVersion}
@@ -69,7 +74,6 @@ export function IssueEditor({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Header */}
       <IssueEditorHeader
         isPending={isPending}
         isSaving={content.isSaving}
@@ -77,6 +81,7 @@ export function IssueEditor({
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
         onExport={actions.handleDownload}
+        onGeneratePlan={openGeneratePlanModal}
         onRename={openRenameDialog}
         onSave={content.saveContent}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -85,16 +90,13 @@ export function IssueEditor({
         versionDisplay={versionDisplay}
       />
 
-      {/* Content Area with Optional Metadata Panel */}
       <div className="flex min-h-0 flex-1">
-        {/* Scrollable Editor */}
         <EditorContent
           onChange={content.updateContent}
           placeholder="Start writing your issue..."
           value={content.content}
         />
 
-        {/* Metadata Panel */}
         {uiState.showMetadataPanel ? (
           <IssueMetadataPanel
             approver={metadata.approver}
@@ -116,7 +118,6 @@ export function IssueEditor({
         ) : null}
       </div>
 
-      {/* Rename Dialog */}
       <RenameDialog
         currentFileName={issue.fileName ?? ""}
         currentTitle={issue.title}
@@ -128,7 +129,6 @@ export function IssueEditor({
         title="Rename Issue"
       />
 
-      {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
         isPending={isPending}
         itemName={issue.title}
@@ -136,6 +136,12 @@ export function IssueEditor({
         onOpenChange={uiState.setShowDeleteDialog}
         open={uiState.showDeleteDialog}
         title="Issue"
+      />
+
+      <NewPlanModal
+        onOpenChange={setShowGeneratePlanModal}
+        open={showGeneratePlanModal}
+        sourceArtifact={issue}
       />
     </div>
   );

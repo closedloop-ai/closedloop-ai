@@ -26,7 +26,6 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  // Use focused hooks instead of monolithic usePRDEditor
   const content = useArtifactContent({
     artifact: prd,
   });
@@ -46,10 +45,7 @@ export function PRDEditor({
     artifactType: "PRD",
   });
 
-  // Type assertion for PRD-specific UI state
-  // Since useArtifactUIState returns a union type based on artifactType,
-  // TypeScript can't narrow it automatically. We assert the PRD type here
-  // using showGeneratePlanModal which is unique to the PRD branch.
+  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch
   const {
     showRenameDialog,
     setShowRenameDialog,
@@ -154,7 +150,7 @@ export function PRDEditor({
       <NewPlanModal
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
-        sourcePrd={prd}
+        sourceArtifact={prd}
       />
     </div>
   );

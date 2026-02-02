@@ -216,8 +216,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
 
       expect(result.workstream).not.toBeNull();
       expect(result.workstream?.id).toBe(workstream.id);
-      expect(result.prdArtifact).not.toBeNull();
-      expect(result.prdArtifact?.id).toBe(prd.id);
+      expect(result.sourceArtifact).not.toBeNull();
+      expect(result.sourceArtifact?.id).toBe(prd.id);
     });
   });
 
@@ -272,8 +272,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
 
       // Should auto-create workstream and link artifacts
       expect(result.workstream).not.toBeNull();
-      expect(result.prdArtifact).not.toBeNull();
-      expect(result.prdArtifact?.id).toBe(prd.id);
+      expect(result.sourceArtifact).not.toBeNull();
+      expect(result.sourceArtifact?.id).toBe(prd.id);
 
       // Verify artifacts were linked to new workstream
       const updatedPlan = await withDb((db) =>

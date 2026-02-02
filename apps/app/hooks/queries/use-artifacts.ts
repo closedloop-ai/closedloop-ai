@@ -297,7 +297,7 @@ export function useRequestPlanChanges() {
 
 /**
  * Create an artifact and immediately trigger generation workflow.
- * Used for implementation plans that need to be generated from a PRD.
+ * Used for implementation plans generated from a PRD or Issue.
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
@@ -320,8 +320,16 @@ export function useCreateAndGenerateArtifact() {
         return artifact;
       }
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      if (data.parentId) {
+        queryClient.invalidateQueries({
+          queryKey: artifactKeys.detail(data.parentId),
+        });
+      }
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.generationStatus(data.id),
+      });
     },
   });
 }

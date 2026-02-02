@@ -15,7 +15,7 @@ type UseArtifactUIStateConfig = {
  *
  * **What it provides:**
  * - Common UI state (metadata panel, delete dialog)
- * - PRD-specific UI state (rename dialog, generate plan modal)
+ * - PRD/Issue-specific UI state (rename dialog, generate plan modal)
  * - Plan-specific UI state (request changes modal, Linear export dialog, execute modal)
  * - Type-safe return values based on artifact type
  * - Helper functions to open/close/toggle each UI element
@@ -40,7 +40,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  // PRD-specific UI state
+  // PRD/Issue-specific UI state
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
 
@@ -65,7 +65,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     closeDeleteDialog: () => setShowDeleteDialog(false),
   };
 
-  if (artifactType === "PRD") {
+  if (artifactType === "PRD" || artifactType === "ISSUE") {
     return {
       ...commonState,
       showRenameDialog,
@@ -94,16 +94,6 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
       setShowExecuteModal,
       openExecuteModal: () => setShowExecuteModal(true),
       closeExecuteModal: () => setShowExecuteModal(false),
-    };
-  }
-
-  if (artifactType === "ISSUE") {
-    return {
-      ...commonState,
-      showRenameDialog,
-      setShowRenameDialog,
-      openRenameDialog: () => setShowRenameDialog(true),
-      closeRenameDialog: () => setShowRenameDialog(false),
     };
   }
 

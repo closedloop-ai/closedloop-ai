@@ -14,6 +14,7 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   SettingsIcon,
+  SparklesIcon,
   TrashIcon,
 } from "lucide-react";
 import { EditorHeader } from "@/components/artifact-editor/editor-header";
@@ -25,6 +26,7 @@ type IssueEditorHeaderProps = {
   lastSaved: Date;
   showMetadataPanel: boolean;
   onToggleMetadataPanel: () => void;
+  onGeneratePlan: () => void;
   onSave: () => void;
   onRename: () => void;
   onExport: () => void;
@@ -40,6 +42,7 @@ export function IssueEditorHeader({
   lastSaved,
   showMetadataPanel,
   onToggleMetadataPanel,
+  onGeneratePlan,
   onSave,
   onRename,
   onExport,
@@ -62,6 +65,11 @@ export function IssueEditorHeader({
       >
         <SettingsIcon className="mr-2 h-4 w-4" />
         Details
+      </Button>
+
+      <Button onClick={onGeneratePlan} size="sm" variant="default">
+        <SparklesIcon className="mr-2 h-4 w-4" />
+        Generate Plan
       </Button>
 
       <Button disabled={isPending} onClick={onSave}>
