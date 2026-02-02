@@ -108,48 +108,6 @@ jobs:
           # Sticky comments disabled - was causing streaming mode errors
           use_sticky_comment: false
 
-      - name: Mark old summary comments as outdated
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
-        shell: bash
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          REPO="${{ github.repository }}"
-          SUMMARY_FILE=".claude/code-review-summary.md"
-
-          if [ -z "$PR_NUMBER" ]; then
-            echo "No PR number available (workflow_dispatch without PR context). Skipping."
-            exit 0
-          fi
-
-          # Only minimize old summaries if the file-based flow is active.
-          # If no summary file exists, Claude used the old slash command and posted
-          # directly — minimizing would hide the summary it just posted.
-          if [ ! -f "$SUMMARY_FILE" ]; then
-            echo "No summary file found — Claude likely posted directly (old flow). Skipping minimize to preserve it."
-            exit 0
-          fi
-
-          # List all issue comments on the PR
-          COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate 2>/dev/null || echo "[]")
-
-          # Find comments authored by the bot that start with "## Code Review Summary"
-          echo "$COMMENTS" | jq -r '.[] | select(.user.login == "closedloop-ai-stage[bot]" or .user.login == "closedloop-ai[bot]" or .user.login == "symphony-cl") | select(.body | startswith("## Code Review Summary")) | .node_id' | while read -r NODE_ID; do
-            if [ -n "$NODE_ID" ]; then
-              echo "Minimizing old summary comment: $NODE_ID"
-              gh api graphql -f query='
-                mutation($id: ID!) {
-                  minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
-                    minimizedComment { isMinimized minimizedReason }
-                  }
-                }' -f id="$NODE_ID" 2>/dev/null || echo "Warning: Failed to minimize $NODE_ID"
-            fi
-          done
-
-          echo "Old summary cleanup complete."
-
       - name: Post code review summary
         id: post-summary
         if: always()
@@ -194,6 +152,7 @@ jobs:
           RESPONSE=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
             -f body="$SUMMARY" 2>&1)
 
+          NEW_COMMENT_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
           COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url // empty')
           if [ -n "$COMMENT_URL" ]; then
             echo "Summary posted: $COMMENT_URL"
@@ -203,7 +162,25 @@ jobs:
             echo "Warning: Failed to post summary comment"
             echo "$RESPONSE"
             echo "posted=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          # Delete old summary comments (posted by previous runs) to prevent duplicates.
+          # This runs AFTER posting the new comment so we never lose the summary entirely.
+          OLD_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq "
+            [.[] | select(
+              (.user.login == \"closedloop-ai-stage[bot]\" or .user.login == \"closedloop-ai[bot]\" or .user.login == \"symphony-cl\") and
+              (.body | startswith(\"## Code Review Summary\")) and
+              ((.id == $NEW_COMMENT_ID) | not)
+            ) | .id][]
+          " 2>/dev/null || true)
+
+          for OLD_ID in $OLD_IDS; do
+            echo "Deleting old summary comment: $OLD_ID"
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments/$OLD_ID" -X DELETE 2>/dev/null || echo "Warning: Failed to delete comment $OLD_ID"
+          done
+
+          echo "Summary cleanup complete."
 
       - name: Review completed
         if: always()
