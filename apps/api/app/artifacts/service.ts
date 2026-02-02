@@ -15,11 +15,11 @@ import {
   getRepositoryInfo,
   triggerWorkflowDispatch,
 } from "@repo/github";
-import { log } from "@repo/observability/log";
 import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
-} from "@/lib/execution-log-parser";
+} from "@repo/github/execution-log-parser";
+import { log } from "@repo/observability/log";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,

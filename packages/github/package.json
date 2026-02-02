@@ -9,13 +9,16 @@
   "dependencies": {
     "@octokit/auth-app": "^7.1.1",
     "@octokit/rest": "^21.0.2",
+    "@repo/api": "workspace:*",
     "@repo/observability": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.8",
+    "adm-zip": "^0.5.16",
     "server-only": "^0.0.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "@types/adm-zip": "^0.5.7",
     "typescript": "^5.9.3"
   }
 }
