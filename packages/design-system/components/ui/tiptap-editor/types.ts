@@ -1,6 +1,6 @@
 import type { AnyExtension, Editor } from "@tiptap/react";
 
-export type RickTextEditorProps = {
+export type RichTextEditorProps = {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;

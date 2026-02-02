@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
 
-import type { RickTextEditorProps } from "./types";
+import type { RichTextEditorProps } from "./types";
 
 const TiptapEditorCore = dynamic(
   () =>
@@ -23,7 +23,7 @@ const TiptapEditorCore = dynamic(
   }
 );
 
-export function RickTextEditor({
+export function RichTextEditor({
   value,
   onChange,
   placeholder,
@@ -33,7 +33,7 @@ export function RickTextEditor({
   onEditorReady,
   contentResetKey,
   contentResetValue,
-}: Readonly<RickTextEditorProps>) {
+}: Readonly<RichTextEditorProps>) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <TiptapEditorCore
