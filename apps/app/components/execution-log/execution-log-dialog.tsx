@@ -21,7 +21,7 @@ import {
 import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import { cn } from "@repo/design-system/lib/utils";
 import { BotIcon, ChevronDownIcon, TerminalIcon, UserIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type ExecutionLogDialogProps = {
   trace: ExecutionTrace | undefined;
@@ -227,10 +227,13 @@ export function ExecutionLogDialog({
     string | undefined
   >(initialSessionId || firstSessionId);
 
-  // Update selected session when trace changes
-  if (trace && selectedSessionId === undefined && firstSessionId) {
-    setSelectedSessionId(firstSessionId);
-  }
+  // Sync selected session when initialSessionId changes (e.g., user clicks a different session)
+  useEffect(() => {
+    const targetId = initialSessionId || firstSessionId;
+    if (targetId) {
+      setSelectedSessionId(targetId);
+    }
+  }, [initialSessionId, firstSessionId]);
 
   const selectedSession = trace?.sessions.find(
     (s) => s.sessionId === selectedSessionId
