@@ -965,18 +965,21 @@ Please try again or contact support if the issue persists.`,
   ): Promise<ExecutionTrace> {
     try {
       const artifact = await this.findByIdSimple(artifactId, organizationId);
-      if (!artifact) {
+      if (!artifact?.workstreamId) {
         return createEmptyExecutionTrace();
       }
 
+      // Use workstreamId + status to leverage @@index([workstreamId, status])
+      // before applying the JSON path filter on triggerData
       const actionRun = await withDb((db) =>
         db.gitHubActionRun.findFirst({
           where: {
+            workstreamId: artifact.workstreamId!,
+            status: "SUCCESS",
             triggerData: {
               path: ["artifactId"],
               equals: artifactId,
             },
-            status: "SUCCESS",
           },
           orderBy: { completedAt: "desc" },
         })

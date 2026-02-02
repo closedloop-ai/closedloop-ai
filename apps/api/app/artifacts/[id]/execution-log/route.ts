@@ -12,9 +12,6 @@ export const GET = withAuth<ExecutionTrace, "/artifacts/[id]/execution-log">(
       user.organizationId
     );
 
-    const response = successResponse(trace);
-    // Cache for 5 minutes (private cache for authenticated user)
-    response.headers.set("Cache-Control", "private, max-age=300");
-    return response;
+    return successResponse(trace);
   }
 );
