@@ -383,7 +383,10 @@ export const artifactsService = {
                 },
               },
               artifacts: {
-                where: { type: "PRD", isLatest: true },
+                where: {
+                  type: { in: ["PRD", "ISSUE", "BUG"] },
+                  isLatest: true,
+                },
                 take: 1,
               },
             },
@@ -441,9 +444,9 @@ export const artifactsService = {
           where: {
             organizationId,
             workstreamId: artifact.workstream?.id as string,
-            type: { in: ["PRD", "ISSUE"] },
+            type: { in: ["PRD", "ISSUE", "BUG"] },
             isLatest: true,
-            // Prefer the explicit parent when set; fall back to any PRD/Issue in the workstream.
+            // Prefer the explicit parent when set; fall back to any PRD/Issue/Bug in the workstream.
             ...(artifact.parentId ? { id: artifact.parentId } : {}),
           },
         })
@@ -451,7 +454,7 @@ export const artifactsService = {
       return { workstream: artifact.workstream, sourceArtifact };
     }
 
-    // Find PRD or Issue by parentId or matching title.
+    // Find PRD, Issue, or Bug by parentId or matching title.
     // Title matching is a PRD-only heuristic for legacy plans without parentId.
     const titleFallback = artifact.title.replace("Implementation Plan: ", "");
     const foundSource = await withDb((db) =>
@@ -459,7 +462,7 @@ export const artifactsService = {
         where: {
           organizationId,
           projectId: artifact.projectId,
-          type: { in: ["PRD", "ISSUE"] },
+          type: { in: ["PRD", "ISSUE", "BUG"] },
           isLatest: true,
           OR: [
             { id: artifact.parentId ?? undefined },
@@ -703,7 +706,7 @@ ${initialInstructions.trim()}`;
       return {
         success: false,
         error:
-          "No PRD or Issue found to generate plan from. Create a PRD or Issue first.",
+          "No PRD, Issue, or Bug found to generate plan from. Create one first.",
         status: 400,
       };
     }
@@ -851,7 +854,8 @@ ${initialInstructions.trim()}`;
     if (!sourceArtifact) {
       return {
         success: false,
-        error: "No PRD or Issue found for this plan. Cannot request changes.",
+        error:
+          "No PRD, Issue, or Bug found for this plan. Cannot request changes.",
         status: 400,
       };
     }
@@ -1169,7 +1173,7 @@ Please try again or contact support if the issue persists.`,
     if (!sourceArtifact) {
       return {
         success: false,
-        error: "No PRD or Issue found for this plan. Cannot execute.",
+        error: "No PRD, Issue, or Bug found for this plan. Cannot execute.",
         status: 400,
       };
     }
