@@ -1,12 +1,11 @@
 import { createId } from "@paralleldrive/cuid2";
-import {
-  type Artifact,
-  ArtifactType,
-  type ArtifactWithWorkstream,
-  type CreateArtifactInput,
-  type FindArtifactsOptions,
-  type PullRequestInfo,
-  type UpdateArtifactInput,
+import type {
+  Artifact,
+  ArtifactWithWorkstream,
+  CreateArtifactInput,
+  FindArtifactsOptions,
+  PullRequestInfo,
+  UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
@@ -25,6 +24,7 @@ import {
   artifactIncludeWithContext,
   createArtifactVersion,
   generateDocumentSlug,
+  isDocumentArtifact,
 } from "./artifact-utils";
 
 /**
@@ -205,12 +205,9 @@ export const artifactsService = {
       const resolvedOwnerId = input.ownerId ?? userId;
       await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
-      const documentSlug =
-        input.type === ArtifactType.Prd ||
-        input.type === ArtifactType.ImplementationPlan ||
-        input.type === ArtifactType.Issue
-          ? generateDocumentSlug()
-          : null;
+      const documentSlug = isDocumentArtifact(input)
+        ? generateDocumentSlug()
+        : null;
 
       return await tx.artifact.create({
         data: {

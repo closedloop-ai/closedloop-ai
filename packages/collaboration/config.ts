@@ -6,12 +6,14 @@ declare global {
     Presence: {
       // Example, real-time cursor coordinates
       cursor: { x: number; y: number } | null;
+      // Editor-aware presence for collaborative editing
+      selection: { anchor: number; head: number } | null;
     };
 
     // The Storage tree for the room, for useMutation, useStorage, etc.
+    // Note: When using Yjs, Storage remains empty as Yjs manages documents separately
     Storage: {
-      // Example, a conflict-free list
-      // animals: LiveList<string>;
+      // Empty for Yjs-based collaboration
     };
 
     // Custom user info set when authenticating with a secret key
@@ -32,9 +34,7 @@ declare global {
 
     // Custom metadata set on threads, for useThreads, useCreateThread, etc.
     ThreadMetadata: {
-      // Example, attaching coordinates to a thread
-      // x: number;
-      // y: number;
+      resolved: boolean;
     };
 
     // Custom room info set with resolveRoomsInfo, for useRoomInfo
