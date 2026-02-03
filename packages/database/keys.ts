@@ -14,6 +14,7 @@ export const keys = () =>
       PGPORT: z.string().default("5432"),
       PGUSER: z.string().optional(),
       PGDATABASE: z.string().optional(),
+      PGSCHEMA: z.string().optional(),
     },
     runtimeEnv: {
       DATABASE_URL: process.env.DATABASE_URL,
@@ -23,5 +24,6 @@ export const keys = () =>
       PGPORT: process.env.PGPORT,
       PGUSER: process.env.PGUSER,
       PGDATABASE: process.env.PGDATABASE,
+      PGSCHEMA: process.env.PGSCHEMA,
     },
   });

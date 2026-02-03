@@ -1,0 +1,45 @@
+name: Cleanup Preview Schemas (Stage)
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    if: ${{ github.ref == 'refs/heads/main' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGE }}
+          aws-region: us-east-1
+
+      - name: Cleanup preview schemas
+        env:
+          AWS_REGION: us-east-1
+          PGHOST: ${{ secrets.STAGE_PGHOST }}
+          PGPORT: "5432"
+          PGDATABASE: "app"
+          PGUSER: "vercel_iam"
+          PREVIEW_SCHEMA_TTL_DAYS: "14"
+        run: node packages/database/scripts/cleanup-preview-schemas.mjs
