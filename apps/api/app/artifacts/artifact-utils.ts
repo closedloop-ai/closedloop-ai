@@ -17,13 +17,6 @@ export function generateDocumentSlug(): string {
   return nanoid(14);
 }
 
-export function generateLiveblocksRoomId(
-  organizationId: string,
-  documentSlug: string
-): string {
-  return `${organizationId}:artifact:${documentSlug}`;
-}
-
 /**
  * Typed error for artifact not found - maps to 404 HTTP status.
  */

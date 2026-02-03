@@ -40,9 +40,9 @@ export function OptionalComments({
  */
 function CommentsWithHooks({
   editor,
-}: {
+}: Readonly<{
   editor: AnchoredThreadsProps["editor"];
-}) {
+}>) {
   const { threads } = useThreads();
   useConstrainFloatingWithinEditor(editor);
 

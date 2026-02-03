@@ -30,6 +30,7 @@ export function RichTextEditor({
   className,
   readOnly,
   liveblocksExtension,
+  liveblocksIsReady,
   onEditorReady,
   contentResetKey,
   contentResetValue,
@@ -41,6 +42,7 @@ export function RichTextEditor({
         placeholder={placeholder}
         readOnly={readOnly}
         liveblocksExtension={liveblocksExtension}
+        liveblocksIsReady={liveblocksIsReady}
         onChange={onChange}
         onEditorReady={onEditorReady}
         contentResetKey={contentResetKey}

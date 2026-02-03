@@ -11,6 +11,7 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
@@ -22,6 +23,7 @@ import {
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
+import { createLiveblocksRoom } from "@/lib/liveblocks";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -284,7 +286,7 @@ export const artifactsService = {
       );
     }
 
-    return await withDb.tx(async (tx) => {
+    const createdArtifact = await withDb.tx(async (tx) => {
       // Resolve projectId from workstream if needed (non-templates only)
       if (!(isTemplate || input.projectId)) {
         const workstream = await tx.workstream.findUnique({
@@ -316,6 +318,25 @@ export const artifactsService = {
         },
       });
     });
+
+    if (createdArtifact?.documentSlug) {
+      // Create Liveblocks room for document artifacts (PRDs, plans, issues, etc.)
+      const roomId = generateArtifactRoomId(
+        organizationId,
+        createdArtifact.documentSlug
+      );
+      await createLiveblocksRoom({
+        roomId,
+        tenantId: organizationId,
+        metadata: {
+          artifactId: createdArtifact.id,
+          artifactType: createdArtifact.type,
+          documentSlug: createdArtifact.documentSlug,
+        },
+      });
+    }
+
+    return createdArtifact;
   },
 
   /**

@@ -2,6 +2,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { auth } from "@repo/auth/server";
 import { authenticate } from "@repo/collaboration/auth";
+import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import z from "zod";
@@ -15,23 +16,28 @@ export const POST = async (request: Request) => {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { room: roomId } = await authenticateValidator.parseAsync(
-      await request.json()
-    );
+    let roomId: string;
+    try {
+      const { room } = authenticateValidator.parse(await request.json());
+      roomId = room;
+    } catch (error) {
+      log.error("Invalid request body", { error: parseError(error) });
+      return new Response("Invalid request body", { status: 400 });
+    }
 
     const user = await fetchUser(getToken);
     if (!user) {
       return new Response("Unable to fetch user", { status: 500 });
     }
 
-    const result = validateRoomId(roomId, user.organizationId);
-    if (!result.success) {
-      log.error("Invalid room ID", {
-        roomId,
-        user,
-        error: result.error,
-      });
-      return new Response(result.error, { status: result.status });
+    try {
+      const { organizationId } = parseArtifactRoomId(roomId);
+      if (organizationId !== user.organizationId) {
+        return new Response("Forbidden", { status: 403 });
+      }
+    } catch (error) {
+      log.error("Invalid room ID", { error: parseError(error) });
+      return new Response("Invalid room ID", { status: 400 });
     }
 
     const { token, status } = await authenticate({
@@ -54,29 +60,6 @@ export const POST = async (request: Request) => {
 const authenticateValidator = z.object({
   room: z.string().min(1, "room is required"),
 });
-
-function validateRoomId(
-  roomId: string,
-  orgId: string
-): { success: true } | { success: false; error: string; status: number } {
-  // Liveblocks room ID format: orgId:type:id
-  const idParts = roomId.split(":");
-  if (idParts.length !== 3) {
-    return { success: false, error: `Invalid room ID: ${roomId}`, status: 400 };
-  }
-  const [roomOrgId, roomType] = idParts;
-  if (roomOrgId !== orgId) {
-    return { success: false, error: "Forbidden", status: 403 };
-  }
-  if (roomType !== "artifact") {
-    return {
-      success: false,
-      error: `Invalid room type: ${roomType}`,
-      status: 400,
-    };
-  }
-  return { success: true };
-}
 
 async function fetchUser(
   getToken: () => Promise<string | null>

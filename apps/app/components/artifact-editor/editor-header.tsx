@@ -1,6 +1,12 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
 import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
@@ -70,21 +76,30 @@ export function EditorHeader({
       )}
     >
       {/* Left Section: Back button, title/version, status, save indicator */}
-      <div className="flex items-center gap-4">
-        <Link href={backHref}>
+      <div className="flex min-w-0 flex-1 items-center gap-4">
+        <Link className="shrink-0" href={backHref}>
           <Button size="sm" variant="ghost">
             <ArrowLeftIcon className="mr-2 h-4 w-4" />
             {backLabel}
           </Button>
         </Link>
 
-        <div className="flex items-center gap-2">
-          <span className="font-medium">{title}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="truncate font-medium">{title}</span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{title}</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {versionDisplay}
           <ArtifactStatusBadge status={status} />
         </div>
 
-        <span className="text-muted-foreground text-sm">
+        <span className="shrink-0 text-muted-foreground text-sm">
           {isSaving
             ? "Saving..."
             : `Last saved: ${formatRelativeTime(lastSaved)}`}
@@ -95,7 +110,7 @@ export function EditorHeader({
 
       {/* Right Section: Actions */}
       {rightActions && (
-        <div className="flex items-center gap-2">{rightActions}</div>
+        <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       )}
     </div>
   );
