@@ -1,9 +1,21 @@
 /**
- * Type assertion tests to verify compatibility between packages/api Artifact type
- * and Prisma generated Artifact type.
+ * Compile-Time Type Compatibility Guard
  *
- * These tests use TypeScript's type system to ensure the types are structurally compatible.
- * If any of these fail, it indicates a breaking change in the type definitions.
+ * This file contains zero runtime code - it uses TypeScript's type system to verify
+ * that the hand-written API types (in packages/api/src/types/artifact.ts) stay in sync
+ * with the Prisma-generated types (from packages/database).
+ *
+ * WHY: The API package intentionally does NOT depend on @repo/database to maintain
+ * separation of concerns. This means we manually define API types that must match the
+ * database schema. Without this guard, the types can drift apart silently.
+ *
+ * HOW IT WORKS: The type assertions below will cause TypeScript compilation to FAIL
+ * if the types become incompatible. For example:
+ *   - If a new enum value is added to Prisma but not to the API types
+ *   - If a field's nullability changes in one place but not the other
+ *   - If a field is added to Prisma but missing from the API type
+ *
+ * WHEN ERRORS OCCUR: Run `pnpm typecheck` - this file is included in the build.
  *
  * Note: This file must live in apps/api (not packages/api) because packages/api
  * intentionally does not depend on @repo/database to maintain separation of concerns.
