@@ -37,7 +37,10 @@ export function MetadataPanel({
 }: Readonly<MetadataPanelProps>) {
   return (
     <div
-      className={cn("w-80 overflow-auto border-l bg-muted/30 p-4", className)}
+      className={cn(
+        "min-h-0 w-80 overflow-auto border-l bg-muted/30 p-4",
+        className
+      )}
     >
       <h3 className="mb-4 font-semibold">{title}</h3>
       <div className="space-y-4">{children}</div>
