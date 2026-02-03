@@ -1,10 +1,13 @@
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   AlertCircleIcon,
   BookOpenIcon,
+  BugIcon,
   ClipboardListIcon,
   FileTextIcon,
   GitBranchIcon,
+  MapIcon,
   PaintbrushIcon,
 } from "lucide-react";
 import type * as React from "react";
@@ -41,39 +44,66 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactDisplayStatus, string> = {
 };
 
 // Artifact type icons
-export const ARTIFACT_TYPE_ICONS: Record<string, React.ElementType> = {
+export const ARTIFACT_TYPE_ICONS: Record<string, React.ElementType> &
+  Partial<Record<ArtifactType, React.ElementType>> = {
+  // Legacy ProjectArtifactType values
   PROJECT_BRIEF: BookOpenIcon,
-  PRD: FileTextIcon,
   DESIGNS: PaintbrushIcon,
-  IMPLEMENTATION_PLAN: ClipboardListIcon,
-  ISSUE: AlertCircleIcon,
   FEATURE_BRANCHES: GitBranchIcon,
+  // ArtifactType values
+  PRD: FileTextIcon,
+  FIGMA_DESIGN: PaintbrushIcon,
+  IMPLEMENTATION_PLAN: ClipboardListIcon,
+  IMPLEMENTATION_STRATEGY: MapIcon,
+  ISSUE: AlertCircleIcon,
+  BUG: BugIcon,
+  TEMPLATE: FileTextIcon,
+  PULL_REQUEST: GitBranchIcon,
 };
 
 // Artifact type labels for display
-export const ARTIFACT_TYPE_LABELS: Record<string, string> = {
+export const ARTIFACT_TYPE_LABELS: Record<string, string> &
+  Partial<Record<ArtifactType, string>> = {
+  // Legacy ProjectArtifactType values
   PROJECT_BRIEF: "Brief",
-  PRD: "PRD",
   DESIGNS: "Designs",
-  IMPLEMENTATION_PLAN: "Impl Plan",
-  ISSUE: "Issue",
   FEATURE_BRANCHES: "Branches",
+  // ArtifactType values
+  PRD: "PRD",
+  FIGMA_DESIGN: "Designs",
+  IMPLEMENTATION_PLAN: "Impl Plan",
+  IMPLEMENTATION_STRATEGY: "Implementation Strategy",
+  ISSUE: "Issue",
+  BUG: "Bug",
+  TEMPLATE: "Template",
+  PULL_REQUEST: "Branches",
 };
 
 // Artifact type colors for pills (bg + text)
 export const ARTIFACT_TYPE_COLORS: Record<
   string,
   { bg: string; text: string }
-> = {
+> &
+  Partial<Record<ArtifactType, { bg: string; text: string }>> = {
+  // Legacy ProjectArtifactType values
   PROJECT_BRIEF: {
     bg: "bg-slate-100 dark:bg-slate-800",
     text: "text-slate-700 dark:text-slate-300",
   },
+  DESIGNS: {
+    bg: "bg-purple-100 dark:bg-purple-900/50",
+    text: "text-purple-700 dark:text-purple-300",
+  },
+  FEATURE_BRANCHES: {
+    bg: "bg-cyan-100 dark:bg-cyan-900/50",
+    text: "text-cyan-700 dark:text-cyan-300",
+  },
+  // ArtifactType values
   PRD: {
     bg: "bg-blue-100 dark:bg-blue-900/50",
     text: "text-blue-700 dark:text-blue-300",
   },
-  DESIGNS: {
+  FIGMA_DESIGN: {
     bg: "bg-purple-100 dark:bg-purple-900/50",
     text: "text-purple-700 dark:text-purple-300",
   },
@@ -81,11 +111,23 @@ export const ARTIFACT_TYPE_COLORS: Record<
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     text: "text-emerald-700 dark:text-emerald-300",
   },
+  IMPLEMENTATION_STRATEGY: {
+    bg: "bg-teal-100 dark:bg-teal-900/50",
+    text: "text-teal-700 dark:text-teal-300",
+  },
   ISSUE: {
     bg: "bg-orange-100 dark:bg-orange-900/50",
     text: "text-orange-700 dark:text-orange-300",
   },
-  FEATURE_BRANCHES: {
+  BUG: {
+    bg: "bg-red-100 dark:bg-red-900/50",
+    text: "text-red-700 dark:text-red-300",
+  },
+  TEMPLATE: {
+    bg: "bg-indigo-100 dark:bg-indigo-900/50",
+    text: "text-indigo-700 dark:text-indigo-300",
+  },
+  PULL_REQUEST: {
     bg: "bg-cyan-100 dark:bg-cyan-900/50",
     text: "text-cyan-700 dark:text-cyan-300",
   },

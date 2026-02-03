@@ -48,12 +48,18 @@ export const ARTIFACT_DISPLAY_STATUS_OPTIONS = Object.values(
   ArtifactDisplayStatus
 );
 
+// ProjectArtifactType mirrors the ArtifactType enum from @repo/api/src/types/artifact.ts
+// and the Prisma schema (packages/database/prisma/schema.prisma).
+// This frontend const provides type-safe access to artifact type literals used in the UI.
 export const ProjectArtifactType = {
   ProjectBrief: "PROJECT_BRIEF",
   Prd: "PRD",
   Designs: "DESIGNS",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
+  ImplementationStrategy: "IMPLEMENTATION_STRATEGY",
   Issue: "ISSUE",
+  Bug: "BUG",
+  Template: "TEMPLATE",
   FeatureBranches: "FEATURE_BRANCHES",
 } as const;
 export type ProjectArtifactType =

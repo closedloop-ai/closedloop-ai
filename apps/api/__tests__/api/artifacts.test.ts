@@ -84,14 +84,15 @@ describe("GET /api/artifacts", () => {
   it("filters by workstreamId", async () => {
     vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
+    const workstreamId = uuidv7();
     const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?workstreamId=ws-123",
+      url: `http://localhost:3002/api/artifacts?workstreamId=${workstreamId}`,
     });
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
     expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ workstreamId: "ws-123" })
+      expect.objectContaining({ workstreamId })
     );
   });
 
