@@ -32,25 +32,9 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
         );
       }
 
-      const {
-        type,
-        category,
-        latestOnly,
-        workstreamId,
-        projectId,
-        documentSlug,
-        version,
-      } = parseResult.data;
-
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
-        type,
-        category,
-        latestOnly,
-        workstreamId,
-        projectId,
-        documentSlug,
-        version,
+        ...parseResult.data,
       });
 
       return successResponse(artifacts);
