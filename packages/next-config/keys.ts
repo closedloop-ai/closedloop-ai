@@ -22,11 +22,12 @@ const ENV_SUFFIXES = ["stage", "prod"] as const;
 function getCurrentAppType(): AppType | null {
   // In preview, VERCEL_BRANCH_URL always uses the project name pattern
   const branchUrl = process.env.VERCEL_BRANCH_URL?.toLowerCase();
+  const vercelUrl = process.env.VERCEL_URL?.toLowerCase();
   const productionUrl =
     process.env.VERCEL_PROJECT_PRODUCTION_URL?.toLowerCase();
 
-  // Try branch URL first (most reliable for previews)
-  const urlToCheck = branchUrl ?? productionUrl;
+  // Try branch URL first (most reliable for previews), then VERCEL_URL, then production URL
+  const urlToCheck = branchUrl ?? vercelUrl ?? productionUrl;
   if (!urlToCheck) {
     return null;
   }
@@ -54,10 +55,11 @@ function getCurrentAppType(): AppType | null {
 function getCurrentEnvSuffix(): string | null {
   // In preview, VERCEL_BRANCH_URL always uses the project name pattern
   const branchUrl = process.env.VERCEL_BRANCH_URL?.toLowerCase();
+  const vercelUrl = process.env.VERCEL_URL?.toLowerCase();
   const productionUrl =
     process.env.VERCEL_PROJECT_PRODUCTION_URL?.toLowerCase();
 
-  const urlToCheck = branchUrl ?? productionUrl;
+  const urlToCheck = branchUrl ?? vercelUrl ?? productionUrl;
   if (!urlToCheck) {
     return null;
   }
@@ -96,14 +98,18 @@ function getCurrentEnvSuffix(): string | null {
  * @param fallback - The configured env var value to use for non-preview
  */
 function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
-  const isPreview = process.env.VERCEL_ENV === "preview";
-  // Use VERCEL_BRANCH_URL (consistent across deployments) not VERCEL_URL (has unique deployment ID)
-  const branchUrl = process.env.VERCEL_BRANCH_URL;
+  const vercelEnv = process.env.VERCEL_ENV;
+  // Use VERCEL_BRANCH_URL (consistent across deployments) then VERCEL_URL
+  const branchUrl = process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL;
   const currentApp = getCurrentAppType();
   const envSuffix = getCurrentEnvSuffix();
+  const isPreviewLike =
+    vercelEnv === "preview" ||
+    (branchUrl?.includes(".preview.") ?? false) ||
+    (branchUrl?.includes("-git-") ?? false);
 
-  // In preview, derive all app URLs from VERCEL_BRANCH_URL by swapping the app type
-  if (isPreview && branchUrl && currentApp && envSuffix) {
+  // In preview-like environments, derive all app URLs by swapping the app type
+  if (isPreviewLike && branchUrl && currentApp && envSuffix) {
     // Match pattern: {appType}-{env}-git-... at start of URL
     // Use regex to swap the app type while preserving the rest
     const searchPattern = new RegExp(`^(${currentApp})(-${envSuffix})`);

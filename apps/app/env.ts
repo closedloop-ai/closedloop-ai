@@ -10,7 +10,6 @@ import { keys as observability } from "@repo/observability/keys";
 import { keys as security } from "@repo/security/keys";
 import { keys as webhooks } from "@repo/webhooks/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
-import { z } from "zod";
 
 export const env = createEnv({
   extends: [
@@ -26,14 +25,7 @@ export const env = createEnv({
     security(),
     webhooks(),
   ],
-  server: {
-    API_URL: z.url().default("http://localhost:3002"),
-  },
-  client: {
-    NEXT_PUBLIC_API_URL: z.url().default("http://localhost:3002"),
-  },
-  runtimeEnv: {
-    API_URL: process.env.API_URL,
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-  },
+  server: {},
+  client: {},
+  runtimeEnv: {},
 });
