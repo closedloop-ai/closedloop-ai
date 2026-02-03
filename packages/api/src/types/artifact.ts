@@ -3,7 +3,15 @@
 
 import type { ProjectOwner } from "./organization";
 
-// Artifact Category
+/**
+ * Broad classification for artifacts:
+ * - Document: Text-based artifacts editable in the app (PRD, Issue, Bug, reports, etc.)
+ * - Workflow: User-defined step sequences that orchestrate execution (e.g., plan -> code -> test -> review)
+ * - Branch: Code-related artifacts tied to version control (e.g., Pull Requests)
+ *
+ * Note: UI sections use type-based grouping for granularity, not category-based filtering.
+ * Category enables future features like category-specific views or permissions.
+ */
 export const ArtifactCategory = {
   Document: "DOCUMENT",
   Workflow: "WORKFLOW",
