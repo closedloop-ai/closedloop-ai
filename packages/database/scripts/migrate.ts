@@ -103,7 +103,10 @@ async function main() {
 
     console.log("✓ Migrations completed successfully");
   } catch (error) {
-    console.error("❌ Migration failed:", error.message);
+    console.error(
+      "❌ Migration failed:",
+      error instanceof Error ? error.message : error
+    );
     process.exit(1);
   }
 }
