@@ -503,7 +503,7 @@ export const artifactsService = {
             },
           },
           artifacts: {
-            where: { type: { in: ["PRD", "ISSUE"] }, isLatest: true },
+            where: { type: { in: ["PRD", "ISSUE", "BUG"] }, isLatest: true },
             take: 1,
           },
         },
