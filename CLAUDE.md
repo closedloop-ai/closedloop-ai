@@ -29,13 +29,23 @@ pnpm test                                   # Run all tests
 pnpm turbo test --filter=app                # Test specific app
 
 # Database (Prisma)
-pnpm migrate                                # Format, generate, and push schema
+pnpm migrate                                # Format, generate, and db push (dev only, NOT migrations)
 cd packages/database && pnpm prisma generate # Regenerate client after schema changes
 cd packages/database && pnpm prisma studio   # Open Prisma Studio
-cd packages/database && pnpm prisma db push  # Push schema changes
+cd packages/database && pnpm prisma db push  # Push schema changes (dev only, no migration)
+
+# Database Migrations (for production-safe schema changes)
+cd packages/database && pnpm prisma migrate dev --name <migration_name>  # Create migration
+cd packages/database && pnpm prisma migrate deploy                       # Apply migrations (CI/prod)
+cd packages/database && pnpm prisma migrate status                       # Check migration status
 ```
 
-**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations), you **must** run `cd packages/database && pnpm prisma generate` to regenerate the TypeScript client in `packages/database/generated/`. Without this, the generated types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
+**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations):
+1. **Create a migration**: `cd packages/database && pnpm prisma migrate dev --name <descriptive_name>`
+2. This automatically runs `prisma generate` to regenerate the TypeScript client in `packages/database/generated/`
+3. Commit both the schema change AND the generated migration files in `prisma/migrations/`
+
+Without migrations, production will not receive your schema changes. Without regenerating, types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
 
 ## Architecture
 
@@ -70,7 +80,14 @@ Each app has its own `.env.local`. Key patterns:
 - Schema: `packages/database/prisma/schema.prisma`
 - Config: `packages/database/prisma.config.ts`
 - Client generated to: `packages/database/generated/`
+- Migrations: `packages/database/prisma/migrations/`
 - Local dev uses `pg` adapter; production uses Neon adapter (auto-detected via URL)
+
+**Schema changes require migrations:**
+- **Development**: Use `prisma migrate dev --name <descriptive_name>` to create a migration file
+- **Production**: Migrations are applied via `prisma migrate deploy` in CI/CD
+- **Never use `prisma db push` for changes that will go to production** — it doesn't create migration files and can cause drift between environments
+- Migration names should be descriptive: `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
 
 ### Data Access Pattern (IMPORTANT)
 
@@ -199,3 +216,4 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm `workspace:*` resolution + TypeScript handles subpath resolution directly. This matches how `@repo/api/src/types/*` subpath imports already work. (context: monorepo|pnpm|workspace|subpath-imports|package.json|exports-field)
 - **[convention]**: Parsers that exclusively process data from a specific domain (e.g., GitHub Actions workflow artifacts) should live in the corresponding domain package (e.g., `packages/github/`) rather than in a generic `apps/api/lib/` location. Import via subpath: `@repo/github/execution-log-parser`. (context: code-organization|domain-packages|domain-boundaries|packages/github|PR-feedback)
 - **[convention]**: New parser/utility modules in domain packages (e.g., `packages/github/execution-log-parser.ts`) must include accompanying unit tests. PR reviewers will reject parsers without test coverage. (context: testing|parser|packages/github|PR-feedback|code-review)
+- **[convention]**: All database schema changes must use `prisma migrate dev --name <name>` to create migration files. Never use `prisma db push` for changes going to production — it doesn't create migrations and causes environment drift. Migrations are applied in prod via `prisma migrate deploy`. (context: prisma|migrations|schema-changes|production|db-push)
