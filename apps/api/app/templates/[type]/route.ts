@@ -16,7 +16,7 @@ import { artifactsService } from "../../artifacts/service";
 export const GET = withAuth<Artifact, "/templates/[type]">(
   async ({ user }, _request, params) => {
     try {
-      const { type } = (await params) as { type: string };
+      const { type } = await params;
 
       // Validate that type is a valid ArtifactType
       if (!Object.values(ArtifactType).includes(type as ArtifactType)) {
