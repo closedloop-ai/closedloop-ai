@@ -77,6 +77,29 @@ export function getArtifactCategory(type: ArtifactType): ArtifactCategory {
   }
 }
 
+/**
+ * Document types that generate a documentSlug for navigation.
+ * Templates are NOT navigable and do NOT get documentSlug.
+ */
+const NAVIGABLE_DOCUMENT_TYPES = new Set<ArtifactType>([
+  ArtifactType.Prd,
+  ArtifactType.ImplementationPlan,
+  ArtifactType.Issue,
+  ArtifactType.Bug,
+  ArtifactType.ImplementationStrategy,
+]);
+
+/**
+ * Determines whether an artifact type should have a document slug generated.
+ * Document slugs enable stable URLs for navigation across artifact versions.
+ *
+ * @param type - The artifact type to check
+ * @returns true if the artifact type should have a document slug
+ */
+export function shouldGenerateDocumentSlug(type: ArtifactType): boolean {
+  return NAVIGABLE_DOCUMENT_TYPES.has(type);
+}
+
 // Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",

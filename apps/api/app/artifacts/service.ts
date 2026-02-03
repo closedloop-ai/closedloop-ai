@@ -7,6 +7,7 @@ import {
   type FindArtifactsOptions,
   getArtifactCategory,
   type PullRequestInfo,
+  shouldGenerateDocumentSlug,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
@@ -46,22 +47,6 @@ async function validateOwnerInOrg(
   if (!owner) {
     throw new Error("Invalid owner ID: user not found in this organization");
   }
-}
-
-/**
- * Document types that generate a documentSlug for navigation.
- * Templates are NOT navigable and do NOT get documentSlug.
- */
-const DOCUMENT_TYPES_WITH_SLUGS = new Set<ArtifactType>([
-  ArtifactType.Prd,
-  ArtifactType.ImplementationPlan,
-  ArtifactType.Issue,
-  ArtifactType.Bug,
-  ArtifactType.ImplementationStrategy,
-]);
-
-function shouldGenerateDocumentSlug(type: ArtifactType): boolean {
-  return DOCUMENT_TYPES_WITH_SLUGS.has(type);
 }
 
 // Result types for service operations
