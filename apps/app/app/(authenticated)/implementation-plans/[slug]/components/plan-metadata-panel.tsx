@@ -6,19 +6,22 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
-import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
 import { useState } from "react";
+import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
+import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import {
+  MetadataPanel,
   MetadataSection,
-  TabbedMetadataPanel,
 } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import {
   calculateAcceptanceRate,
   sortMetricsByScore,
@@ -86,23 +89,6 @@ type PlanMetadataPanelProps = {
 /**
  * Metadata panel for Plan editor.
  * Displays status, approver, generation workflow link, pull request info, and artifact metadata.
- *
- * Usage:
- * ```tsx
- * <PlanMetadataPanel
- *   plan={plan}
- *   status={status}
- *   approver={approver}
- *   owner={owner}
- *   teamMembers={teamMembers}
- *   generationStatus={generationStatus}
- *   pullRequest={pullRequest}
- *   onStatusChange={handleStatusChange}
- *   onApproverChange={handleApproverChange}
- *   onApproverBlur={handleApproverBlur}
- *   onOwnerChange={handleOwnerChange}
- * />
- * ```
  */
 export function PlanMetadataPanel({
   plan,
@@ -117,10 +103,18 @@ export function PlanMetadataPanel({
   onApproverChange,
   onApproverBlur,
   onOwnerChange,
-}: PlanMetadataPanelProps) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [dialogTrace, setDialogTrace] = useState<ExecutionTrace>();
-  const [selectedSessionId, setSelectedSessionId] = useState<string>();
+}: PlanMetadataPanelProps): React.ReactElement {
+  const {
+    dialogOpen,
+    dialogTrace,
+    selectedSessionId,
+    handleViewFullTrace,
+    setDialogOpen,
+  } = useExecutionLogDialog();
+
+  const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
+  const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
+  const [isEvaluationOpen, setIsEvaluationOpen] = useState(false);
 
   const {
     acceptedCount,
@@ -128,151 +122,133 @@ export function PlanMetadataPanel({
     rate: acceptanceRate,
   } = calculateAcceptanceRate(evaluationResults?.metrics);
 
-  const handleViewFullTrace = (trace: ExecutionTrace, sessionId?: string) => {
-    setDialogTrace(trace);
-    setSelectedSessionId(sessionId);
-    setDialogOpen(true);
-  };
-
   return (
     <>
-      <TabbedMetadataPanel
-        tabs={[
-          {
-            id: "details",
-            label: "Details",
-            content: (
-              <div className="space-y-4">
-                <StatusMetadataSection
-                  approver={approver}
-                  onApproverBlur={onApproverBlur}
-                  onApproverChange={onApproverChange}
-                  onOwnerChange={onOwnerChange}
-                  onStatusChange={onStatusChange}
-                  owner={owner}
-                  status={status}
-                  teamMembers={teamMembers}
-                />
+      <MetadataPanel title="Implementation Plan Details">
+        <div className="space-y-6">
+          <CollapsibleSection
+            onOpenChange={setIsPropertiesOpen}
+            open={isPropertiesOpen}
+            title="Properties"
+          >
+            <StatusMetadataSection
+              approver={approver}
+              onApproverBlur={onApproverBlur}
+              onApproverChange={onApproverChange}
+              onOwnerChange={onOwnerChange}
+              onStatusChange={onStatusChange}
+              owner={owner}
+              status={status}
+              teamMembers={teamMembers}
+            />
 
-                <MetadataSection separator>
-                  <div className="space-y-1 text-muted-foreground text-sm">
-                    <p>Version: v{plan.version}</p>
-                    <p>
-                      Created:{" "}
-                      {new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                      }).format(new Date(plan.createdAt))}
-                    </p>
-                    <p>
-                      Updated:{" "}
-                      {new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                      }).format(new Date(plan.updatedAt))}
-                    </p>
-                  </div>
-                </MetadataSection>
+            {generationStatus?.htmlUrl ? (
+              <MetadataSection separator>
+                <Label className="text-muted-foreground text-xs">
+                  Generation
+                </Label>
+                <a
+                  className="flex items-center gap-1 text-primary text-sm hover:underline"
+                  href={generationStatus.htmlUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  View GitHub Workflow
+                  <ExternalLinkIcon className="h-3 w-3" />
+                </a>
+              </MetadataSection>
+            ) : null}
 
-                {/* GitHub Action Run Link */}
-                {generationStatus?.htmlUrl ? (
-                  <MetadataSection separator>
-                    <Label className="text-muted-foreground text-xs">
-                      Generation
-                    </Label>
-                    <a
-                      className="flex items-center gap-1 text-primary text-sm hover:underline"
-                      href={generationStatus.htmlUrl}
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
-                      View GitHub Workflow
-                      <ExternalLinkIcon className="h-3 w-3" />
-                    </a>
-                  </MetadataSection>
-                ) : null}
+            {pullRequest ? (
+              <MetadataSection separator>
+                <Label className="text-muted-foreground text-xs">
+                  Pull Request
+                </Label>
+                <a
+                  className="flex items-center gap-1 text-primary text-sm hover:underline"
+                  href={pullRequest.htmlUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  <GitPullRequestIcon className="h-3 w-3" />#
+                  {pullRequest.number}: {pullRequest.title}
+                  <ExternalLinkIcon className="h-3 w-3" />
+                </a>
+                <div className="flex items-center gap-2 text-muted-foreground text-xs">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
+                  >
+                    {pullRequest.state}
+                  </span>
+                  <span>
+                    {pullRequest.headBranch} → {pullRequest.baseBranch}
+                  </span>
+                </div>
+              </MetadataSection>
+            ) : null}
 
-                {/* Pull Request Link */}
-                {pullRequest ? (
-                  <MetadataSection separator>
-                    <Label className="text-muted-foreground text-xs">
-                      Pull Request
-                    </Label>
-                    <a
-                      className="flex items-center gap-1 text-primary text-sm hover:underline"
-                      href={pullRequest.htmlUrl}
-                      rel="noopener noreferrer"
-                      target="_blank"
-                    >
-                      <GitPullRequestIcon className="h-3 w-3" />#
-                      {pullRequest.number}: {pullRequest.title}
-                      <ExternalLinkIcon className="h-3 w-3" />
-                    </a>
-                    <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
-                      >
-                        {pullRequest.state}
+            <ArtifactVersionInfo
+              createdAt={plan.createdAt}
+              updatedAt={plan.updatedAt}
+              version={plan.version}
+            />
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            onOpenChange={setIsExecutionLogOpen}
+            open={isExecutionLogOpen}
+            title="Execution Log"
+          >
+            <ExecutionLogSummary
+              artifactId={plan.id}
+              onViewFullTrace={handleViewFullTrace}
+            />
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            onOpenChange={setIsEvaluationOpen}
+            open={isEvaluationOpen}
+            title="Evaluation"
+          >
+            <div className="space-y-4">
+              {evaluationResults ? (
+                <div className="space-y-3">
+                  {/* Progress bar showing acceptance rate */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">
+                        {acceptedCount}/{totalCount} judges accepted
                       </span>
-                      <span>
-                        {pullRequest.headBranch} → {pullRequest.baseBranch}
+                      <span className="font-medium">
+                        {acceptanceRate.toFixed(0)}%
                       </span>
                     </div>
-                  </MetadataSection>
-                ) : null}
-              </div>
-            ),
-          },
-          {
-            id: "execution-log",
-            label: "Execution Log",
-            content: (
-              <ExecutionLogSummary
-                artifactId={plan.id}
-                onViewFullTrace={handleViewFullTrace}
-              />
-            ),
-          },
-          {
-            id: "evaluation",
-            label: "Evaluation",
-            content: (
-              <div className="space-y-4">
-                {evaluationResults ? (
-                  <div className="space-y-3">
-                    {/* Progress bar showing acceptance rate */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-muted-foreground">
-                          {acceptedCount}/{totalCount} judges accepted
-                        </span>
-                        <span className="font-medium">
-                          {acceptanceRate.toFixed(0)}%
-                        </span>
-                      </div>
-                      <Progress className="h-2" value={acceptanceRate} />
-                    </div>
-
-                    {/* Judge result cards - sorted by score ascending (worst first) */}
-                    <div className="space-y-2">
-                      {sortMetricsByScore(evaluationResults.metrics).map(
-                        (metric) => (
-                          <JudgeResultCard
-                            key={metric.metric_name}
-                            metric={metric}
-                          />
-                        )
-                      )}
-                    </div>
+                    <Progress className="h-2" value={acceptanceRate} />
                   </div>
-                ) : (
-                  <p className="text-muted-foreground text-sm">
-                    No evaluation available for this plan
-                  </p>
-                )}
-              </div>
-            ),
-          },
-        ]}
-      />
+
+                  {/* Judge result cards - sorted by score ascending (worst first) */}
+                  <div className="space-y-2">
+                    {sortMetricsByScore(evaluationResults.metrics).map(
+                      (metric) => (
+                        <JudgeResultCard
+                          key={metric.metric_name}
+                          metric={metric}
+                        />
+                      )
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  No evaluation available for this plan
+                </p>
+              )}
+            </div>
+          </CollapsibleSection>
+
+          <CommentsSection artifactId={plan.id} />
+        </div>
+      </MetadataPanel>
       <ExecutionLogDialog
         initialSessionId={selectedSessionId}
         onOpenChange={setDialogOpen}

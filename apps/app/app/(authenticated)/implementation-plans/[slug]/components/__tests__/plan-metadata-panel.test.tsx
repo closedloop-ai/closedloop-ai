@@ -1,5 +1,5 @@
 import type { ArtifactStatus } from "@repo/api/src/types/artifact";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   createMockArtifact,
@@ -44,7 +44,6 @@ vi.mock("../judge-result-card", () => ({
 }));
 
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
-const DETAILS_TAB_PATTERN = /details/i;
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
 const UPDATED_PATTERN = /updated:/i;
@@ -211,24 +210,22 @@ describe("PlanMetadataPanel", () => {
     cleanup();
   });
 
-  describe("Tab structure", () => {
-    test("renders all three tabs: Details, Execution Log, and Evaluation", () => {
+  describe("Section structure", () => {
+    test("renders all collapsible sections: Properties, Execution Log, Evaluation, and Comments", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
-      const tabList = screen.getByRole("tablist");
-      const tabs = within(tabList).getAllByRole("tab");
-
-      expect(tabs).toHaveLength(3);
-      expect(tabs[0].textContent).toBe("Details");
-      expect(tabs[1].textContent).toBe("Execution Log");
-      expect(tabs[2].textContent).toBe("Evaluation");
+      // Check for collapsible section headings
+      expect(screen.getByText("Properties")).toBeDefined();
+      expect(screen.getByText("Execution Log")).toBeDefined();
+      expect(screen.getByText("Evaluation")).toBeDefined();
+      expect(screen.getByText("Comments")).toBeDefined();
     });
 
-    test("Details tab is selected by default", () => {
+    test("Properties section is expanded by default", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
-      const detailsTab = screen.getByRole("tab", { name: DETAILS_TAB_PATTERN });
-      expect(detailsTab.getAttribute("aria-selected")).toBe("true");
+      // Properties section content should be visible (StatusMetadataSection is rendered)
+      expect(screen.getByTestId("status-metadata-section")).toBeDefined();
     });
   });
 
