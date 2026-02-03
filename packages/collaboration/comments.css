@@ -1,0 +1,26 @@
+/* Liveblocks comments styling overrides */
+
+.lb-collab-floating,
+.lb-tiptap-floating-composer,
+.lb-tiptap-floating-toolbar,
+.lb-tiptap-floating-threads {
+  z-index: 60;
+}
+
+.lb-collab-floating-composer,
+.lb-collab-floating-threads,
+.lb-tiptap-floating-composer,
+.lb-tiptap-floating-threads {
+  width: 320px;
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+@media (max-width: 768px) {
+  .lb-collab-floating-composer,
+  .lb-collab-floating-threads,
+  .lb-tiptap-floating-composer,
+  .lb-tiptap-floating-threads {
+    width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px);
+  }
+}
