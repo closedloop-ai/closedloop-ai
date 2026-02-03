@@ -4,7 +4,7 @@ import { defineConfig } from "prisma/config";
 import { keys } from "./keys";
 import { addSchemaToUrl, resolveSchemaName } from "./schema-utils";
 
-dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(import.meta.dirname, ".env") });
 
 const env = keys();
 
