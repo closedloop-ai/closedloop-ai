@@ -29,7 +29,6 @@ export default function MembersPage() {
               "bg-primary text-primary-foreground hover:bg-primary/90",
           },
         }}
-        routing="hash"
       />
     </div>
   );
