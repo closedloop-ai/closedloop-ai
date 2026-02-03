@@ -1,6 +1,9 @@
-import react from "@vitejs/plugin-react";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
@@ -31,14 +34,8 @@ export default defineConfig({
         import.meta.dirname,
         "./__tests__/__mocks__/lexical-list.ts"
       ),
-      lexical: path.resolve(
-        import.meta.dirname,
-        "./__tests__/__mocks__/lexical.ts"
-      ),
-      "server-only": path.resolve(
-        import.meta.dirname,
-        "./vitest-mocks/server-only.ts"
-      ),
+      lexical: path.resolve(__dirname, "./__tests__/__mocks__/lexical.ts"),
+      "server-only": path.resolve(__dirname, "./vitest-mocks/server-only.ts"),
     },
   },
 });

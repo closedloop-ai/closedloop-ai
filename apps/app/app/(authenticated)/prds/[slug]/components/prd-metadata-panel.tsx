@@ -4,18 +4,17 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
-import { Input } from "@repo/design-system/components/ui/input";
-import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useState } from "react";
-import {
-  MetadataSection,
-  TabbedMetadataPanel,
-} from "@/components/artifact-editor/metadata-panel";
+import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
+import { CommentsSection } from "@/components/artifact-editor/comments-section";
+import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 
 type PRDMetadataPanelProps = {
   /**
@@ -83,27 +82,6 @@ type PRDMetadataPanelProps = {
 /**
  * Metadata panel for PRD editor.
  * Displays status, approver, target repository/branch, and artifact metadata.
- *
- * Usage:
- * ```tsx
- * <PRDMetadataPanel
- *   prd={prd}
- *   status={status}
- *   approver={approver}
- *   owner={owner}
- *   teamMembers={teamMembers}
- *   targetRepo={targetRepo}
- *   targetBranch={targetBranch}
- *   onStatusChange={handleStatusChange}
- *   onApproverChange={handleApproverChange}
- *   onApproverBlur={handleApproverBlur}
- *   onOwnerChange={handleOwnerChange}
- *   onTargetRepoChange={handleTargetRepoChange}
- *   onTargetRepoBlur={handleTargetRepoBlur}
- *   onTargetBranchChange={handleTargetBranchChange}
- *   onTargetBranchBlur={handleTargetBranchBlur}
- * />
- * ```
  */
 export function PRDMetadataPanel({
   prd,
@@ -121,98 +99,69 @@ export function PRDMetadataPanel({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
-}: PRDMetadataPanelProps) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [dialogTrace, setDialogTrace] = useState<ExecutionTrace>();
-  const [selectedSessionId, setSelectedSessionId] = useState<string>();
+}: PRDMetadataPanelProps): React.ReactElement {
+  const {
+    dialogOpen,
+    dialogTrace,
+    selectedSessionId,
+    handleViewFullTrace,
+    setDialogOpen,
+  } = useExecutionLogDialog();
 
-  const handleViewFullTrace = (trace: ExecutionTrace, sessionId?: string) => {
-    setDialogTrace(trace);
-    setSelectedSessionId(sessionId);
-    setDialogOpen(true);
-  };
+  const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
+  const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
 
   return (
     <>
-      <TabbedMetadataPanel
-        tabs={[
-          {
-            id: "details",
-            label: "Details",
-            content: (
-              <div className="space-y-4">
-                <StatusMetadataSection
-                  approver={approver}
-                  onApproverBlur={onApproverBlur}
-                  onApproverChange={onApproverChange}
-                  onOwnerChange={onOwnerChange}
-                  onStatusChange={onStatusChange}
-                  owner={owner}
-                  status={status}
-                  teamMembers={teamMembers}
-                />
+      <MetadataPanel title="PRD Details">
+        <div className="space-y-6">
+          <CollapsibleSection
+            onOpenChange={setIsPropertiesOpen}
+            open={isPropertiesOpen}
+            title="Properties"
+          >
+            <StatusMetadataSection
+              approver={approver}
+              onApproverBlur={onApproverBlur}
+              onApproverChange={onApproverChange}
+              onOwnerChange={onOwnerChange}
+              onStatusChange={onStatusChange}
+              owner={owner}
+              status={status}
+              teamMembers={teamMembers}
+            />
 
-                <MetadataSection separator>
-                  <h4 className="font-medium text-sm">Plan Generation</h4>
+            <TargetRepositoryFields
+              onTargetBranchBlur={onTargetBranchBlur}
+              onTargetBranchChange={onTargetBranchChange}
+              onTargetRepoBlur={onTargetRepoBlur}
+              onTargetRepoChange={onTargetRepoChange}
+              targetBranch={targetBranch}
+              targetRepo={targetRepo}
+              title="Plan Generation"
+            />
 
-                  <div className="space-y-2">
-                    <Label>
-                      Target Repository{" "}
-                      <span className="text-muted-foreground text-xs">
-                        (owner/repo)
-                      </span>
-                    </Label>
-                    <Input
-                      onBlur={onTargetRepoBlur}
-                      onChange={(e) => onTargetRepoChange(e.target.value)}
-                      placeholder="owner/repo"
-                      value={targetRepo}
-                    />
-                  </div>
+            <ArtifactVersionInfo
+              createdAt={prd.createdAt}
+              updatedAt={prd.updatedAt}
+              version={prd.version}
+            />
+          </CollapsibleSection>
 
-                  <div className="space-y-2">
-                    <Label>Target Branch</Label>
-                    <Input
-                      onBlur={onTargetBranchBlur}
-                      onChange={(e) => onTargetBranchChange(e.target.value)}
-                      placeholder="main"
-                      value={targetBranch}
-                    />
-                  </div>
-                </MetadataSection>
+          <CollapsibleSection
+            onOpenChange={setIsExecutionLogOpen}
+            open={isExecutionLogOpen}
+            title="Execution Log"
+          >
+            <ExecutionLogSummary
+              artifactId={prd.id}
+              onViewFullTrace={handleViewFullTrace}
+            />
+          </CollapsibleSection>
 
-                <MetadataSection separator>
-                  <div className="space-y-1 text-muted-foreground text-sm">
-                    <p>Version: v{prd.version}</p>
-                    <p>
-                      Created:{" "}
-                      {new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                      }).format(new Date(prd.createdAt))}
-                    </p>
-                    <p>
-                      Updated:{" "}
-                      {new Intl.DateTimeFormat("en-US", {
-                        dateStyle: "medium",
-                      }).format(new Date(prd.updatedAt))}
-                    </p>
-                  </div>
-                </MetadataSection>
-              </div>
-            ),
-          },
-          {
-            id: "execution-log",
-            label: "Execution Log",
-            content: (
-              <ExecutionLogSummary
-                artifactId={prd.id}
-                onViewFullTrace={handleViewFullTrace}
-              />
-            ),
-          },
-        ]}
-      />
+          <CommentsSection artifactId={prd.id} />
+        </div>
+      </MetadataPanel>
       <ExecutionLogDialog
         initialSessionId={selectedSessionId}
         onOpenChange={setDialogOpen}
