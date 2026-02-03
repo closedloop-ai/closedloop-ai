@@ -8,63 +8,52 @@
  * @see https://linear.app/closedloop-ai/issue/AI-216/view-evaluation-results-us-001
  */
 
-import type { CaseScore, MetricStatistics } from "@/types/evaluation";
+import { createMockMetricStatistics } from "@/__tests__/fixtures/evaluation";
+import type { CaseScore, EvalStatus } from "@/types/evaluation";
 
-function createMetricMock(
+/**
+ * Helper to create a metric with a specific name, score, and justification.
+ * Delegates to the shared fixture factory.
+ */
+function createMetric(
   name: string,
-  score: 1 | 2 | 3,
+  score: EvalStatus,
   justification: string[]
-): MetricStatistics {
-  const threshold = score === 2 ? 2.0 : 2.5;
-
-  let passRate = 0.0;
-  if (score === 2) {
-    passRate = 0.5;
-  } else if (score === 3) {
-    passRate = 1.0;
-  }
-
-  return {
+) {
+  return createMockMetricStatistics({
     metric_name: name,
-    mean: score,
-    std_dev: 0.0,
-    min: score,
-    max: score,
-    pass_rate: passRate,
-    threshold,
-    sample_count: 1,
-    scores: [score],
+    score,
     justification,
-  };
+  });
 }
 
-const poorMetricMock = createMetricMock("Completeness", 1, [
+const poorMetricMock = createMetric("Completeness", 1, [
   "Plan is missing implementation details for the data migration step",
   "No rollback strategy defined for production deployment",
   "Test coverage requirements are not specified",
   "Missing acceptance criteria for 3 out of 5 user stories",
 ]);
 
-const needsImprovementMetricMock = createMetricMock("Clarity", 2, [
+const needsImprovementMetricMock = createMetric("Clarity", 2, [
   "Task descriptions are generally clear but could be more specific",
   "Technical terminology is used consistently",
   "Dependencies between tasks could be better documented",
 ]);
 
-const greatMetricMock = createMetricMock("Technical Accuracy", 3, [
+const greatMetricMock = createMetric("Technical Accuracy", 3, [
   "All API endpoints follow RESTful conventions correctly",
   "Database schema changes align with Prisma best practices",
   "Authentication flow properly implements OAuth 2.0 standards",
   "Error handling follows established patterns in the codebase",
 ]);
 
-const mixedMetricMock = createMetricMock("Feasibility", 2, [
+const mixedMetricMock = createMetric("Feasibility", 2, [
   "Timeline is reasonable for most tasks",
   "Resource allocation may be tight during Q4",
   "Dependencies on external teams are identified but not fully coordinated",
 ]);
 
-const standardsMetricMock = createMetricMock("Code Standards Adherence", 3, [
+const standardsMetricMock = createMetric("Code Standards Adherence", 3, [
   "Component structure follows established patterns in apps/app/components",
   "Type definitions are properly organized in packages/api/src/types",
   "Data access pattern correctly uses TanStack Query hooks",
@@ -99,17 +88,17 @@ export const mockPlanEvaluation: CaseScore = {
 export const mockExcellentEvaluation: CaseScore = {
   weighted_score: 3.0,
   metrics: [
-    createMetricMock("Completeness", 3, [
+    createMetric("Completeness", 3, [
       "All user stories have comprehensive acceptance criteria",
       "Implementation plan covers all edge cases",
       "Rollback and monitoring strategies are well-defined",
     ]),
-    createMetricMock("Clarity", 3, [
+    createMetric("Clarity", 3, [
       "Task descriptions are clear and actionable",
       "Technical requirements are precisely specified",
       "Dependencies are explicitly documented with clear rationale",
     ]),
-    createMetricMock("Technical Accuracy", 3, [
+    createMetric("Technical Accuracy", 3, [
       "API design follows RESTful best practices",
       "Database schema is properly normalized",
       "Security considerations are thoroughly addressed",
@@ -124,17 +113,17 @@ export const mockExcellentEvaluation: CaseScore = {
 export const mockPoorEvaluation: CaseScore = {
   weighted_score: 1.0,
   metrics: [
-    createMetricMock("Completeness", 1, [
+    createMetric("Completeness", 1, [
       "Plan is missing critical implementation details",
       "No testing strategy defined",
       "Deployment approach is not specified",
     ]),
-    createMetricMock("Clarity", 1, [
+    createMetric("Clarity", 1, [
       "Task descriptions are vague and lack actionable details",
       "Technical terminology is inconsistent",
       "Dependencies are not clearly identified",
     ]),
-    createMetricMock("Technical Accuracy", 1, [
+    createMetric("Technical Accuracy", 1, [
       "Proposed API design violates REST principles",
       "Database schema has normalization issues",
       "Security vulnerabilities not addressed",

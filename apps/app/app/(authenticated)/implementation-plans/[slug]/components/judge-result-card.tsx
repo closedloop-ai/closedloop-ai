@@ -32,23 +32,23 @@ function getScoreConfig(score: number): ScoreStyles {
   switch (score) {
     case 1:
       return {
-        border: "border-red-200 dark:border-red-900",
-        background: "bg-red-50 dark:bg-red-950/30",
-        text: "text-red-700 dark:text-red-300",
+        border: "border-destructive",
+        background: "bg-destructive/10",
+        text: "text-destructive-foreground",
         label: "Poor",
       };
     case 2:
       return {
-        border: "border-yellow-200 dark:border-yellow-900",
-        background: "bg-yellow-50 dark:bg-yellow-950/30",
-        text: "text-yellow-700 dark:text-yellow-300",
+        border: "border-warning",
+        background: "bg-warning/10",
+        text: "text-warning-foreground",
         label: "Needs Improvement",
       };
     default:
       return {
-        border: "border-green-200 dark:border-green-900",
-        background: "bg-green-50 dark:bg-green-950/30",
-        text: "text-green-700 dark:text-green-300",
+        border: "border-success",
+        background: "bg-success/10",
+        text: "text-success-foreground",
         label: "Great",
       };
   }

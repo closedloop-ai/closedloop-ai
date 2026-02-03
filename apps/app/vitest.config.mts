@@ -1,5 +1,5 @@
-import path from "node:path";
 import react from "@vitejs/plugin-react";
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -31,8 +31,14 @@ export default defineConfig({
         __dirname,
         "./__tests__/__mocks__/lexical-list.ts"
       ),
-      lexical: path.resolve(__dirname, "./__tests__/__mocks__/lexical.ts"),
-      "server-only": path.resolve(__dirname, "./vitest-mocks/server-only.ts"),
+      lexical: path.resolve(
+        __dirname,
+        "./__tests__/__mocks__/lexical.ts"
+      ),
+      "server-only": path.resolve(
+        __dirname,
+        "./vitest-mocks/server-only.ts"
+      ),
     },
   },
 });

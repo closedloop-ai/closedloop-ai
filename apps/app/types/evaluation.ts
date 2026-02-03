@@ -38,7 +38,7 @@ export type MetricStatistics = {
   threshold: number | null;
   sample_count: number;
   scores: number[];
-  justification?: string[] | null;
+  justification: string[] | null;
 };
 
 /**

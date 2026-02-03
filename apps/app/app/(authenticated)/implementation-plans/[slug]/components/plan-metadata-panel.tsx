@@ -19,7 +19,11 @@ import {
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
-import type { CaseScore, MetricStatistics } from "@/types/evaluation";
+import {
+  calculateAcceptanceRate,
+  sortMetricsByScore,
+} from "@/lib/evaluation-utils";
+import type { CaseScore } from "@/types/evaluation";
 import { JudgeResultCard } from "./judge-result-card";
 
 const PR_STATE_STYLES: Record<string, string> = {
@@ -100,41 +104,6 @@ type PlanMetadataPanelProps = {
  * />
  * ```
  */
-/**
- * Calculate acceptance rate from evaluation metrics.
- * A metric is considered "accepted" if its mean score is >= its threshold.
- * Only metrics with non-null thresholds are included in the calculation.
- */
-export function calculateAcceptanceRate(
-  metrics: MetricStatistics[] | undefined
-): {
-  acceptedCount: number;
-  totalCount: number;
-  rate: number;
-} {
-  if (!metrics || metrics.length === 0) {
-    return { acceptedCount: 0, totalCount: 0, rate: 0 };
-  }
-
-  const acceptedCount = metrics.filter(
-    (m) => m.threshold !== null && m.mean >= m.threshold
-  ).length;
-  const totalCount = metrics.length;
-  const rate = (acceptedCount / totalCount) * 100;
-
-  return { acceptedCount, totalCount, rate };
-}
-
-/**
- * Sort metrics by score in ascending order (worst/lowest first).
- * This brings attention to metrics that need improvement.
- */
-export function sortMetricsByScore(
-  metrics: MetricStatistics[]
-): MetricStatistics[] {
-  return [...metrics].sort((a, b) => a.mean - b.mean);
-}
-
 export function PlanMetadataPanel({
   plan,
   status,

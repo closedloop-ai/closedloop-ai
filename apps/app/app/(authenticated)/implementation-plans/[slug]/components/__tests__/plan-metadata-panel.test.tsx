@@ -9,9 +9,9 @@ import {
 import { createMockMetric } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
-  PlanMetadataPanel,
   sortMetricsByScore,
-} from "../plan-metadata-panel";
+} from "@/lib/evaluation-utils";
+import { PlanMetadataPanel } from "../plan-metadata-panel";
 
 // Mock the ExecutionLogSummary component to avoid query client dependencies
 vi.mock("@/components/execution-log/execution-log-summary", () => ({
