@@ -22,11 +22,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(import.meta.dirname, "./"),
-      "@repo": path.resolve(import.meta.dirname, "../../packages"),
+      "@": path.resolve(__dirname, "./"),
+      "@repo": path.resolve(__dirname, "../../packages"),
       // Mock server-only package to prevent errors in tests
       "server-only": path.resolve(
-        import.meta.dirname,
+        __dirname,
         "./__tests__/utils/server-only-mock.ts"
       ),
     },
