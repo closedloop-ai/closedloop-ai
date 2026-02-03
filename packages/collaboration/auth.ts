@@ -1,6 +1,7 @@
 import "server-only";
 import { Liveblocks as LiveblocksNode } from "@liveblocks/node";
 import { keys } from "./keys";
+import { parseArtifactRoomId } from "./room-utils";
 
 type AuthenticateOptions = {
   userId: string;
@@ -20,7 +21,17 @@ export const authenticate = async ({
   }
 
   const liveblocks = new LiveblocksNode({ secret });
-  const session = liveblocks.prepareSession(userId, { userInfo });
+  let tenantId: string | undefined;
+
+  try {
+    const { organizationId } = parseArtifactRoomId(roomId);
+    tenantId = organizationId;
+  } catch {}
+
+  const session = liveblocks.prepareSession(userId, {
+    userInfo,
+    tenantId,
+  });
 
   session.allow(roomId, session.FULL_ACCESS);
 

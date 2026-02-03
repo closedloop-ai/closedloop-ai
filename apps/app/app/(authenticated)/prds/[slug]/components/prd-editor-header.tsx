@@ -13,6 +13,7 @@ import {
   DownloadIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  RotateCcwIcon,
   SettingsIcon,
   SparklesIcon,
   TrashIcon,
@@ -28,6 +29,14 @@ type PRDEditorHeaderProps = {
    * Status of the artifact
    */
   status: string;
+  /**
+   * Whether the editor is in edit mode
+   */
+  isEditing: boolean;
+  /**
+   * Whether the document can be edited in the current view
+   */
+  canEdit: boolean;
   /**
    * Whether content is currently being saved
    */
@@ -49,6 +58,10 @@ type PRDEditorHeaderProps = {
    */
   onGeneratePlan: () => void;
   /**
+   * Callback when edit button is clicked
+   */
+  onEdit: () => void;
+  /**
    * Callback when save button is clicked
    */
   onSave: () => void;
@@ -60,6 +73,14 @@ type PRDEditorHeaderProps = {
    * Callback when export menu item is clicked
    */
   onExport: () => void;
+  /**
+   * Whether to show the restore option
+   */
+  showRestore?: boolean;
+  /**
+   * Callback when restore version is clicked
+   */
+  onRestoreVersion?: () => void;
   /**
    * Callback when delete menu item is clicked
    */
@@ -77,14 +98,19 @@ type PRDEditorHeaderProps = {
 export function PRDEditorHeader({
   prd,
   status,
+  isEditing,
+  canEdit,
   isSaving,
   lastSaved,
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onEdit,
   onSave,
   onRename,
   onExport,
+  showRestore = false,
+  onRestoreVersion,
   onDelete,
   versionDisplay,
   isPending = false,
@@ -115,9 +141,21 @@ export function PRDEditorHeader({
         Generate Implementation Plan
       </Button>
 
-      <Button disabled={isPending} onClick={onSave}>
-        {isSaving ? "Saving..." : "Save"}
-      </Button>
+      {isEditing ? (
+        <Button disabled={isPending} onClick={onSave} size="sm">
+          {isSaving ? "Saving..." : "Save"}
+        </Button>
+      ) : (
+        <Button
+          disabled={isPending || !canEdit}
+          onClick={onEdit}
+          size="sm"
+          title={canEdit ? undefined : "Switch to the latest version to edit"}
+        >
+          <PencilIcon className="mr-2 h-4 w-4" />
+          Edit
+        </Button>
+      )}
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -134,6 +172,12 @@ export function PRDEditorHeader({
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
           </DropdownMenuItem>
+          {showRestore ? (
+            <DropdownMenuItem onClick={onRestoreVersion}>
+              <RotateCcwIcon className="mr-2 h-4 w-4" />
+              Restore Version
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive focus:text-destructive"

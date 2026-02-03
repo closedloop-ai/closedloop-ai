@@ -11,15 +11,16 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   CheckIcon,
-  ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
   GitPullRequestIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   PlayIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
   SettingsIcon,
   TrashIcon,
 } from "lucide-react";
@@ -34,6 +35,14 @@ type PlanEditorHeaderProps = {
    * Status of the artifact
    */
   status: string;
+  /**
+   * Whether the editor is in edit mode
+   */
+  isEditing: boolean;
+  /**
+   * Whether the document can be edited in the current view
+   */
+  canEdit: boolean;
   /**
    * Whether content is currently being saved
    */
@@ -66,6 +75,10 @@ type PlanEditorHeaderProps = {
    * Callback when metadata panel toggle is clicked
    */
   onToggleMetadataPanel: () => void;
+  /**
+   * Callback when edit button is clicked
+   */
+  onEdit: () => void;
   /**
    * Callback when approve button is clicked
    */
@@ -103,6 +116,14 @@ type PlanEditorHeaderProps = {
    */
   onDelete: () => void;
   /**
+   * Whether to show the restore option
+   */
+  showRestore?: boolean;
+  /**
+   * Callback when restore version is clicked
+   */
+  onRestoreVersion?: () => void;
+  /**
    * Version selector component to display
    */
   versionDisplay?: React.ReactNode;
@@ -115,6 +136,8 @@ type PlanEditorHeaderProps = {
 export function PlanEditorHeader({
   plan,
   status,
+  isEditing,
+  canEdit,
   isSaving,
   lastSaved,
   showMetadataPanel,
@@ -123,6 +146,7 @@ export function PlanEditorHeader({
   pullRequest,
   isExecuting,
   onToggleMetadataPanel,
+  onEdit,
   onApprove,
   onRequestChanges,
   onExecute,
@@ -132,6 +156,8 @@ export function PlanEditorHeader({
   onExportToLinear,
   onRegenerate,
   onDelete,
+  showRestore = false,
+  onRestoreVersion,
   versionDisplay,
   isPending = false,
 }: PlanEditorHeaderProps) {
@@ -169,16 +195,6 @@ export function PlanEditorHeader({
         </Button>
       ) : null}
 
-      <Button
-        disabled={isPending}
-        onClick={onRequestChanges}
-        size="sm"
-        variant="outline"
-      >
-        <MessageSquareIcon className="mr-2 h-4 w-4" />
-        Request Changes
-      </Button>
-
       {/* Execute button - only enabled when plan is approved */}
       <Button
         disabled={isPending || !isApproved || isExecuting}
@@ -201,34 +217,21 @@ export function PlanEditorHeader({
         </a>
       ) : null}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm" variant="outline">
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Export
-            <ChevronDownIcon className="ml-2 h-4 w-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-[180px]">
-          <DropdownMenuItem onClick={onExportMarkdown}>
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Download Markdown
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={onExportToLinear}>
-            <ExternalLinkIcon className="mr-2 h-4 w-4" />
-            Export to Linear
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <Button onClick={onCopyMarkdown} size="sm" variant="outline">
-        <CopyIcon className="mr-2 h-4 w-4" />
-        Copy MD
-      </Button>
-
-      <Button disabled={isPending} onClick={onSave}>
-        {isSaving ? "Saving..." : "Save"}
-      </Button>
+      {isEditing ? (
+        <Button disabled={isPending} onClick={onSave} size="sm">
+          {isSaving ? "Saving..." : "Save"}
+        </Button>
+      ) : (
+        <Button
+          disabled={isPending || !canEdit}
+          onClick={onEdit}
+          size="sm"
+          title={canEdit ? undefined : "Switch to the latest version to edit"}
+        >
+          <PencilIcon className="mr-2 h-4 w-4" />
+          Edit
+        </Button>
+      )}
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -237,9 +240,35 @@ export function PlanEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[180px]">
+          {showRestore ? (
+            <>
+              <DropdownMenuItem onClick={onRestoreVersion}>
+                <RotateCcwIcon className="mr-2 h-4 w-4" />
+                Restore Version
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
+          <DropdownMenuItem disabled={isPending} onClick={onRequestChanges}>
+            <MessageSquareIcon className="mr-2 h-4 w-4" />
+            Request Changes
+          </DropdownMenuItem>
           <DropdownMenuItem disabled={isPending} onClick={onRegenerate}>
             <RefreshCwIcon className="mr-2 h-4 w-4" />
             Regenerate Plan
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={onExportMarkdown}>
+            <DownloadIcon className="mr-2 h-4 w-4" />
+            Export Markdown
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onExportToLinear}>
+            <ExternalLinkIcon className="mr-2 h-4 w-4" />
+            Export to Linear
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onCopyMarkdown}>
+            <CopyIcon className="mr-2 h-4 w-4" />
+            Copy Markdown
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

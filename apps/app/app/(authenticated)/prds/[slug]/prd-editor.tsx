@@ -1,6 +1,14 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import {
+  OptionalArtifactRoom,
+  OptionalComments,
+  Presence,
+} from "@repo/collaboration";
+import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
+import type { Editor } from "@tiptap/react";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
@@ -26,8 +34,36 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [contentResetKey, setContentResetKey] = useState<number | undefined>(
+    undefined
+  );
+  const [contentResetValue, setContentResetValue] = useState<
+    string | undefined
+  >(undefined);
+
+  const roomId =
+    prd.documentSlug &&
+    generateArtifactRoomId(prd.organizationId, prd.documentSlug);
+  const isViewingHistorical = currentVersion !== latestVersion;
+  const showCollaboration = isEditing;
+
+  const exitEditMode = () => {
+    setIsEditing(false);
+    setContentResetKey(undefined);
+    setContentResetValue(undefined);
+  };
+
+  // Use focused hooks instead of monolithic usePRDEditor
   const content = useArtifactContent({
     artifact: prd,
+    onVersionCreated: () => {
+      exitEditMode();
+      if (isViewingHistorical) {
+        onVersionChange(latestVersion);
+      }
+    },
   });
 
   const metadata = useArtifactMetadata({
@@ -70,59 +106,97 @@ export function PRDEditor({
     <VersionSelector
       currentVersion={currentVersion}
       latestVersion={latestVersion}
-      onVersionChange={onVersionChange}
+      onVersionChange={(version) => {
+        exitEditMode();
+        onVersionChange(version);
+      }}
     />
   );
+
+  const handleEdit = () => {
+    if (!isViewingHistorical) {
+      setIsEditing(true);
+    }
+  };
+
+  const handleRestoreVersion = () => {
+    setContentResetValue(prd.content ?? "");
+    setContentResetKey((key) => (key ?? 0) + 1);
+    setIsEditing(true);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
+        canEdit={!isViewingHistorical}
+        isEditing={isEditing}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
+        onEdit={handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onRename={openRenameDialog}
+        onRestoreVersion={handleRestoreVersion}
         onSave={content.saveContent}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
+        showRestore={isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
 
-      {/* Content Area with Optional Metadata Panel */}
-      <div className="flex min-h-0 flex-1">
-        {/* Scrollable Editor */}
-        <EditorContent
-          onChange={content.updateContent}
-          placeholder="Start writing your PRD..."
-          value={content.content}
-        />
+      <OptionalArtifactRoom roomId={showCollaboration ? roomId : null}>
+        {/* Presence Indicators */}
+        {showCollaboration && <Presence />}
 
-        {/* Metadata Panel */}
-        {uiState.showMetadataPanel ? (
-          <PRDMetadataPanel
-            approver={metadata.approver}
-            onApproverBlur={metadata.handleApproverBlur}
-            onApproverChange={metadata.handleApproverChange}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            owner={metadata.owner}
-            prd={prd}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
-        ) : null}
-      </div>
+        {/* Content Area with Optional Metadata Panel */}
+        <div className="flex min-h-0 flex-1">
+          {/* Scrollable Editor */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <EditorContent
+              contentResetKey={contentResetKey}
+              contentResetValue={contentResetValue}
+              enableLiveblocks={showCollaboration}
+              liveblocksRoomId={roomId}
+              onChange={content.updateContent}
+              onEditorReady={setEditor}
+              placeholder="Start writing your PRD..."
+              readOnly={!isEditing}
+              value={content.content}
+            />
+
+            {/* Comments UI */}
+            {showCollaboration && editor && (
+              <OptionalComments editor={editor} roomId={roomId} />
+            )}
+          </div>
+
+          {/* Metadata Panel */}
+          {uiState.showMetadataPanel ? (
+            <PRDMetadataPanel
+              approver={metadata.approver}
+              onApproverBlur={metadata.handleApproverBlur}
+              onApproverChange={metadata.handleApproverChange}
+              onOwnerChange={metadata.handleOwnerChange}
+              onStatusChange={metadata.handleStatusChange}
+              onTargetBranchBlur={metadata.handleTargetBranchBlur}
+              onTargetBranchChange={metadata.handleTargetBranchChange}
+              onTargetRepoBlur={metadata.handleTargetRepoBlur}
+              onTargetRepoChange={metadata.handleTargetRepoChange}
+              owner={metadata.owner}
+              prd={prd}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          ) : null}
+        </div>
+      </OptionalArtifactRoom>
 
       {/* Rename Dialog */}
       <RenameDialog
