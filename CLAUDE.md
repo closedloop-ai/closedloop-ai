@@ -67,7 +67,7 @@ Shared packages are imported as `@repo/<package-name>`:
 - **analytics** - PostHog + Google Analytics
 - **payments** - Stripe integration
 - **email** - Resend email templates
-- **observability** - Sentry, BetterStack logging
+- **observability** - Error tracking, logging
 - **security** - Arcjet rate limiting
 
 ### Environment Variables
