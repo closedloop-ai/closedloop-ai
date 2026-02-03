@@ -1,6 +1,6 @@
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import {
   artifactKeys,
   useArtifact,
@@ -33,15 +33,7 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifacts", () => {
     test("fetches artifacts with search params", async () => {
-      const mockArtifacts: ArtifactWithWorkstream[] = [
-        {
-          id: "1",
-          title: "Test PRD",
-          type: "PRD",
-          version: 1,
-          documentSlug: "test-prd",
-        } as ArtifactWithWorkstream,
-      ];
+      const mockArtifacts = [createMockArtifact({ id: "1", type: "PRD" })];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
@@ -72,9 +64,7 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifactsByType", () => {
     test("fetches artifacts by type with latestOnly=true", async () => {
-      const mockArtifacts: ArtifactWithWorkstream[] = [
-        { id: "1", type: "PRD" } as ArtifactWithWorkstream,
-      ];
+      const mockArtifacts = [createMockArtifact({ id: "1", type: "PRD" })];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
@@ -108,8 +98,8 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifactsByProject", () => {
     test("fetches artifacts by project ID", async () => {
-      const mockArtifacts: ArtifactWithWorkstream[] = [
-        { id: "1", projectId: "project-123" } as ArtifactWithWorkstream,
+      const mockArtifacts = [
+        createMockArtifact({ id: "1", projectId: "project-123" }),
       ];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
@@ -130,11 +120,7 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifact", () => {
     test("fetches single artifact by ID", async () => {
-      const mockArtifact: ArtifactWithWorkstream = {
-        id: "artifact-123",
-        title: "Test Artifact",
-        type: "PRD",
-      } as ArtifactWithWorkstream;
+      const mockArtifact = createMockArtifact({ id: "artifact-123" });
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifact);
 

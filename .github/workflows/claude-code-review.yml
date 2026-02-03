@@ -167,17 +167,20 @@ jobs:
 
           # Delete old summary comments (posted by previous runs) to prevent duplicates.
           # This runs AFTER posting the new comment so we never lose the summary entirely.
-          OLD_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq "
+          OLD_IDS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '
             [.[] | select(
-              (.user.login == \"closedloop-ai-stage[bot]\" or .user.login == \"closedloop-ai[bot]\" or .user.login == \"symphony-cl\") and
-              (.body | startswith(\"## Code Review Summary\")) and
-              ((.id == $NEW_COMMENT_ID) | not)
+              (.user.login == "closedloop-ai-stage[bot]" or .user.login == "closedloop-ai[bot]" or .user.login == "symphony-cl") and
+              (.body | startswith("## Code Review Summary"))
             ) | .id][]
-          " 2>/dev/null || true)
+          ' 2>/dev/null || true)
 
           for OLD_ID in $OLD_IDS; do
+            # Skip the comment we just posted
+            if [ "$OLD_ID" = "$NEW_COMMENT_ID" ]; then
+              continue
+            fi
             echo "Deleting old summary comment: $OLD_ID"
-            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments/$OLD_ID" -X DELETE 2>/dev/null || echo "Warning: Failed to delete comment $OLD_ID"
+            gh api "repos/${REPO}/issues/comments/$OLD_ID" -X DELETE 2>/dev/null || echo "Warning: Failed to delete comment $OLD_ID"
           done
 
           echo "Summary cleanup complete."
