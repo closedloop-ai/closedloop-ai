@@ -280,7 +280,7 @@ export const artifactsService = {
   /**
    * Create a new artifact (handles versioning and default project creation)
    */
-  create(
+  async create(
     organizationId: string,
     userId: string,
     input: CreateArtifactInput
@@ -299,7 +299,7 @@ export const artifactsService = {
       );
     }
 
-    return withDb.tx(async (tx) => {
+    return await withDb.tx(async (tx) => {
       // Resolve projectId from workstream if needed (non-templates only)
       if (!(isTemplate || input.projectId)) {
         const workstream = await tx.workstream.findUnique({

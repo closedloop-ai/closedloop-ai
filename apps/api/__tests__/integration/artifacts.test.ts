@@ -37,20 +37,21 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     });
   });
 
-  it("returns null when no project/workstream provided", async () => {
-    await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testUserId = uuidv7();
+  it("throws error when no project/workstream provided for non-template artifacts", async () => {
+    // This validation happens before any database operation, so we don't need autoRollbackTransaction
+    const testOrgId = uuidv7();
+    const testUserId = uuidv7();
 
-      // Create artifact without projectId or workstreamId - should return null
-      const artifact = await artifactsService.create(testOrgId, testUserId, {
+    // Create artifact without projectId or workstreamId - should throw error
+    await expect(
+      artifactsService.create(testOrgId, testUserId, {
         type: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
-      });
-
-      expect(artifact).toBeNull();
-    });
+      })
+    ).rejects.toThrow(
+      "Artifacts (except templates) must be associated with a project or workstream"
+    );
   });
 
   it("creates multiple artifacts with version 1", async () => {
