@@ -1,11 +1,13 @@
 import { createId } from "@paralleldrive/cuid2";
-import type {
-  Artifact,
-  ArtifactWithWorkstream,
-  CreateArtifactInput,
-  FindArtifactsOptions,
-  PullRequestInfo,
-  UpdateArtifactInput,
+import {
+  type Artifact,
+  ArtifactType,
+  type ArtifactWithWorkstream,
+  type CreateArtifactInput,
+  type FindArtifactsOptions,
+  getArtifactCategory,
+  type PullRequestInfo,
+  type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
@@ -24,8 +26,8 @@ import {
   artifactIncludeWithContext,
   createArtifactVersion,
   generateDocumentSlug,
-  isDocumentArtifact,
 } from "./artifact-utils";
+import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
 /**
  * Validate that a user belongs to the given organization.
@@ -46,6 +48,22 @@ async function validateOwnerInOrg(
   }
 }
 
+/**
+ * Document types that generate a documentSlug for navigation.
+ * Templates are NOT navigable and do NOT get documentSlug.
+ */
+const DOCUMENT_TYPES_WITH_SLUGS = new Set<ArtifactType>([
+  ArtifactType.Prd,
+  ArtifactType.ImplementationPlan,
+  ArtifactType.Issue,
+  ArtifactType.Bug,
+  ArtifactType.ImplementationStrategy,
+]);
+
+function shouldGenerateDocumentSlug(type: ArtifactType): boolean {
+  return DOCUMENT_TYPES_WITH_SLUGS.has(type);
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -64,6 +82,7 @@ export const artifactsService = {
     const {
       organizationId,
       type,
+      category,
       latestOnly = true,
       workstreamId,
       projectId,
@@ -90,6 +109,7 @@ export const artifactsService = {
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(documentSlug ? { documentSlug } : {}),
           ...(type ? { type } : {}),
+          ...(category ? { category } : {}),
           ...getVersionFilter(),
         },
         include: artifactIncludeWithContext,
@@ -129,6 +149,85 @@ export const artifactsService = {
       db.artifact.findUnique({
         where: { id, organizationId },
       })
+    );
+  },
+
+  /**
+   * Find an organization template for a specific artifact type.
+   * Returns null if no template exists for the given type.
+   * Pure read method - does NOT create templates automatically.
+   */
+  findOrgTemplate(
+    organizationId: string,
+    templateForType: ArtifactType
+  ): Promise<Artifact | null> {
+    return withDb((db) =>
+      db.artifact.findUnique({
+        where: {
+          organizationId_templateForType: {
+            organizationId,
+            templateForType,
+          },
+        },
+      })
+    );
+  },
+
+  /**
+   * Ensure default templates exist for an organization.
+   * Creates/upserts templates for PRD, Issue, and Bug types.
+   * Uses upsert on the unique constraint (organizationId, templateForType) for concurrency safety.
+   *
+   * Templates have type=TEMPLATE with templateForType pointing to the target type (PRD/Issue/Bug).
+   * This ensures templates are queryable via `type: TEMPLATE` and don't pollute normal PRD/Issue/Bug queries.
+   */
+  async ensureDefaultTemplates(organizationId: string): Promise<void> {
+    const templates = [
+      {
+        type: ArtifactType.Template,
+        templateForType: ArtifactType.Prd,
+        title: "Product Requirements Document Template",
+        content: PRD_TEMPLATE,
+      },
+      {
+        type: ArtifactType.Template,
+        templateForType: ArtifactType.Issue,
+        title: "Issue Template",
+        content: ISSUE_TEMPLATE,
+      },
+      {
+        type: ArtifactType.Template,
+        templateForType: ArtifactType.Bug,
+        title: "Bug Report Template",
+        content: BUG_TEMPLATE,
+      },
+    ];
+
+    // Use individual upserts for concurrency safety - multiple requests can run this simultaneously
+    await Promise.all(
+      templates.map((template) =>
+        withDb((db) =>
+          db.artifact.upsert({
+            where: {
+              organizationId_templateForType: {
+                organizationId,
+                templateForType: template.templateForType,
+              },
+            },
+            create: {
+              ...template,
+              category: getArtifactCategory(template.type),
+              organizationId,
+              documentSlug: null, // Templates are not navigable in MVP
+              version: 1,
+              isLatest: true,
+            },
+            // On conflict, do nothing - preserve existing template content
+            // (user may have edited the template)
+            update: {},
+          })
+        )
+      )
     );
   },
 
@@ -186,13 +285,23 @@ export const artifactsService = {
     userId: string,
     input: CreateArtifactInput
   ): Promise<Artifact | null> {
-    // This should never happen, but we'll handle it anyway.
-    if (!(input.projectId || input.workstreamId)) {
-      return Promise.resolve(null);
+    const isTemplate = input.type === ArtifactType.Template;
+
+    // Validate scope constraints
+    if (isTemplate && (input.projectId || input.workstreamId)) {
+      throw new Error(
+        "Templates are organization-level artifacts and cannot be associated with a project or workstream"
+      );
+    }
+    if (!(isTemplate || input.projectId || input.workstreamId)) {
+      throw new Error(
+        "Artifacts (except templates) must be associated with a project or workstream"
+      );
     }
 
     return withDb.tx(async (tx) => {
-      if (!input.projectId) {
+      // Resolve projectId from workstream if needed (non-templates only)
+      if (!(isTemplate || input.projectId)) {
         const workstream = await tx.workstream.findUnique({
           where: { id: input.workstreamId, organizationId },
         });
@@ -205,13 +314,14 @@ export const artifactsService = {
       const resolvedOwnerId = input.ownerId ?? userId;
       await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
-      const documentSlug = isDocumentArtifact(input)
+      const documentSlug = shouldGenerateDocumentSlug(input.type)
         ? generateDocumentSlug()
         : null;
 
       return await tx.artifact.create({
         data: {
           ...input,
+          category: input.category ?? getArtifactCategory(input.type),
           organizationId,
           documentSlug,
           version: 1,

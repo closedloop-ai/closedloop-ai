@@ -3,12 +3,25 @@
 
 import type { ProjectOwner } from "./organization";
 
+// Artifact Category
+export const ArtifactCategory = {
+  Document: "DOCUMENT",
+  Workflow: "WORKFLOW",
+  Branch: "BRANCH",
+} as const;
+export type ArtifactCategory =
+  (typeof ArtifactCategory)[keyof typeof ArtifactCategory];
+export const ARTIFACT_CATEGORY_OPTIONS = Object.values(ArtifactCategory);
+
 // Artifact Type
 export const ArtifactType = {
   Prd: "PRD",
   Issue: "ISSUE",
+  Bug: "BUG",
+  Template: "TEMPLATE",
   FigmaDesign: "FIGMA_DESIGN",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
+  ImplementationStrategy: "IMPLEMENTATION_STRATEGY",
   CodeReviewReport: "CODE_REVIEW_REPORT",
   VisualQaReport: "VISUAL_QA_REPORT",
   AccessibilityReport: "ACCESSIBILITY_REPORT",
@@ -18,6 +31,43 @@ export const ArtifactType = {
 } as const;
 export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
 export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
+
+/**
+ * Maps an ArtifactType to its corresponding ArtifactCategory.
+ * Uses exhaustive switch to ensure compile-time errors if new types are added without mapping.
+ */
+export function getArtifactCategory(type: ArtifactType): ArtifactCategory {
+  switch (type) {
+    // Document types
+    case ArtifactType.Prd:
+    case ArtifactType.Issue:
+    case ArtifactType.Bug:
+    case ArtifactType.Template:
+    case ArtifactType.ImplementationPlan:
+    case ArtifactType.ImplementationStrategy:
+    case ArtifactType.CodeReviewReport:
+    case ArtifactType.VisualQaReport:
+    case ArtifactType.AccessibilityReport:
+    case ArtifactType.TestReport:
+    case ArtifactType.CompletionSummary:
+      return ArtifactCategory.Document;
+
+    // Workflow types
+    case ArtifactType.FigmaDesign:
+      return ArtifactCategory.Workflow;
+
+    // Branch types
+    case ArtifactType.PullRequest:
+      return ArtifactCategory.Branch;
+
+    default: {
+      // Exhaustive check: if a new ArtifactType is added without a mapping,
+      // TypeScript will error here because `type` won't be assignable to `never`
+      const _exhaustiveCheck: never = type;
+      throw new Error(`Unmapped ArtifactType: ${_exhaustiveCheck}`);
+    }
+  }
+}
 
 // Artifact Status
 export const ArtifactStatus = {
@@ -59,6 +109,7 @@ export type Artifact = {
   projectId: string | null;
   parentId: string | null;
   type: ArtifactType;
+  category: ArtifactCategory | null;
   title: string;
   fileName: string | null;
   approver: string | null;
@@ -73,6 +124,7 @@ export type Artifact = {
   tokenUsage: unknown;
   targetRepo: string | null;
   targetBranch: string | null;
+  templateForType: ArtifactType | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -93,6 +145,7 @@ export type ArtifactWithWorkstream = Artifact & {
 
 export type FindArtifactsOptions = {
   type?: ArtifactType;
+  category?: ArtifactCategory;
   latestOnly?: boolean;
   workstreamId?: string;
   projectId?: string;
@@ -105,6 +158,7 @@ export type CreateArtifactInput = {
   projectId?: string;
   parentId?: string;
   type: ArtifactType;
+  category?: ArtifactCategory;
   title: string;
   fileName?: string;
   approver?: string;

@@ -68,15 +68,18 @@ const ARTIFACT_SECTIONS: {
 }[] = [
   {
     title: "Documents",
-    types: new Set<ProjectArtifactType>(["PROJECT_BRIEF", "PRD", "ISSUE"]),
+    types: new Set<ProjectArtifactType>(["PROJECT_BRIEF", "PRD"]),
   },
   {
     title: "Implementation Plans",
-    types: new Set<ProjectArtifactType>(["IMPLEMENTATION_PLAN"]),
+    types: new Set<ProjectArtifactType>([
+      "IMPLEMENTATION_PLAN",
+      "IMPLEMENTATION_STRATEGY",
+    ]),
   },
   {
     title: "Issues",
-    types: new Set<ProjectArtifactType>(["ISSUE"]),
+    types: new Set<ProjectArtifactType>(["ISSUE", "BUG"]),
   },
   {
     title: "Feature Branches",
@@ -85,7 +88,14 @@ const ARTIFACT_SECTIONS: {
 ];
 
 function isNavigableArtifact(type: ProjectArtifactType): boolean {
-  return type === "PRD" || type === "IMPLEMENTATION_PLAN" || type === "ISSUE";
+  const navigableTypes = new Set<ProjectArtifactType>([
+    "PRD",
+    "IMPLEMENTATION_PLAN",
+    "IMPLEMENTATION_STRATEGY",
+    "ISSUE",
+    "BUG",
+  ]);
+  return navigableTypes.has(type);
 }
 
 function isExternalLink(artifact: ProjectArtifact): boolean {
@@ -111,11 +121,20 @@ function getArtifactRoute(artifact: ProjectArtifact): string | null {
       return artifact.documentSlug
         ? `/implementation-plans/${artifact.documentSlug}`
         : null;
+    case "IMPLEMENTATION_STRATEGY":
+      return artifact.documentSlug
+        ? `/implementation-plans/${artifact.documentSlug}`
+        : null;
     case "ISSUE":
+      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
+    case "BUG":
       return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
     case "FEATURE_BRANCHES":
       return artifact.link || null;
+    case "PROJECT_BRIEF":
+    case "TEMPLATE":
+      return null;
     default:
       return null;
   }
