@@ -41,18 +41,45 @@ export function useApiClient() {
   );
 }
 
-const API_URL = env.NEXT_PUBLIC_API_URL;
+const LOCAL_API_FALLBACK = "http://localhost:3002";
+const APP_PREFIX_REGEX = /^app-/;
+
+function resolveApiUrl(): string {
+  // Runtime detection for preview suffix domains (e.g., app-stage.preview.closedloop-stage.ai)
+  // This takes priority because build-time env vars point to .vercel.app URLs,
+  // not the custom preview suffix domain the user is actually on.
+  if (typeof window !== "undefined") {
+    const { protocol, hostname } = window.location;
+
+    // Preview suffix pattern: {project}.preview.{domain}
+    // e.g., app-stage.preview.closedloop-stage.ai → api-stage.preview.closedloop-stage.ai
+    if (hostname.includes(".preview.") && hostname.startsWith("app-")) {
+      return `${protocol}//${hostname.replace(APP_PREFIX_REGEX, "api-")}`;
+    }
+
+    // Vercel preview URLs: app-stage-git-{branch}-{team}.vercel.app
+    // e.g., app-stage-git-my-branch-team.vercel.app → api-stage-git-my-branch-team.vercel.app
+    if (hostname.includes(".vercel.app") && hostname.startsWith("app-")) {
+      return `${protocol}//${hostname.replace(APP_PREFIX_REGEX, "api-")}`;
+    }
+  }
+
+  // Use configured URL for staging/production
+  const configured = env.NEXT_PUBLIC_API_URL;
+  if (configured && configured !== LOCAL_API_FALLBACK) {
+    return configured;
+  }
+
+  // Local development fallback
+  return LOCAL_API_FALLBACK;
+}
 
 async function apiFetch<T>(
   path: string,
   token: string | null,
   options?: RequestInit
 ): Promise<T> {
-  if (!API_URL) {
-    throw new ApiError("API URL not configured (NEXT_PUBLIC_API_URL)", 0);
-  }
-
-  const url = `${API_URL}${path}`;
+  const url = `${resolveApiUrl()}${path}`;
 
   try {
     const authHeaders: Record<string, string> = token

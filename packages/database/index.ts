@@ -7,6 +7,7 @@ import pg from "pg";
 import { PrismaClient } from "./generated/client";
 import type { TransactionClient } from "./generated/internal/prismaNamespace";
 import { keys } from "./keys";
+import { resolveSchemaName } from "./schema-utils";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting
 export * from "./generated/client";
@@ -113,6 +114,8 @@ export async function withImplicitTransaction<T>(
 // -----------------------------------------------------------------------------
 
 const als = new AsyncLocalStorage<{ tx: TransactionClient }>();
+const NON_IDENTIFIER_CHARS = /[^a-z0-9_]/;
+const LEADING_DIGIT = /^[0-9]/;
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | null;
@@ -187,6 +190,13 @@ async function getPool(): Promise<pg.Pool> {
   }
 
   const env = keys();
+  const schema = resolveSchemaName({
+    pgSchema: env.PGSCHEMA,
+    vercelEnv: process.env.VERCEL_ENV,
+    vercelGitCommitRef: process.env.VERCEL_GIT_COMMIT_REF,
+  });
+  const searchPath =
+    schema && schema.length > 0 ? formatSearchPath(schema) : null;
 
   // Determine if using local DATABASE_URL or remote IAM auth
   const isLocalhost = env.DATABASE_URL
@@ -208,6 +218,7 @@ async function getPool(): Promise<pg.Pool> {
     globalForPrisma.pool = new pg.Pool({
       connectionString: url.toString(),
       ssl: false,
+      ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   } else {
     // Vercel/production with IAM authentication
@@ -229,8 +240,16 @@ async function getPool(): Promise<pg.Pool> {
       // Close idle connections after 10 minutes (before 15-minute token expiry)
       // Active connections remain valid for their entire session
       idleTimeoutMillis: 10 * 60 * 1000,
+      ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   }
 
   return globalForPrisma.pool;
+}
+
+function formatSearchPath(schema: string): string {
+  const escaped = schema.replace(/"/g, '""');
+  const needsQuotes =
+    NON_IDENTIFIER_CHARS.test(schema) || LEADING_DIGIT.test(schema);
+  return needsQuotes ? `"${escaped}"` : schema;
 }

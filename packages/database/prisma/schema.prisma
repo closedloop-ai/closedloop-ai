@@ -143,6 +143,15 @@ enum ProjectPriority {
 // CORE ENTITIES
 // =============================================================================
 
+model PreviewSchema {
+  schemaName String   @id @map("schema_name")
+  branch     String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+
+  @@map("preview_schemas")
+}
+
 model Organization {
   id              String   @id @default(uuid(7)) @db.Uuid
   clerkId         String   @unique @map("clerk_id")

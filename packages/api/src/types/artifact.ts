@@ -54,6 +54,7 @@ export const APPROVER_ROLE_OPTIONS = Object.values(ApproverRole);
 
 export type Artifact = {
   id: string;
+  organizationId: string;
   workstreamId: string | null;
   projectId: string | null;
   parentId: string | null;
