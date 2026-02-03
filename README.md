@@ -89,7 +89,7 @@ npx next-forge@latest init
 2. Set up required service accounts (Clerk, Stripe, Resend, etc.)
 3. Run the development server
 
-For detailed setup instructions, read the [documentation](https://www.next-forge.com/docs).
+See the [full setup guide-book](docs/local_deployment.md) for detailed instructions and troubleshooting.
 
 ## Structure
 
