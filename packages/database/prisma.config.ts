@@ -1,10 +1,13 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { defineConfig } from "prisma/config";
 import { keys } from "./keys";
 import { addSchemaToUrl, resolveSchemaName } from "./schema-utils";
 
-dotenv.config({ path: path.resolve(import.meta.dirname, ".env") });
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
+
+dotenv.config({ path: path.resolve(__dirname, ".env") });
 
 const env = keys();
 
