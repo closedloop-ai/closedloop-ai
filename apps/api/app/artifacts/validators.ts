@@ -27,6 +27,7 @@ export const createArtifactValidator = z
       .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
       .optional(),
     targetBranch: z.string().optional(),
+    ownerId: z.uuidv7().optional(),
   })
   .refine((data) => data.workstreamId || data.projectId, {
     message: "Either workstreamId or projectId is required",
@@ -44,6 +45,7 @@ export const updateArtifactValidator = z.object({
     .nullable()
     .optional(),
   targetBranch: z.string().nullable().optional(),
+  ownerId: z.uuidv7().nullable().optional(),
 });
 
 export const newVersionValidator = z.object({

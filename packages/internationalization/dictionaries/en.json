@@ -19,8 +19,8 @@
     },
     "home": {
       "meta": {
-        "title": "Turn PRDs into Beautiful Code Engineers Love",
-        "description": "Transform product requirements into intelligent development plans and production-ready code. Our AI-powered platform generates type-safe, maintainable code that follows best practices,  helping engineering teams ship faster without sacrificing quality."
+        "title": "Turn First-pass PRDs into Approved Implementation Plans",
+        "description": "Symphony turns product intent into a durable, team-reviewed plan that engineers can approve and execute. Stop rebuilding context across handoffs. Ship faster on real, existing codebases."
       },
       "hero": {
         "announcement": "Introducing AI-powered architecture planning"
@@ -29,30 +29,30 @@
         "title": "Trusted by Engineering Teams Worldwide"
       },
       "features": {
-        "title": "From Requirements to Production Code",
-        "description": "Our intelligent platform transforms your PRDs into actionable plans and generates beautiful, maintainable code that your engineers will actually want to work with.",
+        "title": "The missing step between PRD and build",
+        "description": "Symphony makes Implementation Plans a first-class artifact: generated from your inputs, reviewed by your team, approved with clear ownership, and saved as the system of record.",
         "items": [
           {
-            "title": "Intelligent Plan Generation",
-            "description": "Automatically transform PRDs into comprehensive technical plans with architecture decisions, component breakdowns, and implementation strategies tailored to your stack."
+            "title": "Generate the Implementation Plan",
+            "description": "Start from a PRD or a lightweight issue. Symphony generates a structured Implementation Plan using your repo context, so the plan is explicit and ready for review."
           },
           {
-            "title": "Production-Ready Code",
-            "description": "Generate type-safe, tested, and documented code that follows industry best practices. Every line is crafted with maintainability and scalability in mind."
+            "title": "Review and approve, fast",
+            "description": "Assign a final approver, collect edits, and move Draft to Approved. Plans become shared context for humans and agents, not disposable chat output."
           },
           {
-            "title": "Engineer-Friendly Output",
-            "description": "Code that engineers love to work with—readable, well-structured, and consistent. No brittle templates or messy generation artifacts."
+            "title": "Immutable versions, forever",
+            "description": "Every save creates a preserved version. Keep the full history of PRDs and plans so teams can trace decisions, reuse context, and diagnose failures when output is wrong."
           },
           {
-            "title": "Seamless Integration",
-            "description": "Works with your existing tools and workflows. Support for React, Next.js, TypeScript, Tailwind, Prisma, and modern development stacks."
+            "title": "Right-sized workflows",
+            "description": "Pick a preset workflow for the work at hand. Run lean for quick fixes or add gates for higher stakes work. Human touchpoints are explicit, owned, and tracked."
           }
         ]
       },
       "stats": {
-        "title": "Accelerating Engineering Velocity",
-        "description": "Join thousands of engineering teams shipping faster with AI-powered code generation. Our platform has generated over 10 million lines of production code, helping teams reduce development  time by 70% while maintaining code quality that passes peer review.",
+        "title": "Faster execution, less rework",
+        "description": "Symphony reduces planning churn by turning ephemeral plans into approved artifacts. Track time-to-approval, revision count, and plan quality so velocity compounds over time.",
         "items": [
           {
             "title": "PRDs processed",
@@ -81,7 +81,7 @@
         ]
       },
       "testimonials": {
-        "title": "Built by Engineers, for Engineers",
+        "title": "Built for the handoff",
         "items": [
           {
             "title": "Game-changing for our velocity",
@@ -118,36 +118,36 @@
         ]
       },
       "faq": {
-        "title": "Common Questions from Engineering Teams",
-        "description": "Learn how our platform helps you go from requirements to production-ready code while maintaining the quality and control your team needs. We've answered the most common questions about code generation, customization, and integration with your existing workflows.",
+        "title": "Common questions",
+        "description": "Clear answers for teams who want to move fast.",
         "cta": "Still have questions? Let's talk",
         "items": [
           {
-            "question": "How is the generated code different from other AI tools?",
-            "answer": "Our platform generates production-ready, type-safe code that follows modern best practices and architectural patterns. Unlike generic AI tools, we understand full-stack development, monorepo structures, and enterprise patterns. Every component is tested, documented, and designed for maintainability."
+            "question": "What makes Symphony different from using an AI chat to plan work?",
+            "answer": "Symphony turns planning into a shared, durable artifact. Plans are saved, versioned, reviewed, and approved as a team. That means less context loss, fewer mismatches with the PRD, and a single source of truth that humans and agents can reuse."
           },
           {
-            "question": "Can I customize the code generation to match our style?",
-            "answer": "Absolutely. Configure your tech stack, coding conventions, component patterns, and architectural preferences. The platform learns from your existing codebase and generates code that feels native to your project."
+            "question": "Can Symphony start from something smaller than a full PRD?",
+            "answer": "Yes. Symphony supports lightweight inputs for small units of work, like bugs and quick fixes. You can start a workflow from an issue-sized artifact, generate the plan automatically, and only add rigor when the work demands it."
           },
           {
-            "question": "What technologies and frameworks do you support?",
-            "answer": "We support modern JavaScript/TypeScript stacks including Next.js, React, Node.js, Turborepo, Prisma, tRPC, Tailwind CSS, and more. Our platform works with popular design systems like shadcn/ui and integrates with services like Clerk, Stripe, and Vercel."
+            "question": "How do approvals work?",
+            "answer": "Artifacts move from Draft to Approved with a clearly assigned final approver. In workflows, stages can be owned by a human or an agent. Human-owned stages pause for review and can be approved, approved with comments, or rejected."
           },
           {
-            "question": "How does pricing work?",
-            "answer": "We offer flexible plans based on your team size and usage. Start with our free tier to generate up to 10 plans per month, or upgrade to Pro for unlimited plans, custom templates, and priority support. Enterprise plans include dedicated infrastructure and custom integrations."
+            "question": "Do you keep history, or do plans get overwritten?",
+            "answer": "Symphony preserves every version. Each save creates a new immutable revision, so you can always reference prior decisions, reuse past context, and see how the plan evolved as the team learned."
           },
           {
-            "question": "Is the generated code truly production-ready?",
-            "answer": "Yes. All generated code includes TypeScript types, unit tests, error handling, accessibility features, and comprehensive documentation. Our customers regularly ship generated code to production after standard code review processes."
+            "question": "Who is Symphony for?",
+            "answer": "Teams building on real codebases where context matters. Especially product managers and engineering leads at small companies who want a lightweight way to turn intent into approved plans, then move quickly with confidence."
           }
         ]
       },
       "cta": {
-        "title": "Ship Beautiful Code Faster",
-        "description": "Join engineering teams at startups and enterprises who are shipping production features 10x faster. Transform your PRDs into intelligent plans and production-ready code in minutes. Start building today with our free tier—no credit card required.",
-        "secondaryDescription": "Loved by 10,000+ engineers at companies building the future"
+        "title": "Make the plan the source of truth",
+        "description": "Stop losing context between product and engineering. Generate a plan, review it quickly, approve it, and move. Symphony makes AI-assisted development work on brownfield codebases because the handoff is explicit, durable, and reusable.",
+        "secondaryDescription": "Loved by teams building on real codebases"
       }
     },
     "blog": {

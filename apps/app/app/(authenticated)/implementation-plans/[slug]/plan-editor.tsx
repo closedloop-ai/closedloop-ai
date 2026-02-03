@@ -1,41 +1,24 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { Button } from "@repo/design-system/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
-import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor/rich-text-editor";
-import {
-  ArrowLeftIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  DownloadIcon,
-  ExternalLinkIcon,
-  GitPullRequestIcon,
-  MessageSquareIcon,
-  MoreHorizontalIcon,
-  PlayIcon,
-  RefreshCwIcon,
-  SettingsIcon,
-  TrashIcon,
-} from "lucide-react";
-import Link from "next/link";
+import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
-import { ArtifactStatusBadge } from "@/components/status-badge";
-import { formatRelativeTime } from "@/lib/date-utils";
+import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
+import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
+import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
+import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
+import {
+  useArtifactGenerationStatus,
+  useArtifactPullRequest,
+} from "@/hooks/queries/use-artifacts";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
 import { LinearExportDialog } from "./components/linear-export-dialog";
+import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
-import { usePlanEditor } from "./use-plan-editor";
 
 type PlanEditorProps = {
   plan: ArtifactWithWorkstream;
@@ -50,192 +33,96 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
+  // Use focused hooks instead of monolithic usePlanEditor
+  const content = useArtifactContent({
+    artifact: plan,
+  });
+
+  const metadata = useArtifactMetadata({
+    artifact: plan,
+  });
+
+  const actions = useArtifactActions({
+    artifact: plan,
+    redirectPath: plan.project?.teams?.[0]?.id
+      ? `/teams/${plan.project.teams[0].id}/projects/${plan.project.id}`
+      : "/implementation-plans",
+  });
+
+  const planActions = usePlanActions({
+    artifact: plan,
+  });
+
+  const uiState = useArtifactUIState({
+    artifactType: "IMPLEMENTATION_PLAN",
+  });
+
+  // Type assertion for Plan-specific UI state
   const {
-    isPending,
-    content,
-    setContent,
-    lastSaved,
-    isSaving,
-    status,
-    approver,
-    showMetadataPanel,
-    setShowMetadataPanel,
-    showDeleteDialog,
-    setShowDeleteDialog,
     showRequestChangesModal,
     setShowRequestChangesModal,
-    isRequestingChanges,
+    openRequestChangesModal,
     showLinearExportDialog,
     setShowLinearExportDialog,
+    openLinearExportDialog,
     showExecuteModal,
     setShowExecuteModal,
-    isExecuting,
-    isDraft,
-    isApproved,
-    generationStatus,
-    pullRequest,
-    handleSaveContent,
-    handleStatusChange,
-    handleApproverChange,
-    handleApproverBlur,
-    handleApprove,
-    handleDownloadMarkdown,
-    handleCopyMarkdown,
-    handleDelete,
-    handleRegenerate,
-    handleRequestChanges,
-    handleExecute,
-  } = usePlanEditor(plan);
+    openExecuteModal,
+  } = uiState as Extract<
+    ReturnType<typeof useArtifactUIState>,
+    { showRequestChangesModal: boolean }
+  >;
 
-  // Compute back link destination
-  const teamId = plan.project?.teams?.[0]?.id;
-  const backHref = teamId
-    ? `/teams/${teamId}/projects/${plan.project?.id}`
-    : "/implementation-plans";
-  const backLabel = teamId ? "Back to Project" : "Back to Plans";
+  // Fetch generation status and pull request data
+  const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
+  const { data: pullRequest } = useArtifactPullRequest(plan.id);
+
+  // Derived state
+  const isDraft = metadata.status === "DRAFT";
+  const isApproved = metadata.status === "APPROVED";
+  const isPending =
+    content.isSaving ||
+    metadata.isUpdating ||
+    actions.isDeleting ||
+    planActions.isApproving ||
+    planActions.isRegenerating ||
+    planActions.isExecuting;
+
+  // Create version display component for header
+  const versionDisplay = (
+    <VersionSelector
+      currentVersion={currentVersion}
+      latestVersion={latestVersion}
+      onVersionChange={onVersionChange}
+    />
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
-        <div className="flex items-center gap-4">
-          <Link href={backHref}>
-            <Button size="sm" variant="ghost">
-              <ArrowLeftIcon className="mr-2 h-4 w-4" />
-              {backLabel}
-            </Button>
-          </Link>
-
-          <div className="flex items-center gap-2">
-            <span className="font-medium">{plan.title}</span>
-            <VersionSelector
-              currentVersion={currentVersion}
-              latestVersion={latestVersion}
-              onVersionChange={onVersionChange}
-            />
-            <ArtifactStatusBadge status={status} />
-          </div>
-
-          <span className="text-muted-foreground text-sm">
-            {isSaving
-              ? "Saving..."
-              : `Last saved: ${formatRelativeTime(lastSaved)}`}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setShowMetadataPanel(!showMetadataPanel)}
-            size="sm"
-            variant={showMetadataPanel ? "secondary" : "outline"}
-          >
-            <SettingsIcon className="mr-2 h-4 w-4" />
-            Details
-          </Button>
-
-          {/* Approve button - only shown for Draft plans */}
-          {isDraft ? (
-            <Button
-              disabled={isPending}
-              onClick={handleApprove}
-              size="sm"
-              variant="outline"
-            >
-              <CheckIcon className="mr-2 h-4 w-4" />
-              Approve
-            </Button>
-          ) : null}
-
-          <Button
-            disabled={isPending}
-            onClick={() => setShowRequestChangesModal(true)}
-            size="sm"
-            variant="outline"
-          >
-            <MessageSquareIcon className="mr-2 h-4 w-4" />
-            Request Changes
-          </Button>
-
-          {/* Execute button - only enabled when plan is approved */}
-          <Button
-            disabled={isPending || !isApproved || isExecuting}
-            onClick={() => setShowExecuteModal(true)}
-            size="sm"
-            title={
-              isApproved ? "" : "Approve the plan first to enable execution"
-            }
-            variant={isApproved ? "default" : "outline"}
-          >
-            <PlayIcon className="mr-2 h-4 w-4" />
-            Execute
-          </Button>
-
-          {/* PR Link - shown when a PR has been created */}
-          {pullRequest ? (
-            <a
-              href={pullRequest.htmlUrl}
-              rel="noopener noreferrer"
-              target="_blank"
-            >
-              <Button size="sm" variant="outline">
-                <GitPullRequestIcon className="mr-2 h-4 w-4" />
-                PR #{pullRequest.number}
-              </Button>
-            </a>
-          ) : null}
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline">
-                <DownloadIcon className="mr-2 h-4 w-4" />
-                Export
-                <ChevronDownIcon className="ml-2 h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[180px]">
-              <DropdownMenuItem onClick={handleDownloadMarkdown}>
-                <DownloadIcon className="mr-2 h-4 w-4" />
-                Download Markdown
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setShowLinearExportDialog(true)}>
-                <ExternalLinkIcon className="mr-2 h-4 w-4" />
-                Export to Linear
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <Button onClick={handleCopyMarkdown} size="sm" variant="outline">
-            <CopyIcon className="mr-2 h-4 w-4" />
-            Copy MD
-          </Button>
-
-          <Button disabled={isPending} onClick={handleSaveContent}>
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost">
-                <MoreHorizontalIcon className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[180px]">
-              <DropdownMenuItem disabled={isPending} onClick={handleRegenerate}>
-                <RefreshCwIcon className="mr-2 h-4 w-4" />
-                Regenerate Plan
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <TrashIcon className="mr-2 h-4 w-4" />
-                Delete Plan
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
+      <PlanEditorHeader
+        isApproved={isApproved}
+        isDraft={isDraft}
+        isExecuting={planActions.isExecuting}
+        isPending={isPending}
+        isSaving={content.isSaving}
+        lastSaved={content.lastSaved}
+        onApprove={planActions.handleApprove}
+        onCopyMarkdown={actions.handleCopy}
+        onDelete={uiState.openDeleteDialog}
+        onExecute={openExecuteModal}
+        onExportMarkdown={actions.handleDownload}
+        onExportToLinear={openLinearExportDialog}
+        onRegenerate={planActions.handleRegenerate}
+        onRequestChanges={openRequestChangesModal}
+        onSave={content.saveContent}
+        onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        plan={plan}
+        pullRequest={pullRequest ?? null}
+        showMetadataPanel={uiState.showMetadataPanel}
+        status={metadata.status}
+        versionDisplay={versionDisplay}
+      />
 
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
@@ -243,27 +130,26 @@ export function PlanEditor({
       {/* Content Area with Optional Metadata Panel */}
       <div className="flex min-h-0 flex-1">
         {/* Scrollable Editor */}
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="flex min-h-0 w-full flex-1 flex-col">
-            <RichTextEditor
-              onChange={setContent}
-              placeholder="Start writing your implementation plan..."
-              value={content}
-            />
-          </div>
-        </div>
+        <EditorContent
+          onChange={content.updateContent}
+          placeholder="Start writing your implementation plan..."
+          value={content.content}
+        />
 
         {/* Metadata Panel */}
-        {showMetadataPanel ? (
+        {uiState.showMetadataPanel ? (
           <PlanMetadataPanel
-            approver={approver}
+            approver={metadata.approver}
             generationStatus={generationStatus ?? null}
-            onApproverBlur={handleApproverBlur}
-            onApproverChange={handleApproverChange}
-            onStatusChange={handleStatusChange}
+            onApproverBlur={metadata.handleApproverBlur}
+            onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
+            onStatusChange={metadata.handleStatusChange}
+            owner={metadata.owner}
             plan={plan}
             pullRequest={pullRequest ?? null}
-            status={status}
+            status={metadata.status}
+            teamMembers={metadata.teamMembers}
           />
         ) : null}
       </div>
@@ -272,17 +158,17 @@ export function PlanEditor({
       <DeleteConfirmationDialog
         isPending={isPending}
         itemName={plan.title}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
+        onConfirm={actions.handleDelete}
+        onOpenChange={uiState.setShowDeleteDialog}
+        open={uiState.showDeleteDialog}
         title="Implementation Plan"
       />
 
       {/* Request Changes Modal */}
       <RequestChangesModal
-        isSubmitting={isRequestingChanges}
+        isSubmitting={planActions.isRequestingChanges}
         onOpenChange={setShowRequestChangesModal}
-        onSubmit={handleRequestChanges}
+        onSubmit={planActions.handleRequestChanges}
         open={showRequestChangesModal}
       />
 
@@ -295,8 +181,8 @@ export function PlanEditor({
 
       {/* Execute Plan Modal */}
       <ExecutePlanModal
-        isLoading={isExecuting}
-        onConfirm={handleExecute}
+        isLoading={planActions.isExecuting}
+        onConfirm={planActions.handleExecute}
         onOpenChange={setShowExecuteModal}
         open={showExecuteModal}
       />

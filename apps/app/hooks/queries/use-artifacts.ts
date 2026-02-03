@@ -17,6 +17,7 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
+import { executionLogKeys } from "./use-execution-log";
 
 // Query keys
 export const artifactKeys = {
@@ -262,6 +263,9 @@ export function useRegenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(id),
       });
+      queryClient.invalidateQueries({
+        queryKey: executionLogKeys.detail(id),
+      });
     },
   });
 }
@@ -289,6 +293,9 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
       });
+      queryClient.invalidateQueries({
+        queryKey: executionLogKeys.detail(variables.artifactId),
+      });
       // Invalidate list queries so slug-based containers refetch the latest version
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
@@ -297,7 +304,7 @@ export function useRequestPlanChanges() {
 
 /**
  * Create an artifact and immediately trigger generation workflow.
- * Used for implementation plans that need to be generated from a PRD.
+ * Used for implementation plans generated from a PRD or Issue.
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
@@ -320,8 +327,16 @@ export function useCreateAndGenerateArtifact() {
         return artifact;
       }
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      if (data.parentId) {
+        queryClient.invalidateQueries({
+          queryKey: artifactKeys.detail(data.parentId),
+        });
+      }
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.generationStatus(data.id),
+      });
     },
   });
 }

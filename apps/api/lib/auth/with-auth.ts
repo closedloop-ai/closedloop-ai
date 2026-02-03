@@ -7,11 +7,18 @@ import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
-import type { AppRouteHandlerRoutes } from "@/.next/types/routes";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { clerkService } from "@/lib/auth/clerk-service";
 import { unauthorizedResponse } from "../route-utils";
+
+/**
+ * Next.js route context - matches generated type from @/.next/types/routes
+ * In App Router, all route params are single strings (not arrays)
+ */
+type RouteContext<_TRoute extends string = string> = {
+  params: Promise<Record<string, string>>;
+};
 
 /**
  * Context passed to authenticated route handlers.
@@ -28,10 +35,7 @@ export type AuthContext = {
  * @template TResponse - The response data type
  * @template TRoute - The route literal (e.g., '/projects/[id]') for type-safe params
  */
-export type AuthenticatedHandler<
-  TResponse,
-  TRoute extends AppRouteHandlerRoutes = AppRouteHandlerRoutes,
-> = (
+export type AuthenticatedHandler<TResponse, TRoute extends string = string> = (
   context: AuthContext,
   request: NextRequest,
   params: RouteContext<TRoute>["params"]
@@ -66,10 +70,7 @@ export type AuthenticatedHandler<
  *   // ...
  * });
  */
-export function withAuth<
-  TResponse,
-  TRoute extends AppRouteHandlerRoutes = AppRouteHandlerRoutes,
->(
+export function withAuth<TResponse, TRoute extends string = string>(
   handler: AuthenticatedHandler<TResponse, TRoute>
 ): (
   request: NextRequest,

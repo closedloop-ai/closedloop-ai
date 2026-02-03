@@ -1,8 +1,8 @@
 "use client";
 
 import { UserButton } from "@repo/auth/client";
-import { ModeToggle } from "@repo/design-system/components/mode-toggle";
 import { Button } from "@repo/design-system/components/ui/button";
+import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import {
   Sidebar,
   SidebarContent,
@@ -28,10 +28,33 @@ import {
   SettingsIcon,
   UsersIcon,
 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
+import {
+  type AppEnvironment,
+  appEnvironment,
+  envIconPath,
+} from "@/lib/environment";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
+
+const envBadge: Record<
+  AppEnvironment,
+  { label: string; className: string } | null
+> = {
+  local: {
+    label: "DEV",
+    className:
+      "rounded bg-blue-100 px-1.5 py-0.5 font-medium text-[10px] text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  },
+  stage: {
+    label: "STAGE",
+    className:
+      "rounded bg-amber-100 px-1.5 py-0.5 font-medium text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+  },
+  prod: null,
+};
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
@@ -109,7 +132,33 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                   sidebar.open ? "px-2" : "justify-center"
                 )}
               >
-                <span className="font-semibold text-lg">Symphony</span>
+                {sidebar.open ? (
+                  <div className="flex items-center gap-2">
+                    <Image
+                      alt="ClosedLoop.ai"
+                      className="h-7 w-auto dark:brightness-0 dark:invert"
+                      height={32}
+                      src="/logo.svg"
+                      unoptimized
+                      width={160}
+                    />
+                    {(() => {
+                      const badge = envBadge[appEnvironment];
+                      return badge ? (
+                        <span className={badge.className}>{badge.label}</span>
+                      ) : null;
+                    })()}
+                  </div>
+                ) : (
+                  <Image
+                    alt="ClosedLoop.ai"
+                    className="h-7 w-7"
+                    height={28}
+                    priority
+                    src={envIconPath[appEnvironment]}
+                    width={28}
+                  />
+                )}
               </div>
             </SidebarMenuItem>
           </SidebarMenu>

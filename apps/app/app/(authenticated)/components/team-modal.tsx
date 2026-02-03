@@ -258,18 +258,19 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
     }
   };
 
-  const handleDeleteTeam = () => {
+  const handleDeleteTeam = async (): Promise<boolean> => {
     if (!team) {
-      return;
+      return false;
     }
 
-    deleteTeamMutation.mutate(team.id, {
+    const result = await deleteTeamMutation.mutateAsync(team.id, {
       onSuccess: () => {
         setShowDeleteDialog(false);
         handleClose();
         onSuccess?.();
       },
     });
+    return result.deleted ?? false;
   };
 
   const isSubmitting =

@@ -22,6 +22,26 @@ function getConfig() {
   return _config;
 }
 
+/**
+ * Get required Linear credentials, throwing if not configured.
+ * Use this in functions that require Linear to be configured.
+ */
+function getRequiredCredentials(): {
+  clientId: string;
+  clientSecret: string;
+} {
+  const config = getConfig();
+  if (!(config.LINEAR_CLIENT_ID && config.LINEAR_CLIENT_SECRET)) {
+    throw new Error(
+      "Linear integration not configured. Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET."
+    );
+  }
+  return {
+    clientId: config.LINEAR_CLIENT_ID,
+    clientSecret: config.LINEAR_CLIENT_SECRET,
+  };
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -79,9 +99,16 @@ export type PKCEChallenge = {
 // OAuth Functions
 // =============================================================================
 
-const LINEAR_OAUTH_URL = "https://linear.app/oauth/authorize";
 const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const LINEAR_REVOKE_URL = "https://api.linear.app/oauth/revoke";
+
+/**
+ * Redact potential tokens from error messages.
+ * Matches strings that look like tokens (20+ alphanumeric chars with dashes/underscores).
+ */
+function redactTokensFromError(errorText: string): string {
+  return errorText.replace(/[a-zA-Z0-9_-]{20,}/g, "[REDACTED]");
+}
 
 /**
  * Zod schema for validating Linear OAuth token responses.
@@ -130,56 +157,15 @@ export async function generatePKCE(): Promise<PKCEChallenge> {
 }
 
 /**
- * Generate the OAuth authorization URL for Linear.
- * @param state - CSRF protection state parameter
- * @param pkce - Optional PKCE challenge for enhanced security
- */
-export function getOAuthUrl(state: string, pkce?: PKCEChallenge): string {
-  const config = getConfig();
-  const params = new URLSearchParams({
-    client_id: config.LINEAR_CLIENT_ID,
-    redirect_uri: config.LINEAR_REDIRECT_URI,
-    response_type: "code",
-    scope: "read,write,issues:create",
-    state,
-    prompt: "consent",
-  });
-
-  // Add PKCE parameters if provided
-  if (pkce) {
-    params.set("code_challenge", pkce.codeChallenge);
-    params.set("code_challenge_method", pkce.codeChallengeMethod);
-  }
-
-  return `${LINEAR_OAUTH_URL}?${params.toString()}`;
-}
-
-/**
- * Exchange an authorization code for access and refresh tokens.
- * @param code - Authorization code from OAuth callback
- * @param codeVerifier - PKCE code verifier (if PKCE was used in authorization)
+ * Exchange an authorization code for tokens.
+ * Called by the API after the app receives the OAuth callback.
  */
 export async function exchangeCodeForTokens(
   code: string,
-  codeVerifier?: string
+  codeVerifier: string,
+  redirectUri: string
 ): Promise<LinearTokens> {
-  const config = getConfig();
-
-  // Build request body
-  const body: Record<string, string> = {
-    grant_type: "authorization_code",
-    client_id: config.LINEAR_CLIENT_ID,
-    redirect_uri: config.LINEAR_REDIRECT_URI,
-    code,
-  };
-
-  // For PKCE flow, include code_verifier instead of client_secret
-  if (codeVerifier) {
-    body.code_verifier = codeVerifier;
-  } else {
-    // Non-PKCE flow requires client_secret
-    body.client_secret = config.LINEAR_CLIENT_SECRET;
-  }
+  const { clientId, clientSecret } = getRequiredCredentials();
 
   try {
     const response = await fetch(LINEAR_TOKEN_URL, {
@@ -187,16 +173,21 @@ export async function exchangeCodeForTokens(
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams(body),
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        code,
+        code_verifier: codeVerifier,
+      }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      // Redact any potential tokens in error response
-      const safeError = errorText.replace(/[a-zA-Z0-9_-]{20,}/g, "[REDACTED]");
       log.error("[linear/oauth] Token exchange failed", {
         status: response.status,
-        error: safeError,
+        error: redactTokensFromError(errorText),
       });
       throw new Error(`Token exchange failed: ${response.status}`);
     }
@@ -212,7 +203,6 @@ export async function exchangeCodeForTokens(
       scope: data.scope?.split(",") ?? [],
     };
   } catch (error) {
-    // Log and re-throw to preserve error handling upstream
     log.error("[linear/oauth] Token exchange error", {
       error: parseError(error),
     });
@@ -226,7 +216,7 @@ export async function exchangeCodeForTokens(
 export async function refreshAccessToken(
   refreshToken: string
 ): Promise<LinearTokens> {
-  const config = getConfig();
+  const { clientId, clientSecret } = getRequiredCredentials();
 
   try {
     const response = await fetch(LINEAR_TOKEN_URL, {
@@ -236,19 +226,17 @@ export async function refreshAccessToken(
       },
       body: new URLSearchParams({
         grant_type: "refresh_token",
-        client_id: config.LINEAR_CLIENT_ID,
-        client_secret: config.LINEAR_CLIENT_SECRET,
+        client_id: clientId,
+        client_secret: clientSecret,
         refresh_token: refreshToken,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      // Redact any potential tokens in error response
-      const safeError = errorText.replace(/[a-zA-Z0-9_-]{20,}/g, "[REDACTED]");
       log.error("[linear/oauth] Token refresh failed", {
         status: response.status,
-        error: safeError,
+        error: redactTokensFromError(errorText),
       });
       throw new Error(`Token refresh failed: ${response.status}`);
     }
@@ -425,10 +413,11 @@ export async function createIssues(
 
 /**
  * Check if Linear integration is configured.
+ * Returns true only if both CLIENT_ID and CLIENT_SECRET are set.
  */
 export function isLinearConfigured(): boolean {
   try {
-    getConfig();
+    getRequiredCredentials();
     return true;
   } catch {
     return false;

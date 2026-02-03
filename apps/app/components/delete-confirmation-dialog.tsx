@@ -15,7 +15,7 @@ type DeleteConfirmationDialogProps = {
   onOpenChange: (open: boolean) => void;
   title: string;
   itemName: string;
-  onConfirm: () => void;
+  onConfirm: () => Promise<boolean>;
   isPending?: boolean;
 };
 
@@ -26,7 +26,14 @@ export function DeleteConfirmationDialog({
   itemName,
   onConfirm,
   isPending = false,
-}: DeleteConfirmationDialogProps) {
+}: Readonly<DeleteConfirmationDialogProps>) {
+  const handleDelete = async () => {
+    const success = await onConfirm();
+    if (success) {
+      onOpenChange(false);
+    }
+  };
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
@@ -43,7 +50,7 @@ export function DeleteConfirmationDialog({
           </Button>
           <Button
             disabled={isPending}
-            onClick={onConfirm}
+            onClick={handleDelete}
             variant="destructive"
           >
             {isPending ? "Deleting..." : "Delete"}

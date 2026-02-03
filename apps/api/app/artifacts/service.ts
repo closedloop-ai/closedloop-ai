@@ -1,21 +1,50 @@
 import { createId } from "@paralleldrive/cuid2";
-import {
-  type Artifact,
-  ArtifactType,
-  type ArtifactWithWorkstream,
-  type CreateArtifactInput,
-  type FindArtifactsOptions,
-  type PullRequestInfo,
-  type UpdateArtifactInput,
+import type {
+  Artifact,
+  ArtifactWithWorkstream,
+  CreateArtifactInput,
+  FindArtifactsOptions,
+  PullRequestInfo,
+  UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
+import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
-import { getRepositoryInfo, triggerWorkflowDispatch } from "@repo/github";
+import {
+  downloadWorkflowArtifacts,
+  getRepositoryInfo,
+  triggerWorkflowDispatch,
+} from "@repo/github";
+import {
+  createEmptyExecutionTrace,
+  parseExecutionLogs,
+} from "@repo/github/execution-log-parser";
+import { log } from "@repo/observability/log";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
   createArtifactVersion,
   generateDocumentSlug,
+  isDocumentArtifact,
 } from "./artifact-utils";
+
+/**
+ * Validate that a user belongs to the given organization.
+ * Throws if the user does not exist within the org.
+ */
+async function validateOwnerInOrg(
+  ownerId: string,
+  organizationId: string
+): Promise<void> {
+  const owner = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: ownerId, organizationId },
+      select: { id: true },
+    })
+  );
+  if (!owner) {
+    throw new Error("Invalid owner ID: user not found in this organization");
+  }
+}
 
 // Result types for service operations
 export type RegenerateResult =
@@ -173,13 +202,14 @@ export const artifactsService = {
         input.projectId = workstream.projectId;
       }
 
-      const documentSlug =
-        input.type === ArtifactType.Prd ||
-        input.type === ArtifactType.ImplementationPlan
-          ? generateDocumentSlug()
-          : null;
+      const resolvedOwnerId = input.ownerId ?? userId;
+      await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
-      return tx.artifact.create({
+      const documentSlug = isDocumentArtifact(input)
+        ? generateDocumentSlug()
+        : null;
+
+      return await tx.artifact.create({
         data: {
           ...input,
           organizationId,
@@ -187,6 +217,7 @@ export const artifactsService = {
           version: 1,
           isLatest: true,
           generatedBy: userId,
+          ownerId: resolvedOwnerId,
         },
       });
     });
@@ -196,12 +227,16 @@ export const artifactsService = {
    * Update an existing artifact.
    * Auto-increments version when content is modified.
    */
-  update(
+  async update(
     id: string,
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    return withDb((db) =>
+    if (input.ownerId) {
+      await validateOwnerInOrg(input.ownerId, organizationId);
+    }
+
+    return await withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: input,
@@ -221,7 +256,7 @@ export const artifactsService = {
   },
 
   /**
-   * Find an artifact with full regeneration context (workstream, project, repositories, PRD)
+   * Find an artifact with full regeneration context (workstream, project, repositories, source artifact)
    */
   findWithRegenerationContext(id: string, organizationId: string) {
     return withDb((db) =>
@@ -265,7 +300,7 @@ export const artifactsService = {
 
   /**
    * Find or create a workstream for the artifact.
-   * If artifact has no workstream, finds PRD by title match and auto-creates one.
+   * If artifact has no workstream, finds a source artifact (PRD or Issue) and auto-creates one.
    */
   async findOrCreateWorkstream(
     organizationId: string,
@@ -291,35 +326,41 @@ export const artifactsService = {
   ) {
     // If workstream exists, fetch it with project relation
     if (artifact.workstream) {
-      const prdArtifact = await withDb((db) =>
+      const sourceArtifact = await withDb((db) =>
         db.artifact.findFirst({
           where: {
             organizationId,
             workstreamId: artifact.workstream?.id as string,
-            type: "PRD",
+            type: { in: ["PRD", "ISSUE"] },
             isLatest: true,
+            // Prefer the explicit parent when set; fall back to any PRD/Issue in the workstream.
+            ...(artifact.parentId ? { id: artifact.parentId } : {}),
           },
         })
       );
-      return { workstream: artifact.workstream, prdArtifact };
+      return { workstream: artifact.workstream, sourceArtifact };
     }
 
-    // Find PRD by parentId or matching title
-    const prdTitle = artifact.title.replace("Implementation Plan: ", "");
-    const foundPrd = await withDb((db) =>
+    // Find PRD or Issue by parentId or matching title.
+    // Title matching is a PRD-only heuristic for legacy plans without parentId.
+    const titleFallback = artifact.title.replace("Implementation Plan: ", "");
+    const foundSource = await withDb((db) =>
       db.artifact.findFirst({
         where: {
           organizationId,
           projectId: artifact.projectId,
-          type: "PRD",
+          type: { in: ["PRD", "ISSUE"] },
           isLatest: true,
-          OR: [{ id: artifact.parentId ?? undefined }, { title: prdTitle }],
+          OR: [
+            { id: artifact.parentId ?? undefined },
+            { title: titleFallback },
+          ],
         },
       })
     );
 
-    if (!(foundPrd?.content && artifact.projectId)) {
-      return { workstream: null, prdArtifact: foundPrd };
+    if (!(foundSource?.content && artifact.projectId)) {
+      return { workstream: null, sourceArtifact: foundSource };
     }
 
     // Auto-create workstream and link artifacts
@@ -328,20 +369,18 @@ export const artifactsService = {
         data: {
           organizationId,
           projectId: artifact.projectId as string,
-          title: foundPrd.title,
-          description: `Auto-created for: ${foundPrd.title}`,
+          title: foundSource.title,
+          description: `Auto-created for: ${foundSource.title}`,
           type: "FEATURE_DELIVERY",
           createdById: userId,
         },
       });
 
-      // Link artifacts to workstream
       await tx.artifact.updateMany({
-        where: { id: { in: [foundPrd.id, artifact.id] }, organizationId },
+        where: { id: { in: [foundSource.id, artifact.id] }, organizationId },
         data: { workstreamId: newWorkstream.id },
       });
 
-      // Fetch workstream with relations
       const workstream = await tx.workstream.findUnique({
         where: { id: newWorkstream.id, organizationId },
         include: {
@@ -350,23 +389,26 @@ export const artifactsService = {
               repositories: { take: 1 },
             },
           },
-          artifacts: { where: { type: "PRD", isLatest: true }, take: 1 },
+          artifacts: {
+            where: { type: { in: ["PRD", "ISSUE"] }, isLatest: true },
+            take: 1,
+          },
         },
       });
 
-      return { workstream, prdArtifact: foundPrd };
+      return { workstream, sourceArtifact: foundSource };
     });
   },
 
   /**
-   * Build context for plan generation from PRD content and optional initial instructions.
+   * Build context for plan generation from source artifact content and optional initial instructions.
    * Appends "assume defaults" instruction to skip Q&A flow.
    */
   buildPlanContext(
-    prdContent: string,
+    sourceContent: string,
     initialInstructions: string | null
   ): string {
-    let context = prdContent;
+    let context = sourceContent;
 
     // Add initial instructions if provided and not a failure message
     if (
@@ -540,17 +582,18 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD
-    const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+    // Find or create workstream with PRD or Issue
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!prdArtifact?.content) {
+    if (!sourceArtifact?.content) {
       return {
         success: false,
-        error: "No PRD found to generate plan from. Create a PRD first.",
+        error:
+          "No PRD or Issue found to generate plan from. Create a PRD or Issue first.",
         status: 400,
       };
     }
@@ -566,15 +609,18 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
+    // Use source artifact's target repo (fallback to project's primary)
+    const targetRepo =
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
+      sourceArtifact.targetBranch ??
+      existingRepository?.defaultBranch ??
+      "main";
 
     if (!targetRepo) {
       return {
         success: false,
-        error: "No repository configured for this project or PRD",
+        error: "No repository configured for this project or source artifact",
         status: 400,
       };
     }
@@ -617,9 +663,9 @@ ${initialInstructions.trim()}`;
 
     const correlationId = createId();
 
-    // Build context: PRD content + initial instructions + "assume defaults"
+    // Build context: source artifact content + initial instructions + "assume defaults"
     const context = this.buildPlanContext(
-      prdArtifact.content,
+      sourceArtifact.content,
       artifact.content
     );
 
@@ -630,7 +676,7 @@ ${initialInstructions.trim()}`;
       command: "plan",
       context,
       correlationId,
-      sessionId: prdArtifact.id,
+      sessionId: sourceArtifact.id,
     });
 
     if (!result.success) {
@@ -647,7 +693,7 @@ ${initialInstructions.trim()}`;
       workstreamId: workstream.id,
       repositoryId: repository.id,
       artifactId: artifact.id,
-      prdId: prdArtifact.id,
+      prdId: sourceArtifact.id,
       correlationId,
       currentVersion: artifact.version,
       targetRepo,
@@ -685,17 +731,17 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD
-    const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+    // Find or create workstream with PRD or Issue
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!prdArtifact) {
+    if (!sourceArtifact) {
       return {
         success: false,
-        error: "No PRD found for this plan. Cannot request changes.",
+        error: "No PRD or Issue found for this plan. Cannot request changes.",
         status: 400,
       };
     }
@@ -711,15 +757,18 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
+    // Use source artifact's target repo (fallback to project's primary)
+    const targetRepo =
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
+      sourceArtifact.targetBranch ??
+      existingRepository?.defaultBranch ??
+      "main";
 
     if (!targetRepo) {
       return {
         success: false,
-        error: "No repository configured for this project or PRD",
+        error: "No repository configured for this project or source artifact",
         status: 400,
       };
     }
@@ -774,7 +823,7 @@ ${initialInstructions.trim()}`;
       workstreamId: workstream.id,
       repositoryId: repository.id,
       artifact: artifactForVersion as PrismaArtifact,
-      prdId: prdArtifact.id,
+      prdId: sourceArtifact.id,
       correlationId,
       targetRepo,
       targetBranch,
@@ -792,7 +841,7 @@ ${changes}`;
       command: "chat",
       context,
       correlationId,
-      sessionId: prdArtifact.id, // Same session for artifact continuity
+      sessionId: sourceArtifact.id, // Same session for artifact continuity
     });
 
     if (!result.success) {
@@ -904,6 +953,58 @@ Please try again or contact support if the issue persists.`,
   },
 
   /**
+   * Get execution logs for an artifact from its associated GitHub Action run.
+   * Downloads workflow artifacts and parses agent conversation logs.
+   */
+  async getExecutionLog(
+    artifactId: string,
+    organizationId: string
+  ): Promise<ExecutionTrace> {
+    try {
+      const artifact = await this.findByIdSimple(artifactId, organizationId);
+      if (!artifact?.workstreamId) {
+        return createEmptyExecutionTrace();
+      }
+
+      // Use workstreamId + status to leverage @@index([workstreamId, status])
+      // before applying the JSON path filter on triggerData
+      const actionRun = await withDb((db) =>
+        db.gitHubActionRun.findFirst({
+          where: {
+            workstreamId: artifact.workstreamId!,
+            status: "SUCCESS",
+            triggerData: {
+              path: ["artifactId"],
+              equals: artifactId,
+            },
+          },
+          orderBy: { completedAt: "desc" },
+        })
+      );
+
+      if (!actionRun?.runId) {
+        return createEmptyExecutionTrace();
+      }
+
+      const artifacts = await downloadWorkflowArtifacts(
+        Number(actionRun.runId),
+        "execution-logs"
+      );
+
+      if (artifacts.length === 0 || !artifacts[0]) {
+        return createEmptyExecutionTrace();
+      }
+
+      return parseExecutionLogs(artifacts[0].data);
+    } catch (error) {
+      log.error("[artifacts-service] Failed to get execution log", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return createEmptyExecutionTrace();
+    }
+  },
+
+  /**
    * Execute an approved implementation plan.
    * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
    */
@@ -948,17 +1049,17 @@ Please try again or contact support if the issue persists.`,
       };
     }
 
-    // Find or create workstream with PRD
-    const { workstream, prdArtifact } = await this.findOrCreateWorkstream(
+    // Find or create workstream with PRD or Issue
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!prdArtifact) {
+    if (!sourceArtifact) {
       return {
         success: false,
-        error: "No PRD found for this plan. Cannot execute.",
+        error: "No PRD or Issue found for this plan. Cannot execute.",
         status: 400,
       };
     }
@@ -974,15 +1075,18 @@ Please try again or contact support if the issue persists.`,
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use PRD's target repo (fallback to project's primary)
-    const targetRepo = prdArtifact.targetRepo ?? existingRepository?.fullName;
+    // Use source artifact's target repo (fallback to project's primary)
+    const targetRepo =
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      prdArtifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
+      sourceArtifact.targetBranch ??
+      existingRepository?.defaultBranch ??
+      "main";
 
     if (!targetRepo) {
       return {
         success: false,
-        error: "No repository configured for this project or PRD",
+        error: "No repository configured for this project or source artifact",
         status: 400,
       };
     }
@@ -1032,10 +1136,10 @@ Please try again or contact support if the issue persists.`,
             triggerData: {
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
-              prdId: prdArtifact.id,
+              prdId: sourceArtifact.id,
               command: "execute",
             },
-            sessionId: prdArtifact.id,
+            sessionId: sourceArtifact.id,
             jobType: "execute",
             startedAt: new Date(),
           },
@@ -1050,7 +1154,7 @@ Please try again or contact support if the issue persists.`,
               command: "execute",
               correlationId,
               artifactId,
-              prdId: prdArtifact.id,
+              prdId: sourceArtifact.id,
               targetRepo,
               targetBranch,
             },
@@ -1066,7 +1170,7 @@ Please try again or contact support if the issue persists.`,
       command: "execute",
       context,
       correlationId,
-      sessionId: prdArtifact.id,
+      sessionId: sourceArtifact.id,
     });
 
     if (!result.success) {
@@ -1092,7 +1196,8 @@ export type RequestChangesResult =
   | { success: true; message: string; artifactId: string }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
-// Type for raw Prisma result before transformation
+// Type for raw Prisma result before transformation.
+// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
 type RawArtifactWithContext = Artifact & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1100,6 +1205,12 @@ type RawArtifactWithContext = Artifact & {
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
+  } | null;
+  owner: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
   } | null;
 };
 

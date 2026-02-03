@@ -7,9 +7,9 @@ import { cn } from "@repo/design-system/lib/utils";
 
 import type { RichTextEditorProps } from "./types";
 
-const RichTextEditorCore = dynamic(
+const TiptapEditorCore = dynamic(
   () =>
-    import("./rich-text-editor-core").then((mod) => mod.RichTextEditorCore),
+    import("./tiptap-editor-core").then((mod) => mod.TiptapEditorCore),
   {
     ssr: false,
     loading: () => (
@@ -29,14 +29,22 @@ export function RichTextEditor({
   placeholder,
   className,
   readOnly,
+  liveblocksExtension,
+  onEditorReady,
+  contentResetKey,
+  contentResetValue,
 }: Readonly<RichTextEditorProps>) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
-      <RichTextEditorCore
-        onChange={onChange}
+      <TiptapEditorCore
+        value={value}
         placeholder={placeholder}
         readOnly={readOnly}
-        value={value}
+        liveblocksExtension={liveblocksExtension}
+        onChange={onChange}
+        onEditorReady={onEditorReady}
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
       />
     </div>
   );

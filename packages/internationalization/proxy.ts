@@ -1,6 +1,5 @@
 import { match as matchLocale } from "@formatjs/intl-localematcher";
 import Negotiator from "negotiator";
-import type { NextRequest } from "next/server";
 import { createI18nMiddleware } from "next-international/middleware";
 import languine from "./languine.json" with { type: "json" };
 
@@ -10,7 +9,7 @@ const I18nMiddleware = createI18nMiddleware({
   locales,
   defaultLocale: "en",
   urlMappingStrategy: "rewriteDefault",
-  resolveLocaleFromRequest: (request: NextRequest) => {
+  resolveLocaleFromRequest: (request) => {
     const headers = Object.fromEntries(request.headers.entries());
     const negotiator = new Negotiator({ headers });
     const acceptedLanguages = negotiator.languages();
@@ -19,10 +18,11 @@ const I18nMiddleware = createI18nMiddleware({
 
     return matchedLocale;
   },
-});
+}) as ReturnType<typeof createI18nMiddleware>;
 
-export const internationalizationMiddleware = (request: NextRequest) =>
-  I18nMiddleware(request);
+export const internationalizationMiddleware = (
+  request: Parameters<typeof I18nMiddleware>[0]
+) => I18nMiddleware(request);
 
 export const config = {
   matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],

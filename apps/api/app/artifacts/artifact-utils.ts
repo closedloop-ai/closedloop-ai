@@ -1,6 +1,28 @@
-import type { Artifact, ArtifactType } from "@repo/database";
+import { type Artifact, ArtifactType } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { nanoid } from "nanoid";
+
+export function isDocumentArtifact(artifact: Pick<Artifact, "type">): boolean {
+  return (
+    artifact.type === ArtifactType.PRD ||
+    artifact.type === ArtifactType.IMPLEMENTATION_PLAN ||
+    artifact.type === ArtifactType.ISSUE
+  );
+}
+
+/**
+ * Generates a unique slug that can be used to identify a document artifact across versions.
+ */
+export function generateDocumentSlug(): string {
+  return nanoid(14);
+}
+
+export function generateLiveblocksRoomId(
+  organizationId: string,
+  documentSlug: string
+): string {
+  return `${organizationId}:artifact:${documentSlug}`;
+}
 
 /**
  * Typed error for artifact not found - maps to 404 HTTP status.
@@ -59,6 +81,7 @@ export async function createArtifactVersion(
         options.content === undefined ? original.content : options.content,
       externalUrl: original.externalUrl,
       generatedBy: original.generatedBy,
+      ownerId: original.ownerId,
       documentSlug: original.documentSlug,
       targetRepo: original.targetRepo,
       targetBranch: original.targetBranch,
@@ -66,13 +89,6 @@ export async function createArtifactVersion(
       isLatest: true,
     },
   });
-}
-
-/**
- * Generates a unique slug that can be used to identify a document artifact across versions.
- */
-export function generateDocumentSlug(): string {
-  return nanoid(14);
 }
 
 /**
@@ -102,6 +118,14 @@ export const artifactIncludeWithContext = {
         },
         take: 1,
       },
+    },
+  },
+  owner: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
     },
   },
 } as const;

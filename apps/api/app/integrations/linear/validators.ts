@@ -1,10 +1,11 @@
 import { z } from "zod";
 
-/**
- * Validator for POST /integrations/linear/export
- * Export an approved implementation plan to Linear as individual issues
- */
+export const connectLinearValidator = z.object({
+  code: z.string().min(1, "Authorization code is required"),
+  codeVerifier: z.string().min(1, "PKCE code verifier is required"),
+});
+
 export const exportToLinearValidator = z.object({
   artifactId: z.uuidv7(),
-  teamId: z.string().min(1, "Linear team ID is required"),
+  teamId: z.string().min(1, "Team ID is required"),
 });

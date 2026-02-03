@@ -1,9 +1,12 @@
 // Artifact and Approval types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+import type { ProjectOwner } from "./organization";
+
 // Artifact Type
 export const ArtifactType = {
   Prd: "PRD",
+  Issue: "ISSUE",
   FigmaDesign: "FIGMA_DESIGN",
   ImplementationPlan: "IMPLEMENTATION_PLAN",
   CodeReviewReport: "CODE_REVIEW_REPORT",
@@ -11,6 +14,7 @@ export const ArtifactType = {
   AccessibilityReport: "ACCESSIBILITY_REPORT",
   TestReport: "TEST_REPORT",
   CompletionSummary: "COMPLETION_SUMMARY",
+  PullRequest: "PULL_REQUEST",
 } as const;
 export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
 export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
@@ -50,6 +54,7 @@ export const APPROVER_ROLE_OPTIONS = Object.values(ApproverRole);
 
 export type Artifact = {
   id: string;
+  organizationId: string;
   workstreamId: string | null;
   projectId: string | null;
   parentId: string | null;
@@ -64,6 +69,7 @@ export type Artifact = {
   isLatest: boolean;
   documentSlug: string | null;
   generatedBy: string | null;
+  ownerId: string | null;
   tokenUsage: unknown;
   targetRepo: string | null;
   targetBranch: string | null;
@@ -82,6 +88,7 @@ export type ArtifactWithWorkstream = Artifact & {
     name: string;
     teams?: { id: string; name: string }[];
   } | null;
+  owner?: ProjectOwner | null;
 };
 
 export type FindArtifactsOptions = {
@@ -106,6 +113,11 @@ export type CreateArtifactInput = {
   externalUrl?: string;
   targetRepo?: string;
   targetBranch?: string;
+  /**
+   * Owner user ID. Defaults to the authenticated user if not provided.
+   * Must reference a valid user in the organization.
+   */
+  ownerId?: string;
 };
 
 export type UpdateArtifactInput = {
@@ -117,6 +129,7 @@ export type UpdateArtifactInput = {
   externalUrl?: string | null;
   targetRepo?: string | null;
   targetBranch?: string | null;
+  ownerId?: string | null;
 };
 
 export type Approval = {

@@ -25,7 +25,6 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   useExportToLinear,
@@ -43,7 +42,6 @@ export function LinearExportDialog({
   onOpenChange,
   open,
 }: LinearExportDialogProps) {
-  const router = useRouter();
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [exportResult, setExportResult] = useState<{
     issuesCreated: number;
@@ -84,24 +82,21 @@ export function LinearExportDialog({
       return;
     }
 
-    try {
-      const result = await exportToLinear.mutateAsync({
-        artifactId,
-        teamId: selectedTeamId,
-      });
+    const result = await exportToLinear.mutateAsync({
+      artifactId,
+      teamId: selectedTeamId,
+    });
 
-      setExportResult({
-        issuesCreated: result.issuesCreated,
-        issues: result.issues,
-      });
+    setExportResult({
+      issuesCreated: result.issuesCreated,
+      issues: result.issues,
+    });
+
+    if (result.success) {
       toast.success(
         `Successfully exported ${result.issuesCreated} issue${result.issuesCreated === 1 ? "" : "s"} to Linear`
       );
-      router.refresh();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to export to Linear"
-      );
+      onOpenChange(false);
     }
   };
 

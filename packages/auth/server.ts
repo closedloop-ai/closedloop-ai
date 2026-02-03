@@ -2,9 +2,3 @@
 import "server-only";
 
 export * from "@clerk/nextjs/server";
-export {
-  generateOAuthToken,
-  type OAuthTokenPayload,
-  type OAuthTokenVerifyResult,
-  verifyOAuthToken,
-} from "./oauth-token";

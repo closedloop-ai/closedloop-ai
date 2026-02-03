@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -20,6 +20,7 @@ import {
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
+  AlertCircleIcon,
   ChevronDownIcon,
   FileTextIcon,
   ListTodoIcon,
@@ -55,6 +56,27 @@ import { ArtifactsTable } from "./components/artifacts-table";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { PropertiesPanel } from "./components/properties-panel";
 
+/** Workstream states that indicate an async workflow is actively running. */
+const ACTIVE_WORKSTREAM_STATES = new Set([
+  "REQUIREMENTS_GENERATING",
+  "IMPLEMENTATION_PLANNING",
+  "IMPLEMENTATION_IN_PROGRESS",
+  "CODE_REVIEW_RUNNING",
+  "VISUAL_QA_RUNNING",
+  "MERGING",
+]);
+
+/**
+ * Map backend ArtifactType to frontend ProjectArtifactType.
+ * PULL_REQUEST artifacts are displayed under the FEATURE_BRANCHES section.
+ */
+function toProjectArtifactType(type: string): ProjectArtifactType {
+  if (type === "PULL_REQUEST") {
+    return "FEATURE_BRANCHES";
+  }
+  return type as ProjectArtifactType;
+}
+
 export default function ProjectDetailPage() {
   const params = useParams();
   const teamId = params.teamId as string;
@@ -62,7 +84,7 @@ export default function ProjectDetailPage() {
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
-    useState<ArtifactType>("PRD");
+    useState<ArtifactType>(ArtifactType.Prd);
 
   // Queries
   const {
@@ -77,8 +99,25 @@ export default function ProjectDetailPage() {
   } = useProject(projectId);
   const { data: activityData, isLoading: loadingActivity } =
     useProjectActivity(projectId);
+  // Poll artifacts when any workstream is actively running (e.g., execution in progress).
+  // This ensures webhook-created artifacts (like PRs) appear without a manual refresh.
+  // Uses TanStack Query's function form of refetchInterval to access query data directly,
+  // avoiding a circular dependency between the memo and the query declaration.
   const { data: artifactsData = [], isLoading: loadingArtifacts } =
-    useArtifactsByProject(projectId);
+    useArtifactsByProject(projectId, true, {
+      refetchInterval: (query) => {
+        const data = query.state.data;
+        if (!data) {
+          return false;
+        }
+        const hasActive = data.some(
+          (a) =>
+            a.workstream?.state &&
+            ACTIVE_WORKSTREAM_STATES.has(a.workstream.state)
+        );
+        return hasActive ? 5000 : false;
+      },
+    });
 
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
@@ -90,7 +129,7 @@ export default function ProjectDetailPage() {
         id: artifact.id,
         documentSlug: artifact.documentSlug,
         name: artifact.title,
-        type: artifact.type as ProjectArtifactType,
+        type: toProjectArtifactType(artifact.type),
         status: mapArtifactStatusToDisplay(artifact.status),
         link: artifact.externalUrl || undefined,
       })),
@@ -151,8 +190,9 @@ export default function ProjectDetailPage() {
     setCreateModalOpen(true);
   };
 
-  const handleDeleteArtifact = (artifactId: string) => {
-    deleteArtifactMutation.mutate(artifactId);
+  const handleDeleteArtifact = async (artifactId: string): Promise<boolean> => {
+    const result = await deleteArtifactMutation.mutateAsync(artifactId);
+    return result.deleted ?? false;
   };
 
   if (loading) {
@@ -198,15 +238,25 @@ export default function ProjectDetailPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleCreateArtifact("PRD")}>
+              <DropdownMenuItem
+                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+              >
                 <FileTextIcon className="mr-2 h-4 w-4" />
                 PRD
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact("IMPLEMENTATION_PLAN")}
+                onClick={() =>
+                  handleCreateArtifact(ArtifactType.ImplementationPlan)
+                }
               >
                 <ListTodoIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => handleCreateArtifact(ArtifactType.Issue)}
+              >
+                <AlertCircleIcon className="mr-2 h-4 w-4" />
+                Issue
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

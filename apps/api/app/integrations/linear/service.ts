@@ -19,6 +19,10 @@ import { log } from "@repo/observability/log";
 /**
  * Result types for service operations
  */
+export type OAuthCallbackResult =
+  | { success: true }
+  | { success: false; error: string };
+
 export type TokenRefreshResult =
   | { success: true; accessToken: string }
   | { success: false; error: string };
@@ -45,10 +49,6 @@ export type ExportResult =
       }>;
     }
   | { success: false; error: string; status: 400 | 403 | 404 | 500 | 502 };
-
-export type OAuthCallbackResult =
-  | { success: true }
-  | { success: false; error: string };
 
 /**
  * Calculate token expiration date from expiresIn seconds.
@@ -111,6 +111,83 @@ async function ensureValidAccessToken(
  * Linear integration service - handles all business logic and database operations
  */
 export const linearService = {
+  /**
+   * Complete the OAuth callback by exchanging code for tokens and storing the integration.
+   * Called by the connect route after the app receives the OAuth callback.
+   *
+   * @param redirectUri - Must match the redirect_uri used in OAuth initiation
+   */
+  async completeOAuthCallback(
+    code: string,
+    codeVerifier: string,
+    redirectUri: string,
+    organizationId: string,
+    clerkUserId: string
+  ): Promise<OAuthCallbackResult> {
+    try {
+      // Exchange authorization code for tokens
+      const tokens = await exchangeCodeForTokens(
+        code,
+        codeVerifier,
+        redirectUri
+      );
+
+      // Create client and get organization info
+      const client = createLinearClient(tokens.accessToken);
+      const linearOrg = await getViewer(client);
+
+      if (!linearOrg) {
+        return {
+          success: false,
+          error: "Failed to get Linear organization info",
+        };
+      }
+
+      // Calculate token expiration
+      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
+
+      // Upsert the integration record
+      await withDb((db) =>
+        db.linearIntegration.upsert({
+          where: { organizationId },
+          create: {
+            organizationId,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            tokenExpiresAt,
+            linearOrgId: linearOrg.id,
+            linearOrgName: linearOrg.name,
+          },
+          update: {
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            tokenExpiresAt,
+            linearOrgId: linearOrg.id,
+            linearOrgName: linearOrg.name,
+          },
+        })
+      );
+
+      log.info("[linear] Connected Linear integration", {
+        organizationId,
+        linearOrgId: linearOrg.id,
+        clerkUserId,
+      });
+
+      return { success: true };
+    } catch (error) {
+      log.error("[linear/oauth/callback] Failed to complete OAuth callback", {
+        organizationId,
+        clerkUserId,
+        error: parseError(error),
+      });
+      return {
+        success: false,
+        error: "Failed to complete Linear connection",
+      };
+    }
+  },
+
   /**
    * Get the Linear integration status for an organization.
    * Returns connection status, organization name, and available teams.
@@ -379,86 +456,5 @@ export const linearService = {
         title: issue.title,
       })),
     };
-  },
-
-  /**
-   * Complete the OAuth callback flow.
-   * Exchanges the authorization code for tokens and stores them.
-   */
-  async completeOAuthCallback(
-    code: string,
-    codeVerifier: string,
-    organizationId: string,
-    clerkUserId: string
-  ): Promise<OAuthCallbackResult> {
-    try {
-      // Exchange code for tokens (using PKCE code verifier)
-      const tokens = await exchangeCodeForTokens(code, codeVerifier);
-
-      // Create Linear client and fetch organization info
-      const client = createLinearClient(tokens.accessToken);
-      const org = await getViewer(client);
-
-      if (!org) {
-        log.error("[linear/oauth/callback] Failed to get Linear organization", {
-          clerkUserId,
-          organizationId,
-        });
-        return {
-          success: false,
-          error: "Failed to get Linear organization",
-        };
-      }
-
-      // Fetch teams for default team selection
-      const teams = await getTeams(client);
-      const defaultTeamId = teams.length === 1 ? teams[0].id : undefined;
-
-      // Calculate token expiration
-      const tokenExpiresAt = calculateTokenExpiration(tokens.expiresIn);
-
-      // Upsert the integration record
-      await withDb((db) =>
-        db.linearIntegration.upsert({
-          where: { organizationId },
-          create: {
-            organizationId,
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken ?? null,
-            tokenExpiresAt,
-            linearOrgId: org.id,
-            linearOrgName: org.name,
-            defaultTeamId: defaultTeamId ?? null,
-          },
-          update: {
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken ?? null,
-            tokenExpiresAt,
-            linearOrgId: org.id,
-            linearOrgName: org.name,
-            defaultTeamId: defaultTeamId ?? null,
-          },
-        })
-      );
-
-      log.info("[linear/oauth/callback] Linear connected successfully", {
-        clerkUserId,
-        organizationId,
-        linearOrgId: org.id,
-        linearOrgName: org.name,
-      });
-
-      return { success: true };
-    } catch (error) {
-      log.error("[linear/oauth/callback] Failed to complete OAuth callback", {
-        clerkUserId,
-        organizationId,
-        error: parseError(error),
-      });
-      return {
-        success: false,
-        error: "Failed to exchange authorization code",
-      };
-    }
   },
 };

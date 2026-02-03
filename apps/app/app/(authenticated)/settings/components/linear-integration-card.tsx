@@ -10,34 +10,55 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { CheckCircleIcon, ExternalLinkIcon, Loader2Icon } from "lucide-react";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
+  getLinearOAuthUrl,
   useDisconnectLinear,
-  useGetLinearOAuthUrl,
   useLinearIntegrationStatus,
 } from "@/hooks/queries/use-linear";
+
+/**
+ * Error code to user-friendly message mapping.
+ * Must match LINEAR_ERROR_CODES from linear-utils.ts
+ */
+const ERROR_MESSAGES: Record<string, string> = {
+  not_authenticated: "Please sign in to connect Linear.",
+  not_configured: "Linear integration is not configured.",
+  missing_params: "Invalid authorization request. Please try again.",
+  invalid_state: "Security validation failed. Please try again.",
+  invalid_request: "Invalid authorization request. Please try again.",
+  connection_failed: "Failed to connect to Linear. Please try again.",
+  oauth_failed: "Authorization failed. Please try again.",
+};
 
 export function LinearIntegrationCard() {
   const [connecting, setConnecting] = useState(false);
   const { data: status, isLoading: loading } = useLinearIntegrationStatus();
   const disconnectLinear = useDisconnectLinear();
-  const getOAuthUrl = useGetLinearOAuthUrl();
+  const searchParams = useSearchParams();
 
-  const handleConnect = async () => {
-    setConnecting(true);
-    try {
-      // Get OAuth URL with signed auth token (needed for cross-domain auth)
-      const result = await getOAuthUrl.mutateAsync();
-      if (result.url) {
-        window.location.href = result.url;
-      } else {
-        toast.error("Not authenticated. Please sign in again.");
-        setConnecting(false);
-      }
-    } catch {
-      toast.error("Failed to initiate Linear connection");
-      setConnecting(false);
+  // Handle OAuth callback results from URL params
+  useEffect(() => {
+    const linearStatus = searchParams.get("linear");
+    const errorCode = searchParams.get("code");
+
+    if (linearStatus === "connected") {
+      toast.success("Linear connected successfully!");
+      // Clean up URL params
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (linearStatus === "error" && errorCode) {
+      const message = ERROR_MESSAGES[errorCode] ?? "An error occurred.";
+      toast.error(message);
+      // Clean up URL params
+      window.history.replaceState({}, "", window.location.pathname);
     }
+  }, [searchParams]);
+
+  const handleConnect = () => {
+    setConnecting(true);
+    // Redirect to app's OAuth route (Clerk auth works natively there)
+    window.location.href = getLinearOAuthUrl();
   };
 
   const handleDisconnect = async () => {

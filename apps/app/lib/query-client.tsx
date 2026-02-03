@@ -39,6 +39,7 @@ function makeQueryClient() {
         retry: false,
       },
       mutations: {
+        retry: false,
         onError: (error) => {
           const message = getErrorMessage(error);
           toast.error(message);
