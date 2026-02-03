@@ -12,6 +12,7 @@ This guide walks you through setting up the Symphony application locally.
 | pnpm | 10.28.2+ | Auto-managed via corepack |
 | Docker | Latest | For running PostgreSQL |
 | AWS CLI | v2 | For accessing Secrets Manager |
+| Stripe CLI | Latest | **Optional** — only needed for testing payment webhooks |
 
 ```bash
 # Enable corepack (bundled with Node.js 16.13+)
@@ -90,18 +91,36 @@ pnpm migrate
 
 ### 7. Start the Application
 
+You have two options for starting the development servers:
+
+**Option A: Core apps only (recommended for most development)**
+
 ```bash
 pnpm start-apps
 ```
 
-| App | Port | URL |
-|-----|------|-----|
-| **app** | 3000 | http://localhost:3000 |
-| **web** | 3001 | http://localhost:3001 |
-| **api** | 3002 | http://localhost:3002 |
-| **email** | 3003 | http://localhost:3003 |
-| **docs** | 3004 | http://localhost:3004 |
-| **studio** | 3005 | http://localhost:3005 |
+Starts only the main application and API server—sufficient for most feature development.
+
+**Option B: All apps**
+
+```bash
+pnpm dev
+```
+
+Starts all apps in the monorepo, including marketing site, email preview, docs, and Prisma Studio.
+
+#### Available Apps
+
+| App | Port | URL | Description |
+|-----|------|-----|-------------|
+| **app** | 3000 | http://localhost:3000 | Main authenticated application |
+| **api** | 3002 | http://localhost:3002 | API server (Stripe webhooks, etc.) |
+| **web** | 3001 | http://localhost:3001 | Marketing/public website |
+| **email** | 3003 | http://localhost:3003 | Email template preview (React Email) |
+| **docs** | 3004 | http://localhost:3004 | Documentation (Mintlify) |
+| **studio** | 3005 | http://localhost:3005 | Prisma Studio (database browser) |
+
+> **Tip:** To start a specific app individually, use `pnpm turbo dev --filter=<app-name>` (e.g., `pnpm turbo dev --filter=studio`).
 
 ---
 
@@ -145,6 +164,34 @@ STRIPE_WEBHOOK_SECRET=""
 
 # Right - comment out if not used
 # STRIPE_WEBHOOK_SECRET=""
+```
+
+### Stripe CLI errors on startup
+
+```
+error: spawn stripe ENOENT
+```
+
+or
+
+```
+stripe: command not found
+```
+
+**Cause**: The Stripe CLI is not installed or not logged in. The `apps/api` dev script runs `stripe listen` to forward payment webhooks to your local server.
+
+**Impact**: This error is **not critical**. The API server and main app will continue to run normally. Only Stripe webhook forwarding is affected.
+
+**Solution**:
+- If you don't need to test payment webhooks locally, you can safely ignore this error
+- To enable webhook forwarding, install and configure the Stripe CLI:
+
+```bash
+# macOS
+brew install stripe/stripe-cli/stripe
+
+# Login to Stripe
+stripe login
 ```
 
 ---
