@@ -2,16 +2,43 @@ import "server-only";
 import { Liveblocks } from "@liveblocks/node";
 import { keys } from "./keys";
 
+export type CreateRoomOptions = {
+  roomId: string;
+  tenantId: string;
+  metadata?: Record<string, string>;
+};
+
 /**
- * Get a Liveblocks client instance.
- * Returns null if LIVEBLOCKS_SECRET is not configured.
+ * Create a Liveblocks room with tenant isolation (idempotent).
+ * This function handles errors gracefully and will not throw.
+ *
+ * @param options - Room creation options including roomId, tenantId, and optional metadata
+ * @returns Promise that resolves with success status and optional error message
  */
-function getLiveblocksClient(): Liveblocks | null {
-  const secret = keys().LIVEBLOCKS_SECRET;
-  if (!secret) {
-    return null;
+export async function createRoom(
+  options: CreateRoomOptions
+): Promise<{ success: true } | { success: false; error: string }> {
+  try {
+    const liveblocks = getLiveblocksClient();
+
+    if (!liveblocks) {
+      // Not configured - skip room creation (RoomProvider will auto-create)
+      return { success: true };
+    }
+
+    // Use getOrCreateRoom for idempotency - safe to retry
+    await liveblocks.getOrCreateRoom(options.roomId, {
+      defaultAccesses: [], // Private - require authentication via auth endpoint
+      tenantId: options.tenantId,
+      metadata: options.metadata,
+    });
+
+    return { success: true };
+  } catch (error) {
+    // Return error without throwing - if this fails, RoomProvider will auto-create the room
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { success: false, error: errorMessage };
   }
-  return new Liveblocks({ secret });
 }
 
 /**
@@ -23,7 +50,7 @@ function getLiveblocksClient(): Liveblocks | null {
  */
 export async function deleteRoom(
   roomId: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const liveblocks = getLiveblocksClient();
 
@@ -41,4 +68,16 @@ export async function deleteRoom(
     const errorMessage = error instanceof Error ? error.message : String(error);
     return { success: false, error: errorMessage };
   }
+}
+
+/**
+ * Get a Liveblocks client instance.
+ * Returns null if LIVEBLOCKS_SECRET is not configured.
+ */
+function getLiveblocksClient(): Liveblocks | null {
+  const secret = keys().LIVEBLOCKS_SECRET;
+  if (!secret) {
+    return null;
+  }
+  return new Liveblocks({ secret });
 }

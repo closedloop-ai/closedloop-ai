@@ -26,7 +26,15 @@ export function ArtifactRoom({
         id={roomId}
         initialPresence={{ cursor: null, selection: null }}
       >
-        <ClientSideSuspense fallback={null}>{children}</ClientSideSuspense>
+        <ClientSideSuspense
+          fallback={
+            <div className="flex flex-1 px-6 py-8 text-muted-foreground text-sm">
+              Loading collaborative editor…
+            </div>
+          }
+        >
+          {children}
+        </ClientSideSuspense>
       </RoomProvider>
     </LiveblocksProvider>
   );
