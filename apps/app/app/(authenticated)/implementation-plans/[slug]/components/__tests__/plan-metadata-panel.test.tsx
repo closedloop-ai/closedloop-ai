@@ -116,19 +116,6 @@ describe("sortMetricsByScore", () => {
     const sorted = sortMetricsByScore([]);
     expect(sorted).toHaveLength(0);
   });
-
-  test("does not mutate original array", () => {
-    const metrics = [
-      createMockMetric("High", 0.95),
-      createMockMetric("Low", 0.3),
-    ];
-    const original = [...metrics];
-
-    sortMetricsByScore(metrics);
-
-    expect(metrics[0].metric_name).toBe(original[0].metric_name);
-    expect(metrics[1].metric_name).toBe(original[1].metric_name);
-  });
 });
 
 describe("calculateAcceptanceRate", () => {

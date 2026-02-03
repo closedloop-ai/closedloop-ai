@@ -6,15 +6,18 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
+import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
+import { useState } from "react";
 import {
   MetadataSection,
   TabbedMetadataPanel,
 } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import type { CaseScore, MetricStatistics } from "@/types/evaluation";
 import { JudgeResultCard } from "./judge-result-card";
@@ -146,153 +149,167 @@ export function PlanMetadataPanel({
   onApproverBlur,
   onOwnerChange,
 }: PlanMetadataPanelProps) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogTrace, setDialogTrace] = useState<ExecutionTrace>();
+  const [selectedSessionId, setSelectedSessionId] = useState<string>();
+
   const {
     acceptedCount,
     totalCount,
     rate: acceptanceRate,
   } = calculateAcceptanceRate(evaluationResults?.metrics);
 
-  // TODO: Implement ExecutionLogDialog to display full trace when user clicks "View Full Trace"
-  // For now, this is a no-op until the dialog component is created
-  const handleViewFullTrace = () => {};
+  const handleViewFullTrace = (trace: ExecutionTrace, sessionId?: string) => {
+    setDialogTrace(trace);
+    setSelectedSessionId(sessionId);
+    setDialogOpen(true);
+  };
 
   return (
-    <TabbedMetadataPanel
-      tabs={[
-        {
-          id: "details",
-          label: "Details",
-          content: (
-            <div className="space-y-4">
-              <StatusMetadataSection
-                approver={approver}
-                onApproverBlur={onApproverBlur}
-                onApproverChange={onApproverChange}
-                onOwnerChange={onOwnerChange}
-                onStatusChange={onStatusChange}
-                owner={owner}
-                status={status}
-                teamMembers={teamMembers}
-              />
+    <>
+      <TabbedMetadataPanel
+        tabs={[
+          {
+            id: "details",
+            label: "Details",
+            content: (
+              <div className="space-y-4">
+                <StatusMetadataSection
+                  approver={approver}
+                  onApproverBlur={onApproverBlur}
+                  onApproverChange={onApproverChange}
+                  onOwnerChange={onOwnerChange}
+                  onStatusChange={onStatusChange}
+                  owner={owner}
+                  status={status}
+                  teamMembers={teamMembers}
+                />
 
-              <MetadataSection separator>
-                <div className="space-y-1 text-muted-foreground text-sm">
-                  <p>Version: v{plan.version}</p>
-                  <p>
-                    Created:{" "}
-                    {new Intl.DateTimeFormat("en-US", {
-                      dateStyle: "medium",
-                    }).format(new Date(plan.createdAt))}
-                  </p>
-                  <p>
-                    Updated:{" "}
-                    {new Intl.DateTimeFormat("en-US", {
-                      dateStyle: "medium",
-                    }).format(new Date(plan.updatedAt))}
-                  </p>
-                </div>
-              </MetadataSection>
-
-              {/* GitHub Action Run Link */}
-              {generationStatus?.htmlUrl ? (
                 <MetadataSection separator>
-                  <Label className="text-muted-foreground text-xs">
-                    Generation
-                  </Label>
-                  <a
-                    className="flex items-center gap-1 text-primary text-sm hover:underline"
-                    href={generationStatus.htmlUrl}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  >
-                    View GitHub Workflow
-                    <ExternalLinkIcon className="h-3 w-3" />
-                  </a>
-                </MetadataSection>
-              ) : null}
-
-              {/* Pull Request Link */}
-              {pullRequest ? (
-                <MetadataSection separator>
-                  <Label className="text-muted-foreground text-xs">
-                    Pull Request
-                  </Label>
-                  <a
-                    className="flex items-center gap-1 text-primary text-sm hover:underline"
-                    href={pullRequest.htmlUrl}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  >
-                    <GitPullRequestIcon className="h-3 w-3" />#
-                    {pullRequest.number}: {pullRequest.title}
-                    <ExternalLinkIcon className="h-3 w-3" />
-                  </a>
-                  <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
-                    >
-                      {pullRequest.state}
-                    </span>
-                    <span>
-                      {pullRequest.headBranch} → {pullRequest.baseBranch}
-                    </span>
+                  <div className="space-y-1 text-muted-foreground text-sm">
+                    <p>Version: v{plan.version}</p>
+                    <p>
+                      Created:{" "}
+                      {new Intl.DateTimeFormat("en-US", {
+                        dateStyle: "medium",
+                      }).format(new Date(plan.createdAt))}
+                    </p>
+                    <p>
+                      Updated:{" "}
+                      {new Intl.DateTimeFormat("en-US", {
+                        dateStyle: "medium",
+                      }).format(new Date(plan.updatedAt))}
+                    </p>
                   </div>
                 </MetadataSection>
-              ) : null}
-            </div>
-          ),
-        },
-        {
-          id: "execution-log",
-          label: "Execution Log",
-          content: (
-            <ExecutionLogSummary
-              artifactId={plan.id}
-              onViewFullTrace={handleViewFullTrace}
-            />
-          ),
-        },
-        {
-          id: "evaluation",
-          label: "Evaluation",
-          content: (
-            <div className="space-y-4">
-              {evaluationResults ? (
-                <div className="space-y-3">
-                  {/* Progress bar showing acceptance rate */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">
-                        {acceptedCount}/{totalCount} judges accepted
+
+                {/* GitHub Action Run Link */}
+                {generationStatus?.htmlUrl ? (
+                  <MetadataSection separator>
+                    <Label className="text-muted-foreground text-xs">
+                      Generation
+                    </Label>
+                    <a
+                      className="flex items-center gap-1 text-primary text-sm hover:underline"
+                      href={generationStatus.htmlUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      View GitHub Workflow
+                      <ExternalLinkIcon className="h-3 w-3" />
+                    </a>
+                  </MetadataSection>
+                ) : null}
+
+                {/* Pull Request Link */}
+                {pullRequest ? (
+                  <MetadataSection separator>
+                    <Label className="text-muted-foreground text-xs">
+                      Pull Request
+                    </Label>
+                    <a
+                      className="flex items-center gap-1 text-primary text-sm hover:underline"
+                      href={pullRequest.htmlUrl}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      <GitPullRequestIcon className="h-3 w-3" />#
+                      {pullRequest.number}: {pullRequest.title}
+                      <ExternalLinkIcon className="h-3 w-3" />
+                    </a>
+                    <div className="flex items-center gap-2 text-muted-foreground text-xs">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
+                      >
+                        {pullRequest.state}
                       </span>
-                      <span className="font-medium">
-                        {acceptanceRate.toFixed(0)}%
+                      <span>
+                        {pullRequest.headBranch} → {pullRequest.baseBranch}
                       </span>
                     </div>
-                    <Progress className="h-2" value={acceptanceRate} />
-                  </div>
+                  </MetadataSection>
+                ) : null}
+              </div>
+            ),
+          },
+          {
+            id: "execution-log",
+            label: "Execution Log",
+            content: (
+              <ExecutionLogSummary
+                artifactId={plan.id}
+                onViewFullTrace={handleViewFullTrace}
+              />
+            ),
+          },
+          {
+            id: "evaluation",
+            label: "Evaluation",
+            content: (
+              <div className="space-y-4">
+                {evaluationResults ? (
+                  <div className="space-y-3">
+                    {/* Progress bar showing acceptance rate */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">
+                          {acceptedCount}/{totalCount} judges accepted
+                        </span>
+                        <span className="font-medium">
+                          {acceptanceRate.toFixed(0)}%
+                        </span>
+                      </div>
+                      <Progress className="h-2" value={acceptanceRate} />
+                    </div>
 
-                  {/* Judge result cards - sorted by score ascending (worst first) */}
-                  <div className="space-y-2">
-                    {sortMetricsByScore(evaluationResults.metrics).map(
-                      (metric) => (
-                        <JudgeResultCard
-                          key={metric.metric_name}
-                          metric={metric}
-                        />
-                      )
-                    )}
+                    {/* Judge result cards - sorted by score ascending (worst first) */}
+                    <div className="space-y-2">
+                      {sortMetricsByScore(evaluationResults.metrics).map(
+                        (metric) => (
+                          <JudgeResultCard
+                            key={metric.metric_name}
+                            metric={metric}
+                          />
+                        )
+                      )}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <p className="text-muted-foreground text-sm">
-                  No evaluation available for this plan
-                </p>
-              )}
-            </div>
-          ),
-        },
-      ]}
-    />
+                ) : (
+                  <p className="text-muted-foreground text-sm">
+                    No evaluation available for this plan
+                  </p>
+                )}
+              </div>
+            ),
+          },
+        ]}
+      />
+      <ExecutionLogDialog
+        initialSessionId={selectedSessionId}
+        onOpenChange={setDialogOpen}
+        open={dialogOpen}
+        trace={dialogTrace}
+      />
+    </>
   );
 }
