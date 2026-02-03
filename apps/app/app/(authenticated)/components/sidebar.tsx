@@ -1,8 +1,8 @@
 "use client";
 
 import { UserButton } from "@repo/auth/client";
-import { ModeToggle } from "@repo/design-system/components/mode-toggle";
 import { Button } from "@repo/design-system/components/ui/button";
+import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import {
   Sidebar,
   SidebarContent,
