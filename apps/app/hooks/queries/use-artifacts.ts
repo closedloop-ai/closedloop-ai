@@ -17,6 +17,7 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
+import { executionLogKeys } from "./use-execution-log";
 
 // Query keys
 export const artifactKeys = {
@@ -262,6 +263,9 @@ export function useRegenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(id),
       });
+      queryClient.invalidateQueries({
+        queryKey: executionLogKeys.detail(id),
+      });
     },
   });
 }
@@ -288,6 +292,9 @@ export function useRequestPlanChanges() {
       });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(variables.artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: executionLogKeys.detail(variables.artifactId),
       });
       // Invalidate list queries so slug-based containers refetch the latest version
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });

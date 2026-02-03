@@ -1093,12 +1093,18 @@ importers:
       '@octokit/rest':
         specifier: ^21.0.2
         version: 21.1.1
+      '@repo/api':
+        specifier: workspace:*
+        version: link:../api
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability
       '@t3-oss/env-nextjs':
         specifier: ^0.13.8
         version: 0.13.8(arktype@2.1.20)(typescript@5.9.3)(valibot@1.2.0(typescript@5.9.3))(zod@4.3.5)
+      adm-zip:
+        specifier: ^0.5.16
+        version: 0.5.16
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -1109,9 +1115,15 @@ importers:
       '@repo/typescript-config':
         specifier: workspace:*
         version: link:../typescript-config
+      '@types/adm-zip':
+        specifier: ^0.5.7
+        version: 0.5.7
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^4.0.15
+        version: 4.0.15(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(jiti@2.6.1)(jsdom@27.4.0(@noble/hashes@1.8.0)(bufferutil@4.0.9))(lightningcss@1.30.2)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/internationalization:
     dependencies:
