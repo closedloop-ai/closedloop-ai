@@ -8,6 +8,7 @@ import type {
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { Label } from "@repo/design-system/components/ui/label";
+import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
 import { useState } from "react";
@@ -18,6 +19,12 @@ import {
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import {
+  calculateAcceptanceRate,
+  sortMetricsByScore,
+} from "@/lib/evaluation-utils";
+import type { CaseScore } from "@/types/evaluation";
+import { JudgeResultCard } from "./judge-result-card";
 
 const PR_STATE_STYLES: Record<string, string> = {
   OPEN: "bg-green-100 text-green-700",
@@ -54,6 +61,10 @@ type PlanMetadataPanelProps = {
    * Pull request information if plan has been executed
    */
   pullRequest: PullRequestInfo | null;
+  /**
+   * Evaluation results for this plan (case-level score with judge metrics)
+   */
+  evaluationResults?: CaseScore | null;
   /**
    * Handler called when status is changed
    */
@@ -101,6 +112,7 @@ export function PlanMetadataPanel({
   teamMembers,
   generationStatus,
   pullRequest,
+  evaluationResults,
   onStatusChange,
   onApproverChange,
   onApproverBlur,
@@ -109,6 +121,12 @@ export function PlanMetadataPanel({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogTrace, setDialogTrace] = useState<ExecutionTrace>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
+
+  const {
+    acceptedCount,
+    totalCount,
+    rate: acceptanceRate,
+  } = calculateAcceptanceRate(evaluationResults?.metrics);
 
   const handleViewFullTrace = (trace: ExecutionTrace, sessionId?: string) => {
     setDialogTrace(trace);
@@ -211,6 +229,46 @@ export function PlanMetadataPanel({
                 artifactId={plan.id}
                 onViewFullTrace={handleViewFullTrace}
               />
+            ),
+          },
+          {
+            id: "evaluation",
+            label: "Evaluation",
+            content: (
+              <div className="space-y-4">
+                {evaluationResults ? (
+                  <div className="space-y-3">
+                    {/* Progress bar showing acceptance rate */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">
+                          {acceptedCount}/{totalCount} judges accepted
+                        </span>
+                        <span className="font-medium">
+                          {acceptanceRate.toFixed(0)}%
+                        </span>
+                      </div>
+                      <Progress className="h-2" value={acceptanceRate} />
+                    </div>
+
+                    {/* Judge result cards - sorted by score ascending (worst first) */}
+                    <div className="space-y-2">
+                      {sortMetricsByScore(evaluationResults.metrics).map(
+                        (metric) => (
+                          <JudgeResultCard
+                            key={metric.metric_name}
+                            metric={metric}
+                          />
+                        )
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">
+                    No evaluation available for this plan
+                  </p>
+                )}
+              </div>
             ),
           },
         ]}

@@ -13,6 +13,7 @@ import {
   useArtifactGenerationStatus,
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
+import { mockPlanEvaluation } from "@/mocks/evaluation-data";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -140,6 +141,7 @@ export function PlanEditor({
         {uiState.showMetadataPanel ? (
           <PlanMetadataPanel
             approver={metadata.approver}
+            evaluationResults={mockPlanEvaluation}
             generationStatus={generationStatus ?? null}
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
