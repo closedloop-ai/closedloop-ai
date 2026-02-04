@@ -237,7 +237,6 @@ jobs:
         id: verify_completion
         run: |
           WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
-          STATE_FILE="$WORKDIR/state.json"
 
           # Check workdir exists
           if [ ! -d "$WORKDIR" ]; then
@@ -245,82 +244,24 @@ jobs:
             exit 1
           fi
 
-          # Check state.json exists
-          if [ ! -f "$STATE_FILE" ]; then
-            echo "::error::state.json not found in run directory"
-            echo "Run directory contents:"
-            ls -la "$WORKDIR"
-            exit 1
-          fi
+          echo "Run directory contents:"
+          ls -la "$WORKDIR"
 
-          # Validate file size < 10MB (10485760 bytes)
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-            FILE_SIZE=$(stat -f%z "$STATE_FILE")
-          else
-            FILE_SIZE=$(stat -c%s "$STATE_FILE")
-          fi
-          MAX_SIZE=10485760
-          if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
-            echo "::error::state.json file size ($FILE_SIZE bytes) exceeds maximum allowed ($MAX_SIZE bytes)"
-            exit 1
-          fi
-          echo "✅ File size validated: $FILE_SIZE bytes (max: $MAX_SIZE)"
-
-          # Parse status field (with fallback to .state if .status doesn't exist)
-          STATUS=$(jq -r '.status // .state // "unknown"' "$STATE_FILE")
-
-          # Extract phase and iteration for debugging/logging
-          PHASE=$(jq -r '.currentPhase // .phase // "unknown"' "$STATE_FILE")
-          ITERATION=$(jq -r '.iteration // "N/A"' "$STATE_FILE")
-
-          echo "Symphony Status: $STATUS"
-          echo "Current Phase: $PHASE"
-          echo "Iteration: $ITERATION"
-
-          # Expose outputs for downstream steps
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          echo "phase=$PHASE" >> "$GITHUB_OUTPUT"
-          echo "iteration=$ITERATION" >> "$GITHUB_OUTPUT"
-
-          # Check for minimum viable output (at least one of: plan.json, plan.md, implementation-plan.md)
+          # Check for minimum viable output
+          # The experimental run-loop deletes its state file (.claude/symphony-loop.local.md) on
+          # successful completion, so we verify success by checking for expected output artifacts
           if [ ! -f "$WORKDIR/plan.json" ] && [ ! -f "$WORKDIR/plan.md" ] && [ ! -f "$WORKDIR/implementation-plan.md" ]; then
             echo "::error::No plan output found. At least one of plan.json, plan.md, or implementation-plan.md must exist"
             exit 1
           fi
           echo "✅ Minimum viable output check passed"
 
-          # Handle status values with case statement
-          case "$STATUS" in
-            COMPLETED)
-              echo "✅ Symphony completed successfully"
-              exit 0
-              ;;
-            AWAITING_USER)
-              echo "✅ Symphony completed - awaiting user input"
-              echo "::notice::Symphony is awaiting user input to proceed"
-              exit 0
-              ;;
-            ERROR|FAILED|TIMEOUT|MAX_ITERATIONS)
-              echo "::error::Symphony failed with status: $STATUS"
-              echo "State summary:"
-              jq '{status, phase, iteration}' "$STATE_FILE"
-              exit 1
-              ;;
-            unknown)
-              echo "::warning::Unknown status in state.json"
-              echo "State summary:"
-              jq '{status, phase, iteration}' "$STATE_FILE"
-              echo "Continuing as incomplete..."
-              exit 0
-              ;;
-            *)
-              echo "::warning::Unexpected status: $STATUS"
-              echo "State summary:"
-              jq '{status, phase, iteration}' "$STATE_FILE"
-              echo "Continuing as incomplete..."
-              exit 0
-              ;;
-          esac
+          # Check for open questions (indicates awaiting user input)
+          if [ -f "$WORKDIR/investigation-questions.md" ]; then
+            echo "::notice::Symphony generated questions - awaiting user input"
+          fi
+
+          echo "✅ Symphony plan completed successfully"
 
       - name: Handle AWAITING_USER Status
         if: steps.verify_completion.outputs.status == 'AWAITING_USER'
