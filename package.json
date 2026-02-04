@@ -57,13 +57,13 @@
     "onlyBuiltDependencies": [
       "@clerk/shared",
       "@prisma/engines",
-      "@sentry/cli",
       "bufferutil",
       "core-js",
       "core-js-pure",
       "es5-ext",
       "esbuild",
       "prisma",
+      "protobufjs",
       "sharp"
     ]
   },

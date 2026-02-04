@@ -21,6 +21,7 @@ import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
   AlertCircleIcon,
+  BugIcon,
   ChevronDownIcon,
   FileTextIcon,
   ListTodoIcon,
@@ -253,10 +254,24 @@ export default function ProjectDetailPage() {
                 Implementation Plan
               </DropdownMenuItem>
               <DropdownMenuItem
+                onClick={() =>
+                  handleCreateArtifact(ArtifactType.ImplementationStrategy)
+                }
+              >
+                <ListTodoIcon className="mr-2 h-4 w-4" />
+                Implementation Strategy
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={() => handleCreateArtifact(ArtifactType.Issue)}
               >
                 <AlertCircleIcon className="mr-2 h-4 w-4" />
                 Issue
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => handleCreateArtifact(ArtifactType.Bug)}
+              >
+                <BugIcon className="mr-2 h-4 w-4" />
+                Bug
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

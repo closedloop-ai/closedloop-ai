@@ -2,10 +2,15 @@
 
 import { useCallback, useState } from "react";
 
-type ArtifactType = "PRD" | "IMPLEMENTATION_PLAN" | "ISSUE";
+type EditableArtifactType =
+  | "PRD"
+  | "IMPLEMENTATION_PLAN"
+  | "ISSUE"
+  | "BUG"
+  | "IMPLEMENTATION_STRATEGY";
 
 type UseArtifactUIStateConfig = {
-  artifactType: ArtifactType;
+  artifactType: EditableArtifactType;
 };
 
 /**
@@ -65,7 +70,12 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     closeDeleteDialog: () => setShowDeleteDialog(false),
   };
 
-  if (artifactType === "PRD" || artifactType === "ISSUE") {
+  if (
+    artifactType === "PRD" ||
+    artifactType === "ISSUE" ||
+    artifactType === "BUG" ||
+    artifactType === "IMPLEMENTATION_STRATEGY"
+  ) {
     return {
       ...commonState,
       showRenameDialog,

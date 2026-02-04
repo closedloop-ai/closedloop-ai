@@ -15,7 +15,7 @@ export function useConstrainFloatingWithinEditor(
       return;
     }
 
-    let debounceTimer: number | null = null;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let isVisible = !document.hidden;
 
     // Debounced version for high-frequency events
@@ -23,7 +23,7 @@ export function useConstrainFloatingWithinEditor(
       if (debounceTimer) {
         clearTimeout(debounceTimer);
       }
-      debounceTimer = setTimeout(clampFloatingElements, 16); // ~60fps max
+      debounceTimer = setTimeout(() => clampFloatingElements(editor), 16); // ~60fps max
     };
 
     // Observe DOM mutations for when Liveblocks adds/moves floating elements

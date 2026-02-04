@@ -1,6 +1,9 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
@@ -22,11 +25,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./"),
-      "@repo": path.resolve(__dirname, "../../packages"),
+      "@": path.resolve(import.meta.dirname, "./"),
+      "@repo": path.resolve(import.meta.dirname, "../../packages"),
       // Mock server-only package to prevent errors in tests
       "server-only": path.resolve(
-        __dirname,
+        import.meta.dirname,
         "./__tests__/utils/server-only-mock.ts"
       ),
     },

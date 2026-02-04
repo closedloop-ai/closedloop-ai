@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Runs Prisma migrations using IAM authentication.
- * This script generates an IAM token and runs prisma db push with it.
+ * This script generates an IAM token and runs prisma migrate deploy.
  */
 
 import { execSync } from "node:child_process";
@@ -43,7 +43,7 @@ async function main() {
       resolvedSchema,
       VERCEL_GIT_COMMIT_REF
     );
-    execSync("prisma format && prisma db push", {
+    execSync("prisma migrate deploy", {
       stdio: "inherit",
       env: {
         ...process.env,
@@ -93,7 +93,7 @@ async function main() {
       VERCEL_GIT_COMMIT_REF
     );
 
-    execSync("prisma format && prisma db push", {
+    execSync("prisma migrate deploy", {
       stdio: "inherit",
       env: {
         ...process.env,
@@ -103,7 +103,10 @@ async function main() {
 
     console.log("✓ Migrations completed successfully");
   } catch (error) {
-    console.error("❌ Migration failed:", error.message);
+    console.error(
+      "❌ Migration failed:",
+      error instanceof Error ? error.message : String(error)
+    );
     process.exit(1);
   }
 }

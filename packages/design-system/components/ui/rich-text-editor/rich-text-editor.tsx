@@ -30,9 +30,11 @@ export function RichTextEditor({
   className,
   readOnly,
   liveblocksExtension,
+  liveblocksIsReady,
   onEditorReady,
   contentResetKey,
   contentResetValue,
+  scrollMode = "inner",
 }: Readonly<RichTextEditorProps>) {
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
@@ -41,10 +43,12 @@ export function RichTextEditor({
         placeholder={placeholder}
         readOnly={readOnly}
         liveblocksExtension={liveblocksExtension}
+        liveblocksIsReady={liveblocksIsReady}
         onChange={onChange}
         onEditorReady={onEditorReady}
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
+        scrollMode={scrollMode}
       />
     </div>
   );

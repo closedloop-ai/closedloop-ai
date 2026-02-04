@@ -3,7 +3,11 @@ import type {
   WorkflowRunInProgressEvent,
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactStatus,
+  ArtifactType,
+  type PlanJson,
+} from "@repo/api/src/types/artifact";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
 import { withDb } from "@repo/database";
 import {
@@ -71,8 +75,31 @@ function parseExecutionResult(
 }
 
 /**
+ * Parse plan.json from experimental plugin artifacts.
+ * Returns the markdown content from the JSON structure, or null if parsing fails.
+ */
+function parsePlanJson(content: Buffer, entryName: string): string | null {
+  try {
+    const jsonContent = content.toString("utf-8");
+    const planJson = JSON.parse(jsonContent) as PlanJson;
+    log.info(
+      `Found plan.json: ${entryName} (${planJson.content.length} chars, ${planJson.pendingTasks.length} pending tasks, ${planJson.openQuestions.length} open questions)`
+    );
+    return planJson.content;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error(`Failed to parse plan.json: ${message}`);
+    return null;
+  }
+}
+
+/**
  * Search a zip for plan, questions, or execution result files.
  * Returns the content if found, null otherwise.
+ *
+ * Priority for plan content:
+ * 1. plan.json (experimental plugin artifact)
+ * 2. implementation-plan.md (legacy)
  */
 function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
@@ -89,17 +116,29 @@ function findPlanInZip(zip: AdmZip): ZipContent {
     const name = entry.entryName;
     entries.push({ name, data: content });
 
-    if (name.endsWith("implementation-plan.md")) {
+    // Priority 1: plan.json from experimental plugin
+    if (name.endsWith("plan.json") && !planContent) {
+      planContent = parsePlanJson(content, name);
+    }
+    // Priority 2: implementation-plan.md (legacy, only if plan.json not found)
+    else if (name.endsWith("implementation-plan.md") && !planContent) {
       planContent = content.toString("utf-8");
       log.info(
         `Found implementation plan: ${name} (${planContent.length} chars)`
       );
-    } else if (name.endsWith("open-questions.md")) {
+    }
+    // Check for questions files (both old and new names)
+    else if (
+      name.endsWith("open-questions.md") ||
+      name.endsWith("investigation-questions.md")
+    ) {
       questionsContent = content.toString("utf-8");
       log.info(
         `Found questions file: ${name} (${questionsContent.length} chars)`
       );
-    } else if (name.endsWith("execution-result.json")) {
+    }
+    // Check for execution result
+    else if (name.endsWith("execution-result.json")) {
       executionResult = parseExecutionResult(content, name);
     }
   }

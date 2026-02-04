@@ -1,7 +1,10 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { EditorContent } from "@/components/artifact-editor/editor-content";
+import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
+import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
+import { useState } from "react";
+import { EditorWithComments } from "@/components/artifact-editor/editor-with-comments";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -13,6 +16,7 @@ import {
   useArtifactGenerationStatus,
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
+import { mockPlanEvaluation } from "@/mocks/evaluation-data";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -33,9 +37,33 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [contentResetKey, setContentResetKey] = useState<number | undefined>();
+  const [contentResetValue, setContentResetValue] = useState<
+    string | undefined
+  >();
+
+  const roomId =
+    plan.documentSlug &&
+    generateArtifactRoomId(plan.organizationId, plan.documentSlug);
+  const isViewingHistorical = currentVersion !== latestVersion;
+  const showCollaboration = isEditing;
+
+  const exitEditMode = () => {
+    setIsEditing(false);
+    setContentResetKey(undefined);
+    setContentResetValue(undefined);
+  };
+
   // Use focused hooks instead of monolithic usePlanEditor
   const content = useArtifactContent({
     artifact: plan,
+    onVersionCreated: () => {
+      exitEditMode();
+      if (isViewingHistorical) {
+        onVersionChange(latestVersion);
+      }
+    },
   });
 
   const metadata = useArtifactMetadata({
@@ -93,16 +121,33 @@ export function PlanEditor({
     <VersionSelector
       currentVersion={currentVersion}
       latestVersion={latestVersion}
-      onVersionChange={onVersionChange}
+      onVersionChange={(version) => {
+        exitEditMode();
+        onVersionChange(version);
+      }}
     />
   );
+
+  const handleEdit = () => {
+    if (!isViewingHistorical) {
+      setIsEditing(true);
+    }
+  };
+
+  const handleRestoreVersion = () => {
+    setContentResetValue(plan.content ?? "");
+    setContentResetKey((key) => (key ?? 0) + 1);
+    setIsEditing(true);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PlanEditorHeader
+        canEdit={!isViewingHistorical}
         isApproved={isApproved}
         isDraft={isDraft}
+        isEditing={isEditing}
         isExecuting={planActions.isExecuting}
         isPending={isPending}
         isSaving={content.isSaving}
@@ -110,16 +155,19 @@ export function PlanEditor({
         onApprove={planActions.handleApprove}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
+        onEdit={handleEdit}
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
         onExportToLinear={openLinearExportDialog}
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
+        onRestoreVersion={handleRestoreVersion}
         onSave={content.saveContent}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         plan={plan}
         pullRequest={pullRequest ?? null}
         showMetadataPanel={uiState.showMetadataPanel}
+        showRestore={isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
@@ -127,32 +175,43 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      {/* Content Area with Optional Metadata Panel */}
-      <div className="flex min-h-0 flex-1">
-        {/* Scrollable Editor */}
-        <EditorContent
-          onChange={content.updateContent}
-          placeholder="Start writing your implementation plan..."
-          value={content.content}
-        />
+      <OptionalArtifactRoom roomId={showCollaboration ? roomId : null}>
+        {/* Presence Indicators */}
+        {showCollaboration && <Presence />}
 
-        {/* Metadata Panel */}
-        {uiState.showMetadataPanel ? (
-          <PlanMetadataPanel
-            approver={metadata.approver}
-            generationStatus={generationStatus ?? null}
-            onApproverBlur={metadata.handleApproverBlur}
-            onApproverChange={metadata.handleApproverChange}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            owner={metadata.owner}
-            plan={plan}
-            pullRequest={pullRequest ?? null}
-            status={metadata.status}
-            teamMembers={metadata.teamMembers}
+        {/* Content Area with Optional Metadata Panel */}
+        <div className="flex min-h-0 flex-1">
+          <EditorWithComments
+            contentResetKey={contentResetKey}
+            contentResetValue={contentResetValue}
+            enableLiveblocks={showCollaboration}
+            liveblocksRoomId={roomId}
+            onChange={content.updateContent}
+            placeholder="Start writing your implementation plan..."
+            readOnly={!isEditing}
+            scrollMode="outer"
+            value={content.content}
           />
-        ) : null}
-      </div>
+
+          {/* Metadata Panel */}
+          {uiState.showMetadataPanel ? (
+            <PlanMetadataPanel
+              approver={metadata.approver}
+              evaluationResults={mockPlanEvaluation}
+              generationStatus={generationStatus ?? null}
+              onApproverBlur={metadata.handleApproverBlur}
+              onApproverChange={metadata.handleApproverChange}
+              onOwnerChange={metadata.handleOwnerChange}
+              onStatusChange={metadata.handleStatusChange}
+              owner={metadata.owner}
+              plan={plan}
+              pullRequest={pullRequest ?? null}
+              status={metadata.status}
+              teamMembers={metadata.teamMembers}
+            />
+          ) : null}
+        </div>
+      </OptionalArtifactRoom>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
