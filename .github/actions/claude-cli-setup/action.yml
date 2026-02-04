@@ -29,7 +29,7 @@ runs:
 
         while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
           echo "Attempt $ATTEMPT of $MAX_ATTEMPTS: Installing Claude CLI..."
-          if curl -fsSL https://console.anthropic.com/install.sh | sh; then
+          if curl -fsSL https://claude.ai/install.sh | bash; then
             echo "Claude CLI installed successfully"
             break
           else
@@ -66,7 +66,7 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
       run: |
         set -e
-        claude marketplace register closedloop https://github.com/closedloop-ai/claude_code.git
+        claude plugin marketplace add closedloop-ai/claude_code
         claude plugin install experimental@closedloop
         claude plugin install symphony-core@closedloop
 

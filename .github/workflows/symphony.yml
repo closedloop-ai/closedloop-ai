@@ -12,6 +12,7 @@ jobs:
   detect:
     if: |
       github.event.issue.pull_request == null &&
+      github.event.comment.user.type != 'Bot' &&
       contains(github.event.comment.body, '@symphony-cl')
     runs-on: ubuntu-latest
     outputs:
@@ -87,7 +88,7 @@ jobs:
         id: check_plan
         run: |
           RUN_DIR="${{ steps.check_existing.outputs.run_dir }}"
-          if [ -n "$RUN_DIR" ] && { [ -f "${RUN_DIR}/plan.json" ] || [ -f "${RUN_DIR}/plan.md" ] || [ -f "${RUN_DIR}/implementation-plan.md" ]; }; then
+          if [ -n "$RUN_DIR" ] && [ -f "${RUN_DIR}/plan.json" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -250,18 +251,21 @@ jobs:
           # Check for minimum viable output
           # The experimental run-loop deletes its state file (.claude/symphony-loop.local.md) on
           # successful completion, so we verify success by checking for expected output artifacts
-          if [ ! -f "$WORKDIR/plan.json" ] && [ ! -f "$WORKDIR/plan.md" ] && [ ! -f "$WORKDIR/implementation-plan.md" ]; then
-            echo "::error::No plan output found. At least one of plan.json, plan.md, or implementation-plan.md must exist"
+          if [ ! -f "$WORKDIR/plan.json" ]; then
+            echo "::error::plan.json not found in $WORKDIR"
             exit 1
           fi
-          echo "✅ Minimum viable output check passed"
+          echo "Minimum viable output check passed"
 
           # Check for open questions (indicates awaiting user input)
-          if [ -f "$WORKDIR/investigation-questions.md" ]; then
-            echo "::notice::Symphony generated questions - awaiting user input"
+          if [ -f "$WORKDIR/plan.json" ]; then
+            OPEN_QUESTIONS=$(jq '.openQuestions | length' "$WORKDIR/plan.json" 2>/dev/null || echo "0")
+            if [ "$OPEN_QUESTIONS" -gt 0 ]; then
+              echo "::notice::Symphony generated $OPEN_QUESTIONS questions - awaiting user input"
+            fi
           fi
 
-          echo "✅ Symphony plan completed successfully"
+          echo "Symphony plan completed successfully"
 
       - name: Handle AWAITING_USER Status
         if: steps.verify_completion.outputs.status == 'AWAITING_USER'
@@ -427,28 +431,22 @@ jobs:
             exit 1
           fi
 
-          STATE_FILE="$RUN_DIR/.symphony-loop.local.md"
-          if [ ! -f "$STATE_FILE" ]; then
-            echo "::error::State file not found at $STATE_FILE. Cannot resume run."
-            exit 1
-          fi
-
           PLAN_JSON="$RUN_DIR/plan.json"
           if [ ! -f "$PLAN_JSON" ]; then
             echo "::error::plan.json not found at $PLAN_JSON"
             exit 1
           fi
 
-          QUESTIONS_FILE="$RUN_DIR/investigation-questions.md"
-          if [ ! -f "$QUESTIONS_FILE" ]; then
-            echo "::error::investigation-questions.md not found. This run may not have questions to answer."
+          # Check that openQuestions array is non-empty
+          OPEN_QUESTIONS_COUNT=$(jq '.openQuestions | length' "$PLAN_JSON")
+          if [ "$OPEN_QUESTIONS_COUNT" -eq 0 ]; then
+            echo "::error::No open questions found in plan.json. Nothing to answer."
             exit 1
           fi
 
           echo "Run directory verified: $RUN_DIR"
-          echo "State file found: $STATE_FILE"
-          echo "Questions file found: $QUESTIONS_FILE"
           echo "Plan JSON found: $PLAN_JSON"
+          echo "Open questions count: $OPEN_QUESTIONS_COUNT"
 
       - name: Validate Comment Length
         env:
@@ -462,131 +460,65 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Comment length validated: $COMMENT_LENGTH bytes (max: $MAX_LENGTH)"
+          echo "Comment length validated: $COMMENT_LENGTH bytes (max: $MAX_LENGTH)"
 
-      - name: Parse and Merge Answers
-        id: parse_answers
+      - name: Write User Answers to File
         env:
           USER_COMMENT: ${{ github.event.comment.body }}
         run: |
           RUN_DIR="${{ steps.download.outputs.run_dir }}"
-          PLAN_JSON="$RUN_DIR/plan.json"
-          QUESTIONS_FILE="$RUN_DIR/investigation-questions.md"
-          TEMP_ANSWERS="/tmp/parsed-answers.json"
-          ANSWERS_TEXT_FILE="/tmp/user-answers.txt"
+          # Write user comment to file to avoid prompt injection
+          echo "$USER_COMMENT" > "$RUN_DIR/user-answers.txt"
+          echo "User answers written to $RUN_DIR/user-answers.txt"
 
-          # Extract question IDs and full questions from investigation-questions.md
-          # Store them for matching
-          declare -A QUESTIONS
-          while IFS= read -r line; do
-            if [[ "$line" =~ ^##[[:space:]]+(Q-[0-9]{3}):[[:space:]]*(.+)$ ]]; then
-              Q_ID="${BASH_REMATCH[1]}"
-              Q_TITLE="${BASH_REMATCH[2]}"
-              QUESTIONS["$Q_ID"]="$Q_TITLE"
-            fi
-          done < "$QUESTIONS_FILE"
+      - name: Parse and Merge Answers
+        id: parse_answers
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+          github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: "closedloop-ai-stage,closedloop-ai"
+          prompt: |
+            You are processing user answers to open questions in a Symphony implementation plan.
 
-          # Save user comment to file for processing
-          echo "$USER_COMMENT" | sed 's/@symphony-cl answer//g' > "$ANSWERS_TEXT_FILE"
+            **Plan file location:** ${{ steps.download.outputs.run_dir }}/plan.json
+            **User answers file:** ${{ steps.download.outputs.run_dir }}/user-answers.txt
 
-          # Create answeredQuestions array
-          echo "[]" > "$TEMP_ANSWERS"
+            **Instructions:**
+            1. Read the plan.json file to get the current openQuestions array
+            2. Read the user-answers.txt file to get the user's answers
+            3. Parse the user's answers and match them to the open questions (by Q-ID reference, semantic meaning, or order)
+            4. For each answered question:
+               - Add it to the answeredQuestions array with: id, question, and answer fields
+               - Remove it from the openQuestions array
+            5. Write the updated plan.json file
+            6. Regenerate plan.md from the updated plan.json content field, ensuring it reflects the current state
 
-          # Try to extract structured answers (Q-###: answer format)
-          # If that fails, fall back to line-by-line matching
-          STRUCTURED_ANSWERS=0
-          for Q_ID in "${!QUESTIONS[@]}"; do
-            # Look for Q-ID in the comment (case insensitive, flexible spacing)
-            ANSWER=$(grep -i "^[[:space:]]*${Q_ID}[[:space:]]*:" "$ANSWERS_TEXT_FILE" | sed "s/^[[:space:]]*${Q_ID}[[:space:]]*:[[:space:]]*//" || echo "")
+            **Important:**
+            - Users may format answers in various ways (Q-001: answer, bullet points, numbered lists, or prose)
+            - Use your best judgment to match answers to questions
+            - If an answer is ambiguous or doesn't clearly match a question, leave that question in openQuestions
+            - Preserve all other fields in plan.json unchanged
+            - The plan.md file should match the content field in plan.json
+          claude_args: |
+            --model haiku
+            --max-turns 100
+            --allowedTools "Read,Write,Edit"
 
-            if [ -n "$ANSWER" ]; then
-              STRUCTURED_ANSWERS=$((STRUCTURED_ANSWERS + 1))
-              QUESTION_TEXT="${QUESTIONS[$Q_ID]}"
-
-              # Add to answeredQuestions array
-              TEMP_CONTENT=$(jq --arg id "$Q_ID" \
-                                --arg question "$QUESTION_TEXT" \
-                                --arg answer "$ANSWER" \
-                                '. += [{"id": $id, "question": $question, "answer": $answer}]' \
-                                "$TEMP_ANSWERS")
-              echo "$TEMP_CONTENT" > "$TEMP_ANSWERS"
-            fi
-          done
-
-          # If no structured answers found, fall back to sequential line matching
-          if [ "$STRUCTURED_ANSWERS" -eq 0 ]; then
-            echo "No structured Q-ID: format found, using fallback sequential matching"
-
-            # Filter out empty lines and the trigger command
-            ANSWER_LINES=$(grep -v '^[[:space:]]*$' "$ANSWERS_TEXT_FILE" | grep -v '@symphony-cl')
-
-            ANSWER_COUNTER=0
-            for Q_ID in $(echo "${!QUESTIONS[@]}" | tr ' ' '\n' | sort); do
-              ANSWER_COUNTER=$((ANSWER_COUNTER + 1))
-              ANSWER=$(echo "$ANSWER_LINES" | sed -n "${ANSWER_COUNTER}p")
-
-              if [ -n "$ANSWER" ]; then
-                QUESTION_TEXT="${QUESTIONS[$Q_ID]}"
-
-                TEMP_CONTENT=$(jq --arg id "$Q_ID" \
-                                  --arg question "$QUESTION_TEXT" \
-                                  --arg answer "$ANSWER" \
-                                  '. += [{"id": $id, "question": $question, "answer": $answer}]' \
-                                  "$TEMP_ANSWERS")
-                echo "$TEMP_CONTENT" > "$TEMP_ANSWERS"
-              fi
-            done
-          fi
-
-          # Merge answeredQuestions into plan.json
-          jq --slurpfile answers "$TEMP_ANSWERS" \
-             '.answeredQuestions = ($answers[0])' \
-             "$PLAN_JSON" > "${PLAN_JSON}.tmp"
-          mv "${PLAN_JSON}.tmp" "$PLAN_JSON"
-
-          # Validate the resulting JSON is well-formed
-          if ! jq empty "$PLAN_JSON" 2>/dev/null; then
-            echo "::error::Generated plan.json is invalid JSON after merging answers"
-            echo "plan.json contents:"
-            cat "$PLAN_JSON" || echo "(file unreadable)"
-            exit 1
-          fi
-
-          echo "✅ plan.json validation passed"
-
-          ANSWER_COUNT=$(jq '.answeredQuestions | length' "$PLAN_JSON")
-          echo "Parsed and merged $ANSWER_COUNT answers into plan.json"
-
-          if [ "$ANSWER_COUNT" -eq 0 ]; then
-            echo "::warning::No answers were parsed from the comment. Please check the comment format."
-          fi
-
-          # Cleanup
-          rm -f "$TEMP_ANSWERS" "$ANSWERS_TEXT_FILE"
-
-      - name: Resume Symphony Run Loop
-        id: symphony
-        timeout-minutes: 60
-        continue-on-error: false
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+      - name: Validate Plan JSON
         run: |
           RUN_DIR="${{ steps.download.outputs.run_dir }}"
-          RUN_LOOP="${{ steps.cli_setup.outputs.run_loop_path }}"
+          PLAN_JSON="$RUN_DIR/plan.json"
 
-          if [ ! -f "$RUN_LOOP" ]; then
-            echo "::error::run-loop.sh not found at $RUN_LOOP"
+          if ! jq empty "$PLAN_JSON" 2>/dev/null; then
+            echo "::error::plan.json is invalid JSON after merging answers"
             exit 1
           fi
 
-          echo "Resuming Symphony run loop from: $RUN_DIR"
-          echo "Using run-loop.sh: $RUN_LOOP"
-
-          # Change to run directory and invoke run-loop.sh
-          # It will read state from .symphony-loop.local.md
-          cd "$RUN_DIR"
-          "$RUN_LOOP"
+          OPEN_COUNT=$(jq '.openQuestions | length' "$PLAN_JSON")
+          ANSWERED_COUNT=$(jq '.answeredQuestions | length' "$PLAN_JSON")
+          echo "Open questions remaining: $OPEN_COUNT"
+          echo "Answered questions: $ANSWERED_COUNT"
 
       - name: Post Results
         id: post_results
@@ -597,6 +529,7 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           comment_url: ${{ steps.status_comment.outputs.comment_url }}
           delete_old_comment: "true"
+          skip_questions: "true"
 
       - name: Update Status Comment on Failure
         if: failure()
@@ -606,12 +539,6 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ steps.token.outputs.token }}
           action_name: process answers
-
-      - name: Sanitize Run Loop Log
-        if: always()
-        uses: ./.github/actions/sanitize-run-log
-        with:
-          log_file: ${{ steps.download.outputs.run_dir }}/run-loop.log
 
       - name: Upload Updated Artifact
         if: always()
@@ -739,31 +666,16 @@ jobs:
             exit 1
           fi
 
-          # Find plan file (checking in priority order)
-          PLAN_PATH=""
-          for f in "plan.json" "plan.md" "implementation-plan.md"; do
-            if [ -f "${LATEST_RUN}/${f}" ]; then
-              PLAN_PATH="${LATEST_RUN}/${f}"
-              break
-            fi
-          done
-
-          if [ -z "$PLAN_PATH" ]; then
-            echo "::error::No implementation plan found in $LATEST_RUN"
+          PLAN_JSON="${LATEST_RUN}/plan.json"
+          if [ ! -f "$PLAN_JSON" ]; then
+            echo "::error::plan.json not found in $LATEST_RUN. Run @symphony-cl plan first."
             exit 1
           fi
 
-          STATE_FILE="${LATEST_RUN}/.symphony-loop.local.md"
-          if [ ! -f "$STATE_FILE" ]; then
-            echo "::error::State file not found at $STATE_FILE. Cannot resume run."
-            exit 1
-          fi
-
-          echo "Found implementation plan: $PLAN_PATH"
-          echo "Found state file: $STATE_FILE"
+          echo "Found implementation plan: $PLAN_JSON"
           echo "Run directory: $LATEST_RUN"
 
-          echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "plan_path=$PLAN_JSON" >> "$GITHUB_OUTPUT"
           echo "run_dir=$LATEST_RUN" >> "$GITHUB_OUTPUT"
 
       - name: Create Branch
@@ -814,10 +726,8 @@ jobs:
           # Export run directory for downstream steps
           echo "LATEST_RUN=$RUN_DIR" >> "$GITHUB_ENV"
 
-          # Change to run directory and invoke run-loop.sh
-          # It will read state from .symphony-loop.local.md and execute the plan
-          cd "$RUN_DIR"
-          "$RUN_LOOP" --max-iterations 150 2>&1 | tee run-loop.log
+          # Invoke run-loop.sh with workdir and PRD path
+          "$RUN_LOOP" "$RUN_DIR" --prd "$RUN_DIR/prd.md" --max-iterations 150 2>&1 | tee "$RUN_DIR/run-loop.log"
 
           echo "Symphony implementation completed"
 
@@ -1048,22 +958,14 @@ jobs:
             echo "has_context=true" >> "$GITHUB_OUTPUT"
             echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
 
-            # Find plan file (checking in priority order)
-            PLAN_FILE=""
-            for f in "plan.json" "plan.md" "implementation-plan.md"; do
-              if [ -f "${RUN_DIR}/${f}" ]; then
-                PLAN_FILE="${RUN_DIR}/${f}"
-                break
-              fi
-            done
-
-            if [ -n "$PLAN_FILE" ]; then
+            PLAN_JSON="${RUN_DIR}/plan.json"
+            if [ -f "$PLAN_JSON" ]; then
               echo "has_plan=true" >> "$GITHUB_OUTPUT"
-              echo "plan_file=$PLAN_FILE" >> "$GITHUB_OUTPUT"
-              echo "Found plan file: $PLAN_FILE - will use amend workflow"
+              echo "plan_file=$PLAN_JSON" >> "$GITHUB_OUTPUT"
+              echo "Found plan.json - will use amend workflow"
             else
               echo "has_plan=false" >> "$GITHUB_OUTPUT"
-              echo "No plan file found - will use chat workflow"
+              echo "No plan.json found - will use chat workflow"
             fi
           else
             echo "has_context=false" >> "$GITHUB_OUTPUT"
@@ -1103,7 +1005,7 @@ jobs:
             symphony-core@closedloop
             symphony-fe@closedloop
             experimental@closedloop
-          prompt: /symphony-core:amend-plan --run-dir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
+          prompt: /experimental:amend-plan --workdir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
           claude_args: |
             --max-turns 200
             --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
@@ -1202,6 +1104,7 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           comment_url: ${{ steps.status_comment.outputs.comment_url }}
           artifact_url: ${{ steps.upload_amend.outputs.artifact_url }}
+          skip_questions: "true"
 
       - name: Update Status Comment on Amend Failure
         if: steps.context.outputs.has_plan == 'true' && failure()
@@ -1238,7 +1141,7 @@ jobs:
             ${{ steps.context.outputs.has_context == 'true' && format('Previous planning context is available at: {0}', steps.context.outputs.run_dir) || 'No previous planning context exists for this issue.' }}
 
             Instructions:
-            1. If previous context exists, read the relevant files (implementation-plan.md, investigation-questions.md, investigation-log.md) to understand the current state
+            1. If previous context exists, read plan.json to understand the current state (tasks, open questions, acceptance criteria)
             2. Respond helpfully to the user's message/question
             3. Write your response to a file at .claude/chat-response.md
             4. Keep your response focused and actionable

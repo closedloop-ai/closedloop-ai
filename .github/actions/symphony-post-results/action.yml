@@ -22,6 +22,10 @@ inputs:
     description: 'Whether to delete the old status comment'
     required: false
     default: 'false'
+  skip_questions:
+    description: 'Skip showing open questions and always show the plan (use after answer phase)'
+    required: false
+    default: 'false'
 outputs:
   result_type:
     description: 'Type of result posted: plan or questions'
@@ -48,6 +52,7 @@ runs:
         # Sets global RESULT_TYPE and CONTENT variables
         detect_artifact() {
           local dir="${1%/}/"  # Ensure trailing slash
+          local skip_questions="${2:-false}"
 
           # Priority 1: plan.json (experimental format)
           if [ -f "${dir}plan.json" ]; then
@@ -58,7 +63,8 @@ runs:
               local unanswered_count
               unanswered_count=$(jq '[.openQuestions[]? | select(has("answer") | not)] | length' "${dir}plan.json")
 
-              if [ "$unanswered_count" -gt 0 ]; then
+              # Show questions only if there are unanswered ones AND skip_questions is false
+              if [ "$unanswered_count" -gt 0 ] && [ "$skip_questions" != "true" ]; then
                 RESULT_TYPE="questions"
                 CONTENT=$(jq -r '[.openQuestions[] | select(has("answer") | not)] | .[] |
                   "## " + .id + ": " + .question +
@@ -79,20 +85,6 @@ runs:
             fi
           fi
 
-          # Priority 2: implementation-plan.md (legacy)
-          if [ -f "${dir}implementation-plan.md" ]; then
-            RESULT_TYPE="plan"
-            CONTENT=$(cat "${dir}implementation-plan.md")
-            return 0
-          fi
-
-          # Priority 3: investigation-questions.md (legacy questions)
-          if [ -f "${dir}investigation-questions.md" ]; then
-            RESULT_TYPE="questions"
-            CONTENT=$(cat "${dir}investigation-questions.md")
-            return 0
-          fi
-
           return 1
         }
 
@@ -105,7 +97,7 @@ runs:
         echo "Found run directory: $LATEST_RUN"
 
         # Detect artifact type and extract content
-        if ! detect_artifact "$LATEST_RUN"; then
+        if ! detect_artifact "$LATEST_RUN" "${{ inputs.skip_questions }}"; then
           echo "::error::No plan artifacts found in run directory"
           ls -la "$LATEST_RUN"
           exit 1
