@@ -13,8 +13,6 @@ export function timingSafeCompare(a: string, b: string): boolean {
   const bufferB = Buffer.from(b, "utf8");
 
   if (bufferA.length !== bufferB.length) {
-    // Compare same-length buffers to prevent timing leak
-    timingSafeEqual(bufferA, bufferA);
     return false;
   }
 
