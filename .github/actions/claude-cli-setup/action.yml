@@ -17,6 +17,7 @@ runs:
       env:
         API_KEY: ${{ inputs.anthropic_api_key }}
       run: |
+        # Prevents the API key from being printed in workflow logs
         echo "::add-mask::$API_KEY"
 
     - name: Install Claude CLI
