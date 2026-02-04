@@ -7,7 +7,7 @@ import { addSchemaToUrl, resolveSchemaName } from "./schema-utils";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
-dotenv.config({ path: path.resolve(__dirname, ".env") });
+dotenv.config({ path: path.resolve(import.meta.dirname, ".env") });
 
 const env = keys();
 

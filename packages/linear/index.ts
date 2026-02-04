@@ -6,7 +6,7 @@ import { z } from "zod";
 import { keys } from "./keys";
 
 // Re-export task extraction and formatting
-// biome-ignore lint/performance/noBarrelFile: intentional re-export for package API
+// biome-ignore lint/performance/noBarrelFile: package public API
 export {
   type ExtractedTask,
   extractTasksWithLLM,
