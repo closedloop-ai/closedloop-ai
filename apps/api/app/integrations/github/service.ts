@@ -525,30 +525,32 @@ export const githubService = {
       }
 
       // Upsert each repository to preserve IDs
-      for (const repo of repositories) {
-        await tx.gitHubInstallationRepository.upsert({
-          where: {
-            installationId_githubRepoId: {
+      await Promise.all(
+        repositories.map((repo) =>
+          tx.gitHubInstallationRepository.upsert({
+            where: {
+              installationId_githubRepoId: {
+                installationId,
+                githubRepoId: repo.githubRepoId,
+              },
+            },
+            create: {
               installationId,
               githubRepoId: repo.githubRepoId,
+              fullName: repo.fullName,
+              name: repo.name,
+              owner: repo.owner,
+              private: repo.private,
             },
-          },
-          create: {
-            installationId,
-            githubRepoId: repo.githubRepoId,
-            fullName: repo.fullName,
-            name: repo.name,
-            owner: repo.owner,
-            private: repo.private,
-          },
-          update: {
-            fullName: repo.fullName,
-            name: repo.name,
-            owner: repo.owner,
-            private: repo.private,
-          },
-        });
-      }
+            update: {
+              fullName: repo.fullName,
+              name: repo.name,
+              owner: repo.owner,
+              private: repo.private,
+            },
+          })
+        )
+      );
 
       return tx.gitHubInstallationRepository.findMany({
         where: { installationId },
@@ -571,30 +573,32 @@ export const githubService = {
 
     const result = await withDb.tx(async (tx) => {
       // Upsert each repository (creates if not exists, updates if exists)
-      for (const repo of repositories) {
-        await tx.gitHubInstallationRepository.upsert({
-          where: {
-            installationId_githubRepoId: {
+      await Promise.all(
+        repositories.map((repo) =>
+          tx.gitHubInstallationRepository.upsert({
+            where: {
+              installationId_githubRepoId: {
+                installationId,
+                githubRepoId: repo.githubRepoId,
+              },
+            },
+            create: {
               installationId,
               githubRepoId: repo.githubRepoId,
+              fullName: repo.fullName,
+              name: repo.name,
+              owner: repo.owner,
+              private: repo.private,
             },
-          },
-          create: {
-            installationId,
-            githubRepoId: repo.githubRepoId,
-            fullName: repo.fullName,
-            name: repo.name,
-            owner: repo.owner,
-            private: repo.private,
-          },
-          update: {
-            fullName: repo.fullName,
-            name: repo.name,
-            owner: repo.owner,
-            private: repo.private,
-          },
-        });
-      }
+            update: {
+              fullName: repo.fullName,
+              name: repo.name,
+              owner: repo.owner,
+              private: repo.private,
+            },
+          })
+        )
+      );
 
       // Return the created/updated records
       const githubRepoIds = repositories.map((r) => r.githubRepoId);
