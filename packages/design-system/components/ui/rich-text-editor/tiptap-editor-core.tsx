@@ -27,11 +27,13 @@ export function TiptapEditorCore({
   contentResetValue,
   liveblocksExtension,
   liveblocksIsReady,
+  scrollMode = "inner",
 }: Readonly<RichTextEditorProps>) {
   const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
   const hasSeededContent = useRef(false);
   // Capture initial content on first render to avoid it being cleared by onChange
   const initialContentRef = useRef(value);
+  const isOuterScroll = scrollMode === "outer";
 
   const editor = useEditor({
     extensions: [
@@ -158,7 +160,12 @@ export function TiptapEditorCore({
           hasLiveblocksExtension={!!liveblocksExtension}
           onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
         />
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className={cn(
+            "min-h-0",
+            !isOuterScroll && "flex-1 overflow-y-auto"
+          )}
+        >
           <EditorContent
             editor={editor}
             className={cn("min-h-[200px]", readOnly && "p-4")}
