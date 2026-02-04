@@ -61,9 +61,8 @@ async function fetchLatestDeployment(projectId) {
   const data = await response.json();
   const deployments = Array.isArray(data.deployments) ? data.deployments : [];
 
-  // Find deployment matching our SHA
-  const matching = deployments.find((d) => d.meta?.githubCommitSha === sha);
-  return matching ?? deployments[0] ?? null;
+  // Find deployment matching our SHA - don't fall back to unrelated deployments
+  return deployments.find((d) => d.meta?.githubCommitSha === sha) ?? null;
 }
 
 function isSuccessState(state) {
