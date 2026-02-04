@@ -15,6 +15,10 @@ export const keys = () =>
       GITHUB_APP_DISPATCH_REPO: z.string().regex(OWNER_REPO_REGEX), // owner/repo format
       WEBAPP_ENV: z.enum(["local", "stage", "prod"]).default("stage"),
     },
+    client: {
+      // GitHub App slug for install URL - optional since GitHub integration is optional
+      NEXT_PUBLIC_GITHUB_APP_SLUG: z.string().min(1).optional(),
+    },
     runtimeEnv: {
       GITHUB_APP_ID: process.env.GITHUB_APP_ID,
       GITHUB_APP_PRIVATE_KEY: process.env.GITHUB_APP_PRIVATE_KEY,
@@ -22,6 +26,7 @@ export const keys = () =>
       GITHUB_APP_CLIENT_ID: process.env.GITHUB_APP_CLIENT_ID,
       GITHUB_APP_CLIENT_SECRET: process.env.GITHUB_APP_CLIENT_SECRET,
       GITHUB_APP_DISPATCH_REPO: process.env.GITHUB_APP_DISPATCH_REPO,
+      NEXT_PUBLIC_GITHUB_APP_SLUG: process.env.NEXT_PUBLIC_GITHUB_APP_SLUG,
       WEBAPP_ENV: process.env.WEBAPP_ENV,
     },
   });
