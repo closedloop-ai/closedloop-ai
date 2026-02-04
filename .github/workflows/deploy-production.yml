@@ -1,0 +1,233 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      slack_channel_id:
+        description: "Slack channel ID for deploy updates"
+        required: true
+      slack_thread_ts:
+        description: "Slack thread timestamp for deploy updates"
+        required: true
+      slack_requester_id:
+        description: "Slack user ID who requested the deploy"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  DEPLOY_BASE_BRANCH: production
+  DEPLOY_HEAD_BRANCH: main
+  CHANGELOG_PATH: changelog.md
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Post Deploy Start
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`. I'll post updates here." \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-
+
+      - name: Fetch Branches
+        run: git fetch origin $DEPLOY_BASE_BRANCH $DEPLOY_HEAD_BRANCH --prune
+
+      - name: Build Changelog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/deploy/build-changelog.mjs
+
+      - name: Check For Changes
+        id: diff
+        run: |
+          if git diff --quiet "origin/${DEPLOY_BASE_BRANCH}" "origin/${DEPLOY_HEAD_BRANCH}"; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: No Changes - Notify
+        if: steps.diff.outputs.has_changes == 'false'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "No changes to deploy. \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-
+
+      - name: Compose PR Body
+        if: steps.diff.outputs.has_changes == 'true'
+        run: |
+          {
+            echo "## Production Deploy"
+            echo ""
+            echo "Changelog:"
+            echo ""
+            cat "$CHANGELOG_PATH"
+          } > deploy-pr-body.md
+
+      - name: Create Or Update Deploy PR
+        id: deploy_pr
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_URL=$(gh pr list \
+            --base "$DEPLOY_BASE_BRANCH" \
+            --head "$DEPLOY_HEAD_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+
+          if [ -z "$PR_URL" ]; then
+            TITLE="Deploy ${DEPLOY_HEAD_BRANCH} → ${DEPLOY_BASE_BRANCH} ($(date -u +%Y-%m-%d))"
+            PR_URL=$(gh pr create \
+              --title "$TITLE" \
+              --base "$DEPLOY_BASE_BRANCH" \
+              --head "$DEPLOY_HEAD_BRANCH" \
+              --body-file deploy-pr-body.md)
+          else
+            gh pr edit "$PR_URL" --body-file deploy-pr-body.md
+          fi
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post Changelog
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+        run: |
+          CHANGELOG=$(cat "$CHANGELOG_PATH")
+          MESSAGE="Deploy PR: ${PR_URL}\n\n${CHANGELOG}"
+          jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "$MESSAGE" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-
+
+      - name: Merge Deploy PR
+        id: merge
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+        run: |
+          gh pr merge "$PR_URL" --merge --delete-branch=false
+          MERGE_SHA=$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid')
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Wait For Vercel Deployments
+        id: vercel
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_PROJECT_IDS" ]; then
+            echo "Vercel not configured, skipping deployment check"
+            exit 0
+          fi
+          node scripts/deploy/check-vercel.mjs
+
+      - name: Post Success
+        if: success() && steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
+          VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
+        run: |
+          VERCEL_STATUS=""
+          if [ -f vercel-status.json ]; then
+            IFS=',' read -r -a PROJECT_IDS <<< "${VERCEL_PROJECT_IDS:-}"
+            IFS=',' read -r -a PROJECT_LABELS <<< "${VERCEL_PROJECT_LABELS:-}"
+            for i in "${!PROJECT_IDS[@]}"; do
+              PROJECT_ID="$(echo "${PROJECT_IDS[$i]}" | xargs)"
+              if [ -z "$PROJECT_ID" ]; then
+                continue
+              fi
+              LABEL="$(echo "${PROJECT_LABELS[$i]:-}" | xargs)"
+              URL=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .url // empty' vercel-status.json)
+              STATUS=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .status // empty' vercel-status.json)
+              if [ -n "$URL" ]; then
+                if [ -n "$LABEL" ]; then
+                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${URL}"
+                else
+                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${URL}"
+                fi
+              elif [ -n "$LABEL" ]; then
+                VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${STATUS:-unknown}"
+              fi
+            done
+          fi
+          MESSAGE="Deploy succeeded. PR: ${PR_URL}"
+          if [ -n "$VERCEL_STATUS" ]; then
+            MESSAGE="${MESSAGE}\n\nLive apps:${VERCEL_STATUS}"
+          fi
+          jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "$MESSAGE" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-
+
+      - name: Post Failure
+        if: failure() && steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "Deploy failed. Check the GitHub Actions logs for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-
