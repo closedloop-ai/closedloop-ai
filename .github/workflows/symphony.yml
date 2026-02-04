@@ -87,7 +87,7 @@ jobs:
         id: check_plan
         run: |
           RUN_DIR="${{ steps.check_existing.outputs.run_dir }}"
-          if [ -n "$RUN_DIR" ] && [ -f "${RUN_DIR}/implementation-plan.md" ]; then
+          if [ -n "$RUN_DIR" ] && { [ -f "${RUN_DIR}/plan.json" ] || [ -f "${RUN_DIR}/plan.md" ] || [ -f "${RUN_DIR}/implementation-plan.md" ]; }; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -99,7 +99,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: "⚠️ **A plan already exists for this issue.** Use `@symphony-cl execute` to implement it, or `@symphony-cl <request>` to amend it."
+          message: "⚠️ **Plan artifacts already exist for this issue.** Use `@symphony-cl execute` to implement it, or `@symphony-cl <request>` to amend it."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Fail if Plan Already Exists
@@ -112,6 +112,12 @@ jobs:
         with:
           github_token: ${{ steps.token.outputs.token }}
           node_version: ${{ env.NODE_VERSION }}
+
+      - name: Setup Claude CLI
+        id: cli_setup
+        uses: ./.github/actions/claude-cli-setup
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
 
       - name: Post Status Comment
         id: status_comment
@@ -142,24 +148,47 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           repo: ${{ github.repository }}
 
-      - name: Run Symphony Quick Plan
+      - name: Setup Workdir
+        id: setup_workdir
+        run: |
+          WORKDIR=".claude/runs/$(date -u +%Y%m%d-%H%M%S)-issue-${{ github.event.issue.number }}"
+          mkdir -p "$WORKDIR"
+          echo "workdir=$WORKDIR" >> "$GITHUB_OUTPUT"
+          echo "Created workdir: $WORKDIR"
+
+      - name: Write PRD
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
+          {
+            echo "$ISSUE_TITLE"
+            echo ""
+            echo "$ISSUE_BODY"
+          } > "$WORKDIR/prd.md"
+          echo "PRD written to $WORKDIR/prd.md"
+
+      - name: Run Symphony Plan (experimental)
         id: symphony
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
-          github_token: ${{ steps.token.outputs.token }}
-          show_full_output: true
-          allowed_bots: "closedloop-ai-stage,closedloop-ai"
-          plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
-          plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-          prompt: |
-            /symphony-core:plan ${{ steps.issue_content.outputs.content }} --stop-on-questions ${{ steps.attachments.outputs.attachment_args }}
-          claude_args: |
-            --max-turns 200
-            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
+          RUN_LOOP="${{ steps.cli_setup.outputs.run_loop_path }}"
+
+          # Copy attachments if they exist
+          if [ -d ".claude/attachments" ] && [ "$(ls -A .claude/attachments 2>/dev/null)" ]; then
+            mkdir -p "$WORKDIR/attachments"
+            cp -r .claude/attachments/* "$WORKDIR/attachments/"
+            echo "Copied attachments to $WORKDIR/attachments/"
+          fi
+
+          # Run the experimental loop
+          "$RUN_LOOP" "$WORKDIR" --prd "$WORKDIR/prd.md" --max-iterations 50 2>&1 | tee "$WORKDIR/run-loop.log"
+
+          echo "Run loop completed. Workdir: $WORKDIR"
 
       - name: Post Results
         id: post_results
@@ -172,17 +201,12 @@ jobs:
 
       - name: Update Status Comment on Failure
         if: failure()
-        run: |
-          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
-          if [ -n "$COMMENT_URL" ]; then
-            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
-            if [ -n "$COMMENT_ID" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
-                -f body="❌ Symphony failed to generate plan. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
-            fi
-          fi
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+        uses: ./.github/actions/update-comment-on-failure
+        with:
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          action_name: generate plan
 
       - name: Upload Artifact
         if: always()
@@ -194,28 +218,152 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ steps.token.outputs.token }}
 
-      - name: Upload Claude Execution Log
+      - name: Sanitize Run Loop Log
+        if: always()
+        uses: ./.github/actions/sanitize-run-log
+        with:
+          log_file: ${{ steps.setup_workdir.outputs.workdir }}/run-loop.log
+
+      - name: Upload Run Loop Log
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: claude-execution-log-${{ github.event.issue.number }}
-          path: /home/runner/work/_temp/claude-execution-output.json
+          name: run-loop-log-${{ github.event.issue.number }}
+          path: ${{ steps.setup_workdir.outputs.workdir }}/run-loop.log
           if-no-files-found: ignore
           retention-days: 7
 
       - name: Verify Symphony Completion
+        id: verify_completion
         run: |
-          if [ ! -d ".claude/runs" ]; then
-            echo "::error::Symphony failed - no runs directory created"
+          WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
+          STATE_FILE="$WORKDIR/state.json"
+
+          # Check workdir exists
+          if [ ! -d "$WORKDIR" ]; then
+            echo "::error::Symphony failed - workdir not found: $WORKDIR"
             exit 1
           fi
-          LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
-          if [ -z "$LATEST_RUN" ]; then
-            echo "::error::Symphony failed - no run directory found"
+
+          # Check state.json exists
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "::error::state.json not found in run directory"
+            echo "Run directory contents:"
+            ls -la "$WORKDIR"
             exit 1
           fi
-          echo "Symphony completed successfully"
-          ls -la "$LATEST_RUN"
+
+          # Validate file size < 10MB (10485760 bytes)
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            FILE_SIZE=$(stat -f%z "$STATE_FILE")
+          else
+            FILE_SIZE=$(stat -c%s "$STATE_FILE")
+          fi
+          MAX_SIZE=10485760
+          if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "::error::state.json file size ($FILE_SIZE bytes) exceeds maximum allowed ($MAX_SIZE bytes)"
+            exit 1
+          fi
+          echo "✅ File size validated: $FILE_SIZE bytes (max: $MAX_SIZE)"
+
+          # Parse status field (with fallback to .state if .status doesn't exist)
+          STATUS=$(jq -r '.status // .state // "unknown"' "$STATE_FILE")
+
+          # Extract phase and iteration for debugging/logging
+          PHASE=$(jq -r '.currentPhase // .phase // "unknown"' "$STATE_FILE")
+          ITERATION=$(jq -r '.iteration // "N/A"' "$STATE_FILE")
+
+          echo "Symphony Status: $STATUS"
+          echo "Current Phase: $PHASE"
+          echo "Iteration: $ITERATION"
+
+          # Expose outputs for downstream steps
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "phase=$PHASE" >> "$GITHUB_OUTPUT"
+          echo "iteration=$ITERATION" >> "$GITHUB_OUTPUT"
+
+          # Check for minimum viable output (at least one of: plan.json, plan.md, implementation-plan.md)
+          if [ ! -f "$WORKDIR/plan.json" ] && [ ! -f "$WORKDIR/plan.md" ] && [ ! -f "$WORKDIR/implementation-plan.md" ]; then
+            echo "::error::No plan output found. At least one of plan.json, plan.md, or implementation-plan.md must exist"
+            exit 1
+          fi
+          echo "✅ Minimum viable output check passed"
+
+          # Handle status values with case statement
+          case "$STATUS" in
+            COMPLETED)
+              echo "✅ Symphony completed successfully"
+              exit 0
+              ;;
+            AWAITING_USER)
+              echo "✅ Symphony completed - awaiting user input"
+              echo "::notice::Symphony is awaiting user input to proceed"
+              exit 0
+              ;;
+            ERROR|FAILED|TIMEOUT|MAX_ITERATIONS)
+              echo "::error::Symphony failed with status: $STATUS"
+              echo "State summary:"
+              jq '{status, phase, iteration}' "$STATE_FILE"
+              exit 1
+              ;;
+            unknown)
+              echo "::warning::Unknown status in state.json"
+              echo "State summary:"
+              jq '{status, phase, iteration}' "$STATE_FILE"
+              echo "Continuing as incomplete..."
+              exit 0
+              ;;
+            *)
+              echo "::warning::Unexpected status: $STATUS"
+              echo "State summary:"
+              jq '{status, phase, iteration}' "$STATE_FILE"
+              echo "Continuing as incomplete..."
+              exit 0
+              ;;
+          esac
+
+      - name: Handle AWAITING_USER Status
+        if: steps.verify_completion.outputs.status == 'AWAITING_USER'
+        run: |
+          PHASE="${{ steps.verify_completion.outputs.phase }}"
+          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
+          WORKDIR="${{ steps.setup_workdir.outputs.workdir }}"
+
+          # Determine phase-specific continuation instructions
+          case "$PHASE" in
+            1.1)
+              # Link to plan.md in the workdir
+              PLAN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              MESSAGE="📋 **Implementation plan ready for review.**
+
+          Review the implementation plan in the [workflow artifact]($PLAN_URL).
+
+          When ready to proceed, comment \`@symphony-cl execute\` to begin implementation."
+              ;;
+            1.2)
+              MESSAGE="❓ **Open questions require your input.**
+
+          Please answer the questions posted above.
+
+          When ready, comment \`@symphony-cl answer\` with your answers."
+              ;;
+            *)
+              MESSAGE="⏸️ **Workflow paused.** Please check the status comment for next steps.
+
+          To continue, comment \`@symphony-cl execute\`."
+              ;;
+          esac
+
+          # Post comment via GitHub API
+          if [ -n "$COMMENT_URL" ]; then
+            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+            if [ -n "$COMMENT_ID" ]; then
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
+                -f body="$MESSAGE" || true
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
 
       - name: Build Slack Message
         if: success()
@@ -298,6 +446,12 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           node_version: ${{ env.NODE_VERSION }}
 
+      - name: Setup Claude CLI
+        id: cli_setup
+        uses: ./.github/actions/claude-cli-setup
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+
       - name: Post Status Comment
         id: status_comment
         uses: ./.github/actions/post-status-comment
@@ -316,56 +470,182 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
 
-      - name: Parse Answers
-        uses: anthropics/claude-code-action@v1
+      - name: Validate Artifact Ownership
+        uses: ./.github/actions/validate-artifact-ownership
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
-          github_token: ${{ steps.token.outputs.token }}
-          show_full_output: true
-          allowed_bots: "closedloop-ai-stage,closedloop-ai"
-          plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
-          plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-          prompt: |
-            Parse the user's answers and create answers.txt in the run directory.
+          run_dir: ${{ steps.download.outputs.run_dir }}
+          issue_number: ${{ github.event.issue.number }}
 
-            User's Comment (contains @symphony-cl answer mention and answers):
-            ${{ github.event.comment.body }}
+      - name: Verify Run Directory
+        id: verify_run
+        run: |
+          RUN_DIR="${{ steps.download.outputs.run_dir }}"
 
-            Run Directory: ${{ steps.download.outputs.run_dir }}
+          if [ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ]; then
+            echo "::error::Run directory not found. Previous plan run artifact may be missing."
+            exit 1
+          fi
 
-            Steps:
-            1. Read ${{ steps.download.outputs.run_dir }}/investigation-questions.md to see the original questions (format: ## Q-###: title)
-            2. Extract the user's answers from the comment. They may provide answers in any format:
-               - Freeform natural language
-               - Numbered list matching question order
-               - Quote-reply format with questions quoted
-               - Already in Q-### format
-            3. Convert the answers to the required format:
-               Q-001: <answer text>
-               Q-002: <answer text>
-               (one line per answer, matching the Q-### IDs from investigation-questions.md)
-            4. Write the formatted answers to ${{ steps.download.outputs.run_dir }}/answers.txt
+          STATE_FILE="$RUN_DIR/.symphony-loop.local.md"
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "::error::State file not found at $STATE_FILE. Cannot resume run."
+            exit 1
+          fi
 
-            Do NOT run any symphony commands. Only parse and create the answers file.
-          claude_args: |
-            --allowedTools "Bash(find:*),Bash(ls:*),Glob,Read,Write,TodoWrite"
+          PLAN_JSON="$RUN_DIR/plan.json"
+          if [ ! -f "$PLAN_JSON" ]; then
+            echo "::error::plan.json not found at $PLAN_JSON"
+            exit 1
+          fi
 
-      - name: Run Symphony Quick Plan with Answers
+          QUESTIONS_FILE="$RUN_DIR/investigation-questions.md"
+          if [ ! -f "$QUESTIONS_FILE" ]; then
+            echo "::error::investigation-questions.md not found. This run may not have questions to answer."
+            exit 1
+          fi
+
+          echo "Run directory verified: $RUN_DIR"
+          echo "State file found: $STATE_FILE"
+          echo "Questions file found: $QUESTIONS_FILE"
+          echo "Plan JSON found: $PLAN_JSON"
+
+      - name: Validate Comment Length
+        env:
+          USER_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          COMMENT_LENGTH=${#USER_COMMENT}
+          MAX_LENGTH=10240
+
+          if [ "$COMMENT_LENGTH" -gt "$MAX_LENGTH" ]; then
+            echo "::error::Comment length ($COMMENT_LENGTH bytes) exceeds maximum allowed ($MAX_LENGTH bytes)"
+            exit 1
+          fi
+
+          echo "✅ Comment length validated: $COMMENT_LENGTH bytes (max: $MAX_LENGTH)"
+
+      - name: Parse and Merge Answers
+        id: parse_answers
+        env:
+          USER_COMMENT: ${{ github.event.comment.body }}
+        run: |
+          RUN_DIR="${{ steps.download.outputs.run_dir }}"
+          PLAN_JSON="$RUN_DIR/plan.json"
+          QUESTIONS_FILE="$RUN_DIR/investigation-questions.md"
+          TEMP_ANSWERS="/tmp/parsed-answers.json"
+          ANSWERS_TEXT_FILE="/tmp/user-answers.txt"
+
+          # Extract question IDs and full questions from investigation-questions.md
+          # Store them for matching
+          declare -A QUESTIONS
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^##[[:space:]]+(Q-[0-9]{3}):[[:space:]]*(.+)$ ]]; then
+              Q_ID="${BASH_REMATCH[1]}"
+              Q_TITLE="${BASH_REMATCH[2]}"
+              QUESTIONS["$Q_ID"]="$Q_TITLE"
+            fi
+          done < "$QUESTIONS_FILE"
+
+          # Save user comment to file for processing
+          echo "$USER_COMMENT" | sed 's/@symphony-cl answer//g' > "$ANSWERS_TEXT_FILE"
+
+          # Create answeredQuestions array
+          echo "[]" > "$TEMP_ANSWERS"
+
+          # Try to extract structured answers (Q-###: answer format)
+          # If that fails, fall back to line-by-line matching
+          STRUCTURED_ANSWERS=0
+          for Q_ID in "${!QUESTIONS[@]}"; do
+            # Look for Q-ID in the comment (case insensitive, flexible spacing)
+            ANSWER=$(grep -i "^[[:space:]]*${Q_ID}[[:space:]]*:" "$ANSWERS_TEXT_FILE" | sed "s/^[[:space:]]*${Q_ID}[[:space:]]*:[[:space:]]*//" || echo "")
+
+            if [ -n "$ANSWER" ]; then
+              STRUCTURED_ANSWERS=$((STRUCTURED_ANSWERS + 1))
+              QUESTION_TEXT="${QUESTIONS[$Q_ID]}"
+
+              # Add to answeredQuestions array
+              TEMP_CONTENT=$(jq --arg id "$Q_ID" \
+                                --arg question "$QUESTION_TEXT" \
+                                --arg answer "$ANSWER" \
+                                '. += [{"id": $id, "question": $question, "answer": $answer}]' \
+                                "$TEMP_ANSWERS")
+              echo "$TEMP_CONTENT" > "$TEMP_ANSWERS"
+            fi
+          done
+
+          # If no structured answers found, fall back to sequential line matching
+          if [ "$STRUCTURED_ANSWERS" -eq 0 ]; then
+            echo "No structured Q-ID: format found, using fallback sequential matching"
+
+            # Filter out empty lines and the trigger command
+            ANSWER_LINES=$(grep -v '^[[:space:]]*$' "$ANSWERS_TEXT_FILE" | grep -v '@symphony-cl')
+
+            ANSWER_COUNTER=0
+            for Q_ID in $(echo "${!QUESTIONS[@]}" | tr ' ' '\n' | sort); do
+              ANSWER_COUNTER=$((ANSWER_COUNTER + 1))
+              ANSWER=$(echo "$ANSWER_LINES" | sed -n "${ANSWER_COUNTER}p")
+
+              if [ -n "$ANSWER" ]; then
+                QUESTION_TEXT="${QUESTIONS[$Q_ID]}"
+
+                TEMP_CONTENT=$(jq --arg id "$Q_ID" \
+                                  --arg question "$QUESTION_TEXT" \
+                                  --arg answer "$ANSWER" \
+                                  '. += [{"id": $id, "question": $question, "answer": $answer}]' \
+                                  "$TEMP_ANSWERS")
+                echo "$TEMP_CONTENT" > "$TEMP_ANSWERS"
+              fi
+            done
+          fi
+
+          # Merge answeredQuestions into plan.json
+          jq --slurpfile answers "$TEMP_ANSWERS" \
+             '.answeredQuestions = ($answers[0])' \
+             "$PLAN_JSON" > "${PLAN_JSON}.tmp"
+          mv "${PLAN_JSON}.tmp" "$PLAN_JSON"
+
+          # Validate the resulting JSON is well-formed
+          if ! jq empty "$PLAN_JSON" 2>/dev/null; then
+            echo "::error::Generated plan.json is invalid JSON after merging answers"
+            echo "plan.json contents:"
+            cat "$PLAN_JSON" || echo "(file unreadable)"
+            exit 1
+          fi
+
+          echo "✅ plan.json validation passed"
+
+          ANSWER_COUNT=$(jq '.answeredQuestions | length' "$PLAN_JSON")
+          echo "Parsed and merged $ANSWER_COUNT answers into plan.json"
+
+          if [ "$ANSWER_COUNT" -eq 0 ]; then
+            echo "::warning::No answers were parsed from the comment. Please check the comment format."
+          fi
+
+          # Cleanup
+          rm -f "$TEMP_ANSWERS" "$ANSWERS_TEXT_FILE"
+
+      - name: Resume Symphony Run Loop
         id: symphony
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
-          github_token: ${{ steps.token.outputs.token }}
-          show_full_output: true
-          allowed_bots: "closedloop-ai-stage,closedloop-ai"
-          prompt: |
-            /symphony-core:plan --existing-run ${{ steps.download.outputs.run_dir }}
-          claude_args: |
-            --max-turns 200
-            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+        timeout-minutes: 60
+        continue-on-error: false
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          RUN_DIR="${{ steps.download.outputs.run_dir }}"
+          RUN_LOOP="${{ steps.cli_setup.outputs.run_loop_path }}"
+
+          if [ ! -f "$RUN_LOOP" ]; then
+            echo "::error::run-loop.sh not found at $RUN_LOOP"
+            exit 1
+          fi
+
+          echo "Resuming Symphony run loop from: $RUN_DIR"
+          echo "Using run-loop.sh: $RUN_LOOP"
+
+          # Change to run directory and invoke run-loop.sh
+          # It will read state from .symphony-loop.local.md
+          cd "$RUN_DIR"
+          "$RUN_LOOP"
 
       - name: Post Results
         id: post_results
@@ -379,17 +659,18 @@ jobs:
 
       - name: Update Status Comment on Failure
         if: failure()
-        run: |
-          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
-          if [ -n "$COMMENT_URL" ]; then
-            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
-            if [ -n "$COMMENT_ID" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
-                -f body="❌ Symphony failed to process answers. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
-            fi
-          fi
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+        uses: ./.github/actions/update-comment-on-failure
+        with:
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          action_name: process answers
+
+      - name: Sanitize Run Loop Log
+        if: always()
+        uses: ./.github/actions/sanitize-run-log
+        with:
+          log_file: ${{ steps.download.outputs.run_dir }}/run-loop.log
 
       - name: Upload Updated Artifact
         if: always()
@@ -476,6 +757,12 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           node_version: ${{ env.NODE_VERSION }}
 
+      - name: Setup Claude CLI
+        id: cli_setup
+        uses: ./.github/actions/claude-cli-setup
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+
       - name: Post Status Comment
         id: status_comment
         uses: ./.github/actions/post-status-comment
@@ -494,17 +781,49 @@ jobs:
           repository: ${{ github.repository }}
           github_token: ${{ github.token }}
 
+      - name: Validate Artifact Ownership
+        uses: ./.github/actions/validate-artifact-ownership
+        with:
+          run_dir: ${{ steps.download.outputs.run_dir }}
+          issue_number: ${{ github.event.issue.number }}
+
       - name: Verify Implementation Plan
         id: verify_plan
         run: |
           LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
-          if [ -z "$LATEST_RUN" ] || [ ! -f "${LATEST_RUN}implementation-plan.md" ]; then
-            echo "::error::No implementation plan found. Run @symphony-cl plan first."
+          LATEST_RUN="${LATEST_RUN%/}"
+
+          if [ -z "$LATEST_RUN" ]; then
+            echo "::error::No run directory found. Run @symphony-cl plan first."
             exit 1
           fi
-          PLAN_PATH="${LATEST_RUN}implementation-plan.md"
+
+          # Find plan file (checking in priority order)
+          PLAN_PATH=""
+          for f in "plan.json" "plan.md" "implementation-plan.md"; do
+            if [ -f "${LATEST_RUN}/${f}" ]; then
+              PLAN_PATH="${LATEST_RUN}/${f}"
+              break
+            fi
+          done
+
+          if [ -z "$PLAN_PATH" ]; then
+            echo "::error::No implementation plan found in $LATEST_RUN"
+            exit 1
+          fi
+
+          STATE_FILE="${LATEST_RUN}/.symphony-loop.local.md"
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "::error::State file not found at $STATE_FILE. Cannot resume run."
+            exit 1
+          fi
+
           echo "Found implementation plan: $PLAN_PATH"
+          echo "Found state file: $STATE_FILE"
+          echo "Run directory: $LATEST_RUN"
+
           echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "run_dir=$LATEST_RUN" >> "$GITHUB_OUTPUT"
 
       - name: Create Branch
         run: |
@@ -527,24 +846,54 @@ jobs:
           echo "$BODY" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Run Symphony Implementation
+      - name: Run Symphony Implementation (experimental)
         id: symphony
-        uses: anthropics/claude-code-action@v1
+        timeout-minutes: 120
+        continue-on-error: false
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          RUN_DIR="${{ steps.verify_plan.outputs.run_dir }}"
+          RUN_LOOP="${{ steps.cli_setup.outputs.run_loop_path }}"
+
+          if [ ! -f "$RUN_LOOP" ]; then
+            echo "::error::run-loop.sh not found at $RUN_LOOP"
+            exit 1
+          fi
+
+          if [ ! -d "$RUN_DIR" ]; then
+            echo "::error::Run directory not found: $RUN_DIR"
+            exit 1
+          fi
+
+          echo "Running Symphony implementation from: $RUN_DIR"
+          echo "Using run-loop.sh: $RUN_LOOP"
+
+          # Export run directory for downstream steps
+          echo "LATEST_RUN=$RUN_DIR" >> "$GITHUB_ENV"
+
+          # Change to run directory and invoke run-loop.sh
+          # It will read state from .symphony-loop.local.md and execute the plan
+          cd "$RUN_DIR"
+          "$RUN_LOOP" --max-iterations 150 2>&1 | tee run-loop.log
+
+          echo "Symphony implementation completed"
+
+      - name: Sanitize Run Loop Log
+        if: always()
+        uses: ./.github/actions/sanitize-run-log
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
-          github_token: ${{ steps.token.outputs.token }}
-          show_full_output: true
-          allowed_bots: "closedloop-ai-stage,closedloop-ai"
-          plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
-          plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-          prompt: |
-            /symphony-core:execute ${{ steps.verify_plan.outputs.plan_path }}
-          claude_args: |
-            --max-turns 200
-            --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
+          log_file: ${{ steps.verify_plan.outputs.run_dir }}/run-loop.log
+
+      - name: Upload Run Loop Log
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: run-loop-execute-log-${{ github.event.issue.number }}
+          path: ${{ steps.verify_plan.outputs.run_dir }}/run-loop.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Commit and Push Changes
         id: commit_push
@@ -645,17 +994,12 @@ jobs:
 
       - name: Update Status Comment on Failure
         if: failure()
-        run: |
-          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
-          if [ -n "$COMMENT_URL" ]; then
-            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
-            if [ -n "$COMMENT_ID" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
-                -f body="❌ Symphony failed to implement the plan. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
-            fi
-          fi
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+        uses: ./.github/actions/update-comment-on-failure
+        with:
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          action_name: implement the plan
 
       - name: Build Slack Message
         if: success()
@@ -758,20 +1102,27 @@ jobs:
           ISSUE_BODY: ${{ github.event.issue.body }}
           USER_COMMENT: ${{ github.event.comment.body }}
         run: |
-          # Check if we have a run directory with context
           RUN_DIR="${{ steps.download.outputs.run_dir }}"
           if [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ]; then
             echo "has_context=true" >> "$GITHUB_OUTPUT"
             echo "run_dir=$RUN_DIR" >> "$GITHUB_OUTPUT"
 
-            # Check if implementation-plan.md exists (indicates plan is finalized)
-            if [ -f "${RUN_DIR}/implementation-plan.md" ]; then
+            # Find plan file (checking in priority order)
+            PLAN_FILE=""
+            for f in "plan.json" "plan.md" "implementation-plan.md"; do
+              if [ -f "${RUN_DIR}/${f}" ]; then
+                PLAN_FILE="${RUN_DIR}/${f}"
+                break
+              fi
+            done
+
+            if [ -n "$PLAN_FILE" ]; then
               echo "has_plan=true" >> "$GITHUB_OUTPUT"
-              echo "plan_file=${RUN_DIR}/implementation-plan.md" >> "$GITHUB_OUTPUT"
-              echo "Found implementation-plan.md - will use amend workflow"
+              echo "plan_file=$PLAN_FILE" >> "$GITHUB_OUTPUT"
+              echo "Found plan file: $PLAN_FILE - will use amend workflow"
             else
               echo "has_plan=false" >> "$GITHUB_OUTPUT"
-              echo "No implementation-plan.md found - will use chat workflow"
+              echo "No plan file found - will use chat workflow"
             fi
           else
             echo "has_context=false" >> "$GITHUB_OUTPUT"
@@ -779,7 +1130,7 @@ jobs:
             echo "run_dir=" >> "$GITHUB_OUTPUT"
           fi
 
-          # Pass issue info
+          # Pass issue info using heredoc
           echo "title<<EOF" >> "$GITHUB_OUTPUT"
           echo "$ISSUE_TITLE" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -789,7 +1140,7 @@ jobs:
           echo "$BODY" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-          # Remove newlines and escape double quotes to prevent breaking --message "..." argument parsing
+          # Escape double quotes for --message argument parsing
           COMMENT=$(echo "$USER_COMMENT" | tr '\n\r' '  ' | sed 's/  */ /g')
           COMMENT="${COMMENT//\"/\\\"}"
           echo "comment<<EOF" >> "$GITHUB_OUTPUT"
@@ -810,6 +1161,7 @@ jobs:
           plugins: |
             symphony-core@closedloop
             symphony-fe@closedloop
+            experimental@closedloop
           prompt: /symphony-core:amend-plan --run-dir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
           claude_args: |
             --max-turns 200
@@ -912,17 +1264,12 @@ jobs:
 
       - name: Update Status Comment on Amend Failure
         if: steps.context.outputs.has_plan == 'true' && failure()
-        run: |
-          COMMENT_URL="${{ steps.status_comment.outputs.comment_url }}"
-          if [ -n "$COMMENT_URL" ]; then
-            COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
-            if [ -n "$COMMENT_ID" ]; then
-              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
-                -f body="❌ Symphony failed to process amendment. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
-            fi
-          fi
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+        uses: ./.github/actions/update-comment-on-failure
+        with:
+          comment_url: ${{ steps.status_comment.outputs.comment_url }}
+          repository: ${{ github.repository }}
+          github_token: ${{ steps.token.outputs.token }}
+          action_name: process amendment
 
       - name: Run Symphony Chat
         id: symphony
@@ -938,6 +1285,7 @@ jobs:
           plugins: |
             symphony-core@closedloop
             symphony-fe@closedloop
+            experimental@closedloop
           prompt: |
             You are Symphony, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
 

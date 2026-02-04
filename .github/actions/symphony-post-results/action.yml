@@ -39,85 +39,127 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
+        # Helper: Extract comment ID from URL
+        get_comment_id() {
+          echo "$1" | grep -oE '[0-9]+$'
+        }
+
+        # Helper: Detect artifact type and extract content
+        # Sets global RESULT_TYPE and CONTENT variables
+        detect_artifact() {
+          local dir="${1%/}/"  # Ensure trailing slash
+
+          # Priority 1: plan.json (experimental format)
+          if [ -f "${dir}plan.json" ]; then
+            # Validate JSON first
+            if ! jq empty "${dir}plan.json" 2>/dev/null; then
+              echo "::warning::plan.json exists but contains invalid JSON, falling back to plan.md"
+            else
+              local unanswered_count
+              unanswered_count=$(jq '[.openQuestions[]? | select(has("answer") | not)] | length' "${dir}plan.json")
+
+              if [ "$unanswered_count" -gt 0 ]; then
+                RESULT_TYPE="questions"
+                CONTENT=$(jq -r '[.openQuestions[] | select(has("answer") | not)] | .[] |
+                  "## " + .id + ": " + .question +
+                  (if .description then "\n\n*Context:* " + .description else "" end) +
+                  (if .recommendedAnswer then "\n\n**Recommended:** " + .recommendedAnswer else "" end)' \
+                  "${dir}plan.json")
+
+                if [ -z "$CONTENT" ]; then
+                  echo "::warning::Expected questions but extraction produced empty output"
+                  jq '.openQuestions' "${dir}plan.json"
+                  return 1
+                fi
+              else
+                RESULT_TYPE="plan"
+                CONTENT=$(jq -r '.content' "${dir}plan.json")
+              fi
+              return 0
+            fi
+          fi
+
+          # Priority 2: implementation-plan.md (legacy)
+          if [ -f "${dir}implementation-plan.md" ]; then
+            RESULT_TYPE="plan"
+            CONTENT=$(cat "${dir}implementation-plan.md")
+            return 0
+          fi
+
+          # Priority 3: investigation-questions.md (legacy questions)
+          if [ -f "${dir}investigation-questions.md" ]; then
+            RESULT_TYPE="questions"
+            CONTENT=$(cat "${dir}investigation-questions.md")
+            return 0
+          fi
+
+          return 1
+        }
+
         # Find the latest run directory
         LATEST_RUN=$(ls -td .claude/runs/*/ 2>/dev/null | head -1)
-
         if [ -z "$LATEST_RUN" ]; then
           echo "::error::No runs directory found"
           exit 1
         fi
-
         echo "Found run directory: $LATEST_RUN"
 
-        # Check what type of result we have
-        if [ -f "${LATEST_RUN}implementation-plan.md" ]; then
-          RESULT_TYPE="plan"
-          RESULT_FILE="${LATEST_RUN}implementation-plan.md"
-          TITLE="Implementation Plan"
-          EMOJI="📋"
-        elif [ -f "${LATEST_RUN}investigation-questions.md" ]; then
-          RESULT_TYPE="questions"
-          RESULT_FILE="${LATEST_RUN}investigation-questions.md"
-          TITLE="Open Questions"
-          EMOJI="❓"
-        else
-          echo "::error::No implementation plan or questions found in run directory"
+        # Detect artifact type and extract content
+        if ! detect_artifact "$LATEST_RUN"; then
+          echo "::error::No plan artifacts found in run directory"
           ls -la "$LATEST_RUN"
           exit 1
         fi
 
         echo "result_type=$RESULT_TYPE" >> "$GITHUB_OUTPUT"
 
-        # Read the content
-        CONTENT=$(cat "$RESULT_FILE")
+        # Set title and emoji based on result type
+        if [ "$RESULT_TYPE" = "questions" ]; then
+          TITLE="Open Questions"
+          EMOJI="❓"
+          NEXT_STEPS="**Next steps:** Answer the questions above, then comment \`@symphony-cl answer\` followed by your answers."
+          STATUS_MSG="Symphony has identified some open questions that need answers before planning can continue. See below."
+        else
+          TITLE="Implementation Plan"
+          EMOJI="📋"
+          NEXT_STEPS="**Next steps:** Review the plan above. When ready, comment \`@symphony-cl execute\` to implement it."
+          STATUS_MSG="Symphony has generated an implementation plan. See below."
+        fi
 
-        # Build the comment body with collapsible details using printf for proper formatting
+        # Build comment body
         BODY=$(printf '<details>\n<summary><strong>%s %s</strong></summary>\n\n%s\n\n</details>' "$EMOJI" "$TITLE" "$CONTENT")
 
         # Add artifact link if provided
         if [ -n "${{ inputs.artifact_url }}" ]; then
-          BODY=$(printf '%s\n\n---\n📦 [View Symphony Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
+          BODY=$(printf '%s\n\n---\n[View Symphony Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
         fi
 
-        # Add instructions based on result type
-        if [ "$RESULT_TYPE" = "questions" ]; then
-          BODY=$(printf '%s\n\n---\n**Next steps:** Answer the questions above, then comment `@symphony-cl answer` followed by your answers.' "$BODY")
-        else
-          BODY=$(printf '%s\n\n---\n**Next steps:** Review the plan above. When ready, comment `@symphony-cl execute` to implement it.' "$BODY")
-        fi
+        # Add next steps
+        BODY=$(printf '%s\n\n---\n%s' "$BODY" "$NEXT_STEPS")
 
         # Delete old comment if requested
         if [ "${{ inputs.delete_old_comment }}" = "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
-          OLD_COMMENT_ID=$(echo "${{ inputs.comment_url }}" | grep -oE '[0-9]+$')
+          OLD_COMMENT_ID=$(get_comment_id "${{ inputs.comment_url }}")
           if [ -n "$OLD_COMMENT_ID" ]; then
             gh api -X DELETE "repos/${{ inputs.repository }}/issues/comments/$OLD_COMMENT_ID" || true
             echo "Deleted old status comment"
           fi
         fi
 
-        # Write body to temp file to handle special characters safely
+        # Post new comment
         echo "$BODY" > /tmp/comment-body.txt
-
-        # Post the result as a new comment using --input for safe content handling
         RESPONSE=$(gh api "repos/${{ inputs.repository }}/issues/${{ inputs.issue_number }}/comments" \
           --input <(jq -n --rawfile body /tmp/comment-body.txt '{"body": $body}'))
+        rm -f /tmp/comment-body.txt
 
         COMMENT_URL=$(echo "$RESPONSE" | jq -r '.html_url')
         echo "comment_url=$COMMENT_URL" >> "$GITHUB_OUTPUT"
         echo "Posted results: $COMMENT_URL"
 
-        # Cleanup
-        rm -f /tmp/comment-body.txt
-
-        # Update the status comment if provided and not deleting
+        # Update status comment if not deleting
         if [ "${{ inputs.delete_old_comment }}" != "true" ] && [ -n "${{ inputs.comment_url }}" ]; then
-          STATUS_COMMENT_ID=$(echo "${{ inputs.comment_url }}" | grep -oE '[0-9]+$')
+          STATUS_COMMENT_ID=$(get_comment_id "${{ inputs.comment_url }}")
           if [ -n "$STATUS_COMMENT_ID" ]; then
-            if [ "$RESULT_TYPE" = "questions" ]; then
-              STATUS_MSG="✅ Symphony has identified some open questions that need answers before planning can continue. See below."
-            else
-              STATUS_MSG="✅ Symphony has generated an implementation plan. See below."
-            fi
             gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$STATUS_COMMENT_ID" \
               -f body="$STATUS_MSG" || true
           fi
