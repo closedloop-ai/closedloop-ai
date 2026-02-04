@@ -53,17 +53,20 @@ async function fetchGitHubUser(
 /**
  * Check if an installation can be claimed by the given organization.
  * Returns an error message if claim is blocked, null if allowed.
+ *
+ * Blocks claims when the installation is already owned by a different org,
+ * regardless of status (ACTIVE, SUSPENDED, etc.). This prevents hijacking
+ * when a GitHub admin suspends an installation but the org link remains.
+ * Only UNINSTALLED installations (which have organizationId cleared) can be re-claimed.
  */
 function validateInstallationClaim(
   installation: { organizationId: string | null; status: string },
   targetOrgId: string
 ): string | null {
-  // Block claim if installation is already owned by a different org
-  // This prevents users with GitHub access from hijacking another org's installation
+  // Block claim if installation is already owned by a different org (any status)
   if (
     installation.organizationId &&
-    installation.organizationId !== targetOrgId &&
-    installation.status === "ACTIVE"
+    installation.organizationId !== targetOrgId
   ) {
     return "This GitHub installation is already connected to another organization";
   }
