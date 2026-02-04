@@ -1,6 +1,21 @@
-import type { Artifact, ArtifactType } from "@repo/database";
+import { type Artifact, ArtifactType } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { nanoid } from "nanoid";
+
+export function isDocumentArtifact(artifact: Pick<Artifact, "type">): boolean {
+  return (
+    artifact.type === ArtifactType.PRD ||
+    artifact.type === ArtifactType.IMPLEMENTATION_PLAN ||
+    artifact.type === ArtifactType.ISSUE
+  );
+}
+
+/**
+ * Generates a unique slug that can be used to identify a document artifact across versions.
+ */
+export function generateDocumentSlug(): string {
+  return nanoid(14);
+}
 
 /**
  * Typed error for artifact not found - maps to 404 HTTP status.
@@ -67,13 +82,6 @@ export async function createArtifactVersion(
       isLatest: true,
     },
   });
-}
-
-/**
- * Generates a unique slug that can be used to identify a document artifact across versions.
- */
-export function generateDocumentSlug(): string {
-  return nanoid(14);
 }
 
 /**

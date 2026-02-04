@@ -2,7 +2,9 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { withAuth } from "@/lib/auth/with-auth";
+import { deleteLiveblocksRoom } from "@/lib/liveblocks";
 import {
   deleteResponse,
   errorResponse,
@@ -10,6 +12,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { isDocumentArtifact } from "../artifact-utils";
 import { artifactsService } from "../service";
 import { updateArtifactValidator } from "../validators";
 
@@ -60,8 +63,24 @@ export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
+      const artifact = await artifactsService.findByIdSimple(
+        id,
+        user.organizationId
+      );
+      if (!artifact) {
+        return notFoundResponse("Artifact");
+      }
 
+      // Delete the artifact from the database
       await artifactsService.delete(id, user.organizationId);
+
+      // Asynchronously delete the Liveblocks room if it exists
+      if (isDocumentArtifact(artifact) && artifact.documentSlug) {
+        // Fire and forget - don't await to avoid blocking the response
+        deleteLiveblocksRoom(
+          generateArtifactRoomId(artifact.organizationId, artifact.documentSlug)
+        );
+      }
 
       return deleteResponse();
     } catch (error) {

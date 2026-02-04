@@ -29,13 +29,23 @@ pnpm test                                   # Run all tests
 pnpm turbo test --filter=app                # Test specific app
 
 # Database (Prisma)
-pnpm migrate                                # Format, generate, and push schema
+pnpm migrate                                # Format, generate, and db push (dev only, NOT migrations)
 cd packages/database && pnpm prisma generate # Regenerate client after schema changes
 cd packages/database && pnpm prisma studio   # Open Prisma Studio
-cd packages/database && pnpm prisma db push  # Push schema changes
+cd packages/database && pnpm prisma db push  # Push schema changes (dev only, no migration)
+
+# Database Migrations (for production-safe schema changes)
+cd packages/database && pnpm prisma migrate dev --name <migration_name>  # Create migration
+cd packages/database && pnpm prisma migrate deploy                       # Apply migrations (CI/prod)
+cd packages/database && pnpm prisma migrate status                       # Check migration status
 ```
 
-**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations), you **must** run `cd packages/database && pnpm prisma generate` to regenerate the TypeScript client in `packages/database/generated/`. Without this, the generated types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
+**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations):
+1. **Create a migration**: `cd packages/database && pnpm prisma migrate dev --name <descriptive_name>`
+2. This automatically runs `prisma generate` to regenerate the TypeScript client in `packages/database/generated/`
+3. Commit both the schema change AND the generated migration files in `prisma/migrations/`
+
+Without migrations, production will not receive your schema changes. Without regenerating, types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
 
 ## Architecture
 
@@ -57,7 +67,7 @@ Shared packages are imported as `@repo/<package-name>`:
 - **analytics** - PostHog + Google Analytics
 - **payments** - Stripe integration
 - **email** - Resend email templates
-- **observability** - Sentry, BetterStack logging
+- **observability** - Error tracking, logging
 - **security** - Arcjet rate limiting
 
 ### Environment Variables
@@ -70,7 +80,14 @@ Each app has its own `.env.local`. Key patterns:
 - Schema: `packages/database/prisma/schema.prisma`
 - Config: `packages/database/prisma.config.ts`
 - Client generated to: `packages/database/generated/`
+- Migrations: `packages/database/prisma/migrations/`
 - Local dev uses `pg` adapter; production uses Neon adapter (auto-detected via URL)
+
+**Schema changes require migrations:**
+- **Development**: Use `prisma migrate dev --name <descriptive_name>` to create a migration file
+- **Production**: Migrations are applied via `prisma migrate deploy` in CI/CD
+- **Never use `prisma db push` for changes that will go to production** — it doesn't create migration files and can cause drift between environments
+- Migration names should be descriptive: `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
 
 ### Data Access Pattern (IMPORTANT)
 
@@ -176,26 +193,44 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 **The product:** A platform where AI agents produce artifacts, humans approve and refine them, and the entire workflow is orchestrated toward shipping software faster—with better quality and more alignment across the team.
 ## Learned Patterns
 
-- **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases, (4) ARTIFACT_SECTIONS dual placement. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
-- **[mistake]**: When using ArtifactType constants (ArtifactType.Issue, ArtifactType.Prd, etc.) use regular `import { ArtifactType }` not `import type { ArtifactType }` - the const object is a runtime value that cannot be accessed through a type-only import. (context: typescript|import-type|ArtifactType|runtime-value)
-- **[insight]**: The `errorResponse()` utility in `apps/api/lib/route-utils.ts` returns generic error messages to the client while logging the actual error server-side. When investigating API failures, the response body alone is insufficient - check API server terminal output for the real error. (context: error-handling|route-utils|debugging|api-errors)
-- **[insight]**: In dev mode, `log.error` in `apps/api` routes uses `console.error` which prints to the API server terminal (port 3002), NOT the browser DevTools console. Always check the API server terminal when debugging 500 errors. (context: debugging|observability|dev-mode|error-logging|monorepo)
-- **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-transactional) but is called from inside `withDb.tx` callbacks. The `withDb.tx` implementation does NOT store the transaction in AsyncLocalStorage, so nested `withDb` calls open separate connections instead of reusing the transaction. (context: database|transactions|withDb|connection-pool|prisma)
-- **[mistake]**: Artifact section headers should use `text-lg font-semibold` with no muted background and no side padding - do not apply default CollapsibleTrigger card-like styling. Sections need `space-y-6` vertical spacing between them, not packed into a single continuous container. (context: artifacts-table|ui-styling|figma-fidelity|section-headers)
-- **[insight]**: In `findOrCreateWorkstream` (apps/api/app/artifacts/service.ts), the Prisma `OR: [{ id: parentId }, { title: fallback }]` checks parentId first - title matching only applies to legacy data without parentId. New Issue-sourced plans always set parentId, so title matching is a non-issue for new flows. (context: prisma|findOrCreateWorkstream|OR-conditions|code-review)
-- **[mistake]**: For GitHubActionRun status filters, use `SUCCESS` not `COMPLETED` - check `packages/database/prisma/schema.prisma` enum `GitHubActionStatus` for valid values (PENDING, QUEUED, RUNNING, SUCCESS, FAILURE, CANCELLED). (context: prisma|GitHubActionStatus|enum-values)
-- **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing - it has `downloadWorkflowArtifacts`, `getRepositoryInfo`, `triggerWorkflowDispatch`, and authenticated Octokit setup. (context: packages/github|reuse|API-functions)
-- **[pattern]**: To filter Prisma `Json` fields by nested property, use `{ path: ['key'], equals: value }` syntax - not dot notation or direct equality. Example: `triggerData: { path: ['artifactId'], equals: artifactId }`. (context: prisma|json-filter|triggerData)
-- **[pattern]**: `adm-zip` is already in `apps/api/package.json` from the webhook handler (`apps/api/app/webhooks/github/route.ts`) - check existing dependencies before installing new packages for zip parsing. (context: dependencies|reuse|adm-zip)
-- **[convention]**: After adding/modifying React components in `apps/app`, always run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). Biome enforces alphabetical prop ordering and Tailwind class ordering. (context: biome|lint|components|ordering)
-- **[pattern]**: For artifact API routes in `apps/api/app/artifacts/[id]/`, use `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` - the org-scoped query ensures users only access artifacts in their organization. (context: auth|artifacts|org-scoping)
-- **[pattern]**: When service functions exceed ~30 lines or have complex parsing logic, extract to `apps/api/lib/{feature}-parser.ts` with pure functions. Service orchestrates, parser implements. Matches existing `artifact-utils.ts` pattern. (context: service-layer|architecture|code-organization)
-- **[pattern]**: When adding TanStack Query hooks for derived artifact data (logs, metrics), add cache invalidation to `useRegenerateArtifact` and `useRequestPlanChanges` mutations in `apps/app/hooks/queries/use-artifacts.ts` onSuccess callbacks. (context: tanstack-query|cache-invalidation|mutations)
-- **[pattern]**: When creating new TanStack Query hooks in `apps/app/hooks/queries/`, follow the established pattern: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)` pattern, and add cache invalidation to related mutations. Do NOT add custom retry logic, gcTime, refetchOnMount, or refetchOnWindowFocus — callers can pass these via `...options` if needed. `staleTime` is acceptable as a default. (context: tanstack-query|hooks|query-keys|patterns|PR-feedback)
-- **[convention]**: `staleTime` is acceptable in new TanStack Query hooks (e.g., `10 * 60 * 1000` for 10 minutes) even though existing hooks don't have it yet. Other cache/refetch customizations (gcTime, refetchOnMount, refetchOnWindowFocus) should be omitted and left to callers via the `...options` spread. (context: tanstack-query|staleTime|query-patterns|conventions)
-- **[convention]**: API routes in apps/api must not manually set Cache-Control headers. Caching is handled by TanStack Query on the frontend (staleTime, refetchOnMount, refetchOnWindowFocus). If server-side caching is needed for expensive operations, implement it at the service layer (in-memory or Redis), not via HTTP response headers. (context: api-routes|cache-control|tanstack-query|http-headers|caching-convention)
-- **[pattern]**: When querying GitHubActionRun by triggerData JSON path filter, always scope through workstreamId + status first to leverage the existing `@@index([workstreamId, status])` index. JSON path filters on triggerData cause sequential scans without an index narrowing the result set first. (context: prisma|json-filter|performance|GitHubActionRun|index-usage|workstreamId)
-- **[mistake]**: Adding `export { ... } from './module'` re-exports to an existing index.ts triggers Biome's `noBarrelFile` lint rule, even if the file already has direct `export function` declarations. Use direct subpath imports (e.g., `@repo/github/execution-log-parser`) instead of adding re-exports to the barrel. (context: biome|noBarrelFile|barrel-exports|lint|subpath-imports)
-- **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm `workspace:*` resolution + TypeScript handles subpath resolution directly. This matches how `@repo/api/src/types/*` subpath imports already work. (context: monorepo|pnpm|workspace|subpath-imports|package.json|exports-field)
-- **[convention]**: Parsers that exclusively process data from a specific domain (e.g., GitHub Actions workflow artifacts) should live in the corresponding domain package (e.g., `packages/github/`) rather than in a generic `apps/api/lib/` location. Import via subpath: `@repo/github/execution-log-parser`. (context: code-organization|domain-packages|domain-boundaries|packages/github|PR-feedback)
-- **[convention]**: New parser/utility modules in domain packages (e.g., `packages/github/execution-log-parser.ts`) must include accompanying unit tests. PR reviewers will reject parsers without test coverage. (context: testing|parser|packages/github|PR-feedback|code-review)
+### Planning & Verification
+- **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
+- **[convention]**: Before implementing new entity types or schema changes, check `plan.json` architectureDecisions array - schema design choices are documented there. (context: plan-adherence|architecture|implementation)
+
+### TypeScript & Imports
+- **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
+- **[mistake]**: Adding `export { ... } from './module'` re-exports to an existing index.ts triggers Biome's `noBarrelFile` lint rule. Use direct subpath imports (e.g., `@repo/github/execution-log-parser`) instead of adding re-exports to barrels. (context: biome|noBarrelFile|subpath-imports)
+- **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm workspace resolution + TypeScript handles this directly. (context: monorepo|pnpm|subpath-imports)
+
+### Debugging
+- **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
+
+### Prisma & Database
+- **[convention]**: When using Prisma enums, always verify valid values in `packages/database/prisma/schema.prisma` - don't assume names (e.g., GitHubActionStatus uses `SUCCESS` not `COMPLETED`). (context: prisma|enums|schema)
+- **[pattern]**: To filter Prisma `Json` fields by nested property, use `{ path: ['key'], equals: value }` syntax - not dot notation or direct equality. (context: prisma|json-filter)
+- **[pattern]**: When filtering Prisma `Json` fields, always scope through indexed fields first (e.g., workstreamId + status) before applying JSON path filters. JSON path filters cause sequential scans without index narrowing. (context: prisma|json-filter|performance|indexes)
+- **[pattern]**: When adding a taxonomy layer to an existing enum (e.g., type/subtype), prefer adding a new category field with a default value rather than renaming - avoids touching every reference site. (context: prisma|schema-design|enum-evolution)
+- **[convention]**: All database schema changes must use `prisma migrate dev --name <name>` to create migration files. Never use `prisma db push` for changes going to production — it doesn't create migrations and causes environment drift. Migrations are applied in prod via `prisma migrate deploy`. (context: prisma|migrations|schema-changes|production|db-push)
+- **[mistake]**: After rebasing or updating dependencies, the hardcoded Stripe apiVersion in packages/payments/index.ts may need to be updated to match the installed stripe package's expected version. The SDK enforces strict API version compatibility. (context: stripe|api-version|rebase|dependency-updates|type-errors|packages/payments)
+- **[pattern]**: For collapsible sections in artifact editor sidebar, use PropertiesPanel pattern: CollapsibleTrigger with 'rounded-lg p-3 font-medium text-sm hover:bg-accent' styling, ChevronUp/Down icons, and CollapsibleContent with 'space-y-4 px-3 pb-3' spacing. Default to collapsed (useState(false)). (context: react|components|collapsible|artifact-editor|ui-patterns)
+- **[pattern]**: When converting metadata panels from tabs to collapsible sections: (1) Replace TabbedMetadataPanel with MetadataPanel, (2) Wrap sections in space-y-6 container, (3) Use separate useState(bool) for each section's open/close state, (4) Import Collapsible/CollapsibleTrigger/CollapsibleContent and ChevronUp/ChevronDown icons, (5) Follow existing pattern from PropertiesPanel and CommentsSection components. (context: react|refactoring|metadata-panel|collapsible|ui-patterns)
+- **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in apps/app/app/(authenticated)/{artifact}/[slug]/components/*-metadata-panel.tsx - only difference is artifact-specific fields in Details tab content. (context: architecture|metadata-panel|artifact-editor|code-structure)
+
+### API & Service Layer
+- **[pattern]**: For artifact routes in `apps/api/app/artifacts/[id]/`, use `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` - the org-scoped query ensures authorization. (context: auth|artifacts|org-scoping)
+- **[pattern]**: When service functions exceed ~30 lines or have complex parsing, extract to `apps/api/lib/{feature}-parser.ts` with pure functions. Service orchestrates, parser implements. (context: service-layer|code-organization)
+- **[convention]**: API routes must not set Cache-Control headers manually. Caching is handled by TanStack Query on the frontend. Server-side caching goes in the service layer (in-memory or Redis), not HTTP headers. (context: api-routes|caching)
+
+### TanStack Query
+- **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
+
+### Code Organization
+- **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
+- **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
+- **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
+
+### Linting & Formatting
+- **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
+
+### Domain Concepts
+- **[convention]**: The 'Workflow' artifact category in Symphony represents user-defined step sequences that orchestrate execution (e.g., plan → code → test → review), NOT artifacts generated during execution or external tool integrations. Workflows let users define what steps get executed. (context: artifact-category|workflow|symphony-concepts)

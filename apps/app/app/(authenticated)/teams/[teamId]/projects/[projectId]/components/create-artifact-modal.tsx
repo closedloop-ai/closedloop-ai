@@ -31,6 +31,7 @@ import {
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
 function PrdSelectContent({
@@ -97,6 +98,16 @@ export function CreateArtifactModal({
 
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
+  const supportsTemplate =
+    artifactType === "PRD" ||
+    artifactType === "ISSUE" ||
+    artifactType === "BUG";
+
+  // Fetch template for types that have templates
+  const { data: template } = useOrgTemplateByType(
+    supportsTemplate ? artifactType : "",
+    { enabled: open && supportsTemplate }
+  );
 
   // Fetch PRDs when modal opens for implementation plan
   const { data: artifacts = [], isLoading: loadingPrds } =
@@ -125,6 +136,13 @@ export function CreateArtifactModal({
       }
     }
   }, [isImplementationPlan, selectedPrdId, prds]);
+
+  // Prefill content from template when loaded (only on initial load)
+  useEffect(() => {
+    if (template?.content) {
+      setContent((current) => (current ? current : (template.content ?? "")));
+    }
+  }, [template]);
 
   const handleTitleChange = (value: string) => {
     setTitle(value);

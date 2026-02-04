@@ -1,5 +1,1 @@
-import { initializeSentry } from "@repo/observability/instrumentation";
-
-export const register = async () => {
-  await initializeSentry();
-};
+export const register = async () => {};

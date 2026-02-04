@@ -26,17 +26,12 @@ export const env = createEnv({
     security(),
     webhooks(),
   ],
-  server: {
-    API_URL: z.url().default("http://localhost:3002"),
-  },
+  server: {},
   client: {
-    NEXT_PUBLIC_API_URL: z.url().default("http://localhost:3002"),
     // GitHub App slug for install URL - optional since GitHub integration is optional
     NEXT_PUBLIC_GITHUB_APP_SLUG: z.string().min(1).optional(),
   },
   runtimeEnv: {
-    API_URL: process.env.API_URL,
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_GITHUB_APP_SLUG: process.env.NEXT_PUBLIC_GITHUB_APP_SLUG,
   },
 });
