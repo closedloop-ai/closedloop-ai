@@ -497,31 +497,53 @@ export const githubService = {
 
   /**
    * Sync repositories for an installation.
-   * Deletes existing repositories and creates new ones atomically.
+   * Uses upsert to preserve record IDs and only removes repos no longer in the list.
    */
   syncRepositories(
     installationId: string,
     repositories: RepositoryInput[]
   ): Promise<GitHubInstallationRepository[]> {
     return withDb.tx(async (tx) => {
+      // Get the set of GitHub repo IDs we're syncing
+      const incomingRepoIds = new Set(repositories.map((r) => r.githubRepoId));
+
+      // Delete repos that are no longer in the installation
       await tx.gitHubInstallationRepository.deleteMany({
-        where: { installationId },
+        where: {
+          installationId,
+          githubRepoId: { notIn: [...incomingRepoIds] },
+        },
       });
 
       if (repositories.length === 0) {
         return [];
       }
 
-      await tx.gitHubInstallationRepository.createMany({
-        data: repositories.map((repo) => ({
-          installationId,
-          githubRepoId: repo.githubRepoId,
-          fullName: repo.fullName,
-          name: repo.name,
-          owner: repo.owner,
-          private: repo.private,
-        })),
-      });
+      // Upsert each repository to preserve IDs
+      for (const repo of repositories) {
+        await tx.gitHubInstallationRepository.upsert({
+          where: {
+            installationId_githubRepoId: {
+              installationId,
+              githubRepoId: repo.githubRepoId,
+            },
+          },
+          create: {
+            installationId,
+            githubRepoId: repo.githubRepoId,
+            fullName: repo.fullName,
+            name: repo.name,
+            owner: repo.owner,
+            private: repo.private,
+          },
+          update: {
+            fullName: repo.fullName,
+            name: repo.name,
+            owner: repo.owner,
+            private: repo.private,
+          },
+        });
+      }
 
       return tx.gitHubInstallationRepository.findMany({
         where: { installationId },
@@ -673,7 +695,7 @@ export const githubService = {
           error: result.error,
         }
       );
-      // Continue anyway - we'll mark as REMOVED locally even if GitHub API fails
+      // Continue anyway - we'll mark as UNINSTALLED locally even if GitHub API fails
     }
 
     // Update our database record

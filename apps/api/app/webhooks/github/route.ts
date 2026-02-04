@@ -883,12 +883,12 @@ async function handleInstallationUnsuspended(
   }
 
   // Determine the new status:
-  // - REMOVED stays REMOVED (user explicitly disconnected)
+  // - UNINSTALLED stays UNINSTALLED (user explicitly disconnected)
   // - Unclaimed installations go to PENDING_CLAIM
   // - Claimed installations go to ACTIVE
   let newStatus: GitHubInstallationStatus;
-  if (existingInstallation.status === GitHubInstallationStatus.REMOVED) {
-    newStatus = GitHubInstallationStatus.REMOVED;
+  if (existingInstallation.status === GitHubInstallationStatus.UNINSTALLED) {
+    newStatus = GitHubInstallationStatus.UNINSTALLED;
   } else if (existingInstallation.organizationId === null) {
     newStatus = GitHubInstallationStatus.PENDING_CLAIM;
   } else {
@@ -1038,10 +1038,13 @@ export const POST = async (request: Request): Promise<Response> => {
       );
     }
 
+    // Parse body once after signature verification
+    const parsedBody = JSON.parse(body) as { action?: string };
+
     // Route by event type
     switch (eventType) {
       case "workflow_run": {
-        const event: WorkflowRunEvent = JSON.parse(body);
+        const event = parsedBody as WorkflowRunEvent;
 
         log.info("[webhook/github] Parsed workflow_run event", {
           action: event.action,
@@ -1136,7 +1139,7 @@ export const POST = async (request: Request): Promise<Response> => {
       }
 
       case "installation": {
-        const event = JSON.parse(body) as { action: string };
+        const event = parsedBody as { action: string };
 
         log.info("[webhook/github] Received installation event", {
           action: event.action,
@@ -1184,7 +1187,7 @@ export const POST = async (request: Request): Promise<Response> => {
       }
 
       case "installation_repositories": {
-        const event = JSON.parse(body) as { action: string };
+        const event = parsedBody as { action: string };
 
         log.info("[webhook/github] Received installation_repositories event", {
           action: event.action,

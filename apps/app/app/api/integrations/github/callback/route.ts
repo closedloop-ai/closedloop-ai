@@ -54,13 +54,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const state = searchParams.get("state");
     const installationId = searchParams.get("installation_id");
 
-    // Log all params for debugging
+    // Log params for debugging (redact sensitive values)
     log.info("[github/callback] Received callback params", {
       hasCode: !!code,
       hasState: !!state,
       hasInstallationId: !!installationId,
       installationId,
-      allParams: Object.fromEntries(searchParams.entries()),
     });
 
     if (!(code && state && installationId)) {

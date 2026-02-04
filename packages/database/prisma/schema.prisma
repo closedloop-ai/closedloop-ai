@@ -139,7 +139,6 @@ enum GitHubInstallationStatus {
   PENDING_CLAIM
   ACTIVE
   SUSPENDED
-  REMOVED
   UNINSTALLED
 }
 
