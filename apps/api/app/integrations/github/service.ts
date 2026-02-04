@@ -51,6 +51,26 @@ async function fetchGitHubUser(
 }
 
 /**
+ * Check if an installation can be claimed by the given organization.
+ * Returns an error message if claim is blocked, null if allowed.
+ */
+function validateInstallationClaim(
+  installation: { organizationId: string | null; status: string },
+  targetOrgId: string
+): string | null {
+  // Block claim if installation is already owned by a different org
+  // This prevents users with GitHub access from hijacking another org's installation
+  if (
+    installation.organizationId &&
+    installation.organizationId !== targetOrgId &&
+    installation.status === "ACTIVE"
+  ) {
+    return "This GitHub installation is already connected to another organization";
+  }
+  return null;
+}
+
+/**
  * GitHub integration service - handles all business logic and database operations
  */
 export const githubService = {
@@ -288,6 +308,24 @@ export const githubService = {
           installationId: installation.id,
           githubInstallationId: installationIdNumber,
         });
+      }
+
+      // Security check: Block claim if installation is already owned by a different org
+      const claimError = validateInstallationClaim(
+        installation,
+        organizationId
+      );
+      if (claimError) {
+        log.warn(
+          "[github/oauth] Attempted to claim installation already owned by another org",
+          {
+            installationId,
+            existingOrgId: installation.organizationId,
+            attemptedOrgId: organizationId,
+            userId,
+          }
+        );
+        return { success: false, error: claimError };
       }
 
       // Claim the installation and link to organization in single update
