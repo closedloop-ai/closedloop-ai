@@ -11,7 +11,7 @@ on:
         required: true
       slack_requester_id:
         description: "Slack user ID who requested the deploy"
-        required: true
+        required: false
 
 concurrency:
   group: deploy-production
@@ -149,6 +149,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
+          # Check PR is mergeable before attempting merge
+          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+          if [ "$MERGEABLE" != "MERGEABLE" ]; then
+            echo "::error::PR is not mergeable (state: $MERGEABLE). Check for conflicts or failing checks."
+            exit 1
+          fi
           gh pr merge "$PR_URL" --merge --delete-branch=false
           MERGE_SHA=$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid')
           echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"

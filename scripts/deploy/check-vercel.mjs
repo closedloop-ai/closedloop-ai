@@ -75,11 +75,18 @@ function isErrorState(state) {
 
 const deadline = Date.now() + timeoutSeconds * 1000;
 const results = new Map();
+const pendingCounts = new Map(); // Track consecutive "not found" results
+const MAX_PENDING_ITERATIONS = 30; // Fail after ~10 minutes of no deployment
 
 console.log(`Waiting for Vercel deployments for SHA: ${sha}`);
 console.log(`Projects: ${projectIds.join(", ")}`);
+console.log(`Timeout: ${timeoutSeconds}s, Poll interval: ${intervalSeconds}s`);
 
+let iteration = 0;
 while (Date.now() < deadline) {
+  iteration++;
+  console.log(`\n--- Poll iteration ${iteration} ---`);
+
   for (const projectId of projectIds) {
     if (results.get(projectId)?.done) {
       continue;
@@ -87,6 +94,22 @@ while (Date.now() < deadline) {
 
     const deployment = await fetchLatestDeployment(projectId);
     if (!deployment) {
+      const count = (pendingCounts.get(projectId) || 0) + 1;
+      pendingCounts.set(projectId, count);
+
+      if (count >= MAX_PENDING_ITERATIONS) {
+        console.log(`${projectId}: No deployment found after ${count} attempts, marking as failed`);
+        results.set(projectId, {
+          projectId,
+          status: "NOT_FOUND",
+          error: `No deployment found for SHA ${sha} after ${count} attempts`,
+          done: true,
+          failed: true,
+        });
+        continue;
+      }
+
+      console.log(`${projectId}: PENDING (attempt ${count}/${MAX_PENDING_ITERATIONS})`);
       results.set(projectId, {
         projectId,
         status: "PENDING",
@@ -94,6 +117,9 @@ while (Date.now() < deadline) {
       });
       continue;
     }
+
+    // Reset pending count once we find a deployment
+    pendingCounts.set(projectId, 0);
 
     const state = deployment.readyState || deployment.state;
     const url = deployment.url ? `https://${deployment.url}` : deployment.url;
@@ -134,17 +160,16 @@ while (Date.now() < deadline) {
     });
   }
 
-  const allDone = projectIds.every(
-    (id) => results.get(id)?.status === "READY" || results.get(id)?.failed
-  );
+  const allReady = projectIds.every((id) => results.get(id)?.status === "READY");
   const anyFailed = projectIds.some((id) => results.get(id)?.failed);
 
-  if (allDone) {
+  if (allReady) {
+    console.log("\nAll deployments ready!");
     break;
   }
 
   if (anyFailed) {
-    console.log("One or more deployments failed.");
+    console.log("\nOne or more deployments failed, stopping early.");
     break;
   }
 
@@ -158,9 +183,14 @@ const summary = {
 
 await writeFile(outputPath, JSON.stringify(summary, null, 2));
 
+console.log(`\n--- Final Status (after ${iteration} iterations) ---`);
+for (const d of summary.deployments) {
+  console.log(`${d.projectId}: ${d.status}${d.url ? ` - ${d.url}` : ""}${d.error ? ` (${d.error})` : ""}`);
+}
+
 if (!summary.ok) {
-  console.error("Deployment verification failed.");
+  console.error("\nDeployment verification failed.");
   process.exit(1);
 }
 
-console.log("All deployments ready!");
+console.log("\nAll deployments verified successfully!");
