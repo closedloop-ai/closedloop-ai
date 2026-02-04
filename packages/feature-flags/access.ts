@@ -1,6 +1,8 @@
 import { type ApiData, verifyAccess } from "flags";
 import { type NextRequest, NextResponse } from "next/server";
-import * as flags from "./index";
+import { showBetaFeature } from "./index";
+
+const allFlags = [showBetaFeature];
 
 export const getFlags = async (request: NextRequest) => {
   const access = await verifyAccess(request.headers.get("Authorization"));
@@ -10,7 +12,7 @@ export const getFlags = async (request: NextRequest) => {
   }
 
   const definitions = Object.fromEntries(
-    Object.values(flags).map((flag) => [
+    allFlags.map((flag) => [
       flag.key,
       {
         origin: flag.origin,

@@ -9,7 +9,7 @@ import type { TransactionClient } from "./generated/internal/prismaNamespace";
 import { keys } from "./keys";
 import { resolveSchemaName } from "./schema-utils";
 
-// biome-ignore lint/performance/noBarrelFile: re-exporting
+// biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
 
 /**
