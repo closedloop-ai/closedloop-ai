@@ -88,7 +88,9 @@ export const githubService = {
       db.gitHubInstallation.findFirst({
         where: {
           organizationId,
-          status: "ACTIVE",
+          status: {
+            in: ["ACTIVE", "SUSPENDED"],
+          },
         },
         include: {
           repositories: true,
