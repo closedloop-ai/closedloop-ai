@@ -46,6 +46,11 @@ type EditorContentProps = {
    * Content to apply when a reset is triggered
    */
   contentResetValue?: string;
+  /**
+   * Where scrolling is handled for the editor content.
+   * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
+   */
+  scrollMode?: "inner" | "outer";
 };
 
 export function EditorContent({
@@ -59,6 +64,7 @@ export function EditorContent({
   className,
   contentResetKey,
   contentResetValue,
+  scrollMode = "inner",
 }: Readonly<EditorContentProps>) {
   const shouldUseLiveblocks = !!liveblocksRoomId && enableLiveblocks;
   const editorKey = shouldUseLiveblocks
@@ -70,7 +76,8 @@ export function EditorContent({
     return (
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col overflow-hidden",
+          "flex min-h-0 flex-1 flex-col",
+          scrollMode !== "outer" && "overflow-hidden",
           className
         )}
       >
@@ -82,6 +89,7 @@ export function EditorContent({
           onEditorReady={onEditorReady}
           placeholder={placeholder}
           readOnly={readOnly}
+          scrollMode={scrollMode}
           value={value}
         />
       </div>
@@ -99,6 +107,7 @@ export function EditorContent({
       onEditorReady={onEditorReady}
       placeholder={placeholder}
       readOnly={readOnly}
+      scrollMode={scrollMode}
       value={value}
     />
   );
@@ -125,13 +134,18 @@ function EditorContentWithLiveblocks({
   contentResetKey,
   contentResetValue,
   editorKey,
+  scrollMode = "inner",
 }: EditorContentWithLiveblocksProps) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
 
   return (
     <div
-      className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", className)}
+      className={cn(
+        "flex min-h-0 flex-1 flex-col",
+        scrollMode !== "outer" && "overflow-hidden",
+        className
+      )}
     >
       <RichTextEditor
         contentResetKey={contentResetKey}
@@ -143,6 +157,7 @@ function EditorContentWithLiveblocks({
         onEditorReady={onEditorReady}
         placeholder={placeholder}
         readOnly={readOnly}
+        scrollMode={scrollMode}
         value={value}
       />
     </div>

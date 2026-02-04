@@ -1,5 +1,6 @@
 /* Liveblocks comments styling overrides */
 
+/* Floating comments (mobile/tablet and fallback) */
 .lb-collab-floating,
 .lb-tiptap-floating-composer,
 .lb-tiptap-floating-toolbar,
@@ -23,4 +24,44 @@
     width: calc(100vw - 32px);
     max-width: calc(100vw - 32px);
   }
+}
+
+/* Anchored comments (Google Docs style side panel) */
+.lb-collab-anchored-threads {
+  /* Liveblocks AnchoredThreads creates absolutely positioned elements */
+  /* We provide a fixed-width sidebar that scrolls with the page */
+  position: relative;
+  width: 320px;
+  flex-shrink: 0;
+  overflow: visible;
+  padding: 1.5rem 0;
+  background-color: transparent;
+}
+
+/*
+ * When using anchored mode on desktop (xl breakpoint):
+ * - Hide FloatingThreads (comment threads shown in sidebar instead)
+ */
+@media (min-width: 1280px) {
+  /* Hide any floating thread popups - all comments should be in the sidebar */
+  .lb-tiptap-floating-threads,
+  .lb-collab-floating-threads {
+    display: none !important;
+  }
+}
+
+/* Style anchored thread items to match Google Docs aesthetic */
+.lb-collab-anchored-threads [data-thread] {
+  margin: 0 1.25rem 1.25rem;
+  padding: 0.9rem;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  box-shadow: none;
+  transition: box-shadow 0.2s ease-in-out;
+}
+
+/* Ensure comments are visible in the sidebar */
+.lb-collab-anchored-threads [data-thread]:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }

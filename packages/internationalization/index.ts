@@ -16,7 +16,7 @@ const dictionaries: Record<string, () => Promise<Dictionary>> =
       () =>
         import(`./dictionaries/${locale}.json`)
           .then((mod) => mod.default)
-          .catch((_err) =>
+          .catch(() =>
             import("./dictionaries/en.json").then((mod) => mod.default)
           ),
     ])
@@ -31,7 +31,7 @@ export const getDictionary = async (locale: string): Promise<Dictionary> => {
 
   try {
     return await dictionaries[normalizedLocale]();
-  } catch (_error) {
+  } catch {
     return dictionaries.en();
   }
 };
