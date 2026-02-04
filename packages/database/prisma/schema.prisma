@@ -613,7 +613,6 @@ model GitHubInstallationRepository {
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
 
   @@unique([installationId, githubRepoId])
-  @@index([installationId])
   @@map("github_installation_repositories")
 }
 

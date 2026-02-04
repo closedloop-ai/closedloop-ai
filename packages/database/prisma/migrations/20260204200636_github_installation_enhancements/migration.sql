@@ -54,7 +54,4 @@ CREATE INDEX "github_installations_status_idx" ON "github_installations"("status
 CREATE INDEX "github_installations_account_id_idx" ON "github_installations"("account_id");
 
 -- CreateIndex
-CREATE INDEX "github_installation_repositories_installation_id_idx" ON "github_installation_repositories"("installation_id");
-
--- CreateIndex
 CREATE UNIQUE INDEX "github_installation_repositories_installation_id_github_repo_id_key" ON "github_installation_repositories"("installation_id", "github_repo_id");
