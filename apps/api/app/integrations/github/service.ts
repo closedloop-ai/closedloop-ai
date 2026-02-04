@@ -5,6 +5,8 @@ import type {
   GitHubInstallationStatus,
 } from "@repo/database";
 import { withDb } from "@repo/database";
+import { deleteInstallation } from "@repo/github";
+import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 
@@ -137,8 +139,6 @@ export const githubService = {
     userId: string
   ): Promise<OAuthCallbackResult> {
     try {
-      // Import GitHub keys - validated at runtime
-      const { keys } = await import("@repo/github/keys");
       const config = keys();
 
       // Exchange authorization code for user access token
@@ -689,7 +689,6 @@ export const githubService = {
     }
 
     // Uninstall from GitHub side first
-    const { deleteInstallation } = await import("@repo/github");
     const result = await deleteInstallation(installation.installationId);
 
     if (!result.success) {
