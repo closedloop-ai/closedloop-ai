@@ -63,6 +63,7 @@
       "es5-ext",
       "esbuild",
       "prisma",
+      "protobufjs",
       "sharp"
     ]
   },

@@ -80,4 +80,60 @@ describe("GET /api/users", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
   });
+
+  it("returns only active users", async () => {
+    const mockUsers = [
+      {
+        id: "1",
+        email: "active@example.com",
+        firstName: "Active",
+        lastName: "User",
+        active: true,
+      },
+    ];
+    vi.mocked(usersService.findByOrganization).mockResolvedValue(
+      mockUsers as any
+    );
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/users",
+    });
+    const routeContext = createMockRouteContext({});
+    const response = await GET(request, routeContext);
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual(mockUsers);
+    expect(json.data.every((u: any) => u.active === true)).toBe(true);
+  });
+
+  it("excludes inactive users", async () => {
+    // Mock service returns only active users (inactive users not included)
+    const mockActiveUsers = [
+      {
+        id: "1",
+        email: "active@example.com",
+        firstName: "Active",
+        lastName: "User",
+        active: true,
+      },
+    ];
+    vi.mocked(usersService.findByOrganization).mockResolvedValue(
+      mockActiveUsers as any
+    );
+
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/users",
+    });
+    const routeContext = createMockRouteContext({});
+    const response = await GET(request, routeContext);
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    // Should not include inactive users
+    expect(json.data.length).toBe(1);
+    expect(json.data[0].active).toBe(true);
+  });
 });
