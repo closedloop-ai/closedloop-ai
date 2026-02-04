@@ -2,10 +2,8 @@
 
 import { OptionalComments } from "@repo/collaboration";
 import type { Editor } from "@tiptap/react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
-
-type CommentsMode = "floating" | "anchored";
 
 type EditorWithCommentsProps = {
   value: string;
@@ -30,7 +28,6 @@ export function EditorWithComments({
   readOnly,
   scrollMode = "outer",
 }: Readonly<EditorWithCommentsProps>) {
-  const commentsMode = useCommentsMode();
   const [editor, setEditor] = useState<Editor | null>(null);
   const showCollaboration = enableLiveblocks;
 
@@ -53,40 +50,27 @@ export function EditorWithComments({
         </div>
 
         {showCollaboration && editor && (
-          <OptionalComments
-            editor={editor}
-            mode={commentsMode}
-            roomId={liveblocksRoomId}
-          />
+          <>
+            {/* Floating comments on mobile/tablet (< 1280px) */}
+            <div className="xl:hidden">
+              <OptionalComments
+                editor={editor}
+                mode="floating"
+                roomId={liveblocksRoomId}
+              />
+            </div>
+
+            {/* Anchored comments on desktop (>= 1280px) */}
+            <div className="hidden xl:block">
+              <OptionalComments
+                editor={editor}
+                mode="anchored"
+                roomId={liveblocksRoomId}
+              />
+            </div>
+          </>
         )}
       </div>
     </div>
   );
-}
-
-function useCommentsMode() {
-  const [mode, setMode] = useState<CommentsMode>("floating");
-
-  useEffect(() => {
-    if (!globalThis.window) {
-      return;
-    }
-
-    const media = globalThis.matchMedia("(min-width: 1280px)");
-    const updateMode = () => {
-      setMode(media.matches ? "anchored" : "floating");
-    };
-
-    updateMode();
-
-    if (media.addEventListener) {
-      media.addEventListener("change", updateMode);
-      return () => media.removeEventListener("change", updateMode);
-    }
-
-    media.addEventListener("change", updateMode);
-    return () => media.removeEventListener("change", updateMode);
-  }, []);
-
-  return mode;
 }

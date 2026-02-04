@@ -50,6 +50,7 @@ function CommentsWithHooks({
     <>
       <Threads editor={editor} mode={mode} />
       <FloatingComposer
+        autoFocus
         className="lb-collab-floating lb-collab-floating-composer"
         editor={editor}
       />
