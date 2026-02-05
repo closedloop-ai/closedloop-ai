@@ -149,9 +149,7 @@ jobs:
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           CHANGELOG=$(cat "$CHANGELOG_PATH")
-          MESSAGE="📋 *Deploy PR:* ${PR_URL}
-
-${CHANGELOG}"
+          MESSAGE=$(printf "📋 *Deploy PR:* %s\n\n%s" "$PR_URL" "$CHANGELOG")
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
             exit 0
@@ -301,28 +299,19 @@ ${CHANGELOG}"
               STATUS=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .status // empty' vercel-status.json)
               if [ -n "$URL" ]; then
                 if [ -n "$LABEL" ]; then
-                  VERCEL_LINES="${VERCEL_LINES}
-  ▲ *${LABEL}:* ${URL}"
+                  VERCEL_LINES+=$'\n'"  ▲ *${LABEL}:* ${URL}"
                 else
-                  VERCEL_LINES="${VERCEL_LINES}
-  ▲ ${URL}"
+                  VERCEL_LINES+=$'\n'"  ▲ ${URL}"
                 fi
               elif [ -n "$LABEL" ]; then
-                VERCEL_LINES="${VERCEL_LINES}
-  ▲ *${LABEL}:* ${STATUS:-unknown}"
+                VERCEL_LINES+=$'\n'"  ▲ *${LABEL}:* ${STATUS:-unknown}"
               fi
             done
           fi
           if [ -n "$VERCEL_LINES" ]; then
-            MESSAGE="✅ *Deploy succeeded*
-
-*PR:* ${PR_URL}
-
-*Live apps:*${VERCEL_LINES}"
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s" "$PR_URL" "$VERCEL_LINES")
           else
-            MESSAGE="✅ *Deploy succeeded*
-
-*PR:* ${PR_URL}"
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s" "$PR_URL")
           fi
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
