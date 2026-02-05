@@ -1149,45 +1149,26 @@ Please try again or contact support if the issue persists.`,
         return { status: "success", data: parsedReport };
       }
 
+      // Verify artifact exists and belongs to organization
       const artifact = await this.findByIdSimple(artifactId, organizationId);
-      if (!artifact?.workstreamId) {
+      if (!artifact) {
         return { status: "not_found", data: null };
       }
 
-      // Use workstreamId + status to leverage @@index([workstreamId, status])
-      // before applying the JSON path filter on triggerData
-      const actionRun = await withDb((db) =>
-        db.gitHubActionRun.findFirst({
-          where: {
-            workstreamId: artifact.workstreamId!,
-            status: "SUCCESS",
-            triggerData: {
-              path: ["artifactId"],
-              equals: artifactId,
-            },
-          },
-          orderBy: { completedAt: "desc" },
+      // Query evaluation from database
+      const evaluation = await withDb((db) =>
+        db.artifactEvaluation.findFirst({
+          where: { artifactId },
+          orderBy: { createdAt: "desc" },
         })
       );
 
-      if (!actionRun?.runId) {
+      if (!evaluation) {
         return { status: "not_found", data: null };
       }
 
-      const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "judges"
-      );
-
-      if (artifacts.length === 0 || !artifacts[0]) {
-        return { status: "not_found", data: null };
-      }
-
-      const parsedReport = JSON.parse(
-        artifacts[0].data.toString()
-      ) as JudgesReport;
-
-      return { status: "success", data: parsedReport };
+      const reportData = evaluation.reportData as JudgesReport;
+      return { status: "success", data: reportData };
     } catch (error) {
       log.error("[artifacts-service] Failed to get judges feedback", {
         error: error instanceof Error ? error.message : String(error),

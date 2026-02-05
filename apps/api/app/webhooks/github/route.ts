@@ -14,6 +14,7 @@ import {
   ArtifactType,
   type PlanJson,
 } from "@repo/api/src/types/artifact";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
@@ -36,6 +37,7 @@ type WorkflowContext = {
   runId: number;
   command?: string;
   repositoryId?: string;
+  actionRunId?: string;
 };
 
 type WorkflowRunEvent =
@@ -47,6 +49,7 @@ type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
+  judgesReport: JudgesReport | null;
   entries: { name: string; data: Buffer }[];
 };
 
@@ -82,6 +85,27 @@ function parseExecutionResult(
 }
 
 /**
+ * Parse judges report JSON safely.
+ */
+export function parseJudgesReport(
+  content: Buffer,
+  entryName: string
+): JudgesReport | null {
+  try {
+    const jsonContent = content.toString("utf-8");
+    const result = JSON.parse(jsonContent) as JudgesReport;
+    log.info(
+      `Found judges report: ${entryName}, report_id: ${result.report_id}, ${result.stats.length} judges`
+    );
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error(`Failed to parse judges.json: ${message}`);
+    return null;
+  }
+}
+
+/**
  * Parse plan.json from experimental plugin artifacts.
  * Returns the markdown content from the JSON structure, or null if parsing fails.
  */
@@ -101,18 +125,19 @@ function parsePlanJson(content: Buffer, entryName: string): string | null {
 }
 
 /**
- * Search a zip for plan, questions, or execution result files.
+ * Search a zip for plan, questions, execution result, or judges report files.
  * Returns the content if found, null otherwise.
  *
  * Priority for plan content:
  * 1. plan.json (experimental plugin artifact)
  * 2. implementation-plan.md (legacy)
  */
-function findPlanInZip(zip: AdmZip): ZipContent {
+export function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
   let planContent: string | null = null;
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
+  let judgesReport: JudgesReport | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
@@ -148,9 +173,19 @@ function findPlanInZip(zip: AdmZip): ZipContent {
     else if (name.endsWith("execution-result.json")) {
       executionResult = parseExecutionResult(content, name);
     }
+    // Check for judges report
+    else if (name.endsWith("judges.json")) {
+      judgesReport = parseJudgesReport(content, name);
+    }
   }
 
-  return { planContent, questionsContent, executionResult, entries };
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    entries,
+  };
 }
 
 /**
@@ -184,6 +219,7 @@ function mergeZipContent(
     planContent: result.planContent ?? current.planContent,
     questionsContent: result.questionsContent ?? current.questionsContent,
     executionResult: result.executionResult ?? current.executionResult,
+    judgesReport: result.judgesReport ?? current.judgesReport,
   };
 }
 
@@ -208,6 +244,7 @@ async function processArtifactZip(
     planContent: null,
     questionsContent: null,
     executionResult: null,
+    judgesReport: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
@@ -255,6 +292,7 @@ async function processArtifactUploads(
   planContent: string | null;
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
+  judgesReport: JudgesReport | null;
   artifactKeys: string[];
 }> {
   log.info(
@@ -265,6 +303,7 @@ async function processArtifactUploads(
   let planContent: string | null = null;
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
+  let judgesReport: JudgesReport | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -280,20 +319,27 @@ async function processArtifactUploads(
     planContent = result.planContent ?? planContent;
     questionsContent = result.questionsContent ?? questionsContent;
     executionResult = result.executionResult ?? executionResult;
+    judgesReport = result.judgesReport ?? judgesReport;
     artifactKeys.push(...result.artifactKeys);
   }
 
-  if (planContent || questionsContent || executionResult) {
+  if (planContent || questionsContent || executionResult || judgesReport) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}`
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}`
     );
   } else {
     log.warn(
-      "[processArtifactUploads] No plan, questions, or execution result found in artifacts"
+      "[processArtifactUploads] No plan, questions, execution result, or judges report found in artifacts"
     );
   }
 
-  return { planContent, questionsContent, executionResult, artifactKeys };
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    artifactKeys,
+  };
 }
 
 /**
@@ -435,8 +481,13 @@ async function handleWorkflowSuccess(
     runId,
     s3Configured
   );
-  const { planContent, questionsContent, executionResult, artifactKeys } =
-    result;
+  const {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    artifactKeys,
+  } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact
   if (command === "execute" && executionResult) {
@@ -518,6 +569,33 @@ async function handleWorkflowSuccess(
         },
       },
     });
+
+    // Persist judges report if available
+    if (judgesReport && ctx.actionRunId) {
+      await db.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId,
+            reportId: judgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId,
+          actionRunId: ctx.actionRunId,
+          reportId: judgesReport.report_id,
+          reportData: judgesReport,
+        },
+        update: {
+          reportData: judgesReport,
+        },
+      });
+
+      log.info("[handleWorkflowSuccess] Persisted judges report", {
+        artifactId,
+        reportId: judgesReport.report_id,
+        judgesCount: judgesReport.stats.length,
+      });
+    }
   });
 
   log.info(
@@ -723,6 +801,7 @@ async function processWorkflowCompletion(
     repositoryId: actionRun.repositoryId,
     command: triggerData.command,
     runId,
+    actionRunId: actionRun.id,
   };
 
   // Use transaction to ensure artifact content and status are updated atomically.
