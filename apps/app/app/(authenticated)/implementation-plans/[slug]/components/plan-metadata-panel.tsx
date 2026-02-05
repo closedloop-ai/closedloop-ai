@@ -7,7 +7,6 @@ import type {
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
   CollapsibleContent,
@@ -38,7 +37,6 @@ import {
   calculateAcceptanceRate,
   sortMetricsByScore,
 } from "@/lib/evaluation-utils";
-import { getUseMockJudges } from "@/lib/feature-flags";
 import { JudgeResultCard } from "./judge-result-card";
 
 const PR_STATE_STYLES: Record<string, string> = {
@@ -225,17 +223,7 @@ export function PlanMetadataPanel({
             open={isEvaluationOpen}
           >
             <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg p-3 font-medium text-sm transition-colors hover:bg-accent">
-              <div className="flex items-center">
-                <span>Evaluation</span>
-                {getUseMockJudges() && (
-                  <Badge
-                    className="ml-2 bg-amber-100 text-amber-800"
-                    variant="outline"
-                  >
-                    MOCK DATA
-                  </Badge>
-                )}
-              </div>
+              <span>Evaluation</span>
               {isEvaluationOpen ? (
                 <ChevronUpIcon className="h-4 w-4" />
               ) : (

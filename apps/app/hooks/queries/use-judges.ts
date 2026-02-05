@@ -6,7 +6,6 @@ import type {
 } from "@repo/api/src/types/evaluation";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
-import { getUseMockJudges } from "@/lib/feature-flags";
 
 // Query keys
 export const judgesKeys = {
@@ -28,7 +27,7 @@ export function useJudgesFeedback(
       );
       return response.status === "success" ? response.data : null;
     },
-    enabled: !getUseMockJudges() && !!artifactId,
+    enabled: !!artifactId,
     staleTime: 10 * 60 * 1000, // 10 minutes
   });
 }

@@ -17,8 +17,6 @@ import {
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { getUseMockJudges } from "@/lib/feature-flags";
-import { mockJudgesReport } from "@/mocks/evaluation-data";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -106,10 +104,7 @@ export function PlanEditor({
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
-  const { data: judgesData } = useJudgesFeedback(plan.id);
-
-  // Compute judges data to pass to panel
-  const judgesReport = getUseMockJudges() ? mockJudgesReport : judgesData;
+  const { data: judgesReport } = useJudgesFeedback(plan.id);
 
   // Derived state
   const isDraft = metadata.status === "DRAFT";
