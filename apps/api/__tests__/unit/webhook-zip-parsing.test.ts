@@ -6,7 +6,10 @@
  * 2. ZIP without judges.json yields null
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { findPlanInZip, parseJudgesReport } from "@/app/webhooks/github/route";
+import {
+  findPlanInZip,
+  parseJudgesReport,
+} from "@/app/webhooks/github/zip-parser";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
 describe("ZIP parsing for judges.json", () => {
