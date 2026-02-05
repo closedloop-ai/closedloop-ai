@@ -306,3 +306,40 @@ export function isCurrentEnvironment(correlationId: string): boolean {
   const config = getConfig();
   return parsed.env === config.WEBAPP_ENV;
 }
+
+/**
+ * Delete (uninstall) a GitHub App installation.
+ * This requires JWT authentication (app-level), not installation token.
+ * @see https://docs.github.com/en/rest/apps/apps#delete-an-installation-for-the-authenticated-app
+ */
+export async function deleteInstallation(
+  installationId: number
+): Promise<{ success: boolean; error?: string }> {
+  const config = getConfig();
+
+  try {
+    // Create app-level authenticated Octokit (JWT, not installation token)
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: config.GITHUB_APP_ID,
+        privateKey: config.GITHUB_APP_PRIVATE_KEY,
+      },
+    });
+
+    await appOctokit.apps.deleteInstallation({
+      installation_id: installationId,
+    });
+
+    log.info("[github/app] Deleted installation", { installationId });
+    return { success: true };
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    log.error("[github/app] Failed to delete installation", {
+      installationId,
+      error: errorMessage,
+    });
+    return { success: false, error: errorMessage };
+  }
+}

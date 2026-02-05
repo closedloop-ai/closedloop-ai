@@ -13,6 +13,7 @@ import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-action
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -42,6 +43,9 @@ export function PRDEditor({
     generateArtifactRoomId(prd.organizationId, prd.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
   const showCollaboration = isEditing;
+
+  // Fetch organization users for @mentions in comments
+  const { data: users } = useOrganizationUsers();
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -128,6 +132,7 @@ export function PRDEditor({
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
+        onClose={exitEditMode}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
         onExport={actions.handleDownload}
@@ -143,7 +148,10 @@ export function PRDEditor({
         versionDisplay={versionDisplay}
       />
 
-      <OptionalArtifactRoom roomId={showCollaboration ? roomId : null}>
+      <OptionalArtifactRoom
+        roomId={showCollaboration ? roomId : null}
+        users={users}
+      >
         {/* Presence Indicators */}
         {showCollaboration && <Presence />}
 
