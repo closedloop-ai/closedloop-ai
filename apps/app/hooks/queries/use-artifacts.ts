@@ -18,6 +18,7 @@ import {
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
 import { executionLogKeys } from "./use-execution-log";
+import { judgesKeys } from "./use-judges";
 
 // Query keys
 export const artifactKeys = {
@@ -266,6 +267,9 @@ export function useRegenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: executionLogKeys.detail(id),
       });
+      queryClient.invalidateQueries({
+        queryKey: judgesKeys.detail(id),
+      });
     },
   });
 }
@@ -295,6 +299,9 @@ export function useRequestPlanChanges() {
       });
       queryClient.invalidateQueries({
         queryKey: executionLogKeys.detail(variables.artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: judgesKeys.detail(variables.artifactId),
       });
       // Invalidate list queries so slug-based containers refetch the latest version
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
