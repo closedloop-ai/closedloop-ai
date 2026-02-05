@@ -14,6 +14,10 @@
         ".react-email/**"
       ]
     },
+    "@repo/database#build": {
+      "cache": false,
+      "dependsOn": ["^build"]
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
