@@ -103,10 +103,14 @@ function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
   const branchUrl = process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL;
   const currentApp = getCurrentAppType();
   const envSuffix = getCurrentEnvSuffix();
+
+  // Only apply preview URL derivation for actual Vercel preview deployments.
+  // Production deployments (including staging deployed from main branch) should
+  // use the configured NEXT_PUBLIC_*_URL values, not derive from VERCEL_BRANCH_URL.
   const isPreviewLike =
-    vercelEnv === "preview" ||
-    (branchUrl?.includes(".preview.") ?? false) ||
-    (branchUrl?.includes("-git-") ?? false);
+    vercelEnv === "preview" &&
+    ((branchUrl?.includes(".preview.") ?? false) ||
+      (branchUrl?.includes("-git-") ?? false));
 
   // In preview-like environments, derive all app URLs by swapping the app type
   if (isPreviewLike && branchUrl && currentApp && envSuffix) {
