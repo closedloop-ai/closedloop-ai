@@ -17,6 +17,7 @@ import {
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -48,6 +49,9 @@ export function PlanEditor({
     generateArtifactRoomId(plan.organizationId, plan.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
   const showCollaboration = isEditing;
+
+  // Fetch organization users for @mentions in comments
+  const { data: users } = useOrganizationUsers();
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -154,6 +158,7 @@ export function PlanEditor({
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onApprove={planActions.handleApprove}
+        onClose={exitEditMode}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
@@ -176,7 +181,10 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <OptionalArtifactRoom roomId={showCollaboration ? roomId : null}>
+      <OptionalArtifactRoom
+        roomId={showCollaboration ? roomId : null}
+        users={users}
+      >
         {/* Presence Indicators */}
         {showCollaboration && <Presence />}
 
