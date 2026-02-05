@@ -97,6 +97,11 @@ function getCurrentEnvSuffix(): string | null {
  * @param urlType - Which app this URL represents ("app", "web", or "api")
  * @param fallback - The configured env var value to use for non-preview
  */
+const TRAILING_SLASHES = /\/+$/;
+function stripTrailingSlashes(url: string): string {
+  return url.replace(TRAILING_SLASHES, "");
+}
+
 function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
   const vercelEnv = process.env.VERCEL_ENV;
   // Use VERCEL_BRANCH_URL (consistent across deployments) then VERCEL_URL
@@ -121,7 +126,7 @@ function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
 
     if (match) {
       const targetUrl = branchUrl.replace(searchPattern, `${urlType}$2`);
-      return `https://${targetUrl}`;
+      return stripTrailingSlashes(`https://${targetUrl}`);
     }
     // Pattern didn't match - log warning and fall through to fallback
     console.warn(
@@ -135,7 +140,7 @@ function getDynamicUrl(urlType: AppType, fallback: string | undefined): string {
     web: "http://localhost:3001",
     api: "http://localhost:3002",
   };
-  return fallback ?? defaults[urlType];
+  return stripTrailingSlashes(fallback ?? defaults[urlType]);
 }
 
 export const keys = () =>
