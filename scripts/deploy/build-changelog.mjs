@@ -116,17 +116,17 @@ lines.push(
 lines.push("");
 
 if (prs.size > 0) {
-  lines.push("Included PRs:");
+  lines.push("*Included PRs:*");
   for (const pr of prs.values()) {
     const author = pr.author ? ` (by @${pr.author})` : "";
-    lines.push(`- #${pr.number}: ${pr.title}${author}`);
+    lines.push(`  • #${pr.number}: ${pr.title}${author}`);
   }
 } else if (fallbackCommits.length > 0) {
-  lines.push("Included commits:");
+  lines.push("*Included commits:*");
   for (const commit of fallbackCommits) {
     const message = String(commit.commit?.message || "").split("\n")[0];
     const shortSha = String(commit.sha || "").slice(0, 7);
-    lines.push(`- ${message} (${shortSha})`);
+    lines.push(`  • ${message} (${shortSha})`);
   }
 }
 
