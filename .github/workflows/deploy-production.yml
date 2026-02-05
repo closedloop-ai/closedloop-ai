@@ -66,7 +66,7 @@ jobs:
 
       - name: Build Changelog
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: node scripts/deploy/build-changelog.mjs
 
       - name: Check For Changes
@@ -118,7 +118,7 @@ jobs:
         id: deploy_pr
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           PR_URL=$(gh pr list \
             --base "$DEPLOY_BASE_BRANCH" \
@@ -172,7 +172,7 @@ jobs:
         id: merge
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           # Wait for required status checks to complete (with timeout + retry)
@@ -334,7 +334,7 @@ jobs:
         id: capture_errors
         if: failure() && steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # Determine which step failed
           FAILED_STEP="Unknown"
