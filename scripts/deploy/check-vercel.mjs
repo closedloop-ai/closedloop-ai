@@ -7,6 +7,8 @@ const target = process.env.VERCEL_TARGET || "production";
 const sha = process.env.DEPLOY_SHA;
 const timeoutSeconds = Number(process.env.VERCEL_TIMEOUT_SECONDS || 1200);
 const intervalSeconds = Number(process.env.VERCEL_POLL_INTERVAL_SECONDS || 20);
+const fetchLimitRaw = Number(process.env.VERCEL_FETCH_LIMIT || 20);
+const fetchLimit = Number.isFinite(fetchLimitRaw) && fetchLimitRaw > 0 ? fetchLimitRaw : 20;
 const outputPath = process.env.VERCEL_STATUS_PATH || "vercel-status.json";
 
 if (!token) {
@@ -39,7 +41,7 @@ async function fetchLatestDeployment(projectId) {
   const params = new URLSearchParams({
     projectId,
     target,
-    limit: "5",
+    limit: String(fetchLimit),
   });
 
   if (teamId) {
@@ -75,51 +77,45 @@ function isErrorState(state) {
 
 const deadline = Date.now() + timeoutSeconds * 1000;
 const results = new Map();
-const pendingCounts = new Map(); // Track consecutive "not found" results
-const MAX_PENDING_ITERATIONS = 30; // Fail after ~10 minutes of no deployment
 
 console.log(`Waiting for Vercel deployments for SHA: ${sha}`);
 console.log(`Projects: ${projectIds.join(", ")}`);
 console.log(`Timeout: ${timeoutSeconds}s, Poll interval: ${intervalSeconds}s`);
+console.log(`Fetch limit: ${fetchLimit}`);
 
 let iteration = 0;
 while (Date.now() < deadline) {
   iteration++;
   console.log(`\n--- Poll iteration ${iteration} ---`);
 
-  for (const projectId of projectIds) {
+  await Promise.all(projectIds.map(async (projectId) => {
     if (results.get(projectId)?.done) {
-      continue;
+      return;
     }
 
-    const deployment = await fetchLatestDeployment(projectId);
+    let deployment;
+    try {
+      deployment = await fetchLatestDeployment(projectId);
+    } catch (error) {
+      console.log(`${projectId}: API error while fetching deployment (${error.message || error})`);
+      results.set(projectId, {
+        projectId,
+        status: "ERROR",
+        error: error.message || String(error),
+        done: true,
+        failed: true,
+      });
+      return;
+    }
     if (!deployment) {
-      const count = (pendingCounts.get(projectId) || 0) + 1;
-      pendingCounts.set(projectId, count);
-
-      if (count >= MAX_PENDING_ITERATIONS) {
-        console.log(`${projectId}: No deployment found after ${count} attempts, marking as failed`);
-        results.set(projectId, {
-          projectId,
-          status: "NOT_FOUND",
-          error: `No deployment found for SHA ${sha} after ${count} attempts`,
-          done: true,
-          failed: true,
-        });
-        continue;
-      }
-
-      console.log(`${projectId}: PENDING (attempt ${count}/${MAX_PENDING_ITERATIONS})`);
+      console.log(`${projectId}: PENDING (no deployment yet)`);
       results.set(projectId, {
         projectId,
         status: "PENDING",
         message: "Waiting for deployment to start...",
       });
-      continue;
+      return;
     }
-
-    // Reset pending count once we find a deployment
-    pendingCounts.set(projectId, 0);
 
     const state = deployment.readyState || deployment.state;
     const url = deployment.url ? `https://${deployment.url}` : deployment.url;
@@ -133,7 +129,7 @@ while (Date.now() < deadline) {
         deploymentId: deployment.uid,
         done: true,
       });
-      continue;
+      return;
     }
 
     if (isErrorState(state)) {
@@ -147,7 +143,7 @@ while (Date.now() < deadline) {
         done: true,
         failed: true,
       });
-      continue;
+      return;
     }
 
     console.log(`${projectId}: ${state || "BUILDING"}...`);
@@ -158,7 +154,7 @@ while (Date.now() < deadline) {
       deploymentId: deployment.uid,
       message: "Deployment in progress",
     });
-  }
+  }));
 
   const allReady = projectIds.every((id) => results.get(id)?.status === "READY");
   const anyFailed = projectIds.some((id) => results.get(id)?.failed);
@@ -174,6 +170,30 @@ while (Date.now() < deadline) {
   }
 
   await new Promise((resolve) => setTimeout(resolve, intervalSeconds * 1000));
+}
+
+for (const projectId of projectIds) {
+  const current = results.get(projectId);
+  if (!current || current.status === "PENDING") {
+    results.set(projectId, {
+      projectId,
+      status: "NOT_FOUND",
+      error: `No deployment found for SHA ${sha} within ${timeoutSeconds}s`,
+      done: true,
+      failed: true,
+    });
+    continue;
+  }
+
+  if (current.status !== "READY" && !current.failed) {
+    results.set(projectId, {
+      ...current,
+      status: current.status || "TIMEOUT",
+      error: `Timed out waiting for deployment to reach READY within ${timeoutSeconds}s`,
+      done: true,
+      failed: true,
+    });
+  }
 }
 
 const summary = {

@@ -21,8 +21,24 @@ const headers = {
   Accept: "application/vnd.github+json",
 };
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function api(path) {
-  const response = await fetch(`https://api.github.com${path}`, { headers });
+  let response = await fetch(`https://api.github.com${path}`, { headers });
+  if (response.status === 403) {
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const reset = Number(response.headers.get("x-ratelimit-reset") || 0);
+    const waitMs =
+      retryAfter > 0
+        ? retryAfter * 1000
+        : reset > 0
+          ? Math.max(reset * 1000 - Date.now(), 1000)
+          : 5000;
+    await sleep(waitMs);
+    response = await fetch(`https://api.github.com${path}`, { headers });
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`GitHub API error: ${response.status} ${text}`);
@@ -43,31 +59,46 @@ if (!compare || compare.ahead_by === 0) {
 }
 
 const commits = Array.isArray(compare.commits) ? compare.commits : [];
+
+if (compare.total_commits > commits.length) {
+  console.warn(
+    `Warning: Only ${commits.length} of ${compare.total_commits} commits returned by compare API. Changelog may be incomplete.`
+  );
+}
+
 const prs = new Map();
 const fallbackCommits = [];
 
-for (const commit of commits) {
-  const sha = commit.sha;
-  try {
-    const commitPRs = await api(
-      `/repos/${owner}/${repo}/commits/${sha}/pulls`
-    );
-    if (Array.isArray(commitPRs) && commitPRs.length > 0) {
-      for (const pr of commitPRs) {
-        if (!prs.has(pr.number)) {
-          prs.set(pr.number, {
-            number: pr.number,
-            title: pr.title,
-            author: pr.user?.login,
-            url: pr.html_url,
-          });
+const CONCURRENCY = 10;
+for (let i = 0; i < commits.length; i += CONCURRENCY) {
+  const batch = commits.slice(i, i + CONCURRENCY);
+  const results = await Promise.allSettled(
+    batch.map((commit) =>
+      api(`/repos/${owner}/${repo}/commits/${commit.sha}/pulls`).then(
+        (commitPRs) => ({ commit, commitPRs })
+      )
+    )
+  );
+  for (const [idx, result] of results.entries()) {
+    if (result.status === "fulfilled") {
+      const { commit, commitPRs } = result.value;
+      if (Array.isArray(commitPRs) && commitPRs.length > 0) {
+        for (const pr of commitPRs) {
+          if (!prs.has(pr.number)) {
+            prs.set(pr.number, {
+              number: pr.number,
+              title: pr.title,
+              author: pr.user?.login,
+              url: pr.html_url,
+            });
+          }
         }
+      } else {
+        fallbackCommits.push(commit);
       }
     } else {
-      fallbackCommits.push(commit);
+      fallbackCommits.push(batch[idx]);
     }
-  } catch {
-    fallbackCommits.push(commit);
   }
 }
 
