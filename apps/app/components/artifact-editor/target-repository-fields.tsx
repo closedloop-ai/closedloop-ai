@@ -104,9 +104,10 @@ export function TargetRepositoryFields({
       const defaultBranch = branchesData.branches.find((b) => b.isDefault);
       if (defaultBranch) {
         onTargetBranchChange(defaultBranch.name);
+        onTargetBranchBlur();
       }
     }
-  }, [branchesData, targetBranch, onTargetBranchChange]);
+  }, [branchesData, targetBranch, onTargetBranchChange, onTargetBranchBlur]);
 
   // Compute branch placeholder based on state
   const getBranchPlaceholder = () => {
@@ -127,6 +128,7 @@ export function TargetRepositoryFields({
       onTargetRepoBlur();
       // Clear branch when repository changes - will be auto-set by useEffect
       onTargetBranchChange("");
+      onTargetBranchBlur();
     }
   };
 
