@@ -269,9 +269,12 @@ $RECYCLE.BIN/
 .symphony
 .agent-types
 
-# .Claude Runs
-.claude/runs
-.claude/plan-memory
+# .claude
+.claude/*
+!.claude/agents
+!.claude/commands
+!.claude/settings
+!.claude/skills
 
 
 # Database
