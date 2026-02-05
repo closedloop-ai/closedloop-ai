@@ -67,6 +67,21 @@ async function fetchLatestDeployment(projectId) {
   return deployments.find((d) => d.meta?.githubCommitSha === sha) ?? null;
 }
 
+async function fetchWithRetry(projectId, attempts = 2, delayMs = 2000) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fetchLatestDeployment(projectId);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function isSuccessState(state) {
   return state === "READY";
 }
@@ -95,7 +110,7 @@ while (Date.now() < deadline) {
 
     let deployment;
     try {
-      deployment = await fetchLatestDeployment(projectId);
+      deployment = await fetchWithRetry(projectId, 2, 2000);
     } catch (error) {
       console.log(`${projectId}: API error while fetching deployment (${error.message || error})`);
       results.set(projectId, {

@@ -27,20 +27,25 @@ function sleep(ms) {
 
 async function api(path) {
   let response = await fetch(`https://api.github.com${path}`, { headers });
-  if (response.status === 403) {
+  if (response.status === 403 || response.status === 429) {
     const retryAfter = Number(response.headers.get("retry-after") || 0);
     const reset = Number(response.headers.get("x-ratelimit-reset") || 0);
-    const waitMs =
+    const waitMs = Math.min(
       retryAfter > 0
         ? retryAfter * 1000
         : reset > 0
           ? Math.max(reset * 1000 - Date.now(), 1000)
-          : 5000;
+          : 5000,
+      30000
+    );
     await sleep(waitMs);
     response = await fetch(`https://api.github.com${path}`, { headers });
   }
   if (!response.ok) {
     const text = await response.text();
+    if (response.status === 403) {
+      console.warn(`GitHub API rate limit hit for ${path}. Changelog may be incomplete.`);
+    }
     throw new Error(`GitHub API error: ${response.status} ${text}`);
   }
   return response.json();

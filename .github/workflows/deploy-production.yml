@@ -46,6 +46,7 @@ jobs:
           SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
           SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
         run: |
+          echo "SLACK_FAILED=0" >> "$GITHUB_ENV"
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
             --arg text "Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`. I'll post updates here." \
@@ -57,6 +58,7 @@ jobs:
               -d @-)
           if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
             echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
       - name: Fetch Branches
@@ -83,6 +85,10 @@ jobs:
           SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
           SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
         run: |
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
             --arg text "No changes to deploy. \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
@@ -94,6 +100,7 @@ jobs:
               -d @-)
           if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
             echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
       - name: Compose PR Body
@@ -143,6 +150,10 @@ jobs:
         run: |
           CHANGELOG=$(cat "$CHANGELOG_PATH")
           MESSAGE="Deploy PR: ${PR_URL}\n\n${CHANGELOG}"
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
             --arg text "$MESSAGE" \
@@ -154,6 +165,7 @@ jobs:
               -d @-)
           if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
             echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
       - name: Merge Deploy PR
@@ -300,6 +312,10 @@ jobs:
           if [ -n "$VERCEL_STATUS" ]; then
             MESSAGE="${MESSAGE}\n\nLive apps:${VERCEL_STATUS}"
           fi
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
             --arg text "$MESSAGE" \
@@ -311,6 +327,7 @@ jobs:
               -d @-)
           if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
             echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
       - name: Capture Error Context
@@ -358,6 +375,7 @@ jobs:
           SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
           SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
         run: |
+          SLACK_FAILED=0
           # Read the diagnosis report
           if [ -f diagnosis.json ]; then
             REPORT=$(jq -r '.slackReport' diagnosis.json)
@@ -378,6 +396,8 @@ jobs:
               -d @-)
           if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
             echo "::warning::Slack failure report failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            SLACK_FAILED=1
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
           # Post failure logs as thread comments (chunked)
@@ -395,6 +415,33 @@ jobs:
                   -d @-)
               if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
                 echo "::warning::Slack log chunk failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+                SLACK_FAILED=1
+                echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+                break
               fi
             done <<< "$LOG_CHUNKS"
+          fi
+
+      - name: Post Early Failure
+        if: failure() && steps.diff.outputs.has_changes != 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "Deploy failed before changes could be evaluated. Check the logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack early failure notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
           fi

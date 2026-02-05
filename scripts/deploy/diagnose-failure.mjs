@@ -289,7 +289,7 @@ function formatSlackReport(diagnosis, context) {
   return lines.join("\n");
 }
 
-function chunkForSlack(rawText, maxChunkSize = 2500) {
+function chunkForSlack(rawText, maxChunkSize = 2000) {
   // Avoid accidental termination of code fences in Slack
   const text = String(rawText || "").replace(/```/g, "`` `");
   if (!text.trim()) {
