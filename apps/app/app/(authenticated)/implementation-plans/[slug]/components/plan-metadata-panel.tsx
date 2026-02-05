@@ -6,10 +6,22 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@repo/design-system/components/ui/collapsible";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
-import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  ExternalLinkIcon,
+  GitPullRequestIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
@@ -26,7 +38,7 @@ import {
   calculateAcceptanceRate,
   sortMetricsByScore,
 } from "@/lib/evaluation-utils";
-import type { CaseScore } from "@/types/evaluation";
+import { getUseMockJudges } from "@/lib/feature-flags";
 import { JudgeResultCard } from "./judge-result-card";
 
 const PR_STATE_STYLES: Record<string, string> = {
@@ -65,9 +77,9 @@ type PlanMetadataPanelProps = {
    */
   pullRequest: PullRequestInfo | null;
   /**
-   * Evaluation results for this plan (case-level score with judge metrics)
+   * Judges report containing evaluation results for all judges
    */
-  evaluationResults?: CaseScore | null;
+  judgesReport: JudgesReport | null;
   /**
    * Handler called when status is changed
    */
@@ -98,7 +110,7 @@ export function PlanMetadataPanel({
   teamMembers,
   generationStatus,
   pullRequest,
-  evaluationResults,
+  judgesReport,
   onStatusChange,
   onApproverChange,
   onApproverBlur,
@@ -116,11 +128,14 @@ export function PlanMetadataPanel({
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isEvaluationOpen, setIsEvaluationOpen] = useState(false);
 
+  // Calculate acceptance rate from all judges in the report
+  const allMetrics =
+    judgesReport?.stats.flatMap((caseScore) => caseScore.metrics) ?? [];
   const {
     acceptedCount,
     totalCount,
     rate: acceptanceRate,
-  } = calculateAcceptanceRate(evaluationResults?.metrics);
+  } = calculateAcceptanceRate(allMetrics);
 
   return (
     <>
@@ -205,13 +220,40 @@ export function PlanMetadataPanel({
             />
           </CollapsibleSection>
 
-          <CollapsibleSection
+          <Collapsible
             onOpenChange={setIsEvaluationOpen}
             open={isEvaluationOpen}
-            title="Evaluation"
           >
-            <div className="space-y-4">
-              {evaluationResults ? (
+            <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg p-3 font-medium text-sm transition-colors hover:bg-accent">
+              <div className="flex items-center">
+                <span>Evaluation</span>
+                {getUseMockJudges() && (
+                  <Badge
+                    className="ml-2 bg-amber-100 text-amber-800"
+                    variant="outline"
+                  >
+                    MOCK DATA
+                  </Badge>
+                )}
+              </div>
+              {isEvaluationOpen ? (
+                <ChevronUpIcon className="h-4 w-4" />
+              ) : (
+                <ChevronDownIcon className="h-4 w-4" />
+              )}
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-4 px-3 pb-3">
+              {judgesReport === null && (
+                <p className="text-muted-foreground text-sm">
+                  Awaiting LLM Judges feedback
+                </p>
+              )}
+              {judgesReport !== null && judgesReport.stats.length === 0 && (
+                <p className="text-muted-foreground text-sm">
+                  No judges have been evaluated yet
+                </p>
+              )}
+              {judgesReport !== null && judgesReport.stats.length > 0 && (
                 <div className="space-y-3">
                   {/* Progress bar showing acceptance rate */}
                   <div className="space-y-1.5">
@@ -226,25 +268,21 @@ export function PlanMetadataPanel({
                     <Progress className="h-2" value={acceptanceRate} />
                   </div>
 
-                  {/* Judge result cards - sorted by score ascending (worst first) */}
+                  {/* Judge result cards - all judges from the report */}
                   <div className="space-y-2">
-                    {sortMetricsByScore(evaluationResults.metrics).map(
-                      (metric) => (
+                    {judgesReport.stats.map((caseScore) =>
+                      sortMetricsByScore(caseScore.metrics).map((metric) => (
                         <JudgeResultCard
-                          key={metric.metric_name}
+                          key={`${caseScore.case_id}-${metric.metric_name}`}
                           metric={metric}
                         />
-                      )
+                      ))
                     )}
                   </div>
                 </div>
-              ) : (
-                <p className="text-muted-foreground text-sm">
-                  No evaluation available for this plan
-                </p>
               )}
-            </div>
-          </CollapsibleSection>
+            </CollapsibleContent>
+          </Collapsible>
 
           <CommentsSection artifactId={plan.id} />
         </div>
