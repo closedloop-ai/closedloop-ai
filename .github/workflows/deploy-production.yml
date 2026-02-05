@@ -49,7 +49,7 @@ jobs:
           echo "SLACK_FAILED=0" >> "$GITHUB_ENV"
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
-            --arg text "Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`. I'll post updates here." \
+            --arg text "🚀 Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`" \
             --arg thread_ts "$SLACK_THREAD_TS" \
             '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
             | curl -sS https://slack.com/api/chat.postMessage \
@@ -91,7 +91,7 @@ jobs:
           fi
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
-            --arg text "No changes to deploy. \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
+            --arg text "ℹ️ No changes to deploy — \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
             --arg thread_ts "$SLACK_THREAD_TS" \
             '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
             | curl -sS https://slack.com/api/chat.postMessage \
@@ -149,7 +149,9 @@ jobs:
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           CHANGELOG=$(cat "$CHANGELOG_PATH")
-          MESSAGE="Deploy PR: ${PR_URL}\n\n${CHANGELOG}"
+          MESSAGE="📋 *Deploy PR:* ${PR_URL}
+
+${CHANGELOG}"
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
             exit 0
@@ -285,7 +287,7 @@ jobs:
           VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
           VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
         run: |
-          VERCEL_STATUS=""
+          VERCEL_LINES=""
           if [ -f vercel-status.json ]; then
             IFS=',' read -r -a PROJECT_IDS <<< "${VERCEL_PROJECT_IDS:-}"
             IFS=',' read -r -a PROJECT_LABELS <<< "${VERCEL_PROJECT_LABELS:-}"
@@ -299,18 +301,28 @@ jobs:
               STATUS=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .status // empty' vercel-status.json)
               if [ -n "$URL" ]; then
                 if [ -n "$LABEL" ]; then
-                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${URL}"
+                  VERCEL_LINES="${VERCEL_LINES}
+  ▲ *${LABEL}:* ${URL}"
                 else
-                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${URL}"
+                  VERCEL_LINES="${VERCEL_LINES}
+  ▲ ${URL}"
                 fi
               elif [ -n "$LABEL" ]; then
-                VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${STATUS:-unknown}"
+                VERCEL_LINES="${VERCEL_LINES}
+  ▲ *${LABEL}:* ${STATUS:-unknown}"
               fi
             done
           fi
-          MESSAGE="Deploy succeeded. PR: ${PR_URL}"
-          if [ -n "$VERCEL_STATUS" ]; then
-            MESSAGE="${MESSAGE}\n\nLive apps:${VERCEL_STATUS}"
+          if [ -n "$VERCEL_LINES" ]; then
+            MESSAGE="✅ *Deploy succeeded*
+
+*PR:* ${PR_URL}
+
+*Live apps:*${VERCEL_LINES}"
+          else
+            MESSAGE="✅ *Deploy succeeded*
+
+*PR:* ${PR_URL}"
           fi
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
