@@ -22,8 +22,13 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCreateArtifact } from "@/hooks/queries/use-artifacts";
+import {
+  useGitHubBranches,
+  useGitHubIntegrationStatus,
+  useGitHubRepositories,
+} from "@/hooks/queries/use-github-integration";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -38,6 +43,48 @@ export function NewPRDModal() {
   const [content, setContent] = useState("");
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
+  const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+
+  // GitHub integration queries
+  const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
+    useGitHubIntegrationStatus();
+  const { data: repositories, isLoading: isLoadingRepos } =
+    useGitHubRepositories({
+      enabled: githubStatus?.connected === true,
+    });
+  const { data: branchesData, isLoading: isLoadingBranches } =
+    useGitHubBranches(selectedRepoId, {
+      enabled: !!selectedRepoId,
+    });
+
+  const sortedRepositories = useMemo(
+    () =>
+      repositories
+        ? [...repositories].sort((a, b) => a.name.localeCompare(b.name))
+        : [],
+    [repositories]
+  );
+
+  // Auto-select default branch only when no branch is selected yet
+  useEffect(() => {
+    if (branchesData?.branches && !targetBranch) {
+      const defaultBranch = branchesData.branches.find((b) => b.isDefault);
+      if (defaultBranch) {
+        setTargetBranch(defaultBranch.name);
+      }
+    }
+  }, [branchesData, targetBranch]);
+
+  // Compute branch placeholder based on state
+  const getBranchPlaceholder = () => {
+    if (!selectedRepoId) {
+      return "Select a repository first";
+    }
+    if (isLoadingBranches) {
+      return "Loading branches...";
+    }
+    return "Select a branch";
+  };
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -52,6 +99,16 @@ export function NewPRDModal() {
     }
   };
 
+  const handleRepositoryChange = (repoId: string) => {
+    const selectedRepo = repositories?.find((r) => r.id === repoId);
+    if (selectedRepo) {
+      setSelectedRepoId(repoId);
+      setTargetRepo(selectedRepo.fullName);
+      // Clear branch when repository changes - will be auto-set by useEffect
+      setTargetBranch("");
+    }
+  };
+
   const resetForm = () => {
     setTitle("");
     setFileName("");
@@ -60,6 +117,7 @@ export function NewPRDModal() {
     setContent("");
     setTargetRepo("");
     setTargetBranch("main");
+    setSelectedRepoId("");
     setError(null);
   };
 
@@ -159,22 +217,55 @@ export function NewPRDModal() {
                 (for plan generation)
               </span>
             </Label>
-            <Input
-              id="new-target-repo"
-              onChange={(e) => setTargetRepo(e.target.value)}
-              placeholder="owner/repo"
-              value={targetRepo}
-            />
+            {githubStatus?.connected === false ? (
+              <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+                Connect GitHub to select a repository
+              </div>
+            ) : (
+              <Select
+                disabled={isLoadingGitHubStatus || isLoadingRepos}
+                onValueChange={handleRepositoryChange}
+                value={selectedRepoId}
+              >
+                <SelectTrigger id="new-target-repo">
+                  <SelectValue
+                    placeholder={
+                      isLoadingGitHubStatus || isLoadingRepos
+                        ? "Loading repositories..."
+                        : "Select a repository"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedRepositories.map((repo) => (
+                    <SelectItem key={repo.id} value={repo.id}>
+                      {repo.fullName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="new-target-branch">Target Branch</Label>
-            <Input
-              id="new-target-branch"
-              onChange={(e) => setTargetBranch(e.target.value)}
-              placeholder="main"
+            <Select
+              disabled={!selectedRepoId || isLoadingBranches}
+              onValueChange={setTargetBranch}
               value={targetBranch}
-            />
+            >
+              <SelectTrigger id="new-target-branch">
+                <SelectValue placeholder={getBranchPlaceholder()} />
+              </SelectTrigger>
+              <SelectContent>
+                {branchesData?.branches.map((branch) => (
+                  <SelectItem key={branch.name} value={branch.name}>
+                    {branch.name}
+                    {branch.isDefault ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">

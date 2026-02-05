@@ -47,3 +47,13 @@ export type GitHubRepository = {
 };
 
 export type GetRepositoriesResponse = GitHubRepository[];
+
+export type GitHubBranch = {
+  name: string;
+  committedDate: string;
+  isDefault: boolean;
+};
+
+export type GetBranchesResponse = {
+  branches: GitHubBranch[];
+};

@@ -1,11 +1,14 @@
-import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
+import type {
+  GetBranchesResponse,
+  GitHubIntegrationStatus,
+} from "@repo/api/src/types/github";
 import type {
   GitHubInstallation,
   GitHubInstallationRepository,
   GitHubInstallationStatus,
 } from "@repo/database";
 import { withDb } from "@repo/database";
-import { deleteInstallation } from "@repo/github";
+import { deleteInstallation, getRepositoryBranches } from "@repo/github";
 import { keys } from "@repo/github/keys";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -749,5 +752,65 @@ export const githubService = {
     }
 
     return installation.repositories;
+  },
+
+  /**
+   * Get branches for a GitHub repository.
+   * Fetches branches via GitHub GraphQL API, sorts by committedDate descending,
+   * and pins the default branch at position 0.
+   *
+   * @param repositoryId - Internal UUID of GitHubInstallationRepository
+   * @param organizationId - Organization ID for authorization
+   * @param limit - Maximum number of branches to return (default: 20)
+   */
+  async getBranches(
+    repositoryId: string,
+    organizationId: string,
+    limit = 20
+  ): Promise<GetBranchesResponse> {
+    // Look up the repository and its installation
+    const repository = await withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: {
+          id: repositoryId,
+        },
+        include: {
+          installation: true,
+        },
+      })
+    );
+
+    if (!repository) {
+      throw new Error("Repository not found");
+    }
+
+    // Verify organization ownership
+    if (repository.installation.organizationId !== organizationId) {
+      throw new Error("Repository does not belong to organization");
+    }
+
+    const [owner, name] = repository.fullName.split("/");
+
+    if (!(owner && name)) {
+      throw new Error("Invalid repository fullName format");
+    }
+
+    try {
+      const branches = await getRepositoryBranches(
+        repository.installation.installationId,
+        owner,
+        name,
+        limit
+      );
+
+      return { branches };
+    } catch (error) {
+      log.error("[github/service] Failed to fetch branches", {
+        repositoryId,
+        fullName: repository.fullName,
+        error: parseError(error),
+      });
+      throw new Error("Failed to fetch branches from GitHub");
+    }
   },
 };

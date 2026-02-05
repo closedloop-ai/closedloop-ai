@@ -2,6 +2,7 @@
 
 import type {
   DisconnectGitHubResponse,
+  GetBranchesResponse,
   GetRepositoriesResponse,
   GitHubIntegrationStatus,
 } from "@repo/api/src/types/github";
@@ -18,6 +19,8 @@ export const githubKeys = {
   all: ["github"] as const,
   status: () => [...githubKeys.all, "status"] as const,
   repositories: () => [...githubKeys.all, "repositories"] as const,
+  branches: (repoId: string) =>
+    [...githubKeys.all, "branches", repoId] as const,
 };
 
 // Queries
@@ -55,6 +58,23 @@ export function useGitHubRepositories(
   });
 }
 
+export function useGitHubBranches(
+  repositoryId: string,
+  options?: Omit<UseQueryOptions<GetBranchesResponse>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    ...options,
+    queryKey: githubKeys.branches(repositoryId),
+    queryFn: () =>
+      apiClient.get<GetBranchesResponse>(
+        `/integrations/github/repositories/${repositoryId}/branches`
+      ),
+    enabled: !!repositoryId && options?.enabled !== false,
+  });
+}
+
 // Mutations
 export function useDisconnectGitHub() {
   const queryClient = useQueryClient();
@@ -64,8 +84,7 @@ export function useDisconnectGitHub() {
     mutationFn: () =>
       apiClient.delete<DisconnectGitHubResponse>("/integrations/github"),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: githubKeys.status() });
-      queryClient.invalidateQueries({ queryKey: githubKeys.repositories() });
+      queryClient.invalidateQueries({ queryKey: githubKeys.all });
     },
   });
 }
