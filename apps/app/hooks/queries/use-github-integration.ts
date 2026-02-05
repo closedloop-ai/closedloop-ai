@@ -19,8 +19,8 @@ export const githubKeys = {
   all: ["github"] as const,
   status: () => [...githubKeys.all, "status"] as const,
   repositories: () => [...githubKeys.all, "repositories"] as const,
-  branches: (repoId: string) =>
-    [...githubKeys.all, "branches", repoId] as const,
+  branches: (repoId: string, limit?: number) =>
+    [...githubKeys.all, "branches", repoId, ...(limit ? [limit] : [])] as const,
 };
 
 // Queries
@@ -60,16 +60,22 @@ export function useGitHubRepositories(
 
 export function useGitHubBranches(
   repositoryId: string,
-  options?: Omit<UseQueryOptions<GetBranchesResponse>, "queryKey" | "queryFn">
+  options?: Omit<
+    UseQueryOptions<GetBranchesResponse>,
+    "queryKey" | "queryFn"
+  > & {
+    limit?: number;
+  }
 ) {
   const apiClient = useApiClient();
+  const searchParams = options?.limit ? `?limit=${options.limit}` : "";
 
   return useQuery({
     ...options,
-    queryKey: githubKeys.branches(repositoryId),
+    queryKey: githubKeys.branches(repositoryId, options?.limit),
     queryFn: () =>
       apiClient.get<GetBranchesResponse>(
-        `/integrations/github/repositories/${repositoryId}/branches`
+        `/integrations/github/repositories/${repositoryId}/branches${searchParams}`
       ),
     enabled: !!repositoryId && options?.enabled !== false,
   });
