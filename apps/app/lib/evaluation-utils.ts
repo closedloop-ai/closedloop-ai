@@ -1,4 +1,4 @@
-import type { MetricStatistics } from "@/types/evaluation";
+import type { MetricStatistics } from "@repo/api/src/types/evaluation";
 
 /**
  * Acceptance rate calculation result.
@@ -22,7 +22,7 @@ export function calculateAcceptanceRate(
   }
 
   const acceptedCount = metrics.filter(
-    (m) => m.threshold !== null && m.mean >= m.threshold
+    (m) => m.threshold !== null && m.score >= m.threshold
   ).length;
   const totalCount = metrics.length;
   const rate = (acceptedCount / totalCount) * 100;
@@ -37,5 +37,5 @@ export function calculateAcceptanceRate(
 export function sortMetricsByScore(
   metrics: MetricStatistics[]
 ): MetricStatistics[] {
-  return [...metrics].sort((a, b) => a.mean - b.mean);
+  return [...metrics].sort((a, b) => a.score - b.score);
 }

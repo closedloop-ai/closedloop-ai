@@ -1,12 +1,12 @@
 "use client";
 
+import type { MetricStatistics } from "@repo/api/src/types/evaluation";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import { ChevronDown } from "lucide-react";
-import type { MetricStatistics } from "@/types/evaluation";
 
 type JudgeResultCardProps = {
   /**
@@ -23,47 +23,36 @@ type ScoreStyles = {
 };
 
 /**
- * Get visual styling and label based on mean score:
- * - score = 1 (Poor): destructive red styling
- * - score = 2 (Needs Improvement): warning yellow styling
- * - score = 3 (Great): success green styling
+ * Get visual styling and label based on whether score meets threshold:
+ * - score >= threshold (Passing): success green styling
+ * - score < threshold (Failing): destructive red styling
  */
-function getScoreConfig(score: number): ScoreStyles {
-  switch (score) {
-    case 1:
-      return {
-        border: "border-destructive",
-        background: "bg-destructive/10",
-        text: "text-destructive-foreground",
-        label: "Poor",
-      };
-    case 2:
-      return {
-        border: "border-warning",
-        background: "bg-warning/10",
-        text: "text-warning-foreground",
-        label: "Needs Improvement",
-      };
-    default:
-      return {
-        border: "border-success",
-        background: "bg-success/10",
-        text: "text-success-foreground",
-        label: "Great",
-      };
+function getScoreConfig(isPassing: boolean): ScoreStyles {
+  if (isPassing) {
+    return {
+      border: "border-success",
+      background: "bg-success/10",
+      text: "text-success-foreground",
+      label: "Passing",
+    };
   }
+  return {
+    border: "border-destructive",
+    background: "bg-destructive/10",
+    text: "text-destructive-foreground",
+    label: "Failing",
+  };
 }
 
 /**
  * Display a single judge evaluation result with expand/collapse functionality.
  *
- * Shows the judge name (metric_name), mean score with visual styling,
+ * Shows the judge name (metric_name), score with visual styling,
  * and expandable justification text.
  *
  * Score-based styling:
- * - 1 (Poor): Red border and background
- * - 2 (Needs Improvement): Yellow border and background
- * - 3 (Great): Green border and background
+ * - score >= threshold (Passing): Green border and background
+ * - score < threshold (Failing): Red border and background
  *
  * Usage:
  * ```tsx
@@ -71,8 +60,9 @@ function getScoreConfig(score: number): ScoreStyles {
  * ```
  */
 export function JudgeResultCard({ metric }: JudgeResultCardProps) {
-  const config = getScoreConfig(metric.mean);
-  const justificationText = metric.justification?.[0];
+  const isPassing = metric.score >= metric.threshold;
+  const config = getScoreConfig(isPassing);
+  const justificationText = metric.justification;
 
   return (
     <Collapsible
@@ -84,7 +74,7 @@ export function JudgeResultCard({ metric }: JudgeResultCardProps) {
           <div className="flex flex-col gap-0.5">
             <span className="font-medium text-sm">{metric.metric_name}</span>
             <span className={`font-semibold text-xs ${config.text}`}>
-              Score: {metric.mean} ({config.label})
+              Score: {metric.score} ({config.label})
             </span>
           </div>
         </div>
