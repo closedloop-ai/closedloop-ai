@@ -1,19 +1,13 @@
 import {
   type Artifact,
-  ArtifactSubtype,
-  type ArtifactType,
+  type ArtifactSubtype,
+  ArtifactType,
 } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { nanoid } from "nanoid";
 
-export function isDocumentArtifact(
-  artifact: Pick<Artifact, "subtype">
-): boolean {
-  return (
-    artifact.subtype === ArtifactSubtype.PRD ||
-    artifact.subtype === ArtifactSubtype.IMPLEMENTATION_PLAN ||
-    artifact.subtype === ArtifactSubtype.ISSUE
-  );
+export function isDocumentArtifact(artifact: Pick<Artifact, "type">): boolean {
+  return artifact.type === ArtifactType.DOCUMENT;
 }
 
 /**
