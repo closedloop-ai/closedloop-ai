@@ -9,20 +9,19 @@ import type { ProjectOwner } from "./organization";
  * - Workflow: User-defined step sequences that orchestrate execution (e.g., plan -> code -> test -> review)
  * - Branch: Code-related artifacts tied to version control (e.g., Pull Requests)
  *
- * Note: UI sections use type-based grouping for granularity, not category-based filtering.
- * Category enables future features like category-specific views or permissions.
+ * Note: UI sections use subtype-based grouping for granularity, not type-based filtering.
+ * Type enables future features like type-specific views or permissions.
  */
-export const ArtifactCategory = {
+export const ArtifactType = {
   Document: "DOCUMENT",
   Workflow: "WORKFLOW",
   Branch: "BRANCH",
 } as const;
-export type ArtifactCategory =
-  (typeof ArtifactCategory)[keyof typeof ArtifactCategory];
-export const ARTIFACT_CATEGORY_OPTIONS = Object.values(ArtifactCategory);
+export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
+export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
 
-// Artifact Type
-export const ArtifactType = {
+// Artifact Subtype
+export const ArtifactSubtype = {
   Prd: "PRD",
   Issue: "ISSUE",
   Bug: "BUG",
@@ -37,67 +36,68 @@ export const ArtifactType = {
   CompletionSummary: "COMPLETION_SUMMARY",
   PullRequest: "PULL_REQUEST",
 } as const;
-export type ArtifactType = (typeof ArtifactType)[keyof typeof ArtifactType];
-export const ARTIFACT_TYPE_OPTIONS = Object.values(ArtifactType);
+export type ArtifactSubtype =
+  (typeof ArtifactSubtype)[keyof typeof ArtifactSubtype];
+export const ARTIFACT_SUBTYPE_OPTIONS = Object.values(ArtifactSubtype);
 
 /**
- * Maps an ArtifactType to its corresponding ArtifactCategory.
- * Uses exhaustive switch to ensure compile-time errors if new types are added without mapping.
+ * Maps an ArtifactSubtype to its corresponding ArtifactType.
+ * Uses exhaustive switch to ensure compile-time errors if new subtypes are added without mapping.
  */
-export function getArtifactCategory(type: ArtifactType): ArtifactCategory {
-  switch (type) {
+export function getArtifactType(subtype: ArtifactSubtype): ArtifactType {
+  switch (subtype) {
     // Document types
-    case ArtifactType.Prd:
-    case ArtifactType.Issue:
-    case ArtifactType.Bug:
-    case ArtifactType.Template:
-    case ArtifactType.ImplementationPlan:
-    case ArtifactType.ImplementationStrategy:
-    case ArtifactType.CodeReviewReport:
-    case ArtifactType.VisualQaReport:
-    case ArtifactType.AccessibilityReport:
-    case ArtifactType.TestReport:
-    case ArtifactType.CompletionSummary:
-      return ArtifactCategory.Document;
+    case ArtifactSubtype.Prd:
+    case ArtifactSubtype.Issue:
+    case ArtifactSubtype.Bug:
+    case ArtifactSubtype.Template:
+    case ArtifactSubtype.ImplementationPlan:
+    case ArtifactSubtype.ImplementationStrategy:
+    case ArtifactSubtype.CodeReviewReport:
+    case ArtifactSubtype.VisualQaReport:
+    case ArtifactSubtype.AccessibilityReport:
+    case ArtifactSubtype.TestReport:
+    case ArtifactSubtype.CompletionSummary:
+      return ArtifactType.Document;
 
     // Workflow types
-    case ArtifactType.FigmaDesign:
-      return ArtifactCategory.Workflow;
+    case ArtifactSubtype.FigmaDesign:
+      return ArtifactType.Workflow;
 
     // Branch types
-    case ArtifactType.PullRequest:
-      return ArtifactCategory.Branch;
+    case ArtifactSubtype.PullRequest:
+      return ArtifactType.Branch;
 
     default: {
-      // Exhaustive check: if a new ArtifactType is added without a mapping,
-      // TypeScript will error here because `type` won't be assignable to `never`
-      const _exhaustiveCheck: never = type;
-      throw new Error(`Unmapped ArtifactType: ${_exhaustiveCheck}`);
+      // Exhaustive check: if a new ArtifactSubtype is added without a mapping,
+      // TypeScript will error here because `subtype` won't be assignable to `never`
+      const _exhaustiveCheck: never = subtype;
+      throw new Error(`Unmapped ArtifactSubtype: ${_exhaustiveCheck}`);
     }
   }
 }
 
 /**
- * Document types that generate a documentSlug for navigation.
+ * Document subtypes that generate a documentSlug for navigation.
  * Templates are NOT navigable and do NOT get documentSlug.
  */
-const NAVIGABLE_DOCUMENT_TYPES = new Set<ArtifactType>([
-  ArtifactType.Prd,
-  ArtifactType.ImplementationPlan,
-  ArtifactType.Issue,
-  ArtifactType.Bug,
-  ArtifactType.ImplementationStrategy,
+const NAVIGABLE_DOCUMENT_TYPES = new Set<ArtifactSubtype>([
+  ArtifactSubtype.Prd,
+  ArtifactSubtype.ImplementationPlan,
+  ArtifactSubtype.Issue,
+  ArtifactSubtype.Bug,
+  ArtifactSubtype.ImplementationStrategy,
 ]);
 
 /**
- * Determines whether an artifact type should have a document slug generated.
+ * Determines whether an artifact subtype should have a document slug generated.
  * Document slugs enable stable URLs for navigation across artifact versions.
  *
- * @param type - The artifact type to check
- * @returns true if the artifact type should have a document slug
+ * @param subtype - The artifact subtype to check
+ * @returns true if the artifact subtype should have a document slug
  */
-export function shouldGenerateDocumentSlug(type: ArtifactType): boolean {
-  return NAVIGABLE_DOCUMENT_TYPES.has(type);
+export function shouldGenerateDocumentSlug(subtype: ArtifactSubtype): boolean {
+  return NAVIGABLE_DOCUMENT_TYPES.has(subtype);
 }
 
 // Artifact Status
@@ -140,7 +140,7 @@ export type Artifact = {
   projectId: string | null;
   parentId: string | null;
   type: ArtifactType;
-  category: ArtifactCategory | null;
+  subtype: ArtifactSubtype;
   title: string;
   fileName: string | null;
   approver: string | null;
@@ -155,7 +155,7 @@ export type Artifact = {
   tokenUsage: unknown;
   targetRepo: string | null;
   targetBranch: string | null;
-  templateForType: ArtifactType | null;
+  templateForSubtype: ArtifactSubtype | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -176,7 +176,7 @@ export type ArtifactWithWorkstream = Artifact & {
 
 export type FindArtifactsOptions = {
   type?: ArtifactType;
-  category?: ArtifactCategory;
+  subtype?: ArtifactSubtype;
   latestOnly?: boolean;
   workstreamId?: string;
   projectId?: string;
@@ -188,8 +188,8 @@ export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
   parentId?: string;
-  type: ArtifactType;
-  category?: ArtifactCategory;
+  type?: ArtifactType;
+  subtype: ArtifactSubtype;
   title: string;
   fileName?: string;
   approver?: string;

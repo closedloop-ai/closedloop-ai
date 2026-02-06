@@ -73,7 +73,7 @@ export function NewPRDModal() {
 
     createArtifact.mutate(
       {
-        type: "PRD",
+        subtype: "PRD",
         title: title.trim(),
         fileName: fileName.trim() || undefined,
         approver: approver.trim() || undefined,

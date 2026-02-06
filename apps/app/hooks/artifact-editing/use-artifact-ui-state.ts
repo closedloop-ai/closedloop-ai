@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 
-type EditableArtifactType =
+type EditableArtifactSubtype =
   | "PRD"
   | "IMPLEMENTATION_PLAN"
   | "ISSUE"
@@ -10,7 +10,7 @@ type EditableArtifactType =
   | "IMPLEMENTATION_STRATEGY";
 
 type UseArtifactUIStateConfig = {
-  artifactType: EditableArtifactType;
+  artifactSubtype: EditableArtifactSubtype;
 };
 
 /**
@@ -29,17 +29,17 @@ type UseArtifactUIStateConfig = {
  * ```tsx
  * // For PRD editor
  * const { showMetadataPanel, toggleMetadataPanel, showRenameDialog, openRenameDialog } =
- *   useArtifactUIState({ artifactType: "PRD" });
+ *   useArtifactUIState({ artifactSubtype: "PRD" });
  *
  * // For Plan editor
  * const { showExecuteModal, openExecuteModal, closeExecuteModal } =
- *   useArtifactUIState({ artifactType: "IMPLEMENTATION_PLAN" });
+ *   useArtifactUIState({ artifactSubtype: "IMPLEMENTATION_PLAN" });
  * ```
  *
- * **Important:** Return type is determined by `artifactType` - PRD returns PRD-specific state, Plan returns Plan-specific state.
+ * **Important:** Return type is determined by `artifactSubtype` - PRD returns PRD-specific state, Plan returns Plan-specific state.
  */
 export function useArtifactUIState(config: UseArtifactUIStateConfig) {
-  const { artifactType } = config;
+  const { artifactSubtype } = config;
 
   // Common UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
@@ -71,10 +71,10 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   };
 
   if (
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG" ||
-    artifactType === "IMPLEMENTATION_STRATEGY"
+    artifactSubtype === "PRD" ||
+    artifactSubtype === "ISSUE" ||
+    artifactSubtype === "BUG" ||
+    artifactSubtype === "IMPLEMENTATION_STRATEGY"
   ) {
     return {
       ...commonState,
@@ -89,7 +89,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     };
   }
 
-  if (artifactType === "IMPLEMENTATION_PLAN") {
+  if (artifactSubtype === "IMPLEMENTATION_PLAN") {
     return {
       ...commonState,
       showRequestChangesModal,

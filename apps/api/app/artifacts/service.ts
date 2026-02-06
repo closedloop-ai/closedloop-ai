@@ -1,18 +1,21 @@
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
-  ArtifactType,
   type ArtifactWithWorkstream,
   type CreateArtifactInput,
   type FindArtifactsOptions,
-  getArtifactCategory,
+  getArtifactType,
   type PullRequestInfo,
   shouldGenerateDocumentSlug,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
+import {
+  ArtifactSubtype,
+  type Artifact as PrismaArtifact,
+  withDb,
+} from "@repo/database";
 import {
   downloadWorkflowArtifacts,
   getRepositoryInfo,
@@ -68,8 +71,8 @@ export const artifactsService = {
   ): Promise<ArtifactWithWorkstream[]> {
     const {
       organizationId,
+      subtype,
       type,
-      category,
       latestOnly = true,
       workstreamId,
       projectId,
@@ -95,8 +98,8 @@ export const artifactsService = {
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(documentSlug ? { documentSlug } : {}),
+          ...(subtype ? { subtype } : {}),
           ...(type ? { type } : {}),
-          ...(category ? { category } : {}),
           ...getVersionFilter(),
         },
         include: artifactIncludeWithContext,
@@ -131,60 +134,65 @@ export const artifactsService = {
   /**
    * Find an artifact by ID without context (org-scoped)
    */
-  findByIdSimple(id: string, organizationId: string): Promise<Artifact | null> {
-    return withDb((db) =>
+  async findByIdSimple(
+    id: string,
+    organizationId: string
+  ): Promise<Artifact | null> {
+    const result = await withDb((db) =>
       db.artifact.findUnique({
         where: { id, organizationId },
       })
     );
+    return result as Artifact | null;
   },
 
   /**
-   * Find an organization template for a specific artifact type.
-   * Returns null if no template exists for the given type.
+   * Find an organization template for a specific artifact subtype.
+   * Returns null if no template exists for the given subtype.
    * Pure read method - does NOT create templates automatically.
    */
-  findOrgTemplate(
+  async findOrgTemplate(
     organizationId: string,
-    templateForType: ArtifactType
+    templateForSubtype: ArtifactSubtype
   ): Promise<Artifact | null> {
-    return withDb((db) =>
+    const result = await withDb((db) =>
       db.artifact.findUnique({
         where: {
-          organizationId_templateForType: {
+          organizationId_templateForSubtype: {
             organizationId,
-            templateForType,
+            templateForSubtype,
           },
         },
       })
     );
+    return result as Artifact | null;
   },
 
   /**
    * Ensure default templates exist for an organization.
-   * Creates/upserts templates for PRD, Issue, and Bug types.
-   * Uses upsert on the unique constraint (organizationId, templateForType) for concurrency safety.
+   * Creates/upserts templates for PRD, Issue, and Bug subtypes.
+   * Uses upsert on the unique constraint (organizationId, templateForSubtype) for concurrency safety.
    *
-   * Templates have type=TEMPLATE with templateForType pointing to the target type (PRD/Issue/Bug).
-   * This ensures templates are queryable via `type: TEMPLATE` and don't pollute normal PRD/Issue/Bug queries.
+   * Templates have subtype=TEMPLATE with templateForSubtype pointing to the target subtype (PRD/Issue/Bug).
+   * This ensures templates are queryable via `subtype: TEMPLATE` and don't pollute normal PRD/Issue/Bug queries.
    */
   async ensureDefaultTemplates(organizationId: string): Promise<void> {
     const templates = [
       {
-        type: ArtifactType.Template,
-        templateForType: ArtifactType.Prd,
+        subtype: ArtifactSubtype.TEMPLATE,
+        templateForSubtype: ArtifactSubtype.PRD,
         title: "Product Requirements Document Template",
         content: PRD_TEMPLATE,
       },
       {
-        type: ArtifactType.Template,
-        templateForType: ArtifactType.Issue,
+        subtype: ArtifactSubtype.TEMPLATE,
+        templateForSubtype: ArtifactSubtype.ISSUE,
         title: "Issue Template",
         content: ISSUE_TEMPLATE,
       },
       {
-        type: ArtifactType.Template,
-        templateForType: ArtifactType.Bug,
+        subtype: ArtifactSubtype.TEMPLATE,
+        templateForSubtype: ArtifactSubtype.BUG,
         title: "Bug Report Template",
         content: BUG_TEMPLATE,
       },
@@ -196,14 +204,14 @@ export const artifactsService = {
         withDb((db) =>
           db.artifact.upsert({
             where: {
-              organizationId_templateForType: {
+              organizationId_templateForSubtype: {
                 organizationId,
-                templateForType: template.templateForType,
+                templateForSubtype: template.templateForSubtype,
               },
             },
             create: {
               ...template,
-              category: getArtifactCategory(template.type),
+              type: getArtifactType(template.subtype),
               organizationId,
               documentSlug: null, // Templates are not navigable in MVP
               version: 1,
@@ -272,7 +280,7 @@ export const artifactsService = {
     userId: string,
     input: CreateArtifactInput
   ): Promise<Artifact | null> {
-    const isTemplate = input.type === ArtifactType.Template;
+    const isTemplate = input.subtype === ArtifactSubtype.TEMPLATE;
 
     // Validate scope constraints
     if (isTemplate && (input.projectId || input.workstreamId)) {
@@ -301,14 +309,14 @@ export const artifactsService = {
       const resolvedOwnerId = input.ownerId ?? userId;
       await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
-      const documentSlug = shouldGenerateDocumentSlug(input.type)
+      const documentSlug = shouldGenerateDocumentSlug(input.subtype)
         ? generateDocumentSlug()
         : null;
 
-      return await tx.artifact.create({
+      const artifact = await tx.artifact.create({
         data: {
           ...input,
-          category: input.category ?? getArtifactCategory(input.type),
+          type: input.type ?? getArtifactType(input.subtype),
           organizationId,
           documentSlug,
           version: 1,
@@ -317,6 +325,7 @@ export const artifactsService = {
           ownerId: resolvedOwnerId,
         },
       });
+      return artifact as Artifact;
     });
 
     if (createdArtifact?.documentSlug) {
@@ -330,7 +339,7 @@ export const artifactsService = {
         tenantId: organizationId,
         metadata: {
           artifactId: createdArtifact.id,
-          artifactType: createdArtifact.type,
+          artifactSubtype: createdArtifact.subtype as string,
           documentSlug: createdArtifact.documentSlug,
         },
       });
@@ -352,12 +361,13 @@ export const artifactsService = {
       await validateOwnerInOrg(input.ownerId, organizationId);
     }
 
-    return await withDb((db) =>
+    const result = await withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: input,
       })
     );
+    return result as Artifact;
   },
 
   /**
@@ -390,7 +400,13 @@ export const artifactsService = {
               },
               artifacts: {
                 where: {
-                  type: { in: ["PRD", "ISSUE", "BUG"] },
+                  subtype: {
+                    in: [
+                      ArtifactSubtype.PRD,
+                      ArtifactSubtype.ISSUE,
+                      ArtifactSubtype.BUG,
+                    ],
+                  },
                   isLatest: true,
                 },
                 take: 1,
@@ -450,7 +466,13 @@ export const artifactsService = {
           where: {
             organizationId,
             workstreamId: artifact.workstream?.id as string,
-            type: { in: ["PRD", "ISSUE", "BUG"] },
+            subtype: {
+              in: [
+                ArtifactSubtype.PRD,
+                ArtifactSubtype.ISSUE,
+                ArtifactSubtype.BUG,
+              ],
+            },
             isLatest: true,
             // Prefer the explicit parent when set; fall back to any PRD/Issue/Bug in the workstream.
             ...(artifact.parentId ? { id: artifact.parentId } : {}),
@@ -468,7 +490,13 @@ export const artifactsService = {
         where: {
           organizationId,
           projectId: artifact.projectId,
-          type: { in: ["PRD", "ISSUE", "BUG"] },
+          subtype: {
+            in: [
+              ArtifactSubtype.PRD,
+              ArtifactSubtype.ISSUE,
+              ArtifactSubtype.BUG,
+            ],
+          },
           isLatest: true,
           OR: [
             { id: artifact.parentId ?? undefined },
@@ -509,7 +537,16 @@ export const artifactsService = {
             },
           },
           artifacts: {
-            where: { type: { in: ["PRD", "ISSUE", "BUG"] }, isLatest: true },
+            where: {
+              subtype: {
+                in: [
+                  ArtifactSubtype.PRD,
+                  ArtifactSubtype.ISSUE,
+                  ArtifactSubtype.BUG,
+                ],
+              },
+              isLatest: true,
+            },
             take: 1,
           },
         },
@@ -627,20 +664,20 @@ ${initialInstructions.trim()}`;
         }),
       ]);
 
-      return updatedArtifact;
+      return updatedArtifact as Artifact;
     });
   },
 
   /**
    * Update artifact with placeholder content (when GitHub is not configured)
    */
-  updateWithPlaceholder(
+  async updateWithPlaceholder(
     id: string,
     organizationId: string,
     currentVersion: number,
     content: string
   ): Promise<Artifact> {
-    return withDb((db) =>
+    const result = await withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: {
@@ -650,6 +687,7 @@ ${initialInstructions.trim()}`;
         },
       })
     );
+    return result as Artifact;
   },
 
   /**
@@ -671,7 +709,10 @@ ${initialInstructions.trim()}`;
       throw new ArtifactNotFoundError();
     }
 
-    return withDb.tx((tx) => createArtifactVersion(tx, original, { content }));
+    const result = await withDb.tx((tx) =>
+      createArtifactVersion(tx, original as PrismaArtifact, { content })
+    );
+    return result as Artifact;
   },
 
   /**
@@ -693,7 +734,7 @@ ${initialInstructions.trim()}`;
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be regenerated",
@@ -842,7 +883,7 @@ ${initialInstructions.trim()}`;
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be amended",
@@ -1153,7 +1194,7 @@ Please try again or contact support if the issue persists.`,
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be executed",
@@ -1318,7 +1359,8 @@ export type RequestChangesResult =
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
-type RawArtifactWithContext = Artifact & {
+type RawArtifactWithContext = Omit<Artifact, "subtype"> & {
+  subtype: ArtifactSubtype | null; // Still nullable from Prisma, validated at runtime
   workstream: { id: string; title: string; state: string } | null;
   project: {
     id: string;
@@ -1340,13 +1382,42 @@ type RawArtifactWithContext = Artifact & {
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext
 ): ArtifactWithWorkstream {
+  // Runtime validation: all artifacts must have a subtype
+  if (!artifact.subtype) {
+    log.error(
+      {
+        artifactId: artifact.id,
+        organizationId: artifact.organizationId,
+      },
+      "Artifact missing subtype"
+    );
+    throw new Error("Artifact missing required subtype");
+  }
+
+  // After validation, we know subtype is non-null, so cast the entire artifact
+  const validatedArtifact = artifact as Artifact & {
+    workstream: { id: string; title: string; state: string } | null;
+    project: {
+      id: string;
+      organizationId: string;
+      name: string;
+      teams: { team: { id: string; name: string } }[];
+    } | null;
+    owner: {
+      id: string;
+      firstName: string | null;
+      lastName: string | null;
+      avatarUrl: string | null;
+    } | null;
+  };
+
   return {
-    ...artifact,
-    project: artifact.project
+    ...validatedArtifact,
+    project: validatedArtifact.project
       ? {
-          id: artifact.project.id,
-          name: artifact.project.name,
-          teams: artifact.project.teams.map((pt) => pt.team),
+          id: validatedArtifact.project.id,
+          name: validatedArtifact.project.name,
+          teams: validatedArtifact.project.teams.map((pt) => pt.team),
         }
       : null,
   };

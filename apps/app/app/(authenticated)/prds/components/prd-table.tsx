@@ -10,7 +10,7 @@ import {
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ArtifactStatusBadge } from "@/components/status-badge";
-import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
+import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
@@ -73,7 +73,7 @@ const filterOptions: FilterOption[] = [
 
 export function PRDTable() {
   const router = useRouter();
-  const { data: prds = [], isLoading, error } = useArtifactsByType("PRD");
+  const { data: prds = [], isLoading, error } = useArtifactsBySubtype("PRD");
 
   const handleRowClick = (prd: ArtifactWithWorkstream) => {
     router.push(`/prds/${prd.documentSlug}`);

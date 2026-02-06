@@ -42,7 +42,7 @@ export function IssueEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactType: "ISSUE",
+    artifactSubtype: "ISSUE",
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch

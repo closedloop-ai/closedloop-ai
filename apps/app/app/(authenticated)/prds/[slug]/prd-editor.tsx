@@ -78,7 +78,7 @@ export function PRDEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactType: "PRD",
+    artifactSubtype: "PRD",
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch

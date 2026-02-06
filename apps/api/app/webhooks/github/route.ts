@@ -3,7 +3,11 @@ import type {
   WorkflowRunInProgressEvent,
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactStatus,
+  ArtifactSubtype,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
 import { withDb } from "@repo/database";
 import {
@@ -343,7 +347,8 @@ async function handleExecutionSuccess(
         organizationId: planArtifact.organizationId,
         workstreamId,
         projectId: planArtifact.projectId,
-        type: ArtifactType.PullRequest,
+        type: ArtifactType.Branch,
+        subtype: ArtifactSubtype.PullRequest,
         title: prTitle,
         externalUrl: executionResult.pr_url,
         status: ArtifactStatus.Review,

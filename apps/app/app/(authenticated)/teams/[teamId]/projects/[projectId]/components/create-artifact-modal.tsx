@@ -3,7 +3,7 @@
 import {
   type Artifact,
   ArtifactStatus,
-  type ArtifactType,
+  type ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -31,8 +31,8 @@ import {
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
 function PrdSelectContent({
   loading,
@@ -69,7 +69,7 @@ function PrdSelectContent({
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  artifactType: ArtifactType;
+  artifactSubtype: ArtifactSubtype;
   projectId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
@@ -77,7 +77,7 @@ type CreateArtifactModalProps = {
 export function CreateArtifactModal({
   open,
   onOpenChange,
-  artifactType,
+  artifactSubtype,
   projectId,
   onSuccess,
 }: CreateArtifactModalProps) {
@@ -96,16 +96,16 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
-  const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
+  const typeLabel = ARTIFACT_SUBTYPE_LABELS[artifactSubtype] || artifactSubtype;
+  const isImplementationPlan = artifactSubtype === "IMPLEMENTATION_PLAN";
   const supportsTemplate =
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG";
+    artifactSubtype === "PRD" ||
+    artifactSubtype === "ISSUE" ||
+    artifactSubtype === "BUG";
 
-  // Fetch template for types that have templates
-  const { data: template } = useOrgTemplateByType(
-    supportsTemplate ? artifactType : "",
+  // Fetch template for subtypes that have templates
+  const { data: template } = useOrgTemplateBySubtype(
+    supportsTemplate ? artifactSubtype : "",
     { enabled: open && supportsTemplate }
   );
 
@@ -117,7 +117,7 @@ export function CreateArtifactModal({
 
   // Filter to get only PRDs
   const prds = useMemo(
-    () => artifacts.filter((a) => a.type === "PRD"),
+    () => artifacts.filter((a) => a.subtype === "PRD"),
     [artifacts]
   );
 
@@ -190,7 +190,7 @@ export function CreateArtifactModal({
     createArtifact.mutate(
       {
         projectId,
-        type: artifactType,
+        subtype: artifactSubtype,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
         content: content.trim() || undefined,

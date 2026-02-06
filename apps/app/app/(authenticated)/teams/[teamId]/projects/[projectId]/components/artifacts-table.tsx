@@ -43,14 +43,14 @@ import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
-  ARTIFACT_TYPE_ICONS,
+  ARTIFACT_SUBTYPE_ICONS,
 } from "@/lib/project-constants";
 import type {
   ArtifactDisplayStatus,
   ProjectArtifact,
-  ProjectArtifactType,
+  ProjectArtifactSubtype,
 } from "@/types/teams";
-import { ArtifactTypeBadge } from "./artifact-type-badge";
+import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
 
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
@@ -59,47 +59,48 @@ type ArtifactsTableProps = {
 };
 
 /**
- * Section configuration for grouping artifacts by type.
- * Each section defines a title and which artifact types it contains.
+ * Section configuration for grouping artifacts by subtype.
+ * Each section defines a title and which artifact subtypes it contains.
  */
 const ARTIFACT_SECTIONS: {
   title: string;
-  types: Set<ProjectArtifactType>;
+  subtypes: Set<ProjectArtifactSubtype>;
 }[] = [
   {
     title: "Documents",
-    types: new Set<ProjectArtifactType>(["PROJECT_BRIEF", "PRD"]),
+    subtypes: new Set<ProjectArtifactSubtype>(["PROJECT_BRIEF", "PRD"]),
   },
   {
     title: "Implementation Plans",
-    types: new Set<ProjectArtifactType>([
+    subtypes: new Set<ProjectArtifactSubtype>([
       "IMPLEMENTATION_PLAN",
       "IMPLEMENTATION_STRATEGY",
     ]),
   },
   {
     title: "Issues",
-    types: new Set<ProjectArtifactType>(["ISSUE", "BUG"]),
+    subtypes: new Set<ProjectArtifactSubtype>(["ISSUE", "BUG"]),
   },
   {
     title: "Feature Branches",
-    types: new Set<ProjectArtifactType>(["FEATURE_BRANCHES"]),
+    subtypes: new Set<ProjectArtifactSubtype>(["FEATURE_BRANCHES"]),
   },
 ];
 
-function isNavigableArtifact(type: ProjectArtifactType): boolean {
-  const navigableTypes = new Set<ProjectArtifactType>([
-    "PRD",
-    "IMPLEMENTATION_PLAN",
-    "IMPLEMENTATION_STRATEGY",
-    "ISSUE",
-    "BUG",
-  ]);
-  return navigableTypes.has(type);
+const NAVIGABLE_SUBTYPES = new Set<ProjectArtifactSubtype>([
+  "PRD",
+  "IMPLEMENTATION_PLAN",
+  "IMPLEMENTATION_STRATEGY",
+  "ISSUE",
+  "BUG",
+]);
+
+function isNavigableArtifact(artifact: ProjectArtifact): boolean {
+  return NAVIGABLE_SUBTYPES.has(artifact.subtype);
 }
 
 function isExternalLink(artifact: ProjectArtifact): boolean {
-  switch (artifact.type) {
+  switch (artifact.subtype) {
     case "DESIGNS":
       return artifact.link?.startsWith("http") ?? false;
     case "FEATURE_BRANCHES":
@@ -114,19 +115,15 @@ function isExternalLink(artifact: ProjectArtifact): boolean {
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
  */
 function getArtifactRoute(artifact: ProjectArtifact): string | null {
-  switch (artifact.type) {
+  switch (artifact.subtype) {
     case "PRD":
       return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
     case "IMPLEMENTATION_PLAN":
-      return artifact.documentSlug
-        ? `/implementation-plans/${artifact.documentSlug}`
-        : null;
     case "IMPLEMENTATION_STRATEGY":
       return artifact.documentSlug
         ? `/implementation-plans/${artifact.documentSlug}`
         : null;
     case "ISSUE":
-      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "BUG":
       return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
@@ -206,10 +203,11 @@ function ArtifactSection({
           </TableHeader>
           <TableBody>
             {artifacts.map((artifact) => {
-              const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
+              const Icon =
+                ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
               const route = getArtifactRoute(artifact);
               const isExternal = isExternalLink(artifact);
-              const isClickable = isNavigableArtifact(artifact.type);
+              const isClickable = isNavigableArtifact(artifact);
 
               return (
                 <TableRow
@@ -226,7 +224,7 @@ function ArtifactSection({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <ArtifactTypeBadge type={artifact.type} />
+                    <ArtifactSubtypeBadge subtype={artifact.subtype} />
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Select
@@ -317,13 +315,13 @@ export function ArtifactsTable({
     () =>
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
-        artifacts: artifacts.filter((a) => section.types.has(a.type)),
+        artifacts: artifacts.filter((a) => section.subtypes.has(a.subtype)),
       })).filter((section) => section.artifacts.length > 0),
     [artifacts]
   );
 
   function handleRowClick(artifact: ProjectArtifact): void {
-    if (isNavigableArtifact(artifact.type)) {
+    if (isNavigableArtifact(artifact)) {
       const route = getArtifactRoute(artifact);
       if (route) {
         router.push(route);

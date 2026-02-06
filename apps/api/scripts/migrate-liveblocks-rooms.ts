@@ -87,7 +87,7 @@ async function migrateLiveblocksRooms() {
           tenantId: artifact.organizationId,
           metadata: {
             artifactId: artifact.id,
-            artifactType: artifact.type,
+            artifactSubtype: artifact.subtype,
             documentSlug: artifact.documentSlug,
           },
         });

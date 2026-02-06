@@ -88,7 +88,7 @@ export function PlanEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactType: "IMPLEMENTATION_PLAN",
+    artifactSubtype: "IMPLEMENTATION_PLAN",
   });
 
   // Type assertion for Plan-specific UI state

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -50,7 +50,7 @@ import {
 import type {
   ArtifactDisplayStatus,
   ProjectArtifact,
-  ProjectArtifactType,
+  ProjectArtifactSubtype,
 } from "@/types/teams";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
@@ -68,14 +68,14 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
 ]);
 
 /**
- * Map backend ArtifactType to frontend ProjectArtifactType.
+ * Map backend ArtifactSubtype to frontend ProjectArtifactSubtype.
  * PULL_REQUEST artifacts are displayed under the FEATURE_BRANCHES section.
  */
-function toProjectArtifactType(type: string): ProjectArtifactType {
-  if (type === "PULL_REQUEST") {
+function toProjectArtifactSubtype(subtype: string): ProjectArtifactSubtype {
+  if (subtype === "PULL_REQUEST") {
     return "FEATURE_BRANCHES";
   }
-  return type as ProjectArtifactType;
+  return subtype as ProjectArtifactSubtype;
 }
 
 export default function ProjectDetailPage() {
@@ -84,8 +84,8 @@ export default function ProjectDetailPage() {
   const projectId = params.projectId as string;
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [selectedArtifactType, setSelectedArtifactType] =
-    useState<ArtifactType>(ArtifactType.Prd);
+  const [selectedArtifactSubtype, setSelectedArtifactSubtype] =
+    useState<ArtifactSubtype>(ArtifactSubtype.Prd);
 
   // Queries
   const {
@@ -130,7 +130,7 @@ export default function ProjectDetailPage() {
         id: artifact.id,
         documentSlug: artifact.documentSlug,
         name: artifact.title,
-        type: toProjectArtifactType(artifact.type),
+        subtype: toProjectArtifactSubtype(artifact.subtype),
         status: mapArtifactStatusToDisplay(artifact.status),
         link: artifact.externalUrl || undefined,
       })),
@@ -186,8 +186,8 @@ export default function ProjectDetailPage() {
     });
   };
 
-  const handleCreateArtifact = (type: ArtifactType) => {
-    setSelectedArtifactType(type);
+  const handleCreateArtifact = (subtype: ArtifactSubtype) => {
+    setSelectedArtifactSubtype(subtype);
     setCreateModalOpen(true);
   };
 
@@ -240,14 +240,14 @@ export default function ProjectDetailPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+                onClick={() => handleCreateArtifact(ArtifactSubtype.Prd)}
               >
                 <FileTextIcon className="mr-2 h-4 w-4" />
                 PRD
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() =>
-                  handleCreateArtifact(ArtifactType.ImplementationPlan)
+                  handleCreateArtifact(ArtifactSubtype.ImplementationPlan)
                 }
               >
                 <ListTodoIcon className="mr-2 h-4 w-4" />
@@ -255,20 +255,20 @@ export default function ProjectDetailPage() {
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() =>
-                  handleCreateArtifact(ArtifactType.ImplementationStrategy)
+                  handleCreateArtifact(ArtifactSubtype.ImplementationStrategy)
                 }
               >
                 <ListTodoIcon className="mr-2 h-4 w-4" />
                 Implementation Strategy
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactType.Issue)}
+                onClick={() => handleCreateArtifact(ArtifactSubtype.Issue)}
               >
                 <AlertCircleIcon className="mr-2 h-4 w-4" />
                 Issue
               </DropdownMenuItem>
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactType.Bug)}
+                onClick={() => handleCreateArtifact(ArtifactSubtype.Bug)}
               >
                 <BugIcon className="mr-2 h-4 w-4" />
                 Bug
@@ -313,7 +313,7 @@ export default function ProjectDetailPage() {
         </div>
       </main>
       <CreateArtifactModal
-        artifactType={selectedArtifactType}
+        artifactSubtype={selectedArtifactSubtype}
         onOpenChange={setCreateModalOpen}
         open={createModalOpen}
         projectId={projectId}

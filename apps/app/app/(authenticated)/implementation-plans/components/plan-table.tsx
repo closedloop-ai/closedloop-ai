@@ -10,7 +10,7 @@ import {
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ArtifactStatusBadge } from "@/components/status-badge";
-import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
+import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { PlanRowActions } from "./plan-row-actions";
 
@@ -72,7 +72,7 @@ export function PlanTable() {
     data: plans = [],
     isLoading,
     error,
-  } = useArtifactsByType("IMPLEMENTATION_PLAN");
+  } = useArtifactsBySubtype("IMPLEMENTATION_PLAN");
 
   const handleRowClick = (plan: ArtifactWithWorkstream) => {
     router.push(`/implementation-plans/${plan.documentSlug}`);

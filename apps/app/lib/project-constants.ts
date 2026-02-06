@@ -1,4 +1,4 @@
-import type { ArtifactType } from "@repo/api/src/types/artifact";
+import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   AlertCircleIcon,
@@ -43,14 +43,14 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactDisplayStatus, string> = {
   NOT_PUBLISHED: "text-yellow-600 dark:text-yellow-400",
 };
 
-// Artifact type icons
-export const ARTIFACT_TYPE_ICONS: Record<string, React.ElementType> &
-  Partial<Record<ArtifactType, React.ElementType>> = {
-  // Legacy ProjectArtifactType values
+// Artifact subtype icons
+export const ARTIFACT_SUBTYPE_ICONS: Record<string, React.ElementType> &
+  Partial<Record<ArtifactSubtype, React.ElementType>> = {
+  // Legacy ProjectArtifactSubtype values
   PROJECT_BRIEF: BookOpenIcon,
   DESIGNS: PaintbrushIcon,
   FEATURE_BRANCHES: GitBranchIcon,
-  // ArtifactType values
+  // ArtifactSubtype values
   PRD: FileTextIcon,
   FIGMA_DESIGN: PaintbrushIcon,
   IMPLEMENTATION_PLAN: ClipboardListIcon,
@@ -61,14 +61,14 @@ export const ARTIFACT_TYPE_ICONS: Record<string, React.ElementType> &
   PULL_REQUEST: GitBranchIcon,
 };
 
-// Artifact type labels for display
-export const ARTIFACT_TYPE_LABELS: Record<string, string> &
-  Partial<Record<ArtifactType, string>> = {
-  // Legacy ProjectArtifactType values
+// Artifact subtype labels for display
+export const ARTIFACT_SUBTYPE_LABELS: Record<string, string> &
+  Partial<Record<ArtifactSubtype, string>> = {
+  // Legacy ProjectArtifactSubtype values
   PROJECT_BRIEF: "Brief",
   DESIGNS: "Designs",
   FEATURE_BRANCHES: "Branches",
-  // ArtifactType values
+  // ArtifactSubtype values
   PRD: "PRD",
   FIGMA_DESIGN: "Designs",
   IMPLEMENTATION_PLAN: "Impl Plan",
@@ -79,13 +79,13 @@ export const ARTIFACT_TYPE_LABELS: Record<string, string> &
   PULL_REQUEST: "Branches",
 };
 
-// Artifact type colors for pills (bg + text)
-export const ARTIFACT_TYPE_COLORS: Record<
+// Artifact subtype colors for pills (bg + text)
+export const ARTIFACT_SUBTYPE_COLORS: Record<
   string,
   { bg: string; text: string }
 > &
-  Partial<Record<ArtifactType, { bg: string; text: string }>> = {
-  // Legacy ProjectArtifactType values
+  Partial<Record<ArtifactSubtype, { bg: string; text: string }>> = {
+  // Legacy ProjectArtifactSubtype values
   PROJECT_BRIEF: {
     bg: "bg-slate-100 dark:bg-slate-800",
     text: "text-slate-700 dark:text-slate-300",
@@ -98,7 +98,7 @@ export const ARTIFACT_TYPE_COLORS: Record<
     bg: "bg-cyan-100 dark:bg-cyan-900/50",
     text: "text-cyan-700 dark:text-cyan-300",
   },
-  // ArtifactType values
+  // ArtifactSubtype values
   PRD: {
     bg: "bg-blue-100 dark:bg-blue-900/50",
     text: "text-blue-700 dark:text-blue-300",
