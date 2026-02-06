@@ -25,26 +25,32 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useTeams } from "@/hooks/queries/use-teams";
+import { useIsMounted } from "@/hooks/use-is-mounted";
 import { TeamModal } from "./team-modal";
 
 export function SidebarTeams() {
   const { data: teams = [] } = useTeams();
+  const mounted = useIsMounted();
 
   return (
     <SidebarGroup>
       <SidebarGroupLabel className="flex items-center justify-between pr-2">
         <span>Your Teams</span>
-        <TeamModal
-          trigger={
-            <button
-              className="flex h-5 w-5 items-center justify-center rounded-md hover:bg-sidebar-accent"
-              type="button"
-            >
-              <PlusIcon className="h-3.5 w-3.5" />
-              <span className="sr-only">Add Team</span>
-            </button>
-          }
-        />
+        {mounted ? (
+          <TeamModal
+            trigger={
+              <button
+                className="flex h-5 w-5 items-center justify-center rounded-md hover:bg-sidebar-accent"
+                type="button"
+              >
+                <PlusIcon className="h-3.5 w-3.5" />
+                <span className="sr-only">Add Team</span>
+              </button>
+            }
+          />
+        ) : (
+          <div className="h-5 w-5" />
+        )}
       </SidebarGroupLabel>
       <SidebarMenu>
         {teams.map((team) => (
@@ -72,23 +78,25 @@ export function SidebarTeams() {
                       </Link>
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
-                  <SidebarMenuSubItem>
-                    <TeamModal
-                      team={team}
-                      trigger={
-                        <SidebarMenuSubButton>
-                          <SettingsIcon className="h-4 w-4" />
-                          <span>Settings</span>
-                        </SidebarMenuSubButton>
-                      }
-                    />
-                  </SidebarMenuSubItem>
+                  {mounted ? (
+                    <SidebarMenuSubItem>
+                      <TeamModal
+                        team={team}
+                        trigger={
+                          <SidebarMenuSubButton>
+                            <SettingsIcon className="h-4 w-4" />
+                            <span>Settings</span>
+                          </SidebarMenuSubButton>
+                        }
+                      />
+                    </SidebarMenuSubItem>
+                  ) : null}
                 </SidebarMenuSub>
               </CollapsibleContent>
             </SidebarMenuItem>
           </Collapsible>
         ))}
-        {teams.length === 0 && (
+        {teams.length === 0 && mounted && (
           <SidebarMenuItem>
             <TeamModal
               trigger={
