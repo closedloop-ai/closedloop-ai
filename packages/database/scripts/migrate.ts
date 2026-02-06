@@ -37,7 +37,7 @@ async function main() {
     );
     const databaseUrl = addSchemaToUrl(DATABASE_URL, resolvedSchema);
     console.log("↪ Ensuring schema exists...");
-    await ensureSchemaExists(databaseUrl, resolvedSchema);
+    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
     await upsertSchemaRegistry(
       databaseUrl,
       resolvedSchema,
@@ -50,6 +50,9 @@ async function main() {
         DATABASE_URL: databaseUrl,
       },
     });
+    if (isNew && resolvedSchema) {
+      await cloneDataFromPublic(databaseUrl, resolvedSchema);
+    }
     return;
   }
 
@@ -86,7 +89,7 @@ async function main() {
     console.log("✓ Token generated, running migrations...");
 
     console.log("↪ Ensuring schema exists...");
-    await ensureSchemaExists(databaseUrl, resolvedSchema);
+    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
     await upsertSchemaRegistry(
       databaseUrl,
       resolvedSchema,
@@ -101,6 +104,10 @@ async function main() {
       },
     });
 
+    if (isNew && resolvedSchema) {
+      await cloneDataFromPublic(databaseUrl, resolvedSchema);
+    }
+
     console.log("✓ Migrations completed successfully");
   } catch (error) {
     console.error(
@@ -113,15 +120,24 @@ async function main() {
 
 main();
 
-async function ensureSchemaExists(databaseUrl: string, schema: string | null) {
+async function ensureSchemaExists(
+  databaseUrl: string,
+  schema: string | null
+): Promise<boolean> {
   if (!schema) {
-    return;
+    return false;
   }
   const client = createSslClient(databaseUrl);
   await client.connect();
   try {
     const quoted = quoteIdentifier(schema);
+    const { rows } = await client.query(
+      "SELECT 1 FROM information_schema.schemata WHERE schema_name = $1",
+      [schema]
+    );
+    const existed = rows.length > 0;
     await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoted}`);
+    return !existed;
   } finally {
     await client.end();
   }
@@ -152,6 +168,57 @@ async function upsertSchemaRegistry(
        ON CONFLICT (schema_name)
        DO UPDATE SET branch = EXCLUDED.branch, last_seen_at = now()`,
       [schema, branch ?? null]
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+const CLONE_SKIP_TABLES = new Set(["_prisma_migrations", "preview_schemas"]);
+
+async function cloneDataFromPublic(databaseUrl: string, schema: string) {
+  console.log(`↪ Cloning data from public schema into ${schema}...`);
+  const client = createSslClient(databaseUrl);
+  await client.connect();
+  try {
+    // Get all tables in the public schema
+    const { rows: tables } = await client.query(
+      `SELECT table_name FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_type = 'BASE TABLE'
+       ORDER BY table_name`
+    );
+
+    const tableNames: string[] = tables
+      .map((r: { table_name: string }) => r.table_name)
+      .filter((name: string) => !CLONE_SKIP_TABLES.has(name));
+
+    if (tableNames.length === 0) {
+      console.log("  No tables to clone.");
+      return;
+    }
+
+    const quoted = quoteIdentifier(schema);
+
+    // Disable FK triggers for the session so insert order doesn't matter
+    await client.query(`SET session_replication_role = 'replica'`);
+
+    for (const table of tableNames) {
+      const quotedTable = quoteIdentifier(table);
+      const { rowCount } = await client.query(
+        `INSERT INTO ${quoted}.${quotedTable} SELECT * FROM "public".${quotedTable}`
+      );
+      console.log(`  ${table}: ${rowCount ?? 0} rows`);
+    }
+
+    // Re-enable FK triggers
+    await client.query(`SET session_replication_role = 'DEFAULT'`);
+
+    console.log(`✓ Cloned ${tableNames.length} tables into ${schema}`);
+  } catch (error) {
+    console.error(
+      "⚠️  Data clone failed (schema will start empty):",
+      error instanceof Error ? error.message : String(error)
     );
   } finally {
     await client.end();
