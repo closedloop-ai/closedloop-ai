@@ -198,6 +198,15 @@ async function getPool(): Promise<pg.Pool> {
   const searchPath =
     schema && schema.length > 0 ? formatSearchPath(schema) : null;
 
+  // TODO: Remove after confirming preview schema resolution works
+  console.log("[database] pool init", {
+    resolvedSchema: schema,
+    searchPath,
+    PGSCHEMA: env.PGSCHEMA ?? "(unset)",
+    VERCEL_ENV: process.env.VERCEL_ENV ?? "(unset)",
+    VERCEL_GIT_COMMIT_REF: process.env.VERCEL_GIT_COMMIT_REF ?? "(unset)",
+  });
+
   // Determine if using local DATABASE_URL or remote IAM auth
   const isLocalhost = env.DATABASE_URL
     ? (() => {
