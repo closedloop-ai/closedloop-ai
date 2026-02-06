@@ -1418,7 +1418,6 @@ Please try again or contact support if the issue persists.`,
           updatedAt: new Date(),
         },
         create: {
-          id: createId(),
           artifactId,
           userId,
           organizationId,

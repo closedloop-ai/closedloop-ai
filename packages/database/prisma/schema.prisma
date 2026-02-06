@@ -405,12 +405,12 @@ model Artifact {
   updatedAt       DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization      @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?       @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner        User?             @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  parent       Artifact?         @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]        @relation("ArtifactSource")
+  organization Organization     @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?      @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner        User?            @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  parent       Artifact?        @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children     Artifact[]       @relation("ArtifactSource")
   ratings      ArtifactRating[]
 
   @@unique([organizationId, templateForType])
@@ -426,7 +426,7 @@ model Artifact {
 }
 
 model ArtifactRating {
-  id              String   @id @default(uuid(7)) @db.Uuid @map("id")
+  id              String   @id @default(uuid(7)) @map("id") @db.Uuid
   artifactId      String   @map("artifact_id") @db.Uuid
   userId          String   @map("user_id") @db.Uuid
   organizationId  String   @map("organization_id") @db.Uuid
