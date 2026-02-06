@@ -254,8 +254,18 @@ async function cloneDataFromPublic(databaseUrl: string, schema: string) {
 
     for (const table of tableNames) {
       const quotedTable = quoteIdentifier(table);
+      // Use explicit column list from the target schema to avoid column order mismatches
+      const { rows: cols } = await client.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = $2
+         ORDER BY ordinal_position`,
+        [schema, table]
+      );
+      const colList = cols
+        .map((c: { column_name: string }) => quoteIdentifier(c.column_name))
+        .join(", ");
       const { rowCount } = await client.query(
-        `INSERT INTO ${quoted}.${quotedTable} SELECT * FROM "public".${quotedTable}`
+        `INSERT INTO ${quoted}.${quotedTable} (${colList}) SELECT ${colList} FROM "public".${quotedTable}`
       );
       console.log(`  ${table}: ${rowCount ?? 0} rows`);
     }
