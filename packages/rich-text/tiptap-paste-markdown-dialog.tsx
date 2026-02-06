@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -11,12 +10,13 @@ import {
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import { useState } from "react";
 
-interface TiptapPasteMarkdownDialogProps {
+type TiptapPasteMarkdownDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSetContent: (markdown: string) => void;
-}
+};
 
 export function TiptapPasteMarkdownDialog({
   open,
@@ -46,8 +46,8 @@ export function TiptapPasteMarkdownDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[80vh] flex flex-col">
+    <Dialog onOpenChange={handleOpenChange} open={open}>
+      <DialogContent className="flex max-h-[80vh] flex-col">
         <DialogHeader>
           <DialogTitle>Paste Markdown</DialogTitle>
           <DialogDescription>
@@ -55,23 +55,19 @@ export function TiptapPasteMarkdownDialog({
           </DialogDescription>
         </DialogHeader>
         <Textarea
-          value={markdownInput}
+          className="max-h-[50vh] min-h-[200px] resize-none font-mono text-sm"
           onChange={(e) => setMarkdownInput(e.target.value)}
           placeholder="Paste your markdown here..."
-          className="min-h-[200px] max-h-[50vh] font-mono text-sm resize-none"
+          value={markdownInput}
         />
         <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={handleCancel}
-          >
+          <Button onClick={handleCancel} type="button" variant="outline">
             Cancel
           </Button>
           <Button
-            type="button"
-            onClick={handleSetMarkdownContent}
             disabled={!markdownInput.trim()}
+            onClick={handleSetMarkdownContent}
+            type="button"
           >
             Set Content
           </Button>
