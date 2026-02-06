@@ -38,7 +38,8 @@ const ERROR_PATTERNS = [
     category: "DATABASE",
     pattern: /unique constraint|duplicate key/i,
     name: "Unique Constraint Violation",
-    extract: (log) => log.match(/unique constraint "[^"]+"|duplicate key value/i)?.[0],
+    extract: (log) =>
+      log.match(/unique constraint "[^"]+"|duplicate key value/i)?.[0],
     suggestions: [
       "Check for duplicate data in seed scripts",
       "Verify upsert logic handles existing records",
@@ -76,7 +77,8 @@ const ERROR_PATTERNS = [
     category: "BUILD",
     pattern: /Module not found|Cannot find module/i,
     name: "Missing Module",
-    extract: (log) => log.match(/(?:Module not found|Cannot find module)[^\n]+/i)?.[0],
+    extract: (log) =>
+      log.match(/(?:Module not found|Cannot find module)[^\n]+/i)?.[0],
     suggestions: [
       "Run `pnpm install` to ensure dependencies are installed",
       "Check if the import path is correct",
@@ -87,7 +89,8 @@ const ERROR_PATTERNS = [
     category: "BUILD",
     pattern: /ENOMEM|heap out of memory|JavaScript heap/i,
     name: "Out of Memory",
-    extract: (log) => log.match(/(?:ENOMEM|heap out of memory|JavaScript heap)[^\n]*/i)?.[0],
+    extract: (log) =>
+      log.match(/(?:ENOMEM|heap out of memory|JavaScript heap)[^\n]*/i)?.[0],
     suggestions: [
       "Increase Node memory: `NODE_OPTIONS=--max_old_space_size=4096`",
       "Check for memory leaks in build process",
@@ -111,7 +114,8 @@ const ERROR_PATTERNS = [
     category: "ENVIRONMENT",
     pattern: /missing required.*environment|env.*not set|undefined.*env/i,
     name: "Missing Environment Variable",
-    extract: (log) => log.match(/(?:missing|undefined)[^\n]*(?:env|environment)[^\n]*/i)?.[0],
+    extract: (log) =>
+      log.match(/(?:missing|undefined)[^\n]*(?:env|environment)[^\n]*/i)?.[0],
     suggestions: [
       "Check Vercel environment variables are set for production",
       "Verify variable names match exactly (case-sensitive)",
@@ -138,7 +142,8 @@ const ERROR_PATTERNS = [
     category: "VERCEL",
     pattern: /FUNCTION_INVOCATION_FAILED|EDGE_FUNCTION_INVOCATION/i,
     name: "Serverless Function Error",
-    extract: (log) => log.match(/(?:FUNCTION_INVOCATION_FAILED|EDGE_FUNCTION)[^\n]*/i)?.[0],
+    extract: (log) =>
+      log.match(/(?:FUNCTION_INVOCATION_FAILED|EDGE_FUNCTION)[^\n]*/i)?.[0],
     suggestions: [
       "Check function logs in Vercel dashboard",
       "Verify function doesn't exceed timeout/memory limits",
@@ -190,7 +195,9 @@ function diagnose(errorLog) {
       findings.push({
         category: pattern.category,
         name: pattern.name,
-        detail: pattern.extract(errorLog) || "Pattern matched but no detail extracted",
+        detail:
+          pattern.extract(errorLog) ||
+          "Pattern matched but no detail extracted",
         suggestions: pattern.suggestions,
       });
     }
@@ -226,7 +233,7 @@ function formatSlackReport(diagnosis, context) {
   };
 
   const lines = [
-    `*Deploy Failed* — requires attention`,
+    "*Deploy Failed* — requires attention",
     "",
     `• *PR:* ${prUrl || "N/A"}`,
     `• *Branch:* \`${branch || "main"}\` → \`production\``,
@@ -258,7 +265,9 @@ function formatSlackReport(diagnosis, context) {
         lines.push("  • Database: ⊘ Skipped");
       } else if (d.ok) {
         const latency = d.checks?.connectivity?.latencyMs;
-        lines.push(`  • Database: ✓ Healthy${latency ? ` (${latency}ms)` : ""}`);
+        lines.push(
+          `  • Database: ✓ Healthy${latency ? ` (${latency}ms)` : ""}`
+        );
       } else {
         const error = d.checks?.connectivity?.error || "Unknown error";
         lines.push(`  • Database: ✗ ${error}`);
@@ -284,7 +293,9 @@ function formatSlackReport(diagnosis, context) {
   }
 
   lines.push("─────────────────────────");
-  lines.push("_Fix the issue and re-run the deploy workflow, or reply here for help._");
+  lines.push(
+    "_Fix the issue and re-run the deploy workflow, or reply here for help._"
+  );
 
   return lines.join("\n");
 }
@@ -315,7 +326,9 @@ async function loadHealthCheckStatus() {
   const statuses = {};
 
   try {
-    const vercelRaw = await readFile("vercel-status.json", "utf-8").catch(() => null);
+    const vercelRaw = await readFile("vercel-status.json", "utf-8").catch(
+      () => null
+    );
     if (vercelRaw) {
       statuses.vercel = JSON.parse(vercelRaw);
     }

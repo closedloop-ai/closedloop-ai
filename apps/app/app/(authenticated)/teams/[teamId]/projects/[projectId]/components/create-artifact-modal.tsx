@@ -3,7 +3,7 @@
 import {
   type Artifact,
   ArtifactStatus,
-  type ArtifactSubtype,
+  ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -147,11 +147,12 @@ export function CreateArtifactModal({
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
   const typeLabel = ARTIFACT_SUBTYPE_LABELS[artifactSubtype] || artifactSubtype;
-  const isImplementationPlan = artifactSubtype === "IMPLEMENTATION_PLAN";
+  const isImplementationPlan =
+    artifactSubtype === ArtifactSubtype.ImplementationPlan;
   const supportsTemplate =
-    artifactSubtype === "PRD" ||
-    artifactSubtype === "ISSUE" ||
-    artifactSubtype === "BUG";
+    artifactSubtype === ArtifactSubtype.Prd ||
+    artifactSubtype === ArtifactSubtype.Issue ||
+    artifactSubtype === ArtifactSubtype.Bug;
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =

@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useState } from "react";
@@ -76,7 +79,7 @@ export function PRDEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: "PRD",
+    artifactSubtype: ArtifactSubtype.Prd,
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch

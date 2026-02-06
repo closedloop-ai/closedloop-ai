@@ -1,13 +1,14 @@
 "use client";
 
+import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { useCallback, useState } from "react";
 
 type EditableArtifactSubtype =
-  | "PRD"
-  | "IMPLEMENTATION_PLAN"
-  | "ISSUE"
-  | "BUG"
-  | "IMPLEMENTATION_STRATEGY";
+  | typeof ArtifactSubtype.Prd
+  | typeof ArtifactSubtype.ImplementationPlan
+  | typeof ArtifactSubtype.Issue
+  | typeof ArtifactSubtype.Bug
+  | typeof ArtifactSubtype.ImplementationStrategy;
 
 type UseArtifactUIStateConfig = {
   artifactSubtype: EditableArtifactSubtype;
@@ -71,10 +72,10 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   };
 
   if (
-    artifactSubtype === "PRD" ||
-    artifactSubtype === "ISSUE" ||
-    artifactSubtype === "BUG" ||
-    artifactSubtype === "IMPLEMENTATION_STRATEGY"
+    artifactSubtype === ArtifactSubtype.Prd ||
+    artifactSubtype === ArtifactSubtype.Issue ||
+    artifactSubtype === ArtifactSubtype.Bug ||
+    artifactSubtype === ArtifactSubtype.ImplementationStrategy
   ) {
     return {
       ...commonState,
@@ -89,7 +90,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     };
   }
 
-  if (artifactSubtype === "IMPLEMENTATION_PLAN") {
+  if (artifactSubtype === ArtifactSubtype.ImplementationPlan) {
     return {
       ...commonState,
       showRequestChangesModal,

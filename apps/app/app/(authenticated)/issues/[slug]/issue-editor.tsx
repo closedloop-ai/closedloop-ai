@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
@@ -42,7 +45,7 @@ export function IssueEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: "ISSUE",
+    artifactSubtype: ArtifactSubtype.Issue,
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch

@@ -12,7 +12,10 @@ import { writeFile } from "node:fs/promises";
 
 if (!databaseUrl) {
   console.log("DATABASE_URL not set, skipping database health check");
-  await writeFile(outputPath, JSON.stringify({ skipped: true, reason: "DATABASE_URL not set" }));
+  await writeFile(
+    outputPath,
+    JSON.stringify({ skipped: true, reason: "DATABASE_URL not set" })
+  );
   process.exit(0);
 }
 
@@ -27,7 +30,7 @@ function sanitizeUrl(url) {
   }
 }
 
-console.log(`Checking database health...`);
+console.log("Checking database health...");
 console.log(`Connection: ${sanitizeUrl(databaseUrl)}`);
 
 const checks = {
@@ -79,8 +82,8 @@ try {
       FROM _prisma_migrations
     `);
     const { total, pending } = migrationResult.rows[0];
-    checks.migrations.total = parseInt(total);
-    checks.migrations.pending = parseInt(pending);
+    checks.migrations.total = Number.parseInt(total);
+    checks.migrations.pending = Number.parseInt(pending);
 
     if (pending > 0) {
       checks.migrations.status = "error";
@@ -114,9 +117,8 @@ try {
     FROM information_schema.tables
     WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
   `);
-  const tableCount = parseInt(tableResult.rows[0].count);
+  const tableCount = Number.parseInt(tableResult.rows[0].count);
   console.log(`   ✓ Found ${tableCount} tables in public schema`);
-
 } catch (error) {
   console.error(`\n✗ Database check failed: ${error.message}`);
   checks.connectivity.status = "error";
