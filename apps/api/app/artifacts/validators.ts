@@ -2,7 +2,6 @@ import {
   ARTIFACT_STATUS_OPTIONS,
   ARTIFACT_SUBTYPE_OPTIONS,
   ARTIFACT_TYPE_OPTIONS,
-  getArtifactType,
 } from "@repo/api/src/types/artifact";
 import { z } from "zod";
 
@@ -19,7 +18,6 @@ export const createArtifactValidator = z
     projectId: z.uuidv7().optional(),
     parentId: z.uuidv7().optional(),
     subtype: artifactSubtypeEnum,
-    type: artifactTypeEnum.optional(),
     title: z.string().min(1, "Title is required"),
     fileName: z.string().optional(),
     approver: z.string().optional(),
@@ -41,11 +39,7 @@ export const createArtifactValidator = z
       message:
         "Either workstreamId or projectId is required (except for templates)",
     }
-  )
-  .refine((data) => !data.type || data.type === getArtifactType(data.subtype), {
-    message:
-      "type must match the deterministic mapping from subtype (or omit type to auto-derive)",
-  });
+  );
 
 export const updateArtifactValidator = z.object({
   title: z.string().min(1).optional(),

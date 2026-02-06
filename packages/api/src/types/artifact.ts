@@ -188,7 +188,6 @@ export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
   parentId?: string;
-  type?: ArtifactType;
   subtype: ArtifactSubtype;
   title: string;
   fileName?: string;

@@ -328,7 +328,7 @@ export const artifactsService = {
       const artifact = await tx.artifact.create({
         data: {
           ...input,
-          type: input.type ?? getArtifactType(input.subtype),
+          type: getArtifactType(input.subtype),
           organizationId,
           documentSlug,
           version: 1,
