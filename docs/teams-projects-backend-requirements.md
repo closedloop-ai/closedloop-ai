@@ -181,10 +181,10 @@ export const teamsService = {
 import { teamsService } from "./service";
 
 export async function GET(request: Request) {
-  const { userId } = await auth();
-  if (!userId) return new Response("Unauthorized", { status: 401 });
+  const { userId, orgId } = await auth();
+  if (!userId || !orgId) return new Response("Unauthorized", { status: 401 });
 
-  const user = await usersService.findByClerkId(userId);
+  const user = await usersService.findByClerkIdAndOrg(userId, orgId);
   if (!user) return new Response("User not found", { status: 404 });
 
   const teams = await teamsService.findByOrganization(user.organizationId);
