@@ -49,7 +49,7 @@ jobs:
           echo "SLACK_FAILED=0" >> "$GITHUB_ENV"
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
-            --arg text "Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`. I'll post updates here." \
+            --arg text "🚀 Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`" \
             --arg thread_ts "$SLACK_THREAD_TS" \
             '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
             | curl -sS https://slack.com/api/chat.postMessage \
@@ -66,7 +66,7 @@ jobs:
 
       - name: Build Changelog
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: node scripts/deploy/build-changelog.mjs
 
       - name: Check For Changes
@@ -91,7 +91,7 @@ jobs:
           fi
           SLACK_RESP=$(jq -n \
             --arg channel "$SLACK_CHANNEL_ID" \
-            --arg text "No changes to deploy. \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
+            --arg text "ℹ️ No changes to deploy — \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
             --arg thread_ts "$SLACK_THREAD_TS" \
             '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
             | curl -sS https://slack.com/api/chat.postMessage \
@@ -118,7 +118,7 @@ jobs:
         id: deploy_pr
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           PR_URL=$(gh pr list \
             --base "$DEPLOY_BASE_BRANCH" \
@@ -149,7 +149,7 @@ jobs:
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           CHANGELOG=$(cat "$CHANGELOG_PATH")
-          MESSAGE="Deploy PR: ${PR_URL}\n\n${CHANGELOG}"
+          MESSAGE=$(printf "📋 *Deploy PR:* %s\n\n%s" "$PR_URL" "$CHANGELOG")
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
             exit 0
@@ -172,7 +172,7 @@ jobs:
         id: merge
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           # Wait for required status checks to complete (with timeout + retry)
@@ -285,32 +285,16 @@ jobs:
           VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
           VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
         run: |
-          VERCEL_STATUS=""
-          if [ -f vercel-status.json ]; then
-            IFS=',' read -r -a PROJECT_IDS <<< "${VERCEL_PROJECT_IDS:-}"
-            IFS=',' read -r -a PROJECT_LABELS <<< "${VERCEL_PROJECT_LABELS:-}"
-            for i in "${!PROJECT_IDS[@]}"; do
-              PROJECT_ID="$(echo "${PROJECT_IDS[$i]}" | xargs)"
-              if [ -z "$PROJECT_ID" ]; then
-                continue
-              fi
-              LABEL="$(echo "${PROJECT_LABELS[$i]:-}" | xargs)"
-              URL=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .url // empty' vercel-status.json)
-              STATUS=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .status // empty' vercel-status.json)
-              if [ -n "$URL" ]; then
-                if [ -n "$LABEL" ]; then
-                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${URL}"
-                else
-                  VERCEL_STATUS="${VERCEL_STATUS}\n- ${URL}"
-                fi
-              elif [ -n "$LABEL" ]; then
-                VERCEL_STATUS="${VERCEL_STATUS}\n- ${LABEL}: ${STATUS:-unknown}"
-              fi
-            done
+          VERCEL_LINES=""
+          if [ -f vercel-status.json ] && jq -e '.ok' vercel-status.json > /dev/null 2>&1; then
+            VERCEL_LINES+=$'\n'"  ▲ *app:* https://app.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *web:* https://marketing.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *api:* https://api.closedloop.ai/health"
           fi
-          MESSAGE="Deploy succeeded. PR: ${PR_URL}"
-          if [ -n "$VERCEL_STATUS" ]; then
-            MESSAGE="${MESSAGE}\n\nLive apps:${VERCEL_STATUS}"
+          if [ -n "$VERCEL_LINES" ]; then
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s" "$PR_URL" "$VERCEL_LINES")
+          else
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s" "$PR_URL")
           fi
           if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
             echo "Skipping Slack notification due to prior Slack failure."
@@ -334,7 +318,7 @@ jobs:
         id: capture_errors
         if: failure() && steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           # Determine which step failed
           FAILED_STEP="Unknown"
