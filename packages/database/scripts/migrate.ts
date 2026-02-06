@@ -254,18 +254,33 @@ async function cloneDataFromPublic(databaseUrl: string, schema: string) {
 
     for (const table of tableNames) {
       const quotedTable = quoteIdentifier(table);
-      // Use explicit column list from the target schema to avoid column order mismatches
+      // Query column names and types to handle enum casts between schemas
       const { rows: cols } = await client.query(
-        `SELECT column_name FROM information_schema.columns
+        `SELECT column_name, data_type, udt_name FROM information_schema.columns
          WHERE table_schema = $1 AND table_name = $2
          ORDER BY ordinal_position`,
         [schema, table]
       );
-      const colList = cols
-        .map((c: { column_name: string }) => quoteIdentifier(c.column_name))
+      type ColInfo = {
+        column_name: string;
+        data_type: string;
+        udt_name: string;
+      };
+      const insertCols = cols
+        .map((c: ColInfo) => quoteIdentifier(c.column_name))
+        .join(", ");
+      // For USER-DEFINED types (enums), cast through text to bridge schema-scoped types
+      const selectCols = cols
+        .map((c: ColInfo) => {
+          const col = quoteIdentifier(c.column_name);
+          if (c.data_type === "USER-DEFINED") {
+            return `${col}::text::${quoted}.${quoteIdentifier(c.udt_name)}`;
+          }
+          return col;
+        })
         .join(", ");
       const { rowCount } = await client.query(
-        `INSERT INTO ${quoted}.${quotedTable} (${colList}) SELECT ${colList} FROM "public".${quotedTable}`
+        `INSERT INTO ${quoted}.${quotedTable} (${insertCols}) SELECT ${selectCols} FROM "public".${quotedTable}`
       );
       console.log(`  ${table}: ${rowCount ?? 0} rows`);
     }
