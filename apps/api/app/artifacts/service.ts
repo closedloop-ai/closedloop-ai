@@ -43,6 +43,20 @@ import {
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
 /**
+ * Convert a Prisma Artifact row to the API Artifact type.
+ *
+ * The only divergence is `subtype`: nullable in the DB schema (for forward-compat)
+ * but required in the API contract. This function asserts non-null in one place
+ * so callers don't need scattered `as Artifact` casts.
+ */
+function toArtifact(row: PrismaArtifact): Artifact {
+  if (!row.subtype) {
+    throw new Error(`Artifact ${row.id} is missing required subtype`);
+  }
+  return row as unknown as Artifact;
+}
+
+/**
  * Validate that a user belongs to the given organization.
  * Throws if the user does not exist within the org.
  */
@@ -150,7 +164,7 @@ export const artifactsService = {
         where: { id, organizationId },
       })
     );
-    return result as Artifact | null;
+    return result ? toArtifact(result) : null;
   },
 
   /**
@@ -172,7 +186,7 @@ export const artifactsService = {
         },
       })
     );
-    return result as Artifact | null;
+    return result ? toArtifact(result) : null;
   },
 
   /**
@@ -332,7 +346,7 @@ export const artifactsService = {
           ownerId: resolvedOwnerId,
         },
       });
-      return artifact as Artifact;
+      return toArtifact(artifact);
     });
 
     if (createdArtifact?.documentSlug) {
@@ -374,7 +388,7 @@ export const artifactsService = {
         data: input,
       })
     );
-    return result as Artifact;
+    return toArtifact(result);
   },
 
   /**
@@ -671,7 +685,7 @@ ${initialInstructions.trim()}`;
         }),
       ]);
 
-      return updatedArtifact as Artifact;
+      return toArtifact(updatedArtifact);
     });
   },
 
@@ -694,7 +708,7 @@ ${initialInstructions.trim()}`;
         },
       })
     );
-    return result as Artifact;
+    return toArtifact(result);
   },
 
   /**
@@ -717,9 +731,9 @@ ${initialInstructions.trim()}`;
     }
 
     const result = await withDb.tx((tx) =>
-      createArtifactVersion(tx, original as PrismaArtifact, { content })
+      createArtifactVersion(tx, original, { content })
     );
-    return result as Artifact;
+    return toArtifact(result);
   },
 
   /**
