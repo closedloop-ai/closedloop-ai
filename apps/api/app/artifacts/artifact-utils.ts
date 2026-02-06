@@ -54,7 +54,7 @@ export async function createArtifactVersion(
     workstreamId: original.workstreamId,
     projectId: original.projectId,
     type: original.type,
-    subtype: original.subtype ?? undefined,
+    subtype: original.subtype,
     documentSlug: original.documentSlug,
   });
   const nextVersion = await prepareArtifactVersion(tx, scopeCondition);

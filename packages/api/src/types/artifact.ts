@@ -140,7 +140,7 @@ export type Artifact = {
   projectId: string | null;
   parentId: string | null;
   type: ArtifactType;
-  subtype: ArtifactSubtype | null;
+  subtype: ArtifactSubtype;
   title: string;
   fileName: string | null;
   approver: string | null;

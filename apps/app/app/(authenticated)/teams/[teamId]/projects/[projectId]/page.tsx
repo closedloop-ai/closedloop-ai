@@ -123,19 +123,17 @@ export default function ProjectDetailPage() {
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
 
-  // Map API artifacts to ProjectArtifact format (exclude artifacts without a subtype)
+  // Map API artifacts to ProjectArtifact format
   const artifacts: ProjectArtifact[] = useMemo(
     () =>
-      artifactsData
-        .filter((artifact) => artifact.subtype !== null)
-        .map((artifact) => ({
-          id: artifact.id,
-          documentSlug: artifact.documentSlug,
-          name: artifact.title,
-          subtype: toProjectArtifactSubtype(artifact.subtype as string),
-          status: mapArtifactStatusToDisplay(artifact.status),
-          link: artifact.externalUrl || undefined,
-        })),
+      artifactsData.map((artifact) => ({
+        id: artifact.id,
+        documentSlug: artifact.documentSlug,
+        name: artifact.title,
+        subtype: toProjectArtifactSubtype(artifact.subtype),
+        status: mapArtifactStatusToDisplay(artifact.status),
+        link: artifact.externalUrl || undefined,
+      })),
     [artifactsData]
   );
 

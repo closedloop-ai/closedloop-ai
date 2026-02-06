@@ -351,7 +351,7 @@ export const artifactsService = {
         tenantId: organizationId,
         metadata: {
           artifactId: createdArtifact.id,
-          artifactSubtype: createdArtifact.subtype ?? "",
+          artifactSubtype: createdArtifact.subtype,
           documentSlug: createdArtifact.documentSlug,
         },
       });

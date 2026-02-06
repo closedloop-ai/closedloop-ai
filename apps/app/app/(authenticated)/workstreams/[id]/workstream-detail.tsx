@@ -89,10 +89,8 @@ export function WorkstreamDetail({
                     <div>
                       <p className="font-medium">{artifact.title}</p>
                       <p className="text-muted-foreground text-sm">
-                        {(artifact.subtype &&
-                          ARTIFACT_SUBTYPE_LABELS[artifact.subtype]) ??
-                          artifact.subtype ??
-                          artifact.type}{" "}
+                        {ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ??
+                          artifact.subtype}{" "}
                         · v{artifact.version}
                       </p>
                     </div>

@@ -168,6 +168,10 @@ When working on a PR and you discover a pattern, convention, or gotcha that isn'
 
 The goal is that every PR makes future sessions smarter. CLAUDE.md files are living documents — treat them like code.
 
+## PR Response Tone
+
+When responding to PR review comments, never use phrases like "you're right", "good catch", or other sycophantic language. Keep responses brief and factual — state what was changed, not how insightful the reviewer was.
+
 ## Key Files
 - `turbo.json` - Turborepo task configuration
 - `biome.jsonc` - Linting/formatting config (extends ultracite)
@@ -218,9 +222,9 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in apps/app/app/(authenticated)/{artifact}/[slug]/components/*-metadata-panel.tsx - only difference is artifact-specific fields in Details tab content. (context: architecture|metadata-panel|artifact-editor|code-structure)
 - **[pattern]**: When renaming Prisma enums, `@repo/database` re-exports Prisma-generated types via `export *` in `packages/database/index.ts`. Files importing enum types from `@repo/database` (like `artifact-utils.ts`) need separate treatment from files importing from `@repo/api/src/types/`. Both sources must be updated in sync. (context: prisma|enum|rename|database-reexport|shared-types)
 - **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-transactional) but is called from inside `withDb.tx` callbacks. The `withDb.tx` implementation does NOT store the transaction in AsyncLocalStorage, so nested `withDb` calls open separate connections instead of reusing the transaction. (context: database|transactions|withDb|connection-pool|prisma)
-- **[insight]**: The Prisma `Artifact.subtype` being nullable while the API `Artifact.subtype` is non-null is intentional design — DB schema uses nullable for forward-compatibility while the API enforces non-null at the boundary. Document this pattern rather than trying to align the types. (context: prisma|schema-design|api-contract|forward-compatibility)
+
 - **[convention]**: For Prisma-to-API type conversions in service layer, follow the `toArtifact(row)` pattern: (1) validate required fields that differ between types, (2) throw descriptive error if validation fails, (3) use `as unknown as ApiType` after validation. This mirrors the existing `toArtifactWithWorkstream()` pattern. (context: prisma|service-layer|type-conversion|validation|error-handling)
-- **[insight]**: The Prisma `Artifact.subtype` being nullable while the API `Artifact.subtype` is non-null is intentional design — DB uses nullable for forward-compatibility while the API enforces non-null at the boundary via runtime assertion in the mapping function. (context: prisma|schema-design|api-contract|forward-compatibility|artifact)
+- **[convention]**: `Artifact.subtype` is non-nullable in both the DB schema and API type. All creation paths require a subtype — don't make it nullable for speculative forward-compatibility. (context: prisma|schema-design|api-contract|artifact)
 - **[pattern]**: When checking if an artifact is a document (or other category), use `artifact.type === ArtifactType.DOCUMENT` instead of enumerating subtypes (PRD, IMPLEMENTATION_PLAN, ISSUE). The `type` field is the canonical categorization after the type/subtype split. (context: artifact-types|schema-design|categorization|type-subtype)
 
 ### API & Service Layer
