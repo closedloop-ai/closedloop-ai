@@ -30,7 +30,8 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { type ReactNode, useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { useIsMounted } from "@/hooks/use-is-mounted";
 import {
   type AppEnvironment,
   appEnvironment,
@@ -117,8 +118,7 @@ const data = {
 
 export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const sidebar = useSidebar();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const mounted = useIsMounted();
 
   return (
     <>
