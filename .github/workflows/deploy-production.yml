@@ -286,27 +286,10 @@ jobs:
           VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
         run: |
           VERCEL_LINES=""
-          if [ -f vercel-status.json ]; then
-            IFS=',' read -r -a PROJECT_IDS <<< "${VERCEL_PROJECT_IDS:-}"
-            IFS=',' read -r -a PROJECT_LABELS <<< "${VERCEL_PROJECT_LABELS:-}"
-            for i in "${!PROJECT_IDS[@]}"; do
-              PROJECT_ID="$(echo "${PROJECT_IDS[$i]}" | xargs)"
-              if [ -z "$PROJECT_ID" ]; then
-                continue
-              fi
-              LABEL="$(echo "${PROJECT_LABELS[$i]:-}" | xargs)"
-              URL=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .url // empty' vercel-status.json)
-              STATUS=$(jq -r --arg id "$PROJECT_ID" '.deployments[] | select(.projectId == $id) | .status // empty' vercel-status.json)
-              if [ -n "$URL" ]; then
-                if [ -n "$LABEL" ]; then
-                  VERCEL_LINES+=$'\n'"  ▲ *${LABEL}:* ${URL}"
-                else
-                  VERCEL_LINES+=$'\n'"  ▲ ${URL}"
-                fi
-              elif [ -n "$LABEL" ]; then
-                VERCEL_LINES+=$'\n'"  ▲ *${LABEL}:* ${STATUS:-unknown}"
-              fi
-            done
+          if [ -f vercel-status.json ] && jq -e '.ok' vercel-status.json > /dev/null 2>&1; then
+            VERCEL_LINES+=$'\n'"  ▲ *app:* https://app.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *web:* https://marketing.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *api:* https://api.closedloop.ai/health"
           fi
           if [ -n "$VERCEL_LINES" ]; then
             MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s" "$PR_URL" "$VERCEL_LINES")
