@@ -78,7 +78,6 @@ export function EditorContent({
           contentResetKey={contentResetKey}
           contentResetValue={contentResetValue}
           onChange={onChange}
-          // onEditorReady={onEditorReady}
           placeholder={placeholder}
           readOnly={readOnly}
           scrollMode={scrollMode}

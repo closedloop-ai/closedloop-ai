@@ -28,7 +28,7 @@ export function EditorWithComments({
 }: Readonly<EditorWithCommentsProps>) {
   const [editor, setEditor] = useState<Editor | null>(null);
 
-  const liveblockedEnabled = !!liveblocksRoomId;
+  const liveblocksEnabled = !!liveblocksRoomId;
 
   return (
     <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -37,7 +37,7 @@ export function EditorWithComments({
           <EditorContent
             contentResetKey={contentResetKey}
             contentResetValue={contentResetValue}
-            liveblocksRoomId={liveblockedEnabled ? liveblocksRoomId : undefined}
+            liveblocksRoomId={liveblocksEnabled ? liveblocksRoomId : undefined}
             onChange={onChange}
             onEditorReady={setEditor}
             placeholder={placeholder}
@@ -47,7 +47,7 @@ export function EditorWithComments({
           />
         </div>
 
-        {liveblockedEnabled && (
+        {liveblocksEnabled && (
           <>
             {/* Floating comments on mobile/tablet (< 1280px) */}
             <div className="xl:hidden">

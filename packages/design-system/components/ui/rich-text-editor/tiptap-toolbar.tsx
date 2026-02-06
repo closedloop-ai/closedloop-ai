@@ -1,6 +1,8 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import type { Editor } from "@tiptap/react";
+import type { LucideIcon } from "lucide-react";
 import {
   Bold,
   Code,
@@ -15,7 +17,9 @@ import {
   MessageSquarePlus,
   Network,
   Quote,
+  Redo,
   Table as TableIcon,
+  Undo,
 } from "lucide-react";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -39,327 +43,205 @@ export function TiptapToolbar({
   hasLiveblocksExtension = false,
   onPasteMarkdown,
 }: Readonly<TiptapToolbarProps>) {
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  const updateHistoryState = useCallback(() => {
+    if (editor) {
+      setCanUndo(editor.can().undo());
+      setCanRedo(editor.can().redo());
+    }
+  }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    updateHistoryState();
+    editor.on("transaction", updateHistoryState);
+    return () => {
+      editor.off("transaction", updateHistoryState);
+    };
+  }, [editor, updateHistoryState]);
+
   function toggleLink() {
     const previousUrl = editor?.getAttributes("link").href as string | undefined;
-    const url = window.prompt("URL", previousUrl);
+    const url = globalThis.prompt("URL", previousUrl);
 
     if (url === null) {
       return;
     }
 
     if (url === "") {
-      editor?.chain().focus().extendMarkRange("link").unsetLink().run();
+      editor?.chain().extendMarkRange("link").unsetLink().run();
       return;
     }
 
-    editor?.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
-  }
-
-  function insertMermaidDiagram() {
-    editor?.chain()
-      .focus()
-      .insertContent({
-        type: "mermaid",
-        attrs: {
-          content: "graph TD\n    A[Start] --> B[End]",
-        },
-      })
-      .run();
-  }
-
-  function insertTable() {
-    editor?.chain()
-      .focus()
-      .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-      .run();
-  }
-
-  if (readOnly) {
-    return null;
+    editor?.chain().extendMarkRange("link").setLink({ href: url }).run();
   }
 
   return (
     <TooltipProvider>
       <div className="flex flex-wrap gap-1 p-2 border-b bg-muted/50">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("heading", { level: 1 }) && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Heading1 className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Heading 1</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("heading", { level: 2 }) && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Heading2 className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Heading 2</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("heading", { level: 3 }) && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Heading3 className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Heading 3</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="w-px h-8 bg-border" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleBold().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("bold") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Bold className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Bold</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleItalic().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("italic") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Italic className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Italic</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleCode().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("code") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Code className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Inline Code</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="w-px h-8 bg-border" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleBulletList().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("bulletList") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Bullet List</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleOrderedList().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("orderedList") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <ListOrdered className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Numbered List</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="w-px h-8 bg-border" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("blockquote") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <Quote className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Blockquote</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={toggleLink}
-              className={cn(
-                "h-8 w-8 p-0",
-                editor?.isActive("link") && "bg-accent"
-              )}
-              disabled={readOnly}
-            >
-              <LinkIcon className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Link</p>
-          </TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={insertTable}
-              className="h-8 w-8 p-0"
-              disabled={readOnly}
-            >
-              <TableIcon className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Insert Table</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="w-px h-8 bg-border" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={insertMermaidDiagram}
-              className="h-8 w-8 p-0"
-              disabled={readOnly}
-            >
-              <Network className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Insert Mermaid Diagram</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="w-px h-8 bg-border" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onPasteMarkdown}
-              className="h-8 w-8 p-0"
-              disabled={readOnly}
-            >
-              <FileText className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Paste Markdown</p>
-          </TooltipContent>
-        </Tooltip>
+        <ToolbarButton 
+          icon={Undo}  
+          label="Undo" 
+          onClick={() => editor?.commands.undo()} 
+          disabled={readOnly || !canUndo} />
+        <ToolbarButton 
+          icon={Redo} 
+          label="Redo" 
+          onClick={() => editor?.commands.redo()} 
+          disabled={readOnly || !canRedo} />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={Heading1}
+          label="Heading 1"
+          onClick={() => editor?.commands.toggleHeading({ level: 1 })}
+          active={editor?.isActive("heading", { level: 1 })}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={Heading2}
+          label="Heading 2"
+          onClick={() => editor?.commands.toggleHeading({ level: 2 })}
+          active={editor?.isActive("heading", { level: 2 })}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={Heading3}
+          label="Heading 3"
+          onClick={() => editor?.commands.toggleHeading({ level: 3 })}
+          active={editor?.isActive("heading", { level: 3 })}
+          disabled={readOnly}
+        />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={Bold}
+          label="Bold"
+          onClick={() => editor?.commands.toggleBold()}
+          active={editor?.isActive("bold")}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={Italic}
+          label="Italic"
+          onClick={() => editor?.commands.toggleItalic()}
+          active={editor?.isActive("italic")}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={Code}
+          label="Inline Code"
+          onClick={() => editor?.commands.toggleCode()}
+          active={editor?.isActive("code")}
+          disabled={readOnly}
+        />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={List}
+          label="Bullet List"
+          onClick={() => editor?.commands.toggleBulletList()}
+          active={editor?.isActive("bulletList")}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={ListOrdered}
+          label="Numbered List"
+          onClick={() => editor?.commands.toggleOrderedList()}
+          active={editor?.isActive("orderedList")}
+          disabled={readOnly}
+        />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={Quote}
+          label="Blockquote"
+          onClick={() => editor?.commands.toggleBlockquote()}
+          active={editor?.isActive("blockquote")}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={LinkIcon}
+          label="Link"
+          onClick={toggleLink}
+          active={editor?.isActive("link")}
+          disabled={readOnly}
+        />
+        <ToolbarButton
+          icon={TableIcon}
+          label="Insert Table"
+          onClick={() =>
+            editor
+              ?.commands
+              .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+          }
+          disabled={readOnly}
+        />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={Network}
+          label="Insert Mermaid Diagram"
+          onClick={() =>
+            editor
+              ?.commands
+              .insertContent({
+                type: "mermaid",
+                attrs: { content: "graph TD\n    A[Start] --> B[End]" }
+              })
+          }
+          disabled={readOnly}
+        />
+        <ToolbarDivider />
+        <ToolbarButton
+          icon={FileText}
+          label="Paste Markdown"
+          onClick={onPasteMarkdown}
+          disabled={readOnly}
+        />
         {hasLiveblocksExtension && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // @ts-ignore - addPendingComment is added by Liveblocks extension
-                  editor?.chain().focus().addPendingComment().run();
-                }}
-                className="h-8 w-8 p-0"
-                disabled={readOnly}
-              >
-                <MessageSquarePlus className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Add Comment</p>
-            </TooltipContent>
-          </Tooltip>
+          <ToolbarButton
+            icon={MessageSquarePlus}
+            label="Add Comment"
+            onClick={() => {
+              // @ts-ignore - addPendingComment is added by Liveblocks extension
+              editor?.commands.addPendingComment();
+            }}
+            disabled={readOnly}
+          />
         )}
       </div>
     </TooltipProvider>
   );
+}
+
+interface ToolbarButtonProps {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+}
+
+function ToolbarButton({ icon: Icon, label, onClick, active, disabled }: Readonly<ToolbarButtonProps>) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onClick}
+          className={cn("h-8 w-8 p-0", active && "bg-accent")}
+          disabled={disabled}
+        >
+          <Icon className="h-4 w-4" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        <p>{label}</p>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function ToolbarDivider() {
+  return <div className="w-px h-8 bg-border" />;
 }
