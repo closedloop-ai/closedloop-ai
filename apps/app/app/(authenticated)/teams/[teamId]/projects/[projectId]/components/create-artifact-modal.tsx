@@ -25,8 +25,8 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { LoaderIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { LoaderIcon, UploadIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useArtifactsByProject,
   useCreateArtifact,
@@ -146,9 +146,15 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
   const supportsTemplate =
+    artifactType === "PRD" ||
+    artifactType === "ISSUE" ||
+    artifactType === "BUG";
+  const supportsContentUpload =
     artifactType === "PRD" ||
     artifactType === "ISSUE" ||
     artifactType === "BUG";
@@ -277,11 +283,38 @@ export function CreateArtifactModal({
     setSelectedRepoId("");
     setSelectedPrdId("");
     setError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const handleClose = () => {
     onOpenChange(false);
     resetForm();
+  };
+
+  const handleFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      const content = await file.text();
+      if (!content.trim()) {
+        setError("File is empty");
+        return;
+      }
+      setContent(content);
+    } catch (_error) {
+      setError("Failed to read file. Please try again.");
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
   };
 
   const handleSubmit = () => {
@@ -480,19 +513,42 @@ export function CreateArtifactModal({
             </Select>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="artifact-content">
-              Content{" "}
-              <span className="text-muted-foreground text-xs">(optional)</span>
-            </Label>
-            <Textarea
-              className="min-h-[120px] font-mono text-sm"
-              id="artifact-content"
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste markdown content here..."
-              value={content}
-            />
-          </div>
+          {supportsContentUpload && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="artifact-content">
+                  Content{" "}
+                  <span className="text-muted-foreground text-xs">
+                    (optional)
+                  </span>
+                </Label>
+                <Button
+                  onClick={() => fileInputRef.current?.click()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <UploadIcon className="mr-2 h-4 w-4" />
+                  Upload .md
+                </Button>
+              </div>
+              <input
+                accept=".md"
+                aria-label="Upload markdown file for artifact content"
+                className="hidden"
+                onChange={handleFileChange}
+                ref={fileInputRef}
+                type="file"
+              />
+              <Textarea
+                className="min-h-[120px] font-mono text-sm"
+                id="artifact-content"
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Paste markdown content here..."
+                value={content}
+              />
+            </div>
+          )}
         </div>
 
         <DialogFooter>
