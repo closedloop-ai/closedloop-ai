@@ -59,6 +59,7 @@ vi.mock("@/app/integrations/github/service", () => ({
 import { withDb } from "@repo/database";
 import { githubService } from "@/app/integrations/github/service";
 import {
+  handleInstallation,
   handleInstallationCreated,
   handleInstallationDeleted,
   handleInstallationSuspended,
@@ -1077,6 +1078,99 @@ describe("integration scenarios", () => {
         status: "PENDING_CLAIM",
         organizationId: undefined,
       })
+    );
+  });
+});
+
+describe("handleInstallation (orchestrator)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("routes 'created' action to handleInstallationCreated", async () => {
+    const event = createInstallationCreatedEvent(123_456, "test-org");
+
+    mockFindInstallation.mockResolvedValue(null);
+    mockUpsertInstallation.mockResolvedValue(
+      createMockInstallation({
+        installationId: 123_456,
+        status: GitHubInstallationStatus.PENDING_CLAIM,
+        organizationId: null,
+      })
+    );
+
+    const response = await handleInstallation(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Installation created successfully");
+    expect(mockUpsertInstallation).toHaveBeenCalled();
+  });
+
+  it("routes 'deleted' action to handleInstallationDeleted", async () => {
+    const event = createInstallationDeletedEvent(123_456, "test-org");
+
+    mockFindInstallation.mockResolvedValue(
+      createMockInstallation({ id: "installation-uuid" })
+    );
+    mockDb.gitHubInstallation.update.mockResolvedValue({});
+
+    const response = await handleInstallation(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Installation deleted successfully");
+    expect(mockDb.gitHubInstallation.update).toHaveBeenCalled();
+  });
+
+  it("routes 'suspend' action to handleInstallationSuspended", async () => {
+    const event = createInstallationSuspendEvent(123_456, "test-org", "admin");
+
+    mockFindInstallation.mockResolvedValue(
+      createMockInstallation({ id: "installation-uuid" })
+    );
+    mockUpdateInstallationStatus.mockResolvedValue({});
+
+    const response = await handleInstallation(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Installation suspended successfully");
+    expect(mockUpdateInstallationStatus).toHaveBeenCalled();
+  });
+
+  it("routes 'unsuspend' action to handleInstallationUnsuspended", async () => {
+    const event = createInstallationUnsuspendEvent(123_456, "test-org");
+
+    mockFindInstallation.mockResolvedValue(
+      createMockInstallation({
+        id: "installation-uuid",
+        organizationId: "org-uuid",
+      })
+    );
+    mockUpdateInstallationStatus.mockResolvedValue({});
+
+    const response = await handleInstallation(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Installation unsuspended successfully");
+    expect(mockUpdateInstallationStatus).toHaveBeenCalled();
+  });
+
+  it("acknowledges unknown actions without error", async () => {
+    const event = { action: "new_permissions_accepted" };
+
+    const response = await handleInstallation(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe(
+      "Installation action 'new_permissions_accepted' acknowledged"
     );
   });
 });

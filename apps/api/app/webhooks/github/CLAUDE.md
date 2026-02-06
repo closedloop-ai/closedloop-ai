@@ -107,9 +107,7 @@ POST /webhooks/github
     ↓ signature verification
     ↓ parse event type: "installation"
     ↓
-route.ts switches on action
-    ↓
-handlers/installation-handler.ts
+handlers/installation-handler.ts → handleInstallation()
     ├── created   → upsertInstallation(), syncRepositories()
     ├── deleted   → mark UNINSTALLED, clear organizationId
     ├── suspend   → set SUSPENDED status

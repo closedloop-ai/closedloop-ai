@@ -1,25 +1,9 @@
-import type {
-  InstallationCreatedEvent,
-  InstallationDeletedEvent,
-  InstallationRepositoriesAddedEvent,
-  InstallationRepositoriesRemovedEvent,
-  InstallationSuspendEvent,
-  InstallationUnsuspendEvent,
-} from "@octokit/webhooks-types";
 import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import {
-  handleInstallationCreated,
-  handleInstallationDeleted,
-  handleInstallationSuspended,
-  handleInstallationUnsuspended,
-} from "./handlers/installation-handler";
-import {
-  handleInstallationRepositoriesAdded,
-  handleInstallationRepositoriesRemoved,
-} from "./handlers/installation-repositories-handler";
+import { handleInstallation } from "./handlers/installation-handler";
+import { handleInstallationRepositories } from "./handlers/installation-repositories-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
 import {
@@ -61,84 +45,19 @@ export async function POST(request: Request): Promise<Response> {
     const parsedBody = JSON.parse(body) as { action?: string };
 
     switch (eventType) {
-      case "workflow_run": {
-        const event = parsedBody as WorkflowRunEvent;
-        return await handleWorkflowRun(event, s3Configured);
-      }
+      case "workflow_run":
+        return await handleWorkflowRun(
+          parsedBody as WorkflowRunEvent,
+          s3Configured
+        );
 
-      case "installation": {
-        const event = parsedBody as { action: string };
-        log.info("[webhook/github] Received installation event", {
-          action: event.action,
-        });
+      case "installation":
+        return await handleInstallation(parsedBody as { action: string });
 
-        switch (event.action) {
-          case "created":
-            await handleInstallationCreated(event as InstallationCreatedEvent);
-            return NextResponse.json({
-              message: "Installation created successfully",
-              ok: true,
-            });
-          case "deleted":
-            await handleInstallationDeleted(event as InstallationDeletedEvent);
-            return NextResponse.json({
-              message: "Installation deleted successfully",
-              ok: true,
-            });
-          case "suspend":
-            await handleInstallationSuspended(
-              event as InstallationSuspendEvent
-            );
-            return NextResponse.json({
-              message: "Installation suspended successfully",
-              ok: true,
-            });
-          case "unsuspend":
-            await handleInstallationUnsuspended(
-              event as InstallationUnsuspendEvent
-            );
-            return NextResponse.json({
-              message: "Installation unsuspended successfully",
-              ok: true,
-            });
-          default:
-            return NextResponse.json({
-              message: `Installation action '${event.action}' acknowledged`,
-              ok: true,
-            });
-        }
-      }
-
-      case "installation_repositories": {
-        const event = parsedBody as { action: string };
-        log.info("[webhook/github] Received installation_repositories event", {
-          action: event.action,
-        });
-
-        switch (event.action) {
-          case "added":
-            await handleInstallationRepositoriesAdded(
-              event as InstallationRepositoriesAddedEvent
-            );
-            return NextResponse.json({
-              message: "Repositories added successfully",
-              ok: true,
-            });
-          case "removed":
-            await handleInstallationRepositoriesRemoved(
-              event as InstallationRepositoriesRemovedEvent
-            );
-            return NextResponse.json({
-              message: "Repositories removed successfully",
-              ok: true,
-            });
-          default:
-            return NextResponse.json({
-              message: `Installation repositories action '${event.action}' acknowledged`,
-              ok: true,
-            });
-        }
-      }
+      case "installation_repositories":
+        return await handleInstallationRepositories(
+          parsedBody as { action: string }
+        );
 
       default: {
         log.info("[webhook/github] Ignoring unsupported event type", {

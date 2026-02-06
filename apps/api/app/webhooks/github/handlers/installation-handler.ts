@@ -6,6 +6,7 @@ import type {
 } from "@octokit/webhooks-types";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { NextResponse } from "next/server";
 import { githubService } from "@/app/integrations/github/service";
 
 /**
@@ -222,4 +223,56 @@ export async function handleInstallationUnsuspended(
       suspendedBy: null,
     }
   );
+}
+
+/**
+ * Main handler for installation events.
+ * Routes to the appropriate handler based on the event action.
+ */
+export async function handleInstallation(event: {
+  action: string;
+}): Promise<Response> {
+  log.info("[webhook/github] Received installation event", {
+    action: event.action,
+  });
+
+  switch (event.action) {
+    case "created":
+      await handleInstallationCreated(
+        event as unknown as InstallationCreatedEvent
+      );
+      return NextResponse.json({
+        message: "Installation created successfully",
+        ok: true,
+      });
+    case "deleted":
+      await handleInstallationDeleted(
+        event as unknown as InstallationDeletedEvent
+      );
+      return NextResponse.json({
+        message: "Installation deleted successfully",
+        ok: true,
+      });
+    case "suspend":
+      await handleInstallationSuspended(
+        event as unknown as InstallationSuspendEvent
+      );
+      return NextResponse.json({
+        message: "Installation suspended successfully",
+        ok: true,
+      });
+    case "unsuspend":
+      await handleInstallationUnsuspended(
+        event as unknown as InstallationUnsuspendEvent
+      );
+      return NextResponse.json({
+        message: "Installation unsuspended successfully",
+        ok: true,
+      });
+    default:
+      return NextResponse.json({
+        message: `Installation action '${event.action}' acknowledged`,
+        ok: true,
+      });
+  }
 }

@@ -3,6 +3,7 @@ import type {
   InstallationRepositoriesRemovedEvent,
 } from "@octokit/webhooks-types";
 import { log } from "@repo/observability/log";
+import { NextResponse } from "next/server";
 import { githubService } from "@/app/integrations/github/service";
 import { toRepositoryInput } from "./installation-handler";
 
@@ -83,4 +84,40 @@ export async function handleInstallationRepositoriesRemoved(
     existingInstallation.id,
     githubRepoIds
   );
+}
+
+/**
+ * Main handler for installation_repositories events.
+ * Routes to the appropriate handler based on the event action.
+ */
+export async function handleInstallationRepositories(event: {
+  action: string;
+}): Promise<Response> {
+  log.info("[webhook/github] Received installation_repositories event", {
+    action: event.action,
+  });
+
+  switch (event.action) {
+    case "added":
+      await handleInstallationRepositoriesAdded(
+        event as unknown as InstallationRepositoriesAddedEvent
+      );
+      return NextResponse.json({
+        message: "Repositories added successfully",
+        ok: true,
+      });
+    case "removed":
+      await handleInstallationRepositoriesRemoved(
+        event as unknown as InstallationRepositoriesRemovedEvent
+      );
+      return NextResponse.json({
+        message: "Repositories removed successfully",
+        ok: true,
+      });
+    default:
+      return NextResponse.json({
+        message: `Installation repositories action '${event.action}' acknowledged`,
+        ok: true,
+      });
+  }
 }

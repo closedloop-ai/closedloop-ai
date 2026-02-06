@@ -33,6 +33,7 @@ vi.mock("@/app/integrations/github/service", () => ({
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
 import {
+  handleInstallationRepositories,
   handleInstallationRepositoriesAdded,
   handleInstallationRepositoriesRemoved,
 } from "@/app/webhooks/github/handlers/installation-repositories-handler";
@@ -687,5 +688,69 @@ describe("integration scenarios", () => {
       { installationId: 111_111 }
     );
     expect(mockRemoveRepositories).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleInstallationRepositories (orchestrator)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("routes 'added' action to handleInstallationRepositoriesAdded", async () => {
+    const mockInstallation = {
+      id: "inst-uuid-123",
+      installationId: 123_456,
+      accountLogin: "test-owner",
+      status: "ACTIVE",
+    };
+
+    mockFindInstallationByInstallationId.mockResolvedValue(mockInstallation);
+    mockAddRepositories.mockResolvedValue([]);
+
+    const event = createInstallationRepositoriesAddedEvent(123_456, [
+      { id: 101, full_name: "owner/repo1", name: "repo1", private: false },
+    ]);
+
+    const response = await handleInstallationRepositories(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Repositories added successfully");
+    expect(mockAddRepositories).toHaveBeenCalled();
+  });
+
+  it("routes 'removed' action to handleInstallationRepositoriesRemoved", async () => {
+    const mockInstallation = {
+      id: "inst-uuid-123",
+      installationId: 123_456,
+      accountLogin: "test-owner",
+      status: "ACTIVE",
+    };
+
+    mockFindInstallationByInstallationId.mockResolvedValue(mockInstallation);
+    mockRemoveRepositories.mockResolvedValue(undefined);
+
+    const event = createInstallationRepositoriesRemovedEvent(123_456, [
+      { id: 101, full_name: "owner/repo1", name: "repo1", private: false },
+    ]);
+
+    const response = await handleInstallationRepositories(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe("Repositories removed successfully");
+    expect(mockRemoveRepositories).toHaveBeenCalled();
+  });
+
+  it("acknowledges unknown actions without error", async () => {
+    const event = { action: "unknown_action" };
+
+    const response = await handleInstallationRepositories(event);
+    const body = await response.json();
+
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe(
+      "Installation repositories action 'unknown_action' acknowledged"
+    );
   });
 });
