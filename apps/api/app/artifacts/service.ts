@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
@@ -30,7 +28,6 @@ import {
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
-import { getUseMockJudges } from "@/lib/feature-flags";
 import { createLiveblocksRoom } from "@/lib/liveblocks";
 import { submitRatingSchema } from "./[id]/rating/validators";
 import {
@@ -1136,21 +1133,12 @@ Please try again or contact support if the issue persists.`,
   /**
    * Get judges feedback for an artifact from its associated GitHub Action run.
    * Downloads workflow artifacts and parses the judges.json report.
-   * When USE_MOCK_JUDGES=true, loads from local mocks/judges.json file instead.
    */
   async getJudgesFeedback(
     artifactId: string,
     organizationId: string
   ): Promise<JudgesFeedbackResponse> {
     try {
-      // When mock flag is enabled, load from local file
-      if (getUseMockJudges()) {
-        const mockPath = path.join(process.cwd(), "mocks", "judges.json");
-        const mockData = await readFile(mockPath, "utf-8");
-        const parsedReport = JSON.parse(mockData) as JudgesReport;
-        return { status: "success", data: parsedReport };
-      }
-
       // Verify artifact exists and belongs to organization
       const artifact = await this.findByIdSimple(artifactId, organizationId);
       if (!artifact) {
