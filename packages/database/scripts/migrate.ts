@@ -176,22 +176,74 @@ async function upsertSchemaRegistry(
 
 const CLONE_SKIP_TABLES = new Set(["_prisma_migrations", "preview_schemas"]);
 
+/**
+ * Returns table names from `public` in topological order (parents before children)
+ * so that inserts respect FK constraints without needing superuser privileges.
+ */
+async function getTablesInFkOrder(client: pg.Client): Promise<string[]> {
+  const { rows: tables } = await client.query(
+    `SELECT table_name FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_type = 'BASE TABLE'
+     ORDER BY table_name`
+  );
+
+  const allTables: string[] = tables
+    .map((r: { table_name: string }) => r.table_name)
+    .filter((name: string) => !CLONE_SKIP_TABLES.has(name));
+
+  // Build dependency graph: child -> set of parent tables
+  const { rows: fks } = await client.query(
+    `SELECT
+       tc.table_name AS child,
+       ccu.table_name AS parent
+     FROM information_schema.table_constraints tc
+     JOIN information_schema.constraint_column_usage ccu
+       ON tc.constraint_name = ccu.constraint_name
+       AND tc.constraint_schema = ccu.constraint_schema
+     WHERE tc.constraint_type = 'FOREIGN KEY'
+       AND tc.table_schema = 'public'`
+  );
+
+  const deps = new Map<string, Set<string>>();
+  for (const table of allTables) {
+    deps.set(table, new Set());
+  }
+  for (const { child, parent } of fks as { child: string; parent: string }[]) {
+    if (child !== parent && deps.has(child) && deps.has(parent)) {
+      deps.get(child)!.add(parent);
+    }
+  }
+
+  // Topological sort (Kahn's algorithm)
+  const ordered: string[] = [];
+  const remaining = new Map(deps);
+  while (remaining.size > 0) {
+    const ready = [...remaining.entries()]
+      .filter(([, parents]) => [...parents].every((p) => !remaining.has(p)))
+      .map(([name]) => name);
+
+    if (ready.length === 0) {
+      // Circular dependency — append whatever is left
+      ordered.push(...remaining.keys());
+      break;
+    }
+    ready.sort();
+    for (const name of ready) {
+      remaining.delete(name);
+      ordered.push(name);
+    }
+  }
+
+  return ordered;
+}
+
 async function cloneDataFromPublic(databaseUrl: string, schema: string) {
   console.log(`↪ Cloning data from public schema into ${schema}...`);
   const client = createSslClient(databaseUrl);
   await client.connect();
   try {
-    // Get all tables in the public schema
-    const { rows: tables } = await client.query(
-      `SELECT table_name FROM information_schema.tables
-       WHERE table_schema = 'public'
-         AND table_type = 'BASE TABLE'
-       ORDER BY table_name`
-    );
-
-    const tableNames: string[] = tables
-      .map((r: { table_name: string }) => r.table_name)
-      .filter((name: string) => !CLONE_SKIP_TABLES.has(name));
+    const tableNames = await getTablesInFkOrder(client);
 
     if (tableNames.length === 0) {
       console.log("  No tables to clone.");
@@ -200,9 +252,6 @@ async function cloneDataFromPublic(databaseUrl: string, schema: string) {
 
     const quoted = quoteIdentifier(schema);
 
-    // Disable FK triggers for the session so insert order doesn't matter
-    await client.query(`SET session_replication_role = 'replica'`);
-
     for (const table of tableNames) {
       const quotedTable = quoteIdentifier(table);
       const { rowCount } = await client.query(
@@ -210,9 +259,6 @@ async function cloneDataFromPublic(databaseUrl: string, schema: string) {
       );
       console.log(`  ${table}: ${rowCount ?? 0} rows`);
     }
-
-    // Re-enable FK triggers
-    await client.query(`SET session_replication_role = 'DEFAULT'`);
 
     console.log(`✓ Cloned ${tableNames.length} tables into ${schema}`);
   } catch (error) {
