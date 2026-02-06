@@ -63,6 +63,7 @@ async function migrateLiveblocksRooms() {
         id: true,
         organizationId: true,
         documentSlug: true,
+        subtype: true,
         type: true,
       },
     });
