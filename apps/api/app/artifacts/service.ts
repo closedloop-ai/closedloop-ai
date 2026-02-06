@@ -42,17 +42,8 @@ import {
 } from "./artifact-utils";
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
-/**
- * Convert a Prisma Artifact row to the API Artifact type.
- *
- * The only divergence is `subtype`: nullable in the DB schema (for forward-compat)
- * but required in the API contract. This function asserts non-null in one place
- * so callers don't need scattered `as Artifact` casts.
- */
+/** Convert a Prisma Artifact row to the API Artifact type. */
 function toArtifact(row: PrismaArtifact): Artifact {
-  if (!row.subtype) {
-    throw new Error(`Artifact ${row.id} is missing required subtype`);
-  }
   return row as unknown as Artifact;
 }
 
@@ -360,7 +351,7 @@ export const artifactsService = {
         tenantId: organizationId,
         metadata: {
           artifactId: createdArtifact.id,
-          artifactSubtype: createdArtifact.subtype as string,
+          artifactSubtype: createdArtifact.subtype ?? "",
           documentSlug: createdArtifact.documentSlug,
         },
       });
@@ -1429,8 +1420,7 @@ export type RequestChangesResult =
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
-type RawArtifactWithContext = Omit<Artifact, "subtype"> & {
-  subtype: ArtifactSubtype | null; // Still nullable from Prisma, validated at runtime
+type RawArtifactWithContext = Artifact & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
     id: string;
@@ -1446,48 +1436,17 @@ type RawArtifactWithContext = Omit<Artifact, "subtype"> & {
   } | null;
 };
 
-/**
- * Transform Prisma result to flatten teams structure for API response
- */
+/** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext
 ): ArtifactWithWorkstream {
-  // Runtime validation: all artifacts must have a subtype
-  if (!artifact.subtype) {
-    log.error(
-      {
-        artifactId: artifact.id,
-        organizationId: artifact.organizationId,
-      },
-      "Artifact missing subtype"
-    );
-    throw new Error("Artifact missing required subtype");
-  }
-
-  // After validation, we know subtype is non-null, so cast the entire artifact
-  const validatedArtifact = artifact as Artifact & {
-    workstream: { id: string; title: string; state: string } | null;
-    project: {
-      id: string;
-      organizationId: string;
-      name: string;
-      teams: { team: { id: string; name: string } }[];
-    } | null;
-    owner: {
-      id: string;
-      firstName: string | null;
-      lastName: string | null;
-      avatarUrl: string | null;
-    } | null;
-  };
-
   return {
-    ...validatedArtifact,
-    project: validatedArtifact.project
+    ...artifact,
+    project: artifact.project
       ? {
-          id: validatedArtifact.project.id,
-          name: validatedArtifact.project.name,
-          teams: validatedArtifact.project.teams.map((pt) => pt.team),
+          id: artifact.project.id,
+          name: artifact.project.name,
+          teams: artifact.project.teams.map((pt) => pt.team),
         }
       : null,
   };

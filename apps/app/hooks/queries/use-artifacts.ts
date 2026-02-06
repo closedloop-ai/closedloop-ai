@@ -175,7 +175,9 @@ export function useArtifactVersions(
       }
 
       const params = new URLSearchParams();
-      params.set("subtype", artifact.subtype);
+      if (artifact.subtype) {
+        params.set("subtype", artifact.subtype);
+      }
       params.set("documentSlug", artifact.documentSlug);
       params.set("latestOnly", "false");
 
