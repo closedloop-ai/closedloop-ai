@@ -1,4 +1,4 @@
-// biome-ignore lint/performance/noBarrelFile: <explanation>
+// biome-ignore lint/performance/noBarrelFile: Package index exports - centralized entry point for @repo/collaboration
 export { ArtifactRoom, type UserInfo } from "./artifact-room";
 export { CollaborationProvider as LiveblocksProviderWrapper } from "./collaboration-provider";
 export { FloatingComposer } from "./comments";

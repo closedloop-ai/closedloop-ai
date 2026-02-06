@@ -15,7 +15,7 @@ import {
   useArtifactGenerationStatus,
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
-import { mockPlanEvaluation } from "@/mocks/evaluation-data";
+import { useJudgesFeedback } from "@/hooks/queries/use-judges";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -104,6 +104,7 @@ export function PlanEditor({
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
+  const { data: judgesReport } = useJudgesFeedback(plan.id);
 
   // Derived state
   const isDraft = metadata.status === "DRAFT";
@@ -182,8 +183,8 @@ export function PlanEditor({
         metadataPanel={
           <PlanMetadataPanel
             approver={metadata.approver}
-            evaluationResults={mockPlanEvaluation}
             generationStatus={generationStatus ?? null}
+            judgesReport={judgesReport ?? null}
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
             onOwnerChange={metadata.handleOwnerChange}
