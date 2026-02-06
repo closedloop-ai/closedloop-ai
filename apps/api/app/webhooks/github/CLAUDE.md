@@ -221,108 +221,23 @@ if (!(content.planContent || content.executionResult)) {
 
 ## Testing
 
-**Current State:** No test files exist yet for the webhook handlers.
+**Test Location:** `apps/api/__tests__/unit/`
 
-**Recommended Testing Strategy:**
+Unit tests exist for all webhook handlers, using mocked database and external dependencies:
 
-### Unit Tests
+| Test File | Covers |
+|-----------|--------|
+| `webhook-service.test.ts` | Validation utilities (config checks, request parsing) |
+| `webhook-installation.test.ts` | Installation lifecycle (created, deleted, suspended, unsuspended) |
+| `webhook-installation-repositories.test.ts` | Repository sync (added, removed) |
+| `webhook-workflow-run.test.ts` | Workflow run routing and validation |
+| `webhook-workflow-status.test.ts` | Status updates (requested → QUEUED, in_progress → RUNNING) |
+| `webhook-workflow-completion.test.ts` | Completion handling (success/failure, artifact download, PR creation) |
+| `webhook-zip-parsing.test.ts` | ZIP parsing (plan extraction, judges report, nested zips) |
 
-Create unit tests for pure functions in `zip-parser.ts` and `workflow-artifacts.ts`:
-
-```typescript
-// zip-parser.test.ts
-import AdmZip from "adm-zip";
-import { findPlanInZip, parseJudgesReport } from "../zip-parser";
-
-describe("findPlanInZip", () => {
-  it("should extract plan.json content with priority", () => {
-    const zip = new AdmZip();
-    zip.addFile("plan.json", Buffer.from(JSON.stringify({ content: "# Plan", pendingTasks: [], openQuestions: [] })));
-    zip.addFile("implementation-plan.md", Buffer.from("# Legacy"));
-
-    const result = findPlanInZip(zip);
-    expect(result.planContent).toBe("# Plan"); // plan.json wins
-  });
-
-  it("should handle nested zips", () => {
-    // ...
-  });
-});
-
-describe("parseJudgesReport", () => {
-  it("should parse valid judges.json", () => {
-    const buffer = Buffer.from(JSON.stringify({ report_id: "abc", stats: [] }));
-    const result = parseJudgesReport(buffer, "judges.json");
-    expect(result).toEqual({ report_id: "abc", stats: [] });
-  });
-});
-```
-
-### Integration Tests
-
-Test handlers with mocked database and GitHub API:
-
-```typescript
-// workflow-completion-handler.test.ts
-import { vi } from "vitest";
-import { processWorkflowCompletion } from "../handlers/workflow-completion-handler";
-import * as github from "@repo/github";
-
-vi.mock("@repo/github", () => ({
-  downloadWorkflowArtifacts: vi.fn(),
-}));
-
-describe("processWorkflowCompletion", () => {
-  it("should create PR record on execute success", async () => {
-    // Mock artifact download
-    vi.mocked(github.downloadWorkflowArtifacts).mockResolvedValue([
-      { name: "plan.zip", data: mockZipBuffer },
-    ]);
-
-    // Mock database
-    const mockDb = {
-      gitHubActionRun: { findMany: vi.fn() },
-      gitHubPullRequest: { create: vi.fn() },
-      // ...
-    };
-
-    const event = {
-      workflow_run: { id: 123, conclusion: "success", html_url: "..." },
-      // ...
-    };
-
-    await processWorkflowCompletion(event, "test-correlation-id", true);
-
-    expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
-  });
-});
-```
-
-### E2E Tests (via Playwright)
-
-Test webhook flow end-to-end:
-
-```typescript
-// Use page.route() to mock GitHub webhook POST
-await page.route("**/webhooks/github", async (route) => {
-  await route.fulfill({
-    status: 200,
-    body: JSON.stringify({ ok: true }),
-  });
-});
-
-// Trigger action that dispatches workflow
-await page.click('[data-testid="execute-plan"]');
-
-// Mock webhook completion event
-await fetch("http://localhost:3002/webhooks/github", {
-  method: "POST",
-  headers: { "x-github-event": "workflow_run" },
-  body: JSON.stringify(mockCompletionEvent),
-});
-
-// Verify UI updates
-await expect(page.locator('[data-status="DRAFT"]')).toBeVisible();
+Run webhook tests:
+```bash
+pnpm turbo test --filter=api -- --grep webhook
 ```
 
 ## Adding a New Event Handler
@@ -394,20 +309,23 @@ export type NewEventContext = {
 
 ### 4. Add Tests
 
-Create corresponding test file:
+Create corresponding test file in `apps/api/__tests__/unit/`:
 
 ```bash
-touch apps/api/app/webhooks/github/handlers/new-event-handler.test.ts
+touch apps/api/__tests__/unit/webhook-new-event.test.ts
 ```
 
-Test structure:
+Follow the existing test patterns (mock `@repo/database`, `@repo/github`, etc.):
 ```typescript
 import { describe, it, expect, vi } from "vitest";
-import { handleNewEvent } from "./new-event-handler";
+
+vi.mock("@repo/database", () => ({ withDb: vi.fn() }));
+
+import { handleNewEvent } from "../../app/webhooks/github/handlers/new-event-handler";
 
 describe("handleNewEvent", () => {
   it("should process valid event", async () => {
-    const event = { /* mock event data */ };
+    const event = { /* mock event data - include ALL required fields */ };
     await handleNewEvent(event);
     // assertions
   });
