@@ -384,6 +384,8 @@ model Artifact {
   workstreamId       String?           @map("workstream_id") @db.Uuid
   projectId          String?           @map("project_id") @db.Uuid
   parentId           String?           @map("parent_id") @db.Uuid
+  /// Nullable for forward-compatibility (future types without subtypes).
+  /// All current creation paths require subtype; enforced at API boundary via runtime assertion.
   subtype            ArtifactSubtype?  @map("subtype")
   type               ArtifactType      @default(DOCUMENT) @map("type")
   title              String

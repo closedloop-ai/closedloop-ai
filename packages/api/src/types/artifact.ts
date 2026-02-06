@@ -140,6 +140,8 @@ export type Artifact = {
   projectId: string | null;
   parentId: string | null;
   type: ArtifactType;
+  // Non-null by design: DB column is nullable for forward-compatibility, but all creation
+  // paths require subtype and the service layer asserts non-null before returning to clients.
   subtype: ArtifactSubtype;
   title: string;
   fileName: string | null;
