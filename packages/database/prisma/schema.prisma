@@ -405,12 +405,13 @@ model Artifact {
   updatedAt       DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner        User?        @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  parent       Artifact?    @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]   @relation("ArtifactSource")
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?       @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner        User?             @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  parent       Artifact?         @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children     Artifact[]        @relation("ArtifactSource")
+  ratings      ArtifactRating[]
 
   @@unique([organizationId, templateForType])
   @@index([organizationId, workstreamId, type, isLatest])
@@ -422,6 +423,26 @@ model Artifact {
   @@index([parentId])
   @@index([ownerId])
   @@map("artifacts")
+}
+
+model ArtifactRating {
+  id              String   @id @default(uuid(7)) @db.Uuid @map("id")
+  artifactId      String   @map("artifact_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  // Score validation (1-5) enforced at API layer via Zod schema. Prisma relationMode = "prisma" doesn't support DB check constraints.
+  score           Int
+  comment         String?  @db.VarChar(500)
+  artifactVersion Int      @map("artifact_version")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, userId, organizationId])
+  @@index([artifactId, organizationId])
+  @@map("artifact_ratings")
 }
 
 model FileUpload {

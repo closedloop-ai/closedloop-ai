@@ -11,6 +11,7 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import {
@@ -24,6 +25,7 @@ import {
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
 import { createLiveblocksRoom } from "@/lib/liveblocks";
+import { submitRatingSchema } from "./[id]/rating/validators";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -1305,6 +1307,148 @@ Please try again or contact support if the issue persists.`,
       success: true,
       correlationId,
     };
+  },
+
+  // TODO V2: Extract rating methods to dedicated RatingService when rating expands beyond Implementation Plans (trigger: artifactsService > 2000 lines OR rating on 3+ artifact types)
+  /**
+   * Get rating summary for an artifact (org-scoped).
+   * Returns aggregate statistics and the current user's rating if one exists.
+   */
+  async getRating(
+    artifactId: string,
+    userId: string,
+    organizationId: string
+  ): Promise<ArtifactRatingSummary> {
+    // Validate artifact exists and belongs to user's org (org-scoped authorization)
+    const artifact = await this.findByIdSimple(artifactId, organizationId);
+    if (!artifact) {
+      throw new ArtifactNotFoundError(artifactId);
+    }
+
+    // Fetch user's rating (if exists)
+    const userRating = await withDb((db) =>
+      db.artifactRating.findUnique({
+        where: {
+          artifactId_userId_organizationId: {
+            artifactId,
+            userId,
+            organizationId,
+          },
+        },
+      })
+    );
+
+    // Fetch aggregate statistics (MUST filter by both artifactId AND organizationId for multi-tenant isolation)
+    const aggregate = await withDb((db) =>
+      db.artifactRating.aggregate({
+        where: { artifactId, organizationId },
+        _avg: { score: true },
+        _count: true,
+      })
+    );
+
+    return {
+      average: aggregate._avg.score ?? 0,
+      count: aggregate._count,
+      userRating: userRating
+        ? {
+            id: userRating.id,
+            userId: userRating.userId,
+            score: userRating.score,
+            comment: userRating.comment ?? undefined,
+            artifactVersion: userRating.artifactVersion,
+            createdAt: userRating.createdAt,
+            updatedAt: userRating.updatedAt,
+          }
+        : null,
+    };
+  },
+
+  /**
+   * Upsert a rating for an artifact (org-scoped).
+   * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
+   * Atomically captures artifact version at time of rating to ensure traceability.
+   */
+  async upsertRating(
+    artifactId: string,
+    userId: string,
+    organizationId: string,
+    score: number,
+    comment?: string
+  ): Promise<ArtifactRatingSummary> {
+    // Validate inputs at service layer (defense in depth, even though route also validates)
+    const validated = submitRatingSchema.parse({ score, comment });
+
+    // Validate artifact exists and belongs to user's org (org-scoped authorization)
+    const artifact = await this.findByIdSimple(artifactId, organizationId);
+    if (!artifact) {
+      throw new ArtifactNotFoundError(artifactId);
+    }
+
+    // Use transaction for atomicity: artifact version must be captured atomically
+    // even if version increments during operation
+    return withDb.tx(async (tx) => {
+      // Re-fetch artifact version inside transaction. findByIdSimple (above) runs
+      // outside the transaction for authorization, but its version could be stale by
+      // the time we upsert. This re-fetch inside withDb.tx() guarantees the version
+      // captured is consistent with the upsert — at the cost of one extra PK lookup (~1-2ms).
+      const currentArtifact = await tx.artifact.findUnique({
+        where: { id: artifactId },
+        select: { version: true },
+      });
+
+      // This should never happen since we validated above, but TypeScript doesn't know that
+      if (!currentArtifact) {
+        throw new ArtifactNotFoundError(artifactId);
+      }
+
+      // Upsert rating
+      const rating = await tx.artifactRating.upsert({
+        where: {
+          artifactId_userId_organizationId: {
+            artifactId,
+            userId,
+            organizationId,
+          },
+        },
+        update: {
+          score: validated.score,
+          comment: validated.comment,
+          artifactVersion: currentArtifact.version,
+          updatedAt: new Date(),
+        },
+        create: {
+          id: createId(),
+          artifactId,
+          userId,
+          organizationId,
+          score: validated.score,
+          comment: validated.comment,
+          artifactVersion: currentArtifact.version,
+        },
+      });
+
+      // Recalculate aggregate (same logic as getRating())
+      const aggregate = await tx.artifactRating.aggregate({
+        where: { artifactId, organizationId },
+        _avg: { score: true },
+        _count: true,
+      });
+
+      return {
+        average: aggregate._avg.score ?? 0,
+        count: aggregate._count,
+        userRating: {
+          id: rating.id,
+          userId: rating.userId,
+          score: rating.score,
+          comment: rating.comment ?? undefined,
+          artifactVersion: rating.artifactVersion,
+          createdAt: rating.createdAt,
+          updatedAt: rating.updatedAt,
+        },
+      };
+    });
   },
 };
 

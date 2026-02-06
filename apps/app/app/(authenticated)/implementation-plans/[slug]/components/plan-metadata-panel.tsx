@@ -18,6 +18,7 @@ import {
   MetadataPanel,
   MetadataSection,
 } from "@/components/artifact-editor/metadata-panel";
+import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
@@ -115,6 +116,7 @@ export function PlanMetadataPanel({
   const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isEvaluationOpen, setIsEvaluationOpen] = useState(false);
+  const [isRatingOpen, setIsRatingOpen] = useState(true);
 
   const {
     acceptedCount,
@@ -244,6 +246,17 @@ export function PlanMetadataPanel({
                 </p>
               )}
             </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            onOpenChange={setIsRatingOpen}
+            open={isRatingOpen}
+            title="Rating"
+          >
+            <RatingSection
+              artifactId={plan.id}
+              currentPlanVersion={plan.version}
+            />
           </CollapsibleSection>
 
           <CommentsSection artifactId={plan.id} />
