@@ -63,7 +63,7 @@ describe("artifactsService.refreshPreviewDeployment", () => {
           previewDeployment: {
             update: vi.fn().mockResolvedValue({
               url: "https://preview.example.com",
-              status: "ready",
+              state: "ready",
               environment: "preview",
               ref: "refs/heads/feature-branch",
               sha: null,
