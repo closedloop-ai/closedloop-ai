@@ -264,3 +264,47 @@ export type GenerationStatus = {
   completedAt: Date | null;
   correlationId: string | null;
 };
+
+// Plan JSON types for experimental plugin artifacts
+export type PlanAcceptanceCriterion = {
+  id: string;
+  criterion: string;
+  source: string;
+};
+
+export type PlanTask = {
+  id: string;
+  description: string;
+  acceptanceCriteria: string[];
+};
+
+export type PlanOpenQuestion = {
+  id: string;
+  question: string;
+  recommendedAnswer?: string | null;
+  blockingTask?: string | null;
+};
+
+export type PlanAnsweredQuestion = {
+  id: string;
+  question: string;
+  answer: string;
+};
+
+export type PlanGap = {
+  id: string;
+  description: string;
+  addressed: boolean;
+  resolution?: string | null;
+};
+
+export type PlanJson = {
+  content: string;
+  acceptanceCriteria: PlanAcceptanceCriterion[];
+  pendingTasks: PlanTask[];
+  completedTasks: PlanTask[];
+  openQuestions: PlanOpenQuestion[];
+  answeredQuestions: PlanAnsweredQuestion[];
+  gaps: PlanGap[];
+  manualTasks?: PlanTask[];
+};

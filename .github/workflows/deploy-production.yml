@@ -1,0 +1,435 @@
+name: Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      slack_channel_id:
+        description: "Slack channel ID for deploy updates"
+        required: true
+      slack_thread_ts:
+        description: "Slack thread timestamp for deploy updates"
+        required: true
+      slack_requester_id:
+        description: "Slack user ID who requested the deploy"
+        required: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  DEPLOY_BASE_BRANCH: production
+  DEPLOY_HEAD_BRANCH: main
+  CHANGELOG_PATH: changelog.md
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Post Deploy Start
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          echo "SLACK_FAILED=0" >> "$GITHUB_ENV"
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "🚀 Deploy started for \`${DEPLOY_HEAD_BRANCH}\` → \`${DEPLOY_BASE_BRANCH}\`" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch Branches
+        run: git fetch origin $DEPLOY_BASE_BRANCH $DEPLOY_HEAD_BRANCH --prune
+
+      - name: Build Changelog
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: node scripts/deploy/build-changelog.mjs
+
+      - name: Check For Changes
+        id: diff
+        run: |
+          if git diff --quiet "origin/${DEPLOY_BASE_BRANCH}" "origin/${DEPLOY_HEAD_BRANCH}"; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: No Changes - Notify
+        if: steps.diff.outputs.has_changes == 'false'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "ℹ️ No changes to deploy — \`${DEPLOY_BASE_BRANCH}\` is already up to date with \`${DEPLOY_HEAD_BRANCH}\`." \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compose PR Body
+        if: steps.diff.outputs.has_changes == 'true'
+        run: |
+          {
+            echo "## Production Deploy"
+            echo ""
+            echo "Changelog:"
+            echo ""
+            cat "$CHANGELOG_PATH"
+          } > deploy-pr-body.md
+
+      - name: Create Or Update Deploy PR
+        id: deploy_pr
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          PR_URL=$(gh pr list \
+            --base "$DEPLOY_BASE_BRANCH" \
+            --head "$DEPLOY_HEAD_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+
+          if [ -z "$PR_URL" ]; then
+            TITLE="Deploy ${DEPLOY_HEAD_BRANCH} → ${DEPLOY_BASE_BRANCH} ($(date -u +%Y-%m-%d))"
+            PR_URL=$(gh pr create \
+              --title "$TITLE" \
+              --base "$DEPLOY_BASE_BRANCH" \
+              --head "$DEPLOY_HEAD_BRANCH" \
+              --body-file deploy-pr-body.md)
+          else
+            gh pr edit "$PR_URL" --body-file deploy-pr-body.md
+          fi
+
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post Changelog
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+        run: |
+          CHANGELOG=$(cat "$CHANGELOG_PATH")
+          MESSAGE=$(printf "📋 *Deploy PR:* %s\n\n%s" "$PR_URL" "$CHANGELOG")
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "$MESSAGE" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Merge Deploy PR
+        id: merge
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+        run: |
+          # Wait for required status checks to complete (with timeout + retry)
+          CHECK_EXIT=0
+          ATTEMPT=1
+          MAX_ATTEMPTS=2
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            timeout 30m gh pr checks "$PR_URL" --watch --required --interval 10 && CHECK_EXIT=0 || CHECK_EXIT=$?
+            if [ $CHECK_EXIT -eq 0 ]; then
+              break
+            fi
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "Checks wait failed (exit $CHECK_EXIT). Retrying in 15s..."
+              sleep 15
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          if [ $CHECK_EXIT -eq 124 ]; then
+            echo "::error::Timed out waiting for required checks to complete."
+            exit 1
+          fi
+          if [ $CHECK_EXIT -ne 0 ]; then
+            echo "::error::Required checks failed."
+            exit 1
+          fi
+
+          # Check PR is mergeable before attempting merge
+          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+          if [ "$MERGEABLE" != "MERGEABLE" ]; then
+            echo "::error::PR is not mergeable (state: $MERGEABLE). Check for conflicts or failing checks."
+            exit 1
+          fi
+          gh pr merge "$PR_URL" --merge --delete-branch=false
+          MERGE_SHA=$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid')
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Install Health Check Dependencies
+        if: steps.diff.outputs.has_changes == 'true'
+        run: npm install --no-save pg
+
+      - name: Run Post-Deploy Health Checks
+        id: health_checks
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Run Vercel and Database checks in parallel
+          VERCEL_PID=""
+          DB_PID=""
+
+          # Start Vercel check (if configured)
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_PROJECT_IDS" ]; then
+            echo "Starting Vercel deployment check..."
+            node scripts/deploy/check-vercel.mjs &
+            VERCEL_PID=$!
+          else
+            echo "Vercel not configured, skipping"
+            echo '{"skipped": true}' > vercel-status.json
+          fi
+
+          # Start Database check (if configured)
+          if [ -n "$DATABASE_URL" ]; then
+            echo "Starting database health check..."
+            node scripts/deploy/check-database.mjs &
+            DB_PID=$!
+          else
+            echo "Database URL not configured, skipping"
+            echo '{"skipped": true}' > db-status.json
+          fi
+
+          # Wait for checks to complete
+          VERCEL_EXIT=0
+          DB_EXIT=0
+
+          if [ -n "$VERCEL_PID" ]; then
+            wait $VERCEL_PID || VERCEL_EXIT=$?
+          fi
+
+          if [ -n "$DB_PID" ]; then
+            wait $DB_PID || DB_EXIT=$?
+          fi
+
+          # Report results
+          echo ""
+          echo "=== Health Check Results ==="
+          if [ -f vercel-status.json ]; then
+            echo "Vercel: $(jq -r 'if .ok then "✓ All deployments ready" elif .skipped then "⊘ Skipped" else "✗ Failed" end' vercel-status.json)"
+          fi
+          if [ -f db-status.json ]; then
+            echo "Database: $(jq -r 'if .ok then "✓ Healthy" elif .skipped then "⊘ Skipped" else "✗ Issues detected" end' db-status.json)"
+          fi
+
+          # Fail if any check failed
+          if [ $VERCEL_EXIT -ne 0 ]; then
+            echo "::error::Vercel deployment check failed"
+            exit 1
+          fi
+          if [ $DB_EXIT -ne 0 ]; then
+            echo "::error::Database health check failed"
+            exit 1
+          fi
+
+      - name: Post Success
+        if: success() && steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+          VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
+          VERCEL_PROJECT_LABELS: ${{ secrets.VERCEL_PROJECT_LABELS }}
+        run: |
+          VERCEL_LINES=""
+          if [ -f vercel-status.json ] && jq -e '.ok' vercel-status.json > /dev/null 2>&1; then
+            VERCEL_LINES+=$'\n'"  ▲ *app:* https://app.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *web:* https://marketing.closedloop.ai"
+            VERCEL_LINES+=$'\n'"  ▲ *api:* https://api.closedloop.ai/health"
+          fi
+          if [ -n "$VERCEL_LINES" ]; then
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s\n\n*Live apps:*%s" "$PR_URL" "$VERCEL_LINES")
+          else
+            MESSAGE=$(printf "✅ *Deploy succeeded*\n\n*PR:* %s" "$PR_URL")
+          fi
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "$MESSAGE" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Capture Error Context
+        id: capture_errors
+        if: failure() && steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Determine which step failed
+          FAILED_STEP="Unknown"
+          if [ "${{ steps.merge.outcome }}" = "failure" ]; then
+            FAILED_STEP="Merge Deploy PR"
+          elif [ "${{ steps.health_checks.outcome }}" = "failure" ]; then
+            FAILED_STEP="Run Post-Deploy Health Checks"
+          elif [ "${{ steps.deploy_pr.outcome }}" = "failure" ]; then
+            FAILED_STEP="Create Or Update Deploy PR"
+          fi
+          echo "failed_step=$FAILED_STEP" >> "$GITHUB_OUTPUT"
+
+          # Capture recent workflow logs (last 200 lines)
+          gh run view ${{ github.run_id }} --log 2>/dev/null | tail -200 > error_context.log || true
+
+          # Also capture any Vercel status if available
+          if [ -f vercel-status.json ]; then
+            echo "--- VERCEL STATUS ---" >> error_context.log
+            cat vercel-status.json >> error_context.log
+          fi
+
+      - name: Run Failure Diagnostics
+        id: diagnose
+        if: failure() && steps.diff.outputs.has_changes == 'true'
+        env:
+          ERROR_LOG_PATH: error_context.log
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEPLOY_HEAD_BRANCH: ${{ env.DEPLOY_HEAD_BRANCH }}
+          GITHUB_SHA: ${{ github.sha }}
+          FAILED_STEP: ${{ steps.capture_errors.outputs.failed_step }}
+        run: node scripts/deploy/diagnose-failure.mjs
+
+      - name: Post Failure Report
+        if: failure() && steps.diff.outputs.has_changes == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          SLACK_FAILED=0
+          # Read the diagnosis report
+          if [ -f diagnosis.json ]; then
+            REPORT=$(jq -r '.slackReport' diagnosis.json)
+            LOG_CHUNKS=$(jq -r '.slackLogChunks[]? | @base64' diagnosis.json)
+          else
+            REPORT="Deploy failed. Check the GitHub Actions logs for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            LOG_CHUNKS=""
+          fi
+
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "$REPORT" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack failure report failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+            SLACK_FAILED=1
+            echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+          fi
+
+          # Post failure logs as thread comments (chunked)
+          if [ -n "$LOG_CHUNKS" ]; then
+            while IFS= read -r chunk; do
+              chunk=$(echo "$chunk" | base64 --decode)
+              SLACK_RESP=$(jq -n \
+                --arg channel "$SLACK_CHANNEL_ID" \
+                --arg text "$chunk" \
+                --arg thread_ts "$SLACK_THREAD_TS" \
+                '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+                | curl -sS https://slack.com/api/chat.postMessage \
+                  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+                  -H "Content-Type: application/json; charset=utf-8" \
+                  -d @-)
+              if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+                echo "::warning::Slack log chunk failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+                SLACK_FAILED=1
+                echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
+                break
+              fi
+            done <<< "$LOG_CHUNKS"
+          fi
+
+      - name: Post Early Failure
+        if: failure() && steps.diff.outputs.has_changes != 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ inputs.slack_channel_id }}
+          SLACK_THREAD_TS: ${{ inputs.slack_thread_ts }}
+        run: |
+          if [ "${SLACK_FAILED:-0}" -eq 1 ]; then
+            echo "Skipping Slack notification due to prior Slack failure."
+            exit 0
+          fi
+          SLACK_RESP=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg text "Deploy failed before changes could be evaluated. Check the logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg thread_ts "$SLACK_THREAD_TS" \
+            '{channel: $channel, text: $text, thread_ts: $thread_ts}' \
+            | curl -sS https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json; charset=utf-8" \
+              -d @-)
+          if ! echo "$SLACK_RESP" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::warning::Slack early failure notification failed: $(echo "$SLACK_RESP" | jq -r '.error // "unknown"')"
+          fi

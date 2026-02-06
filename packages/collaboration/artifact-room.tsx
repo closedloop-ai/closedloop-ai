@@ -1,27 +1,30 @@
 "use client";
 
-import {
-  ClientSideSuspense,
-  LiveblocksProvider,
-  RoomProvider,
-} from "@liveblocks/react/suspense";
+import { ClientSideSuspense, RoomProvider } from "@liveblocks/react/suspense";
 import type { ReactNode } from "react";
+import { CollaborationProvider } from "./collaboration-provider";
+import type { UserInfo } from "./user-resolvers";
+
+export type { UserInfo } from "./user-resolvers";
 
 export type ArtifactRoomProps = {
   roomId: string;
   children: ReactNode;
+  users?: UserInfo[];
 };
 
 /**
  * Wrapper component for artifact-specific collaborative editing.
  * Comments are visible to all organization members (no granular permissions).
+ * Supports @mentions when users array is provided.
  */
 export function ArtifactRoom({
   roomId,
   children,
+  users = [],
 }: Readonly<ArtifactRoomProps>) {
   return (
-    <LiveblocksProvider authEndpoint={"/api/collaboration/auth"}>
+    <CollaborationProvider users={users}>
       <RoomProvider
         id={roomId}
         initialPresence={{ cursor: null, selection: null }}
@@ -36,6 +39,6 @@ export function ArtifactRoom({
           {children}
         </ClientSideSuspense>
       </RoomProvider>
-    </LiveblocksProvider>
+    </CollaborationProvider>
   );
 }

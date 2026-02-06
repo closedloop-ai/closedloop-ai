@@ -31,6 +31,11 @@ import {
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import {
+  useGitHubBranches,
+  useGitHubIntegrationStatus,
+  useGitHubRepositories,
+} from "@/hooks/queries/use-github-integration";
 import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
@@ -66,6 +71,50 @@ function PrdSelectContent({
   );
 }
 
+/**
+ * Pre-populates form fields from a selected PRD.
+ * Returns updated field values or null if PRD not found.
+ */
+function populateFieldsFromPrd(
+  prdId: string,
+  prds: ArtifactWithWorkstream[],
+  repositories: Array<{ id: string; fullName: string }> | undefined
+): {
+  approver: string;
+  status: ArtifactStatus;
+  targetRepo: string;
+  targetBranch: string;
+  selectedRepoId: string;
+} | null {
+  const selectedPrd = prds.find((p) => p.id === prdId);
+  if (!selectedPrd) {
+    return null;
+  }
+
+  const basicFields = {
+    approver: selectedPrd.approver ?? "",
+    status: (selectedPrd.status ?? "DRAFT") as ArtifactStatus,
+    targetRepo: selectedPrd.targetRepo ?? "",
+    targetBranch: selectedPrd.targetBranch ?? "main",
+  };
+
+  // Resolve selectedRepoId from PRD's targetRepo
+  let selectedRepoId = "";
+  if (selectedPrd.targetRepo && repositories) {
+    const matchingRepo = repositories.find(
+      (repo) => repo.fullName === selectedPrd.targetRepo
+    );
+    if (matchingRepo) {
+      selectedRepoId = matchingRepo.id;
+    }
+  }
+
+  return {
+    ...basicFields,
+    selectedRepoId,
+  };
+}
+
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -92,6 +141,7 @@ export function CreateArtifactModal({
   const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
+  const [selectedRepoId, setSelectedRepoId] = useState<string>("");
 
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
@@ -102,6 +152,26 @@ export function CreateArtifactModal({
     artifactSubtype === "PRD" ||
     artifactSubtype === "ISSUE" ||
     artifactSubtype === "BUG";
+
+  // GitHub integration queries
+  const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
+    useGitHubIntegrationStatus();
+  const { data: repositories, isLoading: isLoadingRepos } =
+    useGitHubRepositories({
+      enabled: githubStatus?.connected === true,
+    });
+  const { data: branchesData, isLoading: isLoadingBranches } =
+    useGitHubBranches(selectedRepoId, {
+      enabled: !!selectedRepoId,
+    });
+
+  const sortedRepositories = useMemo(
+    () =>
+      repositories
+        ? [...repositories].sort((a, b) => a.name.localeCompare(b.name))
+        : [],
+    [repositories]
+  );
 
   // Fetch template for subtypes that have templates
   const { data: template } = useOrgTemplateBySubtype(
@@ -124,18 +194,36 @@ export function CreateArtifactModal({
   // Create artifact mutation
   const createArtifact = useCreateArtifact();
 
-  // Pre-populate fields from selected PRD for implementation plans
+  // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
-    if (isImplementationPlan && selectedPrdId) {
-      const selectedPrd = prds.find((p) => p.id === selectedPrdId);
-      if (selectedPrd) {
-        setApprover(selectedPrd.approver ?? "");
-        setStatus(selectedPrd.status ?? "DRAFT");
-        setTargetRepo(selectedPrd.targetRepo ?? "");
-        setTargetBranch(selectedPrd.targetBranch ?? "main");
+    if (branchesData?.branches && !targetBranch) {
+      const defaultBranch = branchesData.branches.find((b) => b.isDefault);
+      if (defaultBranch) {
+        setTargetBranch(defaultBranch.name);
       }
     }
-  }, [isImplementationPlan, selectedPrdId, prds]);
+  }, [branchesData, targetBranch]);
+
+  // Pre-populate fields from selected PRD for implementation plans
+  useEffect(() => {
+    if (!(isImplementationPlan && selectedPrdId)) {
+      return;
+    }
+
+    const populatedFields = populateFieldsFromPrd(
+      selectedPrdId,
+      prds,
+      repositories
+    );
+
+    if (populatedFields) {
+      setApprover(populatedFields.approver);
+      setStatus(populatedFields.status);
+      setTargetRepo(populatedFields.targetRepo);
+      setTargetBranch(populatedFields.targetBranch);
+      setSelectedRepoId(populatedFields.selectedRepoId);
+    }
+  }, [isImplementationPlan, selectedPrdId, prds, repositories]);
 
   // Prefill content from template when loaded (only on initial load)
   useEffect(() => {
@@ -143,6 +231,17 @@ export function CreateArtifactModal({
       setContent((current) => (current ? current : (template.content ?? "")));
     }
   }, [template]);
+
+  // Compute branch placeholder based on state
+  const getBranchPlaceholder = () => {
+    if (!selectedRepoId) {
+      return "Select a repository first";
+    }
+    if (isLoadingBranches) {
+      return "Loading branches...";
+    }
+    return "Select a branch";
+  };
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -157,6 +256,16 @@ export function CreateArtifactModal({
     }
   };
 
+  const handleRepositoryChange = (repoId: string) => {
+    const selectedRepo = repositories?.find((r) => r.id === repoId);
+    if (selectedRepo) {
+      setSelectedRepoId(repoId);
+      setTargetRepo(selectedRepo.fullName);
+      // Clear branch when repository changes - will be auto-set by useEffect
+      setTargetBranch("");
+    }
+  };
+
   const resetForm = () => {
     setTitle("");
     setFileName("");
@@ -165,6 +274,7 @@ export function CreateArtifactModal({
     setStatus("DRAFT");
     setTargetRepo("");
     setTargetBranch("main");
+    setSelectedRepoId("");
     setSelectedPrdId("");
     setError(null);
   };
@@ -299,22 +409,55 @@ export function CreateArtifactModal({
                 (for code generation)
               </span>
             </Label>
-            <Input
-              id="artifact-target-repo"
-              onChange={(e) => setTargetRepo(e.target.value)}
-              placeholder="owner/repo"
-              value={targetRepo}
-            />
+            {githubStatus?.connected === false ? (
+              <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+                Connect GitHub to select a repository
+              </div>
+            ) : (
+              <Select
+                disabled={isLoadingGitHubStatus || isLoadingRepos}
+                onValueChange={handleRepositoryChange}
+                value={selectedRepoId}
+              >
+                <SelectTrigger id="artifact-target-repo">
+                  <SelectValue
+                    placeholder={
+                      isLoadingGitHubStatus || isLoadingRepos
+                        ? "Loading repositories..."
+                        : "Select a repository"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedRepositories.map((repo) => (
+                    <SelectItem key={repo.id} value={repo.id}>
+                      {repo.fullName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="artifact-target-branch">Target Branch</Label>
-            <Input
-              id="artifact-target-branch"
-              onChange={(e) => setTargetBranch(e.target.value)}
-              placeholder="main"
+            <Select
+              disabled={!selectedRepoId || isLoadingBranches}
+              onValueChange={setTargetBranch}
               value={targetBranch}
-            />
+            >
+              <SelectTrigger id="artifact-target-branch">
+                <SelectValue placeholder={getBranchPlaceholder()} />
+              </SelectTrigger>
+              <SelectContent>
+                {branchesData?.branches.map((branch) => (
+                  <SelectItem key={branch.name} value={branch.name}>
+                    {branch.name}
+                    {branch.isDefault ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">

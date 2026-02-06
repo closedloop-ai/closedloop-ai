@@ -66,6 +66,10 @@ type PRDEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when close button is clicked (switches back to view mode)
+   */
+  onClose: () => void;
+  /**
    * Callback when rename menu item is clicked
    */
   onRename: () => void;
@@ -107,6 +111,7 @@ export function PRDEditorHeader({
   onGeneratePlan,
   onEdit,
   onSave,
+  onClose,
   onRename,
   onExport,
   showRestore = false,
@@ -127,34 +132,46 @@ export function PRDEditorHeader({
   // PRD-specific toolbar actions
   const rightActions = (
     <>
-      <Button
-        onClick={onToggleMetadataPanel}
-        size="sm"
-        variant={showMetadataPanel ? "secondary" : "outline"}
-      >
-        <SettingsIcon className="mr-2 h-4 w-4" />
-        Details
-      </Button>
-
-      <Button onClick={onGeneratePlan} size="sm" variant="default">
-        <SparklesIcon className="mr-2 h-4 w-4" />
-        Generate Implementation Plan
-      </Button>
-
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Saving..." : "Save"}
-        </Button>
+        <>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+          <Button
+            disabled={isPending}
+            onClick={onClose}
+            size="sm"
+            variant="outline"
+          >
+            Close
+          </Button>
+        </>
       ) : (
-        <Button
-          disabled={isPending || !canEdit}
-          onClick={onEdit}
-          size="sm"
-          title={canEdit ? undefined : "Switch to the latest version to edit"}
-        >
-          <PencilIcon className="mr-2 h-4 w-4" />
-          Edit
-        </Button>
+        <>
+          <Button
+            onClick={onToggleMetadataPanel}
+            size="sm"
+            variant={showMetadataPanel ? "secondary" : "outline"}
+          >
+            <SettingsIcon className="mr-2 h-4 w-4" />
+            Details
+          </Button>
+
+          <Button onClick={onGeneratePlan} size="sm" variant="default">
+            <SparklesIcon className="mr-2 h-4 w-4" />
+            Generate Implementation Plan
+          </Button>
+
+          <Button
+            disabled={isPending || !canEdit}
+            onClick={onEdit}
+            size="sm"
+            title={canEdit ? undefined : "Switch to the latest version to edit"}
+          >
+            <PencilIcon className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
+        </>
       )}
 
       <DropdownMenu>

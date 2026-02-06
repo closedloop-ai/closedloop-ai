@@ -32,13 +32,13 @@ vi.mock("../judge-result-card", () => ({
   JudgeResultCard: ({
     metric,
   }: {
-    metric: { metric_name: string; mean: number };
+    metric: { metric_name: string; score: number };
   }) => (
     <div
-      data-mean={metric.mean}
+      data-score={metric.score}
       data-testid={`judge-card-${metric.metric_name}`}
     >
-      {metric.metric_name}: {metric.mean}
+      {metric.metric_name}: {metric.score}
     </div>
   ),
 }));
@@ -62,7 +62,7 @@ const defaultProps = {
   teamMembers: [],
   generationStatus: null,
   pullRequest: null,
-  evaluationResults: null,
+  judgesReport: null,
   onStatusChange: vi.fn(),
   onApproverChange: vi.fn(),
   onApproverBlur: vi.fn(),
@@ -80,11 +80,11 @@ describe("sortMetricsByScore", () => {
     const sorted = sortMetricsByScore(metrics);
 
     expect(sorted[0].metric_name).toBe("Low Score");
-    expect(sorted[0].mean).toBe(0.3);
+    expect(sorted[0].score).toBe(0.3);
     expect(sorted[1].metric_name).toBe("Medium Score");
-    expect(sorted[1].mean).toBe(0.7);
+    expect(sorted[1].score).toBe(0.7);
     expect(sorted[2].metric_name).toBe("High Score");
-    expect(sorted[2].mean).toBe(0.95);
+    expect(sorted[2].score).toBe(0.95);
   });
 
   test("handles metrics with same score (stable sort)", () => {
@@ -97,7 +97,7 @@ describe("sortMetricsByScore", () => {
     const sorted = sortMetricsByScore(metrics);
 
     expect(sorted).toHaveLength(3);
-    // All have same mean, order should be preserved
+    // All have same score, order should be preserved
     expect(sorted.map((m) => m.metric_name)).toEqual([
       "First",
       "Second",
@@ -189,18 +189,18 @@ describe("calculateAcceptanceRate", () => {
     expect(result.rate).toBe(0);
   });
 
-  test("handles null threshold (still counts toward total)", () => {
+  test("handles zero threshold (still counts toward total)", () => {
     const metrics = [
       createMockMetric("With Threshold", 0.8, { threshold: 0.7 }),
-      createMockMetric("No Threshold", 0.9, { threshold: null }),
+      createMockMetric("Zero Threshold", 0.9, { threshold: 0 }),
     ];
 
     const result = calculateAcceptanceRate(metrics);
 
-    // Only the metric with threshold passes the check
-    expect(result.acceptedCount).toBe(1);
+    // Both metrics should pass (0.9 >= 0 and 0.8 >= 0.7)
+    expect(result.acceptedCount).toBe(2);
     expect(result.totalCount).toBe(2);
-    expect(result.rate).toBe(50);
+    expect(result.rate).toBe(100);
   });
 });
 

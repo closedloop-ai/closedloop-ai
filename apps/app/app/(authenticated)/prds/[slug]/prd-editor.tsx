@@ -1,23 +1,19 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import {
-  OptionalArtifactRoom,
-  OptionalComments,
-  Presence,
-} from "@repo/collaboration";
+import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import type { Editor } from "@tiptap/react";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { EditorContent } from "@/components/artifact-editor/editor-content";
+import { EditorWithComments } from "@/components/artifact-editor/editor-with-comments";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -34,7 +30,6 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [editor, setEditor] = useState<Editor | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>(
     undefined
@@ -48,6 +43,9 @@ export function PRDEditor({
     generateArtifactRoomId(prd.organizationId, prd.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
   const showCollaboration = isEditing;
+
+  // Fetch organization users for @mentions in comments
+  const { data: users } = useOrganizationUsers();
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -134,6 +132,7 @@ export function PRDEditor({
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
+        onClose={exitEditMode}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
         onExport={actions.handleDownload}
@@ -149,31 +148,26 @@ export function PRDEditor({
         versionDisplay={versionDisplay}
       />
 
-      <OptionalArtifactRoom roomId={showCollaboration ? roomId : null}>
+      <OptionalArtifactRoom
+        roomId={showCollaboration ? roomId : null}
+        users={users}
+      >
         {/* Presence Indicators */}
         {showCollaboration && <Presence />}
 
         {/* Content Area with Optional Metadata Panel */}
         <div className="flex min-h-0 flex-1">
-          {/* Scrollable Editor */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <EditorContent
-              contentResetKey={contentResetKey}
-              contentResetValue={contentResetValue}
-              enableLiveblocks={showCollaboration}
-              liveblocksRoomId={roomId}
-              onChange={content.updateContent}
-              onEditorReady={setEditor}
-              placeholder="Start writing your PRD..."
-              readOnly={!isEditing}
-              value={content.content}
-            />
-
-            {/* Comments UI */}
-            {showCollaboration && editor && (
-              <OptionalComments editor={editor} roomId={roomId} />
-            )}
-          </div>
+          <EditorWithComments
+            contentResetKey={contentResetKey}
+            contentResetValue={contentResetValue}
+            enableLiveblocks={showCollaboration}
+            liveblocksRoomId={roomId}
+            onChange={content.updateContent}
+            placeholder="Start writing your PRD..."
+            readOnly={!isEditing}
+            scrollMode="outer"
+            value={content.content}
+          />
 
           {/* Metadata Panel */}
           {uiState.showMetadataPanel ? (

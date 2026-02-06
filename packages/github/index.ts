@@ -306,3 +306,154 @@ export function isCurrentEnvironment(correlationId: string): boolean {
   const config = getConfig();
   return parsed.env === config.WEBAPP_ENV;
 }
+
+/**
+ * Delete (uninstall) a GitHub App installation.
+ * This requires JWT authentication (app-level), not installation token.
+ * @see https://docs.github.com/en/rest/apps/apps#delete-an-installation-for-the-authenticated-app
+ */
+export async function deleteInstallation(
+  installationId: number
+): Promise<{ success: boolean; error?: string }> {
+  const config = getConfig();
+
+  try {
+    // Create app-level authenticated Octokit (JWT, not installation token)
+    const appOctokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: config.GITHUB_APP_ID,
+        privateKey: config.GITHUB_APP_PRIVATE_KEY,
+      },
+    });
+
+    await appOctokit.apps.deleteInstallation({
+      installation_id: installationId,
+    });
+
+    log.info("[github/app] Deleted installation", { installationId });
+    return { success: true };
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    log.error("[github/app] Failed to delete installation", {
+      installationId,
+      error: errorMessage,
+    });
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Get branches for a GitHub repository using GitHub GraphQL API.
+ * Fetches up to 100 branches, sorted by committedDate descending.
+ * Returns the top `limit` branches with the default branch pinned at position 0.
+ *
+ * @param installationId - GitHub installation ID (numeric)
+ * @param owner - Repository owner (org or user)
+ * @param name - Repository name
+ * @param limit - Maximum number of branches to return (default: 20)
+ */
+export async function getRepositoryBranches(
+  installationId: number,
+  owner: string,
+  name: string,
+  limit = 20
+): Promise<Array<{ name: string; committedDate: string; isDefault: boolean }>> {
+  const config = getConfig();
+
+  try {
+    // Create installation-authenticated Octokit
+    const auth = createAppAuth({
+      appId: config.GITHUB_APP_ID,
+      privateKey: config.GITHUB_APP_PRIVATE_KEY,
+    });
+
+    const installationAuth = await auth({
+      type: "installation",
+      installationId,
+    });
+
+    const octokit = new Octokit({
+      auth: installationAuth.token,
+    });
+
+    // GitHub GraphQL query to fetch branches with committedDate
+    // We fetch up to 100 branches (GitHub's default page size) and sort/limit server-side
+    const query = `
+      query($owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) {
+          defaultBranchRef {
+            name
+          }
+          refs(refPrefix: "refs/heads/", first: 100, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+            nodes {
+              name
+              target {
+                ... on Commit {
+                  committedDate
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await octokit.graphql<{
+      repository: {
+        defaultBranchRef: { name: string } | null;
+        refs: {
+          nodes: Array<{
+            name: string;
+            target: { committedDate?: string };
+          }>;
+        };
+      };
+    }>(query, {
+      owner,
+      name,
+    });
+
+    const defaultBranch = response.repository.defaultBranchRef?.name ?? "main";
+
+    const branches = response.repository.refs.nodes
+      .map((node) => ({
+        name: node.name,
+        committedDate: node.target.committedDate ?? new Date(0).toISOString(),
+        isDefault: node.name === defaultBranch,
+      }))
+      .sort(
+        (a, b) =>
+          new Date(b.committedDate).getTime() -
+          new Date(a.committedDate).getTime()
+      );
+
+    // Pin default branch at position 0
+    const defaultBranchIndex = branches.findIndex((b) => b.isDefault);
+    if (defaultBranchIndex > 0) {
+      const [defaultBranchObj] = branches.splice(defaultBranchIndex, 1);
+      branches.unshift(defaultBranchObj);
+    } else if (defaultBranchIndex === -1) {
+      // Default branch wasn't in the top 100 by commit date — add it explicitly
+      branches.unshift({
+        name: defaultBranch,
+        committedDate: new Date(0).toISOString(),
+        isDefault: true,
+      });
+    }
+
+    // Return top `limit` branches
+    return branches.slice(0, limit);
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    log.error("[github/branches] Failed to fetch branches", {
+      installationId,
+      owner,
+      name,
+      error: errorMessage,
+    });
+    throw new Error(`Failed to fetch branches: ${errorMessage}`);
+  }
+}
