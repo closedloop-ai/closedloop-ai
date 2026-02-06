@@ -8,6 +8,7 @@ import {
   type CreateArtifactInput,
   type FindArtifactsOptions,
   getArtifactCategory,
+  type PreviewDeployment,
   type PullRequestInfo,
   shouldGenerateDocumentSlug,
   type UpdateArtifactInput,
@@ -21,6 +22,7 @@ import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { type Artifact as PrismaArtifact, withDb } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
+  getLatestDeploymentStatusForRef,
   getRepositoryInfo,
   triggerWorkflowDispatch,
 } from "@repo/github";
@@ -29,6 +31,7 @@ import {
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
+import { githubService } from "@/app/integrations/github/service";
 import { getUseMockJudges } from "@/lib/feature-flags";
 import { createLiveblocksRoom } from "@/lib/liveblocks";
 import {
@@ -36,6 +39,7 @@ import {
   artifactIncludeWithContext,
   createArtifactVersion,
   generateDocumentSlug,
+  previewDeploymentSelect,
 } from "./artifact-utils";
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
@@ -1181,6 +1185,110 @@ Please try again or contact support if the issue persists.`,
   },
 
   /**
+   * Get the preview deployment for an artifact.
+   */
+  async getArtifactPreviewDeployment(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PreviewDeployment | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        include: {
+          previewDeployment: {
+            select: previewDeploymentSelect,
+          },
+        },
+      })
+    );
+
+    return toPreviewDeploymentFromArtifact(artifact?.previewDeployment ?? null);
+  },
+
+  /**
+   * Refresh preview deployment status by fetching latest from GitHub.
+   * Returns updated PreviewDeployment or null if no deployment info available.
+   */
+  async refreshPreviewDeployment(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PreviewDeployment | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        include: {
+          previewDeployment: true,
+          workstream: {
+            include: {
+              project: {
+                include: { repositories: { take: 1 } },
+              },
+            },
+          },
+        },
+      })
+    );
+
+    if (!artifact?.previewDeployment?.ref) {
+      return toPreviewDeploymentFromArtifact(
+        artifact?.previewDeployment ?? null
+      );
+    }
+
+    const repoFullName =
+      artifact.targetRepo ??
+      artifact.workstream?.project?.repositories?.[0]?.fullName;
+
+    if (!repoFullName) {
+      return toPreviewDeploymentFromArtifact(artifact.previewDeployment);
+    }
+
+    const installationId = await githubService.findInstallationForRepoFullName(
+      organizationId,
+      repoFullName
+    );
+    let deploymentStatus = await getLatestDeploymentStatusForRef(
+      repoFullName,
+      artifact.previewDeployment.ref,
+      {
+        installationId: installationId ?? undefined,
+        environment: "preview",
+      }
+    );
+    if (!deploymentStatus) {
+      deploymentStatus = await getLatestDeploymentStatusForRef(
+        repoFullName,
+        artifact.previewDeployment.ref,
+        {
+          installationId: installationId ?? undefined,
+          environment: undefined,
+        }
+      );
+    }
+
+    if (!deploymentStatus) {
+      return toPreviewDeploymentFromArtifact(artifact.previewDeployment);
+    }
+
+    const updated = await withDb((db) =>
+      db.previewDeployment.update({
+        where: { artifactId },
+        data: {
+          url: deploymentStatus.url,
+          state: deploymentStatus.state,
+          environment: deploymentStatus.environment,
+          updatedAt: deploymentStatus.updatedAt
+            ? new Date(deploymentStatus.updatedAt)
+            : new Date(),
+        },
+        select: previewDeploymentSelect,
+      })
+    );
+
+    return toPreviewDeploymentFromArtifact(updated);
+  },
+
+  /**
    * Execute an approved implementation plan.
    * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
    */
@@ -1388,6 +1496,14 @@ type RawArtifactWithContext = Artifact & {
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
+  previewDeployment: {
+    url: string | null;
+    state: string | null;
+    environment: string | null;
+    ref: string | null;
+    sha: string | null;
+    updatedAt: Date | null;
+  } | null;
 };
 
 /**
@@ -1405,6 +1521,25 @@ function toArtifactWithWorkstream(
           teams: artifact.project.teams.map((pt) => pt.team),
         }
       : null,
+    previewDeployment: toPreviewDeploymentFromArtifact(
+      artifact.previewDeployment
+    ),
+  };
+}
+
+function toPreviewDeploymentFromArtifact(
+  pd: RawArtifactWithContext["previewDeployment"]
+): PreviewDeployment | null {
+  if (!pd) {
+    return null;
+  }
+  return {
+    url: pd.url,
+    state: pd.state,
+    environment: pd.environment,
+    ref: pd.ref,
+    sha: pd.sha,
+    updatedAt: pd.updatedAt,
   };
 }
 

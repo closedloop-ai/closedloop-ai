@@ -9,6 +9,7 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { PreviewLink } from "@/components/preview-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsByType } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
@@ -38,6 +39,11 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     render: (plan) => (
       <span className="text-muted-foreground">{plan.approver ?? "-"}</span>
     ),
+  },
+  {
+    key: "previewDeployment",
+    header: "Preview",
+    render: (plan) => <PreviewLink url={plan.previewDeployment?.url} />,
   },
   {
     key: "updatedAt",
