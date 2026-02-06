@@ -5,12 +5,11 @@ import type { Editor } from "@tiptap/react";
 import { useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 
-type EditorWithCommentsProps = {
+export type EditorWithCommentsProps = {
   value: string;
   onChange: (value: string) => void;
   contentResetKey?: number;
   contentResetValue?: string;
-  enableLiveblocks?: boolean;
   liveblocksRoomId?: string | null;
   placeholder?: string;
   readOnly?: boolean;
@@ -22,14 +21,14 @@ export function EditorWithComments({
   onChange,
   contentResetKey,
   contentResetValue,
-  enableLiveblocks = true,
   liveblocksRoomId,
   placeholder,
   readOnly,
   scrollMode = "outer",
 }: Readonly<EditorWithCommentsProps>) {
   const [editor, setEditor] = useState<Editor | null>(null);
-  const showCollaboration = enableLiveblocks;
+
+  const liveblockedEnabled = !!liveblocksRoomId;
 
   return (
     <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -38,8 +37,7 @@ export function EditorWithComments({
           <EditorContent
             contentResetKey={contentResetKey}
             contentResetValue={contentResetValue}
-            enableLiveblocks={enableLiveblocks}
-            liveblocksRoomId={liveblocksRoomId}
+            liveblocksRoomId={liveblockedEnabled ? liveblocksRoomId : undefined}
             onChange={onChange}
             onEditorReady={setEditor}
             placeholder={placeholder}
@@ -49,7 +47,7 @@ export function EditorWithComments({
           />
         </div>
 
-        {showCollaboration && editor && (
+        {liveblockedEnabled && (
           <>
             {/* Floating comments on mobile/tablet (< 1280px) */}
             <div className="xl:hidden">

@@ -80,9 +80,6 @@ export function TiptapEditorCore({
     onCreate: ({ editor }) => {
       onEditorReady?.(editor);
     },
-    onDestroy: () => {
-      onEditorReady?.(null);
-    },
     onUpdate: ({ editor }) => {
       const markdown = getMarkdownStorage(editor).getMarkdown();
       onChange(markdown);

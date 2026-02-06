@@ -1,43 +1,95 @@
-# Prisma Commands After Schema Updates
+# Prisma Database Workflow
 
-After updating `packages/database/prisma/schema.prisma`, here are the commands you need:
+This project uses **explicit migration files** for all schema changes. Never use `prisma db push` for changes that will go to production.
 
-## Quick Option (Recommended)
+## Daily Development Workflow
+
+### Applying Existing Migrations
+
+When pulling new code that includes migrations:
 
 ```bash
 pnpm migrate
 ```
 
-This single command runs format, generate, and push in sequence.
+This applies all pending migrations and regenerates the Prisma client.
 
-## Individual Commands
+### Creating New Migrations
 
-If you need more control, run these from the `packages/database` directory:
+When you modify `packages/database/prisma/schema.prisma`:
+
+```bash
+# Create and apply a new migration
+pnpm migrate --name <descriptive_name>
+```
+
+**Migration naming conventions:**
+- `add_user_preferences_table`
+- `add_index_on_artifact_status`
+- `rename_foo_to_bar`
+
+This command:
+1. Detects schema changes
+2. Generates a SQL migration file in `prisma/migrations/`
+3. Applies it to your local database
+4. Automatically runs `prisma generate` to update TypeScript types
+
+**Always commit both the schema change AND the generated migration files.**
+
+### Creating Migrations with Custom SQL
+
+If you need to add custom SQL (indexes, constraints, data migrations):
+
+```bash
+# Generate migration without applying it
+pnpm migrate --create-only --name <descriptive_name>
+
+# Edit the generated .sql file in prisma/migrations/
+# Then apply it:
+pnpm migrate
+```
+
+## First-Time Setup (Existing Database)
+
+If you have an existing local database that was created with `db push`, you need to baseline it:
 
 ```bash
 cd packages/database
 
-# 1. Format the schema file (optional but nice)
-pnpm prisma format
+# Check which migrations are pending
+pnpm prisma migrate status
 
-# 2. Generate the Prisma client (creates types in generated/)
-pnpm prisma generate
-
-# 3. Push schema changes to the database (for development)
-pnpm prisma db push
+# Mark existing migrations as already applied (without running them)
+pnpm prisma migrate resolve --applied <migration_name>
 ```
 
-## When to Use What
+## Quick Reference
 
 | Command | Use Case |
 |---------|----------|
-| `prisma db push` | Development - applies schema directly without migrations |
-| `prisma migrate dev` | When you need migration history (production workflows) |
-| `prisma generate` | After any schema change to update TypeScript types |
-| `prisma studio` | Opens a GUI to browse/edit data (`pnpm prisma studio`) |
+| `pnpm migrate` | Apply pending migrations (daily workflow) |
+| `pnpm migrate:status` | Check which migrations are pending |
+| `pnpm migrate --name <name>` | Create and apply a new migration |
+| `pnpm migrate --create-only --name <name>` | Create migration file without applying (for custom SQL) |
+| `pnpm prisma migrate resolve --applied <name>` | Mark migration as applied without running it (baselining) |
+| `pnpm prisma migrate deploy` | Apply migrations in production (CI/CD) |
+| `pnpm prisma generate` | Regenerate Prisma client after schema changes |
+| `pnpm prisma studio` | Open GUI to browse/edit data |
+
+## Production Deployment
+
+Migrations are applied in CI/CD using:
+
+```bash
+cd packages/database && pnpm prisma migrate deploy
+```
+
+This applies all pending migrations without prompting for input.
 
 ## Important Notes
 
-- **Always run `generate`** after schema changes - otherwise your TypeScript types won't match the database
-- **`db push`** is destructive for development - it can drop data if you remove fields
-- The generated client lives in `packages/database/generated/` (configured in `prisma.config.ts`)
+- **Never use `prisma db push` for production changes** - it doesn't create migration files and causes environment drift
+- **Always run migrations before modifying data** - the migration history ensures all environments stay in sync
+- **Commit migration files to git** - they are the source of truth for schema evolution
+- The generated Prisma client lives in `packages/database/generated/` (configured in `prisma.config.ts`)
+- After any schema change, `prisma generate` must run to update TypeScript types
