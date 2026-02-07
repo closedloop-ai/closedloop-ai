@@ -49,7 +49,7 @@ export const ARTIFACT_SUBTYPE_ICONS: Record<string, React.ElementType> &
   // Legacy ProjectArtifactSubtype values
   PROJECT_BRIEF: BookOpenIcon,
   DESIGNS: PaintbrushIcon,
-  FEATURE_BRANCHES: GitBranchIcon,
+  BRANCH: GitBranchIcon,
   // ArtifactSubtype values
   PRD: FileTextIcon,
   FIGMA_DESIGN: PaintbrushIcon,
@@ -67,7 +67,7 @@ export const ARTIFACT_SUBTYPE_LABELS: Record<string, string> &
   // Legacy ProjectArtifactSubtype values
   PROJECT_BRIEF: "Brief",
   DESIGNS: "Designs",
-  FEATURE_BRANCHES: "Branches",
+  BRANCH: "Branches",
   // ArtifactSubtype values
   PRD: "PRD",
   FIGMA_DESIGN: "Designs",
@@ -94,7 +94,7 @@ export const ARTIFACT_SUBTYPE_COLORS: Record<
     bg: "bg-purple-100 dark:bg-purple-900/50",
     text: "text-purple-700 dark:text-purple-300",
   },
-  FEATURE_BRANCHES: {
+  BRANCH: {
     bg: "bg-cyan-100 dark:bg-cyan-900/50",
     text: "text-cyan-700 dark:text-cyan-300",
   },

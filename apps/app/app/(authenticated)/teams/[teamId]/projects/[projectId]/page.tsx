@@ -69,11 +69,11 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
 
 /**
  * Map backend ArtifactSubtype to frontend ProjectArtifactSubtype.
- * PULL_REQUEST artifacts are displayed under the FEATURE_BRANCHES section.
+ * PULL_REQUEST artifacts are displayed under the BRANCH section.
  */
 function toProjectArtifactSubtype(subtype: string): ProjectArtifactSubtype {
   if (subtype === "PULL_REQUEST") {
-    return "FEATURE_BRANCHES";
+    return "BRANCH";
   }
   return subtype as ProjectArtifactSubtype;
 }

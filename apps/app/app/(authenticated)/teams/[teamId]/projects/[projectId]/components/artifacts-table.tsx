@@ -83,7 +83,7 @@ const ARTIFACT_SECTIONS: {
   },
   {
     title: "Branches",
-    subtypes: new Set<ProjectArtifactSubtype>(["FEATURE_BRANCHES"]),
+    subtypes: new Set<ProjectArtifactSubtype>(["BRANCH"]),
   },
 ];
 
@@ -103,7 +103,7 @@ function isExternalLink(artifact: ProjectArtifact): boolean {
   switch (artifact.subtype) {
     case "DESIGNS":
       return artifact.link?.startsWith("http") ?? false;
-    case "FEATURE_BRANCHES":
+    case "BRANCH":
       return true;
     default:
       return false;
@@ -127,7 +127,7 @@ function getArtifactRoute(artifact: ProjectArtifact): string | null {
     case "BUG":
       return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
-    case "FEATURE_BRANCHES":
+    case "BRANCH":
       return artifact.link || null;
     case "PROJECT_BRIEF":
     case "TEMPLATE":

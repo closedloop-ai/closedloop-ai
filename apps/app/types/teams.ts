@@ -49,7 +49,7 @@ export const ARTIFACT_DISPLAY_STATUS_OPTIONS = Object.values(
 );
 
 // ProjectArtifactSubtype extends ArtifactSubtype from @repo/api/src/types/artifact.ts
-// with legacy display-only values (PROJECT_BRIEF, DESIGNS, FEATURE_BRANCHES) that exist
+// with legacy display-only values (PROJECT_BRIEF, DESIGNS, BRANCH) that exist
 // only in the frontend for UI grouping. This const provides type-safe access to subtype
 // literals used in the project detail page.
 export const ProjectArtifactSubtype = {
@@ -61,7 +61,7 @@ export const ProjectArtifactSubtype = {
   Issue: "ISSUE",
   Bug: "BUG",
   Template: "TEMPLATE",
-  FeatureBranches: "FEATURE_BRANCHES",
+  Branch: "BRANCH",
 } as const;
 export type ProjectArtifactSubtype =
   (typeof ProjectArtifactSubtype)[keyof typeof ProjectArtifactSubtype];
