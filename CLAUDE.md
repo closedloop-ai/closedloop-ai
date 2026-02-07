@@ -196,6 +196,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 ### Planning & Verification
 - **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases, (4) ARTIFACT_SECTIONS dual placement. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
 - **[convention]**: Before implementing new entity types or schema changes, check `plan.json` architectureDecisions array - schema design choices are documented there. (context: plan-adherence|architecture|implementation)
+- **[mistake]**: When planning changes to existing files, check investigation-log.md for already-imported components before writing import tasks. Mark as verification when component already exists. (context: plan-writer|investigation-log|import-verification)
 
 ### TypeScript & Imports
 - **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
@@ -227,10 +228,16 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 ### TanStack Query
 - **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
 
+- **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
+
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
 - **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
+- **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
+
+### React & Components
+- **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
