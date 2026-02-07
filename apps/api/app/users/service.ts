@@ -133,7 +133,9 @@ export const usersService = {
   },
 
   /**
-   * Update an existing user by Clerk ID (used by webhooks)
+   * Update an existing user by Clerk ID (used by webhooks).
+   * Uses updateMany to intentionally update ALL org records for this clerkId,
+   * keeping profile data (name, avatar, email) consistent across organizations.
    */
   updateByClerkId(clerkId: string, input: UpdateUserProfileFromClerkInput) {
     return withDb((db) =>
