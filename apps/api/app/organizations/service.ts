@@ -106,23 +106,41 @@ export const organizationsService = {
   /**
    * Find an organization by Clerk ID, or create it by fetching details from Clerk.
    * Handles webhook ordering where a membership/user event arrives before the org creation event.
+   *
+   * When called from webhook handlers, pass the payload to avoid a Clerk API call.
+   * The Clerk API is only used as a fallback when no payload is provided (e.g., from auth middleware).
    */
-  async findOrCreateByClerkId(clerkOrgId: string): Promise<Organization> {
+  async findOrCreateByClerkId(
+    clerkOrgId: string,
+    payload?: { name: string; slug: string | null }
+  ): Promise<Organization> {
     const existing = await organizationsService.findByClerkId(clerkOrgId);
 
     if (existing) {
       return existing;
     }
 
-    log.info("Organization not found, fetching from Clerk", { clerkOrgId });
+    let name: string;
+    let slug: string;
 
-    const clerkOrg = await clerkService.getOrganization(clerkOrgId);
+    if (payload) {
+      log.info("Organization not found, creating from webhook payload", {
+        clerkOrgId,
+      });
+      name = payload.name;
+      slug = payload.slug ?? clerkOrgId;
+    } else {
+      log.info("Organization not found, fetching from Clerk", { clerkOrgId });
+      const clerkOrg = await clerkService.getOrganization(clerkOrgId);
+      name = clerkOrg.name;
+      slug = clerkOrg.slug ?? clerkOrgId;
+    }
 
     try {
       const organization = await organizationsService.create({
         clerkId: clerkOrgId,
-        name: clerkOrg.name,
-        slug: clerkOrg.slug ?? clerkOrgId,
+        name,
+        slug,
       });
 
       log.info("Created organization from Clerk", {

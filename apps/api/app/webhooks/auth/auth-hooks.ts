@@ -36,7 +36,8 @@ export async function handleUserCreated(data: UserJSON): Promise<Response> {
   if (email) {
     for (const membership of data.organization_memberships ?? []) {
       const organization = await organizationsService.findOrCreateByClerkId(
-        membership.organization.id
+        membership.organization.id,
+        membership.organization
       );
 
       await usersService.upsertByClerkIdAndOrg(
@@ -115,7 +116,10 @@ export async function handleOrganizationCreated(
     });
   }
 
-  await organizationsService.findOrCreateByClerkId(data.id);
+  await organizationsService.findOrCreateByClerkId(data.id, {
+    name: data.name,
+    slug: data.slug,
+  });
   // Update name/slug since the organization.created event is the authoritative source
   await organizationsService.updateByClerkId(data.id, {
     name: data.name,
@@ -186,7 +190,8 @@ export async function handleOrganizationMembershipCreated(
   });
 
   const organization = await organizationsService.findOrCreateByClerkId(
-    data.organization.id
+    data.organization.id,
+    data.organization
   );
 
   if (userId) {

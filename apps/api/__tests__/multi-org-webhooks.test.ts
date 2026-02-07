@@ -95,12 +95,6 @@ describe("Multi-Org Webhook Handlers", () => {
           slug: "test-org-1",
         });
 
-        vi.mocked(clerkService.getOrganization).mockResolvedValue({
-          id: "org_test_123",
-          name: "Test Org 1",
-          slug: "test-org-1",
-        });
-
         const payload = buildMembershipPayload({
           orgId: "org_test_123",
           orgName: "Test Org 1",
@@ -127,17 +121,14 @@ describe("Multi-Org Webhook Handlers", () => {
         expect(createdUser?.firstName).toBe("John");
         expect(createdUser?.lastName).toBe("Doe");
         expect(createdUser?.active).toBe(true);
+
+        // Org already existed — Clerk API should not be called
+        expect(clerkService.getOrganization).not.toHaveBeenCalled();
       });
     });
 
     it("creates organization if it doesn't exist (handles webhook ordering)", async () => {
       await autoRollbackTransaction(async () => {
-        vi.mocked(clerkService.getOrganization).mockResolvedValue({
-          id: "org_new_456",
-          name: "New Org",
-          slug: "new-org",
-        });
-
         const payload = buildMembershipPayload({
           orgId: "org_new_456",
           orgName: "New Org",
@@ -161,6 +152,9 @@ describe("Multi-Org Webhook Handlers", () => {
         );
         expect(createdUser).not.toBeNull();
         expect(createdUser?.email).toBe("jane@example.com");
+
+        // Webhook handlers should create orgs from payload, not call Clerk API
+        expect(clerkService.getOrganization).not.toHaveBeenCalled();
       });
     });
 
@@ -168,12 +162,6 @@ describe("Multi-Org Webhook Handlers", () => {
       await autoRollbackTransaction(async () => {
         const orgId = await createTestOrganization({
           clerkId: "org_test_789",
-          name: "Test Org",
-          slug: "test-org",
-        });
-
-        vi.mocked(clerkService.getOrganization).mockResolvedValue({
-          id: "org_test_789",
           name: "Test Org",
           slug: "test-org",
         });
@@ -197,6 +185,9 @@ describe("Multi-Org Webhook Handlers", () => {
         );
         expect(matchingUsers.length).toBe(1);
         expect(matchingUsers[0].email).toBe("alice@example.com");
+
+        // Org already existed — Clerk API should not be called
+        expect(clerkService.getOrganization).not.toHaveBeenCalled();
       });
     });
   });
