@@ -88,6 +88,11 @@ export function withAuth<TResponse, TRoute extends string = string>(
       }
 
       const user = await findOrCreateUser(clerkUserId, clerkOrgId);
+
+      if (!user?.active) {
+        return unauthorizedResponse();
+      }
+
       const authContext: AuthContext = { user, clerkUserId, clerkOrgId };
 
       return handler(authContext, request, routeContext.params);
@@ -100,24 +105,24 @@ export function withAuth<TResponse, TRoute extends string = string>(
 async function findOrCreateUser(
   clerkUserId: string,
   clerkOrgId: string
-): Promise<User> {
-  // Try to find existing user
-  const existingUser = await usersService.findByClerkId(clerkUserId);
+): Promise<User | null> {
+  const organization =
+    await organizationsService.findOrCreateByClerkId(clerkOrgId);
+
+  const existingUser = await usersService.findByClerkIdAndOrg(
+    clerkUserId,
+    organization.id
+  );
 
   if (existingUser) {
     return existingUser;
   }
 
-  // Ensure organization exists first
-  const organization = await findOrCreateOrganization(clerkOrgId);
-
-  // Fetch user details from Clerk
   log.info("User not found, fetching from Clerk", { clerkUserId });
 
   const clerkUser = await clerkService.getUser(clerkUserId);
 
-  // Create the user
-  const user = await usersService.create({
+  const user = await usersService.upsertByClerkIdAndOrg({
     clerkId: clerkUserId,
     organizationId: organization.id,
     email: clerkUser.email,
@@ -127,39 +132,13 @@ async function findOrCreateUser(
     phoneNumber: clerkUser.phoneNumber,
   });
 
-  log.info("Created user from Clerk", {
+  log.info("Created/updated user from Clerk", {
     userId: user.id,
     clerkUserId,
     organizationId: organization.id,
   });
 
   return user;
-}
-
-async function findOrCreateOrganization(clerkOrgId: string) {
-  const existingOrg = await organizationsService.findByClerkId(clerkOrgId);
-
-  if (existingOrg) {
-    return existingOrg;
-  }
-
-  // Fetch organization details from Clerk
-  log.info("Organization not found, fetching from Clerk", { clerkOrgId });
-
-  const clerkOrg = await clerkService.getOrganization(clerkOrgId);
-
-  const organization = await organizationsService.create({
-    clerkId: clerkOrgId,
-    name: clerkOrg.name,
-    slug: clerkOrg.slug ?? clerkOrgId,
-  });
-
-  log.info("Created organization from Clerk", {
-    organizationId: organization.id,
-    clerkOrgId,
-  });
-
-  return organization;
 }
 
 function authErrorResponse(
