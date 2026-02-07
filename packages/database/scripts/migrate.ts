@@ -2,6 +2,12 @@
 /**
  * Runs Prisma migrations using IAM authentication.
  * This script generates an IAM token and runs prisma migrate deploy.
+ *
+ * For preview schemas (prefixed with "preview_"), if migrate deploy fails
+ * with P3005 (non-empty schema without migration history), the schema is
+ * dropped and recreated, then migrations are retried. This is safe because
+ * preview schemas are ephemeral. Production/staging schemas are never
+ * affected by this behavior.
  */
 
 import { execSync } from "node:child_process";
@@ -9,6 +15,67 @@ import { Signer } from "@aws-sdk/rds-signer";
 import { awsCredentialsProvider } from "@vercel/functions/oidc";
 import pg from "pg";
 import { addSchemaToUrl, resolveSchemaName } from "../schema-utils";
+
+function isPreviewSchema(schema: string | null): boolean {
+  return schema?.startsWith("preview_") ?? false;
+}
+
+function runMigrateDeploy(databaseUrl: string) {
+  execSync("prisma migrate deploy", {
+    stdio: "pipe",
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+    },
+  });
+}
+
+/**
+ * Attempts to run prisma migrate deploy. If it fails with P3005 (non-empty
+ * schema) on a preview schema, drops and recreates the schema, then retries.
+ * After a successful retry, re-registers the schema so cleanup tracking works.
+ */
+async function runMigrateWithRetry(
+  databaseUrl: string,
+  schema: string | null,
+  branch: string | undefined
+) {
+  try {
+    runMigrateDeploy(databaseUrl);
+  } catch (error) {
+    // execSync with stdio:"pipe" includes stdout/stderr on the error object
+    const stderr =
+      error && typeof error === "object" && "stderr" in error
+        ? String(error.stderr)
+        : "";
+    const stdout =
+      error && typeof error === "object" && "stdout" in error
+        ? String(error.stdout)
+        : "";
+    const combined = `${stderr}\n${stdout}`;
+
+    // Print captured output so it still appears in CI logs
+    if (stdout) {
+      process.stdout.write(stdout);
+    }
+    if (stderr) {
+      process.stderr.write(stderr);
+    }
+
+    if (combined.includes("P3005") && isPreviewSchema(schema)) {
+      console.log(
+        `↪ Preview schema ${schema} has stale data (P3005), resetting...`
+      );
+      await resetSchema(databaseUrl, schema);
+      runMigrateDeploy(databaseUrl);
+      // Re-register so cleanup tracking still works after schema drop
+      await upsertSchemaRegistry(databaseUrl, schema, branch);
+      return;
+    }
+
+    throw error;
+  }
+}
 
 async function main() {
   const {
@@ -43,13 +110,11 @@ async function main() {
       resolvedSchema,
       VERCEL_GIT_COMMIT_REF
     );
-    execSync("prisma migrate deploy", {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        DATABASE_URL: databaseUrl,
-      },
-    });
+    await runMigrateWithRetry(
+      databaseUrl,
+      resolvedSchema,
+      VERCEL_GIT_COMMIT_REF
+    );
     return;
   }
 
@@ -93,13 +158,11 @@ async function main() {
       VERCEL_GIT_COMMIT_REF
     );
 
-    execSync("prisma migrate deploy", {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        DATABASE_URL: databaseUrl,
-      },
-    });
+    await runMigrateWithRetry(
+      databaseUrl,
+      resolvedSchema,
+      VERCEL_GIT_COMMIT_REF
+    );
 
     console.log("✓ Migrations completed successfully");
   } catch (error) {
@@ -122,6 +185,26 @@ async function ensureSchemaExists(databaseUrl: string, schema: string | null) {
   try {
     const quoted = quoteIdentifier(schema);
     await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoted}`);
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Drops and recreates a preview schema so migrations can run from scratch.
+ * Only callable for preview_ schemas as a safety guard.
+ */
+async function resetSchema(databaseUrl: string, schema: string | null) {
+  if (!(schema && isPreviewSchema(schema))) {
+    throw new Error(`resetSchema refused: ${schema} is not a preview schema`);
+  }
+  const client = createSslClient(databaseUrl);
+  await client.connect();
+  try {
+    const quoted = quoteIdentifier(schema);
+    await client.query(`DROP SCHEMA IF EXISTS ${quoted} CASCADE`);
+    await client.query(`CREATE SCHEMA ${quoted}`);
+    console.log(`✓ Preview schema ${schema} reset successfully`);
   } finally {
     await client.end();
   }
