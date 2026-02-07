@@ -82,7 +82,7 @@ const ARTIFACT_SECTIONS: {
     subtypes: new Set<ProjectArtifactSubtype>(["ISSUE", "BUG"]),
   },
   {
-    title: "Feature Branches",
+    title: "Branches",
     subtypes: new Set<ProjectArtifactSubtype>(["FEATURE_BRANCHES"]),
   },
 ];
