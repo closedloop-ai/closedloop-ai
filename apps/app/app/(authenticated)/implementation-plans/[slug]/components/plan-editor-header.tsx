@@ -173,64 +173,72 @@ export function PlanEditorHeader({
   // Plan-specific toolbar actions
   const rightActions = (
     <>
-      <Button
-        onClick={onToggleMetadataPanel}
-        size="sm"
-        variant={showMetadataPanel ? "secondary" : "outline"}
-      >
-        <SettingsIcon className="mr-2 h-4 w-4" />
-        Details
-      </Button>
-
-      {/* Approve button - only shown for Draft plans */}
-      {isDraft ? (
-        <Button
-          disabled={isPending}
-          onClick={onApprove}
-          size="sm"
-          variant="outline"
-        >
-          <CheckIcon className="mr-2 h-4 w-4" />
-          Approve
-        </Button>
-      ) : null}
-
-      {/* Execute button - only enabled when plan is approved */}
-      <Button
-        disabled={isPending || !isApproved || isExecuting}
-        onClick={onExecute}
-        size="sm"
-        title={isApproved ? "" : "Approve the plan first to enable execution"}
-        variant={isApproved ? "default" : "outline"}
-      >
-        <PlayIcon className="mr-2 h-4 w-4" />
-        Execute
-      </Button>
-
-      {/* PR Link - shown when a PR has been created */}
-      {pullRequest ? (
-        <a href={pullRequest.htmlUrl} rel="noopener noreferrer" target="_blank">
-          <Button size="sm" variant="outline">
-            <GitPullRequestIcon className="mr-2 h-4 w-4" />
-            PR #{pullRequest.number}
-          </Button>
-        </a>
-      ) : null}
-
       {isEditing ? (
         <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Saving..." : "Save"}
+          {isSaving ? "Publishing..." : "Publish"}
         </Button>
       ) : (
-        <Button
-          disabled={isPending || !canEdit}
-          onClick={onEdit}
-          size="sm"
-          title={canEdit ? undefined : "Switch to the latest version to edit"}
-        >
-          <PencilIcon className="mr-2 h-4 w-4" />
-          Edit
-        </Button>
+        <>
+          <Button
+            onClick={onToggleMetadataPanel}
+            size="sm"
+            variant={showMetadataPanel ? "secondary" : "outline"}
+          >
+            <SettingsIcon className="mr-2 h-4 w-4" />
+            Details
+          </Button>
+
+          {/* Approve button - only shown for Draft plans */}
+          {isDraft ? (
+            <Button
+              disabled={isPending}
+              onClick={onApprove}
+              size="sm"
+              variant="outline"
+            >
+              <CheckIcon className="mr-2 h-4 w-4" />
+              Approve
+            </Button>
+          ) : null}
+
+          {/* Execute button - only enabled when plan is approved */}
+          <Button
+            disabled={isPending || !isApproved || isExecuting}
+            onClick={onExecute}
+            size="sm"
+            title={
+              isApproved ? "" : "Approve the plan first to enable execution"
+            }
+            variant={isApproved ? "default" : "outline"}
+          >
+            <PlayIcon className="mr-2 h-4 w-4" />
+            Execute
+          </Button>
+
+          {/* PR Link - shown when a PR has been created */}
+          {pullRequest ? (
+            <a
+              href={pullRequest.htmlUrl}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <Button size="sm" variant="outline">
+                <GitPullRequestIcon className="mr-2 h-4 w-4" />
+                PR #{pullRequest.number}
+              </Button>
+            </a>
+          ) : null}
+
+          <Button
+            disabled={isPending || !canEdit}
+            onClick={onEdit}
+            size="sm"
+            title={canEdit ? undefined : "Switch to the latest version to edit"}
+          >
+            <PencilIcon className="mr-2 h-4 w-4" />
+            Edit
+          </Button>
+        </>
       )}
 
       <DropdownMenu>

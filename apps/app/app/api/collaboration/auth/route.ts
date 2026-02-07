@@ -3,6 +3,7 @@ import type { User } from "@repo/api/src/types/organization";
 import { auth } from "@repo/auth/server";
 import { authenticate } from "@repo/collaboration/auth";
 import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
+import { getConsistentColor } from "@repo/collaboration/user-colors";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import z from "zod";
@@ -41,12 +42,12 @@ export const POST = async (request: Request) => {
     }
 
     const { token, status } = await authenticate({
-      userId,
+      userId: user.id, // Use database user ID, not Clerk ID
       roomId,
       userInfo: {
         name: getUserName(user),
         avatar: user.avatarUrl ?? undefined,
-        color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        color: getConsistentColor(user.id),
       },
     });
 
@@ -114,23 +115,3 @@ function getUserName(user: User): string {
   }
   return "Anonymous";
 }
-
-const COLORS = [
-  "var(--color-red-500)",
-  "var(--color-orange-500)",
-  "var(--color-amber-500)",
-  "var(--color-yellow-500)",
-  "var(--color-lime-500)",
-  "var(--color-green-500)",
-  "var(--color-emerald-500)",
-  "var(--color-teal-500)",
-  "var(--color-cyan-500)",
-  "var(--color-sky-500)",
-  "var(--color-blue-500)",
-  "var(--color-indigo-500)",
-  "var(--color-violet-500)",
-  "var(--color-purple-500)",
-  "var(--color-fuchsia-500)",
-  "var(--color-pink-500)",
-  "var(--color-rose-500)",
-];

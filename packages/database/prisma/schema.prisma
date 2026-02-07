@@ -135,6 +135,14 @@ enum GitHubActionStatus {
   CANCELLED
 }
 
+enum GitHubInstallationStatus {
+  PENDING_CLAIM
+  ACTIVE
+  SUSPENDED
+  REMOVED // @deprecated - kept for backwards compatibility, use UNINSTALLED instead
+  UNINSTALLED
+}
+
 enum TeamRole {
   OWNER
   ADMIN
@@ -173,18 +181,19 @@ model Organization {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   // Relations
-  users       User[]
-  teams       Team[]
-  projects    Project[]
-  workstreams Workstream[]
-  artifacts   Artifact[]
+  users              User[]
+  teams              Team[]
+  projects           Project[]
+  workstreams        Workstream[]
+  artifacts          Artifact[]
+  githubInstallation GitHubInstallation?
 
   @@map("organizations")
 }
 
 model User {
   id             String       @id @default(uuid(7)) @db.Uuid
-  clerkId        String       @unique @map("clerk_id")
+  clerkId        String       @map("clerk_id")
   organizationId String       @map("organization_id") @db.Uuid
   active         Boolean      @default(true) @map("active")
   email          String
@@ -206,6 +215,8 @@ model User {
   ownedArtifacts  Artifact[]   @relation("ArtifactOwner")
 
   @@unique([organizationId, email])
+  @@unique([clerkId, organizationId])
+  @@index([clerkId])
   @@index([linearId])
   @@index([slackId])
   @@index([githubUsername])
@@ -396,12 +407,13 @@ model Artifact {
   updatedAt       DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner        User?        @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  parent       Artifact?    @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]   @relation("ArtifactSource")
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children     Artifact[]           @relation("ArtifactSource")
+  evaluations  ArtifactEvaluation[]
 
   @@unique([organizationId, templateForType])
   @@index([organizationId, workstreamId, type, isLatest])
@@ -560,15 +572,51 @@ model LinearSubtask {
 // =============================================================================
 
 model GitHubInstallation {
+  id                  String                   @id @default(uuid(7)) @db.Uuid
+  organizationId      String?                  @unique @map("organization_id") @db.Uuid
+  installationId      Int                      @unique @map("installation_id")
+  accountId           Int                      @map("account_id")
+  accountLogin        String                   @map("account_login")
+  accountType         String                   @map("account_type")
+  senderLogin         String                   @map("sender_login")
+  senderId            Int                      @map("sender_id")
+  status              GitHubInstallationStatus @default(PENDING_CLAIM)
+  permissions         Json?
+  events              Json?
+  repositorySelection String?                  @map("repository_selection")
+  suspendedAt         DateTime?                @map("suspended_at")
+  suspendedBy         String?                  @map("suspended_by")
+  claimedAt           DateTime?                @map("claimed_at")
+  claimedByUserId     String?                  @map("claimed_by_user_id") @db.Uuid
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization?                  @relation(fields: [organizationId], references: [id])
+  repositories GitHubInstallationRepository[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([accountId])
+  @@map("github_installations")
+}
+
+model GitHubInstallationRepository {
   id             String   @id @default(uuid(7)) @db.Uuid
-  organizationId String   @unique @map("organization_id") @db.Uuid
-  installationId Int      @unique @map("installation_id")
-  accountLogin   String   @map("account_login")
-  accountType    String   @map("account_type")
+  installationId String   @map("installation_id") @db.Uuid
+  githubRepoId   Int      @map("github_repo_id")
+  fullName       String   @map("full_name")
+  name           String
+  owner          String
+  private        Boolean
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  @@map("github_installations")
+  // Relations
+  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+
+  @@unique([installationId, githubRepoId])
+  @@map("github_installation_repositories")
 }
 
 model GitHubPullRequest {
@@ -617,6 +665,21 @@ model GitHubActionRun {
   @@index([workstreamId, status])
   @@index([workstreamId, workflowName])
   @@map("github_action_runs")
+}
+
+model ArtifactEvaluation {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  actionRunId String?  @map("action_run_id") @db.Uuid
+  reportId    String   @map("report_id")
+  reportData  Json     @map("report_data")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, reportId])
+  @@index([artifactId])
+  @@map("artifact_evaluations")
 }
 
 // =============================================================================

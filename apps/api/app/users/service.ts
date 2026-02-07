@@ -1,6 +1,7 @@
 import type {
   CreateUserInput,
   UpdateUserInput,
+  UpdateUserProfileFromClerkInput,
 } from "@repo/api/src/types/organization";
 import { withDb } from "@repo/database";
 
@@ -43,16 +44,21 @@ export const usersService = {
   },
 
   /**
-   * Find a user by Clerk ID
+   * Find a user by Clerk ID and organization ID
    * @returns User regardless of active status (needed for authentication flows)
    * @note Does NOT filter by active status - returns both active and inactive users.
    *       This is intentional to support authentication and webhook processing.
    *       Used by withAuth() middleware to authenticate requests from deactivated users.
    */
-  findByClerkId(clerkId: string) {
+  findByClerkIdAndOrg(clerkId: string, organizationId: string) {
     return withDb((db) =>
       db.user.findUnique({
-        where: { clerkId },
+        where: {
+          clerkId_organizationId: {
+            clerkId,
+            organizationId,
+          },
+        },
       })
     );
   },
@@ -78,29 +84,36 @@ export const usersService = {
   },
 
   /**
-   * Create or update a user by Clerk ID (used by webhooks)
+   * Create or update a user by Clerk ID and organization (used by webhooks and auth)
+   * @note Uses composite unique constraint (clerkId, organizationId) for idempotency
+   * @note Reactivates previously deactivated users by setting active: true
+   * @note Does NOT update organizationId on existing records (composite key is immutable)
    */
-  upsertByClerkId(input: CreateUserInput) {
+  upsertByClerkIdAndOrg(input: CreateUserInput) {
+    const profileFields = {
+      email: input.email,
+      firstName: input.firstName,
+      lastName: input.lastName,
+      avatarUrl: input.avatarUrl,
+      phoneNumber: input.phoneNumber,
+    };
+
     return withDb((db) =>
       db.user.upsert({
-        where: { clerkId: input.clerkId },
+        where: {
+          clerkId_organizationId: {
+            clerkId: input.clerkId,
+            organizationId: input.organizationId,
+          },
+        },
         create: {
           clerkId: input.clerkId,
           organizationId: input.organizationId,
-          email: input.email,
-          firstName: input.firstName,
-          lastName: input.lastName,
-          avatarUrl: input.avatarUrl,
-          phoneNumber: input.phoneNumber,
+          ...profileFields,
           role: input.role ?? "ENGINEER",
         },
         update: {
-          organizationId: input.organizationId,
-          email: input.email,
-          firstName: input.firstName,
-          lastName: input.lastName,
-          avatarUrl: input.avatarUrl,
-          phoneNumber: input.phoneNumber,
+          ...profileFields,
           active: true,
         },
       })
@@ -120,9 +133,11 @@ export const usersService = {
   },
 
   /**
-   * Update an existing user by Clerk ID (used by webhooks)
+   * Update an existing user by Clerk ID (used by webhooks).
+   * Uses updateMany to intentionally update ALL org records for this clerkId,
+   * keeping profile data (name, avatar, email) consistent across organizations.
    */
-  updateByClerkId(clerkId: string, input: Omit<UpdateUserInput, "id">) {
+  updateByClerkId(clerkId: string, input: UpdateUserProfileFromClerkInput) {
     return withDb((db) =>
       db.user.updateMany({
         where: { clerkId },
@@ -144,9 +159,32 @@ export const usersService = {
   },
 
   /**
-   * Deactivate a user by Clerk ID (soft delete, used by webhooks)
+   * Deactivate a user by Clerk ID and organization (soft delete, org-scoped)
+   * @throws Prisma P2025 error if user not found in organization
+   * @note Uses composite unique constraint for precise targeting
+   * @note Throws if user doesn't exist - caller must handle this case
    */
-  deactivateByClerkId(clerkId: string) {
+  deactivateByClerkIdAndOrg(clerkId: string, organizationId: string) {
+    return withDb((db) =>
+      db.user.update({
+        where: {
+          clerkId_organizationId: {
+            clerkId,
+            organizationId,
+          },
+        },
+        data: { active: false },
+      })
+    );
+  },
+
+  /**
+   * Deactivate all users across all organizations for a given Clerk ID (soft delete, global)
+   * @returns Prisma BatchPayload with count of affected records
+   * @note Returns count: 0 if no users found (does not throw)
+   * @note Use for Clerk webhooks that affect all user records across orgs
+   */
+  deactivateAllByClerkId(clerkId: string) {
     return withDb((db) =>
       db.user.updateMany({
         where: { clerkId },

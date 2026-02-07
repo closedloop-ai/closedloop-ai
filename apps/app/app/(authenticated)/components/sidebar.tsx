@@ -39,7 +39,8 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
+import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
@@ -165,9 +166,8 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const { organization } = useOrganization();
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useIsMounted();
   const activeEnvBadge = envBadge[appEnvironment];
-  useEffect(() => setMounted(true), []);
 
   // Clear cache when organization changes
   useEffect(() => {

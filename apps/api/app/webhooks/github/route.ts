@@ -1,15 +1,18 @@
 import type {
+  InstallationCreatedEvent,
+  InstallationDeletedEvent,
+  InstallationRepositoriesAddedEvent,
+  InstallationRepositoriesRemovedEvent,
+  InstallationSuspendEvent,
+  InstallationUnsuspendEvent,
   WorkflowRunCompletedEvent,
   WorkflowRunInProgressEvent,
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
-import {
-  ArtifactStatus,
-  ArtifactType,
-  type PlanJson,
-} from "@repo/api/src/types/artifact";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { getArtifactUrl, uploadArtifact } from "@repo/aws";
-import { withDb } from "@repo/database";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
   isCurrentEnvironment,
@@ -21,6 +24,12 @@ import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import { githubService } from "@/app/integrations/github/service";
+import {
+  type ExecutionResult,
+  findPlanInZip,
+  type ZipContent,
+} from "./zip-parser";
 
 type WorkflowContext = {
   correlationId: string;
@@ -29,6 +38,7 @@ type WorkflowContext = {
   runId: number;
   command?: string;
   repositoryId?: string;
+  actionRunId?: string;
 };
 
 type WorkflowRunEvent =
@@ -36,115 +46,8 @@ type WorkflowRunEvent =
   | WorkflowRunInProgressEvent
   | WorkflowRunRequestedEvent;
 
-type ZipContent = {
-  planContent: string | null;
-  questionsContent: string | null;
-  executionResult: ExecutionResult | null;
-  entries: { name: string; data: Buffer }[];
-};
-
-type ExecutionResult = {
-  has_changes: boolean;
-  pr_url: string;
-  pr_number: string | number; // GitHub Actions outputs as string
-  pr_title?: string; // Optional - may not be in workflow output
-  branch_name: string;
-  base_ref?: string; // Workflow uses base_ref, not base_branch
-  base_branch?: string; // Legacy/alternative field name
-  github_id?: number;
-  commit_sha?: string;
-};
-
-/**
- * Parse execution result JSON safely.
- */
-function parseExecutionResult(
-  content: Buffer,
-  entryName: string
-): ExecutionResult | null {
-  try {
-    const jsonContent = content.toString("utf-8");
-    const result = JSON.parse(jsonContent) as ExecutionResult;
-    log.info(`Found execution result: ${entryName}, PR #${result.pr_number}`);
-    return result;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    log.error(`Failed to parse execution-result.json: ${message}`);
-    return null;
-  }
-}
-
-/**
- * Parse plan.json from experimental plugin artifacts.
- * Returns the markdown content from the JSON structure, or null if parsing fails.
- */
-function parsePlanJson(content: Buffer, entryName: string): string | null {
-  try {
-    const jsonContent = content.toString("utf-8");
-    const planJson = JSON.parse(jsonContent) as PlanJson;
-    log.info(
-      `Found plan.json: ${entryName} (${planJson.content.length} chars, ${planJson.pendingTasks.length} pending tasks, ${planJson.openQuestions.length} open questions)`
-    );
-    return planJson.content;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    log.error(`Failed to parse plan.json: ${message}`);
-    return null;
-  }
-}
-
-/**
- * Search a zip for plan, questions, or execution result files.
- * Returns the content if found, null otherwise.
- *
- * Priority for plan content:
- * 1. plan.json (experimental plugin artifact)
- * 2. implementation-plan.md (legacy)
- */
-function findPlanInZip(zip: AdmZip): ZipContent {
-  const entries: { name: string; data: Buffer }[] = [];
-  let planContent: string | null = null;
-  let questionsContent: string | null = null;
-  let executionResult: ExecutionResult | null = null;
-
-  for (const entry of zip.getEntries()) {
-    if (entry.isDirectory) {
-      continue;
-    }
-
-    const content = entry.getData();
-    const name = entry.entryName;
-    entries.push({ name, data: content });
-
-    // Priority 1: plan.json from experimental plugin
-    if (name.endsWith("plan.json") && !planContent) {
-      planContent = parsePlanJson(content, name);
-    }
-    // Priority 2: implementation-plan.md (legacy, only if plan.json not found)
-    else if (name.endsWith("implementation-plan.md") && !planContent) {
-      planContent = content.toString("utf-8");
-      log.info(
-        `Found implementation plan: ${name} (${planContent.length} chars)`
-      );
-    }
-    // Check for questions files (both old and new names)
-    else if (
-      name.endsWith("open-questions.md") ||
-      name.endsWith("investigation-questions.md")
-    ) {
-      questionsContent = content.toString("utf-8");
-      log.info(
-        `Found questions file: ${name} (${questionsContent.length} chars)`
-      );
-    }
-    // Check for execution result
-    else if (name.endsWith("execution-result.json")) {
-      executionResult = parseExecutionResult(content, name);
-    }
-  }
-
-  return { planContent, questionsContent, executionResult, entries };
-}
+// Types and pure parsing functions extracted to ./zip-parser.ts
+// to avoid pulling in @repo/aws side effects during unit testing.
 
 /**
  * Upload entries to S3, optionally filtering out certain file types.
@@ -177,6 +80,7 @@ function mergeZipContent(
     planContent: result.planContent ?? current.planContent,
     questionsContent: result.questionsContent ?? current.questionsContent,
     executionResult: result.executionResult ?? current.executionResult,
+    judgesReport: result.judgesReport ?? current.judgesReport,
   };
 }
 
@@ -201,6 +105,7 @@ async function processArtifactZip(
     planContent: null,
     questionsContent: null,
     executionResult: null,
+    judgesReport: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
@@ -248,6 +153,7 @@ async function processArtifactUploads(
   planContent: string | null;
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
+  judgesReport: JudgesReport | null;
   artifactKeys: string[];
 }> {
   log.info(
@@ -258,6 +164,7 @@ async function processArtifactUploads(
   let planContent: string | null = null;
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
+  let judgesReport: JudgesReport | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -273,20 +180,27 @@ async function processArtifactUploads(
     planContent = result.planContent ?? planContent;
     questionsContent = result.questionsContent ?? questionsContent;
     executionResult = result.executionResult ?? executionResult;
+    judgesReport = result.judgesReport ?? judgesReport;
     artifactKeys.push(...result.artifactKeys);
   }
 
-  if (planContent || questionsContent || executionResult) {
+  if (planContent || questionsContent || executionResult || judgesReport) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}`
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}`
     );
   } else {
     log.warn(
-      "[processArtifactUploads] No plan, questions, or execution result found in artifacts"
+      "[processArtifactUploads] No plan, questions, execution result, or judges report found in artifacts"
     );
   }
 
-  return { planContent, questionsContent, executionResult, artifactKeys };
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    artifactKeys,
+  };
 }
 
 /**
@@ -428,8 +342,13 @@ async function handleWorkflowSuccess(
     runId,
     s3Configured
   );
-  const { planContent, questionsContent, executionResult, artifactKeys } =
-    result;
+  const {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    artifactKeys,
+  } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact
   if (command === "execute" && executionResult) {
@@ -511,6 +430,33 @@ async function handleWorkflowSuccess(
         },
       },
     });
+
+    // Persist judges report if available
+    if (judgesReport && ctx.actionRunId) {
+      await db.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId,
+            reportId: judgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId,
+          actionRunId: ctx.actionRunId,
+          reportId: judgesReport.report_id,
+          reportData: judgesReport,
+        },
+        update: {
+          reportData: judgesReport,
+        },
+      });
+
+      log.info("[handleWorkflowSuccess] Persisted judges report", {
+        artifactId,
+        reportId: judgesReport.report_id,
+        judgesCount: judgesReport.stats.length,
+      });
+    }
   });
 
   log.info(
@@ -716,6 +662,7 @@ async function processWorkflowCompletion(
     repositoryId: actionRun.repositoryId,
     command: triggerData.command,
     runId,
+    actionRunId: actionRun.id,
   };
 
   // Use transaction to ensure artifact content and status are updated atomically.
@@ -742,6 +689,301 @@ async function processWorkflowCompletion(
   });
 
   return NextResponse.json({ result: "processed", ok: true });
+}
+
+/**
+ * Handle GitHub App installation created event.
+ * Upserts installation record and syncs repositories.
+ */
+async function handleInstallationCreated(
+  event: InstallationCreatedEvent
+): Promise<void> {
+  const { installation, repositories = [], sender } = event;
+
+  log.info("[handleInstallationCreated] Processing installation", {
+    installationId: installation.id,
+    accountLogin: installation.account.login,
+    accountType: installation.target_type,
+    repositoryCount: repositories.length,
+    senderLogin: sender.login,
+  });
+
+  // Upsert installation record
+  // On reinstall, preserve organizationId only if the installation is still ACTIVE (Q-003)
+  // If the installation was UNINSTALLED (user disconnected), we need fresh claim via OAuth
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  // Only preserve org link if the installation was ACTIVE or SUSPENDED (not UNINSTALLED)
+  const shouldPreserveOrg =
+    existingInstallation?.organizationId &&
+    existingInstallation.status !== GitHubInstallationStatus.UNINSTALLED;
+
+  const upsertedInstallation = await githubService.upsertInstallation(
+    installation.id,
+    {
+      accountId: installation.account.id,
+      accountLogin: installation.account.login,
+      accountType: installation.target_type,
+      senderLogin: sender.login,
+      senderId: sender.id,
+      // Set PENDING_CLAIM if not preserving org link
+      status: shouldPreserveOrg ? undefined : "PENDING_CLAIM",
+      permissions: installation.permissions,
+      events: installation.events,
+      repositorySelection: installation.repository_selection,
+      // Preserve organizationId only if installation wasn't explicitly disconnected
+      organizationId: shouldPreserveOrg
+        ? (existingInstallation.organizationId ?? undefined)
+        : undefined,
+    }
+  );
+
+  log.info("[handleInstallationCreated] Upserted installation", {
+    installationId: upsertedInstallation.id,
+    status: upsertedInstallation.status,
+    organizationId: upsertedInstallation.organizationId,
+  });
+
+  // Sync repositories
+  if (repositories.length > 0) {
+    const repositoryInputs = repositories.map((repo) =>
+      toRepositoryInput(repo, installation.account.login)
+    );
+
+    await githubService.syncRepositories(
+      upsertedInstallation.id,
+      repositoryInputs
+    );
+  }
+}
+
+/**
+ * Handle GitHub App installation deleted event.
+ * Updates the installation status to UNINSTALLED.
+ */
+async function handleInstallationDeleted(
+  event: InstallationDeletedEvent
+): Promise<void> {
+  const { installation } = event;
+
+  log.info("[handleInstallationDeleted] Processing installation deletion", {
+    installationId: installation.id,
+    accountLogin: installation.account.login,
+  });
+
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  if (!existingInstallation) {
+    log.warn("[handleInstallationDeleted] Installation not found", {
+      installationId: installation.id,
+    });
+    return;
+  }
+
+  // Clear organizationId when installation is deleted - ensures clean state for reconnection
+  await withDb((db) =>
+    db.gitHubInstallation.update({
+      where: { id: existingInstallation.id },
+      data: {
+        status: GitHubInstallationStatus.UNINSTALLED,
+        organizationId: null,
+      },
+    })
+  );
+
+  log.info("[handleInstallationDeleted] Marked installation as uninstalled", {
+    installationId: existingInstallation.id,
+    previousOrganizationId: existingInstallation.organizationId,
+  });
+}
+
+/**
+ * Handle GitHub App installation suspended event.
+ * Updates the installation status to SUSPENDED and sets suspendedAt/suspendedBy fields.
+ */
+async function handleInstallationSuspended(
+  event: InstallationSuspendEvent
+): Promise<void> {
+  const { installation, sender } = event;
+
+  log.info("[handleInstallationSuspended] Processing installation suspension", {
+    installationId: installation.id,
+    accountLogin: installation.account.login,
+    suspendedBy: sender.login,
+  });
+
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  if (!existingInstallation) {
+    log.warn("[handleInstallationSuspended] Installation not found", {
+      installationId: installation.id,
+    });
+    return;
+  }
+
+  await githubService.updateInstallationStatus(
+    existingInstallation.id,
+    GitHubInstallationStatus.SUSPENDED,
+    {
+      suspendedAt: new Date(),
+      suspendedBy: sender.login,
+    }
+  );
+}
+
+/**
+ * Handle GitHub App installation unsuspended event.
+ * Determines new status based on current state and clears suspension fields.
+ */
+async function handleInstallationUnsuspended(
+  event: InstallationUnsuspendEvent
+): Promise<void> {
+  const { installation } = event;
+
+  log.info(
+    "[handleInstallationUnsuspended] Processing installation unsuspension",
+    {
+      installationId: installation.id,
+      accountLogin: installation.account.login,
+    }
+  );
+
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  if (!existingInstallation) {
+    log.warn("[handleInstallationUnsuspended] Installation not found", {
+      installationId: installation.id,
+    });
+    return;
+  }
+
+  // Determine the new status:
+  // - UNINSTALLED stays UNINSTALLED (user explicitly disconnected)
+  // - Unclaimed installations go to PENDING_CLAIM
+  // - Claimed installations go to ACTIVE
+  let newStatus: GitHubInstallationStatus;
+  if (existingInstallation.status === GitHubInstallationStatus.UNINSTALLED) {
+    newStatus = GitHubInstallationStatus.UNINSTALLED;
+  } else if (existingInstallation.organizationId === null) {
+    newStatus = GitHubInstallationStatus.PENDING_CLAIM;
+  } else {
+    newStatus = GitHubInstallationStatus.ACTIVE;
+  }
+
+  await githubService.updateInstallationStatus(
+    existingInstallation.id,
+    newStatus,
+    {
+      suspendedAt: null,
+      suspendedBy: null,
+    }
+  );
+}
+
+/**
+ * Convert webhook repository data to RepositoryInput format.
+ */
+function toRepositoryInput(
+  repo: { id: number; full_name: string; name: string; private: boolean },
+  fallbackOwner: string
+): {
+  githubRepoId: number;
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+} {
+  const [owner] = repo.full_name.split("/");
+  return {
+    githubRepoId: repo.id,
+    fullName: repo.full_name,
+    name: repo.name,
+    owner: owner || fallbackOwner,
+    private: repo.private,
+  };
+}
+
+/**
+ * Handle GitHub App installation_repositories added event.
+ * Syncs the added repositories to the database.
+ */
+async function handleInstallationRepositoriesAdded(
+  event: InstallationRepositoriesAddedEvent
+): Promise<void> {
+  const { installation, repositories_added } = event;
+
+  log.info(
+    "[handleInstallationRepositoriesAdded] Processing repositories added",
+    {
+      installationId: installation.id,
+      repositoryCount: repositories_added.length,
+    }
+  );
+
+  if (repositories_added.length === 0) {
+    return;
+  }
+
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  if (!existingInstallation) {
+    log.warn("[handleInstallationRepositoriesAdded] Installation not found", {
+      installationId: installation.id,
+    });
+    return;
+  }
+
+  const repositoryInputs = repositories_added.map((repo) =>
+    toRepositoryInput(repo, installation.account.login)
+  );
+
+  await githubService.addRepositories(
+    existingInstallation.id,
+    repositoryInputs
+  );
+}
+
+/**
+ * Handle GitHub App installation_repositories removed event.
+ * Removes the specified repositories from the database.
+ */
+async function handleInstallationRepositoriesRemoved(
+  event: InstallationRepositoriesRemovedEvent
+): Promise<void> {
+  const { installation, repositories_removed } = event;
+
+  log.info(
+    "[handleInstallationRepositoriesRemoved] Processing repositories removed",
+    {
+      installationId: installation.id,
+      repositoryCount: repositories_removed.length,
+    }
+  );
+
+  if (repositories_removed.length === 0) {
+    return;
+  }
+
+  const existingInstallation =
+    await githubService.findInstallationByInstallationId(installation.id);
+
+  if (!existingInstallation) {
+    log.warn("[handleInstallationRepositoriesRemoved] Installation not found", {
+      installationId: installation.id,
+    });
+    return;
+  }
+
+  const githubRepoIds = repositories_removed.map((repo) => repo.id);
+  await githubService.removeRepositories(
+    existingInstallation.id,
+    githubRepoIds
+  );
 }
 
 export const POST = async (request: Request): Promise<Response> => {
@@ -775,99 +1017,195 @@ export const POST = async (request: Request): Promise<Response> => {
       );
     }
 
-    if (eventType !== "workflow_run") {
-      log.info("[webhook/github] Ignoring non-workflow_run event", {
-        eventType,
-        reason: "Not a workflow_run event",
-      });
-      return NextResponse.json({
-        message: `Ignoring event type: ${eventType}`,
-        ok: true,
-      });
-    }
+    // Parse body once after signature verification
+    const parsedBody = JSON.parse(body) as { action?: string };
 
-    const event: WorkflowRunEvent = JSON.parse(body);
+    // Route by event type
+    switch (eventType) {
+      case "workflow_run": {
+        const event = parsedBody as WorkflowRunEvent;
 
-    log.info("[webhook/github] Parsed workflow_run event", {
-      action: event.action,
-      workflowName: event.workflow.name,
-      workflowPath: event.workflow.path,
-      runId: event.workflow_run.id,
-      conclusion:
-        event.action === "completed"
-          ? (event as WorkflowRunCompletedEvent).workflow_run.conclusion
-          : null,
-      htmlUrl: event.workflow_run.html_url,
-    });
+        log.info("[webhook/github] Parsed workflow_run event", {
+          action: event.action,
+          workflowName: event.workflow.name,
+          workflowPath: event.workflow.path,
+          runId: event.workflow_run.id,
+          conclusion:
+            event.action === "completed"
+              ? (event as WorkflowRunCompletedEvent).workflow_run.conclusion
+              : null,
+          htmlUrl: event.workflow_run.html_url,
+        });
 
-    if (!event.workflow.path.includes("symphony-dispatch")) {
-      log.info("[webhook/github] Ignoring non-symphony-dispatch workflow", {
-        workflowName: event.workflow.name,
-        workflowPath: event.workflow.path,
-        reason: "Not a symphony-dispatch workflow",
-      });
-      return NextResponse.json({
-        message: `Ignoring workflow: ${event.workflow.name}`,
-        ok: true,
-      });
-    }
+        if (!event.workflow.path.includes("symphony-dispatch")) {
+          log.info("[webhook/github] Ignoring non-symphony-dispatch workflow", {
+            workflowName: event.workflow.name,
+            workflowPath: event.workflow.path,
+            reason: "Not a symphony-dispatch workflow",
+          });
+          return NextResponse.json({
+            message: `Ignoring workflow: ${event.workflow.name}`,
+            ok: true,
+          });
+        }
 
-    // Extract correlation ID from run name (workflow YAML sets run-name: ${{ inputs.correlation_id }})
-    const correlationId = event.workflow_run.name;
+        // Extract correlation ID from run name (workflow YAML sets run-name: ${{ inputs.correlation_id }})
+        const correlationId = event.workflow_run.name;
 
-    log.info("[webhook/github] Extracted correlation ID from run name", {
-      runName: correlationId,
-      runId: event.workflow_run.id,
-      action: event.action,
-    });
+        log.info("[webhook/github] Extracted correlation ID from run name", {
+          runName: correlationId,
+          runId: event.workflow_run.id,
+          action: event.action,
+        });
 
-    // Check if this is for our environment
-    if (!isCurrentEnvironment(correlationId)) {
-      log.info("[webhook/github] Event for different environment, ignoring", {
-        correlationId,
-        currentEnv: process.env.WEBAPP_ENV,
-        action: event.action,
-      });
-      return NextResponse.json({
-        message: "Event for different environment, ignoring",
-        ok: true,
-      });
-    }
+        // Check if this is for our environment
+        if (!isCurrentEnvironment(correlationId)) {
+          log.info(
+            "[webhook/github] Event for different environment, ignoring",
+            {
+              correlationId,
+              currentEnv: process.env.WEBAPP_ENV,
+              action: event.action,
+            }
+          );
+          return NextResponse.json({
+            message: "Event for different environment, ignoring",
+            ok: true,
+          });
+        }
 
-    // Route by action type
-    switch (event.action) {
-      case "requested":
-      case "in_progress": {
-        return await handleWorkflowStatusUpdate(
-          correlationId,
-          event.action,
-          event.workflow_run.id,
-          event.workflow_run.html_url
-        );
+        // Route by action type
+        switch (event.action) {
+          case "requested":
+          case "in_progress": {
+            return await handleWorkflowStatusUpdate(
+              correlationId,
+              event.action,
+              event.workflow_run.id,
+              event.workflow_run.html_url
+            );
+          }
+
+          case "completed":
+            log.info(
+              "[webhook/github] Processing symphony-dispatch completion",
+              {
+                runId: event.workflow_run.id,
+                correlationId,
+                conclusion: (event as WorkflowRunCompletedEvent).workflow_run
+                  .conclusion,
+              }
+            );
+            return await processWorkflowCompletion(
+              event as WorkflowRunCompletedEvent,
+              correlationId,
+              s3Configured
+            );
+
+          default: {
+            // TypeScript exhaustiveness check - this should never happen
+            const unhandledAction = (event as { action: string }).action;
+            log.info("[webhook/github] Ignoring unhandled action", {
+              action: unhandledAction,
+              reason: "Not a tracked action type",
+            });
+            return NextResponse.json({
+              message: `Ignoring action: ${unhandledAction}`,
+              ok: true,
+            });
+          }
+        }
       }
 
-      case "completed":
-        log.info("[webhook/github] Processing symphony-dispatch completion", {
-          runId: event.workflow_run.id,
-          correlationId,
-          conclusion: (event as WorkflowRunCompletedEvent).workflow_run
-            .conclusion,
+      case "installation": {
+        const event = parsedBody as { action: string };
+
+        log.info("[webhook/github] Received installation event", {
+          action: event.action,
         });
-        return await processWorkflowCompletion(
-          event as WorkflowRunCompletedEvent,
-          correlationId,
-          s3Configured
-        );
+
+        switch (event.action) {
+          case "created":
+            await handleInstallationCreated(event as InstallationCreatedEvent);
+            return NextResponse.json({
+              message: "Installation created successfully",
+              ok: true,
+            });
+
+          case "deleted":
+            await handleInstallationDeleted(event as InstallationDeletedEvent);
+            return NextResponse.json({
+              message: "Installation deleted successfully",
+              ok: true,
+            });
+
+          case "suspend":
+            await handleInstallationSuspended(
+              event as InstallationSuspendEvent
+            );
+            return NextResponse.json({
+              message: "Installation suspended successfully",
+              ok: true,
+            });
+
+          case "unsuspend":
+            await handleInstallationUnsuspended(
+              event as InstallationUnsuspendEvent
+            );
+            return NextResponse.json({
+              message: "Installation unsuspended successfully",
+              ok: true,
+            });
+
+          default:
+            return NextResponse.json({
+              message: `Installation action '${event.action}' acknowledged`,
+              ok: true,
+            });
+        }
+      }
+
+      case "installation_repositories": {
+        const event = parsedBody as { action: string };
+
+        log.info("[webhook/github] Received installation_repositories event", {
+          action: event.action,
+        });
+
+        switch (event.action) {
+          case "added":
+            await handleInstallationRepositoriesAdded(
+              event as InstallationRepositoriesAddedEvent
+            );
+            return NextResponse.json({
+              message: "Repositories added successfully",
+              ok: true,
+            });
+
+          case "removed":
+            await handleInstallationRepositoriesRemoved(
+              event as InstallationRepositoriesRemovedEvent
+            );
+            return NextResponse.json({
+              message: "Repositories removed successfully",
+              ok: true,
+            });
+
+          default:
+            return NextResponse.json({
+              message: `Installation repositories action '${event.action}' acknowledged`,
+              ok: true,
+            });
+        }
+      }
 
       default: {
-        // TypeScript exhaustiveness check - this should never happen
-        const unhandledAction = (event as { action: string }).action;
-        log.info("[webhook/github] Ignoring unhandled action", {
-          action: unhandledAction,
-          reason: "Not a tracked action type",
+        log.info("[webhook/github] Ignoring unsupported event type", {
+          eventType,
+          reason: "Event type not supported",
         });
         return NextResponse.json({
-          message: `Ignoring action: ${unhandledAction}`,
+          message: `Ignoring event type: ${eventType}`,
           ok: true,
         });
       }

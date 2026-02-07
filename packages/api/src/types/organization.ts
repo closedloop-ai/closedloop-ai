@@ -75,6 +75,14 @@ export type UpdateUserInput = {
   active?: boolean;
 };
 
+export type UpdateUserProfileFromClerkInput = {
+  email?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
+};
+
 // Project types
 export const ProjectPriority = {
   NotSet: "NOT_SET",
