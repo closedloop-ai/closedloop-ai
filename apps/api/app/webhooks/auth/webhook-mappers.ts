@@ -5,6 +5,16 @@ import type {
 import type { OrganizationMembershipJSON, UserJSON } from "@repo/auth/server";
 
 /**
+ * Basic email format check. Used to detect when Clerk's public_user_data.identifier
+ * is a phone number rather than an email address.
+ */
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+export function looksLikeEmail(value: string): boolean {
+  return EMAIL_PATTERN.test(value);
+}
+
+/**
  * Maps a Clerk UserJSON webhook payload to CreateUserInput for database upsert.
  *
  * @param data - Clerk user webhook data
@@ -52,19 +62,22 @@ export function mapClerkUserToUpdateInput(
 
 /**
  * Maps a Clerk OrganizationMembershipJSON webhook payload to CreateUserInput for database upsert.
+ * Returns email as null if the identifier is not email-shaped (e.g., phone number),
+ * signaling that the caller must fetch the real email from Clerk.
  *
  * @param data - Clerk organization membership webhook data
  * @param organizationId - Internal organization ID (not Clerk ID)
- * @returns CreateUserInput for usersService.upsertByClerkIdAndOrg
+ * @returns CreateUserInput with email set to the identifier if email-shaped, or null if not
  */
 export function mapMembershipToInput(
   data: OrganizationMembershipJSON,
   organizationId: string
-): CreateUserInput {
+): Omit<CreateUserInput, "email"> & { email: string | null } {
+  const identifier = data.public_user_data.identifier;
   return {
     clerkId: data.public_user_data.user_id,
     organizationId,
-    email: data.public_user_data.identifier,
+    email: looksLikeEmail(identifier) ? identifier : null,
     firstName: data.public_user_data.first_name,
     lastName: data.public_user_data.last_name,
     avatarUrl: data.public_user_data.image_url,

@@ -1,4 +1,5 @@
 import { analytics } from "@repo/analytics/server";
+import type { CreateUserInput } from "@repo/api/src/types/organization";
 import type {
   DeletedObjectJSON,
   OrganizationJSON,
@@ -6,6 +7,7 @@ import type {
   UserJSON,
 } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
+import { clerkService } from "@/lib/auth/clerk-service";
 import { organizationsService } from "../../organizations/service";
 import { usersService } from "../../users/service";
 import {
@@ -195,9 +197,28 @@ export async function handleOrganizationMembershipCreated(
   );
 
   if (userId) {
-    await usersService.upsertByClerkIdAndOrg(
-      mapMembershipToInput(data, organization.id)
-    );
+    const mapped = mapMembershipToInput(data, organization.id);
+
+    if (mapped.email) {
+      // Fast path: identifier is email-shaped, use directly (no Clerk API call)
+      await usersService.upsertByClerkIdAndOrg(mapped as CreateUserInput);
+    } else {
+      // Identifier is not an email (likely phone number).
+      // Fetch full user from Clerk to get the actual email address.
+      log.info(
+        "Membership identifier is not email-shaped, fetching from Clerk",
+        {
+          userId,
+          identifier: data.public_user_data.identifier,
+        }
+      );
+      const clerkUser = await clerkService.getUser(userId);
+      await usersService.upsertByClerkIdAndOrg({
+        ...mapped,
+        email: clerkUser.email,
+        phoneNumber: clerkUser.phoneNumber,
+      });
+    }
   }
 
   return new Response("Organization membership created", { status: 201 });

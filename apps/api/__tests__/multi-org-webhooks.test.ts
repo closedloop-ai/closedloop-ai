@@ -190,6 +190,82 @@ describe("Multi-Org Webhook Handlers", () => {
         expect(clerkService.getOrganization).not.toHaveBeenCalled();
       });
     });
+
+    it("does not call Clerk API when identifier is email-shaped", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization({
+          clerkId: "org_email_test",
+          name: "Email Test Org",
+          slug: "email-test-org",
+        });
+
+        const payload = buildMembershipPayload({
+          orgId: "org_email_test",
+          orgName: "Email Test Org",
+          orgSlug: "email-test-org",
+          userId: "user_email_456",
+          firstName: "Email",
+          lastName: "User",
+          email: "email-user@example.com",
+        });
+
+        await handleOrganizationMembershipCreated(payload);
+
+        // Should NOT have called Clerk API — identifier was email-shaped
+        expect(clerkService.getUser).not.toHaveBeenCalled();
+
+        const createdUser = await usersService.findByClerkIdAndOrg(
+          "user_email_456",
+          orgId
+        );
+
+        expect(createdUser).not.toBeNull();
+        expect(createdUser?.email).toBe("email-user@example.com");
+      });
+    });
+
+    it("fetches email from Clerk when identifier is a phone number", async () => {
+      await autoRollbackTransaction(async () => {
+        const orgId = await createTestOrganization({
+          clerkId: "org_phone_test",
+          name: "Phone Test Org",
+          slug: "phone-test-org",
+        });
+
+        // Mock getUser to return proper email when called
+        vi.mocked(clerkService.getUser).mockResolvedValueOnce({
+          id: "user_phone_123",
+          email: "phone-user@example.com",
+          firstName: "Phone",
+          lastName: "User",
+          imageUrl: "https://example.com/avatar.jpg",
+          phoneNumber: "+15551234567",
+        });
+
+        const payload = buildMembershipPayload({
+          orgId: "org_phone_test",
+          orgName: "Phone Test Org",
+          orgSlug: "phone-test-org",
+          userId: "user_phone_123",
+          firstName: "Phone",
+          lastName: "User",
+          email: "+15551234567", // Phone number as identifier
+        });
+
+        await handleOrganizationMembershipCreated(payload);
+
+        // Should have fetched from Clerk since identifier is not email-shaped
+        expect(clerkService.getUser).toHaveBeenCalledWith("user_phone_123");
+
+        const createdUser = await usersService.findByClerkIdAndOrg(
+          "user_phone_123",
+          orgId
+        );
+
+        expect(createdUser).not.toBeNull();
+        expect(createdUser?.email).toBe("phone-user@example.com");
+      });
+    });
   });
 
   describe("handleOrganizationMembershipDeleted", () => {
