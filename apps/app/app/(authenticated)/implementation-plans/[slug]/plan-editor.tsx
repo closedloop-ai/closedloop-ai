@@ -4,10 +4,9 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useState } from "react";
-import { EditorWithComments } from "@/components/artifact-editor/editor-with-comments";
+import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -20,7 +19,6 @@ import {
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -41,20 +39,19 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>();
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
   >();
 
-  const roomId =
-    plan.documentSlug &&
-    generateArtifactRoomId(plan.organizationId, plan.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
-  const showCollaboration = isEditing;
-
-  // Fetch organization users for @mentions in comments
-  const { data: users } = useOrganizationUsers();
+  // The existence of a room ID controls whether liveblocks is loaded.
+  // Liveblocks can't function properly when the editor is read-only.
+  const liveblocksRoomId =
+    isEditing && plan.documentSlug
+      ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
+      : null;
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -66,7 +63,6 @@ export function PlanEditor({
   const content = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      exitEditMode();
       if (isViewingHistorical) {
         onVersionChange(latestVersion);
       }
@@ -161,7 +157,6 @@ export function PlanEditor({
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onApprove={planActions.handleApprove}
-        onClose={exitEditMode}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
@@ -184,46 +179,31 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <OptionalArtifactRoom
-        roomId={showCollaboration ? roomId : null}
-        users={users}
-      >
-        {/* Presence Indicators */}
-        {showCollaboration && <Presence />}
-
-        {/* Content Area with Optional Metadata Panel */}
-        <div className="flex min-h-0 flex-1">
-          <EditorWithComments
-            contentResetKey={contentResetKey}
-            contentResetValue={contentResetValue}
-            enableLiveblocks={showCollaboration}
-            liveblocksRoomId={roomId}
-            onChange={content.updateContent}
-            placeholder="Start writing your implementation plan..."
-            readOnly={!isEditing}
-            scrollMode="outer"
-            value={content.content}
+      <CollaborativeEditor
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
+        liveblocksRoomId={liveblocksRoomId}
+        metadataPanel={
+          <PlanMetadataPanel
+            approver={metadata.approver}
+            generationStatus={generationStatus ?? null}
+            judgesReport={judgesReport ?? null}
+            onApproverBlur={metadata.handleApproverBlur}
+            onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
+            onStatusChange={metadata.handleStatusChange}
+            owner={metadata.owner}
+            plan={plan}
+            pullRequest={pullRequest ?? null}
+            status={metadata.status}
+            teamMembers={metadata.teamMembers}
           />
-
-          {/* Metadata Panel */}
-          {uiState.showMetadataPanel ? (
-            <PlanMetadataPanel
-              approver={metadata.approver}
-              generationStatus={generationStatus ?? null}
-              judgesReport={judgesReport ?? null}
-              onApproverBlur={metadata.handleApproverBlur}
-              onApproverChange={metadata.handleApproverChange}
-              onOwnerChange={metadata.handleOwnerChange}
-              onStatusChange={metadata.handleStatusChange}
-              owner={metadata.owner}
-              plan={plan}
-              pullRequest={pullRequest ?? null}
-              status={metadata.status}
-              teamMembers={metadata.teamMembers}
-            />
-          ) : null}
-        </div>
-      </OptionalArtifactRoom>
+        }
+        onChange={content.updateContent}
+        readOnly={!isEditing}
+        showMetadataPanel={uiState.showMetadataPanel}
+        value={content.content}
+      />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog

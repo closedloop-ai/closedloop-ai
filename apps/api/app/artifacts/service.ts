@@ -16,7 +16,6 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import {
   ArtifactSubtype,
   type Artifact as PrismaArtifact,
@@ -33,13 +32,13 @@ import {
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
 import { getUseMockJudges } from "@/lib/feature-flags";
-import { createLiveblocksRoom } from "@/lib/liveblocks";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
   createArtifactVersion,
   generateDocumentSlug,
 } from "./artifact-utils";
+import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
 /** Convert a Prisma Artifact row to the API Artifact type. */
@@ -342,19 +341,7 @@ export const artifactsService = {
 
     if (createdArtifact?.documentSlug) {
       // Create Liveblocks room for document artifacts (PRDs, plans, issues, etc.)
-      const roomId = generateArtifactRoomId(
-        organizationId,
-        createdArtifact.documentSlug
-      );
-      await createLiveblocksRoom({
-        roomId,
-        tenantId: organizationId,
-        metadata: {
-          artifactId: createdArtifact.id,
-          artifactSubtype: createdArtifact.subtype,
-          documentSlug: createdArtifact.documentSlug,
-        },
-      });
+      createArtifactRoom(createdArtifact);
     }
 
     return createdArtifact;
@@ -383,14 +370,47 @@ export const artifactsService = {
   },
 
   /**
-   * Delete an artifact (org-scoped)
+   * Delete all versions of an artifact.
    */
-  delete(id: string, organizationId: string): Promise<void> {
-    return withDb(async (db) => {
-      await db.artifact.delete({
+  async delete(id: string, organizationId: string): Promise<void> {
+    const result = await withDb(async (db) => {
+      // First get the artifact to check for a document slug
+      const artifact = await db.artifact.findUnique({
         where: { id, organizationId },
+        select: {
+          documentSlug: true,
+          organizationId: true,
+        },
       });
+
+      if (!artifact) {
+        return;
+      }
+
+      if (artifact.documentSlug) {
+        // Delete all versions with the same document slug
+        await db.artifact.deleteMany({
+          where: {
+            organizationId,
+            documentSlug: artifact.documentSlug,
+          },
+        });
+      } else {
+        // No document slug means no versions - just delete this one artifact
+        await db.artifact.delete({
+          where: { id, organizationId },
+        });
+      }
+
+      return {
+        documentSlug: artifact.documentSlug,
+      };
     });
+
+    // Asynchronously delete Liveblocks room (fire and forget)
+    if (result?.documentSlug) {
+      deleteArtifactRoom(organizationId, result.documentSlug);
+    }
   },
 
   /**
@@ -721,10 +741,16 @@ ${initialInstructions.trim()}`;
       throw new ArtifactNotFoundError();
     }
 
-    const result = await withDb.tx((tx) =>
+    const newVersion = await withDb.tx((tx) =>
       createArtifactVersion(tx, original, { content })
     );
-    return toArtifact(result);
+
+    // Create Liveblocks room for the new version
+    if (newVersion.documentSlug) {
+      createArtifactRoom(newVersion);
+    }
+
+    return toArtifact(newVersion);
   },
 
   /**
@@ -1051,7 +1077,7 @@ Please try again or contact support if the issue persists.`,
    * Create records for a chat/amend workflow trigger.
    * Creates a NEW artifact version to preserve the original content.
    */
-  createChatWorkflowTriggerRecords(params: {
+  async createChatWorkflowTriggerRecords(params: {
     workstreamId: string;
     repositoryId: string;
     artifact: PrismaArtifact;
@@ -1070,7 +1096,7 @@ Please try again or contact support if the issue persists.`,
       targetBranch,
     } = params;
 
-    return withDb.tx(async (tx) => {
+    const newArtifact = await withDb.tx(async (tx) => {
       // Create a NEW artifact version (preserves original content in previous version)
       const newArtifact = await createArtifactVersion(tx, artifact, {
         // Content starts empty - will be populated by webhook when workflow completes
@@ -1123,6 +1149,13 @@ Please try again or contact support if the issue persists.`,
 
       return newArtifact;
     });
+
+    // Create Liveblocks room for the new version after transaction commits
+    if (newArtifact.documentSlug) {
+      createArtifactRoom(newArtifact);
+    }
+
+    return newArtifact;
   },
 
   /**

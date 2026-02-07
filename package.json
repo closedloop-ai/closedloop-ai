@@ -20,7 +20,8 @@
     "boundaries": "turbo boundaries",
     "bump-deps": "npx npm-check-updates --deep -u -x recharts && pnpm install",
     "bump-ui": "npx shadcn@latest add --all --overwrite -c packages/design-system",
-    "migrate": "cd packages/database && npx prisma format && npx prisma generate && npx prisma db push",
+    "migrate": "cd packages/database && pnpm prisma migrate dev",
+    "migrate:status": "cd packages/database && pnpm prisma migrate status",
     "clean": "git clean -xdf node_modules",
     "prepare": "husky",
     "start-apps": "turbo dev --filter=app --filter=api"

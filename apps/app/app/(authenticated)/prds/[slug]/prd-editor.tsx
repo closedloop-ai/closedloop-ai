@@ -4,19 +4,17 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
-import { EditorWithComments } from "@/components/artifact-editor/editor-with-comments";
+import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -33,7 +31,7 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>(
     undefined
   );
@@ -41,14 +39,13 @@ export function PRDEditor({
     string | undefined
   >(undefined);
 
-  const roomId =
-    prd.documentSlug &&
-    generateArtifactRoomId(prd.organizationId, prd.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
-  const showCollaboration = isEditing;
-
-  // Fetch organization users for @mentions in comments
-  const { data: users } = useOrganizationUsers();
+  // The existence of a room ID controls whether liveblocks is loaded.
+  // Liveblocks can't function properly when the editor is read-only.
+  const liveblocksRoomId =
+    isEditing && prd.documentSlug
+      ? generateArtifactRoomId(prd.organizationId, prd.documentSlug)
+      : null;
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -60,7 +57,6 @@ export function PRDEditor({
   const content = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
-      exitEditMode();
       if (isViewingHistorical) {
         onVersionChange(latestVersion);
       }
@@ -135,7 +131,6 @@ export function PRDEditor({
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
-        onClose={exitEditMode}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
         onExport={actions.handleDownload}
@@ -151,49 +146,34 @@ export function PRDEditor({
         versionDisplay={versionDisplay}
       />
 
-      <OptionalArtifactRoom
-        roomId={showCollaboration ? roomId : null}
-        users={users}
-      >
-        {/* Presence Indicators */}
-        {showCollaboration && <Presence />}
-
-        {/* Content Area with Optional Metadata Panel */}
-        <div className="flex min-h-0 flex-1">
-          <EditorWithComments
-            contentResetKey={contentResetKey}
-            contentResetValue={contentResetValue}
-            enableLiveblocks={showCollaboration}
-            liveblocksRoomId={roomId}
-            onChange={content.updateContent}
-            placeholder="Start writing your PRD..."
-            readOnly={!isEditing}
-            scrollMode="outer"
-            value={content.content}
+      <CollaborativeEditor
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
+        liveblocksRoomId={liveblocksRoomId}
+        metadataPanel={
+          <PRDMetadataPanel
+            approver={metadata.approver}
+            onApproverBlur={metadata.handleApproverBlur}
+            onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
+            onStatusChange={metadata.handleStatusChange}
+            onTargetBranchBlur={metadata.handleTargetBranchBlur}
+            onTargetBranchChange={metadata.handleTargetBranchChange}
+            onTargetRepoBlur={metadata.handleTargetRepoBlur}
+            onTargetRepoChange={metadata.handleTargetRepoChange}
+            owner={metadata.owner}
+            prd={prd}
+            status={metadata.status}
+            targetBranch={metadata.targetBranch}
+            targetRepo={metadata.targetRepo}
+            teamMembers={metadata.teamMembers}
           />
-
-          {/* Metadata Panel */}
-          {uiState.showMetadataPanel ? (
-            <PRDMetadataPanel
-              approver={metadata.approver}
-              onApproverBlur={metadata.handleApproverBlur}
-              onApproverChange={metadata.handleApproverChange}
-              onOwnerChange={metadata.handleOwnerChange}
-              onStatusChange={metadata.handleStatusChange}
-              onTargetBranchBlur={metadata.handleTargetBranchBlur}
-              onTargetBranchChange={metadata.handleTargetBranchChange}
-              onTargetRepoBlur={metadata.handleTargetRepoBlur}
-              onTargetRepoChange={metadata.handleTargetRepoChange}
-              owner={metadata.owner}
-              prd={prd}
-              status={metadata.status}
-              targetBranch={metadata.targetBranch}
-              targetRepo={metadata.targetRepo}
-              teamMembers={metadata.teamMembers}
-            />
-          ) : null}
-        </div>
-      </OptionalArtifactRoom>
+        }
+        onChange={content.updateContent}
+        readOnly={!isEditing}
+        showMetadataPanel={uiState.showMetadataPanel}
+        value={content.content}
+      />
 
       {/* Rename Dialog */}
       <RenameDialog

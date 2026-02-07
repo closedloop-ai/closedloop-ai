@@ -80,9 +80,6 @@ export function TiptapEditorCore({
     onCreate: ({ editor }) => {
       onEditorReady?.(editor);
     },
-    onDestroy: () => {
-      onEditorReady?.(null);
-    },
     onUpdate: ({ editor }) => {
       const markdown = getMarkdownStorage(editor).getMarkdown();
       onChange(markdown);
@@ -154,12 +151,12 @@ export function TiptapEditorCore({
         className="flex min-h-0 flex-1 flex-col border rounded-md"
         data-liveblocks-editor-boundary
       >
-        <TiptapToolbar
+        {!readOnly && <TiptapToolbar
           editor={editor}
           readOnly={readOnly}
           hasLiveblocksExtension={!!liveblocksExtension}
           onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
-        />
+        />}
         <div
           className={cn(
             "min-h-0",
@@ -173,11 +170,13 @@ export function TiptapEditorCore({
         </div>
       </div>
 
-      <TiptapPasteMarkdownDialog
-        open={showPasteMarkdownDialog}
-        onOpenChange={setShowPasteMarkdownDialog}
-        onSetContent={handleSetMarkdownContent}
-      />
+      {!readOnly && (
+        <TiptapPasteMarkdownDialog
+          open={showPasteMarkdownDialog}
+          onOpenChange={setShowPasteMarkdownDialog}
+          onSetContent={handleSetMarkdownContent}
+        />
+      )}
     </>
   );
 }
