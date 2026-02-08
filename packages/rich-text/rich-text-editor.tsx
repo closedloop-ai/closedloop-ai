@@ -1,15 +1,13 @@
 "use client";
 
-import dynamic from "next/dynamic";
-
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
+import dynamic from "next/dynamic";
 
 import type { RichTextEditorProps } from "./types";
 
 const TiptapEditorCore = dynamic(
-  () =>
-    import("./tiptap-editor-core").then((mod) => mod.TiptapEditorCore),
+  () => import("./tiptap-editor-core").then((mod) => mod.TiptapEditorCore),
   {
     ssr: false,
     loading: () => (
@@ -39,16 +37,16 @@ export function RichTextEditor({
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       <TiptapEditorCore
-        value={value}
-        placeholder={placeholder}
-        readOnly={readOnly}
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={liveblocksIsReady}
         onChange={onChange}
         onEditorReady={onEditorReady}
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
+        placeholder={placeholder}
+        readOnly={readOnly}
         scrollMode={scrollMode}
+        value={value}
       />
     </div>
   );

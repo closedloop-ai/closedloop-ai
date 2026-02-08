@@ -1,8 +1,8 @@
 "use client";
 
 import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
-import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor";
 import { cn } from "@repo/design-system/lib/utils";
+import { RichTextEditor } from "@repo/rich-text";
 import type { Editor } from "@tiptap/react";
 
 type EditorContentProps = {
