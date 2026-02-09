@@ -7,7 +7,7 @@ type WorkstreamPageProps = {
 };
 
 export const metadata: Metadata = {
-  title: "Workstream",
+  title: "Workstream | ClosedLoop.ai",
   description: "Workstream details",
 };
 

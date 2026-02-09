@@ -7,13 +7,12 @@ type MetadataGenerator = Omit<Metadata, "description" | "title"> & {
   image?: string;
 };
 
-const applicationName = "next-forge";
+const applicationName = "ClosedLoop.ai";
 const author: Metadata["authors"] = {
-  name: "Vercel",
-  url: "https://vercel.com/",
+  name: "ClosedLoop",
+  url: "https://closedloop.ai/",
 };
-const publisher = "Vercel";
-const twitterHandle = "@vercel";
+const publisher = "ClosedLoop";
 const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
 const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 
@@ -51,7 +50,6 @@ export const createMetadata = ({
     publisher,
     twitter: {
       card: "summary_large_image",
-      creator: twitterHandle,
     },
   };
 
