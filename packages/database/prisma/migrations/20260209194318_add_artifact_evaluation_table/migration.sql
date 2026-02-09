@@ -1,3 +1,6 @@
+-- DropForeignKey
+ALTER TABLE "preview_deployments" DROP CONSTRAINT "preview_deployments_artifact_id_fkey";
+
 -- CreateTable
 CREATE TABLE "artifact_evaluations" (
     "id" UUID NOT NULL,
@@ -15,6 +18,3 @@ CREATE INDEX "artifact_evaluations_artifact_id_idx" ON "artifact_evaluations"("a
 
 -- CreateIndex
 CREATE UNIQUE INDEX "artifact_evaluations_artifact_id_report_id_key" ON "artifact_evaluations"("artifact_id", "report_id");
-
--- AddForeignKey
-ALTER TABLE "artifact_evaluations" ADD CONSTRAINT "artifact_evaluations_artifact_id_fkey" FOREIGN KEY ("artifact_id") REFERENCES "artifacts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
