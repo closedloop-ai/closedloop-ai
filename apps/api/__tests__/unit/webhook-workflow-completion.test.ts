@@ -457,6 +457,9 @@ describe("handleExecutionSuccess", () => {
           number: 42,
         }),
       },
+      previewDeployment: {
+        upsert: vi.fn().mockResolvedValue({ id: "preview-123" }),
+      },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-123" }),
       },
@@ -543,6 +546,9 @@ describe("handleExecutionSuccess", () => {
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-456" }),
       },
+      previewDeployment: {
+        upsert: vi.fn().mockResolvedValue({ id: "preview-456" }),
+      },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-456" }),
       },
@@ -590,6 +596,9 @@ describe("handleExecutionSuccess", () => {
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-789" }),
+      },
+      previewDeployment: {
+        upsert: vi.fn().mockResolvedValue({ id: "preview-789" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-789" }),
@@ -1086,6 +1095,9 @@ describe("processWorkflowCompletion", () => {
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-exec" }),
+      },
+      previewDeployment: {
+        upsert: vi.fn().mockResolvedValue({ id: "preview-exec" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec" }),
