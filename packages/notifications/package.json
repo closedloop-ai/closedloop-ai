@@ -7,17 +7,17 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
-    "@knocklabs/node": "^1.24.0",
-    "@knocklabs/react": "^0.9.4",
-    "@t3-oss/env-nextjs": "^0.13.8",
+    "@knocklabs/node": "^1.28.0",
+    "@knocklabs/react": "^0.9.5",
+    "@t3-oss/env-nextjs": "^0.13.10",
     "react": "19.2.1",
-    "zod": "^4.3.5"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "typescript": "^5.9.3",
     "@types/node": "25.0.9",
     "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "typescript": "^5.9.3"
   }
 }
