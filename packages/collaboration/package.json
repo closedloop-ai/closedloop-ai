@@ -4,21 +4,27 @@
   "private": true,
   "scripts": {
     "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
+    "@liveblocks/client": "^3.13.3",
+    "@liveblocks/node": "^3.13.3",
+    "@liveblocks/react": "^3.13.3",
+    "@liveblocks/react-tiptap": "^3.13.3",
+    "@liveblocks/react-ui": "^3.13.3",
+    "@liveblocks/yjs": "^3.13.3",
     "@t3-oss/env-nextjs": "^0.13.8",
-    "@liveblocks/client": "^3.11.0",
-    "@liveblocks/node": "^3.11.0",
-    "@liveblocks/react": "^3.11.0",
     "react": "19.2.1",
     "server-only": "^0.0.1",
+    "yjs": "^13.6.29",
     "zod": "^4.3.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "25.0.9",
     "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "vitest": "^4.0.15"
   }
 }

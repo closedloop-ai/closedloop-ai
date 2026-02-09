@@ -1,8 +1,11 @@
-import { expect, test } from "vitest";
-import { GET } from "../app/health/route";
+import { GET } from "@/app/health/route";
 
-test("Health Check", async () => {
-  const response = await GET();
-  expect(response.status).toBe(200);
-  expect(await response.text()).toBe("OK");
+describe("Health Check", () => {
+  it("returns 200 OK with text body", async () => {
+    const response = GET();
+    expect(response.status).toBe(200);
+
+    const text = await response.text();
+    expect(text).toBe("OK");
+  });
 });

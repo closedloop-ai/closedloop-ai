@@ -1,6 +1,5 @@
 "use client";
 
-import type { Workstream } from "@repo/api/src/types/workstream";
 import {
   Table,
   TableBody,
@@ -9,18 +8,34 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import {
   WorkstreamStateBadge,
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
+import { useWorkstreams } from "@/hooks/queries/use-workstreams";
 import { formatRelativeTime } from "@/lib/date-utils";
 
-type WorkstreamsListProps = {
-  workstreams: Workstream[];
-};
+export function WorkstreamsList() {
+  const { data: workstreams = [], isLoading, error } = useWorkstreams();
 
-export function WorkstreamsList({ workstreams }: WorkstreamsListProps) {
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
+        {error.message}
+      </div>
+    );
+  }
+
   if (workstreams.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-12 text-center">

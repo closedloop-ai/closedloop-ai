@@ -172,8 +172,8 @@ const getName = async () => {
   const value = await text({
     message: "What is your project named?",
     placeholder: "my-app",
-    validate(value: string) {
-      if (value.length === 0) {
+    validate(input: string) {
+      if (input.length === 0) {
         return "Please enter a project name.";
       }
     },

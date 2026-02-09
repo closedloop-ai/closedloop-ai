@@ -1,13 +1,17 @@
 "use client";
 
-import { UserButton } from "@repo/auth/client";
-import { ModeToggle } from "@repo/design-system/components/mode-toggle";
-import { Button } from "@repo/design-system/components/ui/button";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@repo/design-system/components/ui/collapsible";
+  OrganizationSwitcher,
+  UserButton,
+  useOrganization,
+} from "@repo/auth/client";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@repo/design-system/components/ui/avatar";
+import { Button } from "@repo/design-system/components/ui/button";
+import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import {
   Sidebar,
   SidebarContent,
@@ -18,119 +22,169 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   useSidebar,
 } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  AnchorIcon,
-  BookOpenIcon,
-  ChevronRightIcon,
-  ClipboardListIcon,
   FileTextIcon,
+  InboxIcon,
   LifeBuoyIcon,
+  LightbulbIcon,
   SendIcon,
-  Settings2Icon,
+  SettingsIcon,
+  UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
+import { useIsMounted } from "@/hooks/use-is-mounted";
+import { type AppEnvironment, appEnvironment } from "@/lib/environment";
 import { Search } from "./search";
+import { SidebarTeams } from "./sidebar-teams";
+
+const orgSwitcherAppearance = {
+  elements: {
+    rootBox: {
+      display: "flex",
+      overflow: "hidden",
+      width: "100%",
+    },
+    organizationSwitcherTrigger: {
+      display: "flex",
+      alignItems: "center",
+      gap: "0.5rem",
+      width: "100%",
+      padding: "0.5rem",
+      borderRadius: "0.375rem",
+      color: "hsl(var(--sidebar-foreground))",
+      backgroundColor: "transparent",
+      "&:hover": {
+        backgroundColor: "hsl(var(--sidebar-accent))",
+        color: "hsl(var(--sidebar-accent-foreground))",
+      },
+      "&:focus-visible": {
+        outline: "2px solid hsl(var(--sidebar-ring))",
+        outlineOffset: "2px",
+      },
+    },
+    organizationSwitcherTriggerIcon: {
+      color: "hsl(var(--sidebar-foreground))",
+      opacity: "0.7",
+    },
+    organizationPreviewMainIdentifier: {
+      fontSize: "0.875rem",
+      fontWeight: "500",
+      color: "hsl(var(--sidebar-foreground))",
+    },
+    organizationPreviewAvatarContainer: {
+      width: "1.75rem",
+      height: "1.75rem",
+    },
+    organizationPreviewAvatarBox: {
+      width: "1.75rem",
+      height: "1.75rem",
+    },
+  },
+} as const;
+
+const envBadge: Record<
+  AppEnvironment,
+  { label: string; className: string } | null
+> = {
+  local: {
+    label: "DEV",
+    className:
+      "rounded bg-blue-100 px-1.5 py-0.5 font-medium text-[10px] text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  },
+  stage: {
+    label: "STAGE",
+    className:
+      "rounded bg-amber-100 px-1.5 py-0.5 font-medium text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+  },
+  prod: null,
+};
 
 type GlobalSidebarProperties = {
   readonly children: ReactNode;
 };
 
 const data = {
-  user: {
-    name: "shadcn",
-    email: "m@example.com",
-    avatar: "/avatars/shadcn.jpg",
-  },
-  navMain: [
+  workspace: [
     {
-      title: "PRD Library",
-      url: "/prds",
+      title: "Inbox",
+      url: "/inbox",
+      icon: InboxIcon,
+      badge: 1,
+      disabled: true,
+    },
+    {
+      title: "Initiatives",
+      url: "/initiatives",
+      icon: LightbulbIcon,
+      disabled: true,
+    },
+    {
+      title: "My Documents",
+      url: "/my-documents",
       icon: FileTextIcon,
+      disabled: true,
     },
     {
-      title: "Implementation Plans",
-      url: "/implementation-plans",
-      icon: ClipboardListIcon,
-    },
-    {
-      title: "Documentation",
-      url: "#",
-      icon: BookOpenIcon,
-      items: [
-        {
-          title: "Introduction",
-          url: "#",
-        },
-        {
-          title: "Get Started",
-          url: "#",
-        },
-        {
-          title: "Tutorials",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Settings",
-      url: "#",
-      icon: Settings2Icon,
-      items: [
-        {
-          title: "General",
-          url: "#",
-        },
-        {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Billing",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
-        },
-      ],
+      title: "Members",
+      url: "/members",
+      icon: UsersIcon,
+      disabled: false,
     },
   ],
   navSecondary: [
     {
-      title: "Webhooks",
-      url: "/webhooks",
-      icon: AnchorIcon,
+      title: "Settings",
+      url: "/settings",
+      icon: SettingsIcon,
+      disabled: false,
     },
     {
       title: "Support",
       url: "#",
       icon: LifeBuoyIcon,
+      disabled: true,
     },
     {
       title: "Feedback",
       url: "#",
       icon: SendIcon,
+      disabled: true,
     },
   ],
 };
 
-export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
+export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const sidebar = useSidebar();
+  const { organization } = useOrganization();
+  const queryClient = useQueryClient();
+  const prevOrgIdRef = useRef<string | undefined>(undefined);
+  const mounted = useIsMounted();
+  const activeEnvBadge = envBadge[appEnvironment];
+
+  // Clear cache when organization changes
+  useEffect(() => {
+    const currentOrgId = organization?.id;
+
+    // Skip on initial load
+    if (prevOrgIdRef.current === undefined) {
+      prevOrgIdRef.current = currentOrgId;
+      return;
+    }
+
+    // Clear cache when org ID changes
+    if (prevOrgIdRef.current !== currentOrgId) {
+      queryClient.clear();
+      prevOrgIdRef.current = currentOrgId;
+    }
+  }, [organization?.id, queryClient]);
 
   return (
     <>
@@ -140,11 +194,34 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
             <SidebarMenuItem>
               <div
                 className={cn(
-                  "flex h-[36px] items-center overflow-hidden transition-all",
+                  "flex h-[36px] items-center gap-2 overflow-hidden transition-all",
                   sidebar.open ? "px-2" : "justify-center"
                 )}
               >
-                <span className="font-semibold text-lg">Symphony</span>
+                {!mounted && (
+                  <div className="h-8 w-full animate-pulse rounded bg-muted" />
+                )}
+                {mounted && sidebar.open && (
+                  <>
+                    <OrganizationSwitcher appearance={orgSwitcherAppearance} />
+                    {activeEnvBadge && (
+                      <span className={activeEnvBadge.className}>
+                        {activeEnvBadge.label}
+                      </span>
+                    )}
+                  </>
+                )}
+                {mounted && !sidebar.open && (
+                  <Avatar className="size-7">
+                    <AvatarImage
+                      alt={organization?.name || "Organization"}
+                      src={organization?.imageUrl}
+                    />
+                    <AvatarFallback className="text-xs">
+                      {organization?.name?.charAt(0)?.toUpperCase() || "O"}
+                    </AvatarFallback>
+                  </Avatar>
+                )}
               </div>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -152,62 +229,72 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         <Search />
         <SidebarContent>
           <SidebarGroup>
-            <SidebarGroupLabel>Platform</SidebarGroupLabel>
+            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
             <SidebarMenu>
-              {data.navMain.map((item, index) => (
-                <Collapsible
-                  asChild
-                  defaultOpen={
-                    (item as { isActive?: boolean }).isActive ?? false
-                  }
-                  id={`nav-collapsible-${index}`}
-                  key={item.title}
-                >
-                  <SidebarMenuItem>
-                    <SidebarMenuButton asChild tooltip={item.title}>
+              {data.workspace.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    asChild={!item.disabled}
+                    className={cn(
+                      item.disabled
+                        ? "pointer-events-none cursor-not-allowed opacity-50"
+                        : ""
+                    )}
+                    tooltip={item.title}
+                  >
+                    {item.disabled ? (
+                      <span className="flex items-center gap-2">
+                        <item.icon />
+                        <span>{item.title}</span>
+                        {item.badge ? (
+                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
+                            {item.badge}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : (
                       <Link href={item.url}>
                         <item.icon />
                         <span>{item.title}</span>
+                        {item.badge ? (
+                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
+                            {item.badge}
+                          </span>
+                        ) : null}
                       </Link>
-                    </SidebarMenuButton>
-                    {item.items?.length ? (
-                      <>
-                        <CollapsibleTrigger asChild>
-                          <SidebarMenuAction className="data-[state=open]:rotate-90">
-                            <ChevronRightIcon />
-                            <span className="sr-only">Toggle</span>
-                          </SidebarMenuAction>
-                        </CollapsibleTrigger>
-                        <CollapsibleContent>
-                          <SidebarMenuSub>
-                            {item.items?.map((subItem) => (
-                              <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton asChild>
-                                  <Link href={subItem.url}>
-                                    <span>{subItem.title}</span>
-                                  </Link>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            ))}
-                          </SidebarMenuSub>
-                        </CollapsibleContent>
-                      </>
-                    ) : null}
-                  </SidebarMenuItem>
-                </Collapsible>
+                    )}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               ))}
             </SidebarMenu>
           </SidebarGroup>
+
+          <SidebarTeams />
+
           <SidebarGroup className="mt-auto">
             <SidebarGroupContent>
               <SidebarMenu>
                 {data.navSecondary.map((item) => (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild>
-                      <Link href={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
+                    <SidebarMenuButton
+                      asChild={!item.disabled}
+                      className={cn(
+                        item.disabled
+                          ? "pointer-events-none cursor-not-allowed opacity-50"
+                          : ""
+                      )}
+                    >
+                      {item.disabled ? (
+                        <span className="flex items-center gap-2">
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </span>
+                      ) : (
+                        <Link href={item.url}>
+                          <item.icon />
+                          <span>{item.title}</span>
+                        </Link>
+                      )}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
@@ -218,16 +305,20 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem className="flex items-center gap-2">
-              <UserButton
-                appearance={{
-                  elements: {
-                    rootBox: "flex overflow-hidden w-full",
-                    userButtonBox: "flex-row-reverse",
-                    userButtonOuterIdentifier: "truncate pl-0",
-                  },
-                }}
-                showName
-              />
+              {mounted ? (
+                <UserButton
+                  appearance={{
+                    elements: {
+                      rootBox: "flex overflow-hidden w-full",
+                      userButtonBox: "flex-row-reverse",
+                      userButtonOuterIdentifier: "truncate pl-0",
+                    },
+                  }}
+                  showName
+                />
+              ) : (
+                <div className="h-8 w-full" />
+              )}
               <div className="flex shrink-0 items-center gap-px">
                 <ModeToggle />
                 <Button
@@ -248,4 +339,4 @@ export const GlobalSidebar = ({ children }: GlobalSidebarProperties) => {
       <SidebarInset>{children}</SidebarInset>
     </>
   );
-};
+}

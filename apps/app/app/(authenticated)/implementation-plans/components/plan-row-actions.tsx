@@ -16,9 +16,9 @@ import {
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
-import { useState, useTransition } from "react";
-import { deleteArtifact } from "@/app/actions/artifacts";
+import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { useDeleteArtifact } from "@/hooks/queries/use-artifacts";
 import { copyToClipboard } from "@/lib/clipboard-utils";
 import { downloadAsMarkdown } from "@/lib/download-utils";
 
@@ -27,13 +27,13 @@ type PlanRowActionsProps = {
 };
 
 export function PlanRowActions({ plan }: PlanRowActionsProps) {
-  const [isPending, startTransition] = useTransition();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const deleteArtifact = useDeleteArtifact();
 
   const handleExport = () => {
     downloadAsMarkdown(
       plan.content ?? "",
-      plan.fileName ?? `${plan.title.toLowerCase().replace(/\s+/g, "-")}.md`
+      plan.fileName ?? `${plan.title.toLowerCase().replaceAll(/\s+/g, "-")}.md`
     );
   };
 
@@ -46,11 +46,11 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
     }
   };
 
-  const handleDelete = () => {
-    startTransition(async () => {
-      await deleteArtifact(plan.id);
-      setShowDeleteDialog(false);
+  const handleDelete = async (): Promise<boolean> => {
+    const result = await deleteArtifact.mutateAsync(plan.id, {
+      onSuccess: () => setShowDeleteDialog(false),
     });
+    return result.deleted ?? false;
   };
 
   return (
@@ -83,7 +83,7 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
       </DropdownMenu>
 
       <DeleteConfirmationDialog
-        isPending={isPending}
+        isPending={deleteArtifact.isPending}
         itemName={plan.title}
         onConfirm={handleDelete}
         onOpenChange={setShowDeleteDialog}
