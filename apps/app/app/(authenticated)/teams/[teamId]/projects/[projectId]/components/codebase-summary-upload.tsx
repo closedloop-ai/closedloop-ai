@@ -3,6 +3,10 @@
 import { Button } from "@repo/design-system/components/ui/button";
 import { UploadIcon } from "lucide-react";
 import { useRef } from "react";
+import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
 import { useUploadCodebaseSummary } from "@/hooks/queries/use-projects";
 
 type CodebaseSummaryUploadProps = {
@@ -17,33 +21,15 @@ export function CodebaseSummaryUpload({
   onUploadSuccess,
 }: CodebaseSummaryUploadProps) {
   const uploadMutation = useUploadCodebaseSummary();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
 
-  const handleButtonClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    const content = await file.text();
+  const handleFileRead = (content: string) => {
     uploadMutation.mutate(
       { projectId, markdownContent: content },
       {
         onSuccess: (project) => {
           if (project.lastIndexedAt) {
             onUploadSuccess?.(new Date(project.lastIndexedAt));
-          }
-        },
-        onSettled: () => {
-          // Reset the input so the same file can be selected again
-          if (fileInputRef.current) {
-            fileInputRef.current.value = "";
           }
         },
       }
@@ -59,17 +45,15 @@ export function CodebaseSummaryUpload({
 
   return (
     <div className="space-y-2">
-      <input
+      <HiddenFileInput
         accept=".md"
-        className="hidden"
-        onChange={handleFileChange}
+        onFileRead={handleFileRead}
         ref={fileInputRef}
-        type="file"
       />
       <Button
         className="w-full"
         disabled={uploadMutation.isPending}
-        onClick={handleButtonClick}
+        onClick={() => fileInputRef.current?.open()}
         variant="outline"
       >
         <UploadIcon className="mr-2 h-4 w-4" />
