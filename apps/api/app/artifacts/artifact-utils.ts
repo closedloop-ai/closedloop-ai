@@ -84,6 +84,15 @@ export async function createArtifactVersion(
   });
 }
 
+export const previewDeploymentSelect = {
+  url: true,
+  state: true,
+  environment: true,
+  ref: true,
+  sha: true,
+  updatedAt: true,
+} as const;
+
 /**
  * Standard include pattern for artifact queries with workstream and project info.
  */
@@ -120,6 +129,9 @@ export const artifactIncludeWithContext = {
       lastName: true,
       avatarUrl: true,
     },
+  },
+  previewDeployment: {
+    select: previewDeploymentSelect,
   },
 } as const;
 

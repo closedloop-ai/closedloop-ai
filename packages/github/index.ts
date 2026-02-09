@@ -61,6 +61,28 @@ async function getAuthenticatedOctokit(): Promise<Octokit> {
   });
 }
 
+/**
+ * Create an authenticated Octokit instance for a specific installation.
+ */
+async function getInstallationOctokit(
+  installationId: number
+): Promise<Octokit> {
+  const config = getConfig();
+  const auth = createAppAuth({
+    appId: config.GITHUB_APP_ID,
+    privateKey: config.GITHUB_APP_PRIVATE_KEY,
+  });
+
+  const installationAuth = await auth({
+    type: "installation",
+    installationId,
+  });
+
+  return new Octokit({
+    auth: installationAuth.token,
+  });
+}
+
 export type TriggerWorkflowDispatchOptions = {
   targetRepo: string;
   ref?: string;
@@ -341,6 +363,86 @@ export async function deleteInstallation(
       error: errorMessage,
     });
     return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Get the latest deployment status for a given ref (branch) in a repository.
+ * Queries the GitHub Deployments API and returns the most recent deployment status.
+ */
+export async function getLatestDeploymentStatusForRef(
+  repoFullName: string,
+  ref: string,
+  options?: {
+    installationId?: number;
+    environment?: string | null;
+  }
+): Promise<{
+  url: string | null;
+  state: string | null;
+  environment: string | null;
+  updatedAt: string | null;
+} | null> {
+  const [owner, repo] = repoFullName.split("/");
+  if (!(owner && repo)) {
+    return null;
+  }
+
+  try {
+    const octokit =
+      options?.installationId !== undefined
+        ? await getInstallationOctokit(options.installationId)
+        : await getAuthenticatedOctokit();
+    const environment =
+      options?.environment === null ? undefined : options?.environment;
+
+    // Get the most recent deployment for this ref
+    const { data: deployments } = await octokit.repos.listDeployments({
+      owner,
+      repo,
+      ref,
+      per_page: 5,
+      ...(environment ? { environment } : {}),
+    });
+
+    if (deployments.length === 0) {
+      return null;
+    }
+
+    for (const deployment of deployments) {
+      const { data: statuses } = await octokit.repos.listDeploymentStatuses({
+        owner,
+        repo,
+        deployment_id: deployment.id,
+        per_page: 1,
+      });
+
+      if (statuses.length > 0) {
+        const status = statuses[0];
+        return {
+          url: status.environment_url || status.target_url || null,
+          state: status.state,
+          environment: deployment.environment,
+          updatedAt: status.updated_at,
+        };
+      }
+    }
+
+    // Deployment exists but no status yet
+    const deployment = deployments[0];
+    return {
+      url: null,
+      state: "pending",
+      environment: deployment.environment,
+      updatedAt: deployment.updated_at,
+    };
+  } catch (error) {
+    log.error("[github/deployments] Failed to fetch deployment status", {
+      repoFullName,
+      ref,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    return null;
   }
 }
 

@@ -134,7 +134,12 @@ async function getDatabase(): Promise<PrismaClient> {
   }
 
   const pool = await getPool();
-  const adapter = new PrismaPg(pool);
+  const schema = resolveSchemaName({
+    pgSchema: keys().PGSCHEMA,
+    vercelEnv: process.env.VERCEL_ENV,
+    vercelGitCommitRef: process.env.VERCEL_GIT_COMMIT_REF,
+  });
+  const adapter = new PrismaPg(pool, schema ? { schema } : undefined);
   globalForPrisma.prisma = new PrismaClient({ adapter });
 
   return globalForPrisma.prisma;

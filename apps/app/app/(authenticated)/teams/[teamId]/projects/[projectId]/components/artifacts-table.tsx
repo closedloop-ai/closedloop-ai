@@ -39,6 +39,7 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   ARTIFACT_STATUS_COLORS,
@@ -201,6 +202,7 @@ function ArtifactSection({
               <TableHead>Type</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Link</TableHead>
+              <TableHead>Preview</TableHead>
               <TableHead className="w-[50px]" />
             </TableRow>
           </TableHeader>
@@ -272,6 +274,9 @@ function ArtifactSection({
                       isExternal={isExternal}
                       route={route}
                     />
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <PreviewLink url={artifact.previewUrl} />
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
