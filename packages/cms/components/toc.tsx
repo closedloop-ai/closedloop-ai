@@ -1,4 +1,5 @@
 import { RichText } from "basehub/react-rich-text";
+import type React from "react";
 import type { ComponentProps } from "react";
 
 type TableOfContentsProperties = Omit<
@@ -11,7 +12,7 @@ type TableOfContentsProperties = Omit<
 export const TableOfContents = ({
   data,
   ...props
-}: TableOfContentsProperties) => (
+}: TableOfContentsProperties): React.JSX.Element => (
   <div>
     <RichText
       // @ts-expect-error "idk"

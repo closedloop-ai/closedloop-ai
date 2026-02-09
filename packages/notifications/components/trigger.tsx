@@ -4,6 +4,7 @@ import {
   NotificationFeedPopover,
   NotificationIconButton,
 } from "@knocklabs/react";
+import type React from "react";
 import type { RefObject } from "react";
 import { useRef, useState } from "react";
 import { keys } from "../keys";
@@ -12,7 +13,7 @@ import { keys } from "../keys";
 import "@knocklabs/react/dist/index.css";
 import "../styles.css";
 
-export const NotificationsTrigger = () => {
+export const NotificationsTrigger = (): React.JSX.Element | null => {
   const [isVisible, setIsVisible] = useState(false);
   const notifButtonRef = useRef<HTMLButtonElement>(null);
 
