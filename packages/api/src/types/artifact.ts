@@ -160,6 +160,15 @@ export type Artifact = {
   updatedAt: Date;
 };
 
+export type PreviewDeployment = {
+  url: string | null;
+  state: string | null;
+  environment: string | null;
+  ref: string | null;
+  sha: string | null;
+  updatedAt: Date | null;
+};
+
 export type ArtifactWithWorkstream = Artifact & {
   workstream?: {
     id: string;
@@ -172,6 +181,7 @@ export type ArtifactWithWorkstream = Artifact & {
     teams?: { id: string; name: string }[];
   } | null;
   owner?: ProjectOwner | null;
+  previewDeployment?: PreviewDeployment | null;
 };
 
 export type FindArtifactsOptions = {

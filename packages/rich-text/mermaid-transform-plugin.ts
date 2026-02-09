@@ -1,5 +1,5 @@
-import { Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 
 // Plugin to transform codeBlock nodes with language="mermaid" into mermaid nodes
 export const MermaidTransformPlugin = new Plugin({
@@ -7,7 +7,9 @@ export const MermaidTransformPlugin = new Plugin({
 
   appendTransaction(transactions, _oldState, newState) {
     // Check if any transaction modified the document
-    const docChanged = transactions.some((transaction) => transaction.docChanged);
+    const docChanged = transactions.some(
+      (transaction) => transaction.docChanged
+    );
     if (!docChanged) {
       return null;
     }

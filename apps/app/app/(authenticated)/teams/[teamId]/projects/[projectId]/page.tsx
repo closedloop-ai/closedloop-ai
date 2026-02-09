@@ -133,6 +133,7 @@ export default function ProjectDetailPage() {
         subtype: toProjectArtifactSubtype(artifact.subtype),
         status: mapArtifactStatusToDisplay(artifact.status),
         link: artifact.externalUrl || undefined,
+        previewUrl: artifact.previewDeployment?.url ?? undefined,
       })),
     [artifactsData]
   );

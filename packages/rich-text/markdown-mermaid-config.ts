@@ -4,7 +4,11 @@ export const mermaidMarkdownConfig = {
   // Serialize Mermaid node to markdown code fence
   toMarkdown: {
     mermaid(
-      state: { write: (text: string) => void; text: (text: string, escape?: boolean) => void; closeBlock: (node: unknown) => void },
+      state: {
+        write: (text: string) => void;
+        text: (text: string, escapeKey?: boolean) => void;
+        closeBlock: (node: unknown) => void;
+      },
       node: { attrs: { content: string } }
     ) {
       state.write("```mermaid\n");

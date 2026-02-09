@@ -104,17 +104,22 @@ async function main() {
     );
     const databaseUrl = addSchemaToUrl(DATABASE_URL, resolvedSchema);
     console.log("↪ Ensuring schema exists...");
-    await ensureSchemaExists(databaseUrl, resolvedSchema);
+    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
     await upsertSchemaRegistry(
       databaseUrl,
       resolvedSchema,
       VERCEL_GIT_COMMIT_REF
     );
-    await runMigrateWithRetry(
-      databaseUrl,
-      resolvedSchema,
-      VERCEL_GIT_COMMIT_REF
-    );
+    execSync("prisma migrate deploy", {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        DATABASE_URL: databaseUrl,
+      },
+    });
+    if (isNew && resolvedSchema) {
+      await cloneDataFromPublic(databaseUrl, resolvedSchema);
+    }
     return;
   }
 
@@ -151,7 +156,7 @@ async function main() {
     console.log("✓ Token generated, running migrations...");
 
     console.log("↪ Ensuring schema exists...");
-    await ensureSchemaExists(databaseUrl, resolvedSchema);
+    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
     await upsertSchemaRegistry(
       databaseUrl,
       resolvedSchema,
@@ -163,6 +168,10 @@ async function main() {
       resolvedSchema,
       VERCEL_GIT_COMMIT_REF
     );
+
+    if (isNew && resolvedSchema) {
+      await cloneDataFromPublic(databaseUrl, resolvedSchema);
+    }
 
     console.log("✓ Migrations completed successfully");
   } catch (error) {
@@ -176,15 +185,24 @@ async function main() {
 
 main();
 
-async function ensureSchemaExists(databaseUrl: string, schema: string | null) {
+async function ensureSchemaExists(
+  databaseUrl: string,
+  schema: string | null
+): Promise<boolean> {
   if (!schema) {
-    return;
+    return false;
   }
   const client = createSslClient(databaseUrl);
   await client.connect();
   try {
     const quoted = quoteIdentifier(schema);
+    const { rows } = await client.query(
+      "SELECT 1 FROM information_schema.schemata WHERE schema_name = $1",
+      [schema]
+    );
+    const existed = rows.length > 0;
     await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoted}`);
+    return !existed;
   } finally {
     await client.end();
   }
@@ -235,6 +253,128 @@ async function upsertSchemaRegistry(
        ON CONFLICT (schema_name)
        DO UPDATE SET branch = EXCLUDED.branch, last_seen_at = now()`,
       [schema, branch ?? null]
+    );
+  } finally {
+    await client.end();
+  }
+}
+
+const CLONE_SKIP_TABLES = new Set(["_prisma_migrations", "preview_schemas"]);
+
+/**
+ * Returns table names from `public` in topological order (parents before children)
+ * so that inserts respect FK constraints without needing superuser privileges.
+ */
+async function getTablesInFkOrder(client: pg.Client): Promise<string[]> {
+  const { rows: tables } = await client.query(
+    `SELECT table_name FROM information_schema.tables
+     WHERE table_schema = 'public'
+       AND table_type = 'BASE TABLE'
+     ORDER BY table_name`
+  );
+
+  const allTables: string[] = tables
+    .map((r: { table_name: string }) => r.table_name)
+    .filter((name: string) => !CLONE_SKIP_TABLES.has(name));
+
+  // Build dependency graph: child -> set of parent tables
+  const { rows: fks } = await client.query(
+    `SELECT
+       tc.table_name AS child,
+       ccu.table_name AS parent
+     FROM information_schema.table_constraints tc
+     JOIN information_schema.constraint_column_usage ccu
+       ON tc.constraint_name = ccu.constraint_name
+       AND tc.constraint_schema = ccu.constraint_schema
+     WHERE tc.constraint_type = 'FOREIGN KEY'
+       AND tc.table_schema = 'public'`
+  );
+
+  const deps = new Map<string, Set<string>>();
+  for (const table of allTables) {
+    deps.set(table, new Set());
+  }
+  for (const { child, parent } of fks as { child: string; parent: string }[]) {
+    if (child !== parent && deps.has(child) && deps.has(parent)) {
+      deps.get(child)!.add(parent);
+    }
+  }
+
+  // Topological sort (Kahn's algorithm)
+  const ordered: string[] = [];
+  const remaining = new Map(deps);
+  while (remaining.size > 0) {
+    const ready = [...remaining.entries()]
+      .filter(([, parents]) => [...parents].every((p) => !remaining.has(p)))
+      .map(([name]) => name);
+
+    if (ready.length === 0) {
+      // Circular dependency — append whatever is left
+      ordered.push(...remaining.keys());
+      break;
+    }
+    ready.sort();
+    for (const name of ready) {
+      remaining.delete(name);
+      ordered.push(name);
+    }
+  }
+
+  return ordered;
+}
+
+async function cloneDataFromPublic(databaseUrl: string, schema: string) {
+  console.log(`↪ Cloning data from public schema into ${schema}...`);
+  const client = createSslClient(databaseUrl);
+  await client.connect();
+  try {
+    const tableNames = await getTablesInFkOrder(client);
+
+    if (tableNames.length === 0) {
+      console.log("  No tables to clone.");
+      return;
+    }
+
+    const quoted = quoteIdentifier(schema);
+
+    for (const table of tableNames) {
+      const quotedTable = quoteIdentifier(table);
+      // Query column names and types to handle enum casts between schemas
+      const { rows: cols } = await client.query(
+        `SELECT column_name, data_type, udt_name FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = $2
+         ORDER BY ordinal_position`,
+        [schema, table]
+      );
+      type ColInfo = {
+        column_name: string;
+        data_type: string;
+        udt_name: string;
+      };
+      const insertCols = cols
+        .map((c: ColInfo) => quoteIdentifier(c.column_name))
+        .join(", ");
+      // For USER-DEFINED types (enums), cast through text to bridge schema-scoped types
+      const selectCols = cols
+        .map((c: ColInfo) => {
+          const col = quoteIdentifier(c.column_name);
+          if (c.data_type === "USER-DEFINED") {
+            return `${col}::text::${quoted}.${quoteIdentifier(c.udt_name)}`;
+          }
+          return col;
+        })
+        .join(", ");
+      const { rowCount } = await client.query(
+        `INSERT INTO ${quoted}.${quotedTable} (${insertCols}) SELECT ${selectCols} FROM "public".${quotedTable}`
+      );
+      console.log(`  ${table}: ${rowCount ?? 0} rows`);
+    }
+
+    console.log(`✓ Cloned ${tableNames.length} tables into ${schema}`);
+  } catch (error) {
+    console.error(
+      "⚠️  Data clone failed (schema will start empty):",
+      error instanceof Error ? error.message : String(error)
     );
   } finally {
     await client.end();

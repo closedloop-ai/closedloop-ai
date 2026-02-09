@@ -73,4 +73,5 @@ export type ProjectArtifact = {
   subtype: ProjectArtifactSubtype;
   status: ArtifactDisplayStatus;
   link?: string;
+  previewUrl?: string;
 };

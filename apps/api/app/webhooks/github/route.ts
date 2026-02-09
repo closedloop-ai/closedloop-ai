@@ -309,6 +309,26 @@ async function handleExecutionSuccess(
       },
     });
 
+    // Create preview deployment record for the branch.
+    // Don't set updatedAt here — let the polling refresh set it from GitHub
+    // once an actual deployment exists.
+    if (ctx.artifactId) {
+      await tx.previewDeployment.upsert({
+        where: { artifactId: ctx.artifactId },
+        create: {
+          artifactId: ctx.artifactId,
+          ref: executionResult.branch_name,
+          sha: executionResult.commit_sha ?? null,
+          environment: "preview",
+        },
+        update: {
+          ref: executionResult.branch_name,
+          sha: executionResult.commit_sha ?? null,
+          environment: "preview",
+        },
+      });
+    }
+
     // Create workstream event
     await tx.workstreamEvent.create({
       data: {
