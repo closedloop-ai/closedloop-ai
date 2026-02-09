@@ -1,13 +1,13 @@
 "use client";
 
-import { Node, mergeAttributes } from "@tiptap/core";
+import { mergeAttributes, Node } from "@tiptap/core";
 import {
-  ReactNodeViewRenderer,
-  NodeViewWrapper,
   type NodeViewProps,
+  NodeViewWrapper,
+  ReactNodeViewRenderer,
 } from "@tiptap/react";
-import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
+import { useEffect, useRef, useState } from "react";
 import { MermaidTransformPlugin } from "./mermaid-transform-plugin";
 
 // Initialize mermaid with default config
@@ -37,16 +37,21 @@ function MermaidComponent({
 
       try {
         const id = `mermaid-${Math.random().toString(36).substring(2, 11)}`;
-        const { svg: renderedSvg } = await mermaid.render(id, node.attrs.content as string);
+        const { svg: renderedSvg } = await mermaid.render(
+          id,
+          node.attrs.content as string
+        );
         setSvg(renderedSvg);
         setError("");
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to render diagram");
+        setError(
+          err instanceof Error ? err.message : "Failed to render diagram"
+        );
         setSvg("");
       }
     };
 
-    void renderDiagram();
+    renderDiagram();
   }, [node.attrs.content, isEditing]);
 
   function handleEdit() {
@@ -67,36 +72,36 @@ function MermaidComponent({
   return (
     <NodeViewWrapper className="mermaid-wrapper">
       <div
-        className={`border rounded-md p-4 my-4 ${selected ? "ring-2 ring-blue-500" : ""}`}
+        className={`my-4 rounded-md border p-4 ${selected ? "ring-2 ring-blue-500" : ""}`}
         ref={containerRef}
       >
         {isEditing ? (
           <div className="space-y-2">
             <textarea
-              className="w-full min-h-[200px] p-2 border rounded font-mono text-sm bg-muted"
-              value={editContent}
+              className="min-h-[200px] w-full rounded border bg-muted p-2 font-mono text-sm"
               onChange={(e) => setEditContent(e.target.value)}
               placeholder="Enter Mermaid diagram code..."
+              value={editContent}
             />
             <div className="flex gap-2">
               <button
-                type="button"
-                className="px-3 py-1 text-sm bg-primary text-primary-foreground rounded hover:bg-primary/90"
+                className="rounded bg-primary px-3 py-1 text-primary-foreground text-sm hover:bg-primary/90"
                 onClick={handleSave}
+                type="button"
               >
                 Save
               </button>
               <button
-                type="button"
-                className="px-3 py-1 text-sm border rounded hover:bg-accent"
+                className="rounded border px-3 py-1 text-sm hover:bg-accent"
                 onClick={handleCancel}
+                type="button"
               >
                 Cancel
               </button>
               <button
-                type="button"
-                className="px-3 py-1 text-sm border border-destructive text-destructive rounded hover:bg-destructive/10"
+                className="rounded border border-destructive px-3 py-1 text-destructive text-sm hover:bg-destructive/10"
                 onClick={deleteNode}
+                type="button"
               >
                 Delete
               </button>
@@ -104,41 +109,42 @@ function MermaidComponent({
           </div>
         ) : (
           <div>
-            {error ? (
+            {!!error && (
               <div className="text-destructive text-sm">
                 <div className="font-semibold">Mermaid Error:</div>
-                <pre className="mt-2 p-2 bg-muted rounded text-xs overflow-x-auto">
+                <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 text-xs">
                   {error}
                 </pre>
                 <button
-                  type="button"
-                  className="mt-2 px-3 py-1 text-sm border rounded hover:bg-accent"
+                  className="mt-2 rounded border px-3 py-1 text-sm hover:bg-accent"
                   onClick={handleEdit}
+                  type="button"
                 >
                   Edit Diagram
                 </button>
               </div>
-            ) : svg ? (
-              <div className="relative group">
+            )}
+            {!error && svg ? (
+              <div className="group relative">
                 <div
                   className="mermaid-diagram overflow-x-auto"
                   // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid generates safe SVG output
                   dangerouslySetInnerHTML={{ __html: svg }}
                 />
                 <button
-                  type="button"
-                  className="absolute top-2 right-2 px-3 py-1 text-sm border rounded bg-background/80 hover:bg-accent opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute top-2 right-2 rounded border bg-background/80 px-3 py-1 text-sm opacity-0 transition-opacity hover:bg-accent group-hover:opacity-100"
                   onClick={handleEdit}
+                  type="button"
                 >
                   Edit
                 </button>
               </div>
             ) : (
-              <div className="flex items-center justify-center min-h-[100px] text-muted-foreground">
+              <div className="flex min-h-[100px] items-center justify-center text-muted-foreground">
                 <button
-                  type="button"
-                  className="px-3 py-1 text-sm border rounded hover:bg-accent"
+                  className="rounded border px-3 py-1 text-sm hover:bg-accent"
                   onClick={handleEdit}
+                  type="button"
                 >
                   Add Mermaid Diagram
                 </button>
@@ -152,6 +158,7 @@ function MermaidComponent({
 }
 
 declare module "@tiptap/core" {
+  // biome-ignore lint/style/useConsistentTypeDefinitions: type expansion require interface
   interface Commands<ReturnType> {
     mermaid: {
       setMermaid: (attrs: { content: string }) => ReturnType;
@@ -183,7 +190,9 @@ export const MermaidExtension = Node.create({
         // Parse from code blocks with mermaid language
         tag: "pre",
         getAttrs: (node) => {
-          const codeElement = (node as HTMLElement).querySelector("code.language-mermaid");
+          const codeElement = (node as HTMLElement).querySelector(
+            "code.language-mermaid"
+          );
           if (codeElement) {
             return { content: codeElement.textContent || "" };
           }

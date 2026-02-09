@@ -1,21 +1,21 @@
 "use client";
 
 import "./tiptap-editor.css";
+import { cn } from "@repo/design-system/lib/utils";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
 import type { Editor } from "@tiptap/react";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { useEffect, useRef, useState } from "react";
 import StarterKit from "@tiptap/starter-kit";
+import { useEffect, useRef, useState } from "react";
 import { Markdown } from "tiptap-markdown";
-import { Table } from "@tiptap/extension-table";
-import { TableRow } from "@tiptap/extension-table-row";
-import { TableHeader } from "@tiptap/extension-table-header";
-import { TableCell } from "@tiptap/extension-table-cell";
-import { MermaidExtension } from "./mermaid-extension";
 import { mermaidMarkdownConfig } from "./markdown-mermaid-config";
-import { cn } from "@repo/design-system/lib/utils";
-import type { RichTextEditorProps } from "./types";
-import { TiptapToolbar } from "./tiptap-toolbar";
+import { MermaidExtension } from "./mermaid-extension";
 import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
+import { TiptapToolbar } from "./tiptap-toolbar";
+import type { RichTextEditorProps } from "./types";
 
 export function TiptapEditorCore({
   value,
@@ -72,7 +72,7 @@ export function TiptapEditorCore({
     editorProps: {
       attributes: {
         class: cn(
-          "prose prose-sm sm:prose-base dark:prose-invert max-w-none focus:outline-none min-h-[200px] p-4",
+          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none p-4 focus:outline-none",
           className
         ),
       },
@@ -106,10 +106,7 @@ export function TiptapEditorCore({
     const initialContent = initialContentRef.current;
 
     if (
-      !editor ||
-      !liveblocksExtension ||
-      !liveblocksIsReady ||
-      !initialContent ||
+      !(editor && liveblocksExtension && liveblocksIsReady && initialContent) ||
       hasSeededContent.current
     ) {
       return;
@@ -148,33 +145,32 @@ export function TiptapEditorCore({
   return (
     <>
       <div
-        className="flex min-h-0 flex-1 flex-col border rounded-md"
+        className="flex min-h-0 flex-1 flex-col rounded-md border"
         data-liveblocks-editor-boundary
       >
-        {!readOnly && <TiptapToolbar
-          editor={editor}
-          readOnly={readOnly}
-          hasLiveblocksExtension={!!liveblocksExtension}
-          onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
-        />}
+        {!readOnly && (
+          <TiptapToolbar
+            editor={editor}
+            hasLiveblocksExtension={!!liveblocksExtension}
+            onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
+            readOnly={readOnly}
+          />
+        )}
         <div
-          className={cn(
-            "min-h-0",
-            !isOuterScroll && "flex-1 overflow-y-auto"
-          )}
+          className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}
         >
           <EditorContent
-            editor={editor}
             className={cn("min-h-[200px]", readOnly && "p-4")}
+            editor={editor}
           />
         </div>
       </div>
 
       {!readOnly && (
         <TiptapPasteMarkdownDialog
-          open={showPasteMarkdownDialog}
           onOpenChange={setShowPasteMarkdownDialog}
           onSetContent={handleSetMarkdownContent}
+          open={showPasteMarkdownDialog}
         />
       )}
     </>
