@@ -153,7 +153,7 @@ export const artifactsService = {
         where: { id, organizationId },
       })
     );
-    return result ? (result as unknown as Artifact) : null;
+    return result;
   },
 
   /**
@@ -175,7 +175,7 @@ export const artifactsService = {
         },
       })
     );
-    return result ? (result as unknown as Artifact) : null;
+    return result;
   },
 
   /**
@@ -335,7 +335,7 @@ export const artifactsService = {
           ownerId: resolvedOwnerId,
         },
       });
-      return artifact as unknown as Artifact;
+      return artifact;
     });
 
     if (createdArtifact?.documentSlug) {
@@ -365,7 +365,7 @@ export const artifactsService = {
         data: input,
       })
     );
-    return result as unknown as Artifact;
+    return result;
   },
 
   /**
@@ -695,7 +695,7 @@ ${initialInstructions.trim()}`;
         }),
       ]);
 
-      return updatedArtifact as unknown as Artifact;
+      return updatedArtifact;
     });
   },
 
@@ -718,7 +718,7 @@ ${initialInstructions.trim()}`;
         },
       })
     );
-    return result as unknown as Artifact;
+    return result;
   },
 
   /**
@@ -749,7 +749,7 @@ ${initialInstructions.trim()}`;
       createArtifactRoom(newVersion);
     }
 
-    return newVersion as unknown as Artifact;
+    return newVersion;
   },
 
   /**
