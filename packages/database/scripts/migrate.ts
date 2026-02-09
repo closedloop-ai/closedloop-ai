@@ -10,24 +10,54 @@
  * affected by this behavior.
  */
 
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { Signer } from "@aws-sdk/rds-signer";
 import { awsCredentialsProvider } from "@vercel/functions/oidc";
-import pg from "pg";
 import { addSchemaToUrl, resolveSchemaName } from "../schema-utils";
+import { cloneDataFromPublic } from "./clone-schema";
+import {
+  ensureSchemaExists,
+  isPreviewSchema,
+  resetSchema,
+  upsertSchemaRegistry,
+} from "./preview-schema";
 
-function isPreviewSchema(schema: string | null): boolean {
-  return schema?.startsWith("preview_") ?? false;
-}
+const P3005_PATTERN = /\bP3005\b/;
 
 function runMigrateDeploy(databaseUrl: string) {
-  execSync("prisma migrate deploy", {
+  const result = spawnSync("prisma", ["migrate", "deploy"], {
     stdio: "pipe",
+    encoding: "utf8",
     env: {
       ...process.env,
       DATABASE_URL: databaseUrl,
     },
   });
+
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+
+  if (result.error || result.status !== 0) {
+    const error =
+      result.error ??
+      new Error(
+        `prisma migrate deploy failed with exit code ${result.status ?? "unknown"}`
+      );
+    (error as Error & { stdout?: string; stderr?: string }).stdout =
+      result.stdout ?? "";
+    (error as Error & { stdout?: string; stderr?: string }).stderr =
+      result.stderr ?? "";
+    throw error;
+  }
+}
+
+function isP3005Output(message: string): boolean {
+  // Prisma CLI is the only interface here; detect the documented error code.
+  return P3005_PATTERN.test(message);
 }
 
 /**
@@ -39,11 +69,12 @@ async function runMigrateWithRetry(
   databaseUrl: string,
   schema: string | null,
   branch: string | undefined
-) {
+): Promise<boolean> {
   try {
     runMigrateDeploy(databaseUrl);
+    return false;
   } catch (error) {
-    // execSync with stdio:"pipe" includes stdout/stderr on the error object
+    // runMigrateDeploy attaches stdout/stderr to the error object
     const stderr =
       error && typeof error === "object" && "stderr" in error
         ? String(error.stderr)
@@ -54,15 +85,7 @@ async function runMigrateWithRetry(
         : "";
     const combined = `${stderr}\n${stdout}`;
 
-    // Print captured output so it still appears in CI logs
-    if (stdout) {
-      process.stdout.write(stdout);
-    }
-    if (stderr) {
-      process.stderr.write(stderr);
-    }
-
-    if (combined.includes("P3005") && isPreviewSchema(schema)) {
+    if (isP3005Output(combined) && isPreviewSchema(schema)) {
       console.log(
         `↪ Preview schema ${schema} has stale data (P3005), resetting...`
       );
@@ -70,10 +93,30 @@ async function runMigrateWithRetry(
       runMigrateDeploy(databaseUrl);
       // Re-register so cleanup tracking still works after schema drop
       await upsertSchemaRegistry(databaseUrl, schema, branch);
-      return;
+      return true;
     }
 
     throw error;
+  }
+}
+
+/**
+ * Shared migration pipeline: ensure schema → register → migrate → clone.
+ * Used by both DATABASE_URL (password) and IAM auth paths.
+ */
+async function runMigrationPipeline(
+  databaseUrl: string,
+  schema: string | null,
+  branch: string | undefined
+) {
+  console.log("↪ Ensuring schema exists...");
+  const isNew = await ensureSchemaExists(databaseUrl, schema);
+  await upsertSchemaRegistry(databaseUrl, schema, branch);
+
+  const didReset = await runMigrateWithRetry(databaseUrl, schema, branch);
+
+  if ((isNew || didReset) && schema) {
+    await cloneDataFromPublic(databaseUrl, schema);
   }
 }
 
@@ -103,24 +146,21 @@ async function main() {
       "✓ DATABASE_URL found, running migrations with password auth..."
     );
     const databaseUrl = addSchemaToUrl(DATABASE_URL, resolvedSchema);
-    console.log("↪ Ensuring schema exists...");
-    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
-    await upsertSchemaRegistry(
-      databaseUrl,
-      resolvedSchema,
-      VERCEL_GIT_COMMIT_REF
-    );
-    execSync("prisma migrate deploy", {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        DATABASE_URL: databaseUrl,
-      },
-    });
-    if (isNew && resolvedSchema) {
-      await cloneDataFromPublic(databaseUrl, resolvedSchema);
+    try {
+      await runMigrationPipeline(
+        databaseUrl,
+        resolvedSchema,
+        VERCEL_GIT_COMMIT_REF
+      );
+      console.log("✓ Migrations completed successfully");
+      return;
+    } catch (error) {
+      console.error(
+        "❌ Migration failed:",
+        error instanceof Error ? error.message : String(error)
+      );
+      process.exit(1);
     }
-    return;
   }
 
   // Otherwise, use IAM authentication
@@ -155,23 +195,11 @@ async function main() {
 
     console.log("✓ Token generated, running migrations...");
 
-    console.log("↪ Ensuring schema exists...");
-    const isNew = await ensureSchemaExists(databaseUrl, resolvedSchema);
-    await upsertSchemaRegistry(
+    await runMigrationPipeline(
       databaseUrl,
       resolvedSchema,
       VERCEL_GIT_COMMIT_REF
     );
-
-    await runMigrateWithRetry(
-      databaseUrl,
-      resolvedSchema,
-      VERCEL_GIT_COMMIT_REF
-    );
-
-    if (isNew && resolvedSchema) {
-      await cloneDataFromPublic(databaseUrl, resolvedSchema);
-    }
 
     console.log("✓ Migrations completed successfully");
   } catch (error) {
@@ -184,212 +212,3 @@ async function main() {
 }
 
 main();
-
-async function ensureSchemaExists(
-  databaseUrl: string,
-  schema: string | null
-): Promise<boolean> {
-  if (!schema) {
-    return false;
-  }
-  const client = createSslClient(databaseUrl);
-  await client.connect();
-  try {
-    const quoted = quoteIdentifier(schema);
-    const { rows } = await client.query(
-      "SELECT 1 FROM information_schema.schemata WHERE schema_name = $1",
-      [schema]
-    );
-    const existed = rows.length > 0;
-    await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoted}`);
-    return !existed;
-  } finally {
-    await client.end();
-  }
-}
-
-/**
- * Drops and recreates a preview schema so migrations can run from scratch.
- * Only callable for preview_ schemas as a safety guard.
- */
-async function resetSchema(databaseUrl: string, schema: string | null) {
-  if (!(schema && isPreviewSchema(schema))) {
-    throw new Error(`resetSchema refused: ${schema} is not a preview schema`);
-  }
-  const client = createSslClient(databaseUrl);
-  await client.connect();
-  try {
-    const quoted = quoteIdentifier(schema);
-    await client.query(`DROP SCHEMA IF EXISTS ${quoted} CASCADE`);
-    await client.query(`CREATE SCHEMA ${quoted}`);
-    console.log(`✓ Preview schema ${schema} reset successfully`);
-  } finally {
-    await client.end();
-  }
-}
-
-async function upsertSchemaRegistry(
-  databaseUrl: string,
-  schema: string | null,
-  branch: string | undefined
-) {
-  if (!schema?.startsWith("preview_")) {
-    return;
-  }
-  const client = createSslClient(databaseUrl);
-  await client.connect();
-  try {
-    await client.query(
-      `CREATE TABLE IF NOT EXISTS preview_schemas (
-        schema_name text PRIMARY KEY,
-        branch text,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        last_seen_at timestamptz NOT NULL DEFAULT now()
-      )`
-    );
-    await client.query(
-      `INSERT INTO preview_schemas (schema_name, branch)
-       VALUES ($1, $2)
-       ON CONFLICT (schema_name)
-       DO UPDATE SET branch = EXCLUDED.branch, last_seen_at = now()`,
-      [schema, branch ?? null]
-    );
-  } finally {
-    await client.end();
-  }
-}
-
-const CLONE_SKIP_TABLES = new Set(["_prisma_migrations", "preview_schemas"]);
-
-/**
- * Returns table names from `public` in topological order (parents before children)
- * so that inserts respect FK constraints without needing superuser privileges.
- */
-async function getTablesInFkOrder(client: pg.Client): Promise<string[]> {
-  const { rows: tables } = await client.query(
-    `SELECT table_name FROM information_schema.tables
-     WHERE table_schema = 'public'
-       AND table_type = 'BASE TABLE'
-     ORDER BY table_name`
-  );
-
-  const allTables: string[] = tables
-    .map((r: { table_name: string }) => r.table_name)
-    .filter((name: string) => !CLONE_SKIP_TABLES.has(name));
-
-  // Build dependency graph: child -> set of parent tables
-  const { rows: fks } = await client.query(
-    `SELECT
-       tc.table_name AS child,
-       ccu.table_name AS parent
-     FROM information_schema.table_constraints tc
-     JOIN information_schema.constraint_column_usage ccu
-       ON tc.constraint_name = ccu.constraint_name
-       AND tc.constraint_schema = ccu.constraint_schema
-     WHERE tc.constraint_type = 'FOREIGN KEY'
-       AND tc.table_schema = 'public'`
-  );
-
-  const deps = new Map<string, Set<string>>();
-  for (const table of allTables) {
-    deps.set(table, new Set());
-  }
-  for (const { child, parent } of fks as { child: string; parent: string }[]) {
-    if (child !== parent && deps.has(child) && deps.has(parent)) {
-      deps.get(child)!.add(parent);
-    }
-  }
-
-  // Topological sort (Kahn's algorithm)
-  const ordered: string[] = [];
-  const remaining = new Map(deps);
-  while (remaining.size > 0) {
-    const ready = [...remaining.entries()]
-      .filter(([, parents]) => [...parents].every((p) => !remaining.has(p)))
-      .map(([name]) => name);
-
-    if (ready.length === 0) {
-      // Circular dependency — append whatever is left
-      ordered.push(...remaining.keys());
-      break;
-    }
-    ready.sort();
-    for (const name of ready) {
-      remaining.delete(name);
-      ordered.push(name);
-    }
-  }
-
-  return ordered;
-}
-
-async function cloneDataFromPublic(databaseUrl: string, schema: string) {
-  console.log(`↪ Cloning data from public schema into ${schema}...`);
-  const client = createSslClient(databaseUrl);
-  await client.connect();
-  try {
-    const tableNames = await getTablesInFkOrder(client);
-
-    if (tableNames.length === 0) {
-      console.log("  No tables to clone.");
-      return;
-    }
-
-    const quoted = quoteIdentifier(schema);
-
-    for (const table of tableNames) {
-      const quotedTable = quoteIdentifier(table);
-      // Query column names and types to handle enum casts between schemas
-      const { rows: cols } = await client.query(
-        `SELECT column_name, data_type, udt_name FROM information_schema.columns
-         WHERE table_schema = $1 AND table_name = $2
-         ORDER BY ordinal_position`,
-        [schema, table]
-      );
-      type ColInfo = {
-        column_name: string;
-        data_type: string;
-        udt_name: string;
-      };
-      const insertCols = cols
-        .map((c: ColInfo) => quoteIdentifier(c.column_name))
-        .join(", ");
-      // For USER-DEFINED types (enums), cast through text to bridge schema-scoped types
-      const selectCols = cols
-        .map((c: ColInfo) => {
-          const col = quoteIdentifier(c.column_name);
-          if (c.data_type === "USER-DEFINED") {
-            return `${col}::text::${quoted}.${quoteIdentifier(c.udt_name)}`;
-          }
-          return col;
-        })
-        .join(", ");
-      const { rowCount } = await client.query(
-        `INSERT INTO ${quoted}.${quotedTable} (${insertCols}) SELECT ${selectCols} FROM "public".${quotedTable}`
-      );
-      console.log(`  ${table}: ${rowCount ?? 0} rows`);
-    }
-
-    console.log(`✓ Cloned ${tableNames.length} tables into ${schema}`);
-  } catch (error) {
-    console.error(
-      "⚠️  Data clone failed (schema will start empty):",
-      error instanceof Error ? error.message : String(error)
-    );
-  } finally {
-    await client.end();
-  }
-}
-
-function createSslClient(databaseUrl: string) {
-  const url = new URL(databaseUrl);
-  url.searchParams.delete("sslmode");
-  return new pg.Client({
-    connectionString: url.toString(),
-    ssl: { rejectUnauthorized: false },
-  });
-}
-
-function quoteIdentifier(value: string) {
-  return `"${String(value).replace(/"/g, '""')}"`;
-}

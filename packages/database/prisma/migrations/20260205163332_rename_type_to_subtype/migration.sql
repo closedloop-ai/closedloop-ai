@@ -21,5 +21,12 @@ ALTER INDEX "artifacts_organization_id_project_id_type_is_latest_idx" RENAME TO 
 ALTER INDEX "artifacts_organization_id_parent_id_type_is_latest_idx" RENAME TO "artifacts_organization_id_parent_id_subtype_is_latest_idx";
 ALTER INDEX "artifacts_organization_id_type_template_for_type_idx" RENAME TO "artifacts_organization_id_subtype_template_for_subtype_idx";
 
--- Step 7: Rename unique constraint
+-- Step 6: Rename unique constraint
 ALTER INDEX "artifacts_organization_id_template_for_type_key" RENAME TO "artifacts_organization_id_template_for_subtype_key";
+
+-- Step 7: Backfill type values based on subtype
+-- After the rename, all rows have type=DOCUMENT (the old category default).
+-- Assumption: only PULL_REQUEST and FIGMA_DESIGN map to non-DOCUMENT types.
+-- If other subtypes should map to WORKFLOW or BRANCH, update this backfill.
+UPDATE "artifacts" SET "type" = 'BRANCH' WHERE "subtype" = 'PULL_REQUEST';
+UPDATE "artifacts" SET "type" = 'WORKFLOW' WHERE "subtype" = 'FIGMA_DESIGN';
