@@ -153,7 +153,7 @@ export function PlanEditor({
   const pollStartRef = useRef<number | null>(null);
   const pollStoppedRef = useRef(false);
   const emptyRefreshCountRef = useRef(0);
-  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const refreshRef = useRef(refreshPreviewDeployment);
   refreshRef.current = refreshPreviewDeployment;
 
