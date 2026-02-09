@@ -121,11 +121,7 @@ describe("RatingSection", () => {
       });
 
       // Assert disabled state
-      if (expectedDisabled) {
-        expect(button).toBeDisabled();
-      } else {
-        expect(button).not.toBeDisabled();
-      }
+      expect(button.hasAttribute("disabled")).toBe(expectedDisabled);
     }
   );
 });

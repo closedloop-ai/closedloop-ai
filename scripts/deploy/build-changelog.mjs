@@ -10,7 +10,7 @@ if (!token) {
   throw new Error("GITHUB_TOKEN is required to build the changelog.");
 }
 
-if (!repository || !repository.includes("/")) {
+if (!(repository && repository.includes("/"))) {
   throw new Error("GITHUB_REPOSITORY must be set (owner/repo).");
 }
 
@@ -36,7 +36,7 @@ async function api(path) {
         : reset > 0
           ? Math.max(reset * 1000 - Date.now(), 1000)
           : 5000,
-      30000
+      30_000
     );
     await sleep(waitMs);
     response = await fetch(`https://api.github.com${path}`, { headers });
@@ -44,7 +44,9 @@ async function api(path) {
   if (!response.ok) {
     const text = await response.text();
     if (response.status === 403) {
-      console.warn(`GitHub API rate limit hit for ${path}. Changelog may be incomplete.`);
+      console.warn(
+        `GitHub API rate limit hit for ${path}. Changelog may be incomplete.`
+      );
     }
     throw new Error(`GitHub API error: ${response.status} ${text}`);
   }
