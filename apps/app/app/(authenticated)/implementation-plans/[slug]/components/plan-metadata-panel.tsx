@@ -4,9 +4,11 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
   GenerationStatus,
+  PreviewDeployment,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -15,11 +17,13 @@ import {
 import { Label } from "@repo/design-system/components/ui/label";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   ChevronDownIcon,
   ChevronUpIcon,
   ExternalLinkIcon,
   GitPullRequestIcon,
+  RefreshCwIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
@@ -32,18 +36,17 @@ import {
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import {
+  previewDeploymentStateColors,
+  pullRequestStateColors,
+  StatusBadge,
+} from "@/components/status-badge";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import {
   calculateAcceptanceRate,
   sortMetricsByScore,
 } from "@/lib/evaluation-utils";
 import { JudgeResultCard } from "./judge-result-card";
-
-const PR_STATE_STYLES: Record<string, string> = {
-  OPEN: "bg-green-100 text-green-700",
-  MERGED: "bg-purple-100 text-purple-700",
-  CLOSED: "bg-red-100 text-red-700",
-};
 
 type PlanMetadataPanelProps = {
   /**
@@ -74,6 +77,18 @@ type PlanMetadataPanelProps = {
    * Pull request information if plan has been executed
    */
   pullRequest: PullRequestInfo | null;
+  /**
+   * Preview deployment information if available
+   */
+  previewDeployment: PreviewDeployment | null;
+  /**
+   * Refresh preview deployment status
+   */
+  onPreviewRefresh: () => Promise<PreviewDeployment | null>;
+  /**
+   * Whether a preview refresh is in flight
+   */
+  isPreviewRefreshing: boolean;
   /**
    * Judges report containing evaluation results for all judges
    */
@@ -108,6 +123,9 @@ export function PlanMetadataPanel({
   teamMembers,
   generationStatus,
   pullRequest,
+  previewDeployment,
+  onPreviewRefresh,
+  isPreviewRefreshing,
   judgesReport,
   onStatusChange,
   onApproverChange,
@@ -188,14 +206,77 @@ export function PlanMetadataPanel({
                   <ExternalLinkIcon className="h-3 w-3" />
                 </a>
                 <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                  <span
-                    className={`inline-flex items-center rounded-full px-2 py-0.5 font-medium text-xs ${PR_STATE_STYLES[pullRequest.state]}`}
-                  >
-                    {pullRequest.state}
-                  </span>
+                  <StatusBadge
+                    className="px-2 py-0.5 text-xs uppercase"
+                    colorMap={pullRequestStateColors}
+                    status={pullRequest.state}
+                  />
                   <span>
                     {pullRequest.headBranch} → {pullRequest.baseBranch}
                   </span>
+                </div>
+              </MetadataSection>
+            ) : null}
+
+            {previewDeployment ? (
+              <MetadataSection separator>
+                <div className="flex items-center justify-between">
+                  <Label className="text-muted-foreground text-xs">
+                    Preview
+                  </Label>
+                  <Button
+                    aria-label="Refresh preview deployment status"
+                    disabled={isPreviewRefreshing}
+                    onClick={() => {
+                      onPreviewRefresh().catch((error: unknown) => {
+                        console.warn(
+                          "[preview-refresh] Failed to refresh preview deployment",
+                          error
+                        );
+                      });
+                    }}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <RefreshCwIcon
+                      className={cn(
+                        "h-3 w-3",
+                        isPreviewRefreshing && "animate-spin"
+                      )}
+                    />
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {previewDeployment.url ? (
+                    <a
+                      className="flex items-center gap-1 text-primary text-sm hover:underline"
+                      href={previewDeployment.url}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      Open Preview
+                      <ExternalLinkIcon className="h-3 w-3" />
+                    </a>
+                  ) : (
+                    <p className="text-muted-foreground text-xs">
+                      Preview link not available yet.
+                    </p>
+                  )}
+                  <div className="text-muted-foreground text-xs">
+                    <span className="mr-2">
+                      {previewDeployment.environment
+                        ? `Environment: ${previewDeployment.environment}`
+                        : "Environment: preview"}
+                    </span>
+                    {previewDeployment.state ? (
+                      <StatusBadge
+                        className="px-1.5 py-0 text-xs uppercase"
+                        colorMap={previewDeploymentStateColors}
+                        defaultStyle="bg-muted text-muted-foreground border-muted"
+                        status={previewDeployment.state.toUpperCase()}
+                      />
+                    ) : null}
+                  </div>
                 </div>
               </MetadataSection>
             ) : null}

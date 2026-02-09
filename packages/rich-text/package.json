@@ -8,14 +8,14 @@
   },
   "dependencies": {
     "@repo/design-system": "workspace:*",
-    "@tiptap/core": "^3.18.0",
-    "@tiptap/extension-table": "^3.18.0",
-    "@tiptap/extension-table-cell": "^3.18.0",
-    "@tiptap/extension-table-header": "^3.18.0",
-    "@tiptap/extension-table-row": "^3.18.0",
-    "@tiptap/pm": "^3.18.0",
-    "@tiptap/react": "^3.18.0",
-    "@tiptap/starter-kit": "^3.18.0",
+    "@tiptap/core": "^3.19.0",
+    "@tiptap/extension-table": "^3.19.0",
+    "@tiptap/extension-table-cell": "^3.19.0",
+    "@tiptap/extension-table-header": "^3.19.0",
+    "@tiptap/extension-table-row": "^3.19.0",
+    "@tiptap/pm": "^3.19.0",
+    "@tiptap/react": "^3.19.0",
+    "@tiptap/starter-kit": "^3.19.0",
     "lucide-react": "^0.556.0",
     "mermaid": "^11.12.2",
     "react": "19.2.1",
@@ -23,8 +23,8 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/node": "^25.0.9",
-    "@types/react": "^19.2.7",
+    "@types/node": "^25.2.2",
+    "@types/react": "^19.2.13",
     "typescript": "^5.9.3"
   }
 }

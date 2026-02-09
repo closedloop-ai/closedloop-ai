@@ -652,6 +652,35 @@ export const githubService = {
   },
 
   /**
+   * Find the GitHub installationId for a repository fullName owned by an organization.
+   */
+  async findInstallationForRepoFullName(
+    organizationId: string,
+    fullName: string
+  ): Promise<number | null> {
+    const repository = await withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: {
+          fullName,
+          installation: {
+            organizationId,
+            status: "ACTIVE",
+          },
+        },
+        select: {
+          installation: {
+            select: {
+              installationId: true,
+            },
+          },
+        },
+      })
+    );
+
+    return repository?.installation.installationId ?? null;
+  },
+
+  /**
    * Remove GitHubInstallationRepository records by githubRepoId.
    * Used when repositories are removed from an installation.
    */

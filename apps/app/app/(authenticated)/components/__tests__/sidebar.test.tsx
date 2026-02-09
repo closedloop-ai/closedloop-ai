@@ -1,6 +1,6 @@
-import { render } from "@testing-library/react";
+import { cleanup, render } from "@testing-library/react";
 import type React from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { GlobalSidebar } from "../sidebar";
 
 // Mock dependencies
@@ -101,6 +101,7 @@ const createMockOrganization = (overrides?: Record<string, unknown>) => ({
 });
 
 describe("GlobalSidebar - Cache Invalidation", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -177,6 +178,7 @@ describe("GlobalSidebar - Cache Invalidation", () => {
 });
 
 describe("GlobalSidebar - Conditional Rendering", () => {
+  afterEach(cleanup);
   beforeEach(() => {
     vi.clearAllMocks();
 
