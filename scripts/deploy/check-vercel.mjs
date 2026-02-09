@@ -8,7 +8,8 @@ const sha = process.env.DEPLOY_SHA;
 const timeoutSeconds = Number(process.env.VERCEL_TIMEOUT_SECONDS || 1200);
 const intervalSeconds = Number(process.env.VERCEL_POLL_INTERVAL_SECONDS || 20);
 const fetchLimitRaw = Number(process.env.VERCEL_FETCH_LIMIT || 20);
-const fetchLimit = Number.isFinite(fetchLimitRaw) && fetchLimitRaw > 0 ? fetchLimitRaw : 20;
+const fetchLimit =
+  Number.isFinite(fetchLimitRaw) && fetchLimitRaw > 0 ? fetchLimitRaw : 20;
 const outputPath = process.env.VERCEL_STATUS_PATH || "vercel-status.json";
 
 if (!token) {
@@ -103,75 +104,81 @@ while (Date.now() < deadline) {
   iteration++;
   console.log(`\n--- Poll iteration ${iteration} ---`);
 
-  await Promise.all(projectIds.map(async (projectId) => {
-    if (results.get(projectId)?.done) {
-      return;
-    }
+  await Promise.all(
+    projectIds.map(async (projectId) => {
+      if (results.get(projectId)?.done) {
+        return;
+      }
 
-    let deployment;
-    try {
-      deployment = await fetchWithRetry(projectId, 2, 2000);
-    } catch (error) {
-      console.log(`${projectId}: API error while fetching deployment (${error.message || error})`);
+      let deployment;
+      try {
+        deployment = await fetchWithRetry(projectId, 2, 2000);
+      } catch (error) {
+        console.log(
+          `${projectId}: API error while fetching deployment (${error.message || error})`
+        );
+        results.set(projectId, {
+          projectId,
+          status: "ERROR",
+          error: error.message || String(error),
+          done: true,
+          failed: true,
+        });
+        return;
+      }
+      if (!deployment) {
+        console.log(`${projectId}: PENDING (no deployment yet)`);
+        results.set(projectId, {
+          projectId,
+          status: "PENDING",
+          message: "Waiting for deployment to start...",
+        });
+        return;
+      }
+
+      const state = deployment.readyState || deployment.state;
+      const url = deployment.url ? `https://${deployment.url}` : deployment.url;
+
+      if (isSuccessState(state)) {
+        console.log(`${projectId}: READY - ${url}`);
+        results.set(projectId, {
+          projectId,
+          status: "READY",
+          url,
+          deploymentId: deployment.uid,
+          done: true,
+        });
+        return;
+      }
+
+      if (isErrorState(state)) {
+        console.log(`${projectId}: ${state}`);
+        results.set(projectId, {
+          projectId,
+          status: state,
+          url,
+          deploymentId: deployment.uid,
+          error: deployment.errorMessage || deployment.error,
+          done: true,
+          failed: true,
+        });
+        return;
+      }
+
+      console.log(`${projectId}: ${state || "BUILDING"}...`);
       results.set(projectId, {
         projectId,
-        status: "ERROR",
-        error: error.message || String(error),
-        done: true,
-        failed: true,
-      });
-      return;
-    }
-    if (!deployment) {
-      console.log(`${projectId}: PENDING (no deployment yet)`);
-      results.set(projectId, {
-        projectId,
-        status: "PENDING",
-        message: "Waiting for deployment to start...",
-      });
-      return;
-    }
-
-    const state = deployment.readyState || deployment.state;
-    const url = deployment.url ? `https://${deployment.url}` : deployment.url;
-
-    if (isSuccessState(state)) {
-      console.log(`${projectId}: READY - ${url}`);
-      results.set(projectId, {
-        projectId,
-        status: "READY",
+        status: state || "BUILDING",
         url,
         deploymentId: deployment.uid,
-        done: true,
+        message: "Deployment in progress",
       });
-      return;
-    }
+    })
+  );
 
-    if (isErrorState(state)) {
-      console.log(`${projectId}: ${state}`);
-      results.set(projectId, {
-        projectId,
-        status: state,
-        url,
-        deploymentId: deployment.uid,
-        error: deployment.errorMessage || deployment.error,
-        done: true,
-        failed: true,
-      });
-      return;
-    }
-
-    console.log(`${projectId}: ${state || "BUILDING"}...`);
-    results.set(projectId, {
-      projectId,
-      status: state || "BUILDING",
-      url,
-      deploymentId: deployment.uid,
-      message: "Deployment in progress",
-    });
-  }));
-
-  const allReady = projectIds.every((id) => results.get(id)?.status === "READY");
+  const allReady = projectIds.every(
+    (id) => results.get(id)?.status === "READY"
+  );
   const anyFailed = projectIds.some((id) => results.get(id)?.failed);
 
   if (allReady) {
@@ -220,7 +227,9 @@ await writeFile(outputPath, JSON.stringify(summary, null, 2));
 
 console.log(`\n--- Final Status (after ${iteration} iterations) ---`);
 for (const d of summary.deployments) {
-  console.log(`${d.projectId}: ${d.status}${d.url ? ` - ${d.url}` : ""}${d.error ? ` (${d.error})` : ""}`);
+  console.log(
+    `${d.projectId}: ${d.status}${d.url ? ` - ${d.url}` : ""}${d.error ? ` (${d.error})` : ""}`
+  );
 }
 
 if (!summary.ok) {
