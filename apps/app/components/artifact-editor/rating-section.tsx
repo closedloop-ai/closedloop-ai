@@ -133,6 +133,7 @@ export function RatingSection({
               <Button
                 disabled={
                   submitRating.isPending ||
+                  !userRating?.score ||
                   (isEditingComment && commentDraft === userRating?.comment)
                 }
                 onClick={() => {
