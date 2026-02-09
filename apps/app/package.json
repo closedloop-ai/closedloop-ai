@@ -22,6 +22,7 @@
     "@repo/next-config": "workspace:*",
     "@repo/notifications": "workspace:*",
     "@repo/observability": "workspace:*",
+    "@repo/rich-text": "workspace:*",
     "@repo/security": "workspace:*",
     "@repo/seo": "workspace:*",
     "@repo/webhooks": "workspace:*",

@@ -1,8 +1,8 @@
 "use client";
 
 import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
-import { RichTextEditor } from "@repo/design-system/components/ui/rich-text-editor";
 import { cn } from "@repo/design-system/lib/utils";
+import { RichTextEditor } from "@repo/rich-text";
 import type { Editor } from "@tiptap/react";
 
 type EditorContentProps = {
@@ -19,11 +19,8 @@ type EditorContentProps = {
    */
   liveblocksRoomId?: string | null;
   /**
-   * Whether to enable Liveblocks for this editor instance
-   */
-  enableLiveblocks?: boolean;
-  /**
-   * Callback to get the editor instance (for comments/collaboration features)
+   * Callback to get the editor instance (for comments/collaboration features).
+   * The callback is only called when liveblocks is enabled (liveblocksRoomId is not null).
    */
   onEditorReady?: (editor: Editor | null) => void;
   /**
@@ -57,7 +54,6 @@ export function EditorContent({
   value,
   onChange,
   liveblocksRoomId,
-  enableLiveblocks = true,
   onEditorReady,
   placeholder,
   readOnly,
@@ -66,10 +62,7 @@ export function EditorContent({
   contentResetValue,
   scrollMode = "inner",
 }: Readonly<EditorContentProps>) {
-  const shouldUseLiveblocks = !!liveblocksRoomId && enableLiveblocks;
-  const editorKey = shouldUseLiveblocks
-    ? `liveblocks-${liveblocksRoomId ?? "room"}`
-    : "static";
+  const shouldUseLiveblocks = !!liveblocksRoomId;
 
   // If no roomId, render without Liveblocks
   if (!shouldUseLiveblocks) {
@@ -84,9 +77,7 @@ export function EditorContent({
         <RichTextEditor
           contentResetKey={contentResetKey}
           contentResetValue={contentResetValue}
-          key={editorKey}
           onChange={onChange}
-          onEditorReady={onEditorReady}
           placeholder={placeholder}
           readOnly={readOnly}
           scrollMode={scrollMode}
@@ -102,7 +93,6 @@ export function EditorContent({
       className={className}
       contentResetKey={contentResetKey}
       contentResetValue={contentResetValue}
-      editorKey={editorKey}
       onChange={onChange}
       onEditorReady={onEditorReady}
       placeholder={placeholder}
@@ -120,9 +110,7 @@ export function EditorContent({
 type EditorContentWithLiveblocksProps = Omit<
   EditorContentProps,
   "liveblocksRoomId" | "enableLiveblocks"
-> & {
-  editorKey: string;
-};
+>;
 
 function EditorContentWithLiveblocks({
   value,
@@ -133,9 +121,8 @@ function EditorContentWithLiveblocks({
   className,
   contentResetKey,
   contentResetValue,
-  editorKey,
   scrollMode = "inner",
-}: EditorContentWithLiveblocksProps) {
+}: Readonly<EditorContentWithLiveblocksProps>) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
 
@@ -150,7 +137,6 @@ function EditorContentWithLiveblocks({
       <RichTextEditor
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
-        key={editorKey}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={isEditorReady}
         onChange={onChange}
