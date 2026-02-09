@@ -33,7 +33,7 @@
     "adm-zip": "^0.5.16",
     "import-in-the-middle": "^2.0.6",
     "nanoid": "^5.1.6",
-    "next": "16.1.5",
+    "next": "16.1.6",
     "pg": "^8.18.0",
     "react": "19.2.1",
     "react-dom": "19.2.1",
