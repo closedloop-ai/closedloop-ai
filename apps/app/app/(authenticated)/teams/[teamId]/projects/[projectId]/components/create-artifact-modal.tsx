@@ -28,6 +28,10 @@ import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, UploadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
+import {
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
@@ -146,15 +150,11 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
 
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
   const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
-  const supportsTemplate =
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG";
-  const supportsContentUpload =
+  const isDocumentArtifact =
     artifactType === "PRD" ||
     artifactType === "ISSUE" ||
     artifactType === "BUG";
@@ -181,8 +181,8 @@ export function CreateArtifactModal({
 
   // Fetch template for types that have templates
   const { data: template } = useOrgTemplateByType(
-    supportsTemplate ? artifactType : "",
-    { enabled: open && supportsTemplate }
+    isDocumentArtifact ? artifactType : "",
+    { enabled: open && isDocumentArtifact }
   );
 
   // Fetch PRDs when modal opens for implementation plan
@@ -234,7 +234,7 @@ export function CreateArtifactModal({
   // Prefill content from template when loaded (only on initial load)
   useEffect(() => {
     if (template?.content) {
-      setContent((current) => (current ? current : (template.content ?? "")));
+      setContent((current) => current || (template.content ?? ""));
     }
   }, [template]);
 
@@ -255,8 +255,8 @@ export function CreateArtifactModal({
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat(".md");
       setFileName(generatedFileName);
     }
@@ -283,9 +283,7 @@ export function CreateArtifactModal({
     setSelectedRepoId("");
     setSelectedPrdId("");
     setError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    fileInputRef.current?.reset();
   };
 
   const handleClose = () => {
@@ -293,28 +291,12 @@ export function CreateArtifactModal({
     resetForm();
   };
 
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) {
+  const handleFileRead = (content: string) => {
+    if (!content.trim()) {
+      setError("File is empty");
       return;
     }
-
-    try {
-      const content = await file.text();
-      if (!content.trim()) {
-        setError("File is empty");
-        return;
-      }
-      setContent(content);
-    } catch (_error) {
-      setError("Failed to read file. Please try again.");
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
+    setContent(content);
   };
 
   const handleSubmit = () => {
@@ -338,7 +320,6 @@ export function CreateArtifactModal({
         fileName: fileName.trim() || undefined,
         content: content.trim() || undefined,
         parentId: isImplementationPlan ? selectedPrdId : undefined,
-        // Common fields for PRD and Implementation Plan
         approver: approver.trim() || undefined,
         status,
         targetRepo: targetRepo.trim() || undefined,
@@ -348,11 +329,6 @@ export function CreateArtifactModal({
         onSuccess: (artifact) => {
           handleClose();
           onSuccess?.(artifact);
-        },
-        onError: (err) => {
-          setError(
-            err instanceof Error ? err.message : "Failed to create artifact"
-          );
         },
       }
     );
@@ -513,7 +489,7 @@ export function CreateArtifactModal({
             </Select>
           </div>
 
-          {supportsContentUpload && (
+          {isDocumentArtifact && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="artifact-content">
@@ -523,7 +499,7 @@ export function CreateArtifactModal({
                   </span>
                 </Label>
                 <Button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => fileInputRef.current?.open()}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -532,13 +508,12 @@ export function CreateArtifactModal({
                   Upload .md
                 </Button>
               </div>
-              <input
+              <HiddenFileInput
                 accept=".md"
                 aria-label="Upload markdown file for artifact content"
-                className="hidden"
-                onChange={handleFileChange}
+                onError={setError}
+                onFileRead={handleFileRead}
                 ref={fileInputRef}
-                type="file"
               />
               <Textarea
                 className="min-h-[120px] font-mono text-sm"

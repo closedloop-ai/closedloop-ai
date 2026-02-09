@@ -69,7 +69,7 @@ try {
   // Check 2: Basic query
   console.log("\n2. Running basic query...");
   const queryStart = Date.now();
-  const _result = await client.query("SELECT 1 as health_check");
+  await client.query("SELECT 1 as health_check");
   const queryLatency = Date.now() - queryStart;
   console.log(`   ✓ Query successful in ${queryLatency}ms`);
 

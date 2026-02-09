@@ -23,6 +23,10 @@ import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
 import { useCreateArtifact } from "@/hooks/queries/use-artifacts";
 import {
   useGitHubBranches,
@@ -44,7 +48,7 @@ export function NewPRDModal() {
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -120,33 +124,15 @@ export function NewPRDModal() {
     setTargetBranch("main");
     setSelectedRepoId("");
     setError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    fileInputRef.current?.reset();
   };
 
-  const handleFileChange = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-    if (!file) {
+  const handleFileRead = (content: string) => {
+    if (!content.trim()) {
+      setError("File is empty");
       return;
     }
-
-    try {
-      const content = await file.text();
-      if (!content.trim()) {
-        setError("File is empty");
-        return;
-      }
-      setContent(content);
-    } catch (_error) {
-      setError("Failed to read file. Please try again.");
-    } finally {
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-    }
+    setContent(content);
   };
 
   const handleSubmit = () => {
@@ -325,7 +311,7 @@ export function NewPRDModal() {
                 </span>
               </Label>
               <Button
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => fileInputRef.current?.open()}
                 size="sm"
                 type="button"
                 variant="outline"
@@ -334,13 +320,12 @@ export function NewPRDModal() {
                 Upload .md
               </Button>
             </div>
-            <input
+            <HiddenFileInput
               accept=".md"
               aria-label="Upload markdown file for PRD content"
-              className="hidden"
-              onChange={handleFileChange}
+              onError={setError}
+              onFileRead={handleFileRead}
               ref={fileInputRef}
-              type="file"
             />
             <Textarea
               className="min-h-[150px] font-mono text-sm"
