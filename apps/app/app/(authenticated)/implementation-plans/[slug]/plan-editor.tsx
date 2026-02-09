@@ -40,6 +40,35 @@ const PREVIEW_POLL_FAST_MS = 15_000;
 const PREVIEW_POLL_MEDIUM_MS = 30_000;
 const PREVIEW_POLL_SLOW_MS = 60_000;
 
+const POLL_STOP_STATUSES = new Set([401, 403, 429, 404, 422]);
+
+async function executePollRefresh(
+  refreshRef: React.MutableRefObject<() => Promise<unknown>>,
+  emptyRefreshCountRef: React.MutableRefObject<number>,
+  pollStoppedRef: React.MutableRefObject<boolean>
+) {
+  try {
+    const result = await refreshRef.current();
+    if (result) {
+      emptyRefreshCountRef.current = 0;
+    } else {
+      emptyRefreshCountRef.current += 1;
+      if (emptyRefreshCountRef.current >= 3) {
+        pollStoppedRef.current = true;
+      }
+    }
+  } catch (err) {
+    const status = err instanceof ApiError ? err.status : undefined;
+    if (status && POLL_STOP_STATUSES.has(status)) {
+      pollStoppedRef.current = true;
+    }
+    console.warn("[preview-poll] refresh failed:", {
+      status,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export function PlanEditor({
   plan,
   currentVersion,
@@ -128,6 +157,7 @@ export function PlanEditor({
   const pollStartRef = useRef<number | null>(null);
   const pollStoppedRef = useRef(false);
   const emptyRefreshCountRef = useRef(0);
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
   const refreshRef = useRef(refreshPreviewDeployment);
   refreshRef.current = refreshPreviewDeployment;
 
@@ -173,49 +203,38 @@ export function PlanEditor({
       pollStartRef.current = Date.now();
     }
 
-    const elapsed = Date.now() - pollStartRef.current;
-    if (elapsed > PREVIEW_POLL_MAX_MS) {
-      return;
-    }
-
-    let interval = PREVIEW_POLL_SLOW_MS;
-    if (elapsed < 5 * 60_000) {
-      interval = PREVIEW_POLL_FAST_MS;
-    } else if (elapsed < 15 * 60_000) {
-      interval = PREVIEW_POLL_MEDIUM_MS;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      try {
-        const result = await refreshRef.current();
-        if (result) {
-          emptyRefreshCountRef.current = 0;
-        } else {
-          emptyRefreshCountRef.current += 1;
-          if (emptyRefreshCountRef.current >= 3) {
-            pollStoppedRef.current = true;
-          }
-        }
-      } catch (err) {
-        const status = err instanceof ApiError ? err.status : undefined;
-        if (
-          status === 401 ||
-          status === 403 ||
-          status === 429 ||
-          status === 404 ||
-          status === 422
-        ) {
-          pollStoppedRef.current = true;
-        }
-        console.warn("[preview-poll] refresh failed:", {
-          status,
-          message: err instanceof Error ? err.message : String(err),
-        });
+    // Self-scheduling poll loop: each tick schedules the next via setTimeout
+    function schedulePoll() {
+      if (pollStoppedRef.current || pollStartRef.current === null) {
+        return;
       }
-    }, interval);
+
+      const elapsed = Date.now() - pollStartRef.current;
+      if (elapsed > PREVIEW_POLL_MAX_MS) {
+        return;
+      }
+
+      let interval = PREVIEW_POLL_SLOW_MS;
+      if (elapsed < 5 * 60_000) {
+        interval = PREVIEW_POLL_FAST_MS;
+      } else if (elapsed < 15 * 60_000) {
+        interval = PREVIEW_POLL_MEDIUM_MS;
+      }
+
+      pollTimeoutRef.current = setTimeout(async () => {
+        await executePollRefresh(
+          refreshRef,
+          emptyRefreshCountRef,
+          pollStoppedRef
+        );
+        schedulePoll();
+      }, interval);
+    }
+
+    schedulePoll();
 
     return () => {
-      clearTimeout(timeoutId);
+      clearTimeout(pollTimeoutRef.current);
     };
   }, [
     pullRequestNumber,
