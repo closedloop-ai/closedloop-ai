@@ -41,11 +41,6 @@ import {
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
 
-/** Convert a Prisma Artifact row to the API Artifact type. */
-function toArtifact(row: PrismaArtifact): Artifact {
-  return row as unknown as Artifact;
-}
-
 /**
  * Validate that a user belongs to the given organization.
  * Throws if the user does not exist within the org.
@@ -154,7 +149,7 @@ export const artifactsService = {
         where: { id, organizationId },
       })
     );
-    return result ? toArtifact(result) : null;
+    return result ? (result as unknown as Artifact) : null;
   },
 
   /**
@@ -176,7 +171,7 @@ export const artifactsService = {
         },
       })
     );
-    return result ? toArtifact(result) : null;
+    return result ? (result as unknown as Artifact) : null;
   },
 
   /**
@@ -336,7 +331,7 @@ export const artifactsService = {
           ownerId: resolvedOwnerId,
         },
       });
-      return toArtifact(artifact);
+      return artifact as unknown as Artifact;
     });
 
     if (createdArtifact?.documentSlug) {
@@ -366,7 +361,7 @@ export const artifactsService = {
         data: input,
       })
     );
-    return toArtifact(result);
+    return result as unknown as Artifact;
   },
 
   /**
@@ -696,7 +691,7 @@ ${initialInstructions.trim()}`;
         }),
       ]);
 
-      return toArtifact(updatedArtifact);
+      return updatedArtifact as unknown as Artifact;
     });
   },
 
@@ -719,7 +714,7 @@ ${initialInstructions.trim()}`;
         },
       })
     );
-    return toArtifact(result);
+    return result as unknown as Artifact;
   },
 
   /**
@@ -750,7 +745,7 @@ ${initialInstructions.trim()}`;
       createArtifactRoom(newVersion);
     }
 
-    return toArtifact(newVersion);
+    return newVersion as unknown as Artifact;
   },
 
   /**
