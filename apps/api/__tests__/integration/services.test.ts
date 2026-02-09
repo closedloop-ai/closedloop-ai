@@ -12,7 +12,7 @@ const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
 
 describe.skipIf(!hasDatabase)("Users Service Integration", () => {
-  it("creates and finds user by clerkId", async () => {
+  it("creates and finds user by clerkId and organizationId", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
 
@@ -27,7 +27,10 @@ describe.skipIf(!hasDatabase)("Users Service Integration", () => {
       expect(user.id).toBeDefined();
       expect(user.email).toBe("test@example.com");
 
-      const found = await usersService.findByClerkId("clerk_test_123");
+      const found = await usersService.findByClerkIdAndOrg(
+        "clerk_test_123",
+        testOrgId
+      );
       expect(found).not.toBeNull();
       expect(found?.id).toBe(user.id);
     });

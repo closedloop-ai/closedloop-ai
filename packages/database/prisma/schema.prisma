@@ -193,7 +193,7 @@ model Organization {
 
 model User {
   id             String       @id @default(uuid(7)) @db.Uuid
-  clerkId        String       @unique @map("clerk_id")
+  clerkId        String       @map("clerk_id")
   organizationId String       @map("organization_id") @db.Uuid
   active         Boolean      @default(true) @map("active")
   email          String
@@ -215,6 +215,8 @@ model User {
   ownedArtifacts  Artifact[]   @relation("ArtifactOwner")
 
   @@unique([organizationId, email])
+  @@unique([clerkId, organizationId])
+  @@index([clerkId])
   @@index([linearId])
   @@index([slackId])
   @@index([githubUsername])

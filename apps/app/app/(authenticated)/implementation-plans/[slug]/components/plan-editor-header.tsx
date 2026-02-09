@@ -96,10 +96,6 @@ type PlanEditorHeaderProps = {
    */
   onSave: () => void;
   /**
-   * Callback when close button is clicked (switches back to view mode)
-   */
-  onClose: () => void;
-  /**
    * Callback when copy markdown menu item is clicked
    */
   onCopyMarkdown: () => void;
@@ -155,7 +151,6 @@ export function PlanEditorHeader({
   onRequestChanges,
   onExecute,
   onSave,
-  onClose,
   onCopyMarkdown,
   onExportMarkdown,
   onExportToLinear,
@@ -179,19 +174,9 @@ export function PlanEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <>
-          <Button disabled={isPending} onClick={onSave} size="sm">
-            {isSaving ? "Publishing..." : "Publish"}
-          </Button>
-          <Button
-            disabled={isPending}
-            onClick={onClose}
-            size="sm"
-            variant="outline"
-          >
-            Close
-          </Button>
-        </>
+        <Button disabled={isPending} onClick={onSave} size="sm">
+          {isSaving ? "Publishing..." : "Publish"}
+        </Button>
       ) : (
         <>
           <Button

@@ -1,6 +1,15 @@
 "use client";
 
-import { UserButton } from "@repo/auth/client";
+import {
+  OrganizationSwitcher,
+  UserButton,
+  useOrganization,
+} from "@repo/auth/client";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@repo/design-system/components/ui/avatar";
 import { Button } from "@repo/design-system/components/ui/button";
 import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import {
@@ -19,6 +28,7 @@ import {
 } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   FileTextIcon,
   InboxIcon,
@@ -28,16 +38,57 @@ import {
   SettingsIcon,
   UsersIcon,
 } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
-import { type ReactNode, useEffect, useState } from "react";
-import {
-  type AppEnvironment,
-  appEnvironment,
-  envIconPath,
-} from "@/lib/environment";
+import { type ReactNode, useEffect, useRef } from "react";
+import { useIsMounted } from "@/hooks/use-is-mounted";
+import { type AppEnvironment, appEnvironment } from "@/lib/environment";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
+
+const orgSwitcherAppearance = {
+  elements: {
+    rootBox: {
+      display: "flex",
+      overflow: "hidden",
+      width: "100%",
+    },
+    organizationSwitcherTrigger: {
+      display: "flex",
+      alignItems: "center",
+      gap: "0.5rem",
+      width: "100%",
+      padding: "0.5rem",
+      borderRadius: "0.375rem",
+      color: "hsl(var(--sidebar-foreground))",
+      backgroundColor: "transparent",
+      "&:hover": {
+        backgroundColor: "hsl(var(--sidebar-accent))",
+        color: "hsl(var(--sidebar-accent-foreground))",
+      },
+      "&:focus-visible": {
+        outline: "2px solid hsl(var(--sidebar-ring))",
+        outlineOffset: "2px",
+      },
+    },
+    organizationSwitcherTriggerIcon: {
+      color: "hsl(var(--sidebar-foreground))",
+      opacity: "0.7",
+    },
+    organizationPreviewMainIdentifier: {
+      fontSize: "0.875rem",
+      fontWeight: "500",
+      color: "hsl(var(--sidebar-foreground))",
+    },
+    organizationPreviewAvatarContainer: {
+      width: "1.75rem",
+      height: "1.75rem",
+    },
+    organizationPreviewAvatarBox: {
+      width: "1.75rem",
+      height: "1.75rem",
+    },
+  },
+} as const;
 
 const envBadge: Record<
   AppEnvironment,
@@ -61,11 +112,6 @@ type GlobalSidebarProperties = {
 };
 
 const data = {
-  user: {
-    name: "shadcn",
-    email: "m@example.com",
-    avatar: "/avatars/shadcn.jpg",
-  },
   workspace: [
     {
       title: "Inbox",
@@ -117,8 +163,28 @@ const data = {
 
 export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const sidebar = useSidebar();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const { organization } = useOrganization();
+  const queryClient = useQueryClient();
+  const prevOrgIdRef = useRef<string | undefined>(undefined);
+  const mounted = useIsMounted();
+  const activeEnvBadge = envBadge[appEnvironment];
+
+  // Clear cache when organization changes
+  useEffect(() => {
+    const currentOrgId = organization?.id;
+
+    // Skip on initial load
+    if (prevOrgIdRef.current === undefined) {
+      prevOrgIdRef.current = currentOrgId;
+      return;
+    }
+
+    // Clear cache when org ID changes
+    if (prevOrgIdRef.current !== currentOrgId) {
+      queryClient.clear();
+      prevOrgIdRef.current = currentOrgId;
+    }
+  }, [organization?.id, queryClient]);
 
   return (
     <>
@@ -128,36 +194,33 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
             <SidebarMenuItem>
               <div
                 className={cn(
-                  "flex h-[36px] items-center overflow-hidden transition-all",
+                  "flex h-[36px] items-center gap-2 overflow-hidden transition-all",
                   sidebar.open ? "px-2" : "justify-center"
                 )}
               >
-                {sidebar.open ? (
-                  <div className="flex items-center gap-2">
-                    <Image
-                      alt="ClosedLoop.ai"
-                      className="h-7 w-auto dark:brightness-0 dark:invert"
-                      height={32}
-                      src="/logo.svg"
-                      unoptimized
-                      width={160}
+                {!mounted && (
+                  <div className="h-8 w-full animate-pulse rounded bg-muted" />
+                )}
+                {mounted && sidebar.open && (
+                  <>
+                    <OrganizationSwitcher appearance={orgSwitcherAppearance} />
+                    {activeEnvBadge && (
+                      <span className={activeEnvBadge.className}>
+                        {activeEnvBadge.label}
+                      </span>
+                    )}
+                  </>
+                )}
+                {mounted && !sidebar.open && (
+                  <Avatar className="size-7">
+                    <AvatarImage
+                      alt={organization?.name || "Organization"}
+                      src={organization?.imageUrl}
                     />
-                    {(() => {
-                      const badge = envBadge[appEnvironment];
-                      return badge ? (
-                        <span className={badge.className}>{badge.label}</span>
-                      ) : null;
-                    })()}
-                  </div>
-                ) : (
-                  <Image
-                    alt="ClosedLoop.ai"
-                    className="h-7 w-7"
-                    height={28}
-                    priority
-                    src={envIconPath[appEnvironment]}
-                    width={28}
-                  />
+                    <AvatarFallback className="text-xs">
+                      {organization?.name?.charAt(0)?.toUpperCase() || "O"}
+                    </AvatarFallback>
+                  </Avatar>
                 )}
               </div>
             </SidebarMenuItem>
