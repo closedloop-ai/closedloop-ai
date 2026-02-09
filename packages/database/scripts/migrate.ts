@@ -4,10 +4,10 @@
  * This script generates an IAM token and runs prisma migrate deploy.
  *
  * For preview schemas (prefixed with "preview_"), if migrate deploy fails
- * with P3005 (non-empty schema without migration history), the schema is
- * dropped and recreated, then migrations are retried. This is safe because
- * preview schemas are ephemeral. Production/staging schemas are never
- * affected by this behavior.
+ * with P3005 (non-empty schema without migration history) or P3009 (failed
+ * migration blocking deploys), the schema is dropped and recreated, then
+ * migrations are retried. This is safe because preview schemas are ephemeral.
+ * Production/staging schemas are never affected by this behavior.
  */
 
 import { spawnSync } from "node:child_process";
@@ -23,6 +23,7 @@ import {
 } from "./preview-schema";
 
 const P3005_PATTERN = /\bP3005\b/;
+const P3009_PATTERN = /\bP3009\b/;
 
 function runMigrateDeploy(databaseUrl: string) {
   const result = spawnSync("prisma", ["migrate", "deploy"], {
@@ -56,14 +57,17 @@ function runMigrateDeploy(databaseUrl: string) {
 }
 
 function isP3005Output(message: string): boolean {
-  // Prisma CLI is the only interface here; detect the documented error code.
   return P3005_PATTERN.test(message);
+}
+
+function isP3009Output(message: string): boolean {
+  return P3009_PATTERN.test(message);
 }
 
 /**
  * Attempts to run prisma migrate deploy. If it fails with P3005 (non-empty
- * schema) on a preview schema, drops and recreates the schema, then retries.
- * After a successful retry, re-registers the schema so cleanup tracking works.
+ * schema) or P3009 (failed migration) on a preview schema, drops and recreates
+ * the schema, then retries. Safe because preview schemas are ephemeral.
  */
 async function runMigrateWithRetry(
   databaseUrl: string,
@@ -85,10 +89,11 @@ async function runMigrateWithRetry(
         : "";
     const combined = `${stderr}\n${stdout}`;
 
-    if (isP3005Output(combined) && isPreviewSchema(schema)) {
-      console.log(
-        `↪ Preview schema ${schema} has stale data (P3005), resetting...`
-      );
+    const isRecoverable = isP3005Output(combined) || isP3009Output(combined);
+
+    if (isRecoverable && isPreviewSchema(schema)) {
+      const code = isP3009Output(combined) ? "P3009" : "P3005";
+      console.log(`↪ Preview schema ${schema} hit ${code}, resetting...`);
       await resetSchema(databaseUrl, schema);
       runMigrateDeploy(databaseUrl);
       // Re-register so cleanup tracking still works after schema drop
