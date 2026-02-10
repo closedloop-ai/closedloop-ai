@@ -189,7 +189,7 @@ function ArtifactLink({ artifact }: { artifact: ProjectArtifact }) {
     <Link
       className="text-primary text-xs hover:underline"
       href={route}
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e: React.MouseEvent<HTMLAnchorElement>) => e.stopPropagation()}
     >
       View
     </Link>
