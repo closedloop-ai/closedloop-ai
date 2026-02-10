@@ -62,6 +62,28 @@ async function validateOwnerInOrg(
   }
 }
 
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) return undefined;
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -864,6 +886,9 @@ ${initialInstructions.trim()}`;
       artifact.content
     );
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -872,6 +897,7 @@ ${initialInstructions.trim()}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -1030,6 +1056,9 @@ ${initialInstructions.trim()}`;
 
 ${changes}`;
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Now trigger the workflow - records already exist for webhook to find
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1038,6 +1067,7 @@ ${changes}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id, // Same session for artifact continuity
+      ...committer,
     });
 
     if (!result.success) {
@@ -1510,6 +1540,9 @@ Please try again or contact support if the issue persists.`,
       ]);
     });
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1518,6 +1551,7 @@ Please try again or contact support if the issue persists.`,
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
