@@ -101,8 +101,15 @@ if (!sslRejectUnauthorized) {
   console.log(`Database SSL: custom CA provided (${sslCaSource})`);
 }
 
-const clientConfig = { connectionString: databaseUrl };
-if (sslCa || !sslRejectUnauthorized) {
+// Strip sslmode from the URL so the pg connection-string parser doesn't
+// override our explicit ssl config (pg now treats sslmode=require as verify-full).
+// We preserve the original sslmode to ensure SSL stays enabled.
+const parsedUrl = new URL(databaseUrl);
+const originalSslMode = parsedUrl.searchParams.get("sslmode");
+parsedUrl.searchParams.delete("sslmode");
+
+const clientConfig = { connectionString: parsedUrl.toString() };
+if ((originalSslMode && originalSslMode !== "disable") || sslCa || !sslRejectUnauthorized) {
   clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
   if (sslCa) {
     clientConfig.ssl.ca = sslCa;
