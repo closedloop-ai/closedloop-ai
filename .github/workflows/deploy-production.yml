@@ -220,9 +220,8 @@ jobs:
         if: steps.diff.outputs.has_changes == 'true'
         run: |
           mkdir -p /tmp/health-check-deps
-          cd /tmp/health-check-deps
-          npm init -y
-          npm install pg
+          npm --prefix /tmp/health-check-deps init -y
+          npm --prefix /tmp/health-check-deps install --no-save pg
           echo "NODE_PATH=/tmp/health-check-deps/node_modules" >> "$GITHUB_ENV"
 
       - name: Run Post-Deploy Health Checks
