@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
@@ -17,6 +15,7 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   ArtifactSubtype,
   type Artifact as PrismaArtifact,
@@ -34,7 +33,6 @@ import {
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
-import { getUseMockJudges } from "@/lib/feature-flags";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -1212,21 +1210,12 @@ Please try again or contact support if the issue persists.`,
   /**
    * Get judges feedback for an artifact from its associated GitHub Action run.
    * Downloads workflow artifacts and parses the judges.json report.
-   * When USE_MOCK_JUDGES=true, loads from local mocks/judges.json file instead.
    */
   async getJudgesFeedback(
     artifactId: string,
     organizationId: string
   ): Promise<JudgesFeedbackResponse> {
     try {
-      // When mock flag is enabled, load from local file
-      if (getUseMockJudges()) {
-        const mockPath = path.join(process.cwd(), "mocks", "judges.json");
-        const mockData = await readFile(mockPath, "utf-8");
-        const parsedReport = JSON.parse(mockData) as JudgesReport;
-        return { status: "success", data: parsedReport };
-      }
-
       // Verify artifact exists and belongs to organization
       const artifact = await this.findByIdSimple(artifactId, organizationId);
       if (!artifact) {
@@ -1543,6 +1532,128 @@ Please try again or contact support if the issue persists.`,
       success: true,
       correlationId,
     };
+  },
+
+  // TODO V2: Extract rating methods to dedicated RatingService when rating expands beyond Implementation Plans (trigger: artifactsService > 2000 lines OR rating on 3+ artifact types)
+  /**
+   * Get rating summary for an artifact (org-scoped).
+   * Returns aggregate statistics and the current user's rating if one exists.
+   */
+  async getRating(
+    artifactId: string,
+    userId: string,
+    organizationId: string
+  ): Promise<ArtifactRatingSummary> {
+    // Fetch user's rating (if exists)
+    const userRating = await withDb((db) =>
+      db.artifactRating.findUnique({
+        where: {
+          artifactId_userId_organizationId: {
+            artifactId,
+            userId,
+            organizationId,
+          },
+        },
+      })
+    );
+
+    // Fetch aggregate statistics (MUST filter by both artifactId AND organizationId for multi-tenant isolation)
+    const aggregate = await withDb((db) =>
+      db.artifactRating.aggregate({
+        where: { artifactId, organizationId },
+        _avg: { score: true },
+        _count: true,
+      })
+    );
+
+    return {
+      average: aggregate._avg.score ?? 0,
+      count: aggregate._count,
+      userRating: userRating
+        ? {
+            id: userRating.id,
+            userId: userRating.userId,
+            score: userRating.score,
+            comment: userRating.comment ?? undefined,
+            artifactVersion: userRating.artifactVersion,
+            createdAt: userRating.createdAt,
+            updatedAt: userRating.updatedAt,
+          }
+        : null,
+    };
+  },
+
+  /**
+   * Upsert a rating for an artifact (org-scoped).
+   * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
+   * Atomically captures artifact version at time of rating to ensure traceability.
+   */
+  upsertRating(
+    artifactId: string,
+    userId: string,
+    organizationId: string,
+    score: number,
+    comment?: string
+  ): Promise<ArtifactRatingSummary> {
+    // Use transaction for atomicity: artifact version must be captured atomically
+    // even if version increments during operation. Single org-scoped lookup does both
+    // authorization (artifact in org) and version fetch.
+    return withDb.tx(async (tx) => {
+      const currentArtifact = await tx.artifact.findFirst({
+        where: { id: artifactId, organizationId },
+        select: { version: true },
+      });
+
+      if (!currentArtifact) {
+        throw new ArtifactNotFoundError(artifactId);
+      }
+
+      // Upsert rating
+      const rating = await tx.artifactRating.upsert({
+        where: {
+          artifactId_userId_organizationId: {
+            artifactId,
+            userId,
+            organizationId,
+          },
+        },
+        update: {
+          score,
+          comment,
+          artifactVersion: currentArtifact.version,
+          updatedAt: new Date(),
+        },
+        create: {
+          artifactId,
+          userId,
+          organizationId,
+          score,
+          comment,
+          artifactVersion: currentArtifact.version,
+        },
+      });
+
+      // Recalculate aggregate (same logic as getRating())
+      const aggregate = await tx.artifactRating.aggregate({
+        where: { artifactId, organizationId },
+        _avg: { score: true },
+        _count: true,
+      });
+
+      return {
+        average: aggregate._avg.score ?? 0,
+        count: aggregate._count,
+        userRating: {
+          id: rating.id,
+          userId: rating.userId,
+          score: rating.score,
+          comment: rating.comment ?? undefined,
+          artifactVersion: rating.artifactVersion,
+          createdAt: rating.createdAt,
+          updatedAt: rating.updatedAt,
+        },
+      };
+    });
   },
 };
 

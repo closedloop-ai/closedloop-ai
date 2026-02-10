@@ -413,7 +413,8 @@ model Artifact {
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children     Artifact[]           @relation("ArtifactSource")
-  evaluations        ArtifactEvaluation[]
+  ratings      ArtifactRating[]
+  evaluations  ArtifactEvaluation[]
   previewDeployment  PreviewDeployment?
 
   @@unique([organizationId, templateForSubtype])
@@ -426,6 +427,26 @@ model Artifact {
   @@index([parentId])
   @@index([ownerId])
   @@map("artifacts")
+}
+
+model ArtifactRating {
+  id              String   @id @default(uuid(7)) @map("id") @db.Uuid
+  artifactId      String   @map("artifact_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  // Score validation (1-5) enforced at API layer via Zod schema. Prisma relationMode = "prisma" doesn't support DB check constraints.
+  score           Int
+  comment         String?  @db.VarChar(500)
+  artifactVersion Int      @map("artifact_version")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, userId, organizationId])
+  @@index([artifactId, organizationId])
+  @@map("artifact_ratings")
 }
 
 model FileUpload {
