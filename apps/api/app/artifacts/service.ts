@@ -538,12 +538,12 @@ export const artifactsService = {
         })
       );
     }
-    if (!foundSource) {
+    if (!foundSource && projectId) {
       foundSource = await withDb((db) =>
         db.artifact.findFirst({
           where: {
             organizationId,
-            ...(projectId ? { projectId } : {}),
+            projectId,
             subtype: { in: sourceSubtypes },
             isLatest: true,
             title: titleFallback,
