@@ -1363,12 +1363,6 @@ Please try again or contact support if the issue persists.`,
     userId: string,
     organizationId: string
   ): Promise<ArtifactRatingSummary> {
-    // Validate artifact exists and belongs to user's org (org-scoped authorization)
-    const artifact = await this.findByIdSimple(artifactId, organizationId);
-    if (!artifact) {
-      throw new ArtifactNotFoundError(artifactId);
-    }
-
     // Fetch user's rating (if exists)
     const userRating = await withDb((db) =>
       db.artifactRating.findUnique({
