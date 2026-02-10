@@ -43,6 +43,8 @@ function slugToTitleCase(slug: string): string {
  * Resolves room IDs to display names and navigation URLs by reading
  * Liveblocks room metadata (which stores artifactType at creation time).
  * Falls back to generic /artifacts/:slug URL when metadata is missing.
+ * Processes rooms in batches to avoid hitting Liveblocks API rate limits
+ * when resolving many rooms at once.
  *
  * Always returns one entry per input room ID to maintain positional
  * correspondence with the input array.
@@ -58,7 +60,7 @@ export async function resolveRoomMetadata(
 
   const liveblocks = new Liveblocks({ secret });
 
-  const roomPromises = roomIds.map(async (roomId) => {
+  const resolveOne = async (roomId: string): Promise<ResolvedRoom> => {
     try {
       const { documentSlug } = parseArtifactRoomId(roomId);
       const name = slugToTitleCase(documentSlug);
@@ -81,9 +83,20 @@ export async function resolveRoomMetadata(
       // Malformed room ID — return entry with no URL
       return { roomId, name: roomId, url: null };
     }
-  });
+  };
 
-  return await Promise.all(roomPromises);
+  // Limit concurrent Liveblocks API calls to avoid rate limits.
+  // With the 50-room cap in the route, this means at most 5 sequential batches.
+  const MAX_CONCURRENT_ROOM_FETCHES = 10;
+  const results: ResolvedRoom[] = [];
+
+  for (let i = 0; i < roomIds.length; i += MAX_CONCURRENT_ROOM_FETCHES) {
+    const batch = roomIds.slice(i, i + MAX_CONCURRENT_ROOM_FETCHES);
+    const batchResults = await Promise.all(batch.map(resolveOne));
+    results.push(...batchResults);
+  }
+
+  return results;
 }
 
 function resolveFromSlugsOnly(roomIds: string[]): ResolvedRoom[] {
