@@ -1,5 +1,7 @@
 import { getRoutePrefixForSubtype } from "@repo/api/src/types/artifact";
+import { auth } from "@repo/auth/server";
 import { notFound, redirect } from "next/navigation";
+import { env } from "@/env";
 
 /**
  * Catch-all artifact redirect route.
@@ -22,7 +24,6 @@ export default async function ArtifactRedirectPage({
 
   // Try to find the artifact by slug via the API
   try {
-    const { auth } = await import("@repo/auth/server");
     const { getToken } = await auth();
     const token = await getToken();
 
@@ -30,7 +31,6 @@ export default async function ArtifactRedirectPage({
       notFound();
     }
 
-    const { env } = await import("@/env");
     const response = await fetch(
       `${env.NEXT_PUBLIC_API_URL}/artifacts?documentSlug=${encodeURIComponent(slug)}&latestOnly=true`,
       {
