@@ -43,6 +43,9 @@ function slugToTitleCase(slug: string): string {
  * Resolves room IDs to display names and navigation URLs by reading
  * Liveblocks room metadata (which stores artifactType at creation time).
  * Falls back to generic /artifacts/:slug URL when metadata is missing.
+ *
+ * Always returns one entry per input room ID to maintain positional
+ * correspondence with the input array.
  */
 export async function resolveRoomMetadata(
   roomIds: string[]
@@ -54,7 +57,6 @@ export async function resolveRoomMetadata(
   }
 
   const liveblocks = new Liveblocks({ secret });
-  const results: ResolvedRoom[] = [];
 
   const roomPromises = roomIds.map(async (roomId) => {
     try {
@@ -76,33 +78,26 @@ export async function resolveRoomMetadata(
       // Fallback: generic redirect route
       return { roomId, name, url: `/artifacts/${documentSlug}` };
     } catch {
-      return null;
+      // Malformed room ID — return entry with no URL
+      return { roomId, name: roomId, url: null };
     }
   });
 
-  const resolved = await Promise.all(roomPromises);
-  for (const room of resolved) {
-    if (room) {
-      results.push(room);
-    }
-  }
-
-  return results;
+  return await Promise.all(roomPromises);
 }
 
 function resolveFromSlugsOnly(roomIds: string[]): ResolvedRoom[] {
-  const results: ResolvedRoom[] = [];
-  for (const roomId of roomIds) {
+  return roomIds.map((roomId) => {
     try {
       const { documentSlug } = parseArtifactRoomId(roomId);
-      results.push({
+      return {
         roomId,
         name: slugToTitleCase(documentSlug),
         url: `/artifacts/${documentSlug}`,
-      });
+      };
     } catch {
-      // Skip malformed room IDs
+      // Malformed room ID — return entry with no URL
+      return { roomId, name: roomId, url: null };
     }
-  }
-  return results;
+  });
 }
