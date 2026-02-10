@@ -28,15 +28,16 @@ import { EmptyState } from "@/components/empty-state";
 import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
+  getArtifactRoute,
+  isExternalLink,
+  isNavigableArtifact,
+} from "@/lib/artifact-navigation";
+import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_SUBTYPE_ICONS,
 } from "@/lib/project-constants";
-import type {
-  ArtifactDisplayStatus,
-  ProjectArtifact,
-  ProjectArtifactSubtype,
-} from "@/types/teams";
+import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
 import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
 
 type ArtifactsThreadedViewProps = {
@@ -44,52 +45,6 @@ type ArtifactsThreadedViewProps = {
   onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
-
-const NAVIGABLE_SUBTYPES = new Set<ProjectArtifactSubtype>([
-  "PRD",
-  "IMPLEMENTATION_PLAN",
-  "IMPLEMENTATION_STRATEGY",
-  "ISSUE",
-  "BUG",
-]);
-
-function isNavigableArtifact(artifact: ProjectArtifact): boolean {
-  return NAVIGABLE_SUBTYPES.has(artifact.subtype);
-}
-
-function isExternalLink(artifact: ProjectArtifact): boolean {
-  switch (artifact.subtype) {
-    case "DESIGNS":
-      return artifact.link?.startsWith("http") ?? false;
-    case "BRANCH":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function getArtifactRoute(artifact: ProjectArtifact): string | null {
-  switch (artifact.subtype) {
-    case "PRD":
-      return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
-    case "IMPLEMENTATION_PLAN":
-    case "IMPLEMENTATION_STRATEGY":
-      return artifact.documentSlug
-        ? `/implementation-plans/${artifact.documentSlug}`
-        : null;
-    case "ISSUE":
-    case "BUG":
-      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
-    case "DESIGNS":
-    case "BRANCH":
-      return artifact.link || null;
-    case "PROJECT_BRIEF":
-    case "TEMPLATE":
-      return null;
-    default:
-      return null;
-  }
-}
 
 const WORKSTREAM_STATE_LABELS: Record<string, string> = {
   INITIATED: "Initiated",
