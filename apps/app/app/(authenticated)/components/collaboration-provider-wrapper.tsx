@@ -1,6 +1,10 @@
 "use client";
 
-import { LiveblocksAvailabilityContext } from "@repo/collaboration/liveblocks-error-boundary";
+import { LiveblocksProvider } from "@liveblocks/react/suspense";
+import {
+  LiveblocksAvailabilityContext,
+  LiveblocksErrorBoundary,
+} from "@repo/collaboration/liveblocks-error-boundary";
 import { TopLevelCollaborationProvider } from "@repo/collaboration/top-level-collaboration-provider";
 import type { ReactNode } from "react";
 import {
@@ -19,8 +23,10 @@ type CollaborationProviderWrapperProps = {
  * Must be client-side because TopLevelCollaborationProvider is a client component
  * and needs to fetch organization context.
  *
- * While user data loads, provides LiveblocksAvailabilityContext with isAvailable=false
- * to prevent inbox hooks from executing outside the LiveblocksProvider.
+ * While user data loads, mounts a minimal LiveblocksProvider (auth endpoint only)
+ * so that RoomProvider in editor pages doesn't throw if artifact data resolves
+ * before /me. LiveblocksErrorBoundary catches auth errors during bootstrap;
+ * inbox hooks are still gated by isAvailable=false.
  */
 export function CollaborationProviderWrapper({
   children,
@@ -28,13 +34,20 @@ export function CollaborationProviderWrapper({
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
   const { data: users = [] } = useOrganizationUsers();
 
-  // While loading, mark Liveblocks as unavailable so inbox hooks don't run
-  // outside the provider. InboxBadge and inbox page check this context.
+  // While loading, mount a minimal LiveblocksProvider so RoomProvider descendants
+  // have context. Error boundary catches auth failures; isAvailable=false gates
+  // inbox hooks until full provider mounts.
   if (isUserLoading || !currentUser) {
     return (
-      <LiveblocksAvailabilityContext.Provider value={LIVEBLOCKS_UNAVAILABLE}>
-        {children}
-      </LiveblocksAvailabilityContext.Provider>
+      <LiveblocksProvider authEndpoint="/api/collaboration/auth">
+        <LiveblocksErrorBoundary>
+          <LiveblocksAvailabilityContext.Provider
+            value={LIVEBLOCKS_UNAVAILABLE}
+          >
+            {children}
+          </LiveblocksAvailabilityContext.Provider>
+        </LiveblocksErrorBoundary>
+      </LiveblocksProvider>
     );
   }
 
