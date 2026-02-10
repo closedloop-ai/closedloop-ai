@@ -502,9 +502,11 @@ export const artifactsService = {
                 ArtifactSubtype.BUG,
               ],
             },
-            isLatest: true,
-            // Prefer the explicit parent when set; fall back to any PRD/Issue/Bug in the workstream.
-            ...(artifact.parentId ? { id: artifact.parentId } : {}),
+            // When parentId is set, find that exact artifact (do NOT require isLatest).
+            // When parentId is missing, find any PRD/Issue/Bug in workstream with isLatest.
+            ...(artifact.parentId
+              ? { id: artifact.parentId }
+              : { isLatest: true }),
           },
         })
       );
@@ -512,28 +514,43 @@ export const artifactsService = {
     }
 
     // Find PRD, Issue, or Bug by parentId or matching title.
+    // When parentId is set, find that exact artifact (do NOT require isLatest - parent may have been versioned).
     // Title matching is a PRD-only heuristic for legacy plans without parentId.
     const titleFallback = artifact.title.replace("Implementation Plan: ", "");
-    const foundSource = await withDb((db) =>
-      db.artifact.findFirst({
-        where: {
-          organizationId,
-          projectId: artifact.projectId,
-          subtype: {
-            in: [
-              ArtifactSubtype.PRD,
-              ArtifactSubtype.ISSUE,
-              ArtifactSubtype.BUG,
-            ],
+    const sourceSubtypes: ArtifactSubtype[] = [
+      ArtifactSubtype.PRD,
+      ArtifactSubtype.ISSUE,
+      ArtifactSubtype.BUG,
+    ];
+
+    let foundSource: PrismaArtifact | null = null;
+    const projectId = artifact.projectId;
+    const parentId = artifact.parentId;
+    if (parentId && projectId) {
+      foundSource = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            id: parentId,
+            organizationId,
+            projectId,
+            subtype: { in: sourceSubtypes },
           },
-          isLatest: true,
-          OR: [
-            { id: artifact.parentId ?? undefined },
-            { title: titleFallback },
-          ],
-        },
-      })
-    );
+        })
+      );
+    }
+    if (!foundSource) {
+      foundSource = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            organizationId,
+            ...(projectId ? { projectId } : {}),
+            subtype: { in: sourceSubtypes },
+            isLatest: true,
+            title: titleFallback,
+          },
+        })
+      );
+    }
 
     if (!(foundSource?.content && artifact.projectId)) {
       return { workstream: null, sourceArtifact: foundSource };
