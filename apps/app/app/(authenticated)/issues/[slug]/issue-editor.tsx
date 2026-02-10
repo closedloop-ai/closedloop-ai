@@ -104,8 +104,7 @@ export function IssueEditor({
           <IssueMetadataPanel
             approver={metadata.approver}
             issue={issue}
-            onApproverBlur={metadata.handleApproverBlur}
-            onApproverChange={metadata.handleApproverChange}
+            onApproverSelect={metadata.handleApproverSelect}
             onOwnerChange={metadata.handleOwnerChange}
             onStatusChange={metadata.handleStatusChange}
             onTargetBranchBlur={metadata.handleTargetBranchBlur}

@@ -2,7 +2,12 @@ import type { Artifact } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { createLiveblocksRoom, deleteLiveblocksRoom } from "@/lib/liveblocks";
 
-export async function createArtifactRoom(artifact: Artifact) {
+export async function createArtifactRoom(
+  artifact: Pick<
+    Artifact,
+    "id" | "organizationId" | "documentSlug" | "subtype" | "version"
+  >
+) {
   if (!artifact.documentSlug) {
     throw new Error("Artifact has no document slug");
   }

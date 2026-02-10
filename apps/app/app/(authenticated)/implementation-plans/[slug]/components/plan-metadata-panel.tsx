@@ -60,6 +60,7 @@ import {
   StatusBadge,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { getArtifactDetailUrl } from "@/lib/artifact-url-utils";
 import {
@@ -70,6 +71,7 @@ import {
   ARTIFACT_SUBTYPE_ICONS,
   ARTIFACT_SUBTYPE_LABELS,
 } from "@/lib/project-constants";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { JudgeResultCard } from "./judge-result-card";
 
 type PlanMetadataPanelProps = {
@@ -82,9 +84,9 @@ type PlanMetadataPanelProps = {
    */
   status: ArtifactStatus;
   /**
-   * Current approver value
+   * Current approver (User or null if not selected)
    */
-  approver: string;
+  approver: User | null;
   /**
    * Current owner (User or null if not selected)
    */
@@ -122,13 +124,9 @@ type PlanMetadataPanelProps = {
    */
   onStatusChange: (status: ArtifactStatus) => void;
   /**
-   * Handler called when approver input value changes
+   * Handler called when approver is selected
    */
-  onApproverChange: (approver: string) => void;
-  /**
-   * Handler called when approver input loses focus
-   */
-  onApproverBlur: () => void;
+  onApproverSelect: (user: User | null) => void;
   /**
    * Handler called when owner is changed
    */
@@ -156,11 +154,17 @@ export function PlanMetadataPanel({
   isPreviewRefreshing,
   judgesReport,
   onStatusChange,
-  onApproverChange,
-  onApproverBlur,
+  onApproverSelect,
   onOwnerChange,
   onParentChange,
 }: PlanMetadataPanelProps) {
+  // Fetch org users for approver dropdown
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
   const {
     dialogOpen,
     dialogTrace,
@@ -216,10 +220,10 @@ export function PlanMetadataPanel({
           >
             <StatusMetadataSection
               approver={approver}
-              onApproverBlur={onApproverBlur}
-              onApproverChange={onApproverChange}
+              onApproverSelect={onApproverSelect}
               onOwnerChange={onOwnerChange}
               onStatusChange={onStatusChange}
+              orgUsers={transformedOrgUsers}
               owner={owner}
               status={status}
               teamMembers={teamMembers}

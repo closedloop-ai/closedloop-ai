@@ -53,6 +53,9 @@ vi.mock("@/components/artifact-editor/rating-section", () => ({
 // Mock useArtifactsByProject to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-artifacts", () => ({
   useArtifactsByProject: () => ({
+// Mock useOrganizationUsers to avoid Clerk authentication context
+vi.mock("@/hooks/queries/use-users", () => ({
+  useOrganizationUsers: () => ({
     data: [],
     isLoading: false,
     error: null,
@@ -73,7 +76,7 @@ const defaultProps = {
     subtype: "IMPLEMENTATION_PLAN",
   }),
   status: "DRAFT" as ArtifactStatus,
-  approver: "",
+  approver: null,
   owner: null,
   teamMembers: [],
   generationStatus: null,
@@ -83,8 +86,7 @@ const defaultProps = {
   isPreviewRefreshing: false,
   judgesReport: null,
   onStatusChange: vi.fn(),
-  onApproverChange: vi.fn(),
-  onApproverBlur: vi.fn(),
+  onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
   onParentChange: vi.fn(),
 };

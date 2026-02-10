@@ -322,8 +322,7 @@ export function PlanEditor({
             generationStatus={generationStatus ?? null}
             isPreviewRefreshing={isRefreshingPreviewDeployment}
             judgesReport={judgesReport ?? null}
-            onApproverBlur={metadata.handleApproverBlur}
-            onApproverChange={metadata.handleApproverChange}
+            onApproverSelect={metadata.handleApproverSelect}
             onOwnerChange={metadata.handleOwnerChange}
             onParentChange={metadata.handleParentChange}
             onPreviewRefresh={async () => {
