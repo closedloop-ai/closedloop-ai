@@ -103,11 +103,13 @@ if (!sslRejectUnauthorized) {
 
 // Strip sslmode from the URL so the pg connection-string parser doesn't
 // override our explicit ssl config (pg now treats sslmode=require as verify-full).
-const cleanUrl = new URL(databaseUrl);
-cleanUrl.searchParams.delete("sslmode");
+// We preserve the original sslmode to ensure SSL stays enabled.
+const parsedUrl = new URL(databaseUrl);
+const originalSslMode = parsedUrl.searchParams.get("sslmode");
+parsedUrl.searchParams.delete("sslmode");
 
-const clientConfig = { connectionString: cleanUrl.toString() };
-if (sslCa || !sslRejectUnauthorized) {
+const clientConfig = { connectionString: parsedUrl.toString() };
+if (originalSslMode || sslCa || !sslRejectUnauthorized) {
   clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
   if (sslCa) {
     clientConfig.ssl.ca = sslCa;
