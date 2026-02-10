@@ -127,6 +127,7 @@ function getAwsCredentials() {
   };
 }
 
+// TODO: share createSslClient and quoteIdentifier with db-utils.ts when this script is converted to TypeScript
 function createSslClient(databaseUrl) {
   const url = new URL(databaseUrl);
   url.searchParams.delete("sslmode");

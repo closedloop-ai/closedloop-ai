@@ -99,7 +99,7 @@ export function PRDMetadataPanel({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
-}: PRDMetadataPanelProps): React.ReactElement {
+}: PRDMetadataPanelProps) {
   const {
     dialogOpen,
     dialogTrace,

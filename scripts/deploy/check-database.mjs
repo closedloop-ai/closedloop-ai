@@ -9,6 +9,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const outputPath = process.env.DB_STATUS_PATH || "db-status.json";
 
 import { writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 
 if (!databaseUrl) {
   console.log("DATABASE_URL not set, skipping database health check");
@@ -38,10 +39,11 @@ const checks = {
   migrations: { status: "pending", pending: null, error: null },
 };
 
-// Dynamic import pg to handle environments where it's not installed
+// Load pg via CommonJS resolution so NODE_PATH can be honored in CI
 let pg;
 try {
-  pg = await import("pg");
+  const require = createRequire(import.meta.url);
+  pg = require("pg");
 } catch {
   console.log("pg module not available, skipping database checks");
   await writeFile(
@@ -54,7 +56,7 @@ try {
   process.exit(0);
 }
 
-const { Client } = pg.default || pg;
+const { Client } = pg;
 const client = new Client({ connectionString: databaseUrl });
 
 try {
@@ -69,7 +71,7 @@ try {
   // Check 2: Basic query
   console.log("\n2. Running basic query...");
   const queryStart = Date.now();
-  const result = await client.query("SELECT 1 as health_check");
+  await client.query("SELECT 1 as health_check");
   const queryLatency = Date.now() - queryStart;
   console.log(`   ✓ Query successful in ${queryLatency}ms`);
 
@@ -82,8 +84,8 @@ try {
       FROM _prisma_migrations
     `);
     const { total, pending } = migrationResult.rows[0];
-    checks.migrations.total = Number.parseInt(total);
-    checks.migrations.pending = Number.parseInt(pending);
+    checks.migrations.total = Number.parseInt(total, 10);
+    checks.migrations.pending = Number.parseInt(pending, 10);
 
     if (pending > 0) {
       checks.migrations.status = "error";
@@ -117,7 +119,7 @@ try {
     FROM information_schema.tables
     WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
   `);
-  const tableCount = Number.parseInt(tableResult.rows[0].count);
+  const tableCount = Number.parseInt(tableResult.rows[0].count, 10);
   console.log(`   ✓ Found ${tableCount} tables in public schema`);
 } catch (error) {
   console.error(`\n✗ Database check failed: ${error.message}`);

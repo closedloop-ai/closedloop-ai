@@ -33,6 +33,7 @@ import {
   MetadataPanel,
   MetadataSection,
 } from "@/components/artifact-editor/metadata-panel";
+import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
@@ -131,7 +132,7 @@ export function PlanMetadataPanel({
   onApproverChange,
   onApproverBlur,
   onOwnerChange,
-}: PlanMetadataPanelProps): React.ReactElement {
+}: PlanMetadataPanelProps) {
   const {
     dialogOpen,
     dialogTrace,
@@ -143,6 +144,7 @@ export function PlanMetadataPanel({
   const [isPropertiesOpen, setIsPropertiesOpen] = useState(true);
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isEvaluationOpen, setIsEvaluationOpen] = useState(false);
+  const [isRatingOpen, setIsRatingOpen] = useState(true);
 
   // Calculate acceptance rate from all judges in the report
   const allMetrics =
@@ -352,6 +354,17 @@ export function PlanMetadataPanel({
               )}
             </CollapsibleContent>
           </Collapsible>
+
+          <CollapsibleSection
+            onOpenChange={setIsRatingOpen}
+            open={isRatingOpen}
+            title="Rating"
+          >
+            <RatingSection
+              artifactId={plan.id}
+              currentPlanVersion={plan.version}
+            />
+          </CollapsibleSection>
 
           <CommentsSection artifactId={plan.id} />
         </div>

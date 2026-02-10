@@ -21,7 +21,7 @@ type CommentsSectionProps = {
 export function CommentsSection({
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   artifactId: _artifactId,
-}: Readonly<CommentsSectionProps>): React.ReactElement {
+}: Readonly<CommentsSectionProps>) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (

@@ -3,7 +3,7 @@
 import {
   type Artifact,
   ArtifactStatus,
-  type ArtifactType,
+  ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -25,8 +25,12 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { LoaderIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { LoaderIcon, UploadIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
 import {
   useArtifactsByProject,
   useCreateArtifact,
@@ -36,8 +40,8 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
-import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
 function PrdSelectContent({
   loading,
@@ -118,7 +122,7 @@ function populateFieldsFromPrd(
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  artifactType: ArtifactType;
+  artifactSubtype: ArtifactSubtype;
   projectId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
@@ -126,10 +130,11 @@ type CreateArtifactModalProps = {
 export function CreateArtifactModal({
   open,
   onOpenChange,
-  artifactType,
+  artifactSubtype,
   projectId,
   onSuccess,
 }: CreateArtifactModalProps) {
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
@@ -146,12 +151,13 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
-  const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
-  const supportsTemplate =
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG";
+  const typeLabel = ARTIFACT_SUBTYPE_LABELS[artifactSubtype] || artifactSubtype;
+  const isImplementationPlan =
+    artifactSubtype === ArtifactSubtype.ImplementationPlan;
+  const isDocumentArtifact =
+    artifactSubtype === ArtifactSubtype.Prd ||
+    artifactSubtype === ArtifactSubtype.Issue ||
+    artifactSubtype === ArtifactSubtype.Bug;
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -173,10 +179,10 @@ export function CreateArtifactModal({
     [repositories]
   );
 
-  // Fetch template for types that have templates
-  const { data: template } = useOrgTemplateByType(
-    supportsTemplate ? artifactType : "",
-    { enabled: open && supportsTemplate }
+  // Fetch template for subtypes that have templates
+  const { data: template } = useOrgTemplateBySubtype(
+    isDocumentArtifact ? artifactSubtype : "",
+    { enabled: open && isDocumentArtifact }
   );
 
   // Fetch PRDs when modal opens for implementation plan
@@ -187,7 +193,7 @@ export function CreateArtifactModal({
 
   // Filter to get only PRDs
   const prds = useMemo(
-    () => artifacts.filter((a) => a.type === "PRD"),
+    () => artifacts.filter((a) => a.subtype === "PRD"),
     [artifacts]
   );
 
@@ -228,7 +234,7 @@ export function CreateArtifactModal({
   // Prefill content from template when loaded (only on initial load)
   useEffect(() => {
     if (template?.content) {
-      setContent((current) => (current ? current : (template.content ?? "")));
+      setContent((current) => current || (template.content ?? ""));
     }
   }, [template]);
 
@@ -249,8 +255,8 @@ export function CreateArtifactModal({
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat(".md");
       setFileName(generatedFileName);
     }
@@ -277,11 +283,20 @@ export function CreateArtifactModal({
     setSelectedRepoId("");
     setSelectedPrdId("");
     setError(null);
+    fileInputRef.current?.reset();
   };
 
   const handleClose = () => {
     onOpenChange(false);
     resetForm();
+  };
+
+  const handleFileRead = (content: string) => {
+    if (!content.trim()) {
+      setError("File is empty");
+      return;
+    }
+    setContent(content);
   };
 
   const handleSubmit = () => {
@@ -300,12 +315,11 @@ export function CreateArtifactModal({
     createArtifact.mutate(
       {
         projectId,
-        type: artifactType,
+        subtype: artifactSubtype,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
         content: content.trim() || undefined,
         parentId: isImplementationPlan ? selectedPrdId : undefined,
-        // Common fields for PRD and Implementation Plan
         approver: approver.trim() || undefined,
         status,
         targetRepo: targetRepo.trim() || undefined,
@@ -315,11 +329,6 @@ export function CreateArtifactModal({
         onSuccess: (artifact) => {
           handleClose();
           onSuccess?.(artifact);
-        },
-        onError: (err) => {
-          setError(
-            err instanceof Error ? err.message : "Failed to create artifact"
-          );
         },
       }
     );
@@ -480,19 +489,41 @@ export function CreateArtifactModal({
             </Select>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="artifact-content">
-              Content{" "}
-              <span className="text-muted-foreground text-xs">(optional)</span>
-            </Label>
-            <Textarea
-              className="min-h-[120px] font-mono text-sm"
-              id="artifact-content"
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="Paste markdown content here..."
-              value={content}
-            />
-          </div>
+          {isDocumentArtifact && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="artifact-content">
+                  Content{" "}
+                  <span className="text-muted-foreground text-xs">
+                    (optional)
+                  </span>
+                </Label>
+                <Button
+                  onClick={() => fileInputRef.current?.open()}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <UploadIcon className="mr-2 h-4 w-4" />
+                  Upload .md
+                </Button>
+              </div>
+              <HiddenFileInput
+                accept=".md"
+                aria-label="Upload markdown file for artifact content"
+                onError={setError}
+                onFileRead={handleFileRead}
+                ref={fileInputRef}
+              />
+              <Textarea
+                className="min-h-[120px] font-mono text-sm"
+                id="artifact-content"
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="Paste markdown content here..."
+                value={content}
+              />
+            </div>
+          )}
         </div>
 
         <DialogFooter>

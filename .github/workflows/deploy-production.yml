@@ -180,7 +180,14 @@ jobs:
           ATTEMPT=1
           MAX_ATTEMPTS=2
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            timeout 30m gh pr checks "$PR_URL" --watch --required --interval 10 && CHECK_EXIT=0 || CHECK_EXIT=$?
+            CHECK_OUTPUT=$(timeout 30m gh pr checks "$PR_URL" --watch --required --interval 10 2>&1) && CHECK_EXIT=0 || CHECK_EXIT=$?
+            echo "$CHECK_OUTPUT"
+            # "no required checks" means no checks are configured — treat as success
+            if echo "$CHECK_OUTPUT" | grep -q "no required checks"; then
+              echo "No required checks configured on base branch — proceeding."
+              CHECK_EXIT=0
+              break
+            fi
             if [ $CHECK_EXIT -eq 0 ]; then
               break
             fi
@@ -211,7 +218,11 @@ jobs:
 
       - name: Install Health Check Dependencies
         if: steps.diff.outputs.has_changes == 'true'
-        run: npm install --no-save pg
+        run: |
+          # Install in /tmp to avoid npm workspace parsing in repo root.
+          mkdir -p /tmp/health-check-deps
+          npm --prefix /tmp/health-check-deps init -y
+          npm --prefix /tmp/health-check-deps install --no-save pg
 
       - name: Run Post-Deploy Health Checks
         id: health_checks
@@ -240,7 +251,7 @@ jobs:
           # Start Database check (if configured)
           if [ -n "$DATABASE_URL" ]; then
             echo "Starting database health check..."
-            node scripts/deploy/check-database.mjs &
+            NODE_PATH=/tmp/health-check-deps/node_modules node scripts/deploy/check-database.mjs &
             DB_PID=$!
           else
             echo "Database URL not configured, skipping"

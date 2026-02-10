@@ -1,4 +1,4 @@
-import type { Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import type { Artifact, ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -15,13 +15,14 @@ export const GET = withAuth<Artifact[], "/workstreams/[id]/artifacts">(
       const { id: workstreamId } = await params;
 
       const searchParams = request.nextUrl.searchParams;
-      const type = (searchParams.get("type") as ArtifactType) ?? undefined;
+      const subtype =
+        (searchParams.get("subtype") as ArtifactSubtype) ?? undefined;
       const latestOnly = searchParams.get("latestOnly") === "true";
 
       const artifacts = await artifactsService.findAll({
         organizationId: user.organizationId,
         workstreamId,
-        type,
+        subtype,
         latestOnly,
       });
 

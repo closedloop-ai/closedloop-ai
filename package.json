@@ -24,7 +24,8 @@
     "migrate:status": "cd packages/database && pnpm prisma migrate status",
     "clean": "git clean -xdf node_modules",
     "prepare": "husky",
-    "start-apps": "turbo dev --filter=app --filter=api"
+    "start-apps": "turbo dev --filter=app --filter=api",
+    "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {
     "@auto-it/first-time-contributor": "^11.3.6",
@@ -33,6 +34,7 @@
     "@repo/typescript-config": "workspace:*",
     "@turbo/gen": "^2.8.3",
     "@types/node": "^25.2.2",
+    "check-dependency-version-consistency": "^6.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "next": "16.1.6",
@@ -53,6 +55,8 @@
   },
   "pnpm": {
     "overrides": {
+      "@types/react": "19.2.13",
+      "@types/react-dom": "19.2.3",
       "parse5": "^7.2.1"
     },
     "onlyBuiltDependencies": [

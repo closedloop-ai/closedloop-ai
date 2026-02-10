@@ -15,7 +15,7 @@ export async function createArtifactRoom(artifact: Artifact) {
     tenantId: artifact.organizationId,
     metadata: {
       artifactId: artifact.id,
-      artifactType: artifact.type,
+      artifactSubtype: artifact.subtype,
       documentSlug: artifact.documentSlug,
       version: String(artifact.version),
     },

@@ -43,6 +43,13 @@ vi.mock("../judge-result-card", () => ({
   ),
 }));
 
+// Mock RatingSection to avoid Clerk auth dependencies
+vi.mock("@/components/artifact-editor/rating-section", () => ({
+  RatingSection: () => (
+    <div data-testid="rating-section">Rating Section Mock</div>
+  ),
+}));
+
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
@@ -52,7 +59,10 @@ const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
 const defaultProps = {
-  plan: createMockArtifact({ type: "IMPLEMENTATION_PLAN" }),
+  plan: createMockArtifact({
+    type: "DOCUMENT",
+    subtype: "IMPLEMENTATION_PLAN",
+  }),
   status: "DRAFT" as ArtifactStatus,
   approver: "",
   owner: null,

@@ -313,14 +313,14 @@ As a security-conscious user, I want to enable MFA so that my account is more se
     // Helper to upsert artifact (can't use prisma.upsert with nullable field in composite unique)
     async function upsertArtifact(data: {
       projectId: string;
-      type: "PRD" | "IMPLEMENTATION_PLAN";
+      subtype: "PRD" | "IMPLEMENTATION_PLAN";
       title: string;
       content: string;
     }) {
       const existing = await prisma.artifact.findFirst({
         where: {
           projectId: data.projectId,
-          type: data.type,
+          subtype: data.subtype,
           documentSlug: "main",
           isLatest: true,
         },
@@ -336,7 +336,8 @@ As a security-conscious user, I want to enable MFA so that my account is more se
           data: {
             organizationId,
             projectId: data.projectId,
-            type: data.type,
+            type: "DOCUMENT",
+            subtype: data.subtype,
             title: data.title,
             status: "APPROVED",
             content: data.content,
@@ -350,7 +351,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 
     await upsertArtifact({
       projectId: project1.id,
-      type: "PRD",
+      subtype: "PRD",
       title: "User Authentication System PRD",
       content: prd1Content,
     });
@@ -358,7 +359,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 
     await upsertArtifact({
       projectId: project1.id,
-      type: "IMPLEMENTATION_PLAN",
+      subtype: "IMPLEMENTATION_PLAN",
       title: "User Authentication System Implementation Plan",
       content: implPlan1Content,
     });
@@ -471,7 +472,7 @@ As an analyst, I want to export dashboard data so that I can perform deeper anal
 
     await upsertArtifact({
       projectId: project2.id,
-      type: "PRD",
+      subtype: "PRD",
       title: "Analytics Dashboard PRD",
       content: prd2Content,
     });
@@ -479,7 +480,7 @@ As an analyst, I want to export dashboard data so that I can perform deeper anal
 
     await upsertArtifact({
       projectId: project2.id,
-      type: "IMPLEMENTATION_PLAN",
+      subtype: "IMPLEMENTATION_PLAN",
       title: "Analytics Dashboard Implementation Plan",
       content: implPlan2Content,
     });

@@ -17,6 +17,7 @@ import {
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
 type WorkstreamDetailProps = {
   workstream: Workstream;
@@ -88,7 +89,9 @@ export function WorkstreamDetail({
                     <div>
                       <p className="font-medium">{artifact.title}</p>
                       <p className="text-muted-foreground text-sm">
-                        {artifact.type} · v{artifact.version}
+                        {ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ??
+                          artifact.subtype}{" "}
+                        · v{artifact.version}
                       </p>
                     </div>
                   </div>

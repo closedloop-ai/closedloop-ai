@@ -1,16 +1,17 @@
 "use client";
 
+import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { useCallback, useState } from "react";
 
-type EditableArtifactType =
-  | "PRD"
-  | "IMPLEMENTATION_PLAN"
-  | "ISSUE"
-  | "BUG"
-  | "IMPLEMENTATION_STRATEGY";
+type EditableArtifactSubtype =
+  | typeof ArtifactSubtype.Prd
+  | typeof ArtifactSubtype.ImplementationPlan
+  | typeof ArtifactSubtype.Issue
+  | typeof ArtifactSubtype.Bug
+  | typeof ArtifactSubtype.ImplementationStrategy;
 
 type UseArtifactUIStateConfig = {
-  artifactType: EditableArtifactType;
+  artifactSubtype: EditableArtifactSubtype;
 };
 
 /**
@@ -29,17 +30,17 @@ type UseArtifactUIStateConfig = {
  * ```tsx
  * // For PRD editor
  * const { showMetadataPanel, toggleMetadataPanel, showRenameDialog, openRenameDialog } =
- *   useArtifactUIState({ artifactType: "PRD" });
+ *   useArtifactUIState({ artifactSubtype: "PRD" });
  *
  * // For Plan editor
  * const { showExecuteModal, openExecuteModal, closeExecuteModal } =
- *   useArtifactUIState({ artifactType: "IMPLEMENTATION_PLAN" });
+ *   useArtifactUIState({ artifactSubtype: "IMPLEMENTATION_PLAN" });
  * ```
  *
- * **Important:** Return type is determined by `artifactType` - PRD returns PRD-specific state, Plan returns Plan-specific state.
+ * **Important:** Return type is determined by `artifactSubtype` - PRD returns PRD-specific state, Plan returns Plan-specific state.
  */
 export function useArtifactUIState(config: UseArtifactUIStateConfig) {
-  const { artifactType } = config;
+  const { artifactSubtype } = config;
 
   // Common UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
@@ -71,10 +72,10 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   };
 
   if (
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG" ||
-    artifactType === "IMPLEMENTATION_STRATEGY"
+    artifactSubtype === ArtifactSubtype.Prd ||
+    artifactSubtype === ArtifactSubtype.Issue ||
+    artifactSubtype === ArtifactSubtype.Bug ||
+    artifactSubtype === ArtifactSubtype.ImplementationStrategy
   ) {
     return {
       ...commonState,
@@ -89,7 +90,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     };
   }
 
-  if (artifactType === "IMPLEMENTATION_PLAN") {
+  if (artifactSubtype === ArtifactSubtype.ImplementationPlan) {
     return {
       ...commonState,
       showRequestChangesModal,
