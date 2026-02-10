@@ -61,8 +61,8 @@ export function useArtifacts(
   });
 }
 
-export function useArtifactsByType(
-  type: string,
+export function useArtifactsBySubtype(
+  subtype: string,
   latestOnly = true,
   options?: Omit<
     UseQueryOptions<ArtifactWithWorkstream[]>,
@@ -72,10 +72,10 @@ export function useArtifactsByType(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: artifactKeys.list({ type, latestOnly }),
+    queryKey: artifactKeys.list({ subtype, latestOnly }),
     queryFn: () => {
       const params = new URLSearchParams();
-      params.set("type", type);
+      params.set("subtype", subtype);
       params.set("latestOnly", String(latestOnly));
       return apiClient.get<ArtifactWithWorkstream[]>(
         `/artifacts?${params.toString()}`
@@ -178,7 +178,9 @@ export function useArtifactVersions(
       }
 
       const params = new URLSearchParams();
-      params.set("type", artifact.type);
+      if (artifact.subtype) {
+        params.set("subtype", artifact.subtype);
+      }
       params.set("documentSlug", artifact.documentSlug);
       params.set("latestOnly", "false");
 

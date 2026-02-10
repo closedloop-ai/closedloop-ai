@@ -6,7 +6,7 @@ import {
   useArtifact,
   useArtifacts,
   useArtifactsByProject,
-  useArtifactsByType,
+  useArtifactsBySubtype,
   useCreateArtifact,
   useCreateNewVersion,
   useDeleteArtifact,
@@ -33,25 +33,25 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifacts", () => {
     test("fetches artifacts with search params", async () => {
-      const mockArtifacts = [createMockArtifact({ id: "1", type: "PRD" })];
+      const mockArtifacts = [createMockArtifact({ id: "1", subtype: "PRD" })];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
       const { result } = renderHook(
-        () => useArtifacts({ type: "PRD", latestOnly: true }),
+        () => useArtifacts({ subtype: "PRD", latestOnly: true }),
         { wrapper: createWrapper() }
       );
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
       expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?type=PRD&latestOnly=true"
+        "/artifacts?subtype=PRD&latestOnly=true"
       );
       expect(result.current.data).toEqual(mockArtifacts);
     });
 
     test("uses correct query key", () => {
-      const searchParams = { type: "PRD" as const, latestOnly: true };
+      const searchParams = { subtype: "PRD" as const, latestOnly: true };
       const expectedKey = artifactKeys.list(searchParams);
 
       renderHook(() => useArtifacts(searchParams), {
@@ -62,36 +62,36 @@ describe("Artifact Query Hooks", () => {
     });
   });
 
-  describe("useArtifactsByType", () => {
-    test("fetches artifacts by type with latestOnly=true", async () => {
-      const mockArtifacts = [createMockArtifact({ id: "1", type: "PRD" })];
+  describe("useArtifactsBySubtype", () => {
+    test("fetches artifacts by subtype with latestOnly=true", async () => {
+      const mockArtifacts = [createMockArtifact({ id: "1", subtype: "PRD" })];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
-      const { result } = renderHook(() => useArtifactsByType("PRD", true), {
+      const { result } = renderHook(() => useArtifactsBySubtype("PRD", true), {
         wrapper: createWrapper(),
       });
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
       expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?type=PRD&latestOnly=true"
+        "/artifacts?subtype=PRD&latestOnly=true"
       );
       expect(result.current.data).toEqual(mockArtifacts);
     });
 
-    test("fetches artifacts by type with latestOnly=false", async () => {
+    test("fetches artifacts by subtype with latestOnly=false", async () => {
       mockApiClient.get.mockResolvedValueOnce([]);
 
       const { result } = renderHook(
-        () => useArtifactsByType("IMPLEMENTATION_PLAN", false),
+        () => useArtifactsBySubtype("IMPLEMENTATION_PLAN", false),
         { wrapper: createWrapper() }
       );
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
       expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?type=IMPLEMENTATION_PLAN&latestOnly=false"
+        "/artifacts?subtype=IMPLEMENTATION_PLAN&latestOnly=false"
       );
     });
   });
@@ -164,7 +164,7 @@ describe("Artifact Mutation Hooks", () => {
       const mockArtifact = {
         id: "new-artifact",
         title: "New PRD",
-        type: "PRD",
+        subtype: "PRD",
       };
 
       mockApiClient.post.mockResolvedValueOnce(mockArtifact);
@@ -175,7 +175,7 @@ describe("Artifact Mutation Hooks", () => {
 
       result.current.mutate({
         title: "New PRD",
-        type: "PRD",
+        subtype: "PRD",
         content: "Content here",
       });
 
@@ -183,7 +183,7 @@ describe("Artifact Mutation Hooks", () => {
 
       expect(mockApiClient.post).toHaveBeenCalledWith("/artifacts", {
         title: "New PRD",
-        type: "PRD",
+        subtype: "PRD",
         content: "Content here",
       });
       expect(result.current.data).toEqual(mockArtifact);
@@ -199,7 +199,7 @@ describe("Artifact Mutation Hooks", () => {
 
       result.current.mutate({
         title: "New PRD",
-        type: "PRD",
+        subtype: "PRD",
         content: "Content",
       });
 

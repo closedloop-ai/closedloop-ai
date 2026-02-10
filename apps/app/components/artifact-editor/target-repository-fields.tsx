@@ -59,7 +59,7 @@ export function TargetRepositoryFields({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
-}: Readonly<TargetRepositoryFieldsProps>): React.ReactElement {
+}: Readonly<TargetRepositoryFieldsProps>) {
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
     useGitHubIntegrationStatus();

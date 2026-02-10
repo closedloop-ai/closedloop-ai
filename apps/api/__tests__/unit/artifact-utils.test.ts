@@ -31,13 +31,13 @@ describe("buildArtifactScopeCondition", () => {
     const result = buildArtifactScopeCondition({
       organizationId: "org-123",
       workstreamId: "ws-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "test-doc",
     });
     expect(result).toEqual({
       organizationId: "org-123",
       workstreamId: "ws-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "test-doc",
     });
   });
@@ -46,13 +46,13 @@ describe("buildArtifactScopeCondition", () => {
     const result = buildArtifactScopeCondition({
       organizationId: "org-123",
       projectId: "proj-123",
-      type: "IMPLEMENTATION_PLAN",
+      subtype: "IMPLEMENTATION_PLAN",
       documentSlug: null,
     });
     expect(result).toEqual({
       organizationId: "org-123",
       projectId: "proj-123",
-      type: "IMPLEMENTATION_PLAN",
+      subtype: "IMPLEMENTATION_PLAN",
       documentSlug: null,
     });
   });
@@ -60,12 +60,12 @@ describe("buildArtifactScopeCondition", () => {
   it("omits workstreamId and projectId when null", () => {
     const result = buildArtifactScopeCondition({
       organizationId: "org-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "test",
     });
     expect(result).toEqual({
       organizationId: "org-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "test",
     });
   });
@@ -82,14 +82,14 @@ describe("prepareArtifactVersion", () => {
 
     const result = await prepareArtifactVersion(mockTx as any, {
       organizationId: "org-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "test-doc",
     });
 
     expect(mockTx.artifact.updateMany).toHaveBeenCalledWith({
       where: {
         organizationId: "org-123",
-        type: "PRD",
+        subtype: "PRD",
         documentSlug: "test-doc",
         isLatest: true,
       },
@@ -108,7 +108,7 @@ describe("prepareArtifactVersion", () => {
 
     const result = await prepareArtifactVersion(mockTx as any, {
       organizationId: "org-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "new-doc",
     });
 
@@ -126,7 +126,7 @@ describe("prepareArtifactVersion", () => {
 
     const version1 = await prepareArtifactVersion(mockTx as any, {
       organizationId: "org-123",
-      type: "PRD",
+      subtype: "PRD",
       documentSlug: "concurrent-test",
     });
 

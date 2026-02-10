@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -119,7 +122,7 @@ export function PlanEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactType: "IMPLEMENTATION_PLAN",
+    artifactSubtype: ArtifactSubtype.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state

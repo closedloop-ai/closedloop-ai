@@ -1,13 +1,13 @@
-import { type Artifact, ArtifactType } from "@repo/database";
+import {
+  type Artifact,
+  type ArtifactSubtype,
+  ArtifactType,
+} from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { nanoid } from "nanoid";
 
 export function isDocumentArtifact(artifact: Pick<Artifact, "type">): boolean {
-  return (
-    artifact.type === ArtifactType.PRD ||
-    artifact.type === ArtifactType.IMPLEMENTATION_PLAN ||
-    artifact.type === ArtifactType.ISSUE
-  );
+  return artifact.type === ArtifactType.DOCUMENT;
 }
 
 /**
@@ -54,6 +54,7 @@ export async function createArtifactVersion(
     workstreamId: original.workstreamId,
     projectId: original.projectId,
     type: original.type,
+    subtype: original.subtype,
     documentSlug: original.documentSlug,
   });
   const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
@@ -65,6 +66,7 @@ export async function createArtifactVersion(
       projectId: original.projectId,
       parentId: original.parentId,
       type: original.type,
+      subtype: original.subtype,
       title: options.title ?? original.title,
       fileName:
         options.fileName === undefined ? original.fileName : options.fileName,
@@ -144,12 +146,14 @@ export function buildArtifactScopeCondition(params: {
   workstreamId?: string | null;
   projectId?: string | null;
   type?: ArtifactType;
+  subtype?: ArtifactSubtype;
   documentSlug?: string | null;
 }): {
   organizationId: string;
   workstreamId?: string;
   projectId?: string;
   type?: ArtifactType;
+  subtype?: ArtifactSubtype;
   documentSlug: string | null;
 } {
   return {
@@ -159,6 +163,7 @@ export function buildArtifactScopeCondition(params: {
       ? { projectId: params.projectId }
       : {}),
     ...(params.type ? { type: params.type } : {}),
+    ...(params.subtype ? { subtype: params.subtype } : {}),
     documentSlug: params.documentSlug ?? null,
   };
 }

@@ -1,5 +1,9 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactStatus,
+  ArtifactSubtype,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import { getArtifactUrl } from "@repo/aws";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
@@ -102,7 +106,8 @@ export async function handleExecutionSuccess(
         organizationId: planArtifact.organizationId,
         workstreamId,
         projectId: planArtifact.projectId,
-        type: ArtifactType.PullRequest,
+        type: ArtifactType.Branch,
+        subtype: ArtifactSubtype.PullRequest,
         title: prTitle,
         externalUrl: executionResult.pr_url,
         status: ArtifactStatus.Review,

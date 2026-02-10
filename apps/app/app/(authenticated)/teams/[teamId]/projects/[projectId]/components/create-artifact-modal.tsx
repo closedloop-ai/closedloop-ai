@@ -3,7 +3,7 @@
 import {
   type Artifact,
   ArtifactStatus,
-  type ArtifactType,
+  ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -40,8 +40,8 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
-import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
-import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
+import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
 function PrdSelectContent({
   loading,
@@ -122,7 +122,7 @@ function populateFieldsFromPrd(
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  artifactType: ArtifactType;
+  artifactSubtype: ArtifactSubtype;
   projectId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
@@ -130,10 +130,11 @@ type CreateArtifactModalProps = {
 export function CreateArtifactModal({
   open,
   onOpenChange,
-  artifactType,
+  artifactSubtype,
   projectId,
   onSuccess,
 }: CreateArtifactModalProps) {
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
@@ -150,14 +151,13 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const fileInputRef = useRef<HiddenFileInputHandle>(null);
-
-  const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] || artifactType;
-  const isImplementationPlan = artifactType === "IMPLEMENTATION_PLAN";
+  const typeLabel = ARTIFACT_SUBTYPE_LABELS[artifactSubtype] || artifactSubtype;
+  const isImplementationPlan =
+    artifactSubtype === ArtifactSubtype.ImplementationPlan;
   const isDocumentArtifact =
-    artifactType === "PRD" ||
-    artifactType === "ISSUE" ||
-    artifactType === "BUG";
+    artifactSubtype === ArtifactSubtype.Prd ||
+    artifactSubtype === ArtifactSubtype.Issue ||
+    artifactSubtype === ArtifactSubtype.Bug;
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -179,9 +179,9 @@ export function CreateArtifactModal({
     [repositories]
   );
 
-  // Fetch template for types that have templates
-  const { data: template } = useOrgTemplateByType(
-    isDocumentArtifact ? artifactType : "",
+  // Fetch template for subtypes that have templates
+  const { data: template } = useOrgTemplateBySubtype(
+    isDocumentArtifact ? artifactSubtype : "",
     { enabled: open && isDocumentArtifact }
   );
 
@@ -193,7 +193,7 @@ export function CreateArtifactModal({
 
   // Filter to get only PRDs
   const prds = useMemo(
-    () => artifacts.filter((a) => a.type === "PRD"),
+    () => artifacts.filter((a) => a.subtype === "PRD"),
     [artifacts]
   );
 
@@ -315,7 +315,7 @@ export function CreateArtifactModal({
     createArtifact.mutate(
       {
         projectId,
-        type: artifactType,
+        subtype: artifactSubtype,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
         content: content.trim() || undefined,

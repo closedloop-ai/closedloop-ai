@@ -35,8 +35,20 @@ describe("GET /api/artifacts", () => {
 
   it("returns all latest artifacts for user org", async () => {
     const mockArtifacts = [
-      { id: "1", title: "PRD 1", project: null, type: "PRD", isLatest: true },
-      { id: "2", title: "PLAN 1", project: null, type: "PLAN", isLatest: true },
+      {
+        id: "1",
+        title: "PRD 1",
+        project: null,
+        subtype: "PRD",
+        isLatest: true,
+      },
+      {
+        id: "2",
+        title: "PLAN 1",
+        project: null,
+        subtype: "IMPLEMENTATION_PLAN",
+        isLatest: true,
+      },
     ];
 
     vi.mocked(artifactsService.findAll).mockResolvedValue(mockArtifacts as any);
@@ -57,13 +69,13 @@ describe("GET /api/artifacts", () => {
     vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?type=PRD",
+      url: "http://localhost:3002/api/artifacts?subtype=PRD",
     });
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
     expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "PRD" })
+      expect.objectContaining({ subtype: "PRD" })
     );
   });
 
@@ -188,14 +200,14 @@ describe("GET /api/artifacts", () => {
     vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?type=IMPLEMENTATION_PLAN&documentSlug=auth-feature&version=3",
+      url: "http://localhost:3002/api/artifacts?subtype=IMPLEMENTATION_PLAN&documentSlug=auth-feature&version=3",
     });
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
     expect(artifactsService.findAll).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: "IMPLEMENTATION_PLAN",
+        subtype: "IMPLEMENTATION_PLAN",
         documentSlug: "auth-feature",
         version: 3,
       })
@@ -217,7 +229,7 @@ describe("POST /api/artifacts", () => {
     const mockArtifact = {
       id: "new-artifact-id",
       title: "New PRD",
-      type: "PRD",
+      subtype: "PRD",
       version: 1,
       isLatest: true,
     };
@@ -227,7 +239,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "New PRD",
         content: "# Content",
         projectId: uuidv7(),
@@ -246,7 +258,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         // missing title
       },
     });
@@ -264,7 +276,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Test",
         projectId: uuidv7(),
       },
@@ -290,7 +302,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         fileName: "my-prd.md",
         projectId: uuidv7(),
@@ -303,7 +315,7 @@ describe("POST /api/artifacts", () => {
       "test-org-id",
       "user-123",
       expect.objectContaining({
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         fileName: "my-prd.md",
       })
@@ -314,7 +326,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Standalone PRD",
       },
     });
@@ -335,7 +347,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         projectId: uuidv7(),
       },
@@ -357,7 +369,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         projectId: uuidv7(),
       },
@@ -384,7 +396,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         projectId,
       },
@@ -398,7 +410,7 @@ describe("POST /api/artifacts", () => {
       "test-org-id",
       "user-123",
       expect.objectContaining({
-        type: "PRD",
+        subtype: "PRD",
         title: "Test PRD",
         projectId,
       })
