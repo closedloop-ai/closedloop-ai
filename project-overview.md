@@ -1,7 +1,6 @@
 # Product Context Report
 
 Generated: 2026-02-09
-Working Directory: /Users/kris.wong/Dev/symphony-alpha
 Repository: symphony-alpha (Next.js monorepo on next-forge template)
 
 ---
@@ -431,25 +430,25 @@ Key files analyzed during this report:
 
 | File | Description |
 |------|-------------|
-| `/Users/kris.wong/Dev/symphony-alpha/CLAUDE.md` | Project-level development conventions and architecture documentation |
-| `/Users/kris.wong/Dev/symphony-alpha/README.md` | Project overview and setup instructions |
-| `/Users/kris.wong/Dev/symphony-alpha/package.json` | Root monorepo configuration |
-| `/Users/kris.wong/Dev/symphony-alpha/turbo.json` | Turborepo task configuration |
-| `/Users/kris.wong/Dev/symphony-alpha/docker-compose.yml` | Local PostgreSQL setup |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/database/prisma/schema.prisma` | Complete database schema (703 lines, 30+ models) |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/api/src/types/artifact.ts` | Artifact type definitions and category mapping |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/api/src/types/workstream.ts` | Workstream state machine and type definitions |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/app/artifacts/service.ts` | Artifact service (1526 lines) - core business logic |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/lib/auth/with-auth.ts` | Authentication wrapper for all API routes |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/github/index.ts` | GitHub App integration (workflow dispatch, webhook verification) |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/ai/lib/agents.ts` | AI agent configuration (PRD generation with Claude Opus 4.5) |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/ai/lib/models.ts` | AI model configuration |
-| `/Users/kris.wong/Dev/symphony-alpha/packages/security/index.ts` | Arcjet security configuration |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/.env.example` | API environment variables (reveals service dependencies) |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/app/.env.example` | Frontend environment variables |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/app/app/(authenticated)/settings/page.tsx` | Settings page with integration management |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/app/integrations/linear/service.ts` | Linear integration service |
-| `/Users/kris.wong/Dev/symphony-alpha/.github/workflows/deploy-production.yml` | Production deployment workflow with health checks |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/app/webhooks/github/route.ts` | GitHub webhook handler (installation events, workflow completions) |
-| `/Users/kris.wong/Dev/symphony-alpha/apps/api/app/webhooks/auth/auth-hooks.ts` | Clerk webhook handlers (user/org lifecycle) |
-| `/Users/kris.wong/Dev/symphony-alpha/docs/local_deployment.md` | Local development setup guide |
+| `CLAUDE.md` | Project-level development conventions and architecture documentation |
+| `README.md` | Project overview and setup instructions |
+| `package.json` | Root monorepo configuration |
+| `turbo.json` | Turborepo task configuration |
+| `docker-compose.yml` | Local PostgreSQL setup |
+| `packages/database/prisma/schema.prisma` | Complete database schema (703 lines, 30+ models) |
+| `packages/api/src/types/artifact.ts` | Artifact type definitions and category mapping |
+| `packages/api/src/types/workstream.ts` | Workstream state machine and type definitions |
+| `apps/api/app/artifacts/service.ts` | Artifact service (1526 lines) - core business logic |
+| `apps/api/lib/auth/with-auth.ts` | Authentication wrapper for all API routes |
+| `packages/github/index.ts` | GitHub App integration (workflow dispatch, webhook verification) |
+| `packages/ai/lib/agents.ts` | AI agent configuration (PRD generation with Claude Opus 4.5) |
+| `packages/ai/lib/models.ts` | AI model configuration |
+| `packages/security/index.ts` | Arcjet security configuration |
+| `apps/api/.env.example` | API environment variables (reveals service dependencies) |
+| `apps/app/.env.example` | Frontend environment variables |
+| `apps/app/app/(authenticated)/settings/page.tsx` | Settings page with integration management |
+| `apps/api/app/integrations/linear/service.ts` | Linear integration service |
+| `.github/workflows/deploy-production.yml` | Production deployment workflow with health checks |
+| `apps/api/app/webhooks/github/route.ts` | GitHub webhook handler (installation events, workflow completions) |
+| `apps/api/app/webhooks/auth/auth-hooks.ts` | Clerk webhook handlers (user/org lifecycle) |
+| `docs/local_deployment.md` | Local development setup guide |
