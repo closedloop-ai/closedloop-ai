@@ -222,7 +222,6 @@ jobs:
           mkdir -p /tmp/health-check-deps
           npm --prefix /tmp/health-check-deps init -y
           npm --prefix /tmp/health-check-deps install --no-save pg
-          echo "NODE_PATH=/tmp/health-check-deps/node_modules" >> "$GITHUB_ENV"
 
       - name: Run Post-Deploy Health Checks
         id: health_checks
@@ -233,6 +232,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
           DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NODE_PATH: /tmp/health-check-deps/node_modules
         run: |
           # Run Vercel and Database checks in parallel
           VERCEL_PID=""
