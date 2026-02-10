@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { generateArtifactMetadata } from "@/lib/artifact-metadata";
 import { PRDEditorContainer } from "./prd-editor-container";
 
 type PrdPageProps = {
@@ -7,10 +8,12 @@ type PrdPageProps = {
   searchParams: Promise<{ version?: string }>;
 };
 
-export const metadata: Metadata = {
-  title: "PRD",
-  description: "Product Requirements Document",
-};
+export async function generateMetadata({
+  params,
+}: PrdPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  return generateArtifactMetadata(slug);
+}
 
 export default async function PrdPage({ params, searchParams }: PrdPageProps) {
   const { slug } = await params;
