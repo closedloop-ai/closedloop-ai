@@ -24,7 +24,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       // Create artifact without documentSlug - should auto-generate from title
       const artifact = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
-        type: "PRD",
+        subtype: "PRD",
         title: "My Feature Requirements",
         content: "Feature details...",
       });
@@ -45,7 +45,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     // Create artifact without projectId or workstreamId - should throw error
     await expect(
       artifactsService.create(testOrgId, testUserId, {
-        type: "PRD",
+        subtype: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
       })
@@ -64,7 +64,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       // Create first artifact (v1)
       const v1 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
-        type: "PRD",
+        subtype: "PRD",
         title: "My Feature",
         content: "Version 1 content",
       });
@@ -76,7 +76,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       // Create second artifact - also v1 (versioning removed)
       const v2 = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
-        type: "PRD",
+        subtype: "PRD",
         title: "My Feature Updated",
         content: "Version 2 content",
       });
@@ -104,7 +104,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       // Create original artifact
       const original = await artifactsService.create(testOrgId, testUserId, {
         projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
+        subtype: "IMPLEMENTATION_PLAN",
         title: "Original Plan",
         content: "# Original Content\n\nOriginal implementation details",
         status: "APPROVED",
@@ -127,7 +127,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
       );
       expect(newVersion.title).toBe(original!.title);
       expect(newVersion.projectId).toBe(original!.projectId);
-      expect(newVersion.type).toBe(original!.type);
+      expect(newVersion.subtype).toBe(original!.subtype);
 
       // Original should still exist and be marked as not latest
       const originalAfter = await artifactsService.findByIdSimple(
@@ -165,7 +165,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
             organizationId: testOrgId,
             projectId: testProjectId,
             workstreamId: workstream.id,
-            type: "PRD",
+            subtype: "PRD",
             title: "Feature PRD",
             content: "PRD content here",
             version: 1,
@@ -181,7 +181,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
             organizationId: testOrgId,
             projectId: testProjectId,
             workstreamId: workstream.id,
-            type: "IMPLEMENTATION_PLAN",
+            subtype: "IMPLEMENTATION_PLAN",
             title: "Implementation Plan: Feature PRD",
             content: "Plan content",
             version: 1,
@@ -234,7 +234,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "PRD",
+            subtype: "PRD",
             title: "User Authentication",
             content: "PRD content for auth feature",
             version: 1,
@@ -249,7 +249,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "IMPLEMENTATION_PLAN",
+            subtype: "IMPLEMENTATION_PLAN",
             title: "Implementation Plan: User Authentication",
             content: "Implementation details",
             version: 1,
@@ -301,7 +301,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "PRD",
+            subtype: "PRD",
             title: "My Feature PRD",
             documentSlug,
             content: "Version 1 content",
@@ -317,7 +317,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "PRD",
+            subtype: "PRD",
             title: "My Feature PRD",
             documentSlug,
             content: "Version 2 content",
@@ -354,7 +354,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
             data: {
               organizationId: testOrgId,
               projectId: testProjectId,
-              type: "IMPLEMENTATION_PLAN",
+              subtype: "IMPLEMENTATION_PLAN",
               title: "Versioned Plan",
               documentSlug,
               content: `Version ${version} content`,
@@ -390,7 +390,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "PRD",
+            subtype: "PRD",
             title: "Latest Only Test",
             documentSlug,
             content: "Old content",
@@ -405,7 +405,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           data: {
             organizationId: testOrgId,
             projectId: testProjectId,
-            type: "PRD",
+            subtype: "PRD",
             title: "Latest Only Test",
             documentSlug,
             content: "Latest content",

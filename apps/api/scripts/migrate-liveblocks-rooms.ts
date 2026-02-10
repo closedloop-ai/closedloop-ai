@@ -63,6 +63,7 @@ async function migrateLiveblocksRooms() {
         id: true,
         organizationId: true,
         documentSlug: true,
+        subtype: true,
         type: true,
       },
     });
@@ -87,7 +88,7 @@ async function migrateLiveblocksRooms() {
           tenantId: artifact.organizationId,
           metadata: {
             artifactId: artifact.id,
-            artifactType: artifact.type,
+            artifactSubtype: artifact.subtype,
             documentSlug: artifact.documentSlug,
           },
         });

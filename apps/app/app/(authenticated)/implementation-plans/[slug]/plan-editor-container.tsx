@@ -1,6 +1,6 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
@@ -28,7 +28,7 @@ export function PlanEditorContainer({
     isLoading: isLoadingLatest,
     error: latestError,
   } = useArtifacts({
-    type: ArtifactType.ImplementationPlan,
+    subtype: ArtifactSubtype.ImplementationPlan,
     documentSlug: slug,
     latestOnly: true,
   });
@@ -40,7 +40,7 @@ export function PlanEditorContainer({
     error: versionError,
   } = useArtifacts(
     {
-      type: ArtifactType.ImplementationPlan,
+      subtype: ArtifactSubtype.ImplementationPlan,
       documentSlug: slug,
       ...(selectedVersion
         ? { version: selectedVersion }

@@ -1,13 +1,13 @@
 import {
-  ARTIFACT_CATEGORY_OPTIONS,
   ARTIFACT_STATUS_OPTIONS,
+  ARTIFACT_SUBTYPE_OPTIONS,
   ARTIFACT_TYPE_OPTIONS,
 } from "@repo/api/src/types/artifact";
 import { z } from "zod";
 
-const artifactTypeEnum = z.enum(ARTIFACT_TYPE_OPTIONS);
+const artifactSubtypeEnum = z.enum(ARTIFACT_SUBTYPE_OPTIONS);
 const artifactStatusEnum = z.enum(ARTIFACT_STATUS_OPTIONS);
-const artifactCategoryEnum = z.enum(ARTIFACT_CATEGORY_OPTIONS);
+const artifactTypeEnum = z.enum(ARTIFACT_TYPE_OPTIONS);
 
 // Validate owner/repo format (e.g., "closedloop/astoria-service")
 const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
@@ -17,8 +17,7 @@ export const createArtifactValidator = z
     workstreamId: z.uuidv7().optional(),
     projectId: z.uuidv7().optional(),
     parentId: z.uuidv7().optional(),
-    type: artifactTypeEnum,
-    category: artifactCategoryEnum.optional(),
+    subtype: artifactSubtypeEnum,
     title: z.string().min(1, "Title is required"),
     fileName: z.string().optional(),
     approver: z.string().optional(),
@@ -31,10 +30,11 @@ export const createArtifactValidator = z
       .optional(),
     targetBranch: z.string().optional(),
     ownerId: z.uuidv7().optional(),
-    templateForType: artifactTypeEnum.nullable().optional(),
+    templateForSubtype: artifactSubtypeEnum.nullable().optional(),
   })
   .refine(
-    (data) => data.type === "TEMPLATE" || data.workstreamId || data.projectId,
+    (data) =>
+      data.subtype === "TEMPLATE" || data.workstreamId || data.projectId,
     {
       message:
         "Either workstreamId or projectId is required (except for templates)",
@@ -61,8 +61,8 @@ export const newVersionValidator = z.object({
 });
 
 export const findArtifactsQueryValidator = z.object({
+  subtype: artifactSubtypeEnum.optional(),
   type: artifactTypeEnum.optional(),
-  category: artifactCategoryEnum.optional(),
   latestOnly: z
     .string()
     .optional()

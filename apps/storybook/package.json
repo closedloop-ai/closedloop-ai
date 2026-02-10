@@ -31,7 +31,7 @@
     "@storybook/nextjs": "^10.2.8",
     "@storybook/react": "^10.2.8",
     "@types/node": "^25.2.2",
-    "@types/react": "19.2.7",
+    "@types/react": "^19.2.13",
     "@types/react-dom": "19.2.3",
     "chromatic": "^13.3.5",
     "postcss": "^8.5.6",

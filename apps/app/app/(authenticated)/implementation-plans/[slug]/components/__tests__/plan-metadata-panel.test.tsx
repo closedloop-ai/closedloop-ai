@@ -59,7 +59,10 @@ const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
 const defaultProps = {
-  plan: createMockArtifact({ type: "IMPLEMENTATION_PLAN" }),
+  plan: createMockArtifact({
+    type: "DOCUMENT",
+    subtype: "IMPLEMENTATION_PLAN",
+  }),
   status: "DRAFT" as ArtifactStatus,
   approver: "",
   owner: null,

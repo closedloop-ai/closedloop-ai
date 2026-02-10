@@ -40,7 +40,7 @@ export function CollapsibleSection({
   onOpenChange,
   children,
   contentClassName = "space-y-4 px-3 pb-3",
-}: Readonly<CollapsibleSectionProps>): React.ReactElement {
+}: Readonly<CollapsibleSectionProps>) {
   return (
     <Collapsible onOpenChange={onOpenChange} open={open}>
       <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg p-3 font-medium text-sm transition-colors hover:bg-accent">

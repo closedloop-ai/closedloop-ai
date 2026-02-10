@@ -1,6 +1,6 @@
 "use client";
 
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
@@ -28,7 +28,7 @@ export function PRDEditorContainer({
     isLoading: isLoadingLatest,
     error: latestError,
   } = useArtifacts({
-    type: ArtifactType.Prd,
+    subtype: ArtifactSubtype.Prd,
     documentSlug: slug,
     latestOnly: true,
   });
@@ -40,7 +40,7 @@ export function PRDEditorContainer({
     error: versionError,
   } = useArtifacts(
     {
-      type: ArtifactType.Prd,
+      subtype: ArtifactSubtype.Prd,
       documentSlug: slug,
       ...(selectedVersion
         ? { version: selectedVersion }

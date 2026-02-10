@@ -8,13 +8,13 @@ import { useApiClient } from "@/hooks/use-api-client";
 export const templateKeys = {
   all: ["templates"] as const,
   orgTemplates: () => [...templateKeys.all, "org"] as const,
-  orgTemplateByType: (templateForType: string) =>
-    [...templateKeys.all, "org", "type", templateForType] as const,
+  orgTemplateBySubtype: (templateForSubtype: string) =>
+    [...templateKeys.all, "org", "subtype", templateForSubtype] as const,
 };
 
 /**
  * Fetch all templates for the authenticated user's organization.
- * Returns artifacts where type=TEMPLATE.
+ * Returns artifacts where subtype=TEMPLATE.
  */
 export function useOrgTemplates(
   options?: Omit<UseQueryOptions<Artifact[]>, "queryKey" | "queryFn">
@@ -30,20 +30,20 @@ export function useOrgTemplates(
 }
 
 /**
- * Fetch a single template by artifact type.
+ * Fetch a single template by artifact subtype.
  * Triggers lazy seeding of default templates on the backend.
  */
-export function useOrgTemplateByType(
-  templateForType: string,
+export function useOrgTemplateBySubtype(
+  templateForSubtype: string,
   options?: Omit<UseQueryOptions<Artifact>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: templateKeys.orgTemplateByType(templateForType),
-    queryFn: () => apiClient.get<Artifact>(`/templates/${templateForType}`),
+    queryKey: templateKeys.orgTemplateBySubtype(templateForSubtype),
+    queryFn: () => apiClient.get<Artifact>(`/templates/${templateForSubtype}`),
     staleTime: 10 * 60 * 1000, // 10 minutes - templates don't change frequently
-    enabled: !!templateForType,
+    enabled: !!templateForSubtype,
     ...options,
   });
 }

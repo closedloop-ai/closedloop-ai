@@ -42,7 +42,7 @@ enum WorkstreamState {
   CANCELLED
 }
 
-enum ArtifactType {
+enum ArtifactSubtype {
   PRD
   ISSUE
   BUG
@@ -65,7 +65,7 @@ enum ArtifactStatus {
   ARCHIVED
 }
 
-enum ArtifactCategory {
+enum ArtifactType {
   DOCUMENT
   WORKFLOW
   BRANCH
@@ -381,30 +381,30 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id              String           @id @default(uuid(7)) @db.Uuid
-  organizationId  String           @map("organization_id") @db.Uuid
-  workstreamId    String?          @map("workstream_id") @db.Uuid
-  projectId       String?          @map("project_id") @db.Uuid
-  parentId        String?          @map("parent_id") @db.Uuid
-  type            ArtifactType
-  category        ArtifactCategory @default(DOCUMENT)
-  title           String
-  fileName        String?          @map("file_name")
-  approver        String?
-  status          ArtifactStatus   @default(DRAFT)
-  content         String?          @db.Text
-  externalUrl     String?          @map("external_url")
-  version         Int              @default(1)
-  isLatest        Boolean          @default(true) @map("is_latest")
-  documentSlug    String?          @map("document_slug")
-  generatedBy     String?          @map("generated_by") @db.Uuid
-  ownerId         String?          @map("owner_id") @db.Uuid
-  tokenUsage      Json?            @map("token_usage")
-  targetRepo      String?          @map("target_repo")
-  targetBranch    String?          @map("target_branch")
-  templateForType ArtifactType?    @map("template_for_type")
-  createdAt       DateTime         @default(now()) @map("created_at")
-  updatedAt       DateTime         @updatedAt @map("updated_at")
+  id                 String            @id @default(uuid(7)) @db.Uuid
+  organizationId     String            @map("organization_id") @db.Uuid
+  workstreamId       String?           @map("workstream_id") @db.Uuid
+  projectId          String?           @map("project_id") @db.Uuid
+  parentId           String?           @map("parent_id") @db.Uuid
+  subtype            ArtifactSubtype   @map("subtype")
+  type               ArtifactType      @default(DOCUMENT) @map("type")
+  title              String
+  fileName           String?           @map("file_name")
+  approver           String?
+  status             ArtifactStatus    @default(DRAFT)
+  content            String?           @db.Text
+  externalUrl        String?           @map("external_url")
+  version            Int               @default(1)
+  isLatest           Boolean           @default(true) @map("is_latest")
+  documentSlug       String?           @map("document_slug")
+  generatedBy        String?           @map("generated_by") @db.Uuid
+  ownerId            String?           @map("owner_id") @db.Uuid
+  tokenUsage         Json?             @map("token_usage")
+  targetRepo         String?           @map("target_repo")
+  targetBranch       String?           @map("target_branch")
+  templateForSubtype ArtifactSubtype?  @map("template_for_subtype")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
 
   // Relations
   organization Organization         @relation(fields: [organizationId], references: [id])
@@ -417,11 +417,11 @@ model Artifact {
   evaluations  ArtifactEvaluation[]
   previewDeployment  PreviewDeployment?
 
-  @@unique([organizationId, templateForType])
-  @@index([organizationId, workstreamId, type, isLatest])
-  @@index([organizationId, projectId, type, isLatest])
-  @@index([organizationId, parentId, type, isLatest])
-  @@index([organizationId, type, templateForType])
+  @@unique([organizationId, templateForSubtype])
+  @@index([organizationId, workstreamId, subtype, isLatest])
+  @@index([organizationId, projectId, subtype, isLatest])
+  @@index([organizationId, parentId, subtype, isLatest])
+  @@index([organizationId, subtype, templateForSubtype])
   @@index([workstreamId])
   @@index([projectId])
   @@index([parentId])

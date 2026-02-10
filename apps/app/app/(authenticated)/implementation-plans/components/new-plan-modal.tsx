@@ -25,7 +25,7 @@ import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  useArtifactsByType,
+  useArtifactsBySubtype,
   useCreateAndGenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
 
@@ -158,7 +158,7 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
-  const { data: prds = [], isLoading: loadingPrds } = useArtifactsByType(
+  const { data: prds = [], isLoading: loadingPrds } = useArtifactsBySubtype(
     "PRD",
     true,
     {
@@ -219,7 +219,7 @@ export function NewPlanModal({
 
     createAndGeneratePlan.mutate(
       {
-        type: "IMPLEMENTATION_PLAN",
+        subtype: "IMPLEMENTATION_PLAN",
         title: title.trim(),
         fileName: finalFileName,
         approver: selectedSource.approver ?? undefined,
