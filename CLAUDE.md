@@ -249,13 +249,16 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
 - **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
 - **[insight]**: `@repo/observability/log` exports `console` directly and does not import `server-only`, so it is safe to use in client components despite `server-only` being a package-level dependency of `@repo/observability`. (context: observability|client-components|server-only|module-resolution)
+- **[pattern]**: When shared mappings (e.g., artifact subtype-to-route prefix) are needed by both server packages (`packages/collaboration`) and frontend code (`apps/app`), place them in `packages/api/src/types/` since server packages cannot import from `apps/app/lib/`. (context: monorepo|code-organization|shared-types|cross-package-dependencies)
 
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
+- **[mistake]**: Biome's import order rules in this monorepo require `@repo/*` package imports before `@/*` path alias imports. Run `pnpm lint:fix` to auto-fix after adding shared package imports. (context: biome|import-order|lint|monorepo)
 - **[convention]**: To lint a single file with Biome, use `npx biome check <file>` directly. The monorepo's `pnpm lint -- --filter=<file>` does not support single-file targeting. (context: biome|linting|cli|single-file)
+- **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
 
 ### Domain Concepts
 - **[convention]**: The 'Workflow' artifact category in Symphony represents user-defined step sequences that orchestrate execution (e.g., plan → code → test → review), NOT artifacts generated during execution or external tool integrations. Workflows let users define what steps get executed. (context: artifact-category|workflow|symphony-concepts)
@@ -276,3 +279,4 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: RoomProvider requires a LiveblocksProvider ancestor. When LiveblocksProvider is conditionally mounted based on user data loading, and artifact data resolves first, RoomProvider descendants crash. Always mount at least a minimal LiveblocksProvider (auth endpoint only) during loading states. (context: liveblocks|RoomProvider|react-providers|loading-state|race-condition)
 - **[mistake]**: When mounting LiveblocksProvider in loading/bootstrap branches, must include LiveblocksErrorBoundary to contain auth/runtime errors. Without it, Liveblocks errors during bootstrap bubble up and crash the app before the full provider mounts. (context: liveblocks|error-boundary|bootstrap|error-handling|react)
 - **[pattern]**: When nesting LiveblocksErrorBoundary with a manual LiveblocksAvailabilityContext.Provider, place the manual override inside the error boundary. The inner provider wins, ensuring isAvailable=false during loading regardless of auth errors. (context: react-context|error-boundaries|liveblocks|context-nesting)
+- **[mistake]**: When reading Liveblocks room metadata, must use the same key that was stored at room creation. Room creation stores `artifactSubtype` in `room-utils.ts` but room resolution was reading `artifactType` in `room-metadata.ts`, causing fallback to generic URLs. Always verify read keys match write keys. (context: liveblocks|room-metadata|metadata-keys|consistency|read-write-mismatch)

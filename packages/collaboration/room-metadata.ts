@@ -19,7 +19,7 @@ function slugToTitleCase(slug: string): string {
 
 /**
  * Resolves room IDs to display names and navigation URLs by reading
- * Liveblocks room metadata (which stores artifactType at creation time).
+ * Liveblocks room metadata (which stores artifactSubtype at creation time).
  * Falls back to generic /artifacts/:slug URL when metadata is missing.
  * Processes rooms in batches to avoid hitting Liveblocks API rate limits
  * when resolving many rooms at once.
@@ -45,7 +45,7 @@ export async function resolveRoomMetadata(
 
       try {
         const room = await liveblocks.getRoom(roomId);
-        const artifactType = room.metadata?.artifactType;
+        const artifactType = room.metadata?.artifactSubtype;
 
         if (typeof artifactType === "string") {
           const prefix = getRoutePrefixForSubtype(artifactType);
