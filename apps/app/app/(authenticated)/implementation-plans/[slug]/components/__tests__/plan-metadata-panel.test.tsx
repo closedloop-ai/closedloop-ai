@@ -50,6 +50,15 @@ vi.mock("@/components/artifact-editor/rating-section", () => ({
   ),
 }));
 
+// Mock useArtifactsByProject to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifactsByProject: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Mock useOrganizationUsers to avoid Clerk authentication context
 vi.mock("@/hooks/queries/use-users", () => ({
   useOrganizationUsers: () => ({
@@ -85,6 +94,7 @@ const defaultProps = {
   onStatusChange: vi.fn(),
   onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
+  onParentChange: vi.fn(),
 };
 
 describe("sortMetricsByScore", () => {
