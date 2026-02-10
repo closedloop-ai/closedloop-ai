@@ -1,4 +1,3 @@
-import type { ApiResult } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
 import { auth } from "@repo/auth/server";
 import { authenticate } from "@repo/collaboration/auth";
@@ -7,7 +6,7 @@ import { getConsistentColor } from "@repo/collaboration/user-colors";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import z from "zod";
-import { env } from "@/env";
+import { fetchUser } from "../fetch-user";
 
 export async function POST(request: Request): Promise<Response> {
   try {
@@ -69,47 +68,6 @@ export async function POST(request: Request): Promise<Response> {
 const authenticateValidator = z.object({
   room: z.string().min(1, "room is required").optional(),
 });
-
-async function fetchUser(
-  getToken: () => Promise<string | null>
-): Promise<User | null> {
-  if (!env.NEXT_PUBLIC_API_URL) {
-    log.error("NEXT_PUBLIC_API_URL is not set");
-    return null;
-  }
-
-  try {
-    const token = await getToken();
-    if (!token) {
-      log.error("Unable to fetch auth token");
-      return null;
-    }
-
-    const response = await fetch(`${env.NEXT_PUBLIC_API_URL}/me`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      log.error("Unable to fetch user", { status: response.status });
-      return null;
-    }
-
-    const result = (await response.json()) as ApiResult<User>;
-    if (!result.success) {
-      log.error("Unable to fetch user", { error: result.error });
-      return null;
-    }
-
-    return result.data;
-  } catch (error) {
-    log.error("Error fetching user", { error: parseError(error) });
-    return null;
-  }
-}
 
 function getUserName(user: User): string {
   if (user.firstName && user.lastName) {
