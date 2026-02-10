@@ -1190,15 +1190,21 @@ Please try again or contact support if the issue persists.`,
       }
 
       const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "execution-logs"
+        Number(actionRun.runId)
       );
 
-      if (artifacts.length === 0 || !artifacts[0]) {
+      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      const symphonyArtifact = artifacts.find(
+        (a) =>
+          a.name.startsWith("symphony-run-") ||
+          a.name.startsWith("symphony-dispatch-")
+      );
+
+      if (!symphonyArtifact) {
         return createEmptyExecutionTrace();
       }
 
-      return parseExecutionLogs(artifacts[0].data);
+      return parseExecutionLogs(symphonyArtifact.data);
     } catch (error) {
       log.error("[artifacts-service] Failed to get execution log", {
         error: error instanceof Error ? error.message : String(error),
