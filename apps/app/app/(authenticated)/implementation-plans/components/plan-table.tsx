@@ -14,6 +14,7 @@ import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 import { PlanRowActions } from "./plan-row-actions";
 
 const columns: Column<ArtifactWithWorkstream>[] = [
@@ -43,7 +44,9 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     key: "approver",
     header: "Approver",
     render: (plan) => (
-      <span className="text-muted-foreground">{plan.approver ?? "-"}</span>
+      <span className="text-muted-foreground">
+        {plan.approver ? getUserDisplayName(plan.approver) : "-"}
+      </span>
     ),
   },
   {

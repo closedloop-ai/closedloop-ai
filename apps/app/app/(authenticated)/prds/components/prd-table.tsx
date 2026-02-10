@@ -13,6 +13,7 @@ import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
 const columns: Column<ArtifactWithWorkstream>[] = [
@@ -49,7 +50,9 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     key: "approver",
     header: "Approver",
     render: (prd) => (
-      <span className="text-muted-foreground">{prd.approver ?? "-"}</span>
+      <span className="text-muted-foreground">
+        {prd.approver ? getUserDisplayName(prd.approver) : "-"}
+      </span>
     ),
   },
   {
