@@ -1716,6 +1716,7 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
     title: string;
     subtype: ArtifactSubtype;
     documentSlug: string | null;
+  } | null;
   approver: {
     id: string;
     firstName: string | null;

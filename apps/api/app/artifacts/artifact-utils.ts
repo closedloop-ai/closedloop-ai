@@ -149,14 +149,6 @@ export const artifactIncludeWithContext = {
       },
     },
   },
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
   parent: {
     select: {
       id: true,
