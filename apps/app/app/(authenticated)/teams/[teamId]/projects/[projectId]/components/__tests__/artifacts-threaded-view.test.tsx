@@ -55,6 +55,8 @@ vi.mock("../artifact-subtype-badge", () => ({
   ),
 }));
 
+const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Feature Branch/;
+
 const createMockArtifact = (
   overrides: Partial<ProjectArtifact>
 ): ProjectArtifact => ({
@@ -160,7 +162,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     expect(screen.getByText("1 artifact")).toBeDefined();
   });
 
-  test("places unassigned artifacts in 'Unassigned' group", () => {
+  test("uses PRD name as title for unassigned groups", () => {
     const artifacts: ProjectArtifact[] = [
       createMockArtifact({
         id: "1",
@@ -172,7 +174,60 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
     render(<ArtifactsThreadedView artifacts={artifacts} />);
 
+    expect(screen.getByText("Orphan PRD")).toBeDefined();
+    expect(screen.queryByText("Unassigned")).toBeNull();
+  });
+
+  test("falls back to 'Unassigned' when no PRD in group", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Feature Branch",
+        subtype: "BRANCH",
+        workstreamId: null,
+        workstreamTitle: null,
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
     expect(screen.getByText("Unassigned")).toBeDefined();
+  });
+
+  test("sorts artifacts within group: PRD, plan, branch", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Feature Branch",
+        subtype: "BRANCH",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+      createMockArtifact({
+        id: "2",
+        name: "The PRD",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+      createMockArtifact({
+        id: "3",
+        name: "The Plan",
+        subtype: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    const names = screen.getAllByText(ARTIFACT_NAME_PATTERN);
+    expect(names[0].textContent).toBe("The PRD");
+    expect(names[1].textContent).toBe("The Plan");
+    expect(names[2].textContent).toBe("Feature Branch");
   });
 
   test("shows workstream state badge", () => {

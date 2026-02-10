@@ -88,7 +88,46 @@ type WorkstreamGroup = {
   title: string;
   state: string | null;
   artifacts: ProjectArtifact[];
+  /** Raw workstream title from API, used during group construction. */
+  _workstreamTitle?: string | null;
 };
+
+/** Defines display order of artifact subtypes within a workstream group. */
+const SUBTYPE_ORDER: Record<string, number> = {
+  PRD: 0,
+  IMPLEMENTATION_PLAN: 1,
+  IMPLEMENTATION_STRATEGY: 2,
+  ISSUE: 3,
+  BUG: 4,
+  BRANCH: 5,
+  DESIGNS: 6,
+  PROJECT_BRIEF: 7,
+  TEMPLATE: 8,
+};
+
+function sortArtifactsBySubtype(
+  artifacts: ProjectArtifact[]
+): ProjectArtifact[] {
+  return [...artifacts].sort(
+    (a, b) =>
+      (SUBTYPE_ORDER[a.subtype] ?? 99) - (SUBTYPE_ORDER[b.subtype] ?? 99)
+  );
+}
+
+/**
+ * Derive a group title. For groups with a workstream title, use it directly.
+ * For unassigned groups, use the PRD artifact's name if one exists.
+ */
+function deriveGroupTitle(
+  workstreamTitle: string | null | undefined,
+  artifacts: ProjectArtifact[]
+): string {
+  if (workstreamTitle) {
+    return workstreamTitle;
+  }
+  const prd = artifacts.find((a) => a.subtype === "PRD");
+  return prd?.name ?? "Unassigned";
+}
 
 function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
   const groups = new Map<string | null, WorkstreamGroup>();
@@ -99,12 +138,19 @@ function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
     if (!groups.has(key)) {
       groups.set(key, {
         id: key,
-        title: artifact.workstreamTitle ?? "Unassigned",
+        title: "", // resolved after all artifacts are collected
         state: artifact.workstreamState ?? null,
         artifacts: [],
+        _workstreamTitle: artifact.workstreamTitle,
       });
     }
     groups.get(key)!.artifacts.push(artifact);
+  }
+
+  // Resolve titles and sort artifacts within each group
+  for (const group of groups.values()) {
+    group.title = deriveGroupTitle(group._workstreamTitle, group.artifacts);
+    group.artifacts = sortArtifactsBySubtype(group.artifacts);
   }
 
   // Sort: workstreams with IDs first (by title), unassigned last
