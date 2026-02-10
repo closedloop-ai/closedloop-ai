@@ -28,6 +28,7 @@ import {
   useArtifactsBySubtype,
   useCreateAndGenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { getUserDisplayName } from "@/lib/user-utils";
 
 type NewPlanModalProps = {
   sourceArtifact?: ArtifactWithWorkstream;
@@ -110,7 +111,7 @@ function PlanPreview({
         {prd.approver ? (
           <li>
             <span className="font-medium text-foreground">Approver:</span>{" "}
-            {prd.approver}
+            {getUserDisplayName(prd.approver)}
           </li>
         ) : null}
         {prd.targetRepo ? (
@@ -222,7 +223,7 @@ export function NewPlanModal({
         subtype: "IMPLEMENTATION_PLAN",
         title: title.trim(),
         fileName: finalFileName,
-        approver: selectedSource.approver ?? undefined,
+        approverId: selectedSource.approver?.id,
         status: "DRAFT",
         content: content.trim() || "",
         parentId: selectedSource.id,

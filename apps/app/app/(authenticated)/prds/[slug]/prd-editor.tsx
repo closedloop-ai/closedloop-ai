@@ -153,8 +153,7 @@ export function PRDEditor({
         metadataPanel={
           <PRDMetadataPanel
             approver={metadata.approver}
-            onApproverBlur={metadata.handleApproverBlur}
-            onApproverChange={metadata.handleApproverChange}
+            onApproverSelect={metadata.handleApproverSelect}
             onOwnerChange={metadata.handleOwnerChange}
             onStatusChange={metadata.handleStatusChange}
             onTargetBranchBlur={metadata.handleTargetBranchBlur}

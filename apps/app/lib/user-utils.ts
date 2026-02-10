@@ -23,3 +23,23 @@ export function getUserInitials(
   const last = lastName?.charAt(0) || "";
   return (first + last).toUpperCase() || "?";
 }
+
+/**
+ * Transform API User to UserSelectPopover User format
+ * Handles null avatarUrl (converts to undefined) and missing names (fallback to email)
+ */
+export function transformApiUserToSelectUser(user: {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email?: string;
+  avatarUrl?: string | null;
+}): import("@repo/design-system/components/ui/user-select-popover").User {
+  return {
+    id: user.id,
+    name: getUserDisplayName(user),
+    email: user.email || "",
+    avatarUrl: user.avatarUrl || undefined,
+    initials: getUserInitials(user.firstName, user.lastName),
+  };
+}

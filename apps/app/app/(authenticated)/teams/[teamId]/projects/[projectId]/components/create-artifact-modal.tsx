@@ -25,6 +25,10 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import {
+  type User,
+  UserSelectPopover,
+} from "@repo/design-system/components/ui/user-select-popover";
 import { LoaderIcon, UploadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -41,7 +45,9 @@ import {
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
 import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 function PrdSelectContent({
   loading,
@@ -82,9 +88,10 @@ function PrdSelectContent({
 function populateFieldsFromPrd(
   prdId: string,
   prds: ArtifactWithWorkstream[],
-  repositories: Array<{ id: string; fullName: string }> | undefined
+  repositories: Array<{ id: string; fullName: string }> | undefined,
+  transformedUsers: User[]
 ): {
-  approver: string;
+  approver: User | null;
   status: ArtifactStatus;
   targetRepo: string;
   targetBranch: string;
@@ -95,8 +102,12 @@ function populateFieldsFromPrd(
     return null;
   }
 
+  const matchingApprover = selectedPrd.approver
+    ? transformedUsers.find((u) => u.id === selectedPrd.approver?.id)
+    : null;
+
   const basicFields = {
-    approver: selectedPrd.approver ?? "",
+    approver: matchingApprover || null,
     status: (selectedPrd.status ?? "DRAFT") as ArtifactStatus,
     targetRepo: selectedPrd.targetRepo ?? "",
     targetBranch: selectedPrd.targetBranch ?? "main",
@@ -142,7 +153,7 @@ export function CreateArtifactModal({
   const [content, setContent] = useState("");
 
   // PRD-specific fields
-  const [approver, setApprover] = useState("");
+  const [selectedApprover, setSelectedApprover] = useState<User | null>(null);
   const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
@@ -197,6 +208,14 @@ export function CreateArtifactModal({
     [artifacts]
   );
 
+  // Fetch organization users for approver dropdown
+  const { data: orgUsers = [], isLoading: isLoadingUsers } =
+    useOrganizationUsers();
+  const transformedUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
   // Create artifact mutation
   const createArtifact = useCreateArtifact();
 
@@ -219,17 +238,24 @@ export function CreateArtifactModal({
     const populatedFields = populateFieldsFromPrd(
       selectedPrdId,
       prds,
-      repositories
+      repositories,
+      transformedUsers
     );
 
     if (populatedFields) {
-      setApprover(populatedFields.approver);
+      setSelectedApprover(populatedFields.approver);
       setStatus(populatedFields.status);
       setTargetRepo(populatedFields.targetRepo);
       setTargetBranch(populatedFields.targetBranch);
       setSelectedRepoId(populatedFields.selectedRepoId);
     }
-  }, [isImplementationPlan, selectedPrdId, prds, repositories]);
+  }, [
+    isImplementationPlan,
+    selectedPrdId,
+    prds,
+    repositories,
+    transformedUsers,
+  ]);
 
   // Prefill content from template when loaded (only on initial load)
   useEffect(() => {
@@ -276,7 +302,7 @@ export function CreateArtifactModal({
     setTitle("");
     setFileName("");
     setContent("");
-    setApprover("");
+    setSelectedApprover(null);
     setStatus("DRAFT");
     setTargetRepo("");
     setTargetBranch("main");
@@ -320,7 +346,7 @@ export function CreateArtifactModal({
         fileName: fileName.trim() || undefined,
         content: content.trim() || undefined,
         parentId: isImplementationPlan ? selectedPrdId : undefined,
-        approver: approver.trim() || undefined,
+        approverId: selectedApprover?.id ?? undefined,
         status,
         targetRepo: targetRepo.trim() || undefined,
         targetBranch: targetBranch.trim() || undefined,
@@ -402,12 +428,16 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="artifact-approver">Approver</Label>
-            <Input
-              id="artifact-approver"
-              onChange={(e) => setApprover(e.target.value)}
-              placeholder="Approver name"
-              value={approver}
+            <Label>Approver</Label>
+            <UserSelectPopover
+              className="w-full"
+              disabled={isLoadingUsers}
+              onSelect={setSelectedApprover}
+              placeholder={
+                isLoadingUsers ? "Loading users..." : "Select approver..."
+              }
+              users={transformedUsers}
+              value={selectedApprover}
             />
           </div>
 
