@@ -5,7 +5,7 @@ import type { ProjectArtifact } from "@/types/teams";
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
  */
 export function getArtifactRoute(artifact: ProjectArtifact): string | null {
-  switch (artifact.type) {
+  switch (artifact.subtype) {
     case "PRD":
       return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
     case "IMPLEMENTATION_PLAN":
@@ -17,7 +17,7 @@ export function getArtifactRoute(artifact: ProjectArtifact): string | null {
     case "BUG":
       return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
-    case "FEATURE_BRANCHES":
+    case "BRANCH":
       return artifact.link || null;
     case "PROJECT_BRIEF":
     case "TEMPLATE":

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProjectArtifact } from "@/types/teams";
-import { ArtifactDisplayStatus, ProjectArtifactType } from "@/types/teams";
+import { ArtifactDisplayStatus, ProjectArtifactSubtype } from "@/types/teams";
 import { getArtifactRoute } from "../artifact-routes";
 
 // Regex patterns for route prefix testing
@@ -15,7 +15,7 @@ function createMockArtifact(
     id: "art-123",
     documentSlug: "test-doc",
     name: "Test Artifact",
-    type: ProjectArtifactType.Prd,
+    subtype: ProjectArtifactSubtype.Prd,
     status: ArtifactDisplayStatus.NotStarted,
     ...overrides,
   };
@@ -25,7 +25,7 @@ describe("getArtifactRoute", () => {
   describe("PRD artifacts", () => {
     it("returns PRD route with document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Prd,
+        subtype: ProjectArtifactSubtype.Prd,
         documentSlug: "my-prd",
       });
 
@@ -34,7 +34,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null when PRD has no document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Prd,
+        subtype: ProjectArtifactSubtype.Prd,
         documentSlug: null,
       });
 
@@ -45,7 +45,7 @@ describe("getArtifactRoute", () => {
   describe("Implementation Plan artifacts", () => {
     it("returns implementation-plans route for IMPLEMENTATION_PLAN type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationPlan,
+        subtype: ProjectArtifactSubtype.ImplementationPlan,
         documentSlug: "my-plan",
       });
 
@@ -54,7 +54,7 @@ describe("getArtifactRoute", () => {
 
     it("returns implementation-plans route for IMPLEMENTATION_STRATEGY type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationStrategy,
+        subtype: ProjectArtifactSubtype.ImplementationStrategy,
         documentSlug: "my-strategy",
       });
 
@@ -65,7 +65,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null when IMPLEMENTATION_PLAN has no document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationPlan,
+        subtype: ProjectArtifactSubtype.ImplementationPlan,
         documentSlug: null,
       });
 
@@ -74,7 +74,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null when IMPLEMENTATION_STRATEGY has no document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationStrategy,
+        subtype: ProjectArtifactSubtype.ImplementationStrategy,
         documentSlug: null,
       });
 
@@ -85,7 +85,7 @@ describe("getArtifactRoute", () => {
   describe("Issue artifacts", () => {
     it("returns issues route for ISSUE type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Issue,
+        subtype: ProjectArtifactSubtype.Issue,
         documentSlug: "my-issue",
       });
 
@@ -94,7 +94,7 @@ describe("getArtifactRoute", () => {
 
     it("returns issues route for BUG type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Bug,
+        subtype: ProjectArtifactSubtype.Bug,
         documentSlug: "my-bug",
       });
 
@@ -103,7 +103,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null when ISSUE has no document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Issue,
+        subtype: ProjectArtifactSubtype.Issue,
         documentSlug: null,
       });
 
@@ -112,7 +112,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null when BUG has no document slug", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Bug,
+        subtype: ProjectArtifactSubtype.Bug,
         documentSlug: null,
       });
 
@@ -123,16 +123,16 @@ describe("getArtifactRoute", () => {
   describe("Link-based artifacts", () => {
     it("returns link for DESIGNS type when link is provided", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         link: "https://figma.com/design-123",
       });
 
       expect(getArtifactRoute(artifact)).toBe("https://figma.com/design-123");
     });
 
-    it("returns link for FEATURE_BRANCHES type when link is provided", () => {
+    it("returns link for BRANCH type when link is provided", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.FeatureBranches,
+        subtype: ProjectArtifactSubtype.Branch,
         link: "https://github.com/repo/tree/branch",
       });
 
@@ -143,16 +143,16 @@ describe("getArtifactRoute", () => {
 
     it("returns null for DESIGNS when link is undefined", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         link: undefined,
       });
 
       expect(getArtifactRoute(artifact)).toBeNull();
     });
 
-    it("returns null for FEATURE_BRANCHES when link is undefined", () => {
+    it("returns null for BRANCH when link is undefined", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.FeatureBranches,
+        subtype: ProjectArtifactSubtype.Branch,
         link: undefined,
       });
 
@@ -161,7 +161,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null for DESIGNS when link is empty string", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         link: "",
       });
 
@@ -172,7 +172,7 @@ describe("getArtifactRoute", () => {
   describe("Non-navigable artifacts", () => {
     it("returns null for PROJECT_BRIEF type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ProjectBrief,
+        subtype: ProjectArtifactSubtype.ProjectBrief,
         documentSlug: "has-slug",
       });
 
@@ -181,7 +181,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null for TEMPLATE type", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Template,
+        subtype: ProjectArtifactSubtype.Template,
         documentSlug: "has-slug",
       });
 
@@ -192,7 +192,7 @@ describe("getArtifactRoute", () => {
   describe("edge cases", () => {
     it("handles document slug with special characters", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Prd,
+        subtype: ProjectArtifactSubtype.Prd,
         documentSlug: "doc-123-special_chars",
       });
 
@@ -201,7 +201,7 @@ describe("getArtifactRoute", () => {
 
     it("handles link with query parameters", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         link: "https://figma.com/design?id=123&mode=view",
       });
 
@@ -212,7 +212,7 @@ describe("getArtifactRoute", () => {
 
     it("handles link with hash fragment", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.FeatureBranches,
+        subtype: ProjectArtifactSubtype.Branch,
         link: "https://github.com/repo/tree/branch#section",
       });
 
@@ -223,7 +223,7 @@ describe("getArtifactRoute", () => {
 
     it("preserves document slug casing", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationPlan,
+        subtype: ProjectArtifactSubtype.ImplementationPlan,
         documentSlug: "MyPlan-WithCaps",
       });
 
@@ -235,7 +235,7 @@ describe("getArtifactRoute", () => {
     it("handles artifact type in different case (default case)", () => {
       // TypeScript should prevent this, but testing runtime behavior
       const artifact = createMockArtifact({
-        type: "UNKNOWN_TYPE" as ProjectArtifact["type"],
+        subtype: "UNKNOWN_TYPE" as ProjectArtifact["subtype"],
         documentSlug: "test",
       });
 
@@ -246,7 +246,7 @@ describe("getArtifactRoute", () => {
   describe("documentSlug vs link priority", () => {
     it("uses documentSlug for PRD even when link exists", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Prd,
+        subtype: ProjectArtifactSubtype.Prd,
         documentSlug: "my-prd",
         link: "https://example.com",
       });
@@ -256,7 +256,7 @@ describe("getArtifactRoute", () => {
 
     it("uses link for DESIGNS even when documentSlug exists", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         documentSlug: "ignored-slug",
         link: "https://figma.com/design",
       });
@@ -266,7 +266,7 @@ describe("getArtifactRoute", () => {
 
     it("returns null for DESIGNS when both documentSlug and link are missing", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Designs,
+        subtype: ProjectArtifactSubtype.Designs,
         documentSlug: null,
         link: undefined,
       });
@@ -278,7 +278,7 @@ describe("getArtifactRoute", () => {
   describe("route prefix consistency", () => {
     it("uses /prds/ prefix for PRD artifacts", () => {
       const artifact = createMockArtifact({
-        type: ProjectArtifactType.Prd,
+        subtype: ProjectArtifactSubtype.Prd,
         documentSlug: "doc",
       });
 
@@ -287,11 +287,11 @@ describe("getArtifactRoute", () => {
 
     it("uses /implementation-plans/ prefix for plan artifacts", () => {
       const planArtifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationPlan,
+        subtype: ProjectArtifactSubtype.ImplementationPlan,
         documentSlug: "doc",
       });
       const strategyArtifact = createMockArtifact({
-        type: ProjectArtifactType.ImplementationStrategy,
+        subtype: ProjectArtifactSubtype.ImplementationStrategy,
         documentSlug: "doc",
       });
 
@@ -305,11 +305,11 @@ describe("getArtifactRoute", () => {
 
     it("uses /issues/ prefix for issue artifacts", () => {
       const issueArtifact = createMockArtifact({
-        type: ProjectArtifactType.Issue,
+        subtype: ProjectArtifactSubtype.Issue,
         documentSlug: "doc",
       });
       const bugArtifact = createMockArtifact({
-        type: ProjectArtifactType.Bug,
+        subtype: ProjectArtifactSubtype.Bug,
         documentSlug: "doc",
       });
 
