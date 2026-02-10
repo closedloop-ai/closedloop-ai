@@ -1,5 +1,6 @@
 "use client";
 
+import { log } from "@repo/observability/log";
 import {
   Component,
   createContext,
@@ -7,9 +8,6 @@ import {
   type ReactNode,
   useContext,
 } from "react";
-
-// Using console directly to avoid module resolution issues in client components
-const log = console;
 
 type ErrorBoundaryState = {
   hasError: boolean;
