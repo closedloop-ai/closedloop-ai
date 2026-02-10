@@ -31,6 +31,7 @@ import {
   ChevronDown,
   ExternalLinkIcon,
   FileTextIcon,
+  GitPullRequestIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
@@ -223,6 +224,18 @@ function ArtifactSection({
                     <div className="flex items-center gap-2">
                       <Icon className="h-4 w-4 text-muted-foreground" />
                       <span className="font-medium">{artifact.name}</span>
+                      {artifact.pullRequest && (
+                        <a
+                          aria-label={`Pull request #${artifact.pullRequest.number}`}
+                          className="text-muted-foreground transition-colors hover:text-primary"
+                          href={artifact.pullRequest.htmlUrl}
+                          onClick={(e) => e.stopPropagation()}
+                          rel="noopener noreferrer"
+                          target="_blank"
+                        >
+                          <GitPullRequestIcon className="h-4 w-4" />
+                        </a>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell>

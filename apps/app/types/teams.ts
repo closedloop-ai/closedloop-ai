@@ -1,3 +1,4 @@
+import type { PullRequestInfo } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 
 // TODO: Move all types to packages/api.
@@ -74,4 +75,5 @@ export type ProjectArtifact = {
   status: ArtifactDisplayStatus;
   link?: string;
   previewUrl?: string;
+  pullRequest?: PullRequestInfo | null;
 };

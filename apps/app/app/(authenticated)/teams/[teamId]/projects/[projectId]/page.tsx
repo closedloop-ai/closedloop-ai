@@ -134,6 +134,7 @@ export default function ProjectDetailPage() {
         status: mapArtifactStatusToDisplay(artifact.status),
         link: artifact.externalUrl || undefined,
         previewUrl: artifact.previewDeployment?.url ?? undefined,
+        pullRequest: artifact.pullRequest ?? null,
       })),
     [artifactsData]
   );

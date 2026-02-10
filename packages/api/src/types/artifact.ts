@@ -182,6 +182,7 @@ export type ArtifactWithWorkstream = Artifact & {
   } | null;
   owner?: ProjectOwner | null;
   previewDeployment?: PreviewDeployment | null;
+  pullRequest?: PullRequestInfo | null;
 };
 
 export type FindArtifactsOptions = {

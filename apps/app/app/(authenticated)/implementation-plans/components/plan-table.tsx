@@ -7,7 +7,7 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
-import { Loader2Icon } from "lucide-react";
+import { GitPullRequestIcon, Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { PreviewLink } from "@/components/preview-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
@@ -19,7 +19,23 @@ const columns: Column<ArtifactWithWorkstream>[] = [
   {
     key: "title",
     header: "Plan Name",
-    render: (plan) => <span className="font-medium">{plan.title}</span>,
+    render: (plan) => (
+      <div className="flex items-center gap-2">
+        <span className="font-medium">{plan.title}</span>
+        {plan.pullRequest && (
+          <a
+            aria-label={`Pull request #${plan.pullRequest.number}`}
+            className="text-muted-foreground transition-colors hover:text-primary"
+            href={plan.pullRequest.htmlUrl}
+            onClick={(e) => e.stopPropagation()}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <GitPullRequestIcon className="h-4 w-4" />
+          </a>
+        )}
+      </div>
+    ),
   },
   {
     key: "version",

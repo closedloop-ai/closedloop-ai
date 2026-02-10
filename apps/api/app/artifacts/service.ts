@@ -115,7 +115,46 @@ export const artifactsService = {
       })
     );
 
-    return artifacts.map((a) => toArtifactWithWorkstream(a));
+    // Batch-fetch PRs for all artifacts with workstreams
+    const uniqueWorkstreamIds = [
+      ...new Set(
+        artifacts
+          .map((a) => a.workstreamId)
+          .filter((id): id is string => id !== null)
+      ),
+    ];
+
+    let prMap: Map<string, PullRequestInfo> = new Map();
+    if (uniqueWorkstreamIds.length > 0) {
+      const prs = await withDb((db) =>
+        db.gitHubPullRequest.findMany({
+          where: { workstreamId: { in: uniqueWorkstreamIds } },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            workstreamId: true,
+            number: true,
+            title: true,
+            htmlUrl: true,
+            state: true,
+            headBranch: true,
+            baseBranch: true,
+            createdAt: true,
+          },
+        })
+      );
+
+      // Deduplicate to get most recent PR per workstream
+      prMap = new Map<string, PullRequestInfo>();
+      for (const pr of prs) {
+        if (pr.workstreamId && !prMap.has(pr.workstreamId)) {
+          // Cast state enum to literal union type
+          prMap.set(pr.workstreamId, pr as PullRequestInfo);
+        }
+      }
+    }
+
+    return artifacts.map((a) => toArtifactWithWorkstream(a, prMap));
   },
 
   /**
@@ -1693,8 +1732,14 @@ type RawArtifactWithContext = Artifact & {
 
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
-  artifact: RawArtifactWithContext
+  artifact: RawArtifactWithContext,
+  prMap?: Map<string, PullRequestInfo>
 ): ArtifactWithWorkstream {
+  const pullRequest =
+    artifact.workstreamId && prMap
+      ? (prMap.get(artifact.workstreamId) ?? null)
+      : null;
+
   return {
     ...artifact,
     project: artifact.project
@@ -1707,6 +1752,7 @@ function toArtifactWithWorkstream(
     previewDeployment: toPreviewDeploymentFromArtifact(
       artifact.previewDeployment
     ),
+    pullRequest,
   };
 }
 
