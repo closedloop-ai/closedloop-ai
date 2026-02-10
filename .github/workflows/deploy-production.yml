@@ -218,7 +218,12 @@ jobs:
 
       - name: Install Health Check Dependencies
         if: steps.diff.outputs.has_changes == 'true'
-        run: npm install --no-save pg
+        run: |
+          mkdir -p /tmp/health-check-deps
+          cd /tmp/health-check-deps
+          npm init -y
+          npm install pg
+          echo "NODE_PATH=/tmp/health-check-deps/node_modules" >> "$GITHUB_ENV"
 
       - name: Run Post-Deploy Health Checks
         id: health_checks
