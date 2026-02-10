@@ -8,7 +8,7 @@
 const databaseUrl = process.env.DATABASE_URL;
 const outputPath = process.env.DB_STATUS_PATH || "db-status.json";
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 
 if (!databaseUrl) {
@@ -57,7 +57,66 @@ try {
 }
 
 const { Client } = pg;
-const client = new Client({ connectionString: databaseUrl });
+
+const sslRejectUnauthorizedEnv = process.env.DB_SSL_REJECT_UNAUTHORIZED;
+const sslRejectUnauthorized =
+  sslRejectUnauthorizedEnv == null || sslRejectUnauthorizedEnv === ""
+    ? true
+    : sslRejectUnauthorizedEnv.toLowerCase() !== "false";
+
+let sslCa;
+let sslCaSource;
+const sslCaCandidates = [
+  process.env.DB_SSL_CA_B64 ? "DB_SSL_CA_B64" : null,
+  process.env.DB_SSL_CA_PATH ? "DB_SSL_CA_PATH" : null,
+  process.env.PGSSLROOTCERT ? "PGSSLROOTCERT" : null,
+].filter(Boolean);
+if (sslCaCandidates.length > 1) {
+  console.warn(
+    `Multiple DB SSL CA sources set (${sslCaCandidates.join(
+      ", "
+    )}); using highest-precedence value.`
+  );
+}
+try {
+  if (process.env.DB_SSL_CA_B64) {
+    sslCa = Buffer.from(process.env.DB_SSL_CA_B64, "base64").toString("utf8");
+    sslCaSource = "DB_SSL_CA_B64";
+  } else if (process.env.DB_SSL_CA_PATH) {
+    sslCa = await readFile(process.env.DB_SSL_CA_PATH, "utf8");
+    sslCaSource = `DB_SSL_CA_PATH (${process.env.DB_SSL_CA_PATH})`;
+  } else if (process.env.PGSSLROOTCERT) {
+    sslCa = await readFile(process.env.PGSSLROOTCERT, "utf8");
+    sslCaSource = `PGSSLROOTCERT (${process.env.PGSSLROOTCERT})`;
+  }
+} catch (error) {
+  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`); 
+  console.error(error?.message || error);
+  process.exit(1);
+}
+
+if (!sslRejectUnauthorized) {
+  console.log("Database SSL: rejectUnauthorized=false (NOT recommended)");
+} else if (sslCa) {
+  console.log(`Database SSL: custom CA provided (${sslCaSource})`);
+}
+
+// Strip sslmode from the URL so the pg connection-string parser doesn't
+// override our explicit ssl config (pg now treats sslmode=require as verify-full).
+// We preserve the original sslmode to ensure SSL stays enabled.
+const parsedUrl = new URL(databaseUrl);
+const originalSslMode = parsedUrl.searchParams.get("sslmode");
+parsedUrl.searchParams.delete("sslmode");
+
+const clientConfig = { connectionString: parsedUrl.toString() };
+if ((originalSslMode && originalSslMode !== "disable") || sslCa || !sslRejectUnauthorized) {
+  clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
+  if (sslCa) {
+    clientConfig.ssl.ca = sslCa;
+  }
+}
+
+const client = new Client(clientConfig);
 
 try {
   // Check 1: Connectivity
