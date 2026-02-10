@@ -149,6 +149,14 @@ export const artifactIncludeWithContext = {
       },
     },
   },
+  parent: {
+    select: {
+      id: true,
+      title: true,
+      subtype: true,
+      documentSlug: true,
+    },
+  },
   ...artifactIncludeWithUser,
   previewDeployment: {
     select: previewDeploymentSelect,
