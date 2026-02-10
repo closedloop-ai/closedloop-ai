@@ -1,0 +1,41 @@
+name: 'Update Comment on Failure'
+description: 'Update a status comment with a failure message and workflow link'
+inputs:
+  comment_url:
+    description: 'URL of the status comment to update'
+    required: true
+  repository:
+    description: 'Repository in owner/repo format'
+    required: true
+  github_token:
+    description: 'GitHub token for API calls'
+    required: true
+  action_name:
+    description: 'Name of the failed action (e.g., "generate plan", "process answers")'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Update Comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        COMMENT_URL="${{ inputs.comment_url }}"
+        if [ -z "$COMMENT_URL" ]; then
+          echo "No comment URL provided, skipping update"
+          exit 0
+        fi
+
+        COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
+        if [ -z "$COMMENT_ID" ]; then
+          echo "Could not extract comment ID from URL: $COMMENT_URL"
+          exit 0
+        fi
+
+        WORKFLOW_URL="${{ github.server_url }}/${{ inputs.repository }}/actions/runs/${{ github.run_id }}"
+        MESSAGE="Symphony failed to ${{ inputs.action_name }}. Check the [workflow logs]($WORKFLOW_URL) for details."
+
+        gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$COMMENT_ID" \
+          -f body="$MESSAGE" || true

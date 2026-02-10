@@ -109,9 +109,114 @@ export function ItemForm() {
 
 **Do NOT import `@repo/database` in this app.**
 
-All database operations must go through the BFF API (`apps/api`):
-- API routes handle database operations
-- Frontend calls API via `apiClient` in server actions
-- Shared types live in `packages/api/src/types/`
+All database operations go through the BFF API (`apps/api`) via TanStack Query:
+
+```
+TanStack Query Hook (hooks/queries/use-*.ts)
+    ↓ uses
+useApiClient() hook
+    ↓ HTTP request to
+API Route (apps/api/app/*/route.ts)
+    ↓ delegates to
+Service (apps/api/app/*/service.ts)
+    ↓ queries
+Database (@repo/database)
+```
+
+## Data Fetching with TanStack Query
+
+All data fetching uses TanStack Query hooks in `hooks/queries/`.
+
+### Query Hooks (`hooks/queries/use-*.ts`)
+
+```typescript
+"use client";
+
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useApiClient } from "@/hooks/use-api-client";
+
+// Query key factory - keeps cache keys organized
+export const artifactKeys = {
+  all: ["artifacts"] as const,
+  lists: () => [...artifactKeys.all, "list"] as const,
+  list: (filters: Record<string, unknown>) => [...artifactKeys.lists(), filters] as const,
+  detail: (id: string) => [...artifactKeys.all, "detail", id] as const,
+};
+
+// Query hook - for reading data
+export function useArtifact(id: string) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: artifactKeys.detail(id),
+    queryFn: () => apiClient.get<Artifact>(`/artifacts/${id}`),
+    enabled: !!id,
+  });
+}
+
+// Mutation hook - for creating/updating/deleting
+export function useUpdateArtifact() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (input: UpdateArtifactInput) => {
+      const { id, ...body } = input;
+      return apiClient.put<Artifact>(`/artifacts/${id}`, body);
+    },
+    onSuccess: (_, { id }) => {
+      // Invalidate relevant caches
+      queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+  });
+}
+```
+
+### Using in Components
+
+```typescript
+"use client";
+
+import { useArtifact, useUpdateArtifact } from "@/hooks/queries/use-artifacts";
+
+export function ArtifactEditor({ id }: { id: string }) {
+  const { data: artifact, isLoading, error } = useArtifact(id);
+  const updateArtifact = useUpdateArtifact();
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Error message={error.message} />;
+
+  const handleSave = () => {
+    updateArtifact.mutate({ id, title: "New Title" });
+  };
+
+  return <div>...</div>;
+}
+```
+
+### Key Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| **Query keys** | Use factory pattern (`entityKeys.detail(id)`) for consistent cache management |
+| **useApiClient()** | Client-side HTTP hook that throws `ApiError` on failures |
+| **Cache invalidation** | Always invalidate relevant queries in mutation `onSuccess` |
+| **enabled** | Use to conditionally run queries (`enabled: !!id`) |
+| **Polling** | Use `refetchInterval` for real-time updates (e.g., generation status) |
+
+### File Organization
+
+```
+hooks/
+├── queries/
+│   ├── use-artifacts.ts    # artifactKeys + useArtifact, useCreateArtifact, etc.
+│   ├── use-projects.ts     # projectKeys + useProject, useCreateProject, etc.
+│   ├── use-workstreams.ts
+│   ├── use-teams.ts
+│   ├── use-users.ts
+│   └── use-organizations.ts
+├── use-api-client.ts       # HTTP client hook used by all query hooks
+└── use-*.ts                # Other non-query hooks
 
 See root CLAUDE.md for full architecture details.

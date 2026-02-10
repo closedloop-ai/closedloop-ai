@@ -20,22 +20,89 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { LoaderIcon, PlusIcon } from "lucide-react";
+import {
+  type User,
+  UserSelectPopover,
+} from "@repo/design-system/components/ui/user-select-popover";
+import { LoaderIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import { createArtifact } from "@/app/actions/artifacts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
+import { useCreateArtifact } from "@/hooks/queries/use-artifacts";
+import {
+  useGitHubBranches,
+  useGitHubIntegrationStatus,
+  useGitHubRepositories,
+} from "@/hooks/queries/use-github-integration";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 export function NewPRDModal() {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const createArtifact = useCreateArtifact();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
-  const [approver, setApprover] = useState("");
+  const [selectedApprover, setSelectedApprover] = useState<User | null>(null);
   const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [content, setContent] = useState("");
+  const [targetRepo, setTargetRepo] = useState("");
+  const [targetBranch, setTargetBranch] = useState("main");
+  const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
+
+  const { data: orgUsers = [], isLoading: isLoadingUsers } =
+    useOrganizationUsers();
+  const transformedUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
+  // GitHub integration queries
+  const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
+    useGitHubIntegrationStatus();
+  const { data: repositories, isLoading: isLoadingRepos } =
+    useGitHubRepositories({
+      enabled: githubStatus?.connected === true,
+    });
+  const { data: branchesData, isLoading: isLoadingBranches } =
+    useGitHubBranches(selectedRepoId, {
+      enabled: !!selectedRepoId,
+    });
+
+  const sortedRepositories = useMemo(
+    () =>
+      repositories
+        ? [...repositories].sort((a, b) => a.name.localeCompare(b.name))
+        : [],
+    [repositories]
+  );
+
+  // Auto-select default branch only when no branch is selected yet
+  useEffect(() => {
+    if (branchesData?.branches && !targetBranch) {
+      const defaultBranch = branchesData.branches.find((b) => b.isDefault);
+      if (defaultBranch) {
+        setTargetBranch(defaultBranch.name);
+      }
+    }
+  }, [branchesData, targetBranch]);
+
+  // Compute branch placeholder based on state
+  const getBranchPlaceholder = () => {
+    if (!selectedRepoId) {
+      return "Select a repository first";
+    }
+    if (isLoadingBranches) {
+      return "Loading branches...";
+    }
+    return "Select a branch";
+  };
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -43,20 +110,42 @@ export function NewPRDModal() {
     if (value.trim()) {
       const generatedFileName = value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
+        .replaceAll(/[^a-z0-9\s]/g, "")
+        .replaceAll(/\s+/g, "-")
         .concat(".md");
       setFileName(generatedFileName);
+    }
+  };
+
+  const handleRepositoryChange = (repoId: string) => {
+    const selectedRepo = repositories?.find((r) => r.id === repoId);
+    if (selectedRepo) {
+      setSelectedRepoId(repoId);
+      setTargetRepo(selectedRepo.fullName);
+      // Clear branch when repository changes - will be auto-set by useEffect
+      setTargetBranch("");
     }
   };
 
   const resetForm = () => {
     setTitle("");
     setFileName("");
-    setApprover("");
+    setSelectedApprover(null);
     setStatus("DRAFT");
     setContent("");
+    setTargetRepo("");
+    setTargetBranch("main");
+    setSelectedRepoId("");
     setError(null);
+    fileInputRef.current?.reset();
+  };
+
+  const handleFileRead = (content: string) => {
+    if (!content.trim()) {
+      setError("File is empty");
+      return;
+    }
+    setContent(content);
   };
 
   const handleSubmit = () => {
@@ -67,30 +156,25 @@ export function NewPRDModal() {
       return;
     }
 
-    startTransition(async () => {
-      try {
-        const result = await createArtifact({
-          type: "PRD",
-          title: title.trim(),
-          fileName: fileName.trim() || undefined,
-          approver: approver.trim() || undefined,
-          status,
-          content: content.trim() || undefined,
-        });
-
-        if (!result.success) {
-          setError(result.error);
-          return;
-        }
-
-        setOpen(false);
-        resetForm();
-        router.push(`/prds/${result.data.id}`);
-      } catch (err) {
-        console.error("Failed to create PRD:", err);
-        setError("An unexpected error occurred");
+    createArtifact.mutate(
+      {
+        subtype: "PRD",
+        title: title.trim(),
+        fileName: fileName.trim() || undefined,
+        approverId: selectedApprover?.id,
+        status,
+        content: content.trim() || undefined,
+        targetRepo: targetRepo.trim() || undefined,
+        targetBranch: targetBranch.trim() || undefined,
+      },
+      {
+        onSuccess: (artifact) => {
+          setOpen(false);
+          resetForm();
+          router.push(`/prds/${artifact.documentSlug}`);
+        },
       }
-    });
+    );
   };
 
   return (
@@ -145,12 +229,74 @@ export function NewPRDModal() {
 
           <div className="space-y-2">
             <Label htmlFor="new-approver">Approver</Label>
-            <Input
-              id="new-approver"
-              onChange={(e) => setApprover(e.target.value)}
-              placeholder="Approver name"
-              value={approver}
+            <UserSelectPopover
+              className="w-full"
+              disabled={isLoadingUsers}
+              onSelect={setSelectedApprover}
+              placeholder={
+                isLoadingUsers ? "Loading users..." : "Select approver..."
+              }
+              users={transformedUsers}
+              value={selectedApprover}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-target-repo">
+              Target Repository{" "}
+              <span className="text-muted-foreground text-xs">
+                (for plan generation)
+              </span>
+            </Label>
+            {githubStatus?.connected === false ? (
+              <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
+                Connect GitHub to select a repository
+              </div>
+            ) : (
+              <Select
+                disabled={isLoadingGitHubStatus || isLoadingRepos}
+                onValueChange={handleRepositoryChange}
+                value={selectedRepoId}
+              >
+                <SelectTrigger id="new-target-repo">
+                  <SelectValue
+                    placeholder={
+                      isLoadingGitHubStatus || isLoadingRepos
+                        ? "Loading repositories..."
+                        : "Select a repository"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {sortedRepositories.map((repo) => (
+                    <SelectItem key={repo.id} value={repo.id}>
+                      {repo.fullName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-target-branch">Target Branch</Label>
+            <Select
+              disabled={!selectedRepoId || isLoadingBranches}
+              onValueChange={setTargetBranch}
+              value={targetBranch}
+            >
+              <SelectTrigger id="new-target-branch">
+                <SelectValue placeholder={getBranchPlaceholder()} />
+              </SelectTrigger>
+              <SelectContent>
+                {branchesData?.branches.map((branch) => (
+                  <SelectItem key={branch.name} value={branch.name}>
+                    {branch.name}
+                    {branch.isDefault ? " (default)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">
@@ -174,12 +320,30 @@ export function NewPRDModal() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="new-content">
-              Content{" "}
-              <span className="text-muted-foreground text-xs">
-                (optional - paste markdown here)
-              </span>
-            </Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="new-content">
+                Content{" "}
+                <span className="text-muted-foreground text-xs">
+                  (optional - paste markdown here)
+                </span>
+              </Label>
+              <Button
+                onClick={() => fileInputRef.current?.open()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <UploadIcon className="mr-2 h-4 w-4" />
+                Upload .md
+              </Button>
+            </div>
+            <HiddenFileInput
+              accept=".md"
+              aria-label="Upload markdown file for PRD content"
+              onError={setError}
+              onFileRead={handleFileRead}
+              ref={fileInputRef}
+            />
             <Textarea
               className="min-h-[150px] font-mono text-sm"
               id="new-content"
@@ -194,8 +358,11 @@ export function NewPRDModal() {
           <Button onClick={() => setOpen(false)} variant="outline">
             Cancel
           </Button>
-          <Button disabled={isPending || !title.trim()} onClick={handleSubmit}>
-            {isPending ? (
+          <Button
+            disabled={createArtifact.isPending || !title.trim()}
+            onClick={handleSubmit}
+          >
+            {createArtifact.isPending ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...

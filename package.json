@@ -8,7 +8,7 @@
     "dist/index.js"
   ],
   "scripts": {
-    "postinstall": "cd packages/database && DATABASE_URL=${DATABASE_URL:-postgresql://localhost:5432/placeholder} npx prisma generate --schema=./prisma/schema.prisma",
+    "postinstall": "cd packages/database && AWS_ROLE_ARN=${AWS_ROLE_ARN:-arn:aws:iam::000000000000:role/placeholder} AWS_REGION=${AWS_REGION:-us-east-1} PGHOST=${PGHOST:-localhost} PGPORT=${PGPORT:-5432} PGUSER=${PGUSER:-postgres} PGDATABASE=${PGDATABASE:-app} npx prisma generate --schema=./prisma/schema.prisma",
     "build": "turbo build",
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",
@@ -20,41 +20,56 @@
     "boundaries": "turbo boundaries",
     "bump-deps": "npx npm-check-updates --deep -u -x recharts && pnpm install",
     "bump-ui": "npx shadcn@latest add --all --overwrite -c packages/design-system",
-    "migrate": "cd packages/database && npx prisma format && npx prisma generate && npx prisma db push",
+    "migrate": "cd packages/database && pnpm prisma migrate dev",
+    "migrate:status": "cd packages/database && pnpm prisma migrate status",
     "clean": "git clean -xdf node_modules",
     "prepare": "husky",
-    "start-apps": "turbo dev --filter=app --filter=api"
+    "start-apps": "turbo dev --filter=app --filter=api",
+    "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {
     "@auto-it/first-time-contributor": "^11.3.6",
-    "@biomejs/biome": "2.3.8",
+    "@biomejs/biome": "2.3.13",
+    "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",
-    "@turbo/gen": "^2.6.3",
-    "@types/node": "^25.0.9",
+    "@turbo/gen": "^2.8.3",
+    "@types/node": "^25.2.2",
+    "check-dependency-version-consistency": "^6.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "next": "16.0.10",
+    "next": "16.1.6",
+    "playwright": "^1.58.2",
     "tsup": "^8.5.1",
-    "turbo": "^2.7.4",
+    "turbo": "^2.8.3",
     "typescript": "^5.9.3",
-    "ultracite": "6.3.9",
-    "vitest": "^4.0.15"
+    "ultracite": "7.1.1",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@10.28.1+sha512.7d7dbbca9e99447b7c3bf7a73286afaaf6be99251eb9498baefa7d406892f67b879adb3a1d7e687fc4ccc1a388c7175fbaae567a26ab44d1067b54fcb0d6a316",
+  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264",
   "dependencies": {
     "@clack/prompts": "^0.11.0",
-    "commander": "^14.0.2"
+    "commander": "^14.0.3"
   },
   "pnpm": {
     "overrides": {
+      "@types/react": "19.2.13",
+      "@types/react-dom": "19.2.3",
       "parse5": "^7.2.1"
     },
     "onlyBuiltDependencies": [
       "@clerk/shared",
-      "esbuild"
+      "@prisma/engines",
+      "bufferutil",
+      "core-js",
+      "core-js-pure",
+      "es5-ext",
+      "esbuild",
+      "prisma",
+      "protobufjs",
+      "sharp"
     ]
   },
   "type": "module"

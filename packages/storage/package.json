@@ -7,9 +7,9 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
-    "@t3-oss/env-nextjs": "^0.13.8",
-    "@vercel/blob": "^2.0.0",
-    "zod": "^4.3.5"
+    "@t3-oss/env-nextjs": "^0.13.10",
+    "@vercel/blob": "^2.2.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*"

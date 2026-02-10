@@ -6,13 +6,15 @@ import {
 import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { unauthorizedResponse } from "@/lib/route-utils";
 
+// TODO: zod schema for request body
 export const POST = async (request: Request): Promise<Response> => {
   try {
     const { isAuthenticated } = await auth();
 
     if (!isAuthenticated) {
-      return new Response("Not authenticated", { status: 401 });
+      return unauthorizedResponse();
     }
 
     const { messages }: { messages: UIMessage[] } = await request.json();

@@ -1,10 +1,11 @@
 import "server-only";
 import { Liveblocks as LiveblocksNode } from "@liveblocks/node";
 import { keys } from "./keys";
+import { parseArtifactRoomId } from "./room-utils";
 
 type AuthenticateOptions = {
   userId: string;
-  orgId: string;
+  roomId: string;
   userInfo: Liveblocks["UserMeta"]["info"];
 };
 
@@ -12,7 +13,7 @@ const secret = keys().LIVEBLOCKS_SECRET;
 
 export const authenticate = async ({
   userId,
-  orgId,
+  roomId,
   userInfo,
 }: AuthenticateOptions) => {
   if (!secret) {
@@ -20,16 +21,20 @@ export const authenticate = async ({
   }
 
   const liveblocks = new LiveblocksNode({ secret });
+  let tenantId: string | undefined;
 
-  // Start an auth session inside your endpoint
-  const session = liveblocks.prepareSession(userId, { userInfo });
+  try {
+    const { organizationId } = parseArtifactRoomId(roomId);
+    tenantId = organizationId;
+  } catch {}
 
-  // Use a naming pattern to allow access to rooms with wildcards
-  // Giving the user write access on their organization
-  session.allow(`${orgId}:*`, session.FULL_ACCESS);
+  const session = liveblocks.prepareSession(userId, {
+    userInfo,
+    tenantId,
+  });
 
-  // Authorize the user and return the result
+  session.allow(roomId, session.FULL_ACCESS);
+
   const { status, body } = await session.authorize();
-
-  return new Response(body, { status });
+  return { token: body, status };
 };

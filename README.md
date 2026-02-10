@@ -1,3 +1,7 @@
+# Project Overview
+
+This project is built from the Next Forge template. See below for more details about Next Forge. For a product specific overview, check out [this document](project-overview.md).
+
 # ▲ / next-forge
 
 **Production-grade Turborepo template for Next.js apps.**
@@ -54,7 +58,7 @@ next-forge comes with batteries included:
 - **Payments** — Subscription management via [Stripe](https://stripe.com)
 - **Email** — Transactional emails via [Resend](https://resend.com)
 - **Analytics** — Web ([Google Analytics](https://developers.google.com/analytics)) and product ([Posthog](https://posthog.com))
-- **Observability** — Error tracking ([Sentry](https://sentry.io)), logging, and uptime monitoring ([BetterStack](https://betterstack.com))
+- **Observability** — Error tracking, logging, and uptime monitoring
 - **Security** — Application security ([Arcjet](https://arcjet.com)), rate limiting, and secure headers
 - **CMS** — Type-safe content management for blogs and documentation
 - **SEO** — Metadata management, sitemaps, and JSON-LD
@@ -89,7 +93,7 @@ npx next-forge@latest init
 2. Set up required service accounts (Clerk, Stripe, Resend, etc.)
 3. Run the development server
 
-For detailed setup instructions, read the [documentation](https://www.next-forge.com/docs).
+See the [full setup guide-book](docs/local_deployment.md) for detailed instructions and troubleshooting.
 
 ## Structure
 
@@ -122,19 +126,3 @@ Full documentation is available at [next-forge.com/docs](https://www.next-forge.
 - Migration guides for swapping providers
 - Deployment instructions
 - Examples and recipes
-
-## Contributing
-
-We welcome contributions! See the [contributing guide](https://github.com/vercel/next-forge/blob/main/.github/CONTRIBUTING.md) for details.
-
-## Contributors
-
-<a href="https://github.com/vercel/next-forge/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=vercel/next-forge" />
-</a>
-
-Made with [contrib.rocks](https://contrib.rocks).
-
-## License
-
-MIT

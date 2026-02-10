@@ -1,0 +1,26 @@
+name: 'Sanitize Run Loop Log'
+description: 'Sanitize sensitive data from run loop log files'
+inputs:
+  log_file:
+    description: 'Path to the log file to sanitize'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Sanitize Log
+      shell: bash
+      run: |
+        LOG_FILE="${{ inputs.log_file }}"
+
+        if [ ! -f "$LOG_FILE" ]; then
+          echo "Log file not found at $LOG_FILE, skipping sanitization"
+          exit 0
+        fi
+
+        echo "Sanitizing log file: $LOG_FILE"
+        sed -i.bak -E \
+          's/sk-ant-[A-Za-z0-9_-]+/[REDACTED_ANTHROPIC_KEY]/g; s/ghp_[A-Za-z0-9]+/[REDACTED_GHP]/g; s/ghs_[A-Za-z0-9]+/[REDACTED_GHS]/g' \
+          "$LOG_FILE"
+        rm -f "${LOG_FILE}.bak"
+        echo "Log file sanitized"

@@ -6,8 +6,10 @@ import type { JsonObject } from "./common";
 
 export type Organization = {
   id: string;
+  clerkId: string;
   name: string;
   slug: string;
+  active: boolean;
   anthropicApiKey: string | null;
   settings: JsonObject;
   createdAt: Date;
@@ -15,59 +17,98 @@ export type Organization = {
 };
 
 export type CreateOrganizationInput = {
+  clerkId: string;
   name: string;
   slug: string;
-  anthropicApiKey?: string;
+  anthropicApiKey?: string | null;
 };
 
 export type UpdateOrganizationInput = {
   id: string;
   name?: string;
   slug?: string;
-  anthropicApiKey?: string;
+  anthropicApiKey?: string | null;
   settings?: JsonObject;
+  active?: boolean;
 };
 
 // User types
 export type User = {
   id: string;
+  clerkId: string;
   organizationId: string;
   email: string;
-  name: string | null;
+  firstName: string | null;
+  lastName: string | null;
   avatarUrl: string | null;
+  phoneNumber: string | null;
   role: ApproverRole;
-  linearUserId: string | null;
-  slackUserId: string | null;
+  linearId: string | null;
+  slackId: string | null;
   githubUsername: string | null;
+  active: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
 
 export type CreateUserInput = {
+  clerkId: string;
   organizationId: string;
   email: string;
-  name?: string;
-  avatarUrl?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
   role?: ApproverRole;
 };
 
 export type UpdateUserInput = {
   id: string;
-  name?: string;
-  avatarUrl?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
   role?: ApproverRole;
-  linearUserId?: string;
-  slackUserId?: string;
-  githubUsername?: string;
+  linearId?: string | null;
+  slackId?: string | null;
+  githubUsername?: string | null;
+  active?: boolean;
+};
+
+export type UpdateUserProfileFromClerkInput = {
+  email?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  avatarUrl?: string | null;
+  phoneNumber?: string | null;
 };
 
 // Project types
+export const ProjectPriority = {
+  NotSet: "NOT_SET",
+  Low: "LOW",
+  Medium: "MEDIUM",
+  High: "HIGH",
+} as const;
+export type ProjectPriority =
+  (typeof ProjectPriority)[keyof typeof ProjectPriority];
+
+export type ProjectOwner = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  avatarUrl: string | null;
+};
+
 export type Project = {
   id: string;
   organizationId: string;
   name: string;
   description: string | null;
-  codebaseSummary: JsonObject | null;
+  priority: ProjectPriority;
+  ownerId: string | null;
+  targetDate: Date | null;
+  codebaseSummary: string | null;
   lastIndexedAt: Date | null;
   settings: JsonObject;
   createdAt: Date;
@@ -82,17 +123,32 @@ export type ProjectWithOrganization = Project & {
   };
 };
 
+export type ProjectWithDetails = Project & {
+  owner?: ProjectOwner;
+  status: number; // 0-100 percentage
+  teams: Array<{ id: string; name: string }>;
+};
+
 export type CreateProjectInput = {
-  organizationId: string;
   name: string;
   description?: string;
+  priority?: ProjectPriority;
+  ownerId?: string | null;
+  targetDate?: Date | null;
+  teamIds?: string[];
 };
 
 export type UpdateProjectInput = {
   id: string;
   name?: string;
   description?: string;
+  priority?: ProjectPriority;
+  ownerId?: string | null;
+  targetDate?: Date | null;
+  teamIds?: string[];
   settings?: JsonObject;
+  codebaseSummary?: string | null;
+  lastIndexedAt?: Date | null;
 };
 
 // Repository types
