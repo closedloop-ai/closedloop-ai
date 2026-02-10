@@ -7,13 +7,6 @@ type ResolvedRoom = {
   url: string | null;
 };
 
-function slugToTitleCase(slug: string): string {
-  return slug
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 /**
  * Creates an async resolver that maps room IDs to display info (name + URL) for Liveblocks.
  * Only resolves rooms belonging to the given organization.
@@ -80,7 +73,7 @@ export function createResolveRoomsInfo(organizationId: string) {
           return undefined;
         }
         return {
-          name: slugToTitleCase(documentSlug),
+          name: documentSlug,
           url: `/artifacts/${documentSlug}`,
         } satisfies Liveblocks["RoomInfo"];
       } catch {

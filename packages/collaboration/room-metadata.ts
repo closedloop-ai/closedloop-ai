@@ -10,13 +10,6 @@ export type ResolvedRoom = {
   url: string | null;
 };
 
-function slugToTitleCase(slug: string): string {
-  return slug
-    .split("-")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
 /**
  * Resolves room IDs to display names and navigation URLs by reading
  * Liveblocks room metadata (which stores artifactSubtype at creation time).
@@ -41,7 +34,7 @@ export async function resolveRoomMetadata(
   const resolveOne = async (roomId: string): Promise<ResolvedRoom> => {
     try {
       const { documentSlug } = parseArtifactRoomId(roomId);
-      const name = slugToTitleCase(documentSlug);
+      const name = documentSlug;
 
       try {
         const room = await liveblocks.getRoom(roomId);
@@ -84,7 +77,7 @@ function resolveFromSlugsOnly(roomIds: string[]): ResolvedRoom[] {
       const { documentSlug } = parseArtifactRoomId(roomId);
       return {
         roomId,
-        name: slugToTitleCase(documentSlug),
+        name: documentSlug,
         url: `/artifacts/${documentSlug}`,
       };
     } catch {
