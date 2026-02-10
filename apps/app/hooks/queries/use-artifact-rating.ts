@@ -4,9 +4,7 @@ import type {
   ArtifactRatingSummary,
   SubmitRatingRequest,
 } from "@repo/api/src/types/rating";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import {
-  type UseMutationOptions,
   type UseQueryOptions,
   useMutation,
   useQuery,
@@ -39,82 +37,25 @@ export function useArtifactRating(
   });
 }
 
-// Context type for optimistic updates
-type SubmitRatingContext = {
-  previousRating: ArtifactRatingSummary | undefined;
-};
-
 // Mutation hook
-export function useSubmitRating(
-  options?: UseMutationOptions<
-    ArtifactRatingSummary,
-    Error,
-    SubmitRatingRequest & { artifactId: string },
-    SubmitRatingContext
-  >
-) {
+export function useSubmitRating() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationKey: ["submit-rating"], // Will be extended with artifactId in mutationFn
-    mutationFn: ({ artifactId, score, comment }) =>
+    mutationFn: ({
+      artifactId,
+      score,
+      comment,
+    }: SubmitRatingRequest & { artifactId: string }) =>
       apiClient.put<ArtifactRatingSummary>(`/artifacts/${artifactId}/rating`, {
         score,
         comment,
       }),
-    onMutate: async (variables) => {
-      // Cancel any outgoing refetches
-      await queryClient.cancelQueries({
-        queryKey: ratingKeys.detail(variables.artifactId),
+    onSuccess: (_, { artifactId }) => {
+      queryClient.invalidateQueries({
+        queryKey: ratingKeys.detail(artifactId),
       });
-
-      // Snapshot the previous value
-      const previousRating = queryClient.getQueryData<ArtifactRatingSummary>(
-        ratingKeys.detail(variables.artifactId)
-      );
-
-      // Optimistically update only the user's rating (not aggregate)
-      queryClient.setQueryData<ArtifactRatingSummary>(
-        ratingKeys.detail(variables.artifactId),
-        (old) =>
-          old
-            ? {
-                ...old,
-                userRating: old.userRating
-                  ? {
-                      ...old.userRating,
-                      score: variables.score,
-                      comment: variables.comment,
-                      updatedAt: new Date(),
-                    }
-                  : null,
-              }
-            : old
-      );
-
-      return { previousRating };
     },
-    onError: (_error, variables, context) => {
-      // Rollback on error
-      if (context?.previousRating) {
-        queryClient.setQueryData(
-          ratingKeys.detail(variables.artifactId),
-          context.previousRating
-        );
-      }
-      toast.error("Failed to submit rating. Please try again.");
-    },
-    onSuccess: async (_data, variables, context) => {
-      // Invalidate to fetch fresh aggregate data from server
-      await queryClient.invalidateQueries({
-        queryKey: ratingKeys.detail(variables.artifactId),
-      });
-
-      // Show contextual toast
-      const hadPreviousRating = context?.previousRating?.userRating != null;
-      toast.success(hadPreviousRating ? "Rating updated" : "Rating submitted");
-    },
-    ...options,
   });
 }
