@@ -50,7 +50,7 @@ export function IssueMetadataPanel({
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
-}: IssueMetadataPanelProps): React.ReactElement {
+}: IssueMetadataPanelProps) {
   const {
     dialogOpen,
     dialogTrace,

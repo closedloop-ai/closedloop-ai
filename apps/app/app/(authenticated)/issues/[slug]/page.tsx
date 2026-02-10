@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { generateArtifactMetadata } from "@/lib/artifact-metadata";
 import { IssueEditorContainer } from "./issue-editor-container";
 
 type IssuePageProps = {
@@ -7,10 +8,12 @@ type IssuePageProps = {
   searchParams: Promise<{ version?: string }>;
 };
 
-export const metadata: Metadata = {
-  title: "Issue",
-  description: "Issue Document",
-};
+export async function generateMetadata({
+  params,
+}: IssuePageProps): Promise<Metadata> {
+  const { slug } = await params;
+  return generateArtifactMetadata(slug);
+}
 
 export default async function IssuePage({
   params,

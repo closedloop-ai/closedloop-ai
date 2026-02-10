@@ -9,6 +9,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const outputPath = process.env.DB_STATUS_PATH || "db-status.json";
 
 import { writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 
 if (!databaseUrl) {
   console.log("DATABASE_URL not set, skipping database health check");
@@ -38,10 +39,11 @@ const checks = {
   migrations: { status: "pending", pending: null, error: null },
 };
 
-// Dynamic import pg to handle environments where it's not installed
+// Load pg via CommonJS resolution so NODE_PATH can be honored in CI
 let pg;
 try {
-  pg = await import("pg");
+  const require = createRequire(import.meta.url);
+  pg = require("pg");
 } catch {
   console.log("pg module not available, skipping database checks");
   await writeFile(
@@ -54,7 +56,7 @@ try {
   process.exit(0);
 }
 
-const { Client } = pg.default || pg;
+const { Client } = pg;
 const client = new Client({ connectionString: databaseUrl });
 
 try {

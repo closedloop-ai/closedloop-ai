@@ -168,6 +168,10 @@ When working on a PR and you discover a pattern, convention, or gotcha that isn'
 
 The goal is that every PR makes future sessions smarter. CLAUDE.md files are living documents — treat them like code.
 
+## PR Response Tone
+
+When responding to PR review comments, never use phrases like "you're right", "good catch", or other sycophantic language. Keep responses brief and factual — state what was changed, not how insightful the reviewer was.
+
 ## Key Files
 - `turbo.json` - Turborepo task configuration
 - `biome.jsonc` - Linting/formatting config (extends ultracite)
@@ -211,18 +215,24 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: To filter Prisma `Json` fields by nested property, use `{ path: ['key'], equals: value }` syntax - not dot notation or direct equality. (context: prisma|json-filter)
 - **[pattern]**: When filtering Prisma `Json` fields, always scope through indexed fields first (e.g., workstreamId + status) before applying JSON path filters. JSON path filters cause sequential scans without index narrowing. (context: prisma|json-filter|performance|indexes)
 - **[pattern]**: When adding a taxonomy layer to an existing enum (e.g., type/subtype), prefer adding a new category field with a default value rather than renaming - avoids touching every reference site. (context: prisma|schema-design|enum-evolution)
+- **[pattern]**: When checking artifact categories (Document vs Workflow vs Branch), use `artifact.type === ArtifactType.DOCUMENT` instead of enumerating subtypes. The `type` field is the canonical categorization mechanism after the type/subtype split - more maintainable when new subtypes are added. (context: artifact|schema-design|type-system|categorization)
 - **[convention]**: All database schema changes must use `prisma migrate dev --name <name>` to create migration files. Never use `prisma db push` for changes going to production — it doesn't create migrations and causes environment drift. Migrations are applied in prod via `prisma migrate deploy`. (context: prisma|migrations|schema-changes|production|db-push)
 - **[mistake]**: After rebasing or updating dependencies, the hardcoded Stripe apiVersion in packages/payments/index.ts may need to be updated to match the installed stripe package's expected version. The SDK enforces strict API version compatibility. (context: stripe|api-version|rebase|dependency-updates|type-errors|packages/payments)
 - **[pattern]**: For collapsible sections in artifact editor sidebar, use PropertiesPanel pattern: CollapsibleTrigger with 'rounded-lg p-3 font-medium text-sm hover:bg-accent' styling, ChevronUp/Down icons, and CollapsibleContent with 'space-y-4 px-3 pb-3' spacing. Default to collapsed (useState(false)). (context: react|components|collapsible|artifact-editor|ui-patterns)
 - **[pattern]**: When converting metadata panels from tabs to collapsible sections: (1) Replace TabbedMetadataPanel with MetadataPanel, (2) Wrap sections in space-y-6 container, (3) Use separate useState(bool) for each section's open/close state, (4) Import Collapsible/CollapsibleTrigger/CollapsibleContent and ChevronUp/ChevronDown icons, (5) Follow existing pattern from PropertiesPanel and CommentsSection components. (context: react|refactoring|metadata-panel|collapsible|ui-patterns)
 - **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in apps/app/app/(authenticated)/{artifact}/[slug]/components/*-metadata-panel.tsx - only difference is artifact-specific fields in Details tab content. (context: architecture|metadata-panel|artifact-editor|code-structure)
+- **[pattern]**: When renaming Prisma enums, `@repo/database` re-exports Prisma-generated types via `export *` in `packages/database/index.ts`. Files importing enum types from `@repo/database` (like `artifact-utils.ts`) need separate treatment from files importing from `@repo/api/src/types/`. Both sources must be updated in sync. (context: prisma|enum|rename|database-reexport|shared-types)
 - **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-transactional) but is called from inside `withDb.tx` callbacks. The `withDb.tx` implementation does NOT store the transaction in AsyncLocalStorage, so nested `withDb` calls open separate connections instead of reusing the transaction. (context: database|transactions|withDb|connection-pool|prisma)
 - **[pattern]**: In this project's multi-org architecture (one User record per Clerk user per org), service methods that update profile data (name, avatar, email) should use `updateMany({ where: { clerkId } })` to sync across all organizations. Document this intentional broad-update behavior in docstrings. (context: multi-org|prisma|service-layer|user-profile|clerk-webhooks)
+
+- **[convention]**: `Artifact.subtype` is non-nullable in both the DB schema and API type. All creation paths require a subtype — don't make it nullable for speculative forward-compatibility. (context: prisma|schema-design|api-contract|artifact)
+- **[pattern]**: When checking if an artifact is a document (or other category), use `artifact.type === ArtifactType.DOCUMENT` instead of enumerating subtypes (PRD, IMPLEMENTATION_PLAN, ISSUE). The `type` field is the canonical categorization after the type/subtype split. (context: artifact-types|schema-design|categorization|type-subtype)
 
 ### API & Service Layer
 - **[pattern]**: For artifact routes in `apps/api/app/artifacts/[id]/`, use `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` - the org-scoped query ensures authorization. (context: auth|artifacts|org-scoping)
 - **[pattern]**: When service functions exceed ~30 lines or have complex parsing, extract to `apps/api/lib/{feature}-parser.ts` with pure functions. Service orchestrates, parser implements. (context: service-layer|code-organization)
 - **[convention]**: API routes must not set Cache-Control headers manually. Caching is handled by TanStack Query on the frontend. Server-side caching goes in the service layer (in-memory or Redis), not HTTP headers. (context: api-routes|caching)
+- **[convention]**: For Prisma-to-API type conversions in the service layer, use a centralized mapping function (e.g., `toArtifact()`, `toArtifactWithWorkstream()`) that validates required fields and throws on contract violations, rather than scattering `as Type` casts across call sites. (context: service-layer|type-mapping|prisma|api-types|validation)
 - **[convention]**: When catching expected errors in webhook handlers (e.g., Prisma P2025 for record-not-found), catch only the specific error code and re-throw everything else. Do not use generic catch blocks that swallow all errors. See `handleOrganizationMembershipDeleted` pattern in `auth-hooks.ts:238-255`. (context: webhooks|error-handling|prisma|expected-errors|api-routes)
 
 ### TanStack Query
@@ -253,3 +263,6 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[insight]**: run-loop.sh deletes `.claude/symphony-loop.local.md` on successful completion (lines 663, 726). State file existence cannot be used as success indicator - verify success by checking for output artifacts (plan.json, plan.md, implementation-plan.md) instead. (context: run-loop|state-management|symphony|verification)
 - **[convention]**: run-loop.sh creates state file at `.claude/symphony-loop.local.md` (repo root), NOT inside the run directory (`.claude/runs/YYYYMMDD-HHMMSS/`). Artifact uploads only include `.claude/runs/`, so state file is not part of the artifact bundle. (context: run-loop|state-management|symphony|artifacts)
 - **[convention]**: The closedloop-ai plugins (symphony-core, experimental) are installed from `https://github.com/closedloop-ai/claude_code.git`. Custom/private Claude Code plugins should use their Git repository URL for installation in CI environments. (context: github-actions|claude-cli|plugins|ci-cd)
+
+### React & Components
+- **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)

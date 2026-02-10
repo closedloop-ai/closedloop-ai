@@ -14,7 +14,8 @@ export const createMockArtifact = (
   ({
     id: "artifact-123",
     title: "Test Artifact",
-    type: "PRD",
+    type: "DOCUMENT",
+    subtype: "PRD",
     version: 1,
     documentSlug: "test-artifact",
     createdAt: "2024-01-15T10:00:00Z",

@@ -291,8 +291,8 @@ export const linearService = {
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    // Validate artifact type and status
-    if (artifact.type !== "IMPLEMENTATION_PLAN") {
+    // Validate artifact subtype and status
+    if (artifact.subtype !== "IMPLEMENTATION_PLAN") {
       return {
         success: false,
         error: "Only implementation plans can be exported to Linear",

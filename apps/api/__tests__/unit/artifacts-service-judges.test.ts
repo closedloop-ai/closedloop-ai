@@ -1,9 +1,7 @@
 /**
  * Unit tests for artifactsService.getJudgesFeedback method.
  *
- * Tests the two main paths:
- * 1. Mock mode: loads from local mocks/judges.json file when USE_MOCK_JUDGES=true
- * 2. DB mode: queries ArtifactEvaluation table for stored judges report
+ * Tests querying ArtifactEvaluation table for stored judges report.
  *
  * Uses scenario registry pattern for maintainable, DRY test structure.
  */
@@ -14,28 +12,16 @@ import type {
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
-vi.mock("@/lib/feature-flags", () => ({
-  getUseMockJudges: vi.fn(),
-}));
-
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-}));
-
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
 // Import after mocking
-import { readFile } from "node:fs/promises";
 import { withDb } from "@repo/database";
 import { artifactsService } from "@/app/artifacts/service";
-import { getUseMockJudges } from "@/lib/feature-flags";
 import { createMockEvaluationRow } from "../fixtures/evaluation";
 
-// Type aliases for mocked functions
-const mockGetUseMockJudges = getUseMockJudges as Mock;
-const mockReadFile = readFile as Mock;
+// Type alias for mocked function
 const mockWithDb = withDb as unknown as Mock;
 
 // Sample mock data matching JudgesReport structure
@@ -75,20 +61,9 @@ type ScenarioConfig = {
  */
 const SCENARIO_REGISTRY: ScenarioConfig[] = [
   {
-    name: "mock_mode_returns_local_file",
-    description:
-      "When USE_MOCK_JUDGES=true, loads from local mocks/judges.json file",
-    setupMocks: () => {
-      mockGetUseMockJudges.mockReturnValue(true);
-      mockReadFile.mockResolvedValue(JSON.stringify(MOCK_JUDGES_REPORT));
-    },
-    expectedResult: { status: "success", data: MOCK_JUDGES_REPORT },
-  },
-  {
     name: "db_success_returns_report",
     description: "Happy path through database returns stored report",
     setupMocks: () => {
-      mockGetUseMockJudges.mockReturnValue(false);
       // Mock findByIdSimple to return artifact
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
@@ -115,7 +90,6 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     description:
       "When no evaluation exists in database, returns not_found status",
     setupMocks: () => {
-      mockGetUseMockJudges.mockReturnValue(false);
       // Mock findByIdSimple to return artifact
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
@@ -136,20 +110,10 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     name: "artifact_not_found_returns_not_found",
     description: "When artifact does not exist, returns not_found status",
     setupMocks: () => {
-      mockGetUseMockJudges.mockReturnValue(false);
       // Mock findByIdSimple to return null
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue(null);
     },
     expectedResult: { status: "not_found", data: null },
-  },
-  {
-    name: "exception_returns_error_status",
-    description: "When an exception occurs, returns error status with message",
-    setupMocks: () => {
-      mockGetUseMockJudges.mockReturnValue(true);
-      mockReadFile.mockRejectedValue(new Error("File not found"));
-    },
-    expectedResult: { status: "error", error: "File not found" },
   },
 ];
 

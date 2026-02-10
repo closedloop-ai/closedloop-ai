@@ -206,8 +206,20 @@ jobs:
             exit 1
           fi
 
-          # Check PR is mergeable before attempting merge
-          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+          # Check PR is mergeable before attempting merge (retry while UNKNOWN)
+          MERGE_ATTEMPT=1
+          MERGE_MAX_ATTEMPTS="${MERGE_MAX_ATTEMPTS:-6}"
+          MERGE_SLEEP_SECONDS="${MERGE_SLEEP_SECONDS:-10}"
+          MERGEABLE="UNKNOWN"
+          while [ "$MERGEABLE" = "UNKNOWN" ] && [ $MERGE_ATTEMPT -le $MERGE_MAX_ATTEMPTS ]; do
+            MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              echo "Mergeable state is UNKNOWN, waiting ${MERGE_SLEEP_SECONDS}s... (attempt $MERGE_ATTEMPT/$MERGE_MAX_ATTEMPTS)"
+              sleep "$MERGE_SLEEP_SECONDS"
+            fi
+            MERGE_ATTEMPT=$((MERGE_ATTEMPT + 1))
+          done
+          echo "Final mergeable state: $MERGEABLE"
           if [ "$MERGEABLE" != "MERGEABLE" ]; then
             echo "::error::PR is not mergeable (state: $MERGEABLE). Check for conflicts or failing checks."
             exit 1
@@ -218,7 +230,11 @@ jobs:
 
       - name: Install Health Check Dependencies
         if: steps.diff.outputs.has_changes == 'true'
-        run: npm install --no-save pg
+        run: |
+          # Install in /tmp to avoid npm workspace parsing in repo root.
+          mkdir -p /tmp/health-check-deps
+          npm --prefix /tmp/health-check-deps init -y
+          npm --prefix /tmp/health-check-deps install --no-save pg
 
       - name: Run Post-Deploy Health Checks
         id: health_checks
@@ -247,7 +263,7 @@ jobs:
           # Start Database check (if configured)
           if [ -n "$DATABASE_URL" ]; then
             echo "Starting database health check..."
-            node scripts/deploy/check-database.mjs &
+            NODE_PATH=/tmp/health-check-deps/node_modules node scripts/deploy/check-database.mjs &
             DB_PID=$!
           else
             echo "Database URL not configured, skipping"

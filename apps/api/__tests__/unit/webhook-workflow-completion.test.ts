@@ -14,7 +14,11 @@
  * - @repo/observability/log (logging)
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactStatus,
+  ArtifactSubtype,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -445,7 +449,8 @@ describe("handleExecutionSuccess", () => {
         }),
         create: vi.fn().mockResolvedValue({
           id: "pr-artifact-123",
-          type: ArtifactType.PullRequest,
+          type: ArtifactType.Branch,
+          subtype: ArtifactSubtype.PullRequest,
           title: executionResult.pr_title,
           externalUrl: executionResult.pr_url,
           status: ArtifactStatus.Review,
@@ -491,7 +496,8 @@ describe("handleExecutionSuccess", () => {
         organizationId: "org-123",
         workstreamId,
         projectId: "project-123",
-        type: ArtifactType.PullRequest,
+        type: ArtifactType.Branch,
+        subtype: ArtifactSubtype.PullRequest,
         title: executionResult.pr_title,
         externalUrl: executionResult.pr_url,
         status: ArtifactStatus.Review,
@@ -1127,7 +1133,8 @@ describe("processWorkflowCompletion", () => {
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
     expect(mockDb.artifact.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        type: ArtifactType.PullRequest,
+        type: ArtifactType.Branch,
+        subtype: ArtifactSubtype.PullRequest,
         status: ArtifactStatus.Review,
       }),
     });
