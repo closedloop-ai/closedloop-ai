@@ -15,7 +15,7 @@ vi.mock("@repo/collaboration/auth", () => ({
 }));
 
 vi.mock("@repo/observability/log", () => ({
-  log: { error: vi.fn() },
+  log: { error: vi.fn(), info: vi.fn() },
 }));
 
 vi.mock("@/env", () => ({
@@ -116,19 +116,6 @@ describe("POST /api/collaboration/auth", () => {
   });
 
   describe("Request validation", () => {
-    test("returns 400 with invalid request body (missing room field)", async () => {
-      mockAuth.mockResolvedValueOnce({
-        userId: "user-123",
-        getToken: vi.fn(),
-      });
-
-      const request = createMockRequest({});
-      const response = await POST(request);
-
-      expect(response.status).toBe(400);
-      expect(await response.text()).toBe("Invalid request body");
-    });
-
     test("returns 400 with invalid request body (empty room string)", async () => {
       mockAuth.mockResolvedValueOnce({
         userId: "user-123",
@@ -546,6 +533,43 @@ describe("POST /api/collaboration/auth", () => {
           }),
         })
       );
+    });
+  });
+
+  describe("Global token (no room)", () => {
+    test("returns a valid token when room is omitted", async () => {
+      const mockUser = createMockUser();
+      const mockToken = "liveblocks-global-token";
+
+      mockAuth.mockResolvedValueOnce({
+        userId: "user-123",
+        getToken: vi.fn().mockResolvedValueOnce("clerk-token"),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValueOnce({ success: true, data: mockUser }),
+      });
+
+      mockAuthenticate.mockResolvedValueOnce({
+        token: mockToken,
+        status: 200,
+      });
+
+      const request = createMockRequest({});
+      const response = await POST(request);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(mockToken);
+      expect(mockAuthenticate).toHaveBeenCalledWith({
+        userId: "user-123",
+        roomId: undefined,
+        userInfo: {
+          name: "John Doe",
+          avatar: "https://example.com/avatar.jpg",
+          color: expect.stringContaining("var(--color-"),
+        },
+      });
     });
   });
 

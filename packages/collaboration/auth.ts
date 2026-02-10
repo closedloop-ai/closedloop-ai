@@ -5,36 +5,42 @@ import { parseArtifactRoomId } from "./room-utils";
 
 type AuthenticateOptions = {
   userId: string;
-  roomId: string;
+  roomId?: string;
   userInfo: Liveblocks["UserMeta"]["info"];
 };
 
 const secret = keys().LIVEBLOCKS_SECRET;
 
-export const authenticate = async ({
+function extractTenantId(roomId: string): string | undefined {
+  try {
+    return parseArtifactRoomId(roomId).organizationId;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function authenticate({
   userId,
   roomId,
   userInfo,
-}: AuthenticateOptions) => {
+}: AuthenticateOptions): Promise<{ token: string; status: number }> {
   if (!secret) {
     throw new Error("LIVEBLOCKS_SECRET is not set");
   }
 
   const liveblocks = new LiveblocksNode({ secret });
-  let tenantId: string | undefined;
-
-  try {
-    const { organizationId } = parseArtifactRoomId(roomId);
-    tenantId = organizationId;
-  } catch {}
+  const tenantId = roomId ? extractTenantId(roomId) : undefined;
 
   const session = liveblocks.prepareSession(userId, {
     userInfo,
     tenantId,
   });
 
-  session.allow(roomId, session.FULL_ACCESS);
+  // Room-scoped token when roomId is provided; user-scoped via tenantId otherwise
+  if (roomId) {
+    session.allow(roomId, session.FULL_ACCESS);
+  }
 
   const { status, body } = await session.authorize();
   return { token: body, status };
-};
+}

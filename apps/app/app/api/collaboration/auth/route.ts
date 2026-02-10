@@ -9,7 +9,7 @@ import { log } from "@repo/observability/log";
 import z from "zod";
 import { env } from "@/env";
 
-export const POST = async (request: Request) => {
+export async function POST(request: Request): Promise<Response> {
   try {
     const { userId, getToken } = await auth();
 
@@ -17,7 +17,7 @@ export const POST = async (request: Request) => {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    let roomId: string;
+    let roomId: string | undefined;
     try {
       const { room } = authenticateValidator.parse(await request.json());
       roomId = room;
@@ -31,18 +31,25 @@ export const POST = async (request: Request) => {
       return new Response("Unable to fetch user", { status: 500 });
     }
 
-    try {
-      const { organizationId } = parseArtifactRoomId(roomId);
-      if (organizationId !== user.organizationId) {
-        return new Response("Forbidden", { status: 403 });
+    if (roomId) {
+      try {
+        const { organizationId } = parseArtifactRoomId(roomId);
+        if (organizationId !== user.organizationId) {
+          return new Response("Forbidden", { status: 403 });
+        }
+      } catch (error) {
+        log.error("Invalid room ID", { error: parseError(error) });
+        return new Response("Invalid room ID", { status: 400 });
       }
-    } catch (error) {
-      log.error("Invalid room ID", { error: parseError(error) });
-      return new Response("Invalid room ID", { status: 400 });
+    } else {
+      log.info("Global collaboration token requested", {
+        userId: user.id,
+        organizationId: user.organizationId,
+      });
     }
 
     const { token, status } = await authenticate({
-      userId: user.id, // Use database user ID, not Clerk ID
+      userId: user.id,
       roomId,
       userInfo: {
         name: getUserName(user),
@@ -56,10 +63,10 @@ export const POST = async (request: Request) => {
     log.error("Collaboration auth error", { error: parseError(error) });
     return new Response("Unable to authenticate", { status: 500 });
   }
-};
+}
 
 const authenticateValidator = z.object({
-  room: z.string().min(1, "room is required"),
+  room: z.string().min(1, "room is required").optional(),
 });
 
 async function fetchUser(

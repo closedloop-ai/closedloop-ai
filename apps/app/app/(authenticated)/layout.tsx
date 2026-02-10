@@ -3,6 +3,7 @@ import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
 import { secure } from "@repo/security";
 import type { ReactNode } from "react";
 import { env } from "@/env";
+import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { NotificationsProvider } from "./components/notifications-provider";
 import { GlobalSidebar } from "./components/sidebar";
 
@@ -24,15 +25,17 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
   }
 
   return (
-    <NotificationsProvider userId={user.id}>
-      <SidebarProvider>
-        <GlobalSidebar>
-          <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
-            {children}
-          </div>
-        </GlobalSidebar>
-      </SidebarProvider>
-    </NotificationsProvider>
+    <CollaborationProviderWrapper>
+      <NotificationsProvider userId={user.id}>
+        <SidebarProvider>
+          <GlobalSidebar>
+            <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
+              {children}
+            </div>
+          </GlobalSidebar>
+        </SidebarProvider>
+      </NotificationsProvider>
+    </CollaborationProviderWrapper>
   );
 };
 
