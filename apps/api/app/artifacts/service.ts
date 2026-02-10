@@ -36,6 +36,7 @@ import { githubService } from "@/app/integrations/github/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
+  artifactIncludeWithUser,
   createArtifactVersion,
   generateDocumentSlug,
   previewDeploymentSelect,
@@ -149,6 +150,7 @@ export const artifactsService = {
     const result = await withDb((db) =>
       db.artifact.findUnique({
         where: { id, organizationId },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -171,6 +173,7 @@ export const artifactsService = {
             templateForSubtype,
           },
         },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -317,6 +320,10 @@ export const artifactsService = {
       const resolvedOwnerId = input.ownerId ?? userId;
       await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
+      if (input.approverId) {
+        await validateOwnerInOrg(input.approverId, organizationId);
+      }
+
       const documentSlug = shouldGenerateDocumentSlug(input.subtype)
         ? generateDocumentSlug()
         : null;
@@ -332,6 +339,7 @@ export const artifactsService = {
           generatedBy: userId,
           ownerId: resolvedOwnerId,
         },
+        include: artifactIncludeWithUser,
       });
       return artifact;
     });
@@ -356,14 +364,17 @@ export const artifactsService = {
     if (input.ownerId) {
       await validateOwnerInOrg(input.ownerId, organizationId);
     }
+    if (input.approverId) {
+      await validateOwnerInOrg(input.approverId, organizationId);
+    }
 
-    const result = await withDb((db) =>
+    return withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: input,
+        include: artifactIncludeWithUser,
       })
     );
-    return result;
   },
 
   /**
@@ -691,6 +702,7 @@ ${initialInstructions.trim()}`;
             status: "DRAFT",
             // Correlation tracked via GitHubActionRun.triggerData.correlationId
           },
+          include: artifactIncludeWithUser,
         }),
         db.workstreamEvent.create({
           data: {
@@ -731,6 +743,7 @@ ${initialInstructions.trim()}`;
           status: "DRAFT",
           content,
         },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -764,7 +777,7 @@ ${initialInstructions.trim()}`;
       createArtifactRoom(newVersion);
     }
 
-    return newVersion;
+    return newVersion as unknown as Artifact;
   },
 
   /**
@@ -1684,7 +1697,7 @@ export type RequestChangesResult =
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
-type RawArtifactWithContext = Artifact & {
+type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
     id: string;
@@ -1693,6 +1706,12 @@ type RawArtifactWithContext = Artifact & {
     teams: { team: { id: string; name: string } }[];
   } | null;
   owner: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  approver: {
     id: string;
     firstName: string | null;
     lastName: string | null;
