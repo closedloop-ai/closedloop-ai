@@ -156,7 +156,7 @@ describe("GET /api/artifacts/[id]/rating", () => {
     );
   });
 
-  it("passes through unexpected errors", async () => {
+  it("returns 500 for unexpected errors", async () => {
     vi.mocked(artifactsService.getRating).mockRejectedValue(
       new Error("Unexpected database error")
     );
@@ -164,10 +164,15 @@ describe("GET /api/artifacts/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/artifacts/artifact-1/rating",
     });
+    const response = await GET(
+      request,
+      createMockRouteContext({ id: "artifact-1" })
+    );
 
-    await expect(
-      GET(request, createMockRouteContext({ id: "artifact-1" }))
-    ).rejects.toThrow("Unexpected database error");
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Failed to fetch rating");
   });
 });
 
@@ -481,7 +486,7 @@ describe("PUT /api/artifacts/[id]/rating", () => {
     );
   });
 
-  it("passes through unexpected errors", async () => {
+  it("returns 500 for unexpected errors", async () => {
     vi.mocked(artifactsService.upsertRating).mockRejectedValue(
       new Error("Unexpected database error")
     );
@@ -491,10 +496,15 @@ describe("PUT /api/artifacts/[id]/rating", () => {
       method: "PUT",
       body: { score: 4 },
     });
+    const response = await PUT(
+      request,
+      createMockRouteContext({ id: "artifact-1" })
+    );
 
-    await expect(
-      PUT(request, createMockRouteContext({ id: "artifact-1" }))
-    ).rejects.toThrow("Unexpected database error");
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe("Failed to submit rating");
   });
 
   it("returns updated aggregate after upsert", async () => {

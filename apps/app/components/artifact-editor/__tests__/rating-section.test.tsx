@@ -1,5 +1,5 @@
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createWrapper } from "@/hooks/queries/__tests__/test-utils";
 import { RatingSection } from "../rating-section";
@@ -13,17 +13,29 @@ vi.mock("@/hooks/queries/use-artifact-rating", () => ({
   useSubmitRating: () => mockUseSubmitRating(),
 }));
 
-// Mock StarRating component to avoid dependencies
+// Mock StarRating component to avoid dependencies; supports onChange for testing selection
 vi.mock("@repo/design-system/components/ui/star-rating", () => ({
-  StarRating: ({ value }: { value: number }) => (
+  StarRating: ({
+    value,
+    onChange,
+  }: {
+    value: number;
+    onChange?: (score: number) => void;
+  }) => (
     <div data-testid="star-rating" data-value={value}>
       Star Rating: {value}
+      {onChange != null && (
+        <button onClick={() => onChange(4)} type="button">
+          Set 4 stars
+        </button>
+      )}
     </div>
   ),
 }));
 
-// Regex pattern for testing (hoisted to module level per Biome lint rules)
+// Regex patterns for testing (hoisted to module level per Biome lint rules)
 const SAVE_COMMENT_BUTTON_PATTERN = /save comment/i;
+const EDIT_COMMENT_BUTTON_PATTERN = /edit comment/i;
 
 describe("RatingSection", () => {
   beforeEach(() => {
@@ -66,7 +78,7 @@ describe("RatingSection", () => {
         },
       },
       commentSectionVisible: true,
-      expectedDisabled: false,
+      expectedDisabled: true, // Save disabled when comment unchanged (no comment set)
     },
     {
       name: "rating with score 0 (edge case)",
@@ -121,5 +133,66 @@ describe("RatingSection", () => {
     } else {
       expect(button).toBeNull();
     }
+  });
+
+  test("prior comment is shown in editable textarea and Edit comment button is not present", () => {
+    const priorComment = "My prior comment";
+    mockUseArtifactRating.mockReturnValue({
+      data: {
+        average: 4.0,
+        count: 1,
+        userRating: {
+          id: "rating-1",
+          userId: "user-1",
+          score: 4,
+          comment: priorComment,
+          artifactVersion: 1,
+          createdAt: new Date("2024-01-01"),
+          updatedAt: new Date("2024-01-01"),
+        },
+      },
+      isLoading: false,
+    });
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <RatingSection artifactId="test-123" currentPlanVersion={1} />
+      </Wrapper>
+    );
+
+    const textarea = screen.getByPlaceholderText("Add a comment (optional)");
+    expect(textarea).toBeTruthy();
+    expect((textarea as HTMLTextAreaElement).value).toBe(priorComment);
+    expect(
+      screen.queryByRole("button", { name: EDIT_COMMENT_BUTTON_PATTERN })
+    ).toBeNull();
+  });
+
+  test("comment section is visible when user selects score before mutation completes", () => {
+    mockUseArtifactRating.mockReturnValue({
+      data: { average: 0, count: 0, userRating: null },
+      isLoading: false,
+    });
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <RatingSection artifactId="test-123" currentPlanVersion={1} />
+      </Wrapper>
+    );
+
+    expect(
+      screen.queryByPlaceholderText("Add a comment (optional)")
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Set 4 stars" }));
+
+    expect(
+      screen.getByPlaceholderText("Add a comment (optional)")
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: SAVE_COMMENT_BUTTON_PATTERN })
+    ).toBeTruthy();
   });
 });

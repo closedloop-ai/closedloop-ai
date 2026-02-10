@@ -2,7 +2,7 @@ import { success } from "@repo/api/src/types/common";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
-import { notFoundResponse, parseBody } from "@/lib/route-utils";
+import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { ArtifactNotFoundError } from "../../artifact-utils";
 import { artifactsService } from "../../service";
 import { submitRatingSchema } from "./validators";
@@ -21,7 +21,7 @@ export const GET = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
       if (error instanceof ArtifactNotFoundError) {
         return notFoundResponse("Artifact");
       }
-      throw error;
+      return errorResponse("Failed to fetch rating", error);
     }
   }
 );
@@ -53,7 +53,7 @@ export const PUT = withAuth<ArtifactRatingSummary, "/artifacts/[id]/rating">(
       if (error instanceof ArtifactNotFoundError) {
         return notFoundResponse("Artifact");
       }
-      throw error;
+      return errorResponse("Failed to submit rating", error);
     }
   }
 );

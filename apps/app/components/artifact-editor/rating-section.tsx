@@ -5,7 +5,7 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { StarRating } from "@repo/design-system/components/ui/star-rating";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { AlertTriangle as AlertTriangleIcon, Loader2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useArtifactRating,
   useSubmitRating,
@@ -25,7 +25,7 @@ export function RatingSection({
   artifactId,
   currentPlanVersion,
 }: Readonly<RatingSectionProps>): React.ReactElement {
-  const [isEditingComment, setIsEditingComment] = useState(false);
+  const [selectedScore, setSelectedScore] = useState<number | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
 
   const { data: summary, isLoading } = useArtifactRating(artifactId);
@@ -34,6 +34,16 @@ export function RatingSection({
   const userRating = summary?.userRating;
   const hasStaleVersion =
     userRating && userRating.artifactVersion !== currentPlanVersion;
+
+  const effectiveScore = userRating?.score ?? selectedScore ?? 0;
+  const showCommentSection = effectiveScore > 0;
+
+  // Sync draft from server when userRating updates (load or after submit/star change)
+  useEffect(() => {
+    if (userRating != null) {
+      setCommentDraft(userRating.comment ?? "");
+    }
+  }, [userRating]);
 
   // Loading state
   if (isLoading) {
@@ -46,74 +56,50 @@ export function RatingSection({
   }
 
   let commentSection: React.ReactNode = null;
-  if (userRating?.score) {
-    if (userRating?.comment && !isEditingComment) {
-      commentSection = (
-        <div className="space-y-2">
-          <p className="text-muted-foreground text-sm">{userRating.comment}</p>
-          <Button
-            onClick={() => {
-              setCommentDraft(userRating.comment ?? "");
-              setIsEditingComment(true);
-            }}
-            size="sm"
-            variant="ghost"
-          >
-            Edit comment
-          </Button>
-        </div>
-      );
-    } else {
-      commentSection = (
-        <div className="space-y-2">
-          <Textarea
-            className="min-h-[80px]"
-            maxLength={500}
-            onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder="Add a comment (optional)"
-            value={commentDraft}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground text-xs">
-              {commentDraft.length} / 500
-            </span>
-            <div className="flex gap-2">
-              {isEditingComment && (
-                <Button
-                  onClick={() => setIsEditingComment(false)}
-                  size="sm"
-                  variant="ghost"
-                >
-                  Cancel
-                </Button>
-              )}
-              <Button
-                disabled={
-                  submitRating.isPending ||
-                  !userRating?.score ||
-                  (isEditingComment && commentDraft === userRating?.comment)
-                }
-                onClick={() => {
-                  submitRating.mutate(
-                    {
-                      artifactId,
-                      score: userRating?.score ?? 0,
-                      comment: commentDraft,
-                    },
-                    {
-                      onSuccess: () => setIsEditingComment(false),
-                    }
-                  );
-                }}
-                size="sm"
-              >
-                Save Comment
-              </Button>
-            </div>
+  if (showCommentSection) {
+    const currentScore = userRating?.score ?? selectedScore ?? 0;
+    const commentUnchanged = (userRating?.comment ?? "") === commentDraft;
+
+    commentSection = (
+      <div className="space-y-2">
+        <Textarea
+          className="min-h-[80px]"
+          maxLength={500}
+          onChange={(e) => setCommentDraft(e.target.value)}
+          placeholder="Add a comment (optional)"
+          value={commentDraft}
+        />
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground text-xs">
+            {commentDraft.length} / 500
+          </span>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => setCommentDraft(userRating?.comment ?? "")}
+              size="sm"
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                submitRating.isPending || currentScore <= 0 || commentUnchanged
+              }
+              onClick={() => {
+                submitRating.mutate({
+                  artifactId,
+                  score: currentScore,
+                  comment: commentDraft,
+                });
+              }}
+              size="sm"
+            >
+              Save Comment
+            </Button>
           </div>
         </div>
-      );
-    }
+      </div>
+    );
   }
 
   return (
@@ -122,14 +108,15 @@ export function RatingSection({
       <div className="flex items-center gap-2">
         <StarRating
           onChange={(score) => {
+            setSelectedScore(score);
             submitRating.mutate({
               artifactId,
               score,
-              comment: userRating?.comment,
+              comment: commentDraft || userRating?.comment,
             });
           }}
           readonly={submitRating.isPending}
-          value={userRating?.score ?? 0}
+          value={userRating?.score ?? selectedScore ?? 0}
         />
         {submitRating.isPending && (
           <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -163,7 +150,7 @@ export function RatingSection({
         </div>
       )}
 
-      {/* Comment section — only after user has rated */}
+      {/* Comment section — when user has or just selected a rating */}
       {commentSection}
     </div>
   );
