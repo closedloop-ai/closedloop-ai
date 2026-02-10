@@ -13,7 +13,7 @@ const author: Metadata["authors"] = {
   url: "https://closedloop.ai",
 };
 const publisher = "ClosedLoop.ai";
-const twitterHandle = "@closedloopai";
+const _twitterHandle = "@closedloopai";
 const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
 const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL;
 
@@ -51,7 +51,6 @@ export const createMetadata = ({
     publisher,
     twitter: {
       card: "summary_large_image",
-      creator: twitterHandle,
     },
   };
 

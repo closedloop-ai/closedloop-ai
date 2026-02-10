@@ -41,7 +41,11 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
-import { getArtifactRoute } from "@/lib/artifact-routes";
+import {
+  getArtifactRoute,
+  isExternalLink,
+  isNavigableArtifact,
+} from "@/lib/artifact-navigation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
@@ -88,29 +92,6 @@ const ARTIFACT_SECTIONS: {
     subtypes: new Set<ProjectArtifactSubtype>(["BRANCH"]),
   },
 ];
-
-const NAVIGABLE_SUBTYPES = new Set<ProjectArtifactSubtype>([
-  "PRD",
-  "IMPLEMENTATION_PLAN",
-  "IMPLEMENTATION_STRATEGY",
-  "ISSUE",
-  "BUG",
-]);
-
-function isNavigableArtifact(artifact: ProjectArtifact): boolean {
-  return NAVIGABLE_SUBTYPES.has(artifact.subtype);
-}
-
-function isExternalLink(artifact: ProjectArtifact): boolean {
-  switch (artifact.subtype) {
-    case "DESIGNS":
-      return artifact.link?.startsWith("http") ?? false;
-    case "BRANCH":
-      return true;
-    default:
-      return false;
-  }
-}
 
 function ArtifactLinkCell({
   artifact,
