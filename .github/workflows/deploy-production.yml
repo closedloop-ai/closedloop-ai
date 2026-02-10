@@ -206,8 +206,20 @@ jobs:
             exit 1
           fi
 
-          # Check PR is mergeable before attempting merge
-          MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+          # Check PR is mergeable before attempting merge (retry while UNKNOWN)
+          MERGE_ATTEMPT=1
+          MERGE_MAX_ATTEMPTS="${MERGE_MAX_ATTEMPTS:-6}"
+          MERGE_SLEEP_SECONDS="${MERGE_SLEEP_SECONDS:-10}"
+          MERGEABLE="UNKNOWN"
+          while [ "$MERGEABLE" = "UNKNOWN" ] && [ $MERGE_ATTEMPT -le $MERGE_MAX_ATTEMPTS ]; do
+            MERGEABLE=$(gh pr view "$PR_URL" --json mergeable --jq '.mergeable')
+            if [ "$MERGEABLE" = "UNKNOWN" ]; then
+              echo "Mergeable state is UNKNOWN, waiting ${MERGE_SLEEP_SECONDS}s... (attempt $MERGE_ATTEMPT/$MERGE_MAX_ATTEMPTS)"
+              sleep "$MERGE_SLEEP_SECONDS"
+            fi
+            MERGE_ATTEMPT=$((MERGE_ATTEMPT + 1))
+          done
+          echo "Final mergeable state: $MERGEABLE"
           if [ "$MERGEABLE" != "MERGEABLE" ]; then
             echo "::error::PR is not mergeable (state: $MERGEABLE). Check for conflicts or failing checks."
             exit 1
@@ -233,6 +245,8 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
           DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL_CA_B64: ${{ secrets.DB_SSL_CA_B64 }}
+          DB_SSL_REJECT_UNAUTHORIZED: ${{ secrets.DB_SSL_REJECT_UNAUTHORIZED }}
         run: |
           # Run Vercel and Database checks in parallel
           VERCEL_PID=""
