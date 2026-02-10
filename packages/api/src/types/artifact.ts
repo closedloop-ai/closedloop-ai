@@ -103,7 +103,7 @@ export function shouldGenerateDocumentSlug(subtype: ArtifactSubtype): boolean {
 /**
  * Maps navigable artifact subtypes to their URL route prefixes.
  * Single source of truth for subtype→route mapping used by:
- * - apps/app/lib/artifact-routes.ts (frontend navigation)
+ * - apps/app/lib/artifact-navigation.ts (frontend navigation)
  * - apps/app/app/(authenticated)/artifacts/[slug]/page.tsx (redirect fallback)
  * - packages/collaboration/room-metadata.ts (Liveblocks notification URLs)
  */
