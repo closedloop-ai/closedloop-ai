@@ -1,8 +1,12 @@
+import type { ApiResult } from "@repo/api/src/types/common";
+import type { User } from "@repo/api/src/types/organization";
 import { auth } from "@repo/auth/server";
 import { resolveRoomMetadata } from "@repo/collaboration/room-metadata";
+import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { env } from "@/env";
 
 /**
  * GET /api/collaboration/rooms/resolve?roomIds=id1,id2,...
@@ -10,12 +14,19 @@ import { NextResponse } from "next/server";
  * Resolves room IDs to display names and navigation URLs by reading
  * Liveblocks room metadata (which stores artifactType at creation time).
  * Used by the client-side resolveRoomsInfo function in the top-level provider.
+ *
+ * Only resolves rooms belonging to the authenticated user's organization.
  */
 export async function GET(request: Request): Promise<Response> {
   try {
-    const { userId } = await auth();
+    const { userId, getToken } = await auth();
     if (!userId) {
       return new Response("Unauthorized", { status: 401 });
+    }
+
+    const user = await fetchUser(getToken);
+    if (!user) {
+      return new Response("Unable to fetch user", { status: 500 });
     }
 
     const { searchParams } = new URL(request.url);
@@ -30,13 +41,64 @@ export async function GET(request: Request): Promise<Response> {
       return NextResponse.json([]);
     }
 
+    // Filter to only rooms belonging to the user's organization (defense in depth)
+    const orgScopedRoomIds = roomIds.filter((roomId) => {
+      try {
+        const { organizationId } = parseArtifactRoomId(roomId);
+        return organizationId === user.organizationId;
+      } catch {
+        return false;
+      }
+    });
+
     // Cap at 50 rooms per request to prevent abuse
-    const cappedRoomIds = roomIds.slice(0, 50);
+    const cappedRoomIds = orgScopedRoomIds.slice(0, 50);
     const results = await resolveRoomMetadata(cappedRoomIds);
 
     return NextResponse.json(results);
   } catch (error) {
     log.error("Room resolve error", { error: parseError(error) });
     return new Response("Internal server error", { status: 500 });
+  }
+}
+
+async function fetchUser(
+  getToken: () => Promise<string | null>
+): Promise<User | null> {
+  if (!env.NEXT_PUBLIC_API_URL) {
+    log.error("NEXT_PUBLIC_API_URL is not set");
+    return null;
+  }
+
+  try {
+    const token = await getToken();
+    if (!token) {
+      log.error("Unable to fetch auth token");
+      return null;
+    }
+
+    const response = await fetch(`${env.NEXT_PUBLIC_API_URL}/me`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      log.error("Unable to fetch user", { status: response.status });
+      return null;
+    }
+
+    const result = (await response.json()) as ApiResult<User>;
+    if (!result.success) {
+      log.error("Unable to fetch user", { error: result.error });
+      return null;
+    }
+
+    return result.data;
+  } catch (error) {
+    log.error("Error fetching user", { error: parseError(error) });
+    return null;
   }
 }
