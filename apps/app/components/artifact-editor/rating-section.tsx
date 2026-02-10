@@ -45,55 +45,10 @@ export function RatingSection({
     );
   }
 
-  return (
-    <div className="space-y-4">
-      {/* Star selector row */}
-      <div className="flex items-center gap-2">
-        <StarRating
-          onChange={(score) => {
-            submitRating.mutate({
-              artifactId,
-              score,
-              comment: userRating?.comment,
-            });
-          }}
-          readonly={submitRating.isPending}
-          value={userRating?.score ?? 0}
-        />
-        {submitRating.isPending && (
-          <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
-        )}
-      </div>
-
-      {/* Aggregate display */}
-      <div aria-live="polite" className="text-center text-sm">
-        {summary && summary.count > 0 ? (
-          <span>
-            {summary.average.toFixed(1)} / 5{" "}
-            <span className="text-muted-foreground">
-              ({summary.count} rating{summary.count === 1 ? "" : "s"})
-            </span>
-          </span>
-        ) : (
-          <span className="text-muted-foreground">
-            No ratings yet. Be the first to rate!
-          </span>
-        )}
-      </div>
-
-      {/* Stale version indicator */}
-      {hasStaleVersion && (
-        <div className="flex items-center gap-1.5 rounded-md bg-amber-100 px-2 py-1 text-amber-800 text-xs dark:bg-amber-900 dark:text-amber-200">
-          <AlertTriangleIcon className="h-3 w-3" />
-          <span>
-            Rated on version {userRating.artifactVersion} (current:{" "}
-            {currentPlanVersion})
-          </span>
-        </div>
-      )}
-
-      {/* Comment section */}
-      {userRating?.comment && !isEditingComment ? (
+  let commentSection: React.ReactNode = null;
+  if (userRating?.score) {
+    if (userRating?.comment && !isEditingComment) {
+      commentSection = (
         <div className="space-y-2">
           <p className="text-muted-foreground text-sm">{userRating.comment}</p>
           <Button
@@ -107,7 +62,9 @@ export function RatingSection({
             Edit comment
           </Button>
         </div>
-      ) : (
+      );
+    } else {
+      commentSection = (
         <div className="space-y-2">
           <Textarea
             className="min-h-[80px]"
@@ -155,7 +112,59 @@ export function RatingSection({
             </div>
           </div>
         </div>
+      );
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Star selector row */}
+      <div className="flex items-center gap-2">
+        <StarRating
+          onChange={(score) => {
+            submitRating.mutate({
+              artifactId,
+              score,
+              comment: userRating?.comment,
+            });
+          }}
+          readonly={submitRating.isPending}
+          value={userRating?.score ?? 0}
+        />
+        {submitRating.isPending && (
+          <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+        )}
+      </div>
+
+      {/* Aggregate display */}
+      <div aria-live="polite" className="text-center text-sm">
+        {summary && summary.count > 0 ? (
+          <span>
+            {summary.average.toFixed(1)} / 5{" "}
+            <span className="text-muted-foreground">
+              ({summary.count} rating{summary.count === 1 ? "" : "s"})
+            </span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground">
+            No ratings yet. Be the first to rate!
+          </span>
+        )}
+      </div>
+
+      {/* Stale version indicator */}
+      {hasStaleVersion && (
+        <div className="flex items-center gap-1.5 rounded-md bg-amber-100 px-2 py-1 text-amber-800 text-xs dark:bg-amber-900 dark:text-amber-200">
+          <AlertTriangleIcon className="h-3 w-3" />
+          <span>
+            Rated on version {userRating.artifactVersion} (current:{" "}
+            {currentPlanVersion})
+          </span>
+        </div>
       )}
+
+      {/* Comment section — only after user has rated */}
+      {commentSection}
     </div>
   );
 }

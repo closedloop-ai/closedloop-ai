@@ -42,11 +42,13 @@ describe("RatingSection", () => {
   const scenarios: Array<{
     name: string;
     summary: ArtifactRatingSummary;
+    commentSectionVisible: boolean;
     expectedDisabled: boolean;
   }> = [
     {
       name: "no rating exists (userRating is null)",
       summary: { average: 0, count: 0, userRating: null },
+      commentSectionVisible: false,
       expectedDisabled: true,
     },
     {
@@ -63,6 +65,7 @@ describe("RatingSection", () => {
           updatedAt: new Date("2024-01-01"),
         },
       },
+      commentSectionVisible: true,
       expectedDisabled: false,
     },
     {
@@ -79,49 +82,44 @@ describe("RatingSection", () => {
           updatedAt: new Date("2024-01-01"),
         },
       },
+      commentSectionVisible: false,
       expectedDisabled: true,
     },
   ];
 
-  test.each(scenarios)(
-    ({
-      name,
-      expectedDisabled,
-    }: {
-      name: string;
-      summary: ArtifactRatingSummary;
-      expectedDisabled: boolean;
-    }) =>
-      `Save Comment button is ${expectedDisabled ? "disabled" : "enabled"} when ${name}`,
-    ({
-      summary,
-      expectedDisabled,
-    }: {
-      name: string;
-      summary: ArtifactRatingSummary;
-      expectedDisabled: boolean;
-    }) => {
-      // Mock useArtifactRating to return the scenario's summary
-      mockUseArtifactRating.mockReturnValue({
-        data: summary,
-        isLoading: false,
-      });
+  test.each(
+    scenarios
+  )("comment section visibility and Save button state when $name", ({
+    summary,
+    commentSectionVisible,
+    expectedDisabled,
+  }: {
+    name: string;
+    summary: ArtifactRatingSummary;
+    commentSectionVisible: boolean;
+    expectedDisabled: boolean;
+  }) => {
+    mockUseArtifactRating.mockReturnValue({
+      data: summary,
+      isLoading: false,
+    });
 
-      // Render RatingSection with artifactId="test-123" and currentPlanVersion={1}
-      const Wrapper = createWrapper();
-      render(
-        <Wrapper>
-          <RatingSection artifactId="test-123" currentPlanVersion={1} />
-        </Wrapper>
-      );
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <RatingSection artifactId="test-123" currentPlanVersion={1} />
+      </Wrapper>
+    );
 
-      // Find button using screen.getByRole("button", { name: SAVE_COMMENT_BUTTON_PATTERN })
-      const button = screen.getByRole("button", {
-        name: SAVE_COMMENT_BUTTON_PATTERN,
-      });
+    const button = screen.queryByRole("button", {
+      name: SAVE_COMMENT_BUTTON_PATTERN,
+    });
 
-      // Assert disabled state
-      expect(button.hasAttribute("disabled")).toBe(expectedDisabled);
+    if (commentSectionVisible) {
+      expect(button).not.toBeNull();
+      expect(button?.hasAttribute("disabled")).toBe(expectedDisabled);
+    } else {
+      expect(button).toBeNull();
     }
-  );
+  });
 });
