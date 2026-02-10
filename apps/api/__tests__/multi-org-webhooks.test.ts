@@ -12,6 +12,9 @@ import {
   createTestOrganization,
 } from "./utils/db-helpers";
 
+const env = process.env;
+const hasDatabase = !!env.DATABASE_URL;
+
 // Mock analytics to avoid actual tracking in tests
 vi.mock("@repo/analytics/server", () => ({
   analytics: {
@@ -85,7 +88,7 @@ function buildMembershipPayload(overrides: {
   };
 }
 
-describe("Multi-Org Webhook Handlers", () => {
+describe.skipIf(!hasDatabase)("Multi-Org Webhook Handlers", () => {
   describe("handleOrganizationMembershipCreated", () => {
     it("creates per-org user record when user joins organization", async () => {
       await autoRollbackTransaction(async () => {
