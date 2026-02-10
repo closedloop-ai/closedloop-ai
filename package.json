@@ -55,6 +55,8 @@
   },
   "pnpm": {
     "overrides": {
+      "@types/react": "19.2.13",
+      "@types/react-dom": "19.2.3",
       "parse5": "^7.2.1"
     },
     "onlyBuiltDependencies": [
