@@ -65,18 +65,40 @@ const sslRejectUnauthorized =
     : sslRejectUnauthorizedEnv.toLowerCase() !== "false";
 
 let sslCa;
-if (process.env.DB_SSL_CA_B64) {
-  sslCa = Buffer.from(process.env.DB_SSL_CA_B64, "base64").toString("utf8");
-} else if (process.env.DB_SSL_CA_PATH) {
-  sslCa = await readFile(process.env.DB_SSL_CA_PATH, "utf8");
-} else if (process.env.PGSSLROOTCERT) {
-  sslCa = await readFile(process.env.PGSSLROOTCERT, "utf8");
+let sslCaSource;
+const sslCaCandidates = [
+  process.env.DB_SSL_CA_B64 ? "DB_SSL_CA_B64" : null,
+  process.env.DB_SSL_CA_PATH ? "DB_SSL_CA_PATH" : null,
+  process.env.PGSSLROOTCERT ? "PGSSLROOTCERT" : null,
+].filter(Boolean);
+if (sslCaCandidates.length > 1) {
+  console.warn(
+    `Multiple DB SSL CA sources set (${sslCaCandidates.join(
+      ", "
+    )}); using highest-precedence value.`
+  );
+}
+try {
+  if (process.env.DB_SSL_CA_B64) {
+    sslCa = Buffer.from(process.env.DB_SSL_CA_B64, "base64").toString("utf8");
+    sslCaSource = "DB_SSL_CA_B64";
+  } else if (process.env.DB_SSL_CA_PATH) {
+    sslCa = await readFile(process.env.DB_SSL_CA_PATH, "utf8");
+    sslCaSource = `DB_SSL_CA_PATH (${process.env.DB_SSL_CA_PATH})`;
+  } else if (process.env.PGSSLROOTCERT) {
+    sslCa = await readFile(process.env.PGSSLROOTCERT, "utf8");
+    sslCaSource = `PGSSLROOTCERT (${process.env.PGSSLROOTCERT})`;
+  }
+} catch (error) {
+  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`); 
+  console.error(error?.message || error);
+  process.exit(1);
 }
 
 if (!sslRejectUnauthorized) {
   console.log("Database SSL: rejectUnauthorized=false (NOT recommended)");
 } else if (sslCa) {
-  console.log("Database SSL: custom CA provided");
+  console.log(`Database SSL: custom CA provided (${sslCaSource})`);
 }
 
 const clientConfig = { connectionString: databaseUrl };
