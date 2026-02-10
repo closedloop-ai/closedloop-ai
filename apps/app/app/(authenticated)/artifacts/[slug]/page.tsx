@@ -1,4 +1,4 @@
-import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForSubtype } from "@repo/api/src/types/artifact";
 import { notFound, redirect } from "next/navigation";
 
 /**
@@ -10,14 +10,6 @@ import { notFound, redirect } from "next/navigation";
  * The resolver tries to build type-specific URLs, but falls back to
  * /artifacts/:slug which lands here and redirects appropriately.
  */
-
-const ARTIFACT_TYPE_ROUTES: Partial<Record<ArtifactSubtype, string>> = {
-  PRD: "prds",
-  IMPLEMENTATION_PLAN: "implementation-plans",
-  IMPLEMENTATION_STRATEGY: "implementation-plans",
-  ISSUE: "issues",
-  BUG: "issues",
-};
 
 type ArtifactPageProps = {
   params: Promise<{ slug: string }>;
@@ -53,8 +45,7 @@ export default async function ArtifactRedirectPage({
       const result = await response.json();
       if (result.success && result.data?.length > 0) {
         const artifact = result.data[0];
-        const routePrefix =
-          ARTIFACT_TYPE_ROUTES[artifact.subtype as ArtifactSubtype];
+        const routePrefix = getRoutePrefixForSubtype(artifact.subtype);
 
         if (routePrefix && artifact.documentSlug) {
           redirect(`/${routePrefix}/${artifact.documentSlug}`);

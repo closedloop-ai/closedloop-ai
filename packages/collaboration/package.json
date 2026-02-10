@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
+    "@repo/api": "workspace:*",
     "@liveblocks/client": "^3.13.4",
     "@liveblocks/node": "^3.13.4",
     "@liveblocks/react": "^3.13.4",

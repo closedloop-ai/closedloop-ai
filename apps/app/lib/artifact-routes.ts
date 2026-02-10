@@ -1,3 +1,4 @@
+import { getRoutePrefixForSubtype } from "@repo/api/src/types/artifact";
 import type { ProjectArtifact } from "@/types/teams";
 
 /**
@@ -5,23 +6,19 @@ import type { ProjectArtifact } from "@/types/teams";
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
  */
 export function getArtifactRoute(artifact: ProjectArtifact): string | null {
+  // Document subtypes with slug-based routes
+  const routePrefix = getRoutePrefixForSubtype(artifact.subtype);
+  if (routePrefix) {
+    return artifact.documentSlug
+      ? `/${routePrefix}/${artifact.documentSlug}`
+      : null;
+  }
+
+  // Link-based artifact types
   switch (artifact.subtype) {
-    case "PRD":
-      return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
-    case "IMPLEMENTATION_PLAN":
-    case "IMPLEMENTATION_STRATEGY":
-      return artifact.documentSlug
-        ? `/implementation-plans/${artifact.documentSlug}`
-        : null;
-    case "ISSUE":
-    case "BUG":
-      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
     case "DESIGNS":
     case "BRANCH":
       return artifact.link || null;
-    case "PROJECT_BRIEF":
-    case "TEMPLATE":
-      return null;
     default:
       return null;
   }

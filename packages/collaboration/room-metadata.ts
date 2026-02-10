@@ -1,5 +1,6 @@
 import "server-only";
 import { Liveblocks } from "@liveblocks/node";
+import { getRoutePrefixForSubtype } from "@repo/api/src/types/artifact";
 import { keys } from "./keys";
 import { parseArtifactRoomId } from "./room-utils";
 
@@ -8,29 +9,6 @@ export type ResolvedRoom = {
   name: string;
   url: string | null;
 };
-
-/**
- * Maps artifact type (from Liveblocks room metadata) to a route prefix.
- * Mirrors the logic in apps/app/lib/artifact-routes.ts but operates on
- * raw string types from room metadata rather than frontend type unions.
- */
-function getRouteForArtifactType(
-  artifactType: string,
-  documentSlug: string
-): string | null {
-  switch (artifactType) {
-    case "PRD":
-      return `/prds/${documentSlug}`;
-    case "IMPLEMENTATION_PLAN":
-    case "IMPLEMENTATION_STRATEGY":
-      return `/implementation-plans/${documentSlug}`;
-    case "ISSUE":
-    case "BUG":
-      return `/issues/${documentSlug}`;
-    default:
-      return null;
-  }
-}
 
 function slugToTitleCase(slug: string): string {
   return slug
@@ -70,7 +48,8 @@ export async function resolveRoomMetadata(
         const artifactType = room.metadata?.artifactType;
 
         if (typeof artifactType === "string") {
-          const url = getRouteForArtifactType(artifactType, documentSlug);
+          const prefix = getRoutePrefixForSubtype(artifactType);
+          const url = prefix ? `/${prefix}/${documentSlug}` : null;
           return { roomId, name, url };
         }
       } catch {
