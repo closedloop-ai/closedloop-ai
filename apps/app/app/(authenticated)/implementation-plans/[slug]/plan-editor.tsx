@@ -324,6 +324,7 @@ export function PlanEditor({
             judgesReport={judgesReport ?? null}
             onApproverSelect={metadata.handleApproverSelect}
             onOwnerChange={metadata.handleOwnerChange}
+            onParentChange={metadata.handleParentChange}
             onPreviewRefresh={async () => {
               const result = await refreshPreviewDeployment();
               return result ?? null;
