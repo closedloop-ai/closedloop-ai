@@ -2,10 +2,10 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { StarRating } from "@repo/design-system/components/ui/star-rating";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { AlertTriangle as AlertTriangleIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { StarRating } from "@/components/star-rating";
 import {
   useArtifactRating,
   useSubmitRating,

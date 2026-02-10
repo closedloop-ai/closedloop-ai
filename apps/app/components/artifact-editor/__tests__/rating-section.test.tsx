@@ -14,7 +14,7 @@ vi.mock("@/hooks/queries/use-artifact-rating", () => ({
 }));
 
 // Mock StarRating component to avoid dependencies; supports onChange for testing selection
-vi.mock("@repo/design-system/components/ui/star-rating", () => ({
+vi.mock("@/components/star-rating", () => ({
   StarRating: ({
     value,
     onChange,
