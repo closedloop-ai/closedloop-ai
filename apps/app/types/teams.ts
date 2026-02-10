@@ -75,4 +75,7 @@ export type ProjectArtifact = {
   parentId?: string | null;
   link?: string;
   previewUrl?: string;
+  workstreamId?: string | null;
+  workstreamTitle?: string | null;
+  workstreamState?: string | null;
 };

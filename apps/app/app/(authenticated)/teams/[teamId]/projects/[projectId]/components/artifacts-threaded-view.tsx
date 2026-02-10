@@ -1,6 +1,12 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@repo/design-system/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -8,13 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
-import {
+  ChevronDown,
   ExternalLinkIcon,
   FileTextIcon,
   MoreHorizontalIcon,
@@ -68,10 +68,6 @@ function isExternalLink(artifact: ProjectArtifact): boolean {
   }
 }
 
-/**
- * Get the route to navigate to for viewing/editing an artifact.
- * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
- */
 function getArtifactRoute(artifact: ProjectArtifact): string | null {
   switch (artifact.subtype) {
     case "PRD":
@@ -95,151 +91,132 @@ function getArtifactRoute(artifact: ProjectArtifact): string | null {
   }
 }
 
-function ArtifactLinkCell({
-  artifact,
-  route,
-  isExternal,
-}: {
-  artifact: ProjectArtifact;
-  route: string | null;
-  isExternal: boolean;
-}) {
-  if (!route) {
-    return <span className="text-muted-foreground text-sm">n/a</span>;
+const WORKSTREAM_STATE_LABELS: Record<string, string> = {
+  INITIATED: "Initiated",
+  REQUIREMENTS_GENERATING: "Generating Requirements",
+  REQUIREMENTS_PENDING_APPROVAL: "Requirements Review",
+  DESIGN_IN_PROGRESS: "Designing",
+  DESIGN_PENDING_APPROVAL: "Design Review",
+  IMPLEMENTATION_PLANNING: "Planning",
+  IMPLEMENTATION_IN_PROGRESS: "Implementing",
+  IMPLEMENTATION_PENDING_REVIEW: "Implementation Review",
+  CODE_REVIEW_RUNNING: "Code Review",
+  CODE_REVIEW_PENDING_APPROVAL: "Code Review Approval",
+  VISUAL_QA_RUNNING: "Visual QA",
+  VISUAL_QA_PENDING_APPROVAL: "Visual QA Approval",
+  MERGING: "Merging",
+  DEPLOYED: "Deployed",
+  COMPLETED: "Completed",
+  BLOCKED: "Blocked",
+  CANCELLED: "Cancelled",
+};
+
+function getWorkstreamStateBadgeVariant(
+  state: string
+): "default" | "secondary" | "destructive" | "outline" {
+  switch (state) {
+    case "COMPLETED":
+    case "DEPLOYED":
+      return "default";
+    case "BLOCKED":
+    case "CANCELLED":
+      return "destructive";
+    case "INITIATED":
+      return "outline";
+    default:
+      return "secondary";
   }
-  if (isExternal) {
+}
+
+type WorkstreamGroup = {
+  id: string | null;
+  title: string;
+  state: string | null;
+  artifacts: ProjectArtifact[];
+};
+
+function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
+  const groups = new Map<string | null, WorkstreamGroup>();
+
+  for (const artifact of artifacts) {
+    const key = artifact.workstreamId ?? null;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: key,
+        title: artifact.workstreamTitle ?? "Unassigned",
+        state: artifact.workstreamState ?? null,
+        artifacts: [],
+      });
+    }
+    groups.get(key)!.artifacts.push(artifact);
+  }
+
+  // Sort: workstreams with IDs first (by title), unassigned last
+  const sorted = [...groups.values()].sort((a, b) => {
+    if (a.id === null) {
+      return 1;
+    }
+    if (b.id === null) {
+      return -1;
+    }
+    return a.title.localeCompare(b.title);
+  });
+
+  return sorted;
+}
+
+function ArtifactLink({ artifact }: { artifact: ProjectArtifact }) {
+  const route = getArtifactRoute(artifact);
+  if (!route) {
+    return null;
+  }
+  if (isExternalLink(artifact)) {
     return (
       <a
-        className="inline-flex items-center gap-1 text-primary text-sm hover:underline"
+        className="inline-flex items-center gap-1 text-primary text-xs hover:underline"
         href={route}
+        onClick={(e) => e.stopPropagation()}
         rel="noopener noreferrer"
         target="_blank"
       >
-        {artifact.link || "External Link"}
+        View
         <ExternalLinkIcon className="h-3 w-3" />
       </a>
     );
   }
   return (
-    <Link className="text-primary text-sm hover:underline" href={route}>
-      {artifact.link || "View"}
+    <Link
+      className="text-primary text-xs hover:underline"
+      href={route}
+      onClick={(e) => e.stopPropagation()}
+    >
+      View
     </Link>
   );
 }
 
-type ArtifactNode = ProjectArtifact & {
-  children: ArtifactNode[];
-  depth: number;
-};
-
-/**
- * Build a tree structure from flat artifact list using parentId relationships.
- */
-function buildArtifactTree(artifacts: ProjectArtifact[]): ArtifactNode[] {
-  const artifactMap = new Map<string, ArtifactNode>();
-  const rootNodes: ArtifactNode[] = [];
-
-  // First pass: create nodes
-  for (const artifact of artifacts) {
-    artifactMap.set(artifact.id, {
-      ...artifact,
-      children: [],
-      depth: 0,
-    });
-  }
-
-  // Second pass: build parent-child relationships
-  for (const artifact of artifacts) {
-    const node = artifactMap.get(artifact.id);
-    if (!node) {
-      continue;
-    }
-
-    if (artifact.parentId) {
-      const parent = artifactMap.get(artifact.parentId);
-      if (parent) {
-        parent.children.push(node);
-      } else {
-        // Parent not found, treat as root
-        rootNodes.push(node);
-      }
-    } else {
-      // No parent, this is a root node
-      rootNodes.push(node);
-    }
-  }
-
-  // Third pass: calculate depths by traversing from root nodes
-  function setDepths(node: ArtifactNode, depth: number): void {
-    node.depth = depth;
-    for (const child of node.children) {
-      setDepths(child, depth + 1);
-    }
-  }
-
-  for (const rootNode of rootNodes) {
-    setDepths(rootNode, 0);
-  }
-
-  return rootNodes;
-}
-
-/**
- * Flatten tree into a list with depth information for rendering.
- */
-function flattenTree(nodes: ArtifactNode[]): ArtifactNode[] {
-  const result: ArtifactNode[] = [];
-
-  function traverse(node: ArtifactNode): void {
-    result.push(node);
-    for (const child of node.children) {
-      traverse(child);
-    }
-  }
-
-  for (const node of nodes) {
-    traverse(node);
-  }
-
-  return result;
-}
-
-type ArtifactRowProps = {
-  artifact: ArtifactNode;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
-};
-
 function ArtifactRow({
   artifact,
   onRowClick,
-  onStatusChange,
   onRequestDelete,
-}: ArtifactRowProps) {
+}: {
+  artifact: ProjectArtifact;
+  onRowClick: (artifact: ProjectArtifact) => void;
+  onRequestDelete: (artifact: ProjectArtifact) => void;
+}) {
   const Icon = ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
-  const route = getArtifactRoute(artifact);
-  const isExternal = isExternalLink(artifact);
   const isClickable = isNavigableArtifact(artifact);
-  const indentLevel = artifact.depth;
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onRowClick(artifact);
-    }
-  };
-
-  const handleClick = () => {
-    if (isClickable) {
-      onRowClick(artifact);
-    }
-  };
-
-  const rowProps = isClickable
+  const interactiveProps = isClickable
     ? {
-        onClick: handleClick,
-        onKeyDown: handleKeyDown,
+        onClick: () => onRowClick(artifact),
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onRowClick(artifact);
+          }
+        },
         role: "button" as const,
         tabIndex: 0,
       }
@@ -247,87 +224,28 @@ function ArtifactRow({
 
   return (
     <div
-      {...rowProps}
-      className={`grid grid-cols-[1fr,auto,auto,auto,auto,auto] items-center gap-4 border-b px-4 py-3 ${
+      {...interactiveProps}
+      className={`flex items-center gap-3 rounded-md px-3 py-2 ${
         isClickable ? "cursor-pointer hover:bg-muted/50" : ""
       }`}
     >
-      {/* Artifact name with icon and indentation */}
-      <div
-        className="flex items-center gap-2"
-        style={{ paddingLeft: `${indentLevel * 24}px` }}
+      <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate text-sm">{artifact.name}</span>
+      <ArtifactSubtypeBadge subtype={artifact.subtype} />
+      <span
+        className={`text-xs ${ARTIFACT_STATUS_COLORS[artifact.status] ?? "text-muted-foreground"}`}
       >
-        <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-        <span className="font-medium">{artifact.name}</span>
-      </div>
-
-      {/* Type badge */}
+        {ARTIFACT_STATUS_LABELS[artifact.status] ?? artifact.status}
+      </span>
       <div
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        role="none"
-      >
-        <ArtifactSubtypeBadge subtype={artifact.subtype} />
-      </div>
-
-      {/* Status select */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        role="none"
-      >
-        <Select
-          onValueChange={(value) =>
-            onStatusChange?.(artifact.id, value as ArtifactDisplayStatus)
-          }
-          value={artifact.status}
-        >
-          <SelectTrigger className="h-7 w-[140px] border-0 bg-input/30 px-2 text-sm hover:bg-input/50 focus:ring-0 focus:ring-offset-0">
-            <SelectValue>
-              <span className={ARTIFACT_STATUS_COLORS[artifact.status]}>
-                {ARTIFACT_STATUS_LABELS[artifact.status]}
-              </span>
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {Object.entries(ARTIFACT_STATUS_LABELS).map(([value, label]) => (
-              <SelectItem key={value} value={value}>
-                <span
-                  className={
-                    ARTIFACT_STATUS_COLORS[value as ArtifactDisplayStatus]
-                  }
-                >
-                  {label}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Link */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        role="none"
-      >
-        <ArtifactLinkCell
-          artifact={artifact}
-          isExternal={isExternal}
-          route={route}
-        />
-      </div>
-
-      {/* Preview */}
-      <div
+        className="flex items-center gap-1"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
         role="none"
       >
         <PreviewLink url={artifact.previewUrl} />
+        <ArtifactLink artifact={artifact} />
       </div>
-
-      {/* Actions menu */}
       <div
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => e.stopPropagation()}
@@ -335,8 +253,8 @@ function ArtifactRow({
       >
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button className="h-8 w-8" size="icon" variant="ghost">
-              <MoreHorizontalIcon className="h-4 w-4" />
+            <Button className="h-7 w-7" size="icon" variant="ghost">
+              <MoreHorizontalIcon className="h-3.5 w-3.5" />
               <span className="sr-only">Open menu</span>
             </Button>
           </DropdownMenuTrigger>
@@ -355,9 +273,51 @@ function ArtifactRow({
   );
 }
 
+function WorkstreamSection({
+  group,
+  onRowClick,
+  onRequestDelete,
+}: {
+  group: WorkstreamGroup;
+  onRowClick: (artifact: ProjectArtifact) => void;
+  onRequestDelete: (artifact: ProjectArtifact) => void;
+}) {
+  return (
+    <Collapsible className="rounded-lg border">
+      <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
+        <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+        <span className="min-w-0 flex-1 truncate font-medium text-sm">
+          {group.title}
+        </span>
+        <span className="text-muted-foreground text-xs">
+          {group.artifacts.length}{" "}
+          {group.artifacts.length === 1 ? "artifact" : "artifacts"}
+        </span>
+        {group.state && (
+          <Badge variant={getWorkstreamStateBadgeVariant(group.state)}>
+            {WORKSTREAM_STATE_LABELS[group.state] ?? group.state}
+          </Badge>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t px-1 py-1">
+          {group.artifacts.map((artifact) => (
+            <ArtifactRow
+              artifact={artifact}
+              key={artifact.id}
+              onRequestDelete={onRequestDelete}
+              onRowClick={onRowClick}
+            />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function ArtifactsThreadedView({
   artifacts,
-  onStatusChange,
+  onStatusChange: _onStatusChange,
   onDelete,
 }: ArtifactsThreadedViewProps) {
   const router = useRouter();
@@ -366,10 +326,10 @@ export function ArtifactsThreadedView({
     getId: (artifact: ProjectArtifact) => artifact.id,
   });
 
-  const flattenedTree = useMemo(() => {
-    const tree = buildArtifactTree(artifacts);
-    return flattenTree(tree);
-  }, [artifacts]);
+  const workstreamGroups = useMemo(
+    () => groupByWorkstream(artifacts),
+    [artifacts]
+  );
 
   function handleRowClick(artifact: ProjectArtifact): void {
     if (isNavigableArtifact(artifact)) {
@@ -392,25 +352,13 @@ export function ArtifactsThreadedView({
   }
 
   return (
-    <div className="space-y-0">
-      {/* Header */}
-      <div className="grid grid-cols-[1fr,auto,auto,auto,auto,auto] gap-4 border-b bg-muted/50 px-4 py-3 font-medium text-muted-foreground text-sm">
-        <div>Artifact</div>
-        <div>Type</div>
-        <div>Status</div>
-        <div>Link</div>
-        <div>Preview</div>
-        <div className="w-[50px]" />
-      </div>
-
-      {/* Rows */}
-      {flattenedTree.map((artifact) => (
-        <ArtifactRow
-          artifact={artifact}
-          key={artifact.id}
+    <div className="space-y-3">
+      {workstreamGroups.map((group) => (
+        <WorkstreamSection
+          group={group}
+          key={group.id ?? "unassigned"}
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
-          onStatusChange={onStatusChange}
         />
       ))}
 
