@@ -1,14 +1,22 @@
 import { analytics } from "@repo/analytics/server";
+import type { CreateUserInput } from "@repo/api/src/types/organization";
 import type {
   DeletedObjectJSON,
   OrganizationJSON,
   OrganizationMembershipJSON,
   UserJSON,
 } from "@repo/auth/server";
+import { log } from "@repo/observability/log";
+import { clerkService } from "@/lib/auth/clerk-service";
 import { organizationsService } from "../../organizations/service";
 import { usersService } from "../../users/service";
+import {
+  mapClerkUserToInput,
+  mapClerkUserToUpdateInput,
+  mapMembershipToInput,
+} from "./webhook-mappers";
 
-export const handleUserCreated = async (data: UserJSON) => {
+export async function handleUserCreated(data: UserJSON): Promise<Response> {
   const email = data.email_addresses.at(0)?.email_address;
 
   analytics.identify({
@@ -29,40 +37,32 @@ export const handleUserCreated = async (data: UserJSON) => {
 
   if (email) {
     for (const membership of data.organization_memberships ?? []) {
-      const organization = await organizationsService.findByClerkId(
-        membership.organization.id
+      const organization = await organizationsService.findOrCreateByClerkId(
+        membership.organization.id,
+        membership.organization
       );
 
-      if (organization) {
-        await usersService.upsertByClerkId({
-          clerkId: data.id,
-          organizationId: organization.id,
-          email,
-          firstName: data.first_name,
-          lastName: data.last_name,
-          avatarUrl: data.image_url,
-          phoneNumber: data.phone_numbers.at(0)?.phone_number,
-        });
-      }
+      await usersService.upsertByClerkIdAndOrg(
+        mapClerkUserToInput(data, organization.id)
+      );
     }
   }
 
   return new Response("User created", { status: 201 });
-};
+}
 
-export const handleUserUpdated = (data: UserJSON) => {
-  const email = data.email_addresses.at(0)?.email_address;
-  const phoneNumber = data.phone_numbers.at(0)?.phone_number;
+export async function handleUserUpdated(data: UserJSON): Promise<Response> {
+  const updateInput = mapClerkUserToUpdateInput(data);
 
   analytics.identify({
     distinctId: data.id,
     properties: {
-      email,
-      firstName: data.first_name,
-      lastName: data.last_name,
+      email: updateInput.email,
+      firstName: updateInput.firstName,
+      lastName: updateInput.lastName,
       createdAt: new Date(data.created_at),
-      avatar: data.image_url,
-      phoneNumber,
+      avatar: updateInput.avatarUrl,
+      phoneNumber: updateInput.phoneNumber,
     },
   });
 
@@ -71,10 +71,14 @@ export const handleUserUpdated = (data: UserJSON) => {
     distinctId: data.id,
   });
 
-  return new Response("User updated", { status: 204 });
-};
+  await usersService.updateByClerkId(data.id, updateInput);
 
-export const handleUserDeleted = async (data: DeletedObjectJSON) => {
+  return new Response("User updated", { status: 204 });
+}
+
+export async function handleUserDeleted(
+  data: DeletedObjectJSON
+): Promise<Response> {
   if (data.id) {
     analytics.identify({
       distinctId: data.id,
@@ -88,13 +92,15 @@ export const handleUserDeleted = async (data: DeletedObjectJSON) => {
       distinctId: data.id,
     });
 
-    await usersService.deactivateByClerkId(data.id);
+    await usersService.deactivateAllByClerkId(data.id);
   }
 
   return new Response("User deleted", { status: 204 });
-};
+}
 
-export const handleOrganizationCreated = async (data: OrganizationJSON) => {
+export async function handleOrganizationCreated(
+  data: OrganizationJSON
+): Promise<Response> {
   analytics.groupIdentify({
     groupKey: data.id,
     groupType: "company",
@@ -112,16 +118,20 @@ export const handleOrganizationCreated = async (data: OrganizationJSON) => {
     });
   }
 
-  await organizationsService.create({
-    clerkId: data.id,
+  await organizationsService.findOrCreateByClerkId(data.id, {
+    name: data.name,
+    slug: data.slug,
+  });
+  // Update name/slug since the organization.created event is the authoritative source
+  await organizationsService.updateByClerkId(data.id, {
     name: data.name,
     slug: data.slug,
   });
 
   return new Response("Organization created", { status: 201 });
-};
+}
 
-export const handleOrganizationUpdated = (data: OrganizationJSON) => {
+export function handleOrganizationUpdated(data: OrganizationJSON): Response {
   analytics.groupIdentify({
     groupKey: data.id,
     groupType: "company",
@@ -140,9 +150,11 @@ export const handleOrganizationUpdated = (data: OrganizationJSON) => {
   }
 
   return new Response("Organization updated", { status: 204 });
-};
+}
 
-export const handleOrganizationDeleted = async (data: DeletedObjectJSON) => {
+export async function handleOrganizationDeleted(
+  data: DeletedObjectJSON
+): Promise<Response> {
   analytics.groupIdentify({
     groupKey: data.id ?? "<unknown>",
     groupType: "company",
@@ -161,11 +173,11 @@ export const handleOrganizationDeleted = async (data: DeletedObjectJSON) => {
   }
 
   return new Response("Organization deleted", { status: 204 });
-};
+}
 
-export const handleOrganizationMembershipCreated = async (
+export async function handleOrganizationMembershipCreated(
   data: OrganizationMembershipJSON
-) => {
+): Promise<Response> {
   const userId = data.public_user_data.user_id;
 
   analytics.groupIdentify({
@@ -179,27 +191,42 @@ export const handleOrganizationMembershipCreated = async (
     distinctId: userId,
   });
 
-  const organization = await organizationsService.findByClerkId(
-    data.organization.id
+  const organization = await organizationsService.findOrCreateByClerkId(
+    data.organization.id,
+    data.organization
   );
 
-  if (organization && userId) {
-    await usersService.upsertByClerkId({
-      clerkId: userId,
-      organizationId: organization.id,
-      email: data.public_user_data.identifier, // TODO: Verify this is the correct email
-      firstName: data.public_user_data.first_name,
-      lastName: data.public_user_data.last_name,
-      avatarUrl: data.public_user_data.image_url,
-    });
+  if (userId) {
+    const mapped = mapMembershipToInput(data, organization.id);
+
+    if (mapped.email) {
+      // Fast path: identifier is email-shaped, use directly (no Clerk API call)
+      await usersService.upsertByClerkIdAndOrg(mapped as CreateUserInput);
+    } else {
+      // Identifier is not an email (likely phone number).
+      // Fetch full user from Clerk to get the actual email address.
+      log.info(
+        "Membership identifier is not email-shaped, fetching from Clerk",
+        {
+          userId,
+          identifier: data.public_user_data.identifier,
+        }
+      );
+      const clerkUser = await clerkService.getUser(userId);
+      await usersService.upsertByClerkIdAndOrg({
+        ...mapped,
+        email: clerkUser.email,
+        phoneNumber: clerkUser.phoneNumber,
+      });
+    }
   }
 
   return new Response("Organization membership created", { status: 201 });
-};
+}
 
-export const handleOrganizationMembershipUpdated = (
+export function handleOrganizationMembershipUpdated(
   data: OrganizationMembershipJSON
-) => {
+): Response {
   const userId = data.public_user_data.user_id;
 
   analytics.groupIdentify({
@@ -216,11 +243,11 @@ export const handleOrganizationMembershipUpdated = (
   // TODO: eventually we'll need to update the user's role and permissions here.
 
   return new Response("Organization membership updated", { status: 204 });
-};
+}
 
-export const handleOrganizationMembershipDeleted = async (
+export async function handleOrganizationMembershipDeleted(
   data: OrganizationMembershipJSON
-) => {
+): Promise<Response> {
   const userId = data.public_user_data.user_id;
 
   analytics.capture({
@@ -229,8 +256,30 @@ export const handleOrganizationMembershipDeleted = async (
   });
 
   if (userId) {
-    await usersService.deactivateByClerkId(userId);
+    const organization = await organizationsService.findByClerkId(
+      data.organization.id
+    );
+
+    if (organization) {
+      try {
+        await usersService.deactivateByClerkIdAndOrg(userId, organization.id);
+      } catch (error) {
+        // P2025: user record not found — already gone or never created
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          (error as { code: string }).code === "P2025"
+        ) {
+          log.info("User not found for deactivation, skipping", {
+            clerkId: userId,
+            organizationId: organization.id,
+          });
+        } else {
+          throw error;
+        }
+      }
+    }
   }
 
   return new Response("Organization membership deleted", { status: 204 });
-};
+}

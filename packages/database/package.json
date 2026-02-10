@@ -12,24 +12,24 @@
     "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
-    "@aws-sdk/rds-signer": "^3.971.0",
+    "@aws-sdk/rds-signer": "^3.985.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "7.3.0",
     "@prisma/client-runtime-utils": "^7.3.0",
-    "@t3-oss/env-nextjs": "^0.13.8",
-    "@vercel/functions": "^3.3.6",
-    "pg": "^8.16.3",
+    "@t3-oss/env-nextjs": "^0.13.10",
+    "@vercel/functions": "^3.4.1",
+    "pg": "^8.18.0",
     "server-only": "^0.0.1",
-    "zod": "^4.3.5"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "25.0.9",
     "@types/pg": "^8.16.0",
-    "bufferutil": "^4.0.9",
-    "dotenv": "^17.2.3",
+    "bufferutil": "^4.1.0",
+    "dotenv": "^17.2.4",
     "prisma": "7.3.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }
 }

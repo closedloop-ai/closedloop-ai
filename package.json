@@ -20,7 +20,8 @@
     "boundaries": "turbo boundaries",
     "bump-deps": "npx npm-check-updates --deep -u -x recharts && pnpm install",
     "bump-ui": "npx shadcn@latest add --all --overwrite -c packages/design-system",
-    "migrate": "cd packages/database && npx prisma format && npx prisma generate && npx prisma db push",
+    "migrate": "cd packages/database && pnpm prisma migrate dev",
+    "migrate:status": "cd packages/database && pnpm prisma migrate status",
     "clean": "git clean -xdf node_modules",
     "prepare": "husky",
     "start-apps": "turbo dev --filter=app --filter=api"
@@ -28,19 +29,19 @@
   "devDependencies": {
     "@auto-it/first-time-contributor": "^11.3.6",
     "@biomejs/biome": "2.3.13",
-    "@playwright/test": "^1.58.1",
+    "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",
-    "@turbo/gen": "^2.6.3",
-    "@types/node": "^25.0.9",
+    "@turbo/gen": "^2.8.3",
+    "@types/node": "^25.2.2",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
-    "next": "16.0.10",
-    "playwright": "^1.58.1",
+    "next": "16.1.6",
+    "playwright": "^1.58.2",
     "tsup": "^8.5.1",
-    "turbo": "^2.7.6",
+    "turbo": "^2.8.3",
     "typescript": "^5.9.3",
     "ultracite": "7.1.1",
-    "vitest": "^4.0.15"
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=18"
@@ -48,7 +49,7 @@
   "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264",
   "dependencies": {
     "@clack/prompts": "^0.11.0",
-    "commander": "^14.0.2"
+    "commander": "^14.0.3"
   },
   "pnpm": {
     "overrides": {

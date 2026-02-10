@@ -196,6 +196,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 ### Planning & Verification
 - **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases, (4) ARTIFACT_SECTIONS dual placement. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
 - **[convention]**: Before implementing new entity types or schema changes, check `plan.json` architectureDecisions array - schema design choices are documented there. (context: plan-adherence|architecture|implementation)
+- **[mistake]**: When planning changes to existing files, check investigation-log.md for already-imported components before writing import tasks. Mark as verification when component already exists. (context: plan-writer|investigation-log|import-verification)
 
 ### TypeScript & Imports
 - **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
@@ -216,25 +217,36 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: When converting metadata panels from tabs to collapsible sections: (1) Replace TabbedMetadataPanel with MetadataPanel, (2) Wrap sections in space-y-6 container, (3) Use separate useState(bool) for each section's open/close state, (4) Import Collapsible/CollapsibleTrigger/CollapsibleContent and ChevronUp/ChevronDown icons, (5) Follow existing pattern from PropertiesPanel and CommentsSection components. (context: react|refactoring|metadata-panel|collapsible|ui-patterns)
 - **[pattern]**: Artifact metadata panels (PRD, Issue, Plan) follow identical TabbedMetadataPanel structure in apps/app/app/(authenticated)/{artifact}/[slug]/components/*-metadata-panel.tsx - only difference is artifact-specific fields in Details tab content. (context: architecture|metadata-panel|artifact-editor|code-structure)
 - **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-transactional) but is called from inside `withDb.tx` callbacks. The `withDb.tx` implementation does NOT store the transaction in AsyncLocalStorage, so nested `withDb` calls open separate connections instead of reusing the transaction. (context: database|transactions|withDb|connection-pool|prisma)
+- **[pattern]**: In this project's multi-org architecture (one User record per Clerk user per org), service methods that update profile data (name, avatar, email) should use `updateMany({ where: { clerkId } })` to sync across all organizations. Document this intentional broad-update behavior in docstrings. (context: multi-org|prisma|service-layer|user-profile|clerk-webhooks)
 
 ### API & Service Layer
 - **[pattern]**: For artifact routes in `apps/api/app/artifacts/[id]/`, use `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` - the org-scoped query ensures authorization. (context: auth|artifacts|org-scoping)
 - **[pattern]**: When service functions exceed ~30 lines or have complex parsing, extract to `apps/api/lib/{feature}-parser.ts` with pure functions. Service orchestrates, parser implements. (context: service-layer|code-organization)
 - **[convention]**: API routes must not set Cache-Control headers manually. Caching is handled by TanStack Query on the frontend. Server-side caching goes in the service layer (in-memory or Redis), not HTTP headers. (context: api-routes|caching)
+- **[convention]**: When catching expected errors in webhook handlers (e.g., Prisma P2025 for record-not-found), catch only the specific error code and re-throw everything else. Do not use generic catch blocks that swallow all errors. See `handleOrganizationMembershipDeleted` pattern in `auth-hooks.ts:238-255`. (context: webhooks|error-handling|prisma|expected-errors|api-routes)
 
 ### TanStack Query
 - **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
+
+- **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
 
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
 - **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
+- **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
+
+### React & Components
+- **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
 
 ### Domain Concepts
 - **[convention]**: The 'Workflow' artifact category in Symphony represents user-defined step sequences that orchestrate execution (e.g., plan → code → test → review), NOT artifacts generated during execution or external tool integrations. Workflows let users define what steps get executed. (context: artifact-category|workflow|symphony-concepts)
+
+### PR Responses
+- **[convention]**: When drafting PR review responses, be concise and just describe the change made. Don't use filler phrases like "Good catch", "Great point", or other flattery. (context: pr-responses|tone|code-review)
 
 ### Symphony CI/CD
 - **[pattern]**: run-loop.sh stores state in `.symphony-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, completion_promise, workdir, prd_file, run_id, start_sha, started_at) - not in state.json. Resume behavior reads this file at line 564. (context: run-loop|state-management|symphony|CI-workflow)

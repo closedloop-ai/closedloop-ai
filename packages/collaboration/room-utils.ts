@@ -9,16 +9,14 @@ export function parseArtifactRoomId(roomId: string): {
   organizationId: string;
   documentSlug: string;
 } {
-  const idParts = roomId.split(":");
-  if (idParts.length !== 3) {
-    throw new Error("Invalid room ID");
+  const parts = roomId.split(":");
+
+  if (parts.length !== 3 || parts[1] !== "artifact") {
+    throw new Error("Invalid room ID format");
   }
-  const [organizationId, roomType, documentSlug] = idParts;
-  if (roomType !== "artifact") {
-    throw new Error("Invalid room ID");
-  }
-  if (!(organizationId && documentSlug)) {
-    throw new Error("Invalid room ID");
-  }
-  return { organizationId, documentSlug };
+
+  return {
+    organizationId: parts[0],
+    documentSlug: parts[2],
+  };
 }
