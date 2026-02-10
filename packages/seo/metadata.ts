@@ -51,7 +51,6 @@ export const createMetadata = ({
     publisher,
     twitter: {
       card: "summary_large_image",
-      creator: twitterHandle,
     },
   };
 

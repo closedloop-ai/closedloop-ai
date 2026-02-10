@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { generateArtifactMetadata } from "@/lib/artifact-metadata";
 import { PlanEditorContainer } from "./plan-editor-container";
 
 type PlanPageProps = {
@@ -7,10 +8,12 @@ type PlanPageProps = {
   searchParams: Promise<{ version?: string }>;
 };
 
-export const metadata: Metadata = {
-  title: "Implementation Plan",
-  description: "Implementation Plan",
-};
+export async function generateMetadata({
+  params,
+}: PlanPageProps): Promise<Metadata> {
+  const { slug } = await params;
+  return generateArtifactMetadata(slug);
+}
 
 export default async function ImplementationPlanPage({
   params,
