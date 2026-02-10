@@ -41,7 +41,6 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
-import { getArtifactDetailUrl } from "@/lib/artifact-url-utils";
 import {
   getArtifactRoute,
   isExternalLink,
@@ -122,12 +121,26 @@ function isExternalLink(artifact: ProjectArtifact): boolean {
  * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
  */
 function getArtifactRoute(artifact: ProjectArtifact): string | null {
-  // External link types
-  if (artifact.subtype === "DESIGNS" || artifact.subtype === "BRANCH") {
-    return artifact.link || null;
+  switch (artifact.subtype) {
+    case "PRD":
+      return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
+    case "IMPLEMENTATION_PLAN":
+    case "IMPLEMENTATION_STRATEGY":
+      return artifact.documentSlug
+        ? `/implementation-plans/${artifact.documentSlug}`
+        : null;
+    case "ISSUE":
+    case "BUG":
+      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
+    case "DESIGNS":
+    case "BRANCH":
+      return artifact.link || null;
+    case "PROJECT_BRIEF":
+    case "TEMPLATE":
+      return null;
+    default:
+      return null;
   }
-  // Document types with detail pages
-  return getArtifactDetailUrl(artifact.subtype, artifact.documentSlug ?? null);
 }
 
 function ArtifactLinkCell({
