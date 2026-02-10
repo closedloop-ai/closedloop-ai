@@ -1406,32 +1406,22 @@ Please try again or contact support if the issue persists.`,
    * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
    * Atomically captures artifact version at time of rating to ensure traceability.
    */
-  async upsertRating(
+  upsertRating(
     artifactId: string,
     userId: string,
     organizationId: string,
     score: number,
     comment?: string
   ): Promise<ArtifactRatingSummary> {
-    // Validate artifact exists and belongs to user's org (org-scoped authorization)
-    const artifact = await this.findByIdSimple(artifactId, organizationId);
-    if (!artifact) {
-      throw new ArtifactNotFoundError(artifactId);
-    }
-
     // Use transaction for atomicity: artifact version must be captured atomically
-    // even if version increments during operation
+    // even if version increments during operation. Single org-scoped lookup does both
+    // authorization (artifact in org) and version fetch.
     return withDb.tx(async (tx) => {
-      // Re-fetch artifact version inside transaction. findByIdSimple (above) runs
-      // outside the transaction for authorization, but its version could be stale by
-      // the time we upsert. This re-fetch inside withDb.tx() guarantees the version
-      // captured is consistent with the upsert — at the cost of one extra PK lookup (~1-2ms).
-      const currentArtifact = await tx.artifact.findUnique({
-        where: { id: artifactId },
+      const currentArtifact = await tx.artifact.findFirst({
+        where: { id: artifactId, organizationId },
         select: { version: true },
       });
 
-      // This should never happen since we validated above, but TypeScript doesn't know that
       if (!currentArtifact) {
         throw new ArtifactNotFoundError(artifactId);
       }
