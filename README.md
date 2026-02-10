@@ -1,3 +1,7 @@
+# Project Overview
+
+This project is built from the Next Forge template. See below for more details about Next Forge. For a product specific overview, check out [this document](project-overview.md).
+
 # ▲ / next-forge
 
 **Production-grade Turborepo template for Next.js apps.**
@@ -122,19 +126,3 @@ Full documentation is available at [next-forge.com/docs](https://www.next-forge.
 - Migration guides for swapping providers
 - Deployment instructions
 - Examples and recipes
-
-## Contributing
-
-We welcome contributions! See the [contributing guide](https://github.com/vercel/next-forge/blob/main/.github/CONTRIBUTING.md) for details.
-
-## Contributors
-
-<a href="https://github.com/vercel/next-forge/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=vercel/next-forge" />
-</a>
-
-Made with [contrib.rocks](https://contrib.rocks).
-
-## License
-
-MIT
