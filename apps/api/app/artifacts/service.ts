@@ -29,7 +29,6 @@ import {
 } from "@repo/github/execution-log-parser";
 import { log } from "@repo/observability/log";
 import { createLiveblocksRoom } from "@/lib/liveblocks";
-import { submitRatingSchema } from "./[id]/rating/validators";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
@@ -1414,9 +1413,6 @@ Please try again or contact support if the issue persists.`,
     score: number,
     comment?: string
   ): Promise<ArtifactRatingSummary> {
-    // Validate inputs at service layer (defense in depth, even though route also validates)
-    const validated = submitRatingSchema.parse({ score, comment });
-
     // Validate artifact exists and belongs to user's org (org-scoped authorization)
     const artifact = await this.findByIdSimple(artifactId, organizationId);
     if (!artifact) {
@@ -1450,8 +1446,8 @@ Please try again or contact support if the issue persists.`,
           },
         },
         update: {
-          score: validated.score,
-          comment: validated.comment,
+          score,
+          comment,
           artifactVersion: currentArtifact.version,
           updatedAt: new Date(),
         },
@@ -1459,8 +1455,8 @@ Please try again or contact support if the issue persists.`,
           artifactId,
           userId,
           organizationId,
-          score: validated.score,
-          comment: validated.comment,
+          score,
+          comment,
           artifactVersion: currentArtifact.version,
         },
       });
