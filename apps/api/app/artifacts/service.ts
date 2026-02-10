@@ -36,6 +36,7 @@ import { githubService } from "@/app/integrations/github/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
+  artifactIncludeWithUser,
   createArtifactVersion,
   generateDocumentSlug,
   previewDeploymentSelect,
@@ -149,6 +150,7 @@ export const artifactsService = {
     const result = await withDb((db) =>
       db.artifact.findUnique({
         where: { id, organizationId },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -171,6 +173,7 @@ export const artifactsService = {
             templateForSubtype,
           },
         },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -317,6 +320,10 @@ export const artifactsService = {
       const resolvedOwnerId = input.ownerId ?? userId;
       await validateOwnerInOrg(resolvedOwnerId, organizationId);
 
+      if (input.approverId) {
+        await validateOwnerInOrg(input.approverId, organizationId);
+      }
+
       const documentSlug = shouldGenerateDocumentSlug(input.subtype)
         ? generateDocumentSlug()
         : null;
@@ -332,6 +339,7 @@ export const artifactsService = {
           generatedBy: userId,
           ownerId: resolvedOwnerId,
         },
+        include: artifactIncludeWithUser,
       });
       return artifact;
     });
@@ -356,14 +364,17 @@ export const artifactsService = {
     if (input.ownerId) {
       await validateOwnerInOrg(input.ownerId, organizationId);
     }
+    if (input.approverId) {
+      await validateOwnerInOrg(input.approverId, organizationId);
+    }
 
-    const result = await withDb((db) =>
+    return withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
         data: input,
+        include: artifactIncludeWithUser,
       })
     );
-    return result;
   },
 
   /**
@@ -502,9 +513,11 @@ export const artifactsService = {
                 ArtifactSubtype.BUG,
               ],
             },
-            isLatest: true,
-            // Prefer the explicit parent when set; fall back to any PRD/Issue/Bug in the workstream.
-            ...(artifact.parentId ? { id: artifact.parentId } : {}),
+            // When parentId is set, find that exact artifact (do NOT require isLatest).
+            // When parentId is missing, find any PRD/Issue/Bug in workstream with isLatest.
+            ...(artifact.parentId
+              ? { id: artifact.parentId }
+              : { isLatest: true }),
           },
         })
       );
@@ -512,28 +525,43 @@ export const artifactsService = {
     }
 
     // Find PRD, Issue, or Bug by parentId or matching title.
+    // When parentId is set, find that exact artifact (do NOT require isLatest - parent may have been versioned).
     // Title matching is a PRD-only heuristic for legacy plans without parentId.
     const titleFallback = artifact.title.replace("Implementation Plan: ", "");
-    const foundSource = await withDb((db) =>
-      db.artifact.findFirst({
-        where: {
-          organizationId,
-          projectId: artifact.projectId,
-          subtype: {
-            in: [
-              ArtifactSubtype.PRD,
-              ArtifactSubtype.ISSUE,
-              ArtifactSubtype.BUG,
-            ],
+    const sourceSubtypes: ArtifactSubtype[] = [
+      ArtifactSubtype.PRD,
+      ArtifactSubtype.ISSUE,
+      ArtifactSubtype.BUG,
+    ];
+
+    let foundSource: PrismaArtifact | null = null;
+    const projectId = artifact.projectId;
+    const parentId = artifact.parentId;
+    if (parentId && projectId) {
+      foundSource = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            id: parentId,
+            organizationId,
+            projectId,
+            subtype: { in: sourceSubtypes },
           },
-          isLatest: true,
-          OR: [
-            { id: artifact.parentId ?? undefined },
-            { title: titleFallback },
-          ],
-        },
-      })
-    );
+        })
+      );
+    }
+    if (!foundSource && projectId) {
+      foundSource = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            organizationId,
+            projectId,
+            subtype: { in: sourceSubtypes },
+            isLatest: true,
+            title: titleFallback,
+          },
+        })
+      );
+    }
 
     if (!(foundSource?.content && artifact.projectId)) {
       return { workstream: null, sourceArtifact: foundSource };
@@ -674,6 +702,7 @@ ${initialInstructions.trim()}`;
             status: "DRAFT",
             // Correlation tracked via GitHubActionRun.triggerData.correlationId
           },
+          include: artifactIncludeWithUser,
         }),
         db.workstreamEvent.create({
           data: {
@@ -714,6 +743,7 @@ ${initialInstructions.trim()}`;
           status: "DRAFT",
           content,
         },
+        include: artifactIncludeWithUser,
       })
     );
     return result;
@@ -747,7 +777,7 @@ ${initialInstructions.trim()}`;
       createArtifactRoom(newVersion);
     }
 
-    return newVersion;
+    return newVersion as unknown as Artifact;
   },
 
   /**
@@ -1667,7 +1697,7 @@ export type RequestChangesResult =
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
-type RawArtifactWithContext = Artifact & {
+type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
     id: string;
@@ -1676,6 +1706,12 @@ type RawArtifactWithContext = Artifact & {
     teams: { team: { id: string; name: string } }[];
   } | null;
   owner: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  approver: {
     id: string;
     firstName: string | null;
     lastName: string | null;

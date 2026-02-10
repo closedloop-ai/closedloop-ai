@@ -20,6 +20,10 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import {
+  type User,
+  UserSelectPopover,
+} from "@repo/design-system/components/ui/user-select-popover";
 import { LoaderIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +37,8 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 export function NewPRDModal() {
   const router = useRouter();
@@ -42,13 +48,20 @@ export function NewPRDModal() {
 
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
-  const [approver, setApprover] = useState("");
+  const [selectedApprover, setSelectedApprover] = useState<User | null>(null);
   const [status, setStatus] = useState<ArtifactStatus>("DRAFT");
   const [content, setContent] = useState("");
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
   const fileInputRef = useRef<HiddenFileInputHandle>(null);
+
+  const { data: orgUsers = [], isLoading: isLoadingUsers } =
+    useOrganizationUsers();
+  const transformedUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -117,7 +130,7 @@ export function NewPRDModal() {
   const resetForm = () => {
     setTitle("");
     setFileName("");
-    setApprover("");
+    setSelectedApprover(null);
     setStatus("DRAFT");
     setContent("");
     setTargetRepo("");
@@ -148,7 +161,7 @@ export function NewPRDModal() {
         subtype: "PRD",
         title: title.trim(),
         fileName: fileName.trim() || undefined,
-        approver: approver.trim() || undefined,
+        approverId: selectedApprover?.id,
         status,
         content: content.trim() || undefined,
         targetRepo: targetRepo.trim() || undefined,
@@ -216,11 +229,15 @@ export function NewPRDModal() {
 
           <div className="space-y-2">
             <Label htmlFor="new-approver">Approver</Label>
-            <Input
-              id="new-approver"
-              onChange={(e) => setApprover(e.target.value)}
-              placeholder="Approver name"
-              value={approver}
+            <UserSelectPopover
+              className="w-full"
+              disabled={isLoadingUsers}
+              onSelect={setSelectedApprover}
+              placeholder={
+                isLoadingUsers ? "Loading users..." : "Select approver..."
+              }
+              users={transformedUsers}
+              value={selectedApprover}
             />
           </div>
 
