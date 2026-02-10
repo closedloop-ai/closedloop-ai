@@ -32,7 +32,7 @@ export function ArtifactVersionInfo({
   version,
   createdAt,
   updatedAt,
-}: Readonly<ArtifactVersionInfoProps>): React.ReactElement {
+}: Readonly<ArtifactVersionInfoProps>) {
   return (
     <MetadataSection separator>
       <div className="space-y-1 text-muted-foreground text-sm">

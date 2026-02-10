@@ -1,18 +1,17 @@
 import { RichText } from "basehub/react-rich-text";
-import type React from "react";
 import type { ComponentProps } from "react";
 
 type TableOfContentsProperties = Omit<
   ComponentProps<typeof RichText>,
   "children"
 > & {
-  readonly data: ComponentProps<typeof RichText>["children"];
+  readonly data: ComponentProps<typeof RichText>["content"];
 };
 
 export const TableOfContents = ({
   data,
   ...props
-}: TableOfContentsProperties): React.JSX.Element => (
+}: TableOfContentsProperties) => (
   <div>
     <RichText
       // @ts-expect-error "idk"

@@ -5,7 +5,6 @@ import {
   KnockFeedProvider,
   KnockProvider,
 } from "@knocklabs/react";
-import type React from "react";
 import type { ReactNode } from "react";
 import { keys } from "../keys";
 
@@ -22,13 +21,13 @@ export const NotificationsProvider = ({
   children,
   theme,
   userId,
-}: NotificationsProviderProps): React.JSX.Element | ReactNode => {
+}: NotificationsProviderProps) => {
   if (!(knockApiKey && knockFeedChannelId)) {
     return children;
   }
 
   return (
-    <KnockProvider apiKey={knockApiKey} userId={userId}>
+    <KnockProvider apiKey={knockApiKey} user={{ id: userId }}>
       <KnockFeedProvider colorMode={theme} feedId={knockFeedChannelId}>
         {children}
       </KnockFeedProvider>

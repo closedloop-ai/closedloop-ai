@@ -1,4 +1,3 @@
-import type React from "react";
 import type { Thing, WithContext } from "schema-dts";
 
 type JsonLdProps = {
@@ -13,7 +12,7 @@ const escapeJsonForHtml = (json: string): string =>
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 
-export const JsonLd = ({ code }: JsonLdProps): React.JSX.Element => (
+export const JsonLd = ({ code }: JsonLdProps) => (
   <script
     // biome-ignore lint/security/noDangerouslySetInnerHtml: JSON-LD script with properly escaped content
     dangerouslySetInnerHTML={{

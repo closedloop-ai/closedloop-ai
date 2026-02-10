@@ -131,7 +131,7 @@ export function PlanMetadataPanel({
   onApproverChange,
   onApproverBlur,
   onOwnerChange,
-}: PlanMetadataPanelProps): React.ReactElement {
+}: PlanMetadataPanelProps) {
   const {
     dialogOpen,
     dialogTrace,
