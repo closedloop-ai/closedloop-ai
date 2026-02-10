@@ -43,6 +43,11 @@ import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { getArtifactDetailUrl } from "@/lib/artifact-url-utils";
 import {
+  getArtifactRoute,
+  isExternalLink,
+  isNavigableArtifact,
+} from "@/lib/artifact-navigation";
+import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_SUBTYPE_ICONS,
