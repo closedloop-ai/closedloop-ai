@@ -245,6 +245,8 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
           DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SSL_CA_B64: ${{ secrets.DB_SSL_CA_B64 }}
+          DB_SSL_REJECT_UNAUTHORIZED: ${{ secrets.DB_SSL_REJECT_UNAUTHORIZED }}
         run: |
           # Run Vercel and Database checks in parallel
           VERCEL_PID=""
