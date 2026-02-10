@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { WorkstreamState, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { artifactsService } from "@/app/artifacts/service";
@@ -24,7 +25,6 @@ describe.skipIf(!hasDatabase)(
         const workstream = await withDb((db) =>
           db.workstream.create({
             data: {
-              id: `ws-${Date.now()}`,
               organizationId: testOrgId,
               projectId: testProjectId,
               createdById: testUser.id,
@@ -48,7 +48,7 @@ describe.skipIf(!hasDatabase)(
           db.gitHubPullRequest.create({
             data: {
               workstreamId: workstream.id,
-              repositoryId: `repo-${Date.now()}`,
+              repositoryId: randomUUID(),
               githubId: 123_456,
               number: 42,
               title: "Test PR",
@@ -113,7 +113,6 @@ describe.skipIf(!hasDatabase)(
         const workstream = await withDb((db) =>
           db.workstream.create({
             data: {
-              id: `ws-no-pr-${Date.now()}`,
               organizationId: testOrgId,
               projectId: testProjectId,
               createdById: testUser.id,
@@ -151,7 +150,6 @@ describe.skipIf(!hasDatabase)(
         const workstream = await withDb((db) =>
           db.workstream.create({
             data: {
-              id: `ws-multi-pr-${Date.now()}`,
               organizationId: testOrgId,
               projectId: testProjectId,
               createdById: testUser.id,
@@ -175,7 +173,7 @@ describe.skipIf(!hasDatabase)(
           db.gitHubPullRequest.create({
             data: {
               workstreamId: workstream.id,
-              repositoryId: `repo-multi-pr-${Date.now()}`,
+              repositoryId: randomUUID(),
               githubId: 1001,
               number: 10,
               title: "Older PR",
@@ -193,7 +191,7 @@ describe.skipIf(!hasDatabase)(
           db.gitHubPullRequest.create({
             data: {
               workstreamId: workstream.id,
-              repositoryId: `repo-multi-pr-${Date.now()}`,
+              repositoryId: randomUUID(),
               githubId: 1002,
               number: 20,
               title: "Newer PR",
@@ -228,7 +226,6 @@ describe.skipIf(!hasDatabase)(
         const workstream = await withDb((db) =>
           db.workstream.create({
             data: {
-              id: `ws-shared-${Date.now()}`,
               organizationId: testOrgId,
               projectId: testProjectId,
               createdById: testUser.id,
@@ -243,7 +240,7 @@ describe.skipIf(!hasDatabase)(
           db.gitHubPullRequest.create({
             data: {
               workstreamId: workstream.id,
-              repositoryId: `repo-shared-${Date.now()}`,
+              repositoryId: randomUUID(),
               githubId: 2001,
               number: 100,
               title: "Shared PR",
@@ -304,7 +301,6 @@ describe.skipIf(!hasDatabase)(
         const workstream = await withDb((db) =>
           db.workstream.create({
             data: {
-              id: `ws-filter-${Date.now()}`,
               organizationId: testOrgId,
               projectId: testProjectId,
               createdById: testUser.id,
@@ -318,7 +314,7 @@ describe.skipIf(!hasDatabase)(
           db.gitHubPullRequest.create({
             data: {
               workstreamId: workstream.id,
-              repositoryId: `repo-filter-${Date.now()}`,
+              repositoryId: randomUUID(),
               githubId: 3001,
               number: 50,
               title: "Filter test PR",
