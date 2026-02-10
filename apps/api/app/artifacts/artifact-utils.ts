@@ -132,6 +132,14 @@ export const artifactIncludeWithContext = {
       avatarUrl: true,
     },
   },
+  parent: {
+    select: {
+      id: true,
+      title: true,
+      subtype: true,
+      documentSlug: true,
+    },
+  },
   previewDeployment: {
     select: previewDeploymentSelect,
   },

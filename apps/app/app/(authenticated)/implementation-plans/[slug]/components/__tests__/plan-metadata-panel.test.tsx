@@ -50,6 +50,15 @@ vi.mock("@/components/artifact-editor/rating-section", () => ({
   ),
 }));
 
+// Mock useArtifactsByProject to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifactsByProject: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
@@ -77,6 +86,7 @@ const defaultProps = {
   onApproverChange: vi.fn(),
   onApproverBlur: vi.fn(),
   onOwnerChange: vi.fn(),
+  onParentChange: vi.fn(),
 };
 
 describe("sortMetricsByScore", () => {

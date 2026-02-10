@@ -325,6 +325,7 @@ export function PlanEditor({
             onApproverBlur={metadata.handleApproverBlur}
             onApproverChange={metadata.handleApproverChange}
             onOwnerChange={metadata.handleOwnerChange}
+            onParentChange={metadata.handleParentChange}
             onPreviewRefresh={async () => {
               const result = await refreshPreviewDeployment();
               return result ?? null;

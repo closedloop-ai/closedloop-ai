@@ -169,6 +169,13 @@ export type PreviewDeployment = {
   updatedAt: Date | null;
 };
 
+export type ParentArtifactInfo = {
+  id: string;
+  title: string;
+  subtype: ArtifactSubtype;
+  documentSlug: string | null;
+};
+
 export type ArtifactWithWorkstream = Artifact & {
   workstream?: {
     id: string;
@@ -181,6 +188,7 @@ export type ArtifactWithWorkstream = Artifact & {
     teams?: { id: string; name: string }[];
   } | null;
   owner?: ProjectOwner | null;
+  parent?: ParentArtifactInfo | null;
   previewDeployment?: PreviewDeployment | null;
 };
 
@@ -219,6 +227,7 @@ export type UpdateArtifactInput = {
   title?: string;
   fileName?: string;
   approver?: string | null;
+  parentId?: string | null;
   status?: ArtifactStatus;
   externalUrl?: string | null;
   targetRepo?: string | null;

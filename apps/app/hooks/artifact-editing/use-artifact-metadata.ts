@@ -104,6 +104,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
       updates: Partial<{
         status: ArtifactStatus;
         approver: string | null;
+        parentId: string | null;
         targetRepo: string | null;
         targetBranch: string | null;
         ownerId: string | null;
@@ -170,6 +171,17 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   }, [targetBranch, artifact.targetBranch, handleMetadataUpdate]);
 
   /**
+   * Handle parent artifact change.
+   * Immediately saves to server.
+   */
+  const handleParentChange = useCallback(
+    (parentId: string | null) => {
+      handleMetadataUpdate({ parentId });
+    },
+    [handleMetadataUpdate]
+  );
+
+  /**
    * Handle owner change.
    * Updates local state and immediately saves to server.
    */
@@ -204,6 +216,9 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     // Target branch handlers (setTargetBranch is stable, no useCallback needed)
     handleTargetBranchChange: setTargetBranch,
     handleTargetBranchBlur,
+
+    // Parent handlers
+    handleParentChange,
 
     // Owner handlers
     handleOwnerChange,

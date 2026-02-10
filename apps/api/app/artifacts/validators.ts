@@ -45,6 +45,7 @@ export const updateArtifactValidator = z.object({
   title: z.string().min(1).optional(),
   fileName: z.string().optional(),
   approver: z.string().nullable().optional(),
+  parentId: z.uuidv7().nullable().optional(),
   status: artifactStatusEnum.optional(),
   externalUrl: z.url().nullable().optional(),
   targetRepo: z
