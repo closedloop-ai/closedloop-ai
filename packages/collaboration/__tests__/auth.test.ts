@@ -56,6 +56,7 @@ describe("authenticate", () => {
     it("authenticates user without roomId", async () => {
       const result = await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo: {
           name: "John Doe",
           avatar: "https://example.com/avatar.jpg",
@@ -71,7 +72,7 @@ describe("authenticate", () => {
           avatar: "https://example.com/avatar.jpg",
           color: "var(--color-blue)",
         },
-        tenantId: undefined,
+        tenantId: "org-123",
       });
       expect(mockAllow).not.toHaveBeenCalled();
     });
@@ -123,10 +124,11 @@ describe("authenticate", () => {
       );
     });
 
-    it("sets tenantId to undefined when roomId is invalid", async () => {
+    it("falls back to organizationId when roomId is invalid", async () => {
       await authenticate({
         userId: "user-123",
         roomId: "invalid-room-format",
+        organizationId: "org-fallback",
         userInfo: {
           name: "User Name",
           color: "var(--color-green)",
@@ -136,7 +138,7 @@ describe("authenticate", () => {
       expect(mockPrepareSession).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
-          tenantId: undefined,
+          tenantId: "org-fallback",
         })
       );
       // Note: allow() is still called even though parsing failed, with the invalid roomId
@@ -146,10 +148,11 @@ describe("authenticate", () => {
       );
     });
 
-    it("sets tenantId to undefined when roomId has wrong type", async () => {
+    it("falls back to organizationId when roomId has wrong type", async () => {
       await authenticate({
         userId: "user-123",
         roomId: "org-123:invalid-type:doc",
+        organizationId: "org-fallback",
         userInfo: {
           name: "User Name",
           color: "var(--color-green)",
@@ -159,7 +162,7 @@ describe("authenticate", () => {
       expect(mockPrepareSession).toHaveBeenCalledWith(
         "user-123",
         expect.objectContaining({
-          tenantId: undefined,
+          tenantId: "org-fallback",
         })
       );
       // Note: allow() is still called even though parsing failed, with the invalid roomId
@@ -191,6 +194,7 @@ describe("authenticate", () => {
     it("creates user-scoped token when roomId is not provided", async () => {
       await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo: {
           name: "Test User",
           color: "var(--color-blue)",
@@ -229,6 +233,7 @@ describe("authenticate", () => {
 
       await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo,
       });
 
@@ -248,6 +253,7 @@ describe("authenticate", () => {
 
       await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo,
       });
 
@@ -268,6 +274,7 @@ describe("authenticate", () => {
 
       await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo,
       });
 
@@ -281,6 +288,17 @@ describe("authenticate", () => {
   });
 
   describe("error handling", () => {
+    it("throws error when global token requested without organizationId", async () => {
+      await expect(
+        authenticate({
+          userId: "user-123",
+          userInfo: { name: "Test", color: "red" },
+        })
+      ).rejects.toThrow(
+        "organizationId is required for global tokens (when roomId is not provided)"
+      );
+    });
+
     it("throws error when LIVEBLOCKS_SECRET is not set", async () => {
       vi.resetModules();
       vi.doMock("../keys", () => ({
@@ -292,6 +310,7 @@ describe("authenticate", () => {
       await expect(
         authenticateNoSecret({
           userId: "user-123",
+          organizationId: "org-123",
           userInfo: { name: "Test", color: "red" },
         })
       ).rejects.toThrow("LIVEBLOCKS_SECRET is not set");
@@ -303,6 +322,7 @@ describe("authenticate", () => {
       await expect(
         authenticate({
           userId: "user-123",
+          organizationId: "org-123",
           userInfo: { name: "Test", color: "red" },
         })
       ).rejects.toThrow("Authorization failed");
@@ -316,6 +336,7 @@ describe("authenticate", () => {
 
       const result = await authenticate({
         userId: "user-123",
+        organizationId: "org-123",
         userInfo: { name: "Test", color: "red" },
       });
 
@@ -328,6 +349,7 @@ describe("authenticate", () => {
     it("configures session with correct userId", async () => {
       await authenticate({
         userId: "unique-user-id-789",
+        organizationId: "org-123",
         userInfo: { name: "Test", color: "blue" },
       });
 
@@ -359,15 +381,16 @@ describe("authenticate", () => {
   });
 
   describe("dual-mode behavior", () => {
-    it("handles inbox mode (no roomId, has tenantId via undefined)", async () => {
+    it("handles inbox mode (no roomId, tenantId from organizationId)", async () => {
       await authenticate({
         userId: "user-123",
+        organizationId: "org-inbox",
         userInfo: { name: "Inbox User", color: "var(--color-gray)" },
       });
 
       expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
         userInfo: { name: "Inbox User", color: "var(--color-gray)" },
-        tenantId: undefined,
+        tenantId: "org-inbox",
       });
       expect(mockAllow).not.toHaveBeenCalled();
     });

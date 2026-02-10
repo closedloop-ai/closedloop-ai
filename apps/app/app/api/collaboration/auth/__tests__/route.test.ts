@@ -106,6 +106,7 @@ describe("POST /api/collaboration/auth", () => {
       expect(mockAuthenticate).toHaveBeenCalledWith({
         userId: "user-123",
         roomId: "org-123:artifact:art-456",
+        organizationId: "org-123",
         userInfo: {
           name: "John Doe",
           avatar: "https://example.com/avatar.jpg",
@@ -564,6 +565,7 @@ describe("POST /api/collaboration/auth", () => {
       expect(mockAuthenticate).toHaveBeenCalledWith({
         userId: "user-123",
         roomId: undefined,
+        organizationId: "org-123",
         userInfo: {
           name: "John Doe",
           avatar: "https://example.com/avatar.jpg",

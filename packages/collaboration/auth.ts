@@ -6,6 +6,7 @@ import { parseArtifactRoomId } from "./room-utils";
 type AuthenticateOptions = {
   userId: string;
   roomId?: string;
+  organizationId?: string;
   userInfo: Liveblocks["UserMeta"]["info"];
 };
 
@@ -22,14 +23,23 @@ function extractTenantId(roomId: string): string | undefined {
 export async function authenticate({
   userId,
   roomId,
+  organizationId,
   userInfo,
 }: AuthenticateOptions): Promise<{ token: string; status: number }> {
   if (!secret) {
     throw new Error("LIVEBLOCKS_SECRET is not set");
   }
 
+  if (!(roomId || organizationId)) {
+    throw new Error(
+      "organizationId is required for global tokens (when roomId is not provided)"
+    );
+  }
+
   const liveblocks = new LiveblocksNode({ secret });
-  const tenantId = roomId ? extractTenantId(roomId) : undefined;
+  const tenantId = roomId
+    ? (extractTenantId(roomId) ?? organizationId)
+    : organizationId;
 
   const session = liveblocks.prepareSession(userId, {
     userInfo,
