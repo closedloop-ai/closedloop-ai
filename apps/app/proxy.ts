@@ -18,7 +18,8 @@ export default authMiddleware(() => securityHeaders());
 export const config = {
   matcher: [
     // Skip Next.js internals and all static files, unless found in search params
-    String.raw`/((?!_next|[^?]*\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)`,
+    // Do not use String.raw here! Next.js can't statically analyze String.raw, so this breaks the build.
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
     // Always run for API routes
     "/(api|trpc)(.*)",
   ],

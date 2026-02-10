@@ -20,9 +20,13 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { LoaderIcon, PlusIcon } from "lucide-react";
+import { LoaderIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  HiddenFileInput,
+  type HiddenFileInputHandle,
+} from "@/components/hidden-file-input";
 import { useCreateArtifact } from "@/hooks/queries/use-artifacts";
 import {
   useGitHubBranches,
@@ -44,6 +48,7 @@ export function NewPRDModal() {
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+  const fileInputRef = useRef<HiddenFileInputHandle>(null);
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -119,6 +124,15 @@ export function NewPRDModal() {
     setTargetBranch("main");
     setSelectedRepoId("");
     setError(null);
+    fileInputRef.current?.reset();
+  };
+
+  const handleFileRead = (content: string) => {
+    if (!content.trim()) {
+      setError("File is empty");
+      return;
+    }
+    setContent(content);
   };
 
   const handleSubmit = () => {
@@ -289,12 +303,30 @@ export function NewPRDModal() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="new-content">
-              Content{" "}
-              <span className="text-muted-foreground text-xs">
-                (optional - paste markdown here)
-              </span>
-            </Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="new-content">
+                Content{" "}
+                <span className="text-muted-foreground text-xs">
+                  (optional - paste markdown here)
+                </span>
+              </Label>
+              <Button
+                onClick={() => fileInputRef.current?.open()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <UploadIcon className="mr-2 h-4 w-4" />
+                Upload .md
+              </Button>
+            </div>
+            <HiddenFileInput
+              accept=".md"
+              aria-label="Upload markdown file for PRD content"
+              onError={setError}
+              onFileRead={handleFileRead}
+              ref={fileInputRef}
+            />
             <Textarea
               className="min-h-[150px] font-mono text-sm"
               id="new-content"

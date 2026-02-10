@@ -10,7 +10,7 @@ if (!token) {
   throw new Error("GITHUB_TOKEN is required to build the changelog.");
 }
 
-if (!(repository && repository.includes("/"))) {
+if (!repository?.includes("/")) {
   throw new Error("GITHUB_REPOSITORY must be set (owner/repo).");
 }
 
@@ -30,14 +30,15 @@ async function api(path) {
   if (response.status === 403 || response.status === 429) {
     const retryAfter = Number(response.headers.get("retry-after") || 0);
     const reset = Number(response.headers.get("x-ratelimit-reset") || 0);
-    const waitMs = Math.min(
-      retryAfter > 0
-        ? retryAfter * 1000
-        : reset > 0
-          ? Math.max(reset * 1000 - Date.now(), 1000)
-          : 5000,
-      30_000
-    );
+
+    let waitMs = 5000;
+    if (retryAfter > 0) {
+      waitMs = retryAfter * 1000;
+    } else if (reset > 0) {
+      waitMs = Math.max(reset * 1000 - Date.now(), 1000);
+    }
+    waitMs = Math.min(waitMs, 30_000);
+
     await sleep(waitMs);
     response = await fetch(`https://api.github.com${path}`, { headers });
   }
