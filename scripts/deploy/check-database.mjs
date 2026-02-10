@@ -109,7 +109,7 @@ const originalSslMode = parsedUrl.searchParams.get("sslmode");
 parsedUrl.searchParams.delete("sslmode");
 
 const clientConfig = { connectionString: parsedUrl.toString() };
-if (originalSslMode || sslCa || !sslRejectUnauthorized) {
+if ((originalSslMode && originalSslMode !== "disable") || sslCa || !sslRejectUnauthorized) {
   clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
   if (sslCa) {
     clientConfig.ssl.ca = sslCa;
