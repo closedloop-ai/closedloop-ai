@@ -1,10 +1,9 @@
 "use client";
 
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useState } from "react";
-import { EditorWithComments } from "@/components/artifact-editor/editor-with-comments";
+import { useEffect, useRef, useState } from "react";
+import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -14,10 +13,12 @@ import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-sta
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
+  useArtifactPreviewDeployment,
   useArtifactPullRequest,
+  useRefreshPreviewDeployment,
 } from "@/hooks/queries/use-artifacts";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { ApiError } from "@/lib/api-error";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -32,26 +33,59 @@ type PlanEditorProps = {
   onVersionChange: (version: number) => void;
 };
 
+const PREVIEW_POLL_MAX_MS = 45 * 60_000;
+const PREVIEW_POLL_FAST_MS = 15_000;
+const PREVIEW_POLL_MEDIUM_MS = 30_000;
+const PREVIEW_POLL_SLOW_MS = 60_000;
+
+const POLL_STOP_STATUSES = new Set([401, 403, 429, 404, 422]);
+
+async function executePollRefresh(
+  refreshRef: React.MutableRefObject<() => Promise<unknown>>,
+  emptyRefreshCountRef: React.MutableRefObject<number>,
+  pollStoppedRef: React.MutableRefObject<boolean>
+) {
+  try {
+    const result = await refreshRef.current();
+    if (result) {
+      emptyRefreshCountRef.current = 0;
+    } else {
+      emptyRefreshCountRef.current += 1;
+      if (emptyRefreshCountRef.current >= 3) {
+        pollStoppedRef.current = true;
+      }
+    }
+  } catch (err) {
+    const status = err instanceof ApiError ? err.status : undefined;
+    if (status && POLL_STOP_STATUSES.has(status)) {
+      pollStoppedRef.current = true;
+    }
+    console.warn("[preview-poll] refresh failed:", {
+      status,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export function PlanEditor({
   plan,
   currentVersion,
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>();
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
   >();
 
-  const roomId =
-    plan.documentSlug &&
-    generateArtifactRoomId(plan.organizationId, plan.documentSlug);
   const isViewingHistorical = currentVersion !== latestVersion;
-  const showCollaboration = isEditing;
-
-  // Fetch organization users for @mentions in comments
-  const { data: users } = useOrganizationUsers();
+  // The existence of a room ID controls whether liveblocks is loaded.
+  // Liveblocks can't function properly when the editor is read-only.
+  const liveblocksRoomId =
+    isEditing && plan.documentSlug
+      ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
+      : null;
 
   const exitEditMode = () => {
     setIsEditing(false);
@@ -63,7 +97,6 @@ export function PlanEditor({
   const content = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      exitEditMode();
       if (isViewingHistorical) {
         onVersionChange(latestVersion);
       }
@@ -109,6 +142,102 @@ export function PlanEditor({
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = useJudgesFeedback(plan.id);
+
+  // Preview deployment polling
+  const { data: previewDeployment } = useArtifactPreviewDeployment(plan.id);
+  const {
+    mutateAsync: refreshPreviewDeployment,
+    isPending: isRefreshingPreviewDeployment,
+  } = useRefreshPreviewDeployment(plan.id);
+
+  const pollStartRef = useRef<number | null>(null);
+  const pollStoppedRef = useRef(false);
+  const emptyRefreshCountRef = useRef(0);
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const refreshRef = useRef(refreshPreviewDeployment);
+  refreshRef.current = refreshPreviewDeployment;
+
+  // Reset poll start when the PR changes (new execution = new deployment)
+  const pullRequestNumber = pullRequest?.number;
+  const prevPrRef = useRef(pullRequestNumber);
+  if (prevPrRef.current !== pullRequestNumber) {
+    prevPrRef.current = pullRequestNumber;
+    pollStartRef.current = null;
+    pollStoppedRef.current = false;
+    emptyRefreshCountRef.current = 0;
+  }
+
+  // Poll for preview deployment status when a PR exists; stops on terminal states
+  const previewState = previewDeployment?.state;
+  const isGenerationRunning =
+    generationStatus?.status &&
+    ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
+      generationStatus.status.toUpperCase()
+    );
+  useEffect(() => {
+    const hasPreviewRef = !!previewDeployment?.ref;
+    if (
+      !(pullRequestNumber || hasPreviewRef || isGenerationRunning) ||
+      pollStoppedRef.current
+    ) {
+      return;
+    }
+
+    const normalized = previewState?.toUpperCase();
+    const isTerminal =
+      normalized === "READY" ||
+      normalized === "SUCCESS" ||
+      normalized === "FAILURE" ||
+      normalized === "ERROR" ||
+      normalized === "INACTIVE";
+
+    if (isTerminal) {
+      return;
+    }
+
+    if (pollStartRef.current === null) {
+      pollStartRef.current = Date.now();
+    }
+
+    // Self-scheduling poll loop: each tick schedules the next via setTimeout
+    function schedulePoll() {
+      if (pollStoppedRef.current || pollStartRef.current === null) {
+        return;
+      }
+
+      const elapsed = Date.now() - pollStartRef.current;
+      if (elapsed > PREVIEW_POLL_MAX_MS) {
+        return;
+      }
+
+      let interval = PREVIEW_POLL_SLOW_MS;
+      if (elapsed < 5 * 60_000) {
+        interval = PREVIEW_POLL_FAST_MS;
+      } else if (elapsed < 15 * 60_000) {
+        interval = PREVIEW_POLL_MEDIUM_MS;
+      }
+
+      pollTimeoutRef.current = setTimeout(async () => {
+        await executePollRefresh(
+          refreshRef,
+          emptyRefreshCountRef,
+          pollStoppedRef
+        );
+        schedulePoll();
+      }, interval);
+    }
+
+    schedulePoll();
+
+    return () => {
+      clearTimeout(pollTimeoutRef.current);
+    };
+  }, [
+    pullRequestNumber,
+    previewState,
+    isGenerationRunning,
+    previewDeployment?.ref,
+  ]);
 
   // Derived state
   const isDraft = metadata.status === "DRAFT";
@@ -158,7 +287,6 @@ export function PlanEditor({
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onApprove={planActions.handleApprove}
-        onClose={exitEditMode}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
         onEdit={handleEdit}
@@ -181,46 +309,37 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <OptionalArtifactRoom
-        roomId={showCollaboration ? roomId : null}
-        users={users}
-      >
-        {/* Presence Indicators */}
-        {showCollaboration && <Presence />}
-
-        {/* Content Area with Optional Metadata Panel */}
-        <div className="flex min-h-0 flex-1">
-          <EditorWithComments
-            contentResetKey={contentResetKey}
-            contentResetValue={contentResetValue}
-            enableLiveblocks={showCollaboration}
-            liveblocksRoomId={roomId}
-            onChange={content.updateContent}
-            placeholder="Start writing your implementation plan..."
-            readOnly={!isEditing}
-            scrollMode="outer"
-            value={content.content}
+      <CollaborativeEditor
+        contentResetKey={contentResetKey}
+        contentResetValue={contentResetValue}
+        liveblocksRoomId={liveblocksRoomId}
+        metadataPanel={
+          <PlanMetadataPanel
+            approver={metadata.approver}
+            generationStatus={generationStatus ?? null}
+            isPreviewRefreshing={isRefreshingPreviewDeployment}
+            judgesReport={judgesReport ?? null}
+            onApproverBlur={metadata.handleApproverBlur}
+            onApproverChange={metadata.handleApproverChange}
+            onOwnerChange={metadata.handleOwnerChange}
+            onPreviewRefresh={async () => {
+              const result = await refreshPreviewDeployment();
+              return result ?? null;
+            }}
+            onStatusChange={metadata.handleStatusChange}
+            owner={metadata.owner}
+            plan={plan}
+            previewDeployment={previewDeployment ?? null}
+            pullRequest={pullRequest ?? null}
+            status={metadata.status}
+            teamMembers={metadata.teamMembers}
           />
-
-          {/* Metadata Panel */}
-          {uiState.showMetadataPanel ? (
-            <PlanMetadataPanel
-              approver={metadata.approver}
-              generationStatus={generationStatus ?? null}
-              judgesReport={judgesReport ?? null}
-              onApproverBlur={metadata.handleApproverBlur}
-              onApproverChange={metadata.handleApproverChange}
-              onOwnerChange={metadata.handleOwnerChange}
-              onStatusChange={metadata.handleStatusChange}
-              owner={metadata.owner}
-              plan={plan}
-              pullRequest={pullRequest ?? null}
-              status={metadata.status}
-              teamMembers={metadata.teamMembers}
-            />
-          ) : null}
-        </div>
-      </OptionalArtifactRoom>
+        }
+        onChange={content.updateContent}
+        readOnly={!isEditing}
+        showMetadataPanel={uiState.showMetadataPanel}
+        value={content.content}
+      />
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog

@@ -193,7 +193,7 @@ model Organization {
 
 model User {
   id             String       @id @default(uuid(7)) @db.Uuid
-  clerkId        String       @unique @map("clerk_id")
+  clerkId        String       @map("clerk_id")
   organizationId String       @map("organization_id") @db.Uuid
   active         Boolean      @default(true) @map("active")
   email          String
@@ -215,6 +215,8 @@ model User {
   ownedArtifacts  Artifact[]   @relation("ArtifactOwner")
 
   @@unique([organizationId, email])
+  @@unique([clerkId, organizationId])
+  @@index([clerkId])
   @@index([linearId])
   @@index([slackId])
   @@index([githubUsername])
@@ -411,7 +413,8 @@ model Artifact {
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children     Artifact[]           @relation("ArtifactSource")
-  evaluations  ArtifactEvaluation[]
+  evaluations        ArtifactEvaluation[]
+  previewDeployment  PreviewDeployment?
 
   @@unique([organizationId, templateForType])
   @@index([organizationId, workstreamId, type, isLatest])
@@ -678,6 +681,23 @@ model ArtifactEvaluation {
   @@unique([artifactId, reportId])
   @@index([artifactId])
   @@map("artifact_evaluations")
+}
+
+model PreviewDeployment {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  artifactId  String    @unique @map("artifact_id") @db.Uuid
+  url         String?
+  state       String?
+  environment String?
+  ref         String?
+  sha         String?
+  updatedAt   DateTime? @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([ref, updatedAt])
+  @@map("preview_deployments")
 }
 
 // =============================================================================

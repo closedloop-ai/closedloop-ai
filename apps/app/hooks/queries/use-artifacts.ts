@@ -6,6 +6,7 @@ import type {
   CreateArtifactInput,
   FindArtifactsOptions,
   GenerationStatus,
+  PreviewDeployment,
   PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
@@ -31,6 +32,8 @@ export const artifactKeys = {
   versions: (id: string) => [...artifactKeys.detail(id), "versions"] as const,
   generationStatus: (id: string) =>
     [...artifactKeys.detail(id), "generation-status"] as const,
+  previewDeployment: (id: string) =>
+    [...artifactKeys.detail(id), "preview-deployment"] as const,
 };
 
 // Queries
@@ -395,5 +398,53 @@ export function useArtifactPullRequest(
       ),
     enabled: !!artifactId,
     ...options,
+  });
+}
+
+/**
+ * Fetch the preview deployment for an artifact.
+ */
+export function useArtifactPreviewDeployment(
+  artifactId: string,
+  options?: Omit<
+    UseQueryOptions<PreviewDeployment | null>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: artifactKeys.previewDeployment(artifactId),
+    queryFn: () =>
+      apiClient.get<PreviewDeployment | null>(
+        `/artifacts/${artifactId}/preview-deployment`
+      ),
+    enabled: !!artifactId,
+    ...options,
+  });
+}
+
+/**
+ * Refresh preview deployment status by fetching latest from GitHub.
+ */
+export function useRefreshPreviewDeployment(
+  artifactId: string,
+  options?: { showToast?: boolean }
+) {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+  const _showToast = options?.showToast ?? true;
+
+  return useMutation({
+    mutationFn: () =>
+      apiClient.post<PreviewDeployment | null>(
+        `/artifacts/${artifactId}/preview-deployment`,
+        {}
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.previewDeployment(artifactId),
+      });
+    },
   });
 }
