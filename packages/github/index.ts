@@ -91,6 +91,8 @@ export type TriggerWorkflowDispatchOptions = {
   context: string;
   correlationId: string;
   sessionId?: string;
+  committerName?: string;
+  committerEmail?: string;
 };
 
 /**
@@ -135,6 +137,8 @@ export async function triggerWorkflowDispatch(
         correlation_id: prefixedCorrelationId,
         session_id: opts.sessionId || "",
         environment: config.WEBAPP_ENV === "prod" ? "prod" : "stage",
+        committer_name: opts.committerName || "",
+        committer_email: opts.committerEmail || "",
       },
     });
 
