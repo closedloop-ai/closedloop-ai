@@ -66,6 +66,10 @@ type PRDEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when rename menu item is clicked
    */
   onRename: () => void;
@@ -105,6 +109,7 @@ export function PRDEditorHeader({
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onDiscard,
   onEdit,
   onSave,
   onRename,
@@ -128,9 +133,19 @@ export function PRDEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
           <Button

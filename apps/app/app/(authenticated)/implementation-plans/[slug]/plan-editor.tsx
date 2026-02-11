@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { type FocusEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -77,7 +77,6 @@ export function PlanEditor({
   onVersionChange,
 }: PlanEditorProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const editorContainerRef = useRef<HTMLDivElement>(null);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>();
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
@@ -278,18 +277,14 @@ export function PlanEditor({
     setIsEditing(true);
   };
 
-  const handleEditorBlur = (e: FocusEvent) => {
-    if (!isEditing) {
-      return;
-    }
-    const newTarget = e.relatedTarget as Node | null;
-    if (newTarget && editorContainerRef.current?.contains(newTarget)) {
-      return;
-    }
+  const handlePublish = () => {
+    content.saveContent();
+    exitEditMode();
+  };
 
-    // Focus left the editor area — auto-save and exit
+  const handleDiscard = () => {
     if (content.hasUnsavedChanges) {
-      content.autoSaveContent();
+      content.discardChanges();
     }
     exitEditMode();
   };
@@ -309,6 +304,7 @@ export function PlanEditor({
         onApprove={planActions.handleApprove}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
+        onDiscard={handleDiscard}
         onEdit={handleEdit}
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
@@ -316,7 +312,7 @@ export function PlanEditor({
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
         onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onSave={handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         plan={plan}
         pullRequest={pullRequest ?? null}
@@ -333,10 +329,8 @@ export function PlanEditor({
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
       <div
         className="flex min-h-0 flex-1 flex-col"
-        onBlur={handleEditorBlur}
         onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
         onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
-        ref={editorContainerRef}
       >
         <CollaborativeEditor
           contentResetKey={contentResetKey}

@@ -96,6 +96,10 @@ type PlanEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when copy markdown menu item is clicked
    */
   onCopyMarkdown: () => void;
@@ -146,6 +150,7 @@ export function PlanEditorHeader({
   pullRequest,
   isExecuting,
   onToggleMetadataPanel,
+  onDiscard,
   onEdit,
   onApprove,
   onRequestChanges,
@@ -174,9 +179,19 @@ export function PlanEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
           <Button

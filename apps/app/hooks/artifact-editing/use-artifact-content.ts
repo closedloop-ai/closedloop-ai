@@ -81,26 +81,6 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
   ]);
 
   /**
-   * Auto-save content silently (no toasts). Used by blur-to-save behavior.
-   * Guards against double-saves by checking mutation pending state.
-   */
-  const autoSaveContent = useCallback(() => {
-    if (!hasUnsavedChanges || createNewVersion.isPending) {
-      return;
-    }
-    createNewVersion.mutate(
-      { id: artifact.id, content },
-      { onSuccess: () => onVersionCreated?.() }
-    );
-  }, [
-    artifact.id,
-    content,
-    createNewVersion,
-    hasUnsavedChanges,
-    onVersionCreated,
-  ]);
-
-  /**
    * Discard local changes and revert to the last saved content.
    */
   const discardChanges = useCallback(() => {
@@ -116,7 +96,6 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
 
     // Save operations
     saveContent,
-    autoSaveContent,
     discardChanges,
     isSaving,
     lastSaved,

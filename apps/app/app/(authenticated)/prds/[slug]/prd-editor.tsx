@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { type FocusEvent, useRef, useState } from "react";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -32,7 +32,6 @@ export function PRDEditor({
   onVersionChange,
 }: PRDEditorProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const editorContainerRef = useRef<HTMLDivElement>(null);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>(
     undefined
   );
@@ -123,18 +122,14 @@ export function PRDEditor({
     setIsEditing(true);
   };
 
-  const handleEditorBlur = (e: FocusEvent) => {
-    if (!isEditing) {
-      return;
-    }
-    const newTarget = e.relatedTarget as Node | null;
-    if (newTarget && editorContainerRef.current?.contains(newTarget)) {
-      return;
-    }
+  const handlePublish = () => {
+    content.saveContent();
+    exitEditMode();
+  };
 
-    // Focus left the editor area — auto-save and exit
+  const handleDiscard = () => {
     if (content.hasUnsavedChanges) {
-      content.autoSaveContent();
+      content.discardChanges();
     }
     exitEditMode();
   };
@@ -149,12 +144,13 @@ export function PRDEditor({
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
+        onDiscard={handleDiscard}
         onEdit={handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onRename={openRenameDialog}
         onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onSave={handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
@@ -167,10 +163,8 @@ export function PRDEditor({
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
       <div
         className="flex min-h-0 flex-1 flex-col"
-        onBlur={handleEditorBlur}
         onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
         onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
-        ref={editorContainerRef}
       >
         <CollaborativeEditor
           contentResetKey={contentResetKey}
