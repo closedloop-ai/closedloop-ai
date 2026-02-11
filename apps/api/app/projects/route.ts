@@ -28,8 +28,8 @@ export const GET = withAuth<ProjectWithDetails[], "/projects">(
       });
 
       const queryResult = querySchema.safeParse({
-        teamId: url.searchParams.get("teamId"),
-        limit: url.searchParams.get("limit"),
+        teamId: url.searchParams.get("teamId") ?? undefined,
+        limit: url.searchParams.get("limit") ?? undefined,
       });
 
       if (!queryResult.success) {
