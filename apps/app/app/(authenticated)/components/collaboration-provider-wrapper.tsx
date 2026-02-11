@@ -35,8 +35,6 @@ export function CollaborationProviderWrapper({
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
   const { data: users = [] } = useOrganizationUsers();
 
-  // Type assertion is necessary because TypeScript can't verify the RoomInfo type
-  // matches the global Liveblocks interface across module boundaries
   const organizationId = currentUser?.organizationId;
   const resolveRoomsInfo = useMemo(
     () => (organizationId ? createResolveRoomsInfo(organizationId) : undefined),
