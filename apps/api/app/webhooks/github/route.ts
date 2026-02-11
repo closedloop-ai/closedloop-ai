@@ -64,11 +64,7 @@ export async function POST(request: Request): Promise<Response> {
         );
 
       case "pull_request":
-        await handlePullRequest(parsedBody as HandledPullRequestEvent);
-        return NextResponse.json({
-          message: "Event processed successfully",
-          ok: true,
-        });
+        return await handlePullRequest(parsedBody as HandledPullRequestEvent);
 
       default: {
         log.info("[webhook/github] Ignoring unsupported event type", {

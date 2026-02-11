@@ -7,6 +7,7 @@ import type {
 } from "@octokit/webhooks-types";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { NextResponse } from "next/server";
 
 /**
  * Union type for pull request events we handle.
@@ -48,7 +49,7 @@ function parseDateOrNow(value: string | null): Date {
  */
 export async function handlePullRequest(
   event: HandledPullRequestEvent
-): Promise<void> {
+): Promise<Response> {
   const { action, pull_request, repository } = event;
 
   // Early exit for unhandled actions to avoid unnecessary DB lookups.
@@ -67,7 +68,10 @@ export async function handlePullRequest(
       prNumber: pull_request.number,
       repositoryFullName: repository.full_name,
     });
-    return;
+    return NextResponse.json({
+      message: `Ignoring unhandled pull_request action: ${action}`,
+      ok: true,
+    });
   }
 
   log.info("[handlePullRequest] Processing pull_request event", {
@@ -239,5 +243,10 @@ export async function handlePullRequest(
     action,
     prNumber: pull_request.number,
     githubRepoId: repository.id,
+  });
+
+  return NextResponse.json({
+    message: "Event processed successfully",
+    ok: true,
   });
 }
