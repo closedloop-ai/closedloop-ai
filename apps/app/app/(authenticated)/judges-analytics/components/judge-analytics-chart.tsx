@@ -20,33 +20,56 @@ type BoxPlotDataPoint = {
   count: number;
 };
 
-// Custom shape component for rendering box plots
-const BoxPlotShape: React.FC<{
+// Box plot vertical positions use the chart's global Y scale; the Bar slot is only for x/width.
+type BoxPlotShapeProps = {
   x?: number;
   y?: number;
   width?: number;
   height?: number;
   payload?: BoxPlotDataPoint;
   fill?: string;
-}> = ({ x = 0, y = 0, width = 0, height = 0, payload, fill }) => {
+  /** Y domain [min, max] for the chart. Used to convert data values to pixel Y. */
+  yDomain?: [number, number];
+};
+
+const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
+  x = 0,
+  y = 0,
+  width = 0,
+  height = 0,
+  payload,
+  fill,
+  yDomain = [0, 1],
+}) => {
   if (!payload) {
     return null;
   }
 
-  // Calculate the Y positions for each part of the box plot
-  // We need to convert from data values to pixel coordinates
-  // Since we don't have direct access to the scale, we'll calculate proportionally
-  const chartHeight = height;
-  const chartY = y;
+  const [yMin, yMax] = yDomain;
+  const yRange = yMax - yMin;
+  if (yRange <= 0) {
+    return null;
+  }
 
-  // Get the data range
-  const dataMin = payload.lowerWhisker;
-  const dataMax = payload.upperWhisker;
-  const dataRange = dataMax - dataMin;
+  // Recharts gives us a bar slot from yMin to median in data space. Derive the global
+  // plot scale so we can position the box in chart coordinates (not slot coordinates).
+  const median = payload.median;
+  const dataSpan = median - yMin;
+  const plotHeight = dataSpan > 0 ? (height * yRange) / dataSpan : height;
+  const plotTop = y + height - plotHeight;
 
+  const valueToY = (value: number) =>
+    plotTop + (1 - (value - yMin) / yRange) * plotHeight;
+
+  const whiskerLowerY = valueToY(payload.lowerWhisker);
+  const boxLowerY = valueToY(payload.lowerBox);
+  const medianY = valueToY(payload.median);
+  const boxUpperY = valueToY(payload.upperBox);
+  const whiskerUpperY = valueToY(payload.upperWhisker);
+
+  const dataRange = payload.upperWhisker - payload.lowerWhisker;
   if (dataRange === 0) {
-    // All values are the same - just draw a single horizontal line
-    const lineY = chartY + chartHeight / 2;
+    const lineY = valueToY(payload.median);
     return (
       <g>
         <line
@@ -60,18 +83,6 @@ const BoxPlotShape: React.FC<{
       </g>
     );
   }
-
-  // Convert data values to pixel positions (inverted Y-axis)
-  const valueToY = (value: number) => {
-    const proportion = (value - dataMin) / dataRange;
-    return chartY + chartHeight * (1 - proportion);
-  };
-
-  const whiskerLowerY = valueToY(payload.lowerWhisker);
-  const boxLowerY = valueToY(payload.lowerBox);
-  const medianY = valueToY(payload.median);
-  const boxUpperY = valueToY(payload.upperBox);
-  const whiskerUpperY = valueToY(payload.upperWhisker);
 
   const centerX = x + width / 2;
   const boxWidth = width * 0.6;
@@ -211,6 +222,19 @@ export function JudgeAnalyticsChart({
     count: judge.artifactsEvaluated,
   }));
 
+  // Y domain: adaptive to data, clamped to [0, 1]. Y_min = max(0, 0.8*min); Y_max = min(1, max).
+  let yDomain: [number, number] = [0, 1];
+  if (boxPlotData.length > 0) {
+    const rawMin = Math.min(...boxPlotData.map((d) => d.lowerWhisker));
+    const rawMax = Math.max(...boxPlotData.map((d) => d.upperWhisker));
+    const yMin = Math.max(0, 0.8 * rawMin);
+    let yMax = Math.min(1, rawMax);
+    if (yMax <= yMin) {
+      yMax = Math.max(yMin + 0.01, yMax);
+    }
+    yDomain = [yMin, yMax];
+  }
+
   // Generate chart config with colors for each judge
   const chartConfig = boxPlotData.reduce(
     (acc, judge, index) => {
@@ -241,7 +265,7 @@ export function JudgeAnalyticsChart({
           tick={{ fontSize: 12 }}
         />
         <YAxis
-          domain={[0, "auto"]}
+          domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
         />
         <Tooltip content={<BoxPlotTooltip />} />
@@ -250,8 +274,9 @@ export function JudgeAnalyticsChart({
           fill="#8884d8"
           shape={(props: unknown) => (
             <BoxPlotShape
-              {...(props as Parameters<typeof BoxPlotShape>[0])}
+              {...(props as BoxPlotShapeProps)}
               fill={(props as { fill?: string }).fill}
+              yDomain={yDomain}
             />
           )}
         />

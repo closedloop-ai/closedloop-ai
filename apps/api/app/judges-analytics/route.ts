@@ -27,9 +27,9 @@ export const GET = withAuth<JudgeStatsResponse, "/judges-analytics">(
 
       const { startDate, endDate } = parseResult.data;
 
-      // Parse dates from YYYY-MM-DD to Date objects
-      const startDateObj = new Date(startDate);
-      const endDateObj = new Date(endDate);
+      // Parse YYYY-MM-DD as start of day and end of day UTC so the range is inclusive of the full end date
+      const startDateObj = new Date(`${startDate}T00:00:00.000Z`);
+      const endDateObj = new Date(`${endDate}T23:59:59.999Z`);
 
       const stats = await judgesAnalyticsService.getAggregateStats(
         user.organizationId,

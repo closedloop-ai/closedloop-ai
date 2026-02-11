@@ -2,8 +2,12 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
-import { format, subDays } from "date-fns";
+import { format, parse, subDays } from "date-fns";
 import { useState } from "react";
+
+/** Parse "yyyy-MM-dd" as local midnight (not UTC) */
+const toLocalDate = (dateStr: string) =>
+  parse(dateStr, "yyyy-MM-dd", new Date());
 
 type DateRangeFilterProps = {
   startDate: string;
@@ -81,15 +85,16 @@ export function DateRangeFilter({
         <DatePickerPopover
           onSelect={(date) => handleCustomDateChange("start", date)}
           placeholder="Start date"
-          toDate={endDate ? new Date(endDate) : undefined}
-          value={startDate ? new Date(startDate) : null}
+          toDate={endDate ? toLocalDate(endDate) : new Date()}
+          value={startDate ? toLocalDate(startDate) : null}
         />
         <span className="text-muted-foreground">to</span>
         <DatePickerPopover
-          fromDate={startDate ? new Date(startDate) : undefined}
+          fromDate={startDate ? toLocalDate(startDate) : undefined}
           onSelect={(date) => handleCustomDateChange("end", date)}
           placeholder="End date"
-          value={endDate ? new Date(endDate) : null}
+          toDate={new Date()}
+          value={endDate ? toLocalDate(endDate) : null}
         />
       </div>
     </div>
