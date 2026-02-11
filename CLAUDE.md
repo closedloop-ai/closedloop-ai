@@ -244,6 +244,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
 - **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
+- **[convention]**: Do not assert on logging statements (`expect(log.info)`, `expect(log.warn)`, etc.) in unit tests. Log messages are implementation details — tests should assert on observable behavior (DB calls, return values, side effects), not that a particular string was logged. (context: testing|unit-tests|logging|anti-pattern)
 - **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
 
 ### React & Components
