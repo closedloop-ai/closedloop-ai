@@ -361,6 +361,9 @@ export async function launchLoop(
     hasParent: !!loop.parentLoopId,
   });
 
+  // Track taskArn in outer scope so catch block can stop an orphaned task
+  let taskArn: string | undefined;
+
   try {
     // 2. Resolve Anthropic API key
     const anthropicApiKey = await resolveAnthropicApiKey(
@@ -391,7 +394,7 @@ export async function launchLoop(
       loopId,
       organizationId,
     });
-    const taskArn = await runEcsTask({
+    taskArn = await runEcsTask({
       loopId,
       organizationId,
       command: loop.command,
@@ -415,7 +418,6 @@ export async function launchLoop(
 
     return taskArn;
   } catch (error) {
-    // Mark loop as FAILED if launch fails
     const errorMessage =
       error instanceof Error ? error.message : "Unknown launch error";
 
@@ -423,6 +425,23 @@ export async function launchLoop(
       loopId,
       error: errorMessage,
     });
+
+    // If the ECS task was already started, stop it to prevent orphaned tasks
+    if (taskArn) {
+      try {
+        await stopLoopTask(taskArn, "Launch failed after task start");
+        log.info("[loop-orchestrator] Stopped orphaned ECS task", {
+          loopId,
+          taskArn,
+        });
+      } catch (stopError) {
+        log.error("[loop-orchestrator] Failed to stop orphaned ECS task", {
+          loopId,
+          taskArn,
+          stopError,
+        });
+      }
+    }
 
     // Transition PENDING -> CANCELLED (not FAILED, since it never ran)
     try {
@@ -712,7 +731,7 @@ async function handleLoopCompleted(
       type: event.type,
       data: {
         result: event.result,
-        tokensUsed: event.tokensUsed,
+        tokensUsed: event.tokensUsed ?? null,
         timestamp: event.timestamp,
       } as Record<string, unknown>,
     },
@@ -725,8 +744,8 @@ async function handleLoopCompleted(
     ? await downloadMetadata(loop.s3StateKey)
     : null;
 
-  const tokensInput = metadata?.tokensInput ?? event.tokensUsed.input;
-  const tokensOutput = metadata?.tokensOutput ?? event.tokensUsed.output;
+  const tokensInput = metadata?.tokensInput ?? event.tokensUsed?.input ?? 0;
+  const tokensOutput = metadata?.tokensOutput ?? event.tokensUsed?.output ?? 0;
   const tokensByModel: TokensByModel | null =
     event.tokensByModel ?? metadata?.tokensByModel ?? null;
 

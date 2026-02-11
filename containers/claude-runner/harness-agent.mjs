@@ -115,13 +115,15 @@ function validateConfig() {
   // Validate required environment variables (available before context pack download).
   // Secrets (anthropicApiKey, githubToken) are delivered via S3 context pack,
   // so they are validated separately after download.
-  const requiredEnv = [
-    "loopId",
-    "command",
-    "authToken",
-    "apiBaseUrl",
-    "targetRepo",
-  ];
+  const requiredEnv = ["loopId", "command", "authToken", "apiBaseUrl"];
+
+  // targetRepo is only required for commands that operate on a repository.
+  // chat/explore can run prompt-only without a repo.
+  const repoCommands = new Set(["plan", "execute", "request_changes"]);
+  if (repoCommands.has(config.command?.toLowerCase())) {
+    requiredEnv.push("targetRepo");
+  }
+
   const missing = requiredEnv.filter((k) => !config[k]);
   if (missing.length > 0) {
     throw new Error(
@@ -247,29 +249,63 @@ async function downloadContextPack(workDir) {
     if (pack.secrets.githubToken) {
       config.githubToken = pack.secrets.githubToken;
     }
-    pack.secrets = undefined;
     log("info", "Extracted secrets from context pack");
   }
 
-  // Write remaining context data to disk (no secrets).
-  // Validate each path stays within contextDir to prevent path traversal
-  // (defense-in-depth: the backend generates the pack, but S3 tampering is possible).
-  const resolvedContextDir = path.resolve(contextDir) + path.sep;
-  for (const [relPath, content] of Object.entries(pack)) {
-    const absPath = path.resolve(contextDir, relPath);
-    if (!absPath.startsWith(resolvedContextDir)) {
-      throw new Error(
-        `Path traversal detected in context pack key: "${relPath}". ` +
-          `Resolved to "${absPath}" which is outside "${resolvedContextDir}".`
-      );
-    }
-    fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(
-      absPath,
-      typeof content === "string" ? content : JSON.stringify(content, null, 2)
-    );
+  // Write structured context pack fields as specific files that the CLI expects.
+  // The pack schema is: { command, prompt?, artifacts[], repoInfo?, priorLoopSummaries?, secrets? }
+
+  let filesWritten = 0;
+
+  // Write prompt as prompt.md (used by buildClaudeDirectArgs and run-loop.sh)
+  if (pack.prompt) {
+    fs.writeFileSync(path.join(contextDir, "prompt.md"), pack.prompt);
+    filesWritten++;
   }
-  log("info", `Wrote ${Object.keys(pack).length} context pack files`);
+
+  // Write each artifact as artifacts/<type>-<id>.md
+  if (Array.isArray(pack.artifacts) && pack.artifacts.length > 0) {
+    const artifactsDir = path.join(contextDir, "artifacts");
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    for (const artifact of pack.artifacts) {
+      const safeName = (artifact.type || "artifact")
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "_");
+      const fileName = `${safeName}-${artifact.id}.md`;
+      const header = `# ${artifact.title || "Untitled"}\n\n`;
+      fs.writeFileSync(
+        path.join(artifactsDir, fileName),
+        header + (artifact.content || "")
+      );
+      filesWritten++;
+    }
+  }
+
+  // Write repo info as repo-info.json (informational for CLAUDE.md context)
+  if (pack.repoInfo) {
+    fs.writeFileSync(
+      path.join(contextDir, "repo-info.json"),
+      JSON.stringify(pack.repoInfo, null, 2)
+    );
+    filesWritten++;
+  }
+
+  // Write prior loop summaries as prior-loops.md
+  if (
+    Array.isArray(pack.priorLoopSummaries) &&
+    pack.priorLoopSummaries.length > 0
+  ) {
+    const lines = pack.priorLoopSummaries.map(
+      (s) => `## Loop ${s.loopId} (${s.command})\n\n${s.summary}`
+    );
+    fs.writeFileSync(
+      path.join(contextDir, "prior-loops.md"),
+      lines.join("\n\n---\n\n")
+    );
+    filesWritten++;
+  }
+
+  log("info", `Wrote ${filesWritten} context pack files`);
 }
 
 // ---------------------------------------------------------------------------
@@ -815,6 +851,29 @@ function setupShutdownHandlers(workDir) {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace preparation
+// ---------------------------------------------------------------------------
+function prepareWorkspace(workDir) {
+  if (config.targetRepo) {
+    cloneRepo(workDir);
+  } else {
+    fs.mkdirSync(workDir, { recursive: true });
+    log("info", "No targetRepo — skipping clone, using empty workDir");
+  }
+}
+
+function buildCommand(workDir) {
+  const command = config.command.toLowerCase();
+  const usesRunLoop = command === "plan" || command === "execute";
+
+  if (usesRunLoop) {
+    const runLoopPath = findRunLoop();
+    return buildRunLoopArgs(runLoopPath, workDir);
+  }
+  return buildClaudeDirectArgs(workDir);
+}
+
+// ---------------------------------------------------------------------------
 // Main execution
 // ---------------------------------------------------------------------------
 async function main() {
@@ -826,7 +885,8 @@ async function main() {
   log("info", "========================================");
   log("info", `Loop ID:        ${config.loopId}`);
   log("info", `Command:        ${config.command}`);
-  log("info", `Target Repo:    ${config.targetRepo}`);
+  log("info", `Target Repo:    ${config.targetRepo || "(none)"}`);
+
   log("info", `Target Branch:  ${config.targetBranch}`);
   log("info", `Correlation ID: ${config.correlationId}`);
   log("info", `Max Iterations: ${config.maxIterations}`);
@@ -850,20 +910,11 @@ async function main() {
     await downloadContextPack(workDir);
     validateSecrets();
 
-    // Step 3: Clone the target repository (now has githubToken from context pack)
-    cloneRepo(workDir);
+    // Step 3: Clone the target repository or prepare an empty workspace
+    prepareWorkspace(workDir);
 
     // Step 4: Determine execution mode and build command
-    const command = config.command.toLowerCase();
-    const usesRunLoop = command === "plan" || command === "execute";
-    let cmd, args;
-
-    if (usesRunLoop) {
-      const runLoopPath = findRunLoop();
-      ({ cmd, args } = buildRunLoopArgs(runLoopPath, workDir));
-    } else {
-      ({ cmd, args } = buildClaudeDirectArgs(workDir));
-    }
+    const { cmd, args } = buildCommand(workDir);
 
     // Step 5: Build environment for the child process
     const childEnv = {
