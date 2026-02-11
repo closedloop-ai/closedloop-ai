@@ -277,7 +277,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
   });
 });
 
-describe("ArtifactsTable - Generation Status Indicator", () => {
+describe("ArtifactsTable - PR Status Badge Display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseRouter.mockReturnValue({ push: vi.fn() });
@@ -325,6 +325,14 @@ describe("ArtifactsTable - Generation Status Indicator", () => {
           completedAt: null,
           correlationId: null,
         },
+    expect(screen.getByText("OPEN")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Merged PR",
+        pullRequest: createMockPullRequest({ state: "MERGED", number: 2 }),
       }),
     ];
 
@@ -347,6 +355,14 @@ describe("ArtifactsTable - Generation Status Indicator", () => {
         name: "Artifact",
         subtype: "PRD",
         generationStatus: undefined,
+    expect(screen.getByText("MERGED")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for CLOSED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Closed PR",
+        pullRequest: createMockPullRequest({ state: "CLOSED", number: 3 }),
       }),
     ];
 
@@ -372,6 +388,14 @@ describe("ArtifactsTable - Generation Status Indicator", () => {
           completedAt: null,
           correlationId: "test-id",
         },
+    expect(screen.getByText("CLOSED")).toBeInTheDocument();
+  });
+
+  test("does not render badge when pullRequest is null", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact without PR",
+        pullRequest: null,
       }),
     ];
 
@@ -459,5 +483,8 @@ describe("ArtifactsTable - Generation Status Indicator", () => {
     });
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("aria-label");
+    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
+    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
+    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
   });
 });

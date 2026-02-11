@@ -42,6 +42,7 @@ import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { PreviewLink } from "@/components/preview-link";
 import { PullRequestLink } from "@/components/pull-request-link";
+import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -183,6 +184,13 @@ function ArtifactSection({
                       <GenerationStatusIndicator
                         generationStatus={artifact.generationStatus}
                       />
+                      {artifact.pullRequest && (
+                        <div className="hidden sm:flex">
+                          <PullRequestStatusBadge
+                            pullRequest={artifact.pullRequest}
+                          />
+                        </div>
+                      )}
                       <PullRequestLink pullRequest={artifact.pullRequest} />
                     </div>
                   </TableCell>

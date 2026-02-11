@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createMockPullRequest } from "@/__tests__/fixtures/artifacts";
 import type { ProjectArtifact } from "@/types/teams";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
@@ -532,6 +533,17 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
         workstreamId: "ws-1",
         workstreamTitle: "WS",
         generationStatus: undefined,
+    expect(screen.getByText("MERGED")).toBeDefined();
+  });
+
+  test("does not display PR badge when artifact has no pullRequest", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "No PR Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: null,
       }),
     ];
 
@@ -706,5 +718,96 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     const row = screen.getByText("Artifact with Status").closest("div.flex");
     expect(row).not.toBeNull();
     expect(row?.querySelector(".text-muted-foreground")).toBeInTheDocument(); // spinner icon
+    expect(screen.queryByText("OPEN")).toBeNull();
+    expect(screen.queryByText("MERGED")).toBeNull();
+  });
+});
+
+describe("ArtifactsThreadedView - Workstream PR Border", () => {
+  afterEach(cleanup);
+
+  test("shows blue border when workstream has OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+  });
+
+  test("shows green border when workstream has MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-green-500");
+  });
+
+  test("prioritizes OPEN over MERGED when multiple PRs in workstream", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+      createMockArtifact({
+        id: "2",
+        name: "Artifact 2",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
+  });
+
+  test("shows no border when workstream has no PRs", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: null,
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).not.toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
   });
 });

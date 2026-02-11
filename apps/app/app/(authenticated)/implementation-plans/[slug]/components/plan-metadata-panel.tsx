@@ -56,7 +56,7 @@ import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dia
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import {
   previewDeploymentStateColors,
-  pullRequestStateColors,
+  prStatusColors,
   StatusBadge,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
@@ -353,7 +353,7 @@ export function PlanMetadataPanel({
                 <div className="flex items-center gap-2 text-muted-foreground text-xs">
                   <StatusBadge
                     className="px-2 py-0.5 text-xs uppercase"
-                    colorMap={pullRequestStateColors}
+                    colorMap={prStatusColors}
                     status={pullRequest.state}
                   />
                   <span>
