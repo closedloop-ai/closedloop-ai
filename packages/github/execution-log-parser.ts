@@ -134,13 +134,12 @@ export function parseExecutionLogs(zipBuffer: Buffer): ExecutionTrace {
 /**
  * Extract zip entries, handling nested zips if present.
  * Uses shared extractInnerZips utility (same logic as workflow-artifacts).
- * Returns entries from the first nested zip, or outer entries if none found.
+ * Returns flattened entries from all nested zips, or outer entries if none found.
  */
 function extractNestedEntries(zip: AdmZip): AdmZip.IZipEntry[] {
   const innerZips = extractInnerZips(zip);
   if (innerZips.length > 0) {
-    // extractInnerZips already logs errors for corrupt nested zips
-    return innerZips[0]!.getEntries();
+    return innerZips.flatMap((z) => z.getEntries());
   }
   return zip.getEntries();
 }
