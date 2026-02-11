@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -32,6 +32,10 @@ export function PRDEditor({
   onVersionChange,
 }: PRDEditorProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [openThreadCount, setOpenThreadCount] = useState(0);
+  const handleThreadCountChange = useCallback((count: number) => {
+    setOpenThreadCount(count);
+  }, []);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>(
     undefined
   );
@@ -157,6 +161,7 @@ export function PRDEditor({
         onRestoreVersion={handleRestoreVersion}
         onSave={handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={openThreadCount}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
         showRestore={isViewingHistorical}
@@ -194,6 +199,7 @@ export function PRDEditor({
             />
           }
           onChange={content.updateContent}
+          onOpenThreadCountChange={handleThreadCountChange}
           readOnly={!isEditing}
           showMetadataPanel={uiState.showMetadataPanel}
           value={content.content}

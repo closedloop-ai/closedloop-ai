@@ -11,6 +11,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   DownloadIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RotateCcwIcon,
@@ -97,6 +98,10 @@ type PRDEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
 
 export function PRDEditorHeader({
@@ -117,6 +122,7 @@ export function PRDEditorHeader({
   showRestore = false,
   onRestoreVersion,
   onDelete,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PRDEditorHeaderProps) {
@@ -148,6 +154,13 @@ export function PRDEditorHeader({
         </>
       ) : (
         <>
+          {openThreadCount > 0 ? (
+            <span className="flex items-center gap-1 text-muted-foreground text-sm">
+              <MessageSquareIcon className="h-4 w-4" />
+              {openThreadCount}
+            </span>
+          ) : null}
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"

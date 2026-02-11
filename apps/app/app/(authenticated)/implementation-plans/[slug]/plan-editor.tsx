@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -77,6 +77,10 @@ export function PlanEditor({
   onVersionChange,
 }: PlanEditorProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [openThreadCount, setOpenThreadCount] = useState(0);
+  const handleThreadCountChange = useCallback((count: number) => {
+    setOpenThreadCount(count);
+  }, []);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>();
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
@@ -319,6 +323,7 @@ export function PlanEditor({
         onRestoreVersion={handleRestoreVersion}
         onSave={handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={openThreadCount}
         plan={plan}
         pullRequest={pullRequest ?? null}
         showMetadataPanel={uiState.showMetadataPanel}
@@ -364,6 +369,7 @@ export function PlanEditor({
             />
           }
           onChange={content.updateContent}
+          onOpenThreadCountChange={handleThreadCountChange}
           readOnly={!isEditing}
           showMetadataPanel={uiState.showMetadataPanel}
           value={content.content}

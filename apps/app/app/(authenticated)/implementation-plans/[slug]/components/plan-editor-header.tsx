@@ -135,7 +135,23 @@ type PlanEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
+
+function ThreadCountBadge({ count }: { count: number }) {
+  if (count <= 0) {
+    return null;
+  }
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground text-sm">
+      <MessageSquareIcon className="h-4 w-4" />
+      {count}
+    </span>
+  );
+}
 
 export function PlanEditorHeader({
   plan,
@@ -163,6 +179,7 @@ export function PlanEditorHeader({
   onDelete,
   showRestore = false,
   onRestoreVersion,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PlanEditorHeaderProps) {
@@ -194,6 +211,8 @@ export function PlanEditorHeader({
         </>
       ) : (
         <>
+          <ThreadCountBadge count={openThreadCount} />
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"
