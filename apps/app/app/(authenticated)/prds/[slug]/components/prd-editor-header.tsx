@@ -155,10 +155,15 @@ export function PRDEditorHeader({
       ) : (
         <>
           {openThreadCount > 0 ? (
-            <span className="flex items-center gap-1 text-muted-foreground text-sm">
-              <MessageSquareIcon className="h-4 w-4" />
+            <Button
+              onClick={onEdit}
+              size="sm"
+              title="View comments"
+              variant="ghost"
+            >
+              <MessageSquareIcon className="mr-1 h-4 w-4" />
               {openThreadCount}
-            </span>
+            </Button>
           ) : null}
 
           <Button

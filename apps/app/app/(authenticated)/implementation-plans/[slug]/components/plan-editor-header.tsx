@@ -141,15 +141,21 @@ type PlanEditorHeaderProps = {
   openThreadCount?: number;
 };
 
-function ThreadCountBadge({ count }: { count: number }) {
+function ThreadCountBadge({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick?: () => void;
+}) {
   if (count <= 0) {
     return null;
   }
   return (
-    <span className="flex items-center gap-1 text-muted-foreground text-sm">
-      <MessageSquareIcon className="h-4 w-4" />
+    <Button onClick={onClick} size="sm" title="View comments" variant="ghost">
+      <MessageSquareIcon className="mr-1 h-4 w-4" />
       {count}
-    </span>
+    </Button>
   );
 }
 
@@ -211,7 +217,7 @@ export function PlanEditorHeader({
         </>
       ) : (
         <>
-          <ThreadCountBadge count={openThreadCount} />
+          <ThreadCountBadge count={openThreadCount} onClick={onEdit} />
 
           <Button
             onClick={onToggleMetadataPanel}
