@@ -704,6 +704,7 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@index([artifactId])
+  @@index([createdAt, artifactId])
   @@map("artifact_evaluations")
 }
 
