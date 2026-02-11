@@ -9,14 +9,8 @@ import {
   useRequestPlanChanges,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useRunLoop } from "@/hooks/queries/use-loops";
-
-/**
- * Check if the Loops compute feature flag is enabled via client-side env var.
- */
-function isLoopsComputeEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_USE_LOOPS_COMPUTE === "true";
-}
 
 type UsePlanActionsConfig = {
   artifact: ArtifactWithWorkstream;
@@ -34,8 +28,8 @@ type UsePlanActionsConfig = {
  * - Execute operation (triggers implementation execution, creates PR)
  * - Loading states for each operation
  *
- * When the `NEXT_PUBLIC_USE_LOOPS_COMPUTE` flag is enabled, regenerate/execute/request-changes
- * operations create Loops instead of triggering GitHub Actions workflows.
+ * When the organization's compute mode is set to "LOOPS" (via Settings > Integrations),
+ * regenerate/execute/request-changes operations create Loops instead of triggering GitHub Actions.
  *
  * **Example usage:**
  * ```tsx
@@ -51,7 +45,7 @@ type UsePlanActionsConfig = {
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifact } = config;
-  const useLoops = isLoopsComputeEnabled();
+  const useLoops = useIsLoopsEnabled();
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();

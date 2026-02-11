@@ -16,6 +16,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
 import { executionLogKeys } from "./use-execution-log";
@@ -318,13 +319,13 @@ export function useRequestPlanChanges() {
  * Create an artifact and immediately trigger generation workflow.
  * Used for implementation plans generated from a PRD or Issue.
  *
- * When `NEXT_PUBLIC_USE_LOOPS_COMPUTE` is enabled, triggers plan generation via
+ * When the organization's compute mode is set to "LOOPS", triggers plan generation via
  * the run-loop endpoint (ECS Loops) instead of the regenerate endpoint (GitHub Actions).
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
-  const useLoops = process.env.NEXT_PUBLIC_USE_LOOPS_COMPUTE === "true";
+  const useLoops = useIsLoopsEnabled();
 
   return useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
