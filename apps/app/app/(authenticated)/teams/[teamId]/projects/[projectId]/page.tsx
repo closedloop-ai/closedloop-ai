@@ -1,6 +1,9 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -47,7 +50,6 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
-import { isActiveGenerationStatus } from "@/lib/generation-status-utils";
 import {
   mapArtifactStatusToDisplay,
   mapDisplayStatusToArtifact,

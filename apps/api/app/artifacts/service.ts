@@ -212,11 +212,16 @@ export const artifactsService = {
 
         const artifactId = triggerData.artifactId;
 
+        // Map Prisma GitHubActionStatus to GenerationStatus.
+        // CANCELLED maps to FAILURE since both are terminal non-success states.
+        const status: GenerationStatus["status"] =
+          run.status === "CANCELLED" ? "FAILURE" : run.status;
+
         // Only set if this artifact doesn't have a status yet (first = most recent)
         if (!generationStatusMap.has(artifactId)) {
           generationStatusMap.set(artifactId, {
-            status: run.status as GenerationStatus["status"],
-            command: triggerData.command as GenerationStatus["command"],
+            status,
+            command: triggerData.command,
             htmlUrl: run.htmlUrl || null,
             startedAt: run.startedAt,
             completedAt: run.completedAt,

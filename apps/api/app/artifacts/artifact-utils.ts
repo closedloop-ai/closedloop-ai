@@ -217,13 +217,16 @@ export async function prepareArtifactVersion(
   return (latestArtifact?.version ?? 0) + 1;
 }
 
+/** Valid command values for GenerationStatus. */
+const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
+
 /**
  * Type definition for validated trigger data.
  */
 export type TriggerData = {
   correlationId: string;
   artifactId: string;
-  command: string;
+  command: "plan" | "execute" | "chat";
 };
 
 /**
@@ -271,9 +274,14 @@ export function parseTriggerData(triggerData: unknown): TriggerData | null {
     return null;
   }
 
+  // Validate command is a known value
+  if (!VALID_COMMANDS.has(data.command)) {
+    return null;
+  }
+
   return {
     correlationId: data.correlationId,
     artifactId: data.artifactId,
-    command: data.command,
+    command: data.command as TriggerData["command"],
   };
 }

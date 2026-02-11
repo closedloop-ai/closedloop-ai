@@ -1,13 +1,11 @@
 "use client";
 
+import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
-import {
-  getStatusMessage,
-  isActiveGenerationStatus,
-} from "@/lib/generation-status-utils";
+import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusBannerProps = {
   artifactId: string;

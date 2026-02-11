@@ -20,9 +20,3 @@ export function getStatusMessage(
       return "";
   }
 }
-
-export function isActiveGenerationStatus(
-  status: GenerationStatus["status"]
-): boolean {
-  return ["PENDING", "QUEUED", "RUNNING"].includes(status);
-}

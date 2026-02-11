@@ -1,16 +1,16 @@
 "use client";
 
-import type { GenerationStatus } from "@repo/api/src/types/artifact";
+import {
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import {
   CheckCircle,
   ExternalLinkIcon,
   LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
-import {
-  getStatusMessage,
-  isActiveGenerationStatus,
-} from "@/lib/generation-status-utils";
+import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusIndicatorProps = {
   generationStatus?: GenerationStatus;
