@@ -6,6 +6,7 @@ import { loopEventBus } from "@/lib/loop-event-bus";
 import { loopsService } from "../../service";
 
 const KEEPALIVE_INTERVAL_MS = 15_000;
+const MAX_STREAM_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
  * GET /api/loops/:id/stream - Server-Sent Events endpoint for real-time loop events.
@@ -34,11 +35,14 @@ export async function GET(
   }
 
   // Resolve Clerk org ID to internal organization ID.
-  // withAuth() does this automatically, but SSE routes handle auth inline.
+  // Uses read-only lookup (not findOrCreate) since SSE is a read path
+  // and should not create org records as a side effect.
   let organizationId: string;
   try {
-    const organization =
-      await organizationsService.findOrCreateByClerkId(clerkOrgId);
+    const organization = await organizationsService.findByClerkId(clerkOrgId);
+    if (!organization) {
+      return new Response("Unauthorized", { status: 401 });
+    }
     organizationId = organization.id;
   } catch (error) {
     log.error("Failed to resolve organization for SSE stream", {
@@ -69,6 +73,7 @@ export async function GET(
   // Shared cleanup state - accessible from both start() and cancel()
   let unsubscribe: (() => void) | null = null;
   let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  let maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   let cleaned = false;
 
   function cleanup(): void {
@@ -80,6 +85,10 @@ export async function GET(
     if (keepaliveTimer) {
       clearInterval(keepaliveTimer);
       keepaliveTimer = null;
+    }
+    if (maxDurationTimer) {
+      clearTimeout(maxDurationTimer);
+      maxDurationTimer = null;
     }
     if (unsubscribe) {
       unsubscribe();
@@ -140,6 +149,18 @@ export async function GET(
 
       // Start keepalive pings
       keepaliveTimer = setInterval(sendKeepalive, KEEPALIVE_INTERVAL_MS);
+
+      // Enforce maximum connection duration to prevent unbounded resource use.
+      // Clients should reconnect after receiving the close.
+      maxDurationTimer = setTimeout(() => {
+        log.info("SSE stream max duration reached", { loopId });
+        cleanup();
+        try {
+          controller.close();
+        } catch {
+          // Already closed
+        }
+      }, MAX_STREAM_DURATION_MS);
     },
 
     cancel() {

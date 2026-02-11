@@ -255,9 +255,23 @@ export const apiKeyService = {
       return decryptApiKey(user.claudeApiKeyEncrypted);
     }
     if (user?.anthropicApiKey) {
-      throw new Error(
-        "Legacy user API key detected. Re-save your key in Settings to migrate to encrypted storage."
+      // Auto-migrate legacy plaintext key to KMS-encrypted storage.
+      // If migration fails (e.g., KMS unavailable), fall back to the plaintext key
+      // so existing loops aren't broken.
+      log.warn(
+        "Legacy plaintext user API key detected — attempting auto-migration",
+        { userId }
       );
+      try {
+        await this.setUserKey(userId, user.anthropicApiKey);
+        log.info("Successfully migrated legacy user API key", { userId });
+      } catch (migrationError) {
+        log.error("Failed to auto-migrate legacy user API key", {
+          userId,
+          error: migrationError,
+        });
+      }
+      return user.anthropicApiKey;
     }
 
     // Fall back to org key
@@ -275,9 +289,24 @@ export const apiKeyService = {
       return decryptApiKey(org.claudeApiKeyEncrypted);
     }
     if (org?.anthropicApiKey) {
-      throw new Error(
-        "Legacy organization API key detected. Re-save the key in Settings to migrate to encrypted storage."
+      // Auto-migrate legacy plaintext key to KMS-encrypted storage.
+      // If migration fails, fall back to the plaintext key.
+      log.warn(
+        "Legacy plaintext org API key detected — attempting auto-migration",
+        { organizationId }
       );
+      try {
+        await this.setOrgKey(organizationId, org.anthropicApiKey);
+        log.info("Successfully migrated legacy org API key", {
+          organizationId,
+        });
+      } catch (migrationError) {
+        log.error("Failed to auto-migrate legacy org API key", {
+          organizationId,
+          error: migrationError,
+        });
+      }
+      return org.anthropicApiKey;
     }
 
     return null;

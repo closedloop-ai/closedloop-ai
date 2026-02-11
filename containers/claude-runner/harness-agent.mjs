@@ -75,15 +75,20 @@ function redactSensitive(value) {
     return value;
   }
 
-  const secrets = [config.anthropicApiKey, config.githubToken, config.authToken].filter(
-    (secret) => typeof secret === "string" && secret.length > 0
-  );
+  const secrets = [
+    config.anthropicApiKey,
+    config.githubToken,
+    config.authToken,
+  ].filter((secret) => typeof secret === "string" && secret.length > 0);
 
   let redacted = value;
   for (const secret of secrets) {
     redacted = redacted.split(secret).join("[REDACTED]");
   }
-  return redacted.replace(/x-access-token:[^@]+@/g, "x-access-token:[REDACTED]@");
+  return redacted.replace(
+    /x-access-token:[^@]+@/g,
+    "x-access-token:[REDACTED]@"
+  );
 }
 
 function sanitizeValue(value) {
@@ -242,13 +247,22 @@ async function downloadContextPack(workDir) {
     if (pack.secrets.githubToken) {
       config.githubToken = pack.secrets.githubToken;
     }
-    delete pack.secrets;
+    pack.secrets = undefined;
     log("info", "Extracted secrets from context pack");
   }
 
   // Write remaining context data to disk (no secrets).
+  // Validate each path stays within contextDir to prevent path traversal
+  // (defense-in-depth: the backend generates the pack, but S3 tampering is possible).
+  const resolvedContextDir = path.resolve(contextDir) + path.sep;
   for (const [relPath, content] of Object.entries(pack)) {
-    const absPath = path.join(contextDir, relPath);
+    const absPath = path.resolve(contextDir, relPath);
+    if (!absPath.startsWith(resolvedContextDir)) {
+      throw new Error(
+        `Path traversal detected in context pack key: "${relPath}". ` +
+          `Resolved to "${absPath}" which is outside "${resolvedContextDir}".`
+      );
+    }
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
     fs.writeFileSync(
       absPath,
@@ -272,7 +286,15 @@ function cloneRepo(workDir) {
   // Use execFileSync with array args to prevent shell injection via branch/repo names
   execFileSync(
     "git",
-    ["clone", "--depth", "50", "--branch", config.targetBranch, cloneUrl, workDir],
+    [
+      "clone",
+      "--depth",
+      "50",
+      "--branch",
+      config.targetBranch,
+      cloneUrl,
+      workDir,
+    ],
     {
       stdio: "pipe",
       env: {
@@ -916,7 +938,10 @@ async function main() {
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     const errorMessage = err instanceof Error ? err.message : String(err);
     const errorStack = err instanceof Error ? err.stack : undefined;
-    log("error", `Fatal error after ${duration}s: ${redactSensitive(errorMessage)}`);
+    log(
+      "error",
+      `Fatal error after ${duration}s: ${redactSensitive(errorMessage)}`
+    );
     if (errorStack) {
       log("error", redactSensitive(errorStack));
     }

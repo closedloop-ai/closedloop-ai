@@ -43,22 +43,6 @@ const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
 };
 
 /**
- * Validate that a status transition is allowed.
- * Throws if the transition is invalid.
- */
-function validateTransition(
-  currentStatus: LoopStatus,
-  newStatus: LoopStatus
-): void {
-  const allowed = VALID_TRANSITIONS[currentStatus];
-  if (!allowed?.has(newStatus)) {
-    throw new Error(
-      `Invalid status transition: ${currentStatus} → ${newStatus}`
-    );
-  }
-}
-
-/**
  * Transform a Prisma loop record to the API Loop type.
  * Handles Decimal → number conversion for estimatedCost.
  */
@@ -325,24 +309,23 @@ export const loopsService = {
 
   /**
    * Cancel a running Loop.
-   * Can cancel from PENDING or RUNNING states.
+   * Can cancel from PENDING, CLAIMED, or RUNNING states.
+   * Uses atomic conditional update to prevent TOCTOU races.
    */
   async cancel(id: string, organizationId: string): Promise<Loop> {
-    const current = await withDb((db) =>
-      db.loop.findUnique({
-        where: { id, organizationId },
-      })
-    );
+    // Compute valid source statuses for CANCELLED transition
+    const validFromStatuses = Object.entries(VALID_TRANSITIONS)
+      .filter(([, allowed]) => allowed.has("CANCELLED"))
+      .map(([from]) => from as LoopStatus);
 
-    if (!current) {
-      throw new Error(`Loop not found: ${id}`);
-    }
-
-    validateTransition(current.status as LoopStatus, "CANCELLED");
-
-    const loop = await withDb((db) =>
-      db.loop.update({
-        where: { id, organizationId },
+    // Atomic conditional update: only transitions from a valid source status.
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          id,
+          organizationId,
+          status: { in: validFromStatuses },
+        },
         data: {
           status: "CANCELLED",
           completedAt: new Date(),
@@ -350,7 +333,33 @@ export const loopsService = {
       })
     );
 
-    log.info("Loop cancelled", { loopId: id, previousStatus: current.status });
+    if (result.count === 0) {
+      const current = await withDb((db) =>
+        db.loop.findUnique({
+          where: { id, organizationId },
+          select: { status: true },
+        })
+      );
+
+      if (!current) {
+        throw new Error(`Loop not found: ${id}`);
+      }
+
+      throw new Error(
+        `Invalid status transition: ${current.status} → CANCELLED`
+      );
+    }
+
+    log.info("Loop cancelled", { loopId: id });
+
+    // Re-fetch the updated record to return the full Loop object
+    const loop = await withDb((db) =>
+      db.loop.findUnique({ where: { id, organizationId } })
+    );
+
+    if (!loop) {
+      throw new Error(`Loop not found after cancel: ${id}`);
+    }
 
     return toLoop(loop as unknown as Record<string, unknown>);
   },
