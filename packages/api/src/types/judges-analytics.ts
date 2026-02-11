@@ -50,3 +50,31 @@ export type ArtifactSubtypeGroup = {
 export type JudgeStatsResponse = {
   groups: ArtifactSubtypeGroup[];
 };
+
+// ---------------------------------------------------------------------------
+// Artifact creation counts (GET /judges-analytics/artifact-counts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Single time bucket for artifact creation counts.
+ *
+ * Attributes:
+ * - bucket: ISO date string for the start of the period (e.g. "2025-02-01" for day,
+ *   or start of week/month). Frontend can format with date-fns by groupBy.
+ * - countsBySubtype: Map of artifact subtype (ArtifactSubtype value, e.g. "PRD", "IMPLEMENTATION_PLAN")
+ *   to count of artifacts created in that period. Only subtypes with count > 0 are included.
+ */
+export type ArtifactCountBucket = {
+  bucket: string;
+  countsBySubtype: Record<string, number>;
+};
+
+/**
+ * Response for the artifact counts endpoint.
+ *
+ * Attributes:
+ * - buckets: Array of time buckets with counts, ordered by bucket ascending
+ */
+export type ArtifactCountsResponse = {
+  buckets: ArtifactCountBucket[];
+};

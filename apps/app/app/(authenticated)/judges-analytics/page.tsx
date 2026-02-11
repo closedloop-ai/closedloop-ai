@@ -6,6 +6,7 @@ import { format, subDays } from "date-fns";
 import { useState } from "react";
 import { useJudgesAnalytics } from "@/hooks/queries/use-judges-analytics";
 import { ArtifactTypeSection } from "./components/artifact-type-section";
+import { ArtifactsCreatedChart } from "./components/artifacts-created-chart";
 import { DateRangeFilter } from "./components/date-range-filter";
 
 export default function JudgesAnalyticsPage() {
@@ -36,7 +37,10 @@ export default function JudgesAnalyticsPage() {
         </p>
       </div>
 
-      {/* Date range filter */}
+      {/* Artifacts created bar chart (date range + group by) */}
+      <ArtifactsCreatedChart />
+
+      {/* Date range filter for judge stats below */}
       <DateRangeFilter
         endDate={endDate}
         onRangeChange={(start, end) => {

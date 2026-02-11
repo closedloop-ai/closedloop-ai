@@ -15,3 +15,7 @@ export const queryParamsSchema = z
   .refine((data) => data.startDate <= data.endDate, {
     message: "startDate must be less than or equal to endDate",
   });
+
+export const artifactCountsParamsSchema = queryParamsSchema.extend({
+  groupBy: z.enum(["day", "week", "month"]),
+});
