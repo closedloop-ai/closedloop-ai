@@ -49,7 +49,7 @@ export const DELETE = withAuth<Loop, "/loops/[id]">(
         reason: "Cancelled by user",
         timestamp: new Date().toISOString(),
       };
-      await loopsService.addEvent(id, {
+      await loopsService.addEvent(id, user.organizationId, {
         type: cancelEvent.type,
         data: cancelEvent,
       });

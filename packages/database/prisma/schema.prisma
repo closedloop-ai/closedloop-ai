@@ -627,16 +627,19 @@ model Loop {
 }
 
 model LoopEvent {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  loopId    String   @map("loop_id") @db.Uuid
-  type      String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
-  data      Json     @default("{}")
-  createdAt DateTime @default(now()) @map("created_at")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  loopId         String   @map("loop_id") @db.Uuid
+  type           String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
+  data           Json     @default("{}")
+  runnerTokenJti String?  @map("runner_token_jti")
+  runnerNonce    String?  @map("runner_nonce") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
 
   loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
 
   @@index([loopId, createdAt])
   @@index([loopId, type])
+  @@unique([loopId, runnerTokenJti, runnerNonce])
   @@map("loop_events")
 }
 

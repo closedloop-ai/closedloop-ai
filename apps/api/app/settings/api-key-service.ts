@@ -63,42 +63,6 @@ type ApiKeyInfo = {
   setAt: Date | null;
 };
 
-async function migrateOrgLegacyKey(
-  organizationId: string,
-  key: string
-): Promise<void> {
-  const encrypted = await encryptApiKey(key);
-  await withDb((db) =>
-    db.organization.update({
-      where: { id: organizationId },
-      data: {
-        anthropicApiKey: null,
-        claudeApiKeyEncrypted: encrypted,
-        claudeApiKeyLastFour: getLastFour(key),
-        claudeApiKeySetAt: new Date(),
-      },
-    })
-  );
-}
-
-async function migrateUserLegacyKey(
-  userId: string,
-  key: string
-): Promise<void> {
-  const encrypted = await encryptApiKey(key);
-  await withDb((db) =>
-    db.user.update({
-      where: { id: userId },
-      data: {
-        anthropicApiKey: null,
-        claudeApiKeyEncrypted: encrypted,
-        claudeApiKeyLastFour: getLastFour(key),
-        claudeApiKeySetAt: new Date(),
-      },
-    })
-  );
-}
-
 export const apiKeyService = {
   /**
    * Validate a Claude API key format and optionally test it live.
@@ -190,7 +154,6 @@ export const apiKeyService = {
           claudeApiKeyEncrypted: true,
           claudeApiKeyLastFour: true,
           claudeApiKeySetAt: true,
-          anthropicApiKey: true,
         },
       })
     );
@@ -200,14 +163,6 @@ export const apiKeyService = {
         isSet: true,
         lastFour: org.claudeApiKeyLastFour ?? null,
         setAt: org.claudeApiKeySetAt ?? null,
-      };
-    }
-
-    if (org?.anthropicApiKey) {
-      return {
-        isSet: true,
-        lastFour: getLastFour(org.anthropicApiKey),
-        setAt: null,
       };
     }
 
@@ -261,7 +216,6 @@ export const apiKeyService = {
           claudeApiKeyEncrypted: true,
           claudeApiKeyLastFour: true,
           claudeApiKeySetAt: true,
-          anthropicApiKey: true,
         },
       })
     );
@@ -271,14 +225,6 @@ export const apiKeyService = {
         isSet: true,
         lastFour: user.claudeApiKeyLastFour ?? null,
         setAt: user.claudeApiKeySetAt ?? null,
-      };
-    }
-
-    if (user?.anthropicApiKey) {
-      return {
-        isSet: true,
-        lastFour: getLastFour(user.anthropicApiKey),
-        setAt: null,
       };
     }
 
@@ -308,10 +254,10 @@ export const apiKeyService = {
     if (user?.claudeApiKeyEncrypted) {
       return decryptApiKey(user.claudeApiKeyEncrypted);
     }
-
     if (user?.anthropicApiKey) {
-      await migrateUserLegacyKey(userId, user.anthropicApiKey);
-      return user.anthropicApiKey;
+      throw new Error(
+        "Legacy user API key detected. Re-save your key in Settings to migrate to encrypted storage."
+      );
     }
 
     // Fall back to org key
@@ -328,10 +274,10 @@ export const apiKeyService = {
     if (org?.claudeApiKeyEncrypted) {
       return decryptApiKey(org.claudeApiKeyEncrypted);
     }
-
     if (org?.anthropicApiKey) {
-      await migrateOrgLegacyKey(organizationId, org.anthropicApiKey);
-      return org.anthropicApiKey;
+      throw new Error(
+        "Legacy organization API key detected. Re-save the key in Settings to migrate to encrypted storage."
+      );
     }
 
     return null;

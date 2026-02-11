@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+function jsonSizeWithinLimit(value: unknown, maxBytes: number): boolean {
+  return Buffer.byteLength(JSON.stringify(value), "utf-8") <= maxBytes;
+}
+
 export const createLoopValidator = z.object({
   command: z.enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"]),
   artifactId: z.string().uuid().optional(),
@@ -51,10 +55,15 @@ const loopEventType = z.enum([
   "cancelled",
 ]);
 
-export const loopEventValidator = z.object({
-  type: loopEventType,
-  data: z.record(z.string(), z.unknown()).default({}),
-});
+export const loopEventValidator = z
+  .object({
+    type: loopEventType,
+    data: z.record(z.string(), z.unknown()).default({}),
+  })
+  .strict()
+  .refine((val) => jsonSizeWithinLimit(val, 1_000_000), {
+    message: "Event payload too large (max 1MB)",
+  });
 
 /**
  * Accepts either envelope format { type, data } or flattened { type, ...fields }.
@@ -65,7 +74,7 @@ export const loopEventPayloadValidator = z.union([
   z
     .object({ type: loopEventType })
     .catchall(z.unknown())
-    .refine((val) => JSON.stringify(val).length <= 1_000_000, {
+    .refine((val) => jsonSizeWithinLimit(val, 1_000_000), {
       message: "Event payload too large (max 1MB)",
     }),
 ]);

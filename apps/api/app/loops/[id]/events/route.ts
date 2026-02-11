@@ -12,11 +12,14 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { loopsService } from "../../service";
+import { isReplayDetectedError, loopsService } from "../../service";
 import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,
 } from "../../validators";
+
+const NONCE_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const GET = withAuth<
   LoopEvent[] | LoopEventsPaginatedResponse,
@@ -104,6 +107,23 @@ export async function POST(
       );
     }
 
+    const nonce = request.headers.get("x-loop-event-nonce");
+    if (!nonce) {
+      return errorResponse(
+        "Missing runner event nonce",
+        new Error("Unauthorized"),
+        401
+      );
+    }
+
+    if (!NONCE_UUID_REGEX.test(nonce)) {
+      return errorResponse(
+        "Invalid runner event nonce",
+        new Error("Bad Request"),
+        400
+      );
+    }
+
     const { body, errorResponse: parseError } = await parseBody(
       request,
       loopEventPayloadValidator
@@ -121,7 +141,46 @@ export async function POST(
           } as LoopEvent)
         : (body as unknown as LoopEvent);
 
-    await handleLoopEvent(loopId, claims.organizationId, event);
+    const loop = await loopsService.findById(loopId, claims.organizationId);
+    if (!loop) {
+      return errorResponse("Loop not found", new Error("Forbidden"), 403);
+    }
+
+    const terminalStatuses = new Set([
+      "COMPLETED",
+      "FAILED",
+      "CANCELLED",
+      "TIMED_OUT",
+    ]);
+    const terminalEvents = new Set(["completed", "error", "cancelled"]);
+    if (terminalStatuses.has(loop.status) && !terminalEvents.has(event.type)) {
+      return successResponse({
+        received: true as const,
+        ignored: true as const,
+      });
+    }
+
+    try {
+      await handleLoopEvent(loopId, claims.organizationId, event, {
+        tokenJti: claims.tokenId,
+        nonce,
+      });
+    } catch (eventError) {
+      if (isReplayDetectedError(eventError)) {
+        return errorResponse("Replay detected", new Error("Conflict"), 409);
+      }
+      // Idempotency guard: duplicate/replayed terminal events should not 500.
+      if (
+        eventError instanceof Error &&
+        eventError.message.includes("Invalid status transition")
+      ) {
+        return successResponse({
+          received: true as const,
+          ignored: true as const,
+        });
+      }
+      throw eventError;
+    }
 
     // Publish to the in-memory event bus for any active SSE subscribers
     loopEventBus.publish(loopId, event);

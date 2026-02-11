@@ -17,13 +17,24 @@ import type {
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
+export class ReplayDetectedError extends Error {
+  constructor(message = "Replay detected") {
+    super(message);
+    this.name = "ReplayDetectedError";
+  }
+}
+
+export function isReplayDetectedError(error: unknown): boolean {
+  return error instanceof ReplayDetectedError;
+}
+
 /**
  * Valid status transitions for loops.
  * Key = current status, Value = set of allowed next statuses.
  */
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   PENDING: new Set(["CLAIMED", "CANCELLED"]),
-  CLAIMED: new Set(["RUNNING"]),
+  CLAIMED: new Set(["RUNNING", "CANCELLED"]),
   RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
   COMPLETED: new Set(),
   FAILED: new Set(),
@@ -407,17 +418,53 @@ export const loopsService = {
    */
   async addEvent(
     loopId: string,
-    event: { type: string; data: Record<string, unknown> }
-  ): Promise<void> {
-    await withDb((db) =>
-      db.loopEvent.create({
-        data: {
-          loopId,
-          type: event.type,
-          data: event.data as JsonObject,
-        },
+    organizationId: string,
+    event: { type: string; data: Record<string, unknown> },
+    runner?: { tokenJti: string; nonce: string }
+  ): Promise<boolean> {
+    const loop = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId, organizationId },
+        select: { status: true },
       })
     );
+
+    if (!loop) {
+      throw new Error(`Loop not found: ${loopId}`);
+    }
+
+    // Ignore non-terminal events after the loop is terminal.
+    if (
+      TERMINAL_STATUSES.has(loop.status as LoopStatus) &&
+      !["completed", "error", "cancelled"].includes(event.type)
+    ) {
+      return false;
+    }
+
+    try {
+      await withDb((db) =>
+        db.loopEvent.create({
+          data: {
+            loopId,
+            type: event.type,
+            data: event.data as JsonObject,
+            ...(runner?.tokenJti ? { runnerTokenJti: runner.tokenJti } : {}),
+            ...(runner?.nonce ? { runnerNonce: runner.nonce } : {}),
+          },
+        })
+      );
+    } catch (error) {
+      if (
+        runner &&
+        error instanceof Error &&
+        "code" in error &&
+        (error as { code: string }).code === "P2002"
+      ) {
+        throw new ReplayDetectedError();
+      }
+      throw error;
+    }
+    return true;
   },
 
   /**
@@ -581,3 +628,9 @@ export const loopsService = {
     };
   },
 };
+const TERMINAL_STATUSES = new Set<LoopStatus>([
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+]);

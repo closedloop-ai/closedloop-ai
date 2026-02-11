@@ -15,7 +15,8 @@
  * 9. Reports final status (COMPLETED / FAILED / CANCELLED)
  */
 
-import { execFileSync, execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -37,10 +38,13 @@ const {
 function log(level, ...args) {
   const ts = new Date().toISOString();
   const prefix = `[harness][${ts}][${level.toUpperCase()}]`;
+  const safeArgs = args.map((arg) =>
+    typeof arg === "string" ? redactSensitive(arg) : arg
+  );
   if (level === "error") {
-    console.error(prefix, ...args);
+    console.error(prefix, ...safeArgs);
   } else {
-    console.log(prefix, ...args);
+    console.log(prefix, ...safeArgs);
   }
 }
 
@@ -50,10 +54,8 @@ function log(level, ...args) {
 const config = {
   loopId: process.env.LOOP_ID,
   command: process.env.COMMAND, // "plan" | "execute" | "chat" | "explore" | "request_changes"
-  // Secrets are delivered via S3 context pack (not env vars) to keep them out
-  // of ecs:DescribeTasks API responses. Populated after context pack download.
-  anthropicApiKey: null,
-  githubToken: null,
+  anthropicApiKey: null, // Injected from S3 context pack (not env vars)
+  githubToken: null, // Injected from S3 context pack (not env vars)
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
   apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
   organizationId: process.env.ORGANIZATION_ID,
@@ -68,11 +70,46 @@ const config = {
   maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || "50", 10),
 };
 
+function redactSensitive(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return value;
+  }
+
+  const secrets = [config.anthropicApiKey, config.githubToken, config.authToken].filter(
+    (secret) => typeof secret === "string" && secret.length > 0
+  );
+
+  let redacted = value;
+  for (const secret of secrets) {
+    redacted = redacted.split(secret).join("[REDACTED]");
+  }
+  return redacted.replace(/x-access-token:[^@]+@/g, "x-access-token:[REDACTED]@");
+}
+
+function sanitizeValue(value) {
+  if (typeof value === "string") {
+    return redactSensitive(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeValue);
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = sanitizeValue(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 function validateConfig() {
-  // Phase 1: env-var checks (before context pack download)
+  // Validate required environment variables (available before context pack download).
+  // Secrets (anthropicApiKey, githubToken) are delivered via S3 context pack,
+  // so they are validated separately after download.
   const requiredEnv = [
     "loopId",
     "command",
@@ -88,17 +125,14 @@ function validateConfig() {
   }
 }
 
-/**
- * Validate that secrets were populated from the context pack.
- * Called after downloadContextPack().
- */
 function validateSecrets() {
-  const requiredSecrets = ["anthropicApiKey", "githubToken"];
+  // Validate secrets extracted from S3 context pack.
+  const requiredSecrets = ["anthropicApiKey"];
   const missing = requiredSecrets.filter((k) => !config[k]);
   if (missing.length > 0) {
     throw new Error(
       `Missing required secrets from context pack: ${missing.join(", ")}. ` +
-        "Secrets are delivered via the S3 context pack, not environment variables."
+        "Ensure the backend included secrets in the context pack."
     );
   }
 }
@@ -146,16 +180,17 @@ async function uploadToS3(key, body, contentType = "application/octet-stream") {
 // ---------------------------------------------------------------------------
 async function reportEvent(event) {
   const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/events`;
-  const payload = {
+  const payload = sanitizeValue({
     ...event,
     timestamp: event.timestamp || new Date().toISOString(),
-  };
+  });
   try {
     const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.authToken}`,
+        "x-loop-event-nonce": randomUUID(),
       },
       body: JSON.stringify({
         type: payload.type,
@@ -165,11 +200,11 @@ async function reportEvent(event) {
     if (!resp.ok) {
       log(
         "error",
-        `Event report failed (${resp.status}): ${await resp.text()}`
+        `Event report failed (${resp.status}): ${redactSensitive(await resp.text())}`
       );
     }
   } catch (err) {
-    log("error", `Event report error: ${err.message}`);
+    log("error", `Event report error: ${redactSensitive(err.message)}`);
   }
 }
 
@@ -198,9 +233,8 @@ async function downloadContextPack(workDir) {
     );
   }
 
-  // Extract secrets from the context pack into config (never write to disk).
-  // Secrets are delivered via S3 rather than ECS env vars to keep them out of
-  // ecs:DescribeTasks API responses.
+  // Extract secrets from context pack before writing anything to disk.
+  // Secrets must never be persisted to the filesystem.
   if (pack.secrets) {
     if (pack.secrets.anthropicApiKey) {
       config.anthropicApiKey = pack.secrets.anthropicApiKey;
@@ -212,7 +246,7 @@ async function downloadContextPack(workDir) {
     log("info", "Extracted secrets from context pack");
   }
 
-  // Write remaining context data to disk (without secrets)
+  // Write remaining context data to disk (no secrets).
   for (const [relPath, content] of Object.entries(pack)) {
     const absPath = path.join(contextDir, relPath);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -228,14 +262,28 @@ async function downloadContextPack(workDir) {
 // Repository cloning
 // ---------------------------------------------------------------------------
 function cloneRepo(workDir) {
-  const cloneUrl = `https://x-access-token:${config.githubToken}@github.com/${config.targetRepo}.git`;
+  const cloneUrl = `https://github.com/${config.targetRepo}.git`;
+  const authHeader = Buffer.from(
+    `x-access-token:${config.githubToken}`,
+    "utf-8"
+  ).toString("base64");
   log("info", `Cloning ${config.targetRepo} (branch: ${config.targetBranch})`);
 
   // Use execFileSync with array args to prevent shell injection via branch/repo names
   execFileSync(
     "git",
     ["clone", "--depth", "50", "--branch", config.targetBranch, cloneUrl, workDir],
-    { stdio: "pipe" }
+    {
+      stdio: "pipe",
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME || os.homedir(),
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authHeader}`,
+      },
+    }
   );
 
   // Configure git identity for any commits the agent might make
@@ -308,7 +356,7 @@ function spawnProcess(cmd, args, cwd, env) {
 
     const child = spawn(cmd, args, {
       cwd,
-      env: { ...process.env, ...env },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -316,13 +364,14 @@ function spawnProcess(cmd, args, cwd, env) {
     currentChild = child;
 
     function handleLine(stream, line) {
-      outputChunks.push({ stream, line, ts: Date.now() });
+      const safeLine = redactSensitive(line);
+      outputChunks.push({ stream, line: safeLine, ts: Date.now() });
 
       // Log to container stdout/stderr
       if (stream === "stderr") {
-        process.stderr.write(`[child] ${line}\n`);
+        process.stderr.write(`[child] ${safeLine}\n`);
       } else {
-        process.stdout.write(`[child] ${line}\n`);
+        process.stdout.write(`[child] ${safeLine}\n`);
       }
 
       // Throttled event reporting
@@ -331,7 +380,7 @@ function spawnProcess(cmd, args, cwd, env) {
         lastReportedAt = now;
         reportEvent({
           type: "output",
-          chunk: line,
+          chunk: safeLine,
           correlationId: config.correlationId,
         }).catch(() => {});
       }
@@ -711,7 +760,12 @@ function setupShutdownHandlers(workDir) {
     try {
       await uploadState(workDir, []);
     } catch (err) {
-      log("error", `Failed to upload state during shutdown: ${err.message}`);
+      log(
+        "error",
+        `Failed to upload state during shutdown: ${redactSensitive(
+          err instanceof Error ? err.message : String(err)
+        )}`
+      );
     }
 
     // Report cancelled status
@@ -723,7 +777,12 @@ function setupShutdownHandlers(workDir) {
         correlationId: config.correlationId,
       });
     } catch (err) {
-      log("error", `Failed to report cancellation: ${err.message}`);
+      log(
+        "error",
+        `Failed to report cancellation: ${redactSensitive(
+          err instanceof Error ? err.message : String(err)
+        )}`
+      );
     }
 
     process.exit(1);
@@ -767,8 +826,7 @@ async function main() {
     // Step 2: Clone the target repository
     cloneRepo(workDir);
 
-    // Step 3: Download and extract context pack from S3
-    // (this also populates config.anthropicApiKey and config.githubToken from secrets)
+    // Step 3: Download and extract context pack from S3 (secrets are extracted here)
     await downloadContextPack(workDir);
     validateSecrets();
 
@@ -789,8 +847,9 @@ async function main() {
       ANTHROPIC_API_KEY: config.anthropicApiKey,
       GITHUB_TOKEN: config.githubToken,
       GH_TOKEN: config.githubToken,
-      HOME: os.homedir(),
+      HOME: process.env.HOME || os.homedir(),
       PATH: process.env.PATH,
+      LANG: process.env.LANG || "C.UTF-8",
     };
 
     // Step 6: Execute the command
@@ -855,14 +914,21 @@ async function main() {
     process.exit(exitCode || 0);
   } catch (err) {
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    log("error", `Fatal error after ${duration}s: ${err.message}`);
-    log("error", err.stack);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    log("error", `Fatal error after ${duration}s: ${redactSensitive(errorMessage)}`);
+    if (errorStack) {
+      log("error", redactSensitive(errorStack));
+    }
 
     // Best-effort: upload whatever state we have
     try {
       await uploadState(workDir, output);
     } catch (uploadErr) {
-      log("error", `Failed to upload state after error: ${uploadErr.message}`);
+      log(
+        "error",
+        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+      );
     }
 
     // Best-effort: report failure
@@ -870,12 +936,15 @@ async function main() {
       await reportEvent({
         type: "error",
         code: "RUNNER_ERROR",
-        message: err.message,
+        message: redactSensitive(errorMessage),
         correlationId: config.correlationId,
         loopId: config.loopId,
       });
     } catch (reportErr) {
-      log("error", `Failed to report error event: ${reportErr.message}`);
+      log(
+        "error",
+        `Failed to report error event: ${redactSensitive(reportErr.message)}`
+      );
     }
 
     process.exit(1);

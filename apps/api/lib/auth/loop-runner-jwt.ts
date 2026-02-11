@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
 
 const AUDIENCE = "closedloop-runner";
@@ -11,19 +12,26 @@ function getSecret(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
-export type LoopRunnerClaims = {
+export type LoopRunnerTokenIssueClaims = {
   loopId: string;
   organizationId: string;
 };
 
+export type LoopRunnerClaims = {
+  loopId: string;
+  organizationId: string;
+  tokenId: string;
+};
+
 export function issueLoopRunnerToken(
-  claims: LoopRunnerClaims,
+  claims: LoopRunnerTokenIssueClaims,
   ttlSeconds = 2 * 60 * 60
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ orgId: claims.organizationId })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.loopId)
+    .setJti(randomUUID())
     .setAudience(AUDIENCE)
     .setIssuer(ISSUER)
     .setIssuedAt(now)
@@ -42,10 +50,13 @@ export async function verifyLoopRunnerToken(
   if (!payload.sub || typeof payload.sub !== "string") {
     throw new Error("Invalid loop runner token: missing sub");
   }
+  if (!payload.jti || typeof payload.jti !== "string") {
+    throw new Error("Invalid loop runner token: missing jti");
+  }
   const orgId = payload.orgId;
   if (!orgId || typeof orgId !== "string") {
     throw new Error("Invalid loop runner token: missing orgId");
   }
 
-  return { loopId: payload.sub, organizationId: orgId };
+  return { loopId: payload.sub, organizationId: orgId, tokenId: payload.jti };
 }

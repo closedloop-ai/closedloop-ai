@@ -23,6 +23,11 @@ import {
   uploadContextPack,
 } from "./loop-state";
 
+type RunnerReplayContext = {
+  tokenJti: string;
+  nonce: string;
+};
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -227,7 +232,9 @@ async function fetchParentLoopSummary(
     return [];
   }
 
-  const metadata = await downloadMetadata(organizationId, parentLoop.id);
+  const metadata = parentLoop.s3StateKey
+    ? await downloadMetadata(parentLoop.s3StateKey)
+    : null;
   return [
     {
       loopId: parentLoop.id,
@@ -243,6 +250,7 @@ async function fetchParentLoopSummary(
 export async function buildContextPack(
   loop: LoopForContextPack,
   organizationId: string,
+  stateKeyPrefix: string,
   secrets?: { anthropicApiKey: string; githubToken?: string }
 ): Promise<string> {
   const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
@@ -264,7 +272,7 @@ export async function buildContextPack(
     secrets,
   };
 
-  const s3Key = await uploadContextPack(organizationId, loop.id, contextPack);
+  const s3Key = await uploadContextPack(stateKeyPrefix, contextPack);
   return s3Key;
 }
 
@@ -369,14 +377,16 @@ export async function launchLoop(
       );
     }
 
-    // 4. Build context pack and upload to S3 (includes secrets)
-    const s3ContextKey = await buildContextPack(loop, organizationId, {
-      anthropicApiKey,
-      githubToken,
-    });
+    // 4. Build context pack (including secrets) and upload to S3
     const s3StateKey = getStateKeyPrefix(organizationId, loopId);
+    const s3ContextKey = await buildContextPack(
+      loop,
+      organizationId,
+      s3StateKey,
+      { anthropicApiKey, githubToken }
+    );
 
-    // 5. Launch ECS task
+    // 5. Launch ECS task (secrets travel via S3 context pack, not env vars)
     const closedLoopAuthToken = await issueLoopRunnerToken({
       loopId,
       organizationId,
@@ -466,9 +476,8 @@ async function runEcsTask(opts: {
   const config = getEcsConfig();
 
   // Build environment variable overrides for the container.
-  // Note: Secrets (ANTHROPIC_API_KEY, GITHUB_TOKEN) are delivered via the S3
-  // context pack rather than env vars. This keeps them out of
-  // ecs:DescribeTasks API responses.
+  // Note: secrets (API keys, tokens) are delivered via S3 context pack,
+  // NOT as env vars — env vars are visible via ecs:DescribeTasks API.
   const environment = [
     { name: "LOOP_ID", value: opts.loopId },
     { name: "ORGANIZATION_ID", value: opts.organizationId },
@@ -562,7 +571,8 @@ async function runEcsTask(opts: {
 export async function handleLoopEvent(
   loopId: string,
   organizationId: string,
-  event: LoopEvent
+  event: LoopEvent,
+  replayContext?: RunnerReplayContext
 ): Promise<void> {
   log.info("[loop-orchestrator] Handling loop event", {
     loopId,
@@ -574,75 +584,105 @@ export async function handleLoopEvent(
       await loopsService.updateStatus(loopId, organizationId, "RUNNING", {
         startedAt: new Date(),
       });
-      await loopsService.addEvent(loopId, {
-        type: event.type,
-        data: { loopId: event.loopId, timestamp: event.timestamp },
-      });
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: event.type,
+          data: { loopId: event.loopId, timestamp: event.timestamp },
+        },
+        replayContext
+      );
       break;
     }
 
     case "output": {
-      await loopsService.addEvent(loopId, {
-        type: event.type,
-        data: { chunk: event.chunk, timestamp: event.timestamp },
-      });
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: event.type,
+          data: { chunk: event.chunk, timestamp: event.timestamp },
+        },
+        replayContext
+      );
       break;
     }
 
     case "progress": {
-      await loopsService.addEvent(loopId, {
-        type: event.type,
-        data: {
-          percent: event.percent,
-          stage: event.stage,
-          timestamp: event.timestamp,
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: event.type,
+          data: {
+            percent: event.percent,
+            stage: event.stage,
+            timestamp: event.timestamp,
+          },
         },
-      });
+        replayContext
+      );
       break;
     }
 
     case "tool_call": {
-      await loopsService.addEvent(loopId, {
-        type: event.type,
-        data: {
-          tool: event.tool,
-          status: event.status,
-          input: event.input,
-          output: event.output,
-          timestamp: event.timestamp,
-        } as Record<string, unknown>,
-      });
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: event.type,
+          data: {
+            tool: event.tool,
+            status: event.status,
+            input: event.input,
+            output: event.output,
+            timestamp: event.timestamp,
+          } as Record<string, unknown>,
+        },
+        replayContext
+      );
       break;
     }
 
     case "artifact_created": {
-      await loopsService.addEvent(loopId, {
-        type: event.type,
-        data: {
-          artifactId: event.artifactId,
-          artifactType: event.artifactType,
-          timestamp: event.timestamp,
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: event.type,
+          data: {
+            artifactId: event.artifactId,
+            artifactType: event.artifactType,
+            timestamp: event.timestamp,
+          },
         },
-      });
+        replayContext
+      );
       break;
     }
 
     case "completed": {
-      await handleLoopCompleted(loopId, organizationId, event);
+      await handleLoopCompleted(loopId, organizationId, event, replayContext);
       break;
     }
 
     case "error": {
-      await handleLoopError(loopId, organizationId, event);
+      await handleLoopError(loopId, organizationId, event, replayContext);
       break;
     }
 
     default: {
       // Store unknown event types for forward compatibility
-      await loopsService.addEvent(loopId, {
-        type: (event as LoopEvent).type,
-        data: event as unknown as Record<string, unknown>,
-      });
+      await loopsService.addEvent(
+        loopId,
+        organizationId,
+        {
+          type: (event as LoopEvent).type,
+          data: event as unknown as Record<string, unknown>,
+        },
+        replayContext
+      );
       break;
     }
   }
@@ -654,20 +694,29 @@ export async function handleLoopEvent(
 async function handleLoopCompleted(
   loopId: string,
   organizationId: string,
-  event: LoopEventCompleted
+  event: LoopEventCompleted,
+  replayContext?: RunnerReplayContext
 ): Promise<void> {
   // Store the completion event
-  await loopsService.addEvent(loopId, {
-    type: event.type,
-    data: {
-      result: event.result,
-      tokensUsed: event.tokensUsed,
-      timestamp: event.timestamp,
-    } as Record<string, unknown>,
-  });
+  await loopsService.addEvent(
+    loopId,
+    organizationId,
+    {
+      type: event.type,
+      data: {
+        result: event.result,
+        tokensUsed: event.tokensUsed,
+        timestamp: event.timestamp,
+      } as Record<string, unknown>,
+    },
+    replayContext
+  );
 
   // Try to download metadata from S3 for detailed token counts
-  const metadata = await downloadMetadata(organizationId, loopId);
+  const loop = await loopsService.findById(loopId, organizationId);
+  const metadata = loop?.s3StateKey
+    ? await downloadMetadata(loop.s3StateKey)
+    : null;
 
   const tokensInput = metadata?.tokensInput ?? event.tokensUsed.input;
   const tokensOutput = metadata?.tokensOutput ?? event.tokensUsed.output;
@@ -700,16 +749,22 @@ async function handleLoopCompleted(
 async function handleLoopError(
   loopId: string,
   organizationId: string,
-  event: { type: "error"; code: string; message: string; timestamp: string }
+  event: { type: "error"; code: string; message: string; timestamp: string },
+  replayContext?: RunnerReplayContext
 ): Promise<void> {
   if (event.code === "CANCELLED") {
-    await loopsService.addEvent(loopId, {
-      type: "cancelled",
-      data: {
-        reason: event.message,
-        timestamp: event.timestamp,
+    await loopsService.addEvent(
+      loopId,
+      organizationId,
+      {
+        type: "cancelled",
+        data: {
+          reason: event.message,
+          timestamp: event.timestamp,
+        },
       },
-    });
+      replayContext
+    );
 
     const loop = await loopsService.findById(loopId, organizationId);
     if (loop && loop.status !== "CANCELLED") {
@@ -726,14 +781,19 @@ async function handleLoopError(
   }
 
   // Store the error event
-  await loopsService.addEvent(loopId, {
-    type: event.type,
-    data: {
-      code: event.code,
-      message: event.message,
-      timestamp: event.timestamp,
+  await loopsService.addEvent(
+    loopId,
+    organizationId,
+    {
+      type: event.type,
+      data: {
+        code: event.code,
+        message: event.message,
+        timestamp: event.timestamp,
+      },
     },
-  });
+    replayContext
+  );
 
   await loopsService.updateStatus(loopId, organizationId, "FAILED", {
     completedAt: new Date(),

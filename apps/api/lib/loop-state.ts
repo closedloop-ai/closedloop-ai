@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { downloadArtifact, uploadArtifact } from "@repo/aws";
 import { log } from "@repo/observability/log";
 
@@ -12,8 +13,8 @@ import { log } from "@repo/observability/log";
  *   └── work/                (output: work directory snapshot)
  */
 
-const LOOP_STATE_PREFIX = (orgId: string, loopId: string) =>
-  `${orgId}/loops/${loopId}`;
+const LOOP_STATE_PREFIX = (orgId: string, loopId: string, runId: string) =>
+  `${orgId}/loops/${loopId}/${runId}`;
 
 // --- Context Pack (uploaded by backend before container start) ---
 
@@ -35,10 +36,6 @@ export type ContextPack = {
     command: string;
     summary: string;
   }>;
-  /**
-   * Sensitive credentials delivered via S3 instead of ECS env vars.
-   * Keeps secrets out of ecs:DescribeTasks API responses.
-   */
   secrets?: {
     anthropicApiKey: string;
     githubToken?: string;
@@ -46,30 +43,28 @@ export type ContextPack = {
 };
 
 export async function uploadContextPack(
-  organizationId: string,
-  loopId: string,
+  stateKeyPrefix: string,
   contextPack: ContextPack
 ): Promise<string> {
-  const key = `${LOOP_STATE_PREFIX(organizationId, loopId)}/context-pack.json`;
+  const key = `${stateKeyPrefix}/context-pack.json`;
   await uploadArtifact(
     key,
     JSON.stringify(contextPack, null, 2),
     "application/json"
   );
-  log.info("Context pack uploaded", { loopId, key });
+  log.info("Context pack uploaded", { stateKeyPrefix, key });
   return key;
 }
 
 export async function downloadContextPack(
-  organizationId: string,
-  loopId: string
+  stateKeyPrefix: string
 ): Promise<ContextPack | null> {
   try {
-    const key = `${LOOP_STATE_PREFIX(organizationId, loopId)}/context-pack.json`;
+    const key = `${stateKeyPrefix}/context-pack.json`;
     const data = await downloadArtifact(key);
     return JSON.parse(data.toString()) as ContextPack;
   } catch (error) {
-    log.warn("Context pack not found", { loopId, error });
+    log.warn("Context pack not found", { stateKeyPrefix, error });
     return null;
   }
 }
@@ -77,15 +72,14 @@ export async function downloadContextPack(
 // --- Conversation History (uploaded by container after completion) ---
 
 export async function downloadConversation(
-  organizationId: string,
-  loopId: string
+  stateKeyPrefix: string
 ): Promise<unknown[] | null> {
   try {
-    const key = `${LOOP_STATE_PREFIX(organizationId, loopId)}/conversation.json`;
+    const key = `${stateKeyPrefix}/conversation.json`;
     const data = await downloadArtifact(key);
     return JSON.parse(data.toString()) as unknown[];
   } catch (error) {
-    log.warn("Conversation not found", { loopId, error });
+    log.warn("Conversation not found", { stateKeyPrefix, error });
     return null;
   }
 }
@@ -107,15 +101,14 @@ export type LoopMetadata = {
 };
 
 export async function downloadMetadata(
-  organizationId: string,
-  loopId: string
+  stateKeyPrefix: string
 ): Promise<LoopMetadata | null> {
   try {
-    const key = `${LOOP_STATE_PREFIX(organizationId, loopId)}/metadata.json`;
+    const key = `${stateKeyPrefix}/metadata.json`;
     const data = await downloadArtifact(key);
     return JSON.parse(data.toString()) as LoopMetadata;
   } catch (error) {
-    log.warn("Metadata not found", { loopId, error });
+    log.warn("Metadata not found", { stateKeyPrefix, error });
     return null;
   }
 }
@@ -123,16 +116,15 @@ export async function downloadMetadata(
 // --- Event Logs (JSONL format, uploaded by container) ---
 
 export async function downloadEventLog(
-  organizationId: string,
-  loopId: string
+  stateKeyPrefix: string
 ): Promise<unknown[] | null> {
   try {
-    const key = `${LOOP_STATE_PREFIX(organizationId, loopId)}/logs/conversation.jsonl`;
+    const key = `${stateKeyPrefix}/logs/conversation.jsonl`;
     const data = await downloadArtifact(key);
     const lines = data.toString().split("\n").filter(Boolean);
     return lines.map((line) => JSON.parse(line));
   } catch (error) {
-    log.warn("Event log not found", { loopId, error });
+    log.warn("Event log not found", { stateKeyPrefix, error });
     return null;
   }
 }
@@ -141,7 +133,8 @@ export async function downloadEventLog(
 
 export function getStateKeyPrefix(
   organizationId: string,
-  loopId: string
+  loopId: string,
+  runId: string = randomUUID()
 ): string {
-  return LOOP_STATE_PREFIX(organizationId, loopId);
+  return LOOP_STATE_PREFIX(organizationId, loopId, runId);
 }
