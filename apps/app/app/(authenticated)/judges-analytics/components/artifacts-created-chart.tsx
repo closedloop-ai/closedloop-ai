@@ -11,20 +11,18 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@repo/design-system/components/ui/chart";
-import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { format, parse, subDays } from "date-fns";
+import { format, parse } from "date-fns";
 import { useMemo, useState } from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
 import type { ArtifactCountsGroupBy } from "@/hooks/queries/use-judges-analytics";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
-const ALL_TIME_START = "2000-01-01";
-
-/** Parse "yyyy-MM-dd" as local midnight (not UTC) */
-const toLocalDate = (dateStr: string) =>
-  parse(dateStr, "yyyy-MM-dd", new Date());
+type ArtifactsCreatedChartProps = {
+  startDate: string;
+  endDate: string;
+};
 
 function formatBucketLabel(
   bucket: string,
@@ -45,52 +43,17 @@ function formatBucketLabel(
 
 const CHART_COLORS = 5;
 
-export function ArtifactsCreatedChart() {
-  const [startDate, setStartDate] = useState<string>(() =>
-    format(subDays(new Date(), 30), "yyyy-MM-dd")
-  );
-  const [endDate, setEndDate] = useState<string>(() =>
-    format(new Date(), "yyyy-MM-dd")
-  );
+export function ArtifactsCreatedChart({
+  startDate,
+  endDate,
+}: ArtifactsCreatedChartProps) {
   const [groupBy, setGroupBy] = useState<ArtifactCountsGroupBy>("day");
-  const [activePreset, setActivePreset] = useState<
-    "week" | "month" | "year" | "all" | "custom" | null
-  >("month");
 
   const { data, isLoading, isError, error } = useArtifactCounts(
     startDate,
     endDate,
     groupBy
   );
-
-  const handlePresetClick = (
-    preset: "week" | "month" | "year",
-    days: number
-  ) => {
-    const end = new Date();
-    const start = subDays(end, days);
-    setActivePreset(preset);
-    setStartDate(format(start, "yyyy-MM-dd"));
-    setEndDate(format(end, "yyyy-MM-dd"));
-  };
-
-  const handleAllTimeClick = () => {
-    setActivePreset("all");
-    setStartDate(ALL_TIME_START);
-    setEndDate(format(new Date(), "yyyy-MM-dd"));
-  };
-
-  const handleCustomDateChange = (
-    dateType: "start" | "end",
-    date: Date | null
-  ) => {
-    setActivePreset("custom");
-    if (dateType === "start" && date) {
-      setStartDate(format(date, "yyyy-MM-dd"));
-    } else if (dateType === "end" && date) {
-      setEndDate(format(date, "yyyy-MM-dd"));
-    }
-  };
 
   const { chartData, chartConfig, subtypeKeys } = useMemo(() => {
     if (!data?.buckets?.length) {
@@ -137,56 +100,7 @@ export function ArtifactsCreatedChart() {
       <h2 className="font-semibold text-xl">Artifacts created</h2>
 
       <div className="flex flex-wrap items-center gap-4">
-        <div className="flex gap-2">
-          <Button
-            className={activePreset === "week" ? "bg-accent" : ""}
-            onClick={() => handlePresetClick("week", 7)}
-            variant="outline"
-          >
-            Week
-          </Button>
-          <Button
-            className={activePreset === "month" ? "bg-accent" : ""}
-            onClick={() => handlePresetClick("month", 30)}
-            variant="outline"
-          >
-            Month
-          </Button>
-          <Button
-            className={activePreset === "year" ? "bg-accent" : ""}
-            onClick={() => handlePresetClick("year", 365)}
-            variant="outline"
-          >
-            Year
-          </Button>
-          <Button
-            className={activePreset === "all" ? "bg-accent" : ""}
-            onClick={handleAllTimeClick}
-            variant="outline"
-          >
-            All time
-          </Button>
-        </div>
-
         <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-sm">Custom:</span>
-          <DatePickerPopover
-            onSelect={(date) => handleCustomDateChange("start", date)}
-            placeholder="Start date"
-            toDate={endDate ? toLocalDate(endDate) : new Date()}
-            value={startDate ? toLocalDate(startDate) : null}
-          />
-          <span className="text-muted-foreground">to</span>
-          <DatePickerPopover
-            fromDate={startDate ? toLocalDate(startDate) : undefined}
-            onSelect={(date) => handleCustomDateChange("end", date)}
-            placeholder="End date"
-            toDate={new Date()}
-            value={endDate ? toLocalDate(endDate) : null}
-          />
-        </div>
-
-        <div className="flex items-center gap-2 border-border border-l pl-4">
           <span className="text-muted-foreground text-sm">Group by:</span>
           <div className="flex gap-1">
             {(["day", "week", "month"] as const).map((value) => (

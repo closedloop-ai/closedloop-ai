@@ -5,6 +5,8 @@ import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker
 import { format, parse, subDays } from "date-fns";
 import { useState } from "react";
 
+const ALL_TIME_START = "2000-01-01";
+
 /** Parse "yyyy-MM-dd" as local midnight (not UTC) */
 const toLocalDate = (dateStr: string) =>
   parse(dateStr, "yyyy-MM-dd", new Date());
@@ -21,7 +23,7 @@ export function DateRangeFilter({
   onRangeChange,
 }: DateRangeFilterProps) {
   const [activePreset, setActivePreset] = useState<
-    "day" | "week" | "month" | "year" | "custom" | null
+    "day" | "week" | "month" | "year" | "all" | "custom" | null
   >("month");
 
   const handlePresetClick = (
@@ -32,6 +34,11 @@ export function DateRangeFilter({
     const start = subDays(end, days);
     setActivePreset(preset);
     onRangeChange(format(start, "yyyy-MM-dd"), format(end, "yyyy-MM-dd"));
+  };
+
+  const handleAllTimeClick = () => {
+    setActivePreset("all");
+    onRangeChange(ALL_TIME_START, format(new Date(), "yyyy-MM-dd"));
   };
 
   const handleCustomDateChange = (
@@ -77,6 +84,13 @@ export function DateRangeFilter({
           variant="outline"
         >
           Year
+        </Button>
+        <Button
+          className={activePreset === "all" ? "bg-accent" : ""}
+          onClick={handleAllTimeClick}
+          variant="outline"
+        >
+          All time
         </Button>
       </div>
 

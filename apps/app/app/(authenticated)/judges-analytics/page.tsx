@@ -37,10 +37,7 @@ export default function JudgesAnalyticsPage() {
         </p>
       </div>
 
-      {/* Artifacts created bar chart (date range + group by) */}
-      <ArtifactsCreatedChart />
-
-      {/* Date range filter for judge stats below */}
+      {/* Single date range filter for all charts and stats */}
       <DateRangeFilter
         endDate={endDate}
         onRangeChange={(start, end) => {
@@ -49,6 +46,9 @@ export default function JudgesAnalyticsPage() {
         }}
         startDate={startDate}
       />
+
+      {/* Artifacts created bar chart (uses page date range, group by is chart-specific) */}
+      <ArtifactsCreatedChart endDate={endDate} startDate={startDate} />
 
       {/* Content area with conditional rendering */}
       {isLoading && (
