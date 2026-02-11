@@ -22,7 +22,7 @@ function MermaidComponent({
   updateAttributes,
   deleteNode,
   selected,
-}: NodeViewProps) {
+}: Readonly<NodeViewProps>) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [isEditing, setIsEditing] = useState(false);
@@ -190,9 +190,7 @@ export const MermaidExtension = Node.create({
         // Parse from code blocks with mermaid language
         tag: "pre",
         getAttrs: (node) => {
-          const codeElement = (node as HTMLElement).querySelector(
-            "code.language-mermaid"
-          );
+          const codeElement = node.querySelector("code.language-mermaid");
           if (codeElement) {
             return { content: codeElement.textContent || "" };
           }
@@ -221,6 +219,11 @@ export const MermaidExtension = Node.create({
 
   addNodeView() {
     return ReactNodeViewRenderer(MermaidComponent);
+  },
+
+  renderMarkdown: (node: { attrs?: { content?: string } }) => {
+    const content = node.attrs?.content || "";
+    return `\`\`\`mermaid\n${content}\n\`\`\`\n\n`;
   },
 
   addProseMirrorPlugins() {

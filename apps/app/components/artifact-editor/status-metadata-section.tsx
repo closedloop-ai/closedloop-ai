@@ -4,7 +4,6 @@ import {
   ARTIFACT_STATUS_OPTIONS,
   type ArtifactStatus,
 } from "@repo/api/src/types/artifact";
-import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import {
   Select,
@@ -26,9 +25,9 @@ export type StatusMetadataSectionProps = {
    */
   status: ArtifactStatus;
   /**
-   * Current approver value
+   * Current approver (User or null if not selected)
    */
-  approver: string;
+  approver: User | null;
   /**
    * Current owner (User or null if not selected)
    */
@@ -38,17 +37,17 @@ export type StatusMetadataSectionProps = {
    */
   teamMembers: User[];
   /**
+   * List of organization users to choose from for approver selection
+   */
+  orgUsers: User[];
+  /**
    * Handler called when status is changed
    */
   onStatusChange: (status: ArtifactStatus) => void;
   /**
-   * Handler called when approver input value changes
+   * Handler called when approver is selected (saves immediately)
    */
-  onApproverChange: (approver: string) => void;
-  /**
-   * Handler called when approver input loses focus
-   */
-  onApproverBlur: () => void;
+  onApproverSelect: (user: User | null) => void;
   /**
    * Handler called when owner is changed
    */
@@ -61,7 +60,9 @@ export type StatusMetadataSectionProps = {
 
 /**
  * Shared metadata section for PRD and Plan editors.
- * Provides status select, owner selection, and approver input fields with consistent styling.
+ * Provides status select, owner selection, and approver selection fields with consistent styling.
+ *
+ * The approver field saves immediately on selection (no blur handler needed).
  *
  * Usage:
  * ```tsx
@@ -70,9 +71,9 @@ export type StatusMetadataSectionProps = {
  *   approver={approver}
  *   owner={owner}
  *   teamMembers={teamMembers}
+ *   orgUsers={orgUsers}
  *   onStatusChange={handleStatusChange}
- *   onApproverChange={handleApproverChange}
- *   onApproverBlur={handleApproverBlur}
+ *   onApproverSelect={handleApproverSelect}
  *   onOwnerChange={handleOwnerChange}
  * />
  * ```
@@ -82,9 +83,9 @@ export function StatusMetadataSection({
   approver,
   owner,
   teamMembers,
+  orgUsers,
   onStatusChange,
-  onApproverChange,
-  onApproverBlur,
+  onApproverSelect,
   onOwnerChange,
   className,
 }: Readonly<StatusMetadataSectionProps>) {
@@ -122,10 +123,12 @@ export function StatusMetadataSection({
 
       <div className="space-y-2">
         <Label>Approver</Label>
-        <Input
-          onBlur={onApproverBlur}
-          onChange={(e) => onApproverChange(e.target.value)}
-          placeholder="Approver name"
+        <UserSelectPopover
+          className="w-full"
+          disabled={orgUsers.length === 0}
+          onSelect={onApproverSelect}
+          placeholder="Select approver..."
+          users={orgUsers}
           value={approver}
         />
       </div>

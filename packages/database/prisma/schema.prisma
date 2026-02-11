@@ -105,6 +105,7 @@ enum WorkstreamEventType {
   LINEAR_SUBTASK_CREATED
   GITHUB_PR_CREATED
   GITHUB_PR_MERGED
+  GITHUB_PR_CLOSED
   GITHUB_ACTION_TRIGGERED
   GITHUB_ACTION_COMPLETED
   SLACK_NOTIFICATION_SENT
@@ -209,10 +210,11 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization    Organization @relation(fields: [organizationId], references: [id])
-  teamMemberships TeamMember[]
-  ownedProjects   Project[]    @relation("ProjectOwner")
-  ownedArtifacts  Artifact[]   @relation("ArtifactOwner")
+  organization      Organization @relation(fields: [organizationId], references: [id])
+  teamMemberships   TeamMember[]
+  ownedProjects     Project[]    @relation("ProjectOwner")
+  ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
+  approvedArtifacts Artifact[]   @relation("ArtifactApprover")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -390,7 +392,7 @@ model Artifact {
   type               ArtifactType      @default(DOCUMENT) @map("type")
   title              String
   fileName           String?           @map("file_name")
-  approver           String?
+  approverId         String?           @map("approver_id") @db.Uuid
   status             ArtifactStatus    @default(DRAFT)
   content            String?           @db.Text
   externalUrl        String?           @map("external_url")
@@ -411,6 +413,7 @@ model Artifact {
   workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
   parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   children     Artifact[]           @relation("ArtifactSource")
   ratings      ArtifactRating[]
@@ -426,6 +429,7 @@ model Artifact {
   @@index([projectId])
   @@index([parentId])
   @@index([ownerId])
+  @@index([approverId])
   @@map("artifacts")
 }
 
@@ -654,6 +658,8 @@ model GitHubPullRequest {
   baseBranch     String        @map("base_branch")
   headSha        String?       @map("head_sha")
   state          GitHubPRState @default(OPEN)
+  isDraft        Boolean       @default(false) @map("is_draft")
+  closedAt       DateTime?     @map("closed_at")
   mergedAt       DateTime?     @map("merged_at")
   mergeCommitSha String?       @map("merge_commit_sha")
   createdAt      DateTime      @default(now()) @map("created_at")

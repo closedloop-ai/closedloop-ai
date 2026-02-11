@@ -5,7 +5,7 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
@@ -14,19 +14,20 @@ import { StatusMetadataSection } from "@/components/artifact-editor/status-metad
 import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type IssueMetadataPanelProps = {
   issue: ArtifactWithWorkstream;
   status: ArtifactStatus;
-  approver: string;
+  approver: User | null;
   owner: User | null;
   teamMembers: User[];
   targetRepo: string;
   targetBranch: string;
   onStatusChange: (status: ArtifactStatus) => void;
-  onApproverChange: (approver: string) => void;
-  onApproverBlur: () => void;
+  onApproverSelect: (user: User | null) => void;
   onOwnerChange: (user: User | null) => void;
   onTargetRepoChange: (targetRepo: string) => void;
   onTargetRepoBlur: () => void;
@@ -43,14 +44,20 @@ export function IssueMetadataPanel({
   targetRepo,
   targetBranch,
   onStatusChange,
-  onApproverChange,
-  onApproverBlur,
+  onApproverSelect,
   onOwnerChange,
   onTargetRepoChange,
   onTargetRepoBlur,
   onTargetBranchChange,
   onTargetBranchBlur,
 }: IssueMetadataPanelProps) {
+  // Fetch org users for approver dropdown
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
   const {
     dialogOpen,
     dialogTrace,
@@ -73,10 +80,10 @@ export function IssueMetadataPanel({
           >
             <StatusMetadataSection
               approver={approver}
-              onApproverBlur={onApproverBlur}
-              onApproverChange={onApproverChange}
+              onApproverSelect={onApproverSelect}
               onOwnerChange={onOwnerChange}
               onStatusChange={onStatusChange}
+              orgUsers={transformedOrgUsers}
               owner={owner}
               status={status}
               teamMembers={teamMembers}

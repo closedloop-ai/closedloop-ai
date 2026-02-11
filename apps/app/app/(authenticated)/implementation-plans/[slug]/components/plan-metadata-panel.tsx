@@ -14,7 +14,20 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@repo/design-system/components/ui/command";
 import { Label } from "@repo/design-system/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
 import { Progress } from "@repo/design-system/components/ui/progress";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { cn } from "@repo/design-system/lib/utils";
@@ -22,10 +35,14 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   ExternalLinkIcon,
+  FileTextIcon,
   GitPullRequestIcon,
+  LinkIcon,
   RefreshCwIcon,
+  UnlinkIcon,
 } from "lucide-react";
-import { useState } from "react";
+import Link from "next/link";
+import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
@@ -42,11 +59,19 @@ import {
   pullRequestStateColors,
   StatusBadge,
 } from "@/components/status-badge";
+import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
+import { getArtifactDetailUrl } from "@/lib/artifact-url-utils";
 import {
   calculateAcceptanceRate,
   sortMetricsByScore,
 } from "@/lib/evaluation-utils";
+import {
+  ARTIFACT_SUBTYPE_ICONS,
+  ARTIFACT_SUBTYPE_LABELS,
+} from "@/lib/project-constants";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { JudgeResultCard } from "./judge-result-card";
 
 type PlanMetadataPanelProps = {
@@ -59,9 +84,9 @@ type PlanMetadataPanelProps = {
    */
   status: ArtifactStatus;
   /**
-   * Current approver value
+   * Current approver (User or null if not selected)
    */
-  approver: string;
+  approver: User | null;
   /**
    * Current owner (User or null if not selected)
    */
@@ -99,17 +124,17 @@ type PlanMetadataPanelProps = {
    */
   onStatusChange: (status: ArtifactStatus) => void;
   /**
-   * Handler called when approver input value changes
+   * Handler called when approver is selected
    */
-  onApproverChange: (approver: string) => void;
-  /**
-   * Handler called when approver input loses focus
-   */
-  onApproverBlur: () => void;
+  onApproverSelect: (user: User | null) => void;
   /**
    * Handler called when owner is changed
    */
   onOwnerChange: (user: User | null) => void;
+  /**
+   * Handler called when parent artifact is changed
+   */
+  onParentChange: (parentId: string | null) => void;
 };
 
 /**
@@ -129,10 +154,17 @@ export function PlanMetadataPanel({
   isPreviewRefreshing,
   judgesReport,
   onStatusChange,
-  onApproverChange,
-  onApproverBlur,
+  onApproverSelect,
   onOwnerChange,
+  onParentChange,
 }: PlanMetadataPanelProps) {
+  // Fetch org users for approver dropdown
+  const { data: orgUsers = [] } = useOrganizationUsers();
+  const transformedOrgUsers = useMemo(
+    () => orgUsers.map(transformApiUserToSelectUser),
+    [orgUsers]
+  );
+
   const {
     dialogOpen,
     dialogTrace,
@@ -145,6 +177,28 @@ export function PlanMetadataPanel({
   const [isExecutionLogOpen, setIsExecutionLogOpen] = useState(false);
   const [isEvaluationOpen, setIsEvaluationOpen] = useState(false);
   const [isRatingOpen, setIsRatingOpen] = useState(true);
+  const [isParentSelectorOpen, setIsParentSelectorOpen] = useState(false);
+
+  // Fetch artifacts in the same project for parent selection (PRDs, Issues, Bugs)
+  const projectId = plan.projectId ?? plan.project?.id;
+  const { data: projectArtifacts = [] } = useArtifactsByProject(
+    projectId ?? "",
+    true,
+    { enabled: !!projectId }
+  );
+
+  // Filter to only PRDs, Issues, and Bugs (valid parent types)
+  const parentCandidates = useMemo(
+    () =>
+      projectArtifacts.filter(
+        (a) =>
+          (a.subtype === "PRD" ||
+            a.subtype === "ISSUE" ||
+            a.subtype === "BUG") &&
+          a.id !== plan.id
+      ),
+    [projectArtifacts, plan.id]
+  );
 
   // Calculate acceptance rate from all judges in the report
   const allMetrics =
@@ -166,14 +220,103 @@ export function PlanMetadataPanel({
           >
             <StatusMetadataSection
               approver={approver}
-              onApproverBlur={onApproverBlur}
-              onApproverChange={onApproverChange}
+              onApproverSelect={onApproverSelect}
               onOwnerChange={onOwnerChange}
               onStatusChange={onStatusChange}
+              orgUsers={transformedOrgUsers}
               owner={owner}
               status={status}
               teamMembers={teamMembers}
             />
+
+            <MetadataSection separator>
+              <Label className="text-muted-foreground text-xs">
+                Source Artifact
+              </Label>
+              {plan.parent ? (
+                <div className="flex items-center justify-between gap-2">
+                  <Link
+                    className="flex min-w-0 items-center gap-1.5 text-primary text-sm hover:underline"
+                    href={
+                      getArtifactDetailUrl(
+                        plan.parent.subtype,
+                        plan.parent.documentSlug
+                      ) ?? "#"
+                    }
+                  >
+                    {(() => {
+                      const Icon =
+                        ARTIFACT_SUBTYPE_ICONS[plan.parent.subtype] ??
+                        FileTextIcon;
+                      return <Icon className="h-3.5 w-3.5 shrink-0" />;
+                    })()}
+                    <span className="truncate">{plan.parent.title}</span>
+                    <span className="shrink-0 text-muted-foreground text-xs">
+                      {ARTIFACT_SUBTYPE_LABELS[plan.parent.subtype] ??
+                        plan.parent.subtype}
+                    </span>
+                  </Link>
+                  <Button
+                    aria-label="Unlink source artifact"
+                    onClick={() => onParentChange(null)}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <UnlinkIcon className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ) : (
+                <Popover
+                  onOpenChange={setIsParentSelectorOpen}
+                  open={isParentSelectorOpen}
+                >
+                  <PopoverTrigger asChild>
+                    <Button
+                      className="w-full justify-start gap-2 text-muted-foreground"
+                      size="sm"
+                      variant="outline"
+                    >
+                      <LinkIcon className="h-3.5 w-3.5" />
+                      Link Source Artifact
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-72 p-0">
+                    <Command>
+                      <CommandInput placeholder="Search artifacts..." />
+                      <CommandList>
+                        <CommandEmpty>No artifacts found.</CommandEmpty>
+                        <CommandGroup>
+                          {parentCandidates.map((artifact) => {
+                            const Icon =
+                              ARTIFACT_SUBTYPE_ICONS[artifact.subtype] ??
+                              FileTextIcon;
+                            return (
+                              <CommandItem
+                                key={artifact.id}
+                                onSelect={() => {
+                                  onParentChange(artifact.id);
+                                  setIsParentSelectorOpen(false);
+                                }}
+                                value={`${artifact.title} ${ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ?? artifact.subtype}`}
+                              >
+                                <Icon className="mr-2 h-3.5 w-3.5 shrink-0" />
+                                <span className="truncate">
+                                  {artifact.title}
+                                </span>
+                                <span className="ml-auto shrink-0 text-muted-foreground text-xs">
+                                  {ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ??
+                                    artifact.subtype}
+                                </span>
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              )}
+            </MetadataSection>
 
             {generationStatus?.htmlUrl ? (
               <MetadataSection separator>
