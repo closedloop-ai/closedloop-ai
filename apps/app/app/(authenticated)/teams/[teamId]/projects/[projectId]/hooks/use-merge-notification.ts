@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 
 /**
  * Hook to detect new GITHUB_PR_MERGED events in activity feed and show toast notifications.
- * Tracks seen event IDs to prevent duplicate notifications on re-renders.
+ * Seeds seen IDs on first data load so only events arriving after page load trigger toasts.
  */
 export function useMergeNotification(
   activityData: ActivityResponse | undefined,
@@ -16,9 +16,19 @@ export function useMergeNotification(
 ): void {
   const router = useRouter();
   const seenEventIds = useRef<Set<string>>(new Set());
+  const initialized = useRef(false);
 
   useEffect(() => {
     if (!activityData?.activities) {
+      return;
+    }
+
+    // On first load, seed all existing event IDs without toasting
+    if (!initialized.current) {
+      initialized.current = true;
+      for (const activity of activityData.activities) {
+        seenEventIds.current.add(activity.id);
+      }
       return;
     }
 

@@ -419,6 +419,7 @@ model Artifact {
   ratings      ArtifactRating[]
   evaluations  ArtifactEvaluation[]
   previewDeployment  PreviewDeployment?
+  pullRequests GitHubPullRequest[]
 
   @@unique([organizationId, templateForSubtype])
   @@index([organizationId, workstreamId, subtype, isLatest])
@@ -665,6 +666,9 @@ model GitHubPullRequest {
   mergeCommitSha String?       @map("merge_commit_sha")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])

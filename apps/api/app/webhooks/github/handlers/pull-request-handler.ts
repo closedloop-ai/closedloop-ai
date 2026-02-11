@@ -85,7 +85,6 @@ export async function handlePullRequest(
   });
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: PR lifecycle handler covers 5 action types in one transaction by design
   await withDb.tx(async (tx) => {
     // Step 1: Find Repository by githubId
     const repo = await tx.repository.findUnique({
@@ -111,7 +110,12 @@ export async function handlePullRequest(
           number: pull_request.number,
         },
       },
-      select: { id: true, workstreamId: true, artifactId: true },
+      select: {
+        id: true,
+        workstreamId: true,
+        artifactId: true,
+        artifact: { select: { documentSlug: true } },
+      },
     });
 
     if (!existingPr) {
@@ -143,14 +147,6 @@ export async function handlePullRequest(
           },
         });
 
-        // Look up artifact's documentSlug for event metadata
-        const artifact = existingPr.artifactId
-          ? await tx.artifact.findUnique({
-              where: { id: existingPr.artifactId },
-              select: { documentSlug: true },
-            })
-          : null;
-
         // Create workstream event
         await tx.workstreamEvent.create({
           data: {
@@ -162,7 +158,7 @@ export async function handlePullRequest(
               prTitle: pull_request.title,
               prUrl: pull_request.html_url,
               artifactId: existingPr.artifactId,
-              documentSlug: artifact?.documentSlug,
+              documentSlug: existingPr.artifact?.documentSlug,
               ...(isMerged
                 ? {
                     mergedAt: pull_request.merged_at,

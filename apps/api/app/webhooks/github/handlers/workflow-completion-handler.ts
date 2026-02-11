@@ -21,7 +21,7 @@ type PrEventMetadata = {
   prTitle: string;
   prUrl: string;
   artifactId: string;
-  documentSlug: string;
+  documentSlug?: string;
   branch: string;
   prNumber: number;
   correlationId: string;

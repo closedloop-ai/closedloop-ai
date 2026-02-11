@@ -134,6 +134,8 @@ function deriveGroupTitle(
 /**
  * Aggregates PR states across multiple artifacts to determine the workstream's visual state.
  * Priority: OPEN > MERGED > null (no PR state indicator).
+ * CLOSED PRs intentionally return null — abandoned/closed-without-merge PRs
+ * don't warrant a visual indicator, same as workstreams with no PRs.
  */
 function getWorkstreamPrState(
   artifacts: ProjectArtifact[]

@@ -193,9 +193,6 @@ describe("handlePullRequest", () => {
         findUnique: vi.fn(),
         update: vi.fn(),
       },
-      artifact: {
-        findUnique: vi.fn(),
-      },
       workstreamEvent: {
         create: vi.fn(),
       },
@@ -237,16 +234,12 @@ describe("handlePullRequest", () => {
         id: "repo-uuid-123",
       });
 
-      // Mock PR lookup
+      // Mock PR lookup (includes artifact via relation)
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
         artifactId: "artifact-uuid-123",
-      });
-
-      // Mock artifact lookup for documentSlug
-      mockTx.artifact.findUnique.mockResolvedValue({
-        documentSlug: "plan-feature-x",
+        artifact: { documentSlug: "plan-feature-x" },
       });
 
       // Mock update
@@ -263,7 +256,7 @@ describe("handlePullRequest", () => {
         select: { id: true },
       });
 
-      // Verify PR lookup
+      // Verify PR lookup (includes artifact via relation)
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
         where: {
           repositoryId_number: {
@@ -271,13 +264,12 @@ describe("handlePullRequest", () => {
             number: 42,
           },
         },
-        select: { id: true, workstreamId: true, artifactId: true },
-      });
-
-      // Verify artifact lookup for documentSlug
-      expect(mockTx.artifact.findUnique).toHaveBeenCalledWith({
-        where: { id: "artifact-uuid-123" },
-        select: { documentSlug: true },
+        select: {
+          id: true,
+          workstreamId: true,
+          artifactId: true,
+          artifact: { select: { documentSlug: true } },
+        },
       });
 
       // Verify PR update
@@ -340,6 +332,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-789",
         workstreamId: "ws-uuid-abc",
         artifactId: null,
+        artifact: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -356,9 +349,6 @@ describe("handlePullRequest", () => {
           mergeCommitSha: null,
         },
       });
-
-      // Should not query artifact when artifactId is null
-      expect(mockTx.artifact.findUnique).not.toHaveBeenCalled();
 
       expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
         data: {
@@ -650,10 +640,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-tx",
         workstreamId: "ws-uuid-tx",
         artifactId: "artifact-uuid-tx",
-      });
-
-      mockTx.artifact.findUnique.mockResolvedValue({
-        documentSlug: "plan-tx",
+        artifact: { documentSlug: "plan-tx" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
