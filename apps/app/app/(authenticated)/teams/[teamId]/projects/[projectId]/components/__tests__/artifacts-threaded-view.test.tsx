@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createMockPullRequest } from "@/__tests__/fixtures/artifacts";
 import type { ProjectArtifact } from "@/types/teams";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
@@ -452,5 +453,156 @@ describe("ArtifactsThreadedView - Navigation", () => {
 
     const row = screen.getByText("Template").closest("div.flex");
     expect(row?.className).not.toContain("cursor-pointer");
+  });
+});
+
+describe("ArtifactsThreadedView - PR Status Badge", () => {
+  afterEach(cleanup);
+
+  test("displays PR badge for artifact with OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact with PR",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN", number: 10 }),
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("OPEN")).toBeDefined();
+  });
+
+  test("displays PR badge for artifact with MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Merged Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED", number: 20 }),
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("MERGED")).toBeDefined();
+  });
+
+  test("does not display PR badge when artifact has no pullRequest", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "No PR Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: null,
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText("OPEN")).toBeNull();
+    expect(screen.queryByText("MERGED")).toBeNull();
+  });
+});
+
+describe("ArtifactsThreadedView - Workstream PR Border", () => {
+  afterEach(cleanup);
+
+  test("shows blue border when workstream has OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+  });
+
+  test("shows green border when workstream has MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-green-500");
+  });
+
+  test("prioritizes OPEN over MERGED when multiple PRs in workstream", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+      createMockArtifact({
+        id: "2",
+        name: "Artifact 2",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
+  });
+
+  test("shows no border when workstream has no PRs", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: null,
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).not.toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
   });
 });
