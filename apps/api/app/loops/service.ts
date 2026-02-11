@@ -192,6 +192,7 @@ export const loopsService = {
       completedAt: Date;
       tokensInput: number;
       tokensOutput: number;
+      tokensByModel: Record<string, { input: number; output: number }>;
       estimatedCost: number;
       error: { code: string; message: string };
       s3StateKey: string;
@@ -229,6 +230,9 @@ export const loopsService = {
             : {}),
           ...(data?.tokensOutput !== undefined
             ? { tokensOutput: data.tokensOutput }
+            : {}),
+          ...(data?.tokensByModel !== undefined
+            ? { tokensByModel: data.tokensByModel }
             : {}),
           ...(data?.estimatedCost !== undefined
             ? { estimatedCost: data.estimatedCost }

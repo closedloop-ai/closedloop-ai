@@ -585,9 +585,10 @@ model Loop {
   s3StateKey  String? @map("s3_state_key") // S3 prefix for state
 
   // Cost tracking
-  tokensInput   Int      @default(0) @map("tokens_input")
-  tokensOutput  Int      @default(0) @map("tokens_output")
-  estimatedCost Decimal? @map("estimated_cost") @db.Decimal(10, 6)
+  tokensInput    Int      @default(0) @map("tokens_input")
+  tokensOutput   Int      @default(0) @map("tokens_output")
+  tokensByModel  Json?    @map("tokens_by_model") // { "claude-opus-4": { input, output }, ... }
+  estimatedCost  Decimal? @map("estimated_cost") @db.Decimal(10, 6)
 
   // Timing
   startedAt   DateTime? @map("started_at")

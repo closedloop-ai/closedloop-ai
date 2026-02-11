@@ -45,6 +45,7 @@ export type Loop = {
   s3StateKey: string | null;
   tokensInput: number;
   tokensOutput: number;
+  tokensByModel: TokensByModel | null;
   estimatedCost: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -140,6 +141,7 @@ export type LoopEventCompleted = {
   type: "completed";
   result: JsonObject;
   tokensUsed: { input: number; output: number };
+  tokensByModel?: TokensByModel;
   timestamp: string;
 };
 
@@ -171,6 +173,26 @@ export type LoopEventsPaginatedResponse = {
   data: LoopEvent[];
   total: number;
 };
+
+// Per-model token tracking
+export type ModelTokenUsage = {
+  input: number;
+  output: number;
+  cacheCreation?: number;
+  cacheRead?: number;
+};
+
+export type TokensByModel = Record<string, ModelTokenUsage>;
+
+// Model pricing (USD per million tokens)
+export const MODEL_PRICING: Record<string, { input: number; output: number }> =
+  {
+    "claude-opus-4": { input: 15, output: 75 },
+    "claude-sonnet-4-5": { input: 3, output: 15 },
+    "claude-haiku-4-5": { input: 0.8, output: 4 },
+    // Fallback for unknown models
+    default: { input: 15, output: 75 },
+  };
 
 // Usage/cost summary types
 export type LoopUsageByCommand = {

@@ -1,5 +1,10 @@
 import { ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
-import type { LoopEvent, LoopEventCompleted } from "@repo/api/src/types/loop";
+import type {
+  LoopEvent,
+  LoopEventCompleted,
+  TokensByModel,
+} from "@repo/api/src/types/loop";
+import { MODEL_PRICING } from "@repo/api/src/types/loop";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { artifactsService } from "@/app/artifacts/service";
@@ -240,6 +245,38 @@ export async function buildContextPack(
 
   const s3Key = await uploadContextPack(organizationId, loop.id, contextPack);
   return s3Key;
+}
+
+/**
+ * Calculate estimated cost from per-model token breakdown.
+ * Falls back to default (Opus) pricing if no model breakdown is available.
+ */
+function calculateCost(
+  tokensInput: number,
+  tokensOutput: number,
+  tokensByModel: TokensByModel | null
+): number {
+  if (!tokensByModel || Object.keys(tokensByModel).length === 0) {
+    const fallback = MODEL_PRICING.default;
+    return (
+      (tokensInput / 1_000_000) * fallback.input +
+      (tokensOutput / 1_000_000) * fallback.output
+    );
+  }
+
+  let totalCost = 0;
+  for (const [model, usage] of Object.entries(tokensByModel)) {
+    // Match model name to pricing — try exact match, then prefix match, then default
+    const pricing =
+      MODEL_PRICING[model] ??
+      Object.entries(MODEL_PRICING).find(([key]) => model.includes(key))?.[1] ??
+      MODEL_PRICING.default;
+
+    totalCost +=
+      (usage.input / 1_000_000) * pricing.input +
+      (usage.output / 1_000_000) * pricing.output;
+  }
+  return totalCost;
 }
 
 /**
@@ -574,16 +611,17 @@ async function handleLoopCompleted(
 
   const tokensInput = metadata?.tokensInput ?? event.tokensUsed.input;
   const tokensOutput = metadata?.tokensOutput ?? event.tokensUsed.output;
+  const tokensByModel: TokensByModel | null =
+    event.tokensByModel ?? metadata?.tokensByModel ?? null;
 
-  // Estimate cost: Claude Opus pricing (approximate)
-  // $15/M input, $75/M output tokens
-  const estimatedCost =
-    (tokensInput / 1_000_000) * 15 + (tokensOutput / 1_000_000) * 75;
+  // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
+  const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
 
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
     completedAt: new Date(),
     tokensInput,
     tokensOutput,
+    tokensByModel: tokensByModel ?? undefined,
     estimatedCost,
   });
 
@@ -591,6 +629,7 @@ async function handleLoopCompleted(
     loopId,
     tokensInput,
     tokensOutput,
+    tokensByModel,
     estimatedCost,
   });
 }

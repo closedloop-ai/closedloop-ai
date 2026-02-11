@@ -345,6 +345,119 @@ function spawnProcess(cmd, args, cwd, env) {
 }
 
 // ---------------------------------------------------------------------------
+// Token usage parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse Claude Code CLI output for per-model token usage.
+ * Claude Code prints a summary like:
+ *   Model: claude-opus-4-6  Input: 12345  Output: 6789  Cache creation: 100  Cache read: 200
+ *   Model: claude-sonnet-4-5-20250929  Input: 5000  Output: 2000
+ *
+ * It may also print total lines like:
+ *   Total input tokens: 17345
+ *   Total output tokens: 8789
+ *   Total cost: $1.23
+ */
+
+// Regex patterns for parsing token usage (top-level for performance)
+const RE_MODEL_USAGE =
+  /Model:\s*([\w.-]+)\s+Input:\s*([\d,]+)\s+Output:\s*([\d,]+)/i;
+const RE_CACHE_CREATION = /Cache creation:\s*([\d,]+)/i;
+const RE_CACHE_READ = /Cache read:\s*([\d,]+)/i;
+const RE_TOTAL_INPUT = /Total input tokens:\s*([\d,]+)/i;
+const RE_TOTAL_OUTPUT = /Total output tokens:\s*([\d,]+)/i;
+const RE_DATE_SUFFIX = /-\d{8}$/;
+
+/**
+ * Parse a single model-usage line and accumulate into tokensByModel map.
+ */
+function accumulateModelUsage(tokensByModel, line, modelMatch) {
+  const modelName = normalizeModelName(modelMatch[1]);
+  const input = Number.parseInt(modelMatch[2].replace(/,/g, ""), 10);
+  const output = Number.parseInt(modelMatch[3].replace(/,/g, ""), 10);
+
+  if (!tokensByModel[modelName]) {
+    tokensByModel[modelName] = { input: 0, output: 0 };
+  }
+  tokensByModel[modelName].input += input;
+  tokensByModel[modelName].output += output;
+
+  const cacheCreateMatch = line.match(RE_CACHE_CREATION);
+  if (cacheCreateMatch) {
+    tokensByModel[modelName].cacheCreation =
+      (tokensByModel[modelName].cacheCreation || 0) +
+      Number.parseInt(cacheCreateMatch[1].replace(/,/g, ""), 10);
+  }
+  const cacheReadMatch = line.match(RE_CACHE_READ);
+  if (cacheReadMatch) {
+    tokensByModel[modelName].cacheRead =
+      (tokensByModel[modelName].cacheRead || 0) +
+      Number.parseInt(cacheReadMatch[1].replace(/,/g, ""), 10);
+  }
+}
+
+function parseTokenUsage(outputLines) {
+  const tokensByModel = {};
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  for (const entry of outputLines) {
+    const line = entry.line || "";
+
+    const modelMatch = line.match(RE_MODEL_USAGE);
+    if (modelMatch) {
+      accumulateModelUsage(tokensByModel, line, modelMatch);
+    }
+
+    const totalInputMatch = line.match(RE_TOTAL_INPUT);
+    if (totalInputMatch) {
+      totalInput = Number.parseInt(totalInputMatch[1].replace(/,/g, ""), 10);
+    }
+    const totalOutputMatch = line.match(RE_TOTAL_OUTPUT);
+    if (totalOutputMatch) {
+      totalOutput = Number.parseInt(totalOutputMatch[1].replace(/,/g, ""), 10);
+    }
+  }
+
+  const hasModelData = Object.keys(tokensByModel).length > 0;
+  if (!hasModelData) {
+    return { tokensByModel: null, totalInput, totalOutput };
+  }
+
+  let sumInput = 0;
+  let sumOutput = 0;
+  for (const usage of Object.values(tokensByModel)) {
+    sumInput += usage.input;
+    sumOutput += usage.output;
+  }
+  return {
+    tokensByModel,
+    totalInput: sumInput || totalInput,
+    totalOutput: sumOutput || totalOutput,
+  };
+}
+
+/**
+ * Normalize model names to canonical short forms for consistent pricing lookup.
+ * e.g., "claude-opus-4-6" -> "claude-opus-4"
+ *        "claude-sonnet-4-5-20250929" -> "claude-sonnet-4-5"
+ *        "claude-haiku-4-5-20251001" -> "claude-haiku-4-5"
+ */
+function normalizeModelName(rawName) {
+  // Strip date suffixes like -20250929
+  const stripped = rawName.replace(RE_DATE_SUFFIX, "");
+  // Map known variants to canonical names
+  const canonicalMap = {
+    "claude-opus-4-6": "claude-opus-4",
+    "claude-opus-4": "claude-opus-4",
+    "claude-sonnet-4-5": "claude-sonnet-4-5",
+    "claude-haiku-4-5": "claude-haiku-4-5",
+  };
+  return canonicalMap[stripped] || stripped;
+}
+
+// ---------------------------------------------------------------------------
 // State upload
 // ---------------------------------------------------------------------------
 async function uploadState(workDir, output) {
@@ -399,6 +512,55 @@ async function uploadState(workDir, output) {
   }
 
   log("info", "State upload complete");
+}
+
+/**
+ * Upload metadata.json with token usage breakdown and execution info.
+ */
+async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
+  if (!(config.s3StateKey && config.s3Bucket)) {
+    return;
+  }
+
+  const statePrefix = config.s3StateKey;
+
+  // Collect files read/written from output
+  const filesWritten = [];
+  const filesRead = [];
+  let toolCalls = 0;
+
+  for (const entry of output) {
+    const line = entry.line || "";
+    // Count tool calls from Claude Code output
+    if (line.includes("Tool:") || line.includes("tool_use")) {
+      toolCalls++;
+    }
+  }
+
+  const metadata = {
+    loopId: config.loopId,
+    command: config.command,
+    status: "COMPLETED",
+    startedAt: new Date(startTime).toISOString(),
+    completedAt: new Date().toISOString(),
+    tokensInput: tokenUsage.totalInput,
+    tokensOutput: tokenUsage.totalOutput,
+    tokensByModel: tokenUsage.tokensByModel,
+    filesRead,
+    filesWritten,
+    toolCalls,
+  };
+
+  try {
+    await uploadToS3(
+      `${statePrefix}/metadata.json`,
+      JSON.stringify(metadata, null, 2),
+      "application/json"
+    );
+    log("info", "Metadata uploaded to S3");
+  } catch (err) {
+    log("error", `Failed to upload metadata: ${err.message}`);
+  }
 }
 
 async function uploadDirectoryToS3(dirPath, s3Prefix) {
@@ -619,10 +781,22 @@ async function main() {
       `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`
     );
 
-    // Step 7: Upload state to S3
-    await uploadState(workDir, output);
+    // Step 7: Parse token usage from output
+    const tokenUsage = parseTokenUsage(output);
+    log(
+      "info",
+      `Token usage: input=${tokenUsage.totalInput}, output=${tokenUsage.totalOutput}, models=${
+        tokenUsage.tokensByModel
+          ? Object.keys(tokenUsage.tokensByModel).join(", ")
+          : "unknown"
+      }`
+    );
 
-    // Step 8: Report final status
+    // Step 8: Upload state + metadata to S3
+    await uploadState(workDir, output);
+    await uploadMetadata(workDir, output, tokenUsage, startTime);
+
+    // Step 9: Report final status with token breakdown
     const finalStatus = exitCode === 0 ? "COMPLETED" : "FAILED";
     await reportEvent({
       type: "status",
@@ -630,6 +804,11 @@ async function main() {
       exitCode,
       signal: result.signal,
       durationSeconds: Number.parseFloat(duration),
+      tokensUsed: {
+        input: tokenUsage.totalInput,
+        output: tokenUsage.totalOutput,
+      },
+      tokensByModel: tokenUsage.tokensByModel,
       correlationId: config.correlationId,
       loopId: config.loopId,
       artifactId: config.artifactId,

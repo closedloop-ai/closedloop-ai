@@ -1,6 +1,6 @@
 "use client";
 
-import { LoopStatus } from "@repo/api/src/types/loop";
+import { LoopStatus, type TokensByModel } from "@repo/api/src/types/loop";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -61,6 +61,40 @@ function formatTokenCount(count: number): string {
     return `${(count / 1000).toFixed(1)}k`;
   }
   return count.toString();
+}
+
+function formatModelName(model: string): string {
+  return model
+    .replace("claude-", "")
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function ModelTokenBreakdown({
+  tokensByModel,
+}: {
+  tokensByModel: TokensByModel;
+}) {
+  const models = Object.entries(tokensByModel);
+  if (models.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2 space-y-1 border-muted border-t pt-2">
+      {models.map(([model, usage]) => (
+        <div className="flex items-center justify-between text-xs" key={model}>
+          <span className="text-muted-foreground">
+            {formatModelName(model)}
+          </span>
+          <span className="tabular-nums">
+            {formatTokenCount(usage.input)} / {formatTokenCount(usage.output)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 const ACTIVE_STATUSES: Set<string> = new Set([
@@ -168,6 +202,9 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
               <p className="mt-1 text-muted-foreground text-xs">
                 ~${loop.estimatedCost.toFixed(4)}
               </p>
+            )}
+            {loop.tokensByModel && (
+              <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
             )}
           </CardContent>
         </Card>

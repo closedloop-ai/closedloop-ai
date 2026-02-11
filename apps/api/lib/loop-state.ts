@@ -92,6 +92,7 @@ export type LoopMetadata = {
   completedAt: string;
   tokensInput: number;
   tokensOutput: number;
+  tokensByModel?: Record<string, { input: number; output: number }>;
   filesRead: string[];
   filesWritten: string[];
   toolCalls: number;
