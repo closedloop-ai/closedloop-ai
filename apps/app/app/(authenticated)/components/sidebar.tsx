@@ -142,7 +142,7 @@ const data = {
   ],
   navSecondary: [
     {
-      title: "Judges Analytics",
+      title: "Judges",
       url: "/judges-analytics",
       icon: BarChart3,
       disabled: false,

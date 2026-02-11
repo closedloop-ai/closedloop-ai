@@ -28,9 +28,7 @@ export default function JudgesAnalyticsPage() {
     <div className="flex flex-1 flex-col gap-6 p-6">
       {/* Page title */}
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">
-          Judges Analytics
-        </h1>
+        <h1 className="font-semibold text-2xl tracking-tight">Judges</h1>
         <p className="text-muted-foreground">
           View aggregate statistics for LLM judge evaluations across artifact
           types.
