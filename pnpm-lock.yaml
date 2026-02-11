@@ -781,6 +781,12 @@ importers:
       '@liveblocks/yjs':
         specifier: ^3.13.4
         version: 3.13.4(@types/json-schema@7.0.15)(yjs@13.6.29)
+      '@repo/api':
+        specifier: workspace:*
+        version: link:../api
+      '@repo/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@t3-oss/env-nextjs':
         specifier: ^0.13.10
         version: 0.13.10(typescript@5.9.3)(valibot@1.2.0(typescript@5.9.3))(zod@4.3.6)
