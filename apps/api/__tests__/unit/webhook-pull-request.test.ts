@@ -8,8 +8,8 @@
  * - synchronize → Updates headSha
  * - converted_to_draft → Sets isDraft=true
  * - ready_for_review → Sets isDraft=false
- * - Unknown PR/Repository → Logs and returns without error
- * - Unsupported actions → Logs and skips
+ * - Unknown PR/Repository → Returns without error
+ * - Unsupported actions → Skips without DB queries
  */
 
 import type {
@@ -30,14 +30,6 @@ import {
 } from "vitest";
 
 // Mock modules before importing
-vi.mock("@repo/observability/log", () => ({
-  log: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
@@ -53,7 +45,6 @@ vi.mock("@repo/database", () => {
 
 // Import after mocking
 import { withDb } from "@repo/database";
-import { log } from "@repo/observability/log";
 import { handlePullRequest } from "@/app/webhooks/github/handlers/pull-request-handler";
 
 // Type aliases for mocked functions
@@ -300,15 +291,6 @@ describe("handlePullRequest", () => {
           },
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR closed",
-        expect.objectContaining({
-          prNumber: 42,
-          newState: "MERGED",
-          isMerged: true,
-        })
-      );
     });
   });
 
@@ -369,15 +351,6 @@ describe("handlePullRequest", () => {
           },
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR closed",
-        expect.objectContaining({
-          prNumber: 43,
-          newState: "CLOSED",
-          isMerged: false,
-        })
-      );
     });
   });
 
@@ -418,13 +391,6 @@ describe("handlePullRequest", () => {
           closedAt: null,
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR reopened",
-        expect.objectContaining({
-          prNumber: 44,
-        })
-      );
     });
   });
 
@@ -466,16 +432,6 @@ describe("handlePullRequest", () => {
           headSha: "new-sha-xyz",
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR synchronized",
-        expect.objectContaining({
-          prNumber: 45,
-          before: "old-sha-abc",
-          after: "new-sha-xyz",
-          newHeadSha: "new-sha-xyz",
-        })
-      );
     });
   });
 
@@ -515,13 +471,6 @@ describe("handlePullRequest", () => {
           isDraft: true,
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR converted to draft",
-        expect.objectContaining({
-          prNumber: 46,
-        })
-      );
     });
   });
 
@@ -561,18 +510,11 @@ describe("handlePullRequest", () => {
           isDraft: false,
         },
       });
-
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] PR ready for review",
-        expect.objectContaining({
-          prNumber: 47,
-        })
-      );
     });
   });
 
   describe("unknown repository", () => {
-    it("logs warning and returns without error when repository is not found", async () => {
+    it("returns without error when repository is not found", async () => {
       const repository = createRepository(999);
       const pullRequest = createPullRequest({
         number: 50,
@@ -592,16 +534,6 @@ describe("handlePullRequest", () => {
 
       await handlePullRequest(event);
 
-      expect(log.warn).toHaveBeenCalledWith(
-        "[handlePullRequest] Repository not found in database",
-        expect.objectContaining({
-          githubRepoId: 999,
-          repositoryFullName: "owner/test-repo",
-          action: "closed",
-          prNumber: 50,
-        })
-      );
-
       // Should not attempt to find PR or update
       expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
@@ -609,7 +541,7 @@ describe("handlePullRequest", () => {
   });
 
   describe("unknown pull request", () => {
-    it("logs warning and returns without error when PR is not found in database", async () => {
+    it("returns without error when PR is not found in database", async () => {
       const repository = createRepository(333);
       const pullRequest = createPullRequest({
         number: 51,
@@ -634,23 +566,13 @@ describe("handlePullRequest", () => {
 
       await handlePullRequest(event);
 
-      expect(log.warn).toHaveBeenCalledWith(
-        "[handlePullRequest] Pull request not found in database",
-        expect.objectContaining({
-          repositoryId: "repo-uuid-exists",
-          prNumber: 51,
-          action: "reopened",
-          reason: "PR may have been created outside Symphony workflow",
-        })
-      );
-
       // Should not attempt update
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
     });
   });
 
   describe("unsupported actions", () => {
-    it("logs info and skips DB queries for unsupported action types", async () => {
+    it("skips DB queries for unsupported action types", async () => {
       const repository = createRepository(444);
       const pullRequest = createPullRequest({
         number: 52,
@@ -667,15 +589,6 @@ describe("handlePullRequest", () => {
       } as any;
 
       await handlePullRequest(event);
-
-      // Should log info and skip — no DB queries
-      expect(log.info).toHaveBeenCalledWith(
-        "[handlePullRequest] Skipping unhandled action",
-        expect.objectContaining({
-          action: "edited",
-          prNumber: 52,
-        })
-      );
 
       // Should not query DB at all
       expect(mockTx.repository.findUnique).not.toHaveBeenCalled();
