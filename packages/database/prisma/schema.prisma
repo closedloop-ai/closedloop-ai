@@ -157,6 +157,24 @@ enum ProjectPriority {
   HIGH
 }
 
+enum LoopStatus {
+  PENDING
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  TIMED_OUT
+}
+
+enum LoopCommand {
+  PLAN
+  EXECUTE
+  CHAT
+  EXPLORE
+  REQUEST_CHANGES
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -188,26 +206,28 @@ model Organization {
   workstreams        Workstream[]
   artifacts          Artifact[]
   githubInstallation GitHubInstallation?
+  loops              Loop[]
 
   @@map("organizations")
 }
 
 model User {
-  id             String       @id @default(uuid(7)) @db.Uuid
-  clerkId        String       @map("clerk_id")
-  organizationId String       @map("organization_id") @db.Uuid
-  active         Boolean      @default(true) @map("active")
-  email          String
-  firstName      String?      @map("first_name")
-  lastName       String?      @map("last_name")
-  avatarUrl      String?      @map("avatar_url")
-  phoneNumber    String?      @map("phone_number")
-  role           ApproverRole @default(ENGINEER)
-  linearId       String?      @map("linear_id")
-  slackId        String?      @map("slack_id")
-  githubUsername String?      @map("github_username")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  id              String       @id @default(uuid(7)) @db.Uuid
+  clerkId         String       @map("clerk_id")
+  organizationId  String       @map("organization_id") @db.Uuid
+  active          Boolean      @default(true) @map("active")
+  email           String
+  firstName       String?      @map("first_name")
+  lastName        String?      @map("last_name")
+  avatarUrl       String?      @map("avatar_url")
+  phoneNumber     String?      @map("phone_number")
+  role            ApproverRole @default(ENGINEER)
+  linearId        String?      @map("linear_id")
+  slackId         String?      @map("slack_id")
+  githubUsername  String?      @map("github_username")
+  anthropicApiKey String?      @map("anthropic_api_key")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
   organization      Organization @relation(fields: [organizationId], references: [id])
@@ -215,6 +235,7 @@ model User {
   ownedProjects     Project[]    @relation("ProjectOwner")
   ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
   approvedArtifacts Artifact[]   @relation("ArtifactApprover")
+  loops             Loop[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -353,6 +374,7 @@ model Workstream {
   organization Organization @relation(fields: [organizationId], references: [id])
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   artifacts    Artifact[]
+  loops        Loop[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
@@ -383,42 +405,43 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id                 String            @id @default(uuid(7)) @db.Uuid
-  organizationId     String            @map("organization_id") @db.Uuid
-  workstreamId       String?           @map("workstream_id") @db.Uuid
-  projectId          String?           @map("project_id") @db.Uuid
-  parentId           String?           @map("parent_id") @db.Uuid
-  subtype            ArtifactSubtype   @map("subtype")
-  type               ArtifactType      @default(DOCUMENT) @map("type")
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  organizationId     String           @map("organization_id") @db.Uuid
+  workstreamId       String?          @map("workstream_id") @db.Uuid
+  projectId          String?          @map("project_id") @db.Uuid
+  parentId           String?          @map("parent_id") @db.Uuid
+  subtype            ArtifactSubtype  @map("subtype")
+  type               ArtifactType     @default(DOCUMENT) @map("type")
   title              String
-  fileName           String?           @map("file_name")
-  approverId         String?           @map("approver_id") @db.Uuid
-  status             ArtifactStatus    @default(DRAFT)
-  content            String?           @db.Text
-  externalUrl        String?           @map("external_url")
-  version            Int               @default(1)
-  isLatest           Boolean           @default(true) @map("is_latest")
-  documentSlug       String?           @map("document_slug")
-  generatedBy        String?           @map("generated_by") @db.Uuid
-  ownerId            String?           @map("owner_id") @db.Uuid
-  tokenUsage         Json?             @map("token_usage")
-  targetRepo         String?           @map("target_repo")
-  targetBranch       String?           @map("target_branch")
-  templateForSubtype ArtifactSubtype?  @map("template_for_subtype")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
+  fileName           String?          @map("file_name")
+  approverId         String?          @map("approver_id") @db.Uuid
+  status             ArtifactStatus   @default(DRAFT)
+  content            String?          @db.Text
+  externalUrl        String?          @map("external_url")
+  version            Int              @default(1)
+  isLatest           Boolean          @default(true) @map("is_latest")
+  documentSlug       String?          @map("document_slug")
+  generatedBy        String?          @map("generated_by") @db.Uuid
+  ownerId            String?          @map("owner_id") @db.Uuid
+  tokenUsage         Json?            @map("token_usage")
+  targetRepo         String?          @map("target_repo")
+  targetBranch       String?          @map("target_branch")
+  templateForSubtype ArtifactSubtype? @map("template_for_subtype")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]           @relation("ArtifactSource")
-  ratings      ArtifactRating[]
-  evaluations  ArtifactEvaluation[]
-  previewDeployment  PreviewDeployment?
+  organization      Organization         @relation(fields: [organizationId], references: [id])
+  workstream        Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project           Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner             User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  approver          User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  parent            Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children          Artifact[]           @relation("ArtifactSource")
+  ratings           ArtifactRating[]
+  evaluations       ArtifactEvaluation[]
+  previewDeployment PreviewDeployment?
+  loops             Loop[]
 
   @@unique([organizationId, templateForSubtype])
   @@index([organizationId, workstreamId, subtype, isLatest])
@@ -534,6 +557,80 @@ model Comment {
   @@index([authorId])
   @@index([artifactId])
   @@map("comments")
+}
+
+// =============================================================================
+// LOOPS (Runtime v2 - Container-based compute)
+// =============================================================================
+
+model Loop {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  status         LoopStatus  @default(PENDING)
+  command        LoopCommand
+
+  // Optional relationships
+  artifactId   String? @map("artifact_id") @db.Uuid
+  workstreamId String? @map("workstream_id") @db.Uuid
+  parentLoopId String? @map("parent_loop_id") @db.Uuid
+
+  // Execution context
+  prompt      String? @db.Text
+  repo        Json? // { fullName: string, branch: string }
+  contextRefs Json?   @map("context_refs") // Array<{ artifactId, include }>
+
+  // Container tracking
+  containerId String? @map("container_id") // ECS task ARN
+  s3StateKey  String? @map("s3_state_key") // S3 prefix for state
+
+  // Cost tracking
+  tokensInput   Int      @default(0) @map("tokens_input")
+  tokensOutput  Int      @default(0) @map("tokens_output")
+  estimatedCost Decimal? @map("estimated_cost") @db.Decimal(10, 6)
+
+  // Timing
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  // Error info
+  error Json? // { code: string, message: string }
+
+  // Extensible metadata
+  metadata Json @default("{}") @map("metadata")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  artifact     Artifact?    @relation(fields: [artifactId], references: [id])
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id])
+  parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  childLoops   Loop[]       @relation("LoopParent")
+  events       LoopEvent[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, userId, createdAt])
+  @@index([artifactId])
+  @@index([workstreamId])
+  @@index([parentLoopId])
+  @@map("loops")
+}
+
+model LoopEvent {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  loopId    String   @map("loop_id") @db.Uuid
+  type      String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
+  data      Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([loopId, createdAt])
+  @@index([loopId, type])
+  @@map("loop_events")
 }
 
 // =============================================================================

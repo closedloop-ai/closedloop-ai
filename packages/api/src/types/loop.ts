@@ -1,0 +1,168 @@
+// Loop types for API contract
+// These are explicitly defined to keep packages/api independent of database
+
+import type { JsonObject } from "./common";
+
+// Loop Status
+export const LoopStatus = {
+  Pending: "PENDING",
+  Claimed: "CLAIMED",
+  Running: "RUNNING",
+  Completed: "COMPLETED",
+  Failed: "FAILED",
+  Cancelled: "CANCELLED",
+  TimedOut: "TIMED_OUT",
+} as const;
+export type LoopStatus = (typeof LoopStatus)[keyof typeof LoopStatus];
+
+// Loop Command
+export const LoopCommand = {
+  Plan: "PLAN",
+  Execute: "EXECUTE",
+  Chat: "CHAT",
+  Explore: "EXPLORE",
+  RequestChanges: "REQUEST_CHANGES",
+} as const;
+export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
+
+// Core Loop entity
+export type Loop = {
+  id: string;
+  organizationId: string;
+  userId: string;
+  status: LoopStatus;
+  command: LoopCommand;
+  artifactId: string | null;
+  workstreamId: string | null;
+  parentLoopId: string | null;
+  prompt: string | null;
+  repo: { fullName: string; branch: string } | null;
+  contextRefs: Array<{
+    artifactId: string;
+    include: "full" | "summary";
+  }> | null;
+  containerId: string | null;
+  s3StateKey: string | null;
+  tokensInput: number;
+  tokensOutput: number;
+  estimatedCost: number | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  error: { code: string; message: string } | null;
+  metadata: JsonObject;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+// Loop with related user info (for list views)
+export type LoopWithUser = Loop & {
+  user: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+    email: string;
+  };
+};
+
+// Request/Response types
+export type CreateLoopRequest = {
+  command: LoopCommand;
+  artifactId?: string;
+  workstreamId?: string;
+  prompt?: string;
+  repo?: {
+    fullName: string;
+    branch: string;
+  };
+  contextRefs?: Array<{
+    artifactId: string;
+    include: "full" | "summary";
+  }>;
+};
+
+export type CreateLoopResponse = {
+  loopId: string;
+  status: LoopStatus;
+};
+
+export type ResumeLoopRequest = {
+  prompt?: string;
+};
+
+export type LoopListFilters = {
+  status?: LoopStatus;
+  command?: LoopCommand;
+  artifactId?: string;
+  workstreamId?: string;
+  userId?: string;
+  limit?: number;
+  offset?: number;
+};
+
+// Event types (streamed from container -> backend -> frontend)
+export type LoopEventStarted = {
+  type: "started";
+  loopId: string;
+  timestamp: string;
+};
+
+export type LoopEventOutput = {
+  type: "output";
+  chunk: string;
+  timestamp: string;
+};
+
+export type LoopEventProgress = {
+  type: "progress";
+  percent: number;
+  stage: string;
+  timestamp: string;
+};
+
+export type LoopEventToolCall = {
+  type: "tool_call";
+  tool: string;
+  status: "start" | "end";
+  input?: unknown;
+  output?: unknown;
+  timestamp: string;
+};
+
+export type LoopEventArtifactCreated = {
+  type: "artifact_created";
+  artifactId: string;
+  artifactType: string;
+  timestamp: string;
+};
+
+export type LoopEventCompleted = {
+  type: "completed";
+  result: JsonObject;
+  tokensUsed: { input: number; output: number };
+  timestamp: string;
+};
+
+export type LoopEventError = {
+  type: "error";
+  code: string;
+  message: string;
+  timestamp: string;
+};
+
+export type LoopEvent =
+  | LoopEventStarted
+  | LoopEventOutput
+  | LoopEventProgress
+  | LoopEventToolCall
+  | LoopEventArtifactCreated
+  | LoopEventCompleted
+  | LoopEventError;
+
+// Usage/cost summary types
+export type LoopUsageSummary = {
+  totalLoops: number;
+  totalTokensInput: number;
+  totalTokensOutput: number;
+  totalEstimatedCost: number;
+};

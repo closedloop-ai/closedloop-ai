@@ -1,0 +1,633 @@
+#!/usr/bin/env node
+
+/**
+ * Harness Agent for the Claude Code Runner container.
+ *
+ * Orchestrates a Symphony loop execution inside the container:
+ * 1. Reads configuration from environment variables
+ * 2. Downloads context pack from S3 (PRD, plan, prompt files)
+ * 3. Reports "started" event to the backend
+ * 4. Clones the target repository
+ * 5. Writes context pack files to the work directory
+ * 6. Executes run-loop.sh (or claude directly) based on the command
+ * 7. Streams output and reports progress events
+ * 8. Uploads state to S3 on completion (conversation history, logs)
+ * 9. Reports final status (COMPLETED / FAILED / CANCELLED)
+ */
+
+import { spawn, execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { pipeline } from "node:stream/promises";
+import { createRequire } from "node:module";
+
+// ---------------------------------------------------------------------------
+// AWS SDK v3 — loaded from the global install
+// ---------------------------------------------------------------------------
+const require = createRequire(import.meta.url);
+const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+
+// ---------------------------------------------------------------------------
+// Logging helper
+// ---------------------------------------------------------------------------
+function log(level, ...args) {
+  const ts = new Date().toISOString();
+  const prefix = `[harness][${ts}][${level.toUpperCase()}]`;
+  if (level === "error") {
+    console.error(prefix, ...args);
+  } else {
+    console.log(prefix, ...args);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration (from environment variables)
+// ---------------------------------------------------------------------------
+const config = {
+  loopId: process.env.LOOP_ID,
+  command: process.env.COMMAND, // "plan" | "execute" | "chat" | "explore" | "request_changes"
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+  githubToken: process.env.GITHUB_TOKEN,
+  authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
+  apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
+  organizationId: process.env.ORGANIZATION_ID,
+  artifactId: process.env.ARTIFACT_ID,
+  targetRepo: process.env.TARGET_REPO, // "owner/repo"
+  targetBranch: process.env.TARGET_BRANCH || "main",
+  s3ContextKey: process.env.S3_CONTEXT_KEY, // S3 key for context pack download
+  s3StateKey: process.env.S3_STATE_KEY, // S3 key prefix for state upload
+  s3Bucket: process.env.S3_BUCKET, // "closedloop-runtime-state-stage"
+  s3Region: process.env.S3_REGION || "us-east-1",
+  correlationId: process.env.CORRELATION_ID,
+  maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
+};
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+function validateConfig() {
+  const required = [
+    "loopId",
+    "command",
+    "anthropicApiKey",
+    "githubToken",
+    "authToken",
+    "apiBaseUrl",
+    "targetRepo",
+  ];
+  const missing = required.filter((k) => !config[k]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// S3 helpers
+// ---------------------------------------------------------------------------
+let s3;
+
+function getS3Client() {
+  if (!s3) {
+    s3 = new S3Client({ region: config.s3Region });
+  }
+  return s3;
+}
+
+async function downloadFromS3(key) {
+  log("info", `Downloading s3://${config.s3Bucket}/${key}`);
+  const client = getS3Client();
+  const resp = await client.send(
+    new GetObjectCommand({ Bucket: config.s3Bucket, Key: key })
+  );
+  const chunks = [];
+  for await (const chunk of resp.Body) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function uploadToS3(key, body, contentType = "application/octet-stream") {
+  log("info", `Uploading s3://${config.s3Bucket}/${key}`);
+  const client = getS3Client();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Event reporting
+// ---------------------------------------------------------------------------
+async function reportEvent(event) {
+  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/events`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.authToken}`,
+      },
+      body: JSON.stringify({
+        type: event.type,
+        data: event,
+      }),
+    });
+    if (!resp.ok) {
+      log("error", `Event report failed (${resp.status}): ${await resp.text()}`);
+    }
+  } catch (err) {
+    log("error", `Event report error: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Context pack handling
+// ---------------------------------------------------------------------------
+async function downloadContextPack(workDir) {
+  if (!config.s3ContextKey) {
+    log("info", "No S3_CONTEXT_KEY set, skipping context pack download");
+    return;
+  }
+
+  const buf = await downloadFromS3(config.s3ContextKey);
+  const contextDir = path.join(workDir, ".claude", "context");
+  fs.mkdirSync(contextDir, { recursive: true });
+
+  // The context pack is a JSON blob containing file contents keyed by relative path
+  let pack;
+  try {
+    pack = JSON.parse(buf.toString("utf-8"));
+  } catch {
+    // If it's not JSON, treat it as a raw zip/tar — write to disk and extract
+    const archivePath = path.join(workDir, "context-pack.tar.gz");
+    fs.writeFileSync(archivePath, buf);
+    execSync(`tar -xzf ${archivePath} -C ${contextDir}`, { stdio: "pipe" });
+    fs.unlinkSync(archivePath);
+    log("info", "Extracted context pack archive");
+    return;
+  }
+
+  // JSON context pack: write each file to its relative path
+  for (const [relPath, content] of Object.entries(pack)) {
+    const absPath = path.join(contextDir, relPath);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    fs.writeFileSync(absPath, typeof content === "string" ? content : JSON.stringify(content, null, 2));
+  }
+  log("info", `Wrote ${Object.keys(pack).length} context pack files`);
+}
+
+// ---------------------------------------------------------------------------
+// Repository cloning
+// ---------------------------------------------------------------------------
+function cloneRepo(workDir) {
+  const cloneUrl = `https://x-access-token:${config.githubToken}@github.com/${config.targetRepo}.git`;
+  log("info", `Cloning ${config.targetRepo} (branch: ${config.targetBranch})`);
+
+  execSync(
+    `git clone --depth 50 --branch ${config.targetBranch} ${cloneUrl} ${workDir}`,
+    { stdio: "pipe" }
+  );
+
+  // Configure git identity for any commits the agent might make
+  execSync('git config user.name "Symphony Agent"', { cwd: workDir, stdio: "pipe" });
+  execSync('git config user.email "agent@closedloop.ai"', { cwd: workDir, stdio: "pipe" });
+
+  log("info", "Repository cloned successfully");
+}
+
+// ---------------------------------------------------------------------------
+// Run-loop discovery
+// ---------------------------------------------------------------------------
+function findRunLoop() {
+  const pluginCachePath = path.join(
+    os.homedir(),
+    ".claude",
+    "plugins",
+    "cache",
+    "closedloop",
+    "experimental"
+  );
+  const runLoopPath = path.join(pluginCachePath, "run-loop.sh");
+
+  if (fs.existsSync(runLoopPath)) {
+    log("info", `Found run-loop.sh at ${runLoopPath}`);
+    return runLoopPath;
+  }
+
+  // Fallback: search common locations
+  const fallbackPaths = [
+    path.join(os.homedir(), ".claude", "plugins", "closedloop", "experimental", "run-loop.sh"),
+    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/plugins/closedloop/experimental/run-loop.sh",
+  ];
+
+  for (const p of fallbackPaths) {
+    if (fs.existsSync(p)) {
+      log("info", `Found run-loop.sh at fallback path: ${p}`);
+      return p;
+    }
+  }
+
+  throw new Error(
+    `run-loop.sh not found. Searched: ${runLoopPath}, ${fallbackPaths.join(", ")}`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Child process execution
+// ---------------------------------------------------------------------------
+function spawnProcess(cmd, args, cwd, env) {
+  return new Promise((resolve, reject) => {
+    const outputChunks = [];
+    let lastReportedAt = 0;
+    const REPORT_INTERVAL_MS = 5000; // Report output events at most every 5s
+
+    log("info", `Spawning: ${cmd} ${args.join(" ")}`);
+
+    const child = spawn(cmd, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Track the child so SIGTERM handler can kill it
+    currentChild = child;
+
+    function handleLine(stream, line) {
+      outputChunks.push({ stream, line, ts: Date.now() });
+
+      // Log to container stdout/stderr
+      if (stream === "stderr") {
+        process.stderr.write(`[child] ${line}\n`);
+      } else {
+        process.stdout.write(`[child] ${line}\n`);
+      }
+
+      // Throttled event reporting
+      const now = Date.now();
+      if (now - lastReportedAt >= REPORT_INTERVAL_MS) {
+        lastReportedAt = now;
+        reportEvent({
+          type: "output",
+          stream,
+          line,
+          correlationId: config.correlationId,
+        }).catch(() => {});
+      }
+    }
+
+    let stdoutBuf = "";
+    child.stdout.on("data", (data) => {
+      stdoutBuf += data.toString();
+      const lines = stdoutBuf.split("\n");
+      stdoutBuf = lines.pop(); // keep partial line
+      for (const line of lines) {
+        handleLine("stdout", line);
+      }
+    });
+
+    let stderrBuf = "";
+    child.stderr.on("data", (data) => {
+      stderrBuf += data.toString();
+      const lines = stderrBuf.split("\n");
+      stderrBuf = lines.pop();
+      for (const line of lines) {
+        handleLine("stderr", line);
+      }
+    });
+
+    child.on("error", (err) => {
+      currentChild = null;
+      reject(err);
+    });
+
+    child.on("close", (code, signal) => {
+      currentChild = null;
+      // Flush remaining partial lines
+      if (stdoutBuf) handleLine("stdout", stdoutBuf);
+      if (stderrBuf) handleLine("stderr", stderrBuf);
+
+      resolve({ code, signal, output: outputChunks });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// State upload
+// ---------------------------------------------------------------------------
+async function uploadState(workDir, output) {
+  if (!config.s3StateKey || !config.s3Bucket) {
+    log("info", "No S3_STATE_KEY or S3_BUCKET set, skipping state upload");
+    return;
+  }
+
+  const statePrefix = config.s3StateKey;
+
+  // 1. Upload captured output log
+  try {
+    const logContent = output
+      .map((o) => `[${new Date(o.ts).toISOString()}][${o.stream}] ${o.line}`)
+      .join("\n");
+    await uploadToS3(`${statePrefix}/output.log`, logContent, "text/plain");
+  } catch (err) {
+    log("error", `Failed to upload output log: ${err.message}`);
+  }
+
+  // 2. Upload .claude directory (conversation history, run state)
+  const claudeDir = path.join(workDir, ".claude");
+  if (fs.existsSync(claudeDir)) {
+    try {
+      await uploadDirectoryToS3(claudeDir, `${statePrefix}/claude-state`);
+    } catch (err) {
+      log("error", `Failed to upload .claude state: ${err.message}`);
+    }
+  }
+
+  // 3. Upload key work directory files (plan.json, plan.md, etc.)
+  const keyFiles = [
+    "plan.json",
+    "plan.md",
+    "implementation-plan.md",
+    ".claude/symphony-loop.local.md",
+  ];
+  for (const relPath of keyFiles) {
+    const absPath = path.join(workDir, relPath);
+    if (fs.existsSync(absPath)) {
+      try {
+        const content = fs.readFileSync(absPath);
+        await uploadToS3(`${statePrefix}/artifacts/${relPath}`, content, "application/octet-stream");
+      } catch (err) {
+        log("error", `Failed to upload ${relPath}: ${err.message}`);
+      }
+    }
+  }
+
+  log("info", "State upload complete");
+}
+
+async function uploadDirectoryToS3(dirPath, s3Prefix) {
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    const s3Key = `${s3Prefix}/${entry.name}`;
+
+    if (entry.isDirectory()) {
+      await uploadDirectoryToS3(fullPath, s3Key);
+    } else if (entry.isFile()) {
+      // Skip very large files (>50MB) to avoid timeouts
+      const stat = fs.statSync(fullPath);
+      if (stat.size > 50 * 1024 * 1024) {
+        log("info", `Skipping large file ${fullPath} (${stat.size} bytes)`);
+        continue;
+      }
+      const content = fs.readFileSync(fullPath);
+      await uploadToS3(s3Key, content);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Command builders
+// ---------------------------------------------------------------------------
+function buildRunLoopArgs(runLoopPath, workDir) {
+  const command = config.command.toLowerCase();
+  const args = [runLoopPath];
+
+  switch (command) {
+    case "plan":
+      args.push("--max-iterations", String(config.maxIterations || 50));
+      break;
+    case "execute":
+      args.push("--max-iterations", String(config.maxIterations || 150));
+      break;
+    default:
+      args.push("--max-iterations", String(config.maxIterations || 50));
+      break;
+  }
+
+  return { cmd: "bash", args };
+}
+
+function buildClaudeDirectArgs(workDir) {
+  const command = config.command.toLowerCase();
+  const args = ["claude"];
+
+  switch (command) {
+    case "request_changes": {
+      // Use the amend-plan skill
+      const contextDir = path.join(workDir, ".claude", "context");
+      const promptFile = path.join(contextDir, "prompt.md");
+      let prompt = "Please amend the plan based on the requested changes.";
+      if (fs.existsSync(promptFile)) {
+        prompt = fs.readFileSync(promptFile, "utf-8");
+      }
+      args.push("/experimental:amend-plan", prompt);
+      break;
+    }
+    case "chat":
+    case "explore": {
+      const contextDir = path.join(workDir, ".claude", "context");
+      const promptFile = path.join(contextDir, "prompt.md");
+      let prompt = "";
+      if (fs.existsSync(promptFile)) {
+        prompt = fs.readFileSync(promptFile, "utf-8");
+      }
+      if (!prompt) {
+        throw new Error(`No prompt found for ${command} command`);
+      }
+      args.push(prompt);
+      break;
+    }
+    default:
+      throw new Error(`Unexpected command for direct claude invocation: ${command}`);
+  }
+
+  return { cmd: "npx", args };
+}
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+let currentChild = null;
+let shuttingDown = false;
+
+function setupShutdownHandlers(workDir) {
+  async function handleShutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    log("info", `Received ${signal}, initiating graceful shutdown...`);
+
+    // Kill the child process if still running
+    if (currentChild && !currentChild.killed) {
+      log("info", "Terminating child process...");
+      currentChild.kill("SIGTERM");
+
+      // Give it 10 seconds, then force kill
+      setTimeout(() => {
+        if (currentChild && !currentChild.killed) {
+          log("info", "Force killing child process...");
+          currentChild.kill("SIGKILL");
+        }
+      }, 10000);
+    }
+
+    // Try to upload whatever state we have
+    try {
+      await uploadState(workDir, []);
+    } catch (err) {
+      log("error", `Failed to upload state during shutdown: ${err.message}`);
+    }
+
+    // Report cancelled status
+    try {
+      await reportEvent({
+        type: "status",
+        status: "CANCELLED",
+        reason: signal,
+        correlationId: config.correlationId,
+      });
+    } catch (err) {
+      log("error", `Failed to report cancellation: ${err.message}`);
+    }
+
+    process.exit(1);
+  }
+
+  process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+  process.on("SIGINT", () => handleShutdown("SIGINT"));
+}
+
+// ---------------------------------------------------------------------------
+// Main execution
+// ---------------------------------------------------------------------------
+async function main() {
+  const startTime = Date.now();
+  const workDir = "/workspace/repo";
+
+  log("info", "========================================");
+  log("info", "Symphony Claude Runner - Harness Agent");
+  log("info", "========================================");
+  log("info", `Loop ID:        ${config.loopId}`);
+  log("info", `Command:        ${config.command}`);
+  log("info", `Target Repo:    ${config.targetRepo}`);
+  log("info", `Target Branch:  ${config.targetBranch}`);
+  log("info", `Correlation ID: ${config.correlationId}`);
+  log("info", `Max Iterations: ${config.maxIterations}`);
+
+  validateConfig();
+  setupShutdownHandlers(workDir);
+
+  let output = [];
+
+  try {
+    // Step 1: Report started event
+    await reportEvent({
+      type: "status",
+      status: "STARTED",
+      command: config.command,
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+      artifactId: config.artifactId,
+    });
+    log("info", "Reported STARTED event");
+
+    // Step 2: Clone the target repository
+    cloneRepo(workDir);
+
+    // Step 3: Download and extract context pack from S3
+    await downloadContextPack(workDir);
+
+    // Step 4: Determine execution mode and build command
+    const command = config.command.toLowerCase();
+    const usesRunLoop = command === "plan" || command === "execute";
+    let cmd, args;
+
+    if (usesRunLoop) {
+      const runLoopPath = findRunLoop();
+      ({ cmd, args } = buildRunLoopArgs(runLoopPath, workDir));
+    } else {
+      ({ cmd, args } = buildClaudeDirectArgs(workDir));
+    }
+
+    // Step 5: Build environment for the child process
+    const childEnv = {
+      ANTHROPIC_API_KEY: config.anthropicApiKey,
+      GITHUB_TOKEN: config.githubToken,
+      GH_TOKEN: config.githubToken,
+      HOME: os.homedir(),
+      PATH: process.env.PATH,
+    };
+
+    // Step 6: Execute the command
+    log("info", `Executing: ${cmd} ${args.join(" ")}`);
+    await reportEvent({
+      type: "status",
+      status: "RUNNING",
+      command: config.command,
+      correlationId: config.correlationId,
+    });
+
+    const result = await spawnProcess(cmd, args, workDir, childEnv);
+    output = result.output;
+
+    const exitCode = result.code;
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    log("info", `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`);
+
+    // Step 7: Upload state to S3
+    await uploadState(workDir, output);
+
+    // Step 8: Report final status
+    const finalStatus = exitCode === 0 ? "COMPLETED" : "FAILED";
+    await reportEvent({
+      type: "status",
+      status: finalStatus,
+      exitCode,
+      signal: result.signal,
+      durationSeconds: parseFloat(duration),
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+      artifactId: config.artifactId,
+    });
+    log("info", `Reported ${finalStatus} event`);
+
+    // Exit with the child's exit code
+    process.exit(exitCode || 0);
+  } catch (err) {
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    log("error", `Fatal error after ${duration}s: ${err.message}`);
+    log("error", err.stack);
+
+    // Best-effort: upload whatever state we have
+    try {
+      await uploadState(workDir, output);
+    } catch (uploadErr) {
+      log("error", `Failed to upload state after error: ${uploadErr.message}`);
+    }
+
+    // Best-effort: report failure
+    try {
+      await reportEvent({
+        type: "status",
+        status: "FAILED",
+        error: err.message,
+        durationSeconds: parseFloat(duration),
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+        artifactId: config.artifactId,
+      });
+    } catch (reportErr) {
+      log("error", `Failed to report error event: ${reportErr.message}`);
+    }
+
+    process.exit(1);
+  }
+}
+
+main();
