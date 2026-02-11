@@ -1,6 +1,7 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
+import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
 import {
@@ -74,11 +75,10 @@ export async function processArtifactZip(
   uploadToS3: boolean
 ): Promise<ZipContent & { artifactKeys: string[] }> {
   const outerZip = new AdmZip(artifactData);
-  const outerEntries = outerZip.getEntries();
   const artifactKeys: string[] = [];
 
   log.info(
-    `[processArtifactZip] "${artifactName}" contains ${outerEntries.length} files`
+    `[processArtifactZip] "${artifactName}" contains ${outerZip.getEntries().length} files`
   );
 
   let content: Omit<ZipContent, "entries"> = {
@@ -89,14 +89,8 @@ export async function processArtifactZip(
   };
 
   // Check for nested zips first (Symphony artifact structure)
-  for (const entry of outerEntries) {
-    const isNestedZip = entry.entryName.endsWith(".zip") && !entry.isDirectory;
-    if (!isNestedZip) {
-      continue;
-    }
-
-    log.info(`[processArtifactZip] Found nested zip: ${entry.entryName}`);
-    const innerZip = new AdmZip(entry.getData());
+  const innerZips = extractInnerZips(outerZip);
+  for (const innerZip of innerZips) {
     const result = findPlanInZip(innerZip);
     content = mergeZipContent(content, result);
 

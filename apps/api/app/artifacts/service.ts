@@ -31,6 +31,7 @@ import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
+import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -1263,10 +1264,10 @@ Please try again or contact support if the issue persists.`,
       );
 
       // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
-      const symphonyArtifact = artifacts.find(
-        (a) =>
-          a.name.startsWith("symphony-run-") ||
-          a.name.startsWith("symphony-dispatch-")
+      const symphonyArtifact = artifacts.find((a) =>
+        SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
+          a.name.startsWith(prefix)
+        )
       );
 
       if (!symphonyArtifact) {

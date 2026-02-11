@@ -8,9 +8,13 @@ import type {
 } from "@repo/api/src/types/execution-log";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
+import { extractInnerZips } from "./zip-utils";
 
 // Top-level regex patterns for performance
-const CONVERSATION_FILE_REGEX = /conversations\/.*\.jsonl$/;
+const CONVERSATION_FILE_REGEX =
+  /(?:\.claude\/)?runs\/conversations\/.*\.jsonl$/;
+const SESSIONS_INDEX_REGEX =
+  /(?:\.claude\/)?runs\/conversations\/sessions-index\.json$/;
 const COMMAND_NAME_REGEX = /<command-name>(.*?)<\/command-name>/;
 
 /**
@@ -21,7 +25,7 @@ function findSessionFiles(
 ): { sessionId: string; data: Buffer }[] {
   // Try sessions-index.json first
   const sessionsIndexEntry = entries.find((e) =>
-    e.entryName.endsWith("conversations/sessions-index.json")
+    SESSIONS_INDEX_REGEX.test(e.entryName)
   );
 
   if (sessionsIndexEntry) {
@@ -128,33 +132,17 @@ export function parseExecutionLogs(zipBuffer: Buffer): ExecutionTrace {
 }
 
 /**
- * Extract zip entries, handling nested symphony-run.zip if present.
- * GitHub artifact download wraps in an outer zip; the symphony-artifact action
- * may also produce a nested symphony-run.zip inside.
+ * Extract zip entries, handling nested zips if present.
+ * Uses shared extractInnerZips utility (same logic as workflow-artifacts).
+ * Returns entries from the first nested zip, or outer entries if none found.
  */
 function extractNestedEntries(zip: AdmZip): AdmZip.IZipEntry[] {
-  const entries = zip.getEntries();
-
-  // Check for a nested symphony-run.zip inside the outer zip
-  const nestedZipEntry = entries.find(
-    (e) =>
-      e.entryName === "symphony-run.zip" ||
-      e.entryName.endsWith("/symphony-run.zip")
-  );
-
-  if (nestedZipEntry) {
-    try {
-      const innerZip = new AdmZip(nestedZipEntry.getData());
-      return innerZip.getEntries();
-    } catch (error) {
-      log.warn(
-        "[execution-log-parser] Failed to extract nested symphony-run.zip, using outer entries",
-        { error: error instanceof Error ? error.message : String(error) }
-      );
-    }
+  const innerZips = extractInnerZips(zip);
+  if (innerZips.length > 0) {
+    // extractInnerZips already logs errors for corrupt nested zips
+    return innerZips[0]!.getEntries();
   }
-
-  return entries;
+  return zip.getEntries();
 }
 
 /**
