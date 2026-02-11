@@ -1,7 +1,7 @@
 "use client";
 
 import { LiveblocksProvider } from "@liveblocks/react/suspense";
-import type { ComponentProps, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { LiveblocksErrorBoundary } from "./liveblocks-error-boundary";
 import {
   createResolveMentionSuggestions,
@@ -9,11 +9,13 @@ import {
   type UserInfo,
 } from "./user-resolvers";
 
+export type RoomInfo = Liveblocks["RoomInfo"];
+
 export type TopLevelCollaborationProviderProps = {
   children: ReactNode;
-  resolveRoomsInfo: ComponentProps<
-    typeof LiveblocksProvider
-  >["resolveRoomsInfo"];
+  resolveRoomsInfo?: (args: {
+    roomIds: string[];
+  }) => Promise<(RoomInfo | undefined)[]>;
   users?: UserInfo[];
 };
 

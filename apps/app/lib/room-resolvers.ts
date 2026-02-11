@@ -1,15 +1,5 @@
 import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
-
-type ResolvedRoom = {
-  roomId: string;
-  name: string;
-  url: string | null;
-};
-
-type RoomInfo = {
-  name: string;
-  url: string | null;
-};
+import type { RoomInfo } from "@repo/collaboration/top-level-collaboration-provider";
 
 /**
  * Creates an async resolver that maps room IDs to display info (name + URL) for Liveblocks.
@@ -25,18 +15,14 @@ export function createResolveRoomsInfo(organizationId: string) {
   }: {
     roomIds: string[];
   }): Promise<(RoomInfo | undefined)[]> => {
-    const orgRoomIds: string[] = [];
-
-    for (const roomId of roomIds) {
+    const orgRoomIds = roomIds.filter((roomId) => {
       try {
         const { organizationId: roomOrgId } = parseArtifactRoomId(roomId);
-        if (roomOrgId === organizationId) {
-          orgRoomIds.push(roomId);
-        }
+        return roomOrgId === organizationId;
       } catch {
-        // Skip malformed room IDs
+        return false;
       }
-    }
+    });
 
     if (orgRoomIds.length === 0) {
       return roomIds.map(() => undefined);
@@ -75,10 +61,14 @@ export function createResolveRoomsInfo(organizationId: string) {
         return {
           name: documentSlug,
           url: `/artifacts/${documentSlug}`,
-        };
+        } satisfies RoomInfo;
       } catch {
         return undefined;
       }
     });
   };
 }
+
+type ResolvedRoom = RoomInfo & {
+  roomId: string;
+};

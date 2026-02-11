@@ -39,12 +39,7 @@ export function CollaborationProviderWrapper({
   // matches the global Liveblocks interface across module boundaries
   const organizationId = currentUser?.organizationId;
   const resolveRoomsInfo = useMemo(
-    () =>
-      organizationId
-        ? (createResolveRoomsInfo(organizationId) as Parameters<
-            typeof LiveblocksProvider
-          >[0]["resolveRoomsInfo"])
-        : undefined,
+    () => (organizationId ? createResolveRoomsInfo(organizationId) : undefined),
     [organizationId]
   );
 
