@@ -10,6 +10,7 @@ import {
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { PreviewLink } from "@/components/preview-link";
+import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
@@ -20,7 +21,12 @@ const columns: Column<ArtifactWithWorkstream>[] = [
   {
     key: "title",
     header: "Plan Name",
-    render: (plan) => <span className="font-medium">{plan.title}</span>,
+    render: (plan) => (
+      <div className="flex items-center gap-2">
+        <span className="font-medium">{plan.title}</span>
+        <PullRequestLink pullRequest={plan.pullRequest} />
+      </div>
+    ),
   },
   {
     key: "version",

@@ -203,6 +203,7 @@ export type ArtifactWithWorkstream = Artifact & {
   owner?: ProjectOwner | null;
   parent?: ParentArtifactInfo | null;
   previewDeployment?: PreviewDeployment | null;
+  pullRequest?: PullRequestInfo | null;
 };
 
 export type FindArtifactsOptions = {
