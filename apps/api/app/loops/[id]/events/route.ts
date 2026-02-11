@@ -1,5 +1,6 @@
 import type { LoopEvent } from "@repo/api/src/types/loop";
 import { withAuth } from "@/lib/auth/with-auth";
+import { loopEventBus } from "@/lib/loop-event-bus";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { loopEventValidator } from "../../validators";
@@ -39,6 +40,12 @@ export const POST = withAuth<{ received: true }, "/loops/[id]/events">(
       }
 
       await loopsService.addEvent(id, body);
+
+      // Publish to the in-memory event bus for any active SSE subscribers
+      loopEventBus.publish(id, {
+        type: body.type,
+        ...body.data,
+      } as LoopEvent);
 
       return successResponse({ received: true as const });
     } catch (error) {

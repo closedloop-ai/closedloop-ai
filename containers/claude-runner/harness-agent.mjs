@@ -15,18 +15,21 @@
  * 9. Reports final status (COMPLETED / FAILED / CANCELLED)
  */
 
-import { spawn, execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-import { pipeline } from "node:stream/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
 
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — loaded from the global install
 // ---------------------------------------------------------------------------
 const require = createRequire(import.meta.url);
-const { S3Client, GetObjectCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+} = require("@aws-sdk/client-s3");
 
 // ---------------------------------------------------------------------------
 // Logging helper
@@ -60,7 +63,7 @@ const config = {
   s3Bucket: process.env.S3_BUCKET, // "closedloop-runtime-state-stage"
   s3Region: process.env.S3_REGION || "us-east-1",
   correlationId: process.env.CORRELATION_ID,
-  maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
+  maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || "50", 10),
 };
 
 // ---------------------------------------------------------------------------
@@ -78,7 +81,9 @@ function validateConfig() {
   ];
   const missing = required.filter((k) => !config[k]);
   if (missing.length > 0) {
-    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+    throw new Error(
+      `Missing required environment variables: ${missing.join(", ")}`
+    );
   }
 }
 
@@ -138,7 +143,10 @@ async function reportEvent(event) {
       }),
     });
     if (!resp.ok) {
-      log("error", `Event report failed (${resp.status}): ${await resp.text()}`);
+      log(
+        "error",
+        `Event report failed (${resp.status}): ${await resp.text()}`
+      );
     }
   } catch (err) {
     log("error", `Event report error: ${err.message}`);
@@ -176,7 +184,10 @@ async function downloadContextPack(workDir) {
   for (const [relPath, content] of Object.entries(pack)) {
     const absPath = path.join(contextDir, relPath);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
-    fs.writeFileSync(absPath, typeof content === "string" ? content : JSON.stringify(content, null, 2));
+    fs.writeFileSync(
+      absPath,
+      typeof content === "string" ? content : JSON.stringify(content, null, 2)
+    );
   }
   log("info", `Wrote ${Object.keys(pack).length} context pack files`);
 }
@@ -194,8 +205,14 @@ function cloneRepo(workDir) {
   );
 
   // Configure git identity for any commits the agent might make
-  execSync('git config user.name "Symphony Agent"', { cwd: workDir, stdio: "pipe" });
-  execSync('git config user.email "agent@closedloop.ai"', { cwd: workDir, stdio: "pipe" });
+  execSync('git config user.name "Symphony Agent"', {
+    cwd: workDir,
+    stdio: "pipe",
+  });
+  execSync('git config user.email "agent@closedloop.ai"', {
+    cwd: workDir,
+    stdio: "pipe",
+  });
 
   log("info", "Repository cloned successfully");
 }
@@ -221,7 +238,14 @@ function findRunLoop() {
 
   // Fallback: search common locations
   const fallbackPaths = [
-    path.join(os.homedir(), ".claude", "plugins", "closedloop", "experimental", "run-loop.sh"),
+    path.join(
+      os.homedir(),
+      ".claude",
+      "plugins",
+      "closedloop",
+      "experimental",
+      "run-loop.sh"
+    ),
     "/usr/local/lib/node_modules/@anthropic-ai/claude-code/plugins/closedloop/experimental/run-loop.sh",
   ];
 
@@ -308,8 +332,12 @@ function spawnProcess(cmd, args, cwd, env) {
     child.on("close", (code, signal) => {
       currentChild = null;
       // Flush remaining partial lines
-      if (stdoutBuf) handleLine("stdout", stdoutBuf);
-      if (stderrBuf) handleLine("stderr", stderrBuf);
+      if (stdoutBuf) {
+        handleLine("stdout", stdoutBuf);
+      }
+      if (stderrBuf) {
+        handleLine("stderr", stderrBuf);
+      }
 
       resolve({ code, signal, output: outputChunks });
     });
@@ -320,7 +348,7 @@ function spawnProcess(cmd, args, cwd, env) {
 // State upload
 // ---------------------------------------------------------------------------
 async function uploadState(workDir, output) {
-  if (!config.s3StateKey || !config.s3Bucket) {
+  if (!(config.s3StateKey && config.s3Bucket)) {
     log("info", "No S3_STATE_KEY or S3_BUCKET set, skipping state upload");
     return;
   }
@@ -359,7 +387,11 @@ async function uploadState(workDir, output) {
     if (fs.existsSync(absPath)) {
       try {
         const content = fs.readFileSync(absPath);
-        await uploadToS3(`${statePrefix}/artifacts/${relPath}`, content, "application/octet-stream");
+        await uploadToS3(
+          `${statePrefix}/artifacts/${relPath}`,
+          content,
+          "application/octet-stream"
+        );
       } catch (err) {
         log("error", `Failed to upload ${relPath}: ${err.message}`);
       }
@@ -393,7 +425,7 @@ async function uploadDirectoryToS3(dirPath, s3Prefix) {
 // ---------------------------------------------------------------------------
 // Command builders
 // ---------------------------------------------------------------------------
-function buildRunLoopArgs(runLoopPath, workDir) {
+function buildRunLoopArgs(runLoopPath, _workDir) {
   const command = config.command.toLowerCase();
   const args = [runLoopPath];
 
@@ -443,7 +475,9 @@ function buildClaudeDirectArgs(workDir) {
       break;
     }
     default:
-      throw new Error(`Unexpected command for direct claude invocation: ${command}`);
+      throw new Error(
+        `Unexpected command for direct claude invocation: ${command}`
+      );
   }
 
   return { cmd: "npx", args };
@@ -457,7 +491,9 @@ let shuttingDown = false;
 
 function setupShutdownHandlers(workDir) {
   async function handleShutdown(signal) {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      return;
+    }
     shuttingDown = true;
 
     log("info", `Received ${signal}, initiating graceful shutdown...`);
@@ -473,7 +509,7 @@ function setupShutdownHandlers(workDir) {
           log("info", "Force killing child process...");
           currentChild.kill("SIGKILL");
         }
-      }, 10000);
+      }, 10_000);
     }
 
     // Try to upload whatever state we have
@@ -578,7 +614,10 @@ async function main() {
     const exitCode = result.code;
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
 
-    log("info", `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`);
+    log(
+      "info",
+      `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`
+    );
 
     // Step 7: Upload state to S3
     await uploadState(workDir, output);
@@ -590,7 +629,7 @@ async function main() {
       status: finalStatus,
       exitCode,
       signal: result.signal,
-      durationSeconds: parseFloat(duration),
+      durationSeconds: Number.parseFloat(duration),
       correlationId: config.correlationId,
       loopId: config.loopId,
       artifactId: config.artifactId,
@@ -617,7 +656,7 @@ async function main() {
         type: "status",
         status: "FAILED",
         error: err.message,
-        durationSeconds: parseFloat(duration),
+        durationSeconds: Number.parseFloat(duration),
         correlationId: config.correlationId,
         loopId: config.loopId,
         artifactId: config.artifactId,
