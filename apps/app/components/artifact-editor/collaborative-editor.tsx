@@ -1,8 +1,5 @@
-import {
-  OptionalArtifactRoom,
-  Presence,
-  useThreads,
-} from "@repo/collaboration";
+import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
+import { useThreads } from "@repo/collaboration/hooks";
 import { useEffect } from "react";
 import {
   EditorWithComments,
