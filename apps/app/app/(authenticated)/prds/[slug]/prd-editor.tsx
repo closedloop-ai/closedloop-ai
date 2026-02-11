@@ -133,8 +133,10 @@ export function PRDEditor({
   };
 
   const handleDiscard = () => {
+    setContentResetValue(prd.content ?? "");
+    setContentResetKey((key) => (key ?? 0) + 1);
     content.discardChanges();
-    exitEditMode();
+    setIsEditing(false);
   };
 
   return (

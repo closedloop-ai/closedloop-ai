@@ -288,8 +288,10 @@ export function PlanEditor({
   };
 
   const handleDiscard = () => {
+    setContentResetValue(plan.content ?? "");
+    setContentResetKey((key) => (key ?? 0) + 1);
     content.discardChanges();
-    exitEditMode();
+    setIsEditing(false);
   };
 
   return (
