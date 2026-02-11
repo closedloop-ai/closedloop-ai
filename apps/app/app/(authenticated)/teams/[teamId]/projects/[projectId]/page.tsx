@@ -20,6 +20,10 @@ import {
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@repo/design-system/components/ui/toggle-group";
+import {
   AlertCircleIcon,
   BugIcon,
   ChevronDownIcon,
@@ -54,6 +58,7 @@ import type {
 } from "@/types/teams";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
+import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { PropertiesPanel } from "./components/properties-panel";
 
@@ -86,6 +91,7 @@ export default function ProjectDetailPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactSubtype, setSelectedArtifactSubtype] =
     useState<ArtifactSubtype>(ArtifactSubtype.Prd);
+  const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
 
   // Queries
   const {
@@ -132,8 +138,13 @@ export default function ProjectDetailPage() {
         name: artifact.title,
         subtype: toProjectArtifactSubtype(artifact.subtype),
         status: mapArtifactStatusToDisplay(artifact.status),
+        parentId: artifact.parentId,
         link: artifact.externalUrl || undefined,
         previewUrl: artifact.previewDeployment?.url ?? undefined,
+        pullRequest: artifact.pullRequest ?? null,
+        workstreamId: artifact.workstreamId,
+        workstreamTitle: artifact.workstream?.title,
+        workstreamState: artifact.workstream?.state,
       })),
     [artifactsData]
   );
@@ -293,11 +304,33 @@ export default function ProjectDetailPage() {
                 </p>
               ) : null}
             </div>
-            <ArtifactsTable
-              artifacts={artifacts}
-              onDelete={handleDeleteArtifact}
-              onStatusChange={handleArtifactStatusChange}
-            />
+            <div className="mb-4 flex items-center justify-end">
+              <ToggleGroup
+                onValueChange={(value) => {
+                  if (value) {
+                    setViewMode(value as "type" | "threaded");
+                  }
+                }}
+                type="single"
+                value={viewMode}
+              >
+                <ToggleGroupItem value="type">Type</ToggleGroupItem>
+                <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+            {viewMode === "type" ? (
+              <ArtifactsTable
+                artifacts={artifacts}
+                onDelete={handleDeleteArtifact}
+                onStatusChange={handleArtifactStatusChange}
+              />
+            ) : (
+              <ArtifactsThreadedView
+                artifacts={artifacts}
+                onDelete={handleDeleteArtifact}
+                onStatusChange={handleArtifactStatusChange}
+              />
+            )}
           </div>
 
           {/* Right Sidebar */}

@@ -4,6 +4,17 @@
 import type { ProjectOwner } from "./organization";
 
 /**
+ * Minimal user info included with artifacts for display purposes.
+ * Matches the select pattern in artifactIncludeWithContext.
+ */
+export type ArtifactUser = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  avatarUrl: string | null;
+};
+
+/**
  * Broad classification for artifacts:
  * - Document: Text-based artifacts editable in the app (PRD, Issue, Bug, reports, etc.)
  * - Workflow: User-defined step sequences that orchestrate execution (e.g., plan -> code -> test -> review)
@@ -143,7 +154,8 @@ export type Artifact = {
   subtype: ArtifactSubtype;
   title: string;
   fileName: string | null;
-  approver: string | null;
+  owner: ArtifactUser | null;
+  approver: ArtifactUser | null;
   status: ArtifactStatus;
   content: string | null;
   externalUrl: string | null;
@@ -152,7 +164,8 @@ export type Artifact = {
   documentSlug: string | null;
   generatedBy: string | null;
   ownerId: string | null;
-  tokenUsage: unknown;
+  approverId: string | null;
+  tokenUsage: unknown | null;
   targetRepo: string | null;
   targetBranch: string | null;
   templateForSubtype: ArtifactSubtype | null;
@@ -169,6 +182,13 @@ export type PreviewDeployment = {
   updatedAt: Date | null;
 };
 
+export type ParentArtifactInfo = {
+  id: string;
+  title: string;
+  subtype: ArtifactSubtype;
+  documentSlug: string | null;
+};
+
 export type ArtifactWithWorkstream = Artifact & {
   workstream?: {
     id: string;
@@ -181,7 +201,9 @@ export type ArtifactWithWorkstream = Artifact & {
     teams?: { id: string; name: string }[];
   } | null;
   owner?: ProjectOwner | null;
+  parent?: ParentArtifactInfo | null;
   previewDeployment?: PreviewDeployment | null;
+  pullRequest?: PullRequestInfo | null;
 };
 
 export type FindArtifactsOptions = {
@@ -201,7 +223,7 @@ export type CreateArtifactInput = {
   subtype: ArtifactSubtype;
   title: string;
   fileName?: string;
-  approver?: string;
+  approverId?: string;
   status?: ArtifactStatus;
   content?: string;
   externalUrl?: string;
@@ -218,7 +240,8 @@ export type UpdateArtifactInput = {
   id: string;
   title?: string;
   fileName?: string;
-  approver?: string | null;
+  parentId?: string | null;
+  approverId?: string | null;
   status?: ArtifactStatus;
   externalUrl?: string | null;
   targetRepo?: string | null;

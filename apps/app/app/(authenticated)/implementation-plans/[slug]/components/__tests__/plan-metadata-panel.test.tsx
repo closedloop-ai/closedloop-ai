@@ -50,6 +50,24 @@ vi.mock("@/components/artifact-editor/rating-section", () => ({
   ),
 }));
 
+// Mock useArtifactsByProject to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useArtifactsByProject: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+// Mock useOrganizationUsers to avoid Clerk authentication context
+vi.mock("@/hooks/queries/use-users", () => ({
+  useOrganizationUsers: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
@@ -64,7 +82,7 @@ const defaultProps = {
     subtype: "IMPLEMENTATION_PLAN",
   }),
   status: "DRAFT" as ArtifactStatus,
-  approver: "",
+  approver: null,
   owner: null,
   teamMembers: [],
   generationStatus: null,
@@ -74,9 +92,9 @@ const defaultProps = {
   isPreviewRefreshing: false,
   judgesReport: null,
   onStatusChange: vi.fn(),
-  onApproverChange: vi.fn(),
-  onApproverBlur: vi.fn(),
+  onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
+  onParentChange: vi.fn(),
 };
 
 describe("sortMetricsByScore", () => {
