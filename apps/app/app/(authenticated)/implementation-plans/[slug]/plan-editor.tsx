@@ -83,10 +83,11 @@ export function PlanEditor({
   >();
 
   const isViewingHistorical = currentVersion !== latestVersion;
-  // The existence of a room ID controls whether liveblocks is loaded.
-  // Liveblocks can't function properly when the editor is read-only.
+  // Always connect Liveblocks for the latest version so the editor is pre-loaded
+  // and ready when the user clicks to edit. Only skip for historical versions
+  // where content comes from the version prop, not Liveblocks.
   const liveblocksRoomId =
-    isEditing && plan.documentSlug
+    !isViewingHistorical && plan.documentSlug
       ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
       : null;
 
