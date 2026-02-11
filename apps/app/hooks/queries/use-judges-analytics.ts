@@ -1,13 +1,14 @@
 "use client";
 
 import type {
+  ArtifactCountsGroupBy as ArtifactCountsGroupByType,
   ArtifactCountsResponse,
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
-export type ArtifactCountsGroupBy = "day" | "week" | "month";
+export type { ArtifactCountsGroupBy } from "@repo/api/src/types/judges-analytics";
 
 // Query keys
 export const judgesAnalyticsKeys = {
@@ -17,7 +18,7 @@ export const judgesAnalyticsKeys = {
   artifactCounts: (
     startDate: string,
     endDate: string,
-    groupBy: ArtifactCountsGroupBy
+    groupBy: ArtifactCountsGroupByType
   ) =>
     [
       ...judgesAnalyticsKeys.all,
@@ -55,7 +56,7 @@ export function useJudgesAnalytics(
 export function useArtifactCounts(
   startDate: string,
   endDate: string,
-  groupBy: ArtifactCountsGroupBy,
+  groupBy: ArtifactCountsGroupByType,
   options?: Omit<
     UseQueryOptions<ArtifactCountsResponse>,
     "queryKey" | "queryFn"

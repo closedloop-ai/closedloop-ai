@@ -78,3 +78,15 @@ export type ArtifactCountBucket = {
 export type ArtifactCountsResponse = {
   buckets: ArtifactCountBucket[];
 };
+
+/**
+ * Allowed values for grouping artifact counts by time period.
+ */
+export const ARTIFACT_COUNTS_GROUP_BY_OPTIONS = [
+  "day",
+  "week",
+  "month",
+] as const;
+
+export type ArtifactCountsGroupBy =
+  (typeof ARTIFACT_COUNTS_GROUP_BY_OPTIONS)[number];

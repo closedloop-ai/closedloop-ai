@@ -1,7 +1,8 @@
 import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
-import type { CaseScore, JudgesReport } from "@repo/api/src/types/evaluation";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
+  ArtifactCountsGroupBy,
   ArtifactCountsResponse,
   ArtifactSubtypeGroup,
   JudgeAggregateStats,
@@ -18,12 +19,15 @@ import { withDb } from "@repo/database";
 function extractJudgeScores(
   evaluations: Array<{
     artifactId: string;
-    artifact: { subtype: string };
+    artifact: { subtype: ArtifactSubtype };
     reportData: unknown;
   }>
-): Map<string, Map<string, { scores: number[]; artifactIds: Set<string> }>> {
+): Map<
+  ArtifactSubtype,
+  Map<string, { scores: number[]; artifactIds: Set<string> }>
+> {
   const aggregator = new Map<
-    string,
+    ArtifactSubtype,
     Map<string, { scores: number[]; artifactIds: Set<string> }>
   >();
 
@@ -35,7 +39,7 @@ function extractJudgeScores(
       continue;
     }
 
-    for (const caseScore of reportData.stats as CaseScore[]) {
+    for (const caseScore of reportData.stats) {
       const judgeName = caseScore.case_id;
 
       // Find the MetricStatistics entry where metric_name matches case_id (judge name)
@@ -103,12 +107,10 @@ export const judgesAnalyticsService = {
             lte: endDate,
           },
         },
-        include: {
-          artifact: {
-            select: {
-              subtype: true,
-            },
-          },
+        select: {
+          artifactId: true,
+          reportData: true,
+          artifact: { select: { subtype: true } },
         },
         orderBy: {
           createdAt: "desc",
@@ -158,7 +160,7 @@ export const judgesAnalyticsService = {
       judges.sort((a, b) => b.mean - a.mean);
 
       groups.push({
-        artifactSubtype: artifactSubtype as ArtifactSubtype,
+        artifactSubtype,
         judges,
       });
     }
@@ -180,7 +182,7 @@ export const judgesAnalyticsService = {
     organizationId: string,
     startDate: Date,
     endDate: Date,
-    groupBy: "day" | "week" | "month"
+    groupBy: ArtifactCountsGroupBy
   ): Promise<ArtifactCountsResponse> {
     const artifacts = await withDb((db) =>
       db.artifact.findMany({

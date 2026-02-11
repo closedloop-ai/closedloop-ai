@@ -1,9 +1,12 @@
 "use client";
 
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
-import { ChartContainer } from "@repo/design-system/components/ui/chart";
+import {
+  ChartContainer,
+  ChartTooltip,
+} from "@repo/design-system/components/ui/chart";
 import type React from "react";
-import { Bar, BarChart, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, XAxis, YAxis } from "recharts";
 
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
@@ -268,7 +271,7 @@ export function JudgeAnalyticsChart({
           domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
         />
-        <Tooltip content={<BoxPlotTooltip />} />
+        <ChartTooltip content={<BoxPlotTooltip />} />
         <Bar
           dataKey="median"
           fill="#8884d8"

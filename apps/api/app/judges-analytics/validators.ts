@@ -1,9 +1,10 @@
+import { ARTIFACT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 
 // YYYY-MM-DD format validation
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-export const queryParamsSchema = z
+export const judgesAnalyticsQueryValidator = z
   .object({
     startDate: z
       .string()
@@ -16,6 +17,15 @@ export const queryParamsSchema = z
     message: "startDate must be less than or equal to endDate",
   });
 
-export const artifactCountsParamsSchema = queryParamsSchema.extend({
-  groupBy: z.enum(["day", "week", "month"]),
-});
+export const artifactCountsQueryValidator =
+  judgesAnalyticsQueryValidator.extend({
+    groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
+  });
+
+/** Parse YYYY-MM-DD strings to UTC start-of-day and end-of-day Date objects. */
+export function parseDateRange(startDate: string, endDate: string) {
+  return {
+    startDate: new Date(`${startDate}T00:00:00.000Z`),
+    endDate: new Date(`${endDate}T23:59:59.999Z`),
+  };
+}
