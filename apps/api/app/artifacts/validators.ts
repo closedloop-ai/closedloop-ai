@@ -20,7 +20,7 @@ export const createArtifactValidator = z
     subtype: artifactSubtypeEnum,
     title: z.string().min(1, "Title is required"),
     fileName: z.string().optional(),
-    approver: z.string().optional(),
+    approverId: z.string().uuid().optional(),
     status: artifactStatusEnum.optional(),
     content: z.string().optional(),
     externalUrl: z.url().optional(),
@@ -44,7 +44,8 @@ export const createArtifactValidator = z
 export const updateArtifactValidator = z.object({
   title: z.string().min(1).optional(),
   fileName: z.string().optional(),
-  approver: z.string().nullable().optional(),
+  parentId: z.uuidv7().nullable().optional(),
+  approverId: z.string().uuid().nullable().optional(),
   status: artifactStatusEnum.optional(),
   externalUrl: z.url().nullable().optional(),
   targetRepo: z

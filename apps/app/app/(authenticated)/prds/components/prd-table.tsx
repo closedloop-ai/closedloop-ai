@@ -9,16 +9,23 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
 import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
 const columns: Column<ArtifactWithWorkstream>[] = [
   {
     key: "title",
     header: "Name / Title",
-    render: (prd) => <span className="font-medium">{prd.title}</span>,
+    render: (prd) => (
+      <div className="flex items-center gap-2">
+        <span className="font-medium">{prd.title}</span>
+        <PullRequestLink pullRequest={prd.pullRequest} />
+      </div>
+    ),
   },
   {
     key: "fileName",
@@ -43,7 +50,9 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     key: "approver",
     header: "Approver",
     render: (prd) => (
-      <span className="text-muted-foreground">{prd.approver ?? "-"}</span>
+      <span className="text-muted-foreground">
+        {prd.approver ? getUserDisplayName(prd.approver) : "-"}
+      </span>
     ),
   },
   {

@@ -59,7 +59,7 @@ export async function createArtifactVersion(
   });
   const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
 
-  return tx.artifact.create({
+  const created = await tx.artifact.create({
     data: {
       organizationId: original.organizationId,
       workstreamId: original.workstreamId,
@@ -70,7 +70,7 @@ export async function createArtifactVersion(
       title: options.title ?? original.title,
       fileName:
         options.fileName === undefined ? original.fileName : options.fileName,
-      approver: original.approver,
+      approverId: original.approverId,
       status: "DRAFT",
       content:
         options.content === undefined ? original.content : options.content,
@@ -83,8 +83,33 @@ export async function createArtifactVersion(
       version: nextVersion,
       isLatest: true,
     },
+    include: artifactIncludeWithUser,
   });
+  return created as Artifact;
 }
+
+/**
+ * Lightweight include for queries that return an artifact with owner/approver only.
+ * Use artifactIncludeWithContext when workstream/project info is also needed.
+ */
+export const artifactIncludeWithUser = {
+  owner: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+    },
+  },
+  approver: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+    },
+  },
+} as const;
 
 export const previewDeploymentSelect = {
   url: true,
@@ -124,14 +149,15 @@ export const artifactIncludeWithContext = {
       },
     },
   },
-  owner: {
+  parent: {
     select: {
       id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
+      title: true,
+      subtype: true,
+      documentSlug: true,
     },
   },
+  ...artifactIncludeWithUser,
   previewDeployment: {
     select: previewDeploymentSelect,
   },

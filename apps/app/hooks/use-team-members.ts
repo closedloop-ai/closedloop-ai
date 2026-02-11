@@ -5,7 +5,7 @@ import type { User } from "@repo/design-system/components/ui/user-select-popover
 import { useQueries } from "@tanstack/react-query";
 import { teamKeys } from "@/hooks/queries/use-teams";
 import { useApiClient } from "@/hooks/use-api-client";
-import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
+import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 type UseTeamMembersOptions = {
   /** Team IDs to fetch members for */
@@ -31,17 +31,12 @@ function transformMembers(memberArrays: TeamMember[][]): User[] {
 
   for (const members of memberArrays) {
     for (const member of members) {
-      if (memberMap.has(member.user.id)) {
-        continue;
+      if (!memberMap.has(member.user.id)) {
+        memberMap.set(
+          member.user.id,
+          transformApiUserToSelectUser(member.user)
+        );
       }
-
-      memberMap.set(member.user.id, {
-        id: member.user.id,
-        name: getUserDisplayName(member.user),
-        email: member.user.email,
-        avatarUrl: member.user.avatarUrl || undefined,
-        initials: getUserInitials(member.user.firstName, member.user.lastName),
-      });
     }
   }
 

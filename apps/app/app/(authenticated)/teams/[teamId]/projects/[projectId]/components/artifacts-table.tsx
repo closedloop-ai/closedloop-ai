@@ -40,6 +40,7 @@ import { useMemo } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { PreviewLink } from "@/components/preview-link";
+import { PullRequestLink } from "@/components/pull-request-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -178,6 +179,7 @@ function ArtifactSection({
                     <div className="flex items-center gap-2">
                       <Icon className="h-4 w-4 text-muted-foreground" />
                       <span className="font-medium">{artifact.name}</span>
+                      <PullRequestLink pullRequest={artifact.pullRequest} />
                     </div>
                   </TableCell>
                   <TableCell>
