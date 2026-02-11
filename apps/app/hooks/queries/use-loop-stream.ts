@@ -13,7 +13,7 @@ export type StreamStatus =
   | "disconnected"
   | "error";
 
-const TERMINAL_EVENT_TYPES = new Set(["completed", "error"]);
+const TERMINAL_EVENT_TYPES = new Set(["completed", "error", "cancelled"]);
 
 /** Extract the data payload from a single SSE frame (between double newlines). */
 function parseSSEFrame(frame: string): string {

@@ -30,6 +30,11 @@ export const computeModeService = {
   /**
    * Set the organization's compute mode.
    * Merges into the existing settings JSON field.
+   *
+   * NOTE: This is a read-modify-write on the JSON `settings` column, so
+   * concurrent calls could lose intermediate writes. Acceptable here because
+   * this is a low-traffic admin settings page (one user, manual toggle).
+   * If contention becomes a concern, use `jsonb_set` via $executeRaw.
    */
   async setComputeMode(
     organizationId: string,

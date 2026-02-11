@@ -14,7 +14,7 @@ import type {
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
+import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
 export class ReplayDetectedError extends Error {
@@ -42,28 +42,41 @@ const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   TIMED_OUT: new Set(),
 };
 
+const TERMINAL_STATUSES = new Set<LoopStatus>([
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+]);
+
 /**
  * Transform a Prisma loop record to the API Loop type.
- * Handles Decimal → number conversion for estimatedCost.
+ * Handles Decimal → number conversion for estimatedCost and
+ * typed JSON field casts for repo, contextRefs, error, metadata, tokensByModel.
  */
-function toLoop(record: Record<string, unknown>): Loop {
+function toLoop(record: PrismaLoop): Loop {
   return {
     ...record,
     estimatedCost:
-      record.estimatedCost !== null && record.estimatedCost !== undefined
-        ? Number(record.estimatedCost)
-        : null,
-  } as Loop;
+      record.estimatedCost != null ? Number(record.estimatedCost) : null,
+    repo: record.repo as Loop["repo"],
+    contextRefs: record.contextRefs as Loop["contextRefs"],
+    error: record.error as Loop["error"],
+    metadata: record.metadata as Loop["metadata"],
+    tokensByModel: record.tokensByModel as Loop["tokensByModel"],
+  };
 }
 
 /**
- * Transform a Prisma loop record with user to the API LoopWithUser type.
+ * Transform a Prisma loop record (with included user) to the API LoopWithUser type.
  */
-function toLoopWithUser(record: Record<string, unknown>): LoopWithUser {
+function toLoopWithUser(
+  record: PrismaLoop & { user: LoopWithUser["user"] }
+): LoopWithUser {
   return {
     ...toLoop(record),
-    user: (record as { user: LoopWithUser["user"] }).user,
-  } as LoopWithUser;
+    user: record.user,
+  };
 }
 
 /**
@@ -86,7 +99,11 @@ export const loopsService = {
     userId: string,
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
-    // Enforce per-user concurrency limit
+    // Enforce per-user concurrency limit.
+    // NOTE: This is a soft limit with a known TOCTOU window — two concurrent
+    // requests could both read count=4 and both proceed. The risk is low
+    // (same user, tight race window, generous limit of 5) so a DB-level
+    // INSERT ... WHERE (SELECT count) < 5 is overkill for V1.
     const activeCount = await withDb((db) =>
       db.loop.count({
         where: {
@@ -148,7 +165,7 @@ export const loopsService = {
       return null;
     }
 
-    return toLoop(loop as unknown as Record<string, unknown>);
+    return toLoop(loop);
   },
 
   /**
@@ -195,7 +212,7 @@ export const loopsService = {
     );
 
     return loops.map((l) =>
-      toLoopWithUser(l as unknown as Record<string, unknown>)
+      toLoopWithUser(l as PrismaLoop & { user: LoopWithUser["user"] })
     );
   },
 
@@ -304,7 +321,7 @@ export const loopsService = {
       throw new Error(`Loop not found after update: ${id}`);
     }
 
-    return toLoop(loop as unknown as Record<string, unknown>);
+    return toLoop(loop);
   },
 
   /**
@@ -361,7 +378,7 @@ export const loopsService = {
       throw new Error(`Loop not found after cancel: ${id}`);
     }
 
-    return toLoop(loop as unknown as Record<string, unknown>);
+    return toLoop(loop);
   },
 
   /**
@@ -637,9 +654,3 @@ export const loopsService = {
     };
   },
 };
-const TERMINAL_STATUSES = new Set<LoopStatus>([
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "TIMED_OUT",
-]);

@@ -399,6 +399,7 @@ export async function launchLoop(
       s3ContextKey,
       repo: loop.repo ?? undefined,
       closedLoopAuthToken,
+      artifactId: loop.artifactId ?? undefined,
     });
 
     // 6. Update loop status to CLAIMED
@@ -471,6 +472,7 @@ async function runEcsTask(opts: {
   s3ContextKey: string;
   repo?: { fullName: string; branch: string };
   closedLoopAuthToken: string;
+  artifactId?: string;
 }): Promise<string> {
   const ecs = getEcsClient();
   const config = getEcsConfig();
@@ -485,7 +487,12 @@ async function runEcsTask(opts: {
     { name: "S3_STATE_KEY", value: opts.s3StateKey },
     { name: "S3_CONTEXT_KEY", value: opts.s3ContextKey },
     { name: "CLOSEDLOOP_AUTH_TOKEN", value: opts.closedLoopAuthToken },
+    { name: "CORRELATION_ID", value: opts.loopId },
   ];
+
+  if (opts.artifactId) {
+    environment.push({ name: "ARTIFACT_ID", value: opts.artifactId });
+  }
 
   if (opts.repo) {
     environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });

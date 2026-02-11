@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { downloadArtifact, uploadArtifact } from "@repo/aws";
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { log } from "@repo/observability/log";
 
 /**
@@ -15,6 +19,64 @@ import { log } from "@repo/observability/log";
 
 const LOOP_STATE_PREFIX = (orgId: string, loopId: string, runId: string) =>
   `${orgId}/loops/${loopId}/${runId}`;
+
+// Lazy-init S3 client targeting the dedicated loop-state bucket.
+// The ECS harness reads from S3_BUCKET (set in task definition), so the
+// backend must write to the same bucket via LOOP_STATE_BUCKET.
+let _s3Client: S3Client | null = null;
+function getS3Client(): S3Client {
+  if (!_s3Client) {
+    _s3Client = new S3Client({
+      region: process.env.AWS_REGION ?? "us-east-1",
+    });
+  }
+  return _s3Client;
+}
+
+function requireBucket(): string {
+  const bucket = process.env.LOOP_STATE_BUCKET;
+  if (!bucket) {
+    throw new Error(
+      "LOOP_STATE_BUCKET is not configured. " +
+        "This must point to the dedicated loop-state S3 bucket."
+    );
+  }
+  return bucket;
+}
+
+async function putObject(
+  key: string,
+  body: string,
+  contentType: string
+): Promise<void> {
+  await getS3Client().send(
+    new PutObjectCommand({
+      Bucket: requireBucket(),
+      Key: key,
+      Body: Buffer.from(body),
+      ContentType: contentType,
+    })
+  );
+}
+
+async function getObject(key: string): Promise<Buffer> {
+  const response = await getS3Client().send(
+    new GetObjectCommand({
+      Bucket: requireBucket(),
+      Key: key,
+    })
+  );
+
+  if (!response.Body) {
+    throw new Error(`No body returned for key: ${key}`);
+  }
+
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
 
 // --- Context Pack (uploaded by backend before container start) ---
 
@@ -47,7 +109,7 @@ export async function uploadContextPack(
   contextPack: ContextPack
 ): Promise<string> {
   const key = `${stateKeyPrefix}/context-pack.json`;
-  await uploadArtifact(
+  await putObject(
     key,
     JSON.stringify(contextPack, null, 2),
     "application/json"
@@ -61,7 +123,7 @@ export async function downloadContextPack(
 ): Promise<ContextPack | null> {
   try {
     const key = `${stateKeyPrefix}/context-pack.json`;
-    const data = await downloadArtifact(key);
+    const data = await getObject(key);
     return JSON.parse(data.toString()) as ContextPack;
   } catch (error) {
     log.warn("Context pack not found", { stateKeyPrefix, error });
@@ -76,7 +138,7 @@ export async function downloadConversation(
 ): Promise<unknown[] | null> {
   try {
     const key = `${stateKeyPrefix}/conversation.json`;
-    const data = await downloadArtifact(key);
+    const data = await getObject(key);
     return JSON.parse(data.toString()) as unknown[];
   } catch (error) {
     log.warn("Conversation not found", { stateKeyPrefix, error });
@@ -105,7 +167,7 @@ export async function downloadMetadata(
 ): Promise<LoopMetadata | null> {
   try {
     const key = `${stateKeyPrefix}/metadata.json`;
-    const data = await downloadArtifact(key);
+    const data = await getObject(key);
     return JSON.parse(data.toString()) as LoopMetadata;
   } catch (error) {
     log.warn("Metadata not found", { stateKeyPrefix, error });
@@ -120,7 +182,7 @@ export async function downloadEventLog(
 ): Promise<unknown[] | null> {
   try {
     const key = `${stateKeyPrefix}/logs/conversation.jsonl`;
-    const data = await downloadArtifact(key);
+    const data = await getObject(key);
     const lines = data.toString().split("\n").filter(Boolean);
     return lines.map((line) => JSON.parse(line));
   } catch (error) {

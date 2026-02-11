@@ -74,9 +74,9 @@ export const GET = withAuth<
 /**
  * POST /api/loops/:id/events - Receive events from container harness.
  *
- * NOTE: This route currently uses Clerk auth via withAuth(). In production,
- * container harnesses will authenticate via a container JWT instead.
- * This will need to change when container auth is implemented.
+ * Authenticates via a short-lived JWT issued to the runner at launch time
+ * (see loop-runner-jwt.ts). Each event must also include a unique nonce
+ * header for replay protection.
  */
 export async function POST(
   request: Request,

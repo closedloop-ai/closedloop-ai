@@ -1,8 +1,8 @@
 import { type ApiData, verifyAccess } from "flags";
 import { type NextRequest, NextResponse } from "next/server";
-import { showBetaFeature, useLoopsCompute } from "./index";
+import { showBetaFeature } from "./index";
 
-const allFlags = [showBetaFeature, useLoopsCompute];
+const allFlags = [showBetaFeature];
 
 export const getFlags = async (request: NextRequest) => {
   const access = await verifyAccess(request.headers.get("Authorization"));
