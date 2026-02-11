@@ -481,6 +481,7 @@ describe("handleExecutionSuccess", () => {
       data: {
         workstreamId,
         repositoryId,
+        artifactId: "plan-artifact-123",
         githubId: executionResult.github_id,
         number: 42,
         title: executionResult.pr_title,
@@ -511,12 +512,14 @@ describe("handleExecutionSuccess", () => {
         type: "GITHUB_PR_CREATED",
         actorType: "system",
         data: {
+          artifactId: "plan-artifact-123",
           correlationId,
           prNumber: 42,
           prUrl: executionResult.pr_url,
           prTitle: executionResult.pr_title,
           branch: executionResult.branch_name,
           runId,
+          documentSlug: undefined,
         },
       },
     });

@@ -648,6 +648,7 @@ model GitHubPullRequest {
   id             String        @id @default(uuid(7)) @db.Uuid
   workstreamId   String        @map("workstream_id") @db.Uuid
   repositoryId   String        @map("repository_id") @db.Uuid
+  artifactId     String?       @map("artifact_id") @db.Uuid
   githubId       Int           @map("github_id")
   number         Int
   title          String

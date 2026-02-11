@@ -7,6 +7,9 @@ export const ActivityType = {
   ApprovalRejected: "APPROVAL_REJECTED",
   ProjectCreated: "PROJECT_CREATED",
   ProjectUpdated: "PROJECT_UPDATED",
+  GitHubPrCreated: "GITHUB_PR_CREATED",
+  GitHubPrMerged: "GITHUB_PR_MERGED",
+  GitHubActionCompleted: "GITHUB_ACTION_COMPLETED",
 } as const;
 export type ActivityType = (typeof ActivityType)[keyof typeof ActivityType];
 

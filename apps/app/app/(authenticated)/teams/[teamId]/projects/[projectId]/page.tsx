@@ -61,6 +61,7 @@ import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { PropertiesPanel } from "./components/properties-panel";
+import { useMergeNotification } from "./hooks/use-merge-notification";
 
 /** Workstream states that indicate an async workflow is actively running. */
 const ACTIVE_WORKSTREAM_STATES = new Set([
@@ -106,6 +107,10 @@ export default function ProjectDetailPage() {
   } = useProject(projectId);
   const { data: activityData, isLoading: loadingActivity } =
     useProjectActivity(projectId);
+
+  // Show toast notification when PRs are merged
+  useMergeNotification(activityData, projectId, teamId);
+
   // Poll artifacts when any workstream is actively running (e.g., execution in progress).
   // This ensures webhook-created artifacts (like PRs) appear without a manual refresh.
   // Uses TanStack Query's function form of refetchInterval to access query data directly,

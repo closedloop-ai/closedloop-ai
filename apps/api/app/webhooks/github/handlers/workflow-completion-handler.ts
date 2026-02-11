@@ -14,6 +14,21 @@ import type { ExecutionResult } from "../zip-parser";
 import { processArtifactUploads } from "./workflow-artifacts";
 
 /**
+ * Metadata structure for GITHUB_PR_CREATED and GITHUB_PR_MERGED events.
+ * Used for type-safe event data serialization in WorkstreamEvent.data.
+ */
+type PrEventMetadata = {
+  prTitle: string;
+  prUrl: string;
+  artifactId: string;
+  documentSlug: string;
+  branch: string;
+  prNumber: number;
+  correlationId: string;
+  runId: number;
+};
+
+/**
  * Handle successful execution workflow - creates a PR record if changes were made.
  */
 export async function handleExecutionSuccess(
@@ -69,13 +84,14 @@ export async function handleExecutionSuccess(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
-    // Query plan artifact for organizationId, projectId, generatedBy
+    // Query plan artifact for organizationId, projectId, generatedBy, documentSlug
     const planArtifact = await tx.artifact.findUnique({
       where: { id: ctx.artifactId },
       select: {
         organizationId: true,
         projectId: true,
         generatedBy: true,
+        documentSlug: true,
       },
     });
 
@@ -90,6 +106,7 @@ export async function handleExecutionSuccess(
       data: {
         workstreamId,
         repositoryId,
+        artifactId: ctx.artifactId,
         githubId: executionResult.github_id ?? prNumber,
         number: prNumber,
         title: prTitle,
@@ -148,7 +165,9 @@ export async function handleExecutionSuccess(
           prTitle,
           branch: executionResult.branch_name,
           runId,
-        },
+          artifactId: ctx.artifactId,
+          documentSlug: planArtifact.documentSlug,
+        } as PrEventMetadata,
       },
     });
   });

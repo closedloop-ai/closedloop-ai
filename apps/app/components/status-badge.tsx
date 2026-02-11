@@ -43,6 +43,20 @@ const COLOR_INACTIVE =
 const COLOR_PURPLE =
   "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800";
 
+/**
+ * PR status colors mapping to PRD requirements for AC3.1.
+ * Separate from pullRequestStateColors - this maps specific status strings
+ * (OPEN, MERGED, CLOSED) to semantic colors based on PRD acceptance criteria:
+ * - OPEN → blue (in progress)
+ * - MERGED → green (success)
+ * - CLOSED → red (failure/abandoned)
+ */
+export const prStatusColors: Record<string, string> = {
+  OPEN: COLOR_PROGRESS,
+  MERGED: COLOR_SUCCESS,
+  CLOSED: COLOR_FAILURE,
+};
+
 export const pullRequestStateColors: Record<string, string> = {
   OPEN: COLOR_SUCCESS,
   MERGED: COLOR_PURPLE,

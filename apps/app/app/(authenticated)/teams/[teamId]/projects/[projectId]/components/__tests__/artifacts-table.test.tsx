@@ -272,3 +272,68 @@ describe("ArtifactsTable - PR Icon Display", () => {
     expect(prLink).toHaveAttribute("target", "_blank");
   });
 });
+
+describe("ArtifactsTable - PR Status Badge Display", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseRouter.mockReturnValue({ push: vi.fn() });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("renders PullRequestStatusBadge for OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Open PR",
+        pullRequest: createMockPullRequest({ state: "OPEN", number: 1 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("OPEN")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Merged PR",
+        pullRequest: createMockPullRequest({ state: "MERGED", number: 2 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("MERGED")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for CLOSED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Closed PR",
+        pullRequest: createMockPullRequest({ state: "CLOSED", number: 3 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("CLOSED")).toBeInTheDocument();
+  });
+
+  test("does not render badge when pullRequest is null", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact without PR",
+        pullRequest: null,
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
+    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
+    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
+  });
+});
