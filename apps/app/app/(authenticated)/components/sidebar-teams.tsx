@@ -99,14 +99,6 @@ function TeamCollapsible({
                 </SidebarMenuSubButton>
               </SidebarMenuSubItem>
             ))}
-            <SidebarMenuSubItem>
-              <SidebarMenuSubButton asChild>
-                <Link href={`/teams/${team.id}/projects`}>
-                  <FolderIcon className="h-4 w-4" />
-                  <span>All Projects</span>
-                </Link>
-              </SidebarMenuSubButton>
-            </SidebarMenuSubItem>
             {mounted ? (
               <SidebarMenuSubItem>
                 <TeamModal

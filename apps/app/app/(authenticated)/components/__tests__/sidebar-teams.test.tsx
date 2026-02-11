@@ -306,15 +306,6 @@ describe("SidebarTeams", () => {
     });
   });
 
-  test("Test case 1: renders 'All Projects' text", () => {
-    const { container } = render(<SidebarTeams />);
-
-    // The component always renders "All Projects" link inside CollapsibleContent
-    // It may be hidden by CSS, but it's in the DOM
-    const html = container.innerHTML;
-    expect(html).toContain("All Projects");
-  });
-
   test("Test case 2: simulate CollapsibleTrigger click and verify enabled: true", () => {
     render(<SidebarTeams />);
 
