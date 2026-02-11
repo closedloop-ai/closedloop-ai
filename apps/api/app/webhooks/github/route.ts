@@ -1,11 +1,13 @@
-import type { PullRequestEvent } from "@octokit/webhooks-types";
-import { withDb } from "@repo/database";
 import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { handleInstallation } from "./handlers/installation-handler";
 import { handleInstallationRepositories } from "./handlers/installation-repositories-handler";
+import {
+  type HandledPullRequestEvent,
+  handlePullRequest,
+} from "./handlers/pull-request-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
 import {
@@ -61,55 +63,8 @@ export async function POST(request: Request): Promise<Response> {
           parsedBody as { action: string }
         );
 
-      case "pull_request": {
-        const prEvent = parsedBody as PullRequestEvent;
-        if (prEvent.action === "closed" && prEvent.pull_request.merged) {
-          await withDb(async (db) => {
-            const pr = await db.gitHubPullRequest.findFirst({
-              where: { githubId: prEvent.pull_request.id },
-            });
-            if (pr?.workstreamId) {
-              // Update PR state to MERGED
-              await db.gitHubPullRequest.update({
-                where: { id: pr.id },
-                data: {
-                  state: "MERGED",
-                  mergedAt: prEvent.pull_request.merged_at
-                    ? new Date(prEvent.pull_request.merged_at)
-                    : null,
-                },
-              });
-
-              // Query artifact to get documentSlug for event
-              const artifact = pr.artifactId
-                ? await db.artifact.findUnique({
-                    where: { id: pr.artifactId },
-                    select: { documentSlug: true },
-                  })
-                : null;
-
-              await db.workstreamEvent.create({
-                data: {
-                  workstreamId: pr.workstreamId,
-                  type: "GITHUB_PR_MERGED",
-                  actorType: "system",
-                  data: {
-                    prTitle: prEvent.pull_request.title,
-                    prUrl: prEvent.pull_request.html_url,
-                    artifactId: pr.artifactId,
-                    documentSlug: artifact?.documentSlug,
-                    prNumber: prEvent.pull_request.number,
-                  },
-                },
-              });
-            }
-          });
-        }
-        return NextResponse.json({
-          message: "Pull request event processed",
-          ok: true,
-        });
-      }
+      case "pull_request":
+        return await handlePullRequest(parsedBody as HandledPullRequestEvent);
 
       default: {
         log.info("[webhook/github] Ignoring unsupported event type", {
