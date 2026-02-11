@@ -845,12 +845,13 @@ async function main() {
     });
     log("info", "Reported STARTED event");
 
-    // Step 2: Clone the target repository
-    cloneRepo(workDir);
-
-    // Step 3: Download and extract context pack from S3 (secrets are extracted here)
+    // Step 2: Download context pack and validate secrets BEFORE clone,
+    // because cloneRepo needs config.githubToken which is extracted from the pack.
     await downloadContextPack(workDir);
     validateSecrets();
+
+    // Step 3: Clone the target repository (now has githubToken from context pack)
+    cloneRepo(workDir);
 
     // Step 4: Determine execution mode and build command
     const command = config.command.toLowerCase();

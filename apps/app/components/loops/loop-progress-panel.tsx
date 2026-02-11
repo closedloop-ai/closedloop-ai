@@ -9,6 +9,7 @@ import type {
   LoopEventProgress,
   LoopEventToolCall,
 } from "@repo/api/src/types/loop";
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Card,
@@ -35,7 +36,7 @@ import {
   TerminalIcon,
   TextIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLoopPolling } from "@/hooks/queries/use-loop-polling";
 import {
   type StreamStatus,
@@ -58,10 +59,11 @@ type DisplayStatus =
   | "DISCONNECTED";
 
 function deriveDisplayStatus(
-  streamStatus: StreamStatus,
-  events: LoopEvent[]
+  pollingLoopStatus: LoopStatus | null,
+  events: LoopEvent[],
+  streamStatus: StreamStatus
 ): DisplayStatus {
-  // Terminal events take priority
+  // 1. Terminal events in event list take highest priority
   const lastEvent = events.length > 0 ? events.at(-1) : null;
   if (lastEvent?.type === "completed") {
     return "COMPLETED";
@@ -73,19 +75,32 @@ function deriveDisplayStatus(
     return "CANCELLED";
   }
 
-  // Map stream connection status
-  switch (streamStatus) {
-    case "connecting":
-      return "PENDING";
-    case "connected":
-      return events.length > 0 ? "RUNNING" : "PENDING";
-    case "disconnected":
-      return events.length > 0 ? "DISCONNECTED" : "PENDING";
-    case "error":
-      return "FAILED";
-    default:
-      return "PENDING";
+  // 2. Polled loop status is authoritative (from DB, not transport state)
+  if (pollingLoopStatus) {
+    switch (pollingLoopStatus) {
+      case LoopStatus.Completed:
+        return "COMPLETED";
+      case LoopStatus.Failed:
+      case LoopStatus.TimedOut:
+        return "FAILED";
+      case LoopStatus.Cancelled:
+        return "CANCELLED";
+      case LoopStatus.Running:
+      case LoopStatus.Claimed:
+        return events.length > 0 ? "RUNNING" : "PENDING";
+      default:
+        return "PENDING";
+    }
   }
+
+  // 3. Fallback when polling hasn't loaded yet: infer from events + stream
+  if (events.length > 0) {
+    return "RUNNING";
+  }
+  if (streamStatus === "disconnected" || streamStatus === "error") {
+    return "DISCONNECTED";
+  }
+  return "PENDING";
 }
 
 const displayStatusColorMap: Record<DisplayStatus, string> = {
@@ -410,17 +425,40 @@ export function LoopProgressPanel({
   onComplete,
 }: Readonly<LoopProgressPanelProps>) {
   const stream = useLoopStream(loopId);
-  const polling = useLoopPolling(loopId, {
-    enabled: stream.status !== "connected",
-  });
-  const events = stream.status === "connected" ? stream.events : polling.events;
-  const streamStatus = stream.status;
+  // Always poll — polled events are the authoritative source (full history from DB).
+  // SSE provides real-time events between poll cycles.
+  const polling = useLoopPolling(loopId);
+
+  // Merge: polled events are the base (full DB history).
+  // Append any stream events with timestamps after the last polled event,
+  // giving real-time updates in the gap between poll cycles.
+  const events = useMemo(() => {
+    const polled = polling.events;
+    const streamed = stream.events;
+
+    if (streamed.length === 0) {
+      return polled;
+    }
+    if (polled.length === 0) {
+      return streamed;
+    }
+
+    const lastPolledTs = polled.at(-1)?.timestamp ?? "";
+    const newFromStream = streamed.filter((e) => e.timestamp > lastPolledTs);
+
+    return newFromStream.length > 0 ? [...polled, ...newFromStream] : polled;
+  }, [polling.events, stream.events]);
+
   const isComplete = stream.isComplete || polling.isComplete;
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const hasCalledOnComplete = useRef(false);
 
-  // Derive display status from stream status + events
-  const displayStatus = deriveDisplayStatus(streamStatus, events);
+  // Derive display status from authoritative loop state, then events, then stream transport
+  const displayStatus = deriveDisplayStatus(
+    polling.loopStatus,
+    events,
+    stream.status
+  );
   const active = isActiveDisplayStatus(displayStatus);
 
   // Derive token totals from completed event (if present)

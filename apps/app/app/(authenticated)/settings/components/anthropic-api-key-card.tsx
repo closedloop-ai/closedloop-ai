@@ -22,6 +22,7 @@ import {
   useSetOrgApiKey,
   useSetUserApiKey,
 } from "@/hooks/queries/use-api-keys";
+import { isAdminRole } from "@/lib/role-utils";
 
 function KeyStatusRow({
   label,
@@ -72,7 +73,7 @@ function KeyStatusRow({
 
 export function AnthropicApiKeyCard() {
   const { membership } = useOrganization();
-  const isAdmin = membership?.role === "org:admin";
+  const isAdmin = isAdminRole(membership?.role);
 
   const { data: keyInfo, isLoading } = useApiKeyInfo();
   const setOrgKey = useSetOrgApiKey();

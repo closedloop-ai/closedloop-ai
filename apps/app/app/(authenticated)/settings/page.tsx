@@ -24,6 +24,7 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
+import { isAdminRole } from "@/lib/role-utils";
 import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
 import { ComputeModeCard } from "./components/compute-mode-card";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
@@ -65,7 +66,7 @@ const clerkAppearance = {
 
 export default function SettingsPage() {
   const { membership } = useOrganization();
-  const isAdmin = membership?.role === "org:admin";
+  const isAdmin = isAdminRole(membership?.role);
   const searchParams = useSearchParams();
 
   // Handle GitHub OAuth callback results from URL params
@@ -135,19 +136,21 @@ export default function SettingsPage() {
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="admin">
-          {/* biome-ignore lint/a11y/useValidAriaRole: This is a Clerk role prop, not an ARIA role */}
           <Protect
+            condition={(has) =>
+              has({ role: "org:admin" }) || has({ role: "org:owner" })
+            }
             fallback={
               <Card>
                 <CardHeader>
                   <CardTitle>Access Denied</CardTitle>
                   <CardDescription>
-                    You must be an organization admin to view this section.
+                    You must be an organization admin or owner to view this
+                    section.
                   </CardDescription>
                 </CardHeader>
               </Card>
             }
-            role="org:admin"
           >
             <Card>
               <CardHeader>

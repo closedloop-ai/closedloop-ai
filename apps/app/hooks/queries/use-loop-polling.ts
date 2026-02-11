@@ -90,6 +90,7 @@ export function useLoopPolling(
     events,
     lastEvent,
     isComplete: isTerminal,
+    loopStatus: loopQuery.data?.status ?? null,
     isLoading: eventsQuery.isLoading,
     error: eventsQuery.error,
   };

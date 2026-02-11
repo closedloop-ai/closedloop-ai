@@ -1,5 +1,6 @@
 "use client";
 
+import { useOrganization } from "@repo/auth/client";
 import {
   Card,
   CardContent,
@@ -15,8 +16,11 @@ import {
   useComputeMode,
   useSetComputeMode,
 } from "@/hooks/queries/use-compute-mode";
+import { isAdminRole } from "@/lib/role-utils";
 
 export function ComputeModeCard() {
+  const { membership } = useOrganization();
+  const isAdmin = isAdminRole(membership?.role);
   const { data, isLoading } = useComputeMode();
   const setComputeMode = useSetComputeMode();
 
@@ -52,31 +56,38 @@ export function ComputeModeCard() {
             <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {useLoops ? (
-                <ContainerIcon className="h-5 w-5 text-blue-600" />
-              ) : (
-                <GithubIcon className="h-5 w-5" />
-              )}
-              <div>
-                <Label className="font-medium" htmlFor="compute-mode">
-                  {useLoops ? "Container Mode (Loops)" : "GitHub Actions"}
-                </Label>
-                <p className="text-muted-foreground text-xs">
-                  {useLoops
-                    ? "Runs in dedicated ECS containers with real-time streaming"
-                    : "Runs via GitHub Actions workflows"}
-                </p>
+          <>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {useLoops ? (
+                  <ContainerIcon className="h-5 w-5 text-blue-600" />
+                ) : (
+                  <GithubIcon className="h-5 w-5" />
+                )}
+                <div>
+                  <Label className="font-medium" htmlFor="compute-mode">
+                    {useLoops ? "Container Mode (Loops)" : "GitHub Actions"}
+                  </Label>
+                  <p className="text-muted-foreground text-xs">
+                    {useLoops
+                      ? "Runs in dedicated ECS containers with real-time streaming"
+                      : "Runs via GitHub Actions workflows"}
+                  </p>
+                </div>
               </div>
+              <Switch
+                checked={useLoops}
+                disabled={!isAdmin || setComputeMode.isPending}
+                id="compute-mode"
+                onCheckedChange={handleToggle}
+              />
             </div>
-            <Switch
-              checked={useLoops}
-              disabled={setComputeMode.isPending}
-              id="compute-mode"
-              onCheckedChange={handleToggle}
-            />
-          </div>
+            {!isAdmin && (
+              <p className="mt-2 text-muted-foreground text-xs">
+                Only organization admins and owners can change the compute mode.
+              </p>
+            )}
+          </>
         )}
       </CardContent>
     </Card>

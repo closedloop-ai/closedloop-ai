@@ -38,6 +38,10 @@ export const GET = withAuth<LoopWithUser[], "/loops">(
   }
 );
 
+/**
+ * POST /loops — Creates a loop DB record only (status: PENDING).
+ * Does NOT launch the loop. To create AND launch, use POST /artifacts/[id]/run-loop.
+ */
 export const POST = withAuth<CreateLoopResponse, "/loops">(
   async ({ user }, request) => {
     try {
