@@ -284,10 +284,14 @@ export function PlanEditor({
   };
 
   const handleDiscard = () => {
-    if (content.hasUnsavedChanges) {
-      content.discardChanges();
-    }
-    exitEditMode();
+    // Reset editor content back to the saved version via contentResetKey
+    // (works with Liveblocks, unlike just resetting React state)
+    setContentResetValue(plan.content ?? "");
+    setContentResetKey((key) => (key ?? 0) + 1);
+    content.discardChanges();
+    // Exit edit mode without clearing content reset values so the
+    // reset useEffect fires on the same render
+    setIsEditing(false);
   };
 
   return (
