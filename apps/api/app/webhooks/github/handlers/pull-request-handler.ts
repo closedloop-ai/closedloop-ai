@@ -20,6 +20,11 @@ export type HandledPullRequestEvent =
   | PullRequestConvertedToDraftEvent
   | PullRequestReadyForReviewEvent;
 
+/** Parse a nullable ISO date string, falling back to current time if null. */
+function parseDateOrNow(value: string | null): Date {
+  return value ? new Date(value) : new Date();
+}
+
 /**
  * Handle GitHub pull_request webhook events.
  *
@@ -125,7 +130,7 @@ export async function handlePullRequest(
           where: { id: existingPr.id },
           data: {
             state: newState,
-            closedAt: new Date(pull_request.closed_at as string),
+            closedAt: parseDateOrNow(pull_request.closed_at),
             mergedAt: pull_request.merged_at
               ? new Date(pull_request.merged_at)
               : null,
