@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useState } from "react";
+import { type FocusEvent, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -31,7 +31,8 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
+  const [isEditing, setIsEditing] = useState(false);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>(
     undefined
   );
@@ -122,6 +123,22 @@ export function PRDEditor({
     setIsEditing(true);
   };
 
+  const handleEditorBlur = (e: FocusEvent) => {
+    if (!isEditing) {
+      return;
+    }
+    const newTarget = e.relatedTarget as Node | null;
+    if (newTarget && editorContainerRef.current?.contains(newTarget)) {
+      return;
+    }
+
+    // Focus left the editor area — auto-save and exit
+    if (content.hasUnsavedChanges) {
+      content.autoSaveContent();
+    }
+    exitEditMode();
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
@@ -146,33 +163,43 @@ export function PRDEditor({
         versionDisplay={versionDisplay}
       />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PRDMetadataPanel
-            approver={metadata.approver}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            owner={metadata.owner}
-            prd={prd}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
-        }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onBlur={handleEditorBlur}
+        onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
+        onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
+        ref={editorContainerRef}
+      >
+        <CollaborativeEditor
+          contentResetKey={contentResetKey}
+          contentResetValue={contentResetValue}
+          liveblocksRoomId={liveblocksRoomId}
+          metadataPanel={
+            <PRDMetadataPanel
+              approver={metadata.approver}
+              onApproverSelect={metadata.handleApproverSelect}
+              onOwnerChange={metadata.handleOwnerChange}
+              onStatusChange={metadata.handleStatusChange}
+              onTargetBranchBlur={metadata.handleTargetBranchBlur}
+              onTargetBranchChange={metadata.handleTargetBranchChange}
+              onTargetRepoBlur={metadata.handleTargetRepoBlur}
+              onTargetRepoChange={metadata.handleTargetRepoChange}
+              owner={metadata.owner}
+              prd={prd}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          readOnly={!isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Rename Dialog */}
       <RenameDialog

@@ -5,7 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useEffect, useRef, useState } from "react";
+import { type FocusEvent, useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -76,7 +76,8 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
+  const [isEditing, setIsEditing] = useState(false);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
   const [contentResetKey, setContentResetKey] = useState<number | undefined>();
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
@@ -277,6 +278,22 @@ export function PlanEditor({
     setIsEditing(true);
   };
 
+  const handleEditorBlur = (e: FocusEvent) => {
+    if (!isEditing) {
+      return;
+    }
+    const newTarget = e.relatedTarget as Node | null;
+    if (newTarget && editorContainerRef.current?.contains(newTarget)) {
+      return;
+    }
+
+    // Focus left the editor area — auto-save and exit
+    if (content.hasUnsavedChanges) {
+      content.autoSaveContent();
+    }
+    exitEditMode();
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
@@ -312,37 +329,47 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PlanMetadataPanel
-            approver={metadata.approver}
-            generationStatus={generationStatus ?? null}
-            isPreviewRefreshing={isRefreshingPreviewDeployment}
-            judgesReport={judgesReport ?? null}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onParentChange={metadata.handleParentChange}
-            onPreviewRefresh={async () => {
-              const result = await refreshPreviewDeployment();
-              return result ?? null;
-            }}
-            onStatusChange={metadata.handleStatusChange}
-            owner={metadata.owner}
-            plan={plan}
-            previewDeployment={previewDeployment ?? null}
-            pullRequest={pullRequest ?? null}
-            status={metadata.status}
-            teamMembers={metadata.teamMembers}
-          />
-        }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onBlur={handleEditorBlur}
+        onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
+        onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
+        ref={editorContainerRef}
+      >
+        <CollaborativeEditor
+          contentResetKey={contentResetKey}
+          contentResetValue={contentResetValue}
+          liveblocksRoomId={liveblocksRoomId}
+          metadataPanel={
+            <PlanMetadataPanel
+              approver={metadata.approver}
+              generationStatus={generationStatus ?? null}
+              isPreviewRefreshing={isRefreshingPreviewDeployment}
+              judgesReport={judgesReport ?? null}
+              onApproverSelect={metadata.handleApproverSelect}
+              onOwnerChange={metadata.handleOwnerChange}
+              onParentChange={metadata.handleParentChange}
+              onPreviewRefresh={async () => {
+                const result = await refreshPreviewDeployment();
+                return result ?? null;
+              }}
+              onStatusChange={metadata.handleStatusChange}
+              owner={metadata.owner}
+              plan={plan}
+              previewDeployment={previewDeployment ?? null}
+              pullRequest={pullRequest ?? null}
+              status={metadata.status}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          readOnly={!isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
