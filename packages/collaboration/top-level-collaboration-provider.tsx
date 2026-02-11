@@ -1,9 +1,8 @@
 "use client";
 
 import { LiveblocksProvider } from "@liveblocks/react/suspense";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { LiveblocksErrorBoundary } from "./liveblocks-error-boundary";
-import { createResolveRoomsInfo } from "./room-resolvers";
 import {
   createResolveMentionSuggestions,
   createResolveUsers,
@@ -12,7 +11,9 @@ import {
 
 export type TopLevelCollaborationProviderProps = {
   children: ReactNode;
-  organizationId: string;
+  resolveRoomsInfo: ComponentProps<
+    typeof LiveblocksProvider
+  >["resolveRoomsInfo"];
   users?: UserInfo[];
 };
 
@@ -25,15 +26,9 @@ export type TopLevelCollaborationProviderProps = {
  */
 export function TopLevelCollaborationProvider({
   children,
-  organizationId,
+  resolveRoomsInfo,
   users = [],
 }: Readonly<TopLevelCollaborationProviderProps>) {
-  // Type assertion is necessary because TypeScript can't verify the RoomInfo type
-  // matches the global Liveblocks interface across module boundaries
-  const resolveRoomsInfo = createResolveRoomsInfo(organizationId) as Parameters<
-    typeof LiveblocksProvider
-  >[0]["resolveRoomsInfo"];
-
   return (
     <LiveblocksProvider
       authEndpoint="/api/collaboration/auth"

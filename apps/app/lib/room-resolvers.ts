@@ -1,8 +1,12 @@
-import "./config";
-import { parseArtifactRoomId } from "./room-utils";
+import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 
 type ResolvedRoom = {
   roomId: string;
+  name: string;
+  url: string | null;
+};
+
+type RoomInfo = {
   name: string;
   url: string | null;
 };
@@ -20,8 +24,7 @@ export function createResolveRoomsInfo(organizationId: string) {
     roomIds,
   }: {
     roomIds: string[];
-  }): Promise<(Liveblocks["RoomInfo"] | undefined)[]> => {
-    // Filter to only rooms in this organization (client-side pre-filter)
+  }): Promise<(RoomInfo | undefined)[]> => {
     const orgRoomIds: string[] = [];
 
     for (const roomId of roomIds) {
@@ -39,7 +42,6 @@ export function createResolveRoomsInfo(organizationId: string) {
       return roomIds.map(() => undefined);
     }
 
-    // Call server endpoint for room metadata resolution
     let resolvedMap = new Map<string, ResolvedRoom>();
     try {
       const uniqueRoomIds = [...new Set(orgRoomIds)];
@@ -55,17 +57,15 @@ export function createResolveRoomsInfo(organizationId: string) {
       // Network error — fall back to slug-based resolution below
     }
 
-    // Build result array maintaining original order
     return roomIds.map((roomId) => {
       const resolved = resolvedMap.get(roomId);
       if (resolved) {
         return {
           name: resolved.name,
           url: resolved.url,
-        } satisfies Liveblocks["RoomInfo"];
+        } satisfies RoomInfo;
       }
 
-      // Fallback for rooms not returned by server
       try {
         const { organizationId: roomOrgId, documentSlug } =
           parseArtifactRoomId(roomId);
@@ -75,7 +75,7 @@ export function createResolveRoomsInfo(organizationId: string) {
         return {
           name: documentSlug,
           url: `/artifacts/${documentSlug}`,
-        } satisfies Liveblocks["RoomInfo"];
+        };
       } catch {
         return undefined;
       }

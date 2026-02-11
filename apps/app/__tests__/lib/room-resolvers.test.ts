@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createResolveRoomsInfo } from "../room-resolvers";
+import { createResolveRoomsInfo } from "@/lib/room-resolvers";
 
 // Mock fetch globally for the async resolver
 const mockFetch = vi.fn();
@@ -17,45 +17,45 @@ describe("createResolveRoomsInfo", () => {
     });
   });
 
-  describe("slug-to-title conversion", () => {
-    it("converts single-word slug to title case", async () => {
+  describe("slug fallback names", () => {
+    it("returns raw slug as fallback name", async () => {
       const resolver = createResolveRoomsInfo(organizationId);
       const result = await resolver({
         roomIds: [`${organizationId}:artifact:hello`],
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Hello");
+      expect(result[0]?.name).toBe("hello");
     });
 
-    it("converts multi-word slug to title case", async () => {
+    it("preserves hyphens in slug fallback name", async () => {
       const resolver = createResolveRoomsInfo(organizationId);
       const result = await resolver({
         roomIds: [`${organizationId}:artifact:hello-world`],
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Hello World");
+      expect(result[0]?.name).toBe("hello-world");
     });
 
-    it("converts slug with multiple hyphens to title case", async () => {
+    it("preserves multi-hyphen slug as-is", async () => {
       const resolver = createResolveRoomsInfo(organizationId);
       const result = await resolver({
         roomIds: [`${organizationId}:artifact:this-is-a-test`],
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("This Is A Test");
+      expect(result[0]?.name).toBe("this-is-a-test");
     });
 
-    it("preserves capitalization per-word", async () => {
+    it("preserves original casing in slug", async () => {
       const resolver = createResolveRoomsInfo(organizationId);
       const result = await resolver({
         roomIds: [`${organizationId}:artifact:api-docs`],
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Api Docs");
+      expect(result[0]?.name).toBe("api-docs");
     });
   });
 
@@ -120,7 +120,7 @@ describe("createResolveRoomsInfo", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toBeDefined();
-      expect(result[0]?.name).toBe("Valid Doc");
+      expect(result[0]?.name).toBe("valid-doc");
     });
   });
 
@@ -143,9 +143,9 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(3);
-      expect(result[0]?.name).toBe("Doc One");
-      expect(result[1]?.name).toBe("Doc Two");
-      expect(result[2]?.name).toBe("Doc Three");
+      expect(result[0]?.name).toBe("doc-one");
+      expect(result[1]?.name).toBe("doc-two");
+      expect(result[2]?.name).toBe("doc-three");
     });
 
     it("handles mixed valid and invalid room IDs", async () => {
@@ -160,10 +160,10 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(4);
-      expect(result[0]?.name).toBe("Valid Doc");
+      expect(result[0]?.name).toBe("valid-doc");
       expect(result[1]).toBeUndefined();
       expect(result[2]).toBeUndefined();
-      expect(result[3]?.name).toBe("Another Valid");
+      expect(result[3]?.name).toBe("another-valid");
     });
   });
 
@@ -199,7 +199,7 @@ describe("createResolveRoomsInfo", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.url).toBe("/artifacts/my-document");
-      expect(result[0]?.name).toBe("My Document");
+      expect(result[0]?.name).toBe("my-document");
     });
 
     it("falls back to slug-based URL when fetch throws", async () => {
@@ -212,7 +212,7 @@ describe("createResolveRoomsInfo", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]?.url).toBe("/artifacts/my-document");
-      expect(result[0]?.name).toBe("My Document");
+      expect(result[0]?.name).toBe("my-document");
     });
 
     it("deduplicates room IDs in server request", async () => {
@@ -251,7 +251,7 @@ describe("createResolveRoomsInfo", () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
-        name: "Test Document",
+        name: "test-document",
         url: "/artifacts/test-document",
       });
     });
@@ -275,7 +275,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe(" Leading");
+      expect(result[0]?.name).toBe("-leading");
     });
 
     it("handles slug with trailing hyphen", async () => {
@@ -285,7 +285,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Trailing ");
+      expect(result[0]?.name).toBe("trailing-");
     });
 
     it("handles slug with consecutive hyphens", async () => {
@@ -295,7 +295,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Double  Hyphen");
+      expect(result[0]?.name).toBe("double--hyphen");
     });
 
     it("handles empty slug", async () => {
@@ -317,7 +317,7 @@ describe("createResolveRoomsInfo", () => {
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0]?.name).toBe("Doc 123 Test");
+      expect(result[0]?.name).toBe("doc-123-test");
     });
   });
 });

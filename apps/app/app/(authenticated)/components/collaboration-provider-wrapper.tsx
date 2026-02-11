@@ -6,11 +6,12 @@ import {
   LiveblocksErrorBoundary,
 } from "@repo/collaboration/liveblocks-error-boundary";
 import { TopLevelCollaborationProvider } from "@repo/collaboration/top-level-collaboration-provider";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import {
   useCurrentUser,
   useOrganizationUsers,
 } from "@/hooks/queries/use-users";
+import { createResolveRoomsInfo } from "@/lib/room-resolvers";
 
 const LIVEBLOCKS_UNAVAILABLE = { isAvailable: false };
 
@@ -33,6 +34,19 @@ export function CollaborationProviderWrapper({
 }: Readonly<CollaborationProviderWrapperProps>) {
   const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
   const { data: users = [] } = useOrganizationUsers();
+
+  // Type assertion is necessary because TypeScript can't verify the RoomInfo type
+  // matches the global Liveblocks interface across module boundaries
+  const organizationId = currentUser?.organizationId;
+  const resolveRoomsInfo = useMemo(
+    () =>
+      organizationId
+        ? (createResolveRoomsInfo(organizationId) as Parameters<
+            typeof LiveblocksProvider
+          >[0]["resolveRoomsInfo"])
+        : undefined,
+    [organizationId]
+  );
 
   // While loading, mount a minimal LiveblocksProvider so RoomProvider descendants
   // have context. Error boundary catches auth failures; isAvailable=false gates
@@ -63,7 +77,7 @@ export function CollaborationProviderWrapper({
 
   return (
     <TopLevelCollaborationProvider
-      organizationId={currentUser.organizationId}
+      resolveRoomsInfo={resolveRoomsInfo}
       users={userInfo}
     >
       {children}
