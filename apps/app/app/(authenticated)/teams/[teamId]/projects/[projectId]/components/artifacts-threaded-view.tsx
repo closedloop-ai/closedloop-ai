@@ -253,10 +253,11 @@ function ArtifactRow({
       }`}
     >
       <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate text-sm">{artifact.name}</span>
-      <GenerationStatusIndicator generationStatus={artifact.generationStatus} />
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-sm">{artifact.name}</span>
+        <GenerationStatusIndicator
+          generationStatus={artifact.generationStatus}
+        />
         {artifact.pullRequest && (
           <PullRequestStatusBadge pullRequest={artifact.pullRequest} />
         )}

@@ -325,14 +325,6 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
           completedAt: null,
           correlationId: null,
         },
-    expect(screen.getByText("OPEN")).toBeInTheDocument();
-  });
-
-  test("renders PullRequestStatusBadge for MERGED PR", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact with Merged PR",
-        pullRequest: createMockPullRequest({ state: "MERGED", number: 2 }),
       }),
     ];
 
@@ -355,14 +347,6 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
         name: "Artifact",
         subtype: "PRD",
         generationStatus: undefined,
-    expect(screen.getByText("MERGED")).toBeInTheDocument();
-  });
-
-  test("renders PullRequestStatusBadge for CLOSED PR", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact with Closed PR",
-        pullRequest: createMockPullRequest({ state: "CLOSED", number: 3 }),
       }),
     ];
 
@@ -388,14 +372,6 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
           completedAt: null,
           correlationId: "test-id",
         },
-    expect(screen.getByText("CLOSED")).toBeInTheDocument();
-  });
-
-  test("does not render badge when pullRequest is null", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact without PR",
-        pullRequest: null,
       }),
     ];
 
@@ -410,6 +386,60 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       "https://github.com/org/repo/actions/runs/456"
     );
     expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  test("renders PullRequestStatusBadge for OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Open PR",
+        pullRequest: createMockPullRequest({ state: "OPEN", number: 1 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("OPEN")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Merged PR",
+        pullRequest: createMockPullRequest({ state: "MERGED", number: 2 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("MERGED")).toBeInTheDocument();
+  });
+
+  test("renders PullRequestStatusBadge for CLOSED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact with Closed PR",
+        pullRequest: createMockPullRequest({ state: "CLOSED", number: 3 }),
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.getByText("CLOSED")).toBeInTheDocument();
+  });
+
+  test("does not render badge when pullRequest is null", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockProjectArtifact({
+        name: "Artifact without PR",
+        pullRequest: null,
+      }),
+    ];
+
+    render(<ArtifactsTable artifacts={artifacts} />);
+
+    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
+    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
+    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
   });
 
   test("status transitions from PENDING to SUCCESS", () => {

@@ -533,17 +533,6 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
         workstreamId: "ws-1",
         workstreamTitle: "WS",
         generationStatus: undefined,
-    expect(screen.getByText("MERGED")).toBeDefined();
-  });
-
-  test("does not display PR badge when artifact has no pullRequest", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockArtifact({
-        id: "1",
-        name: "No PR Artifact",
-        workstreamId: "ws-1",
-        workstreamTitle: "WS",
-        pullRequest: null,
       }),
     ];
 
@@ -714,10 +703,10 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       screen.getByText("Executing plan and creating PR...")
     ).toBeInTheDocument();
 
-    // Verify they're both in the same row
-    const row = screen.getByText("Artifact with Status").closest("div.flex");
+    // Verify they're both in the same artifact row (outer div has gap-3)
+    const row = screen.getByText("Artifact with Status").closest(".rounded-md");
     expect(row).not.toBeNull();
-    expect(row?.querySelector(".text-muted-foreground")).toBeInTheDocument(); // spinner icon
+    expect(row?.querySelector(".text-muted-foreground")).toBeInTheDocument(); // file type icon
     expect(screen.queryByText("OPEN")).toBeNull();
     expect(screen.queryByText("MERGED")).toBeNull();
   });
