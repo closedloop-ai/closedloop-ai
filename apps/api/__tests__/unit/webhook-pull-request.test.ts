@@ -691,7 +691,7 @@ describe("handlePullRequest", () => {
   });
 
   describe("transaction behavior", () => {
-    it("executes all operations within a single transaction", async () => {
+    it("executes update and event creation within a single transaction", async () => {
       const repository = createRepository(555);
       const pullRequest = createPullRequest({
         number: 53,
@@ -728,9 +728,10 @@ describe("handlePullRequest", () => {
       // Verify withDb.tx was called (transaction wrapper)
       expect(mockWithDbTx).toHaveBeenCalledTimes(1);
 
-      // Verify the transaction callback was executed
-      expect(mockTx.repository.findUnique).toHaveBeenCalled();
-      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalled();
+      // Verify lookups occurred (outside transaction, via withDb)
+      expect(mockWithDb).toHaveBeenCalledTimes(2);
+
+      // Verify mutations occurred (inside transaction, via withDb.tx)
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
     });
