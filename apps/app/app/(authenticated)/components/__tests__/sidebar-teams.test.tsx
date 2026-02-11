@@ -82,6 +82,7 @@ const mockProjects = [
 const mockUseTeams = vi.fn();
 const mockUseRecentProjectsByTeam = vi.fn();
 const mockUseIsMounted = vi.fn();
+const mockUsePathname = vi.fn();
 
 // Mock @/hooks/queries/use-teams
 vi.mock("@/hooks/queries/use-teams", () => ({
@@ -108,6 +109,11 @@ vi.mock("next/link", () => ({
     children: React.ReactNode;
     href: string;
   }) => <a href={href}>{children}</a>,
+}));
+
+// Mock next/navigation
+vi.mock("next/navigation", () => ({
+  usePathname: () => mockUsePathname(),
 }));
 
 // Mock team-modal to simplify testing
@@ -181,14 +187,18 @@ vi.mock("@repo/design-system/components/ui/sidebar", () => ({
   SidebarMenuSubButton: ({
     children,
     asChild,
+    isActive,
   }: {
     children: React.ReactNode;
     asChild?: boolean;
+    isActive?: boolean;
   }) =>
     asChild ? (
       children
     ) : (
-      <div data-testid="sidebar-menu-sub-button">{children}</div>
+      <div data-active={isActive} data-testid="sidebar-menu-sub-button">
+        {children}
+      </div>
     ),
   SidebarMenuSubItem: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="sidebar-menu-sub-item">{children}</div>
@@ -300,6 +310,7 @@ describe("SidebarTeams", () => {
     // Default mock implementations
     mockUseTeams.mockReturnValue({ data: mockTeams });
     mockUseIsMounted.mockReturnValue(true);
+    mockUsePathname.mockReturnValue("/");
     mockUseRecentProjectsByTeam.mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -464,6 +475,40 @@ describe("SidebarTeams", () => {
     // Verify team names are rendered
     expect(screen.getByText("Engineering")).toBeTruthy();
     expect(screen.getByText("Design")).toBeTruthy();
+  });
+
+  test("auto-expands team and highlights active project when on project detail page", () => {
+    mockUsePathname.mockReturnValue("/teams/team-1/projects/project-1");
+    mockUseRecentProjectsByTeam.mockImplementation((teamId: string) => {
+      if (teamId === "team-1") {
+        return {
+          data: mockProjects,
+          isLoading: false,
+        };
+      }
+      return {
+        data: undefined,
+        isLoading: false,
+      };
+    });
+
+    const { container } = render(<SidebarTeams />);
+
+    // Team-1 should be auto-expanded
+    const collapsibles = screen.getAllByTestId("collapsible");
+    expect(collapsibles[0].getAttribute("data-open")).toBe("true");
+    expect(collapsibles[1].getAttribute("data-open")).toBe("false");
+
+    // The hook for team-1 should be called with enabled: true
+    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-1", {
+      enabled: true,
+    });
+
+    // Verify the active project link exists
+    const activeLink = container.querySelector(
+      'a[href="/teams/team-1/projects/project-1"]'
+    );
+    expect(activeLink).toBeTruthy();
   });
 
   test("renders correct links for teams", () => {

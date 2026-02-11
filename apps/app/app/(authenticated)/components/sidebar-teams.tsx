@@ -25,20 +25,25 @@ import {
   UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { useRecentProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeams } from "@/hooks/queries/use-teams";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { TeamModal } from "./team-modal";
 
+const PROJECT_DETAIL_PATTERN = /^\/teams\/([^/]+)\/projects\/[^/]+/;
+
 type TeamCollapsibleProps = {
   team: TeamWithCounts;
+  pathname: string;
   openTeamIds: Set<string>;
   setOpenTeamIds: React.Dispatch<React.SetStateAction<Set<string>>>;
 };
 
 function TeamCollapsible({
   team,
+  pathname,
   openTeamIds,
   setOpenTeamIds,
 }: TeamCollapsibleProps) {
@@ -91,7 +96,12 @@ function TeamCollapsible({
               ))}
             {recentProjects?.map((project) => (
               <SidebarMenuSubItem key={project.id}>
-                <SidebarMenuSubButton asChild>
+                <SidebarMenuSubButton
+                  asChild
+                  isActive={
+                    pathname === `/teams/${team.id}/projects/${project.id}`
+                  }
+                >
                   <Link href={`/teams/${team.id}/projects/${project.id}`}>
                     <FolderIcon className="h-4 w-4" />
                     <span>{project.name}</span>
@@ -122,7 +132,25 @@ function TeamCollapsible({
 export function SidebarTeams() {
   const { data: teams = [] } = useTeams();
   const mounted = useIsMounted();
+  const pathname = usePathname();
   const [openTeamIds, setOpenTeamIds] = useState<Set<string>>(new Set());
+
+  // Auto-expand the team whose project is currently being viewed
+  const activeTeamId = useMemo(() => {
+    const match = pathname.match(PROJECT_DETAIL_PATTERN);
+    return match?.[1];
+  }, [pathname]);
+
+  useEffect(() => {
+    if (activeTeamId) {
+      setOpenTeamIds((prev) => {
+        if (prev.has(activeTeamId)) {
+          return prev;
+        }
+        return new Set(prev).add(activeTeamId);
+      });
+    }
+  }, [activeTeamId]);
 
   return (
     <SidebarGroup>
@@ -149,6 +177,7 @@ export function SidebarTeams() {
           <TeamCollapsible
             key={team.id}
             openTeamIds={openTeamIds}
+            pathname={pathname}
             setOpenTeamIds={setOpenTeamIds}
             team={team}
           />
