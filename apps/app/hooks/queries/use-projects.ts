@@ -25,6 +25,7 @@ export const projectKeys = {
   detail: (id: string) => [...projectKeys.details(), id] as const,
   activity: (id: string, page: number, pageSize: number) =>
     [...projectKeys.detail(id), "activity", { page, pageSize }] as const,
+  recent: (teamId: string) => [...projectKeys.all, "recent", teamId] as const,
 };
 
 // Queries
@@ -55,6 +56,21 @@ export function useProjectsByTeam(
     queryFn: () =>
       apiClient.get<ProjectWithDetails[]>(`/projects?teamId=${teamId}`),
     enabled: !!teamId,
+    ...options,
+  });
+}
+
+export function useRecentProjectsByTeam(
+  teamId: string,
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: projectKeys.recent(teamId),
+    queryFn: () =>
+      apiClient.get<ProjectWithDetails[]>(`/projects?teamId=${teamId}&limit=3`),
+    enabled: options?.enabled ?? true,
     ...options,
   });
 }
@@ -104,7 +120,7 @@ export function useCreateProject() {
         targetDate: input.targetDate?.toISOString(),
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: projectKeys.all });
     },
   });
 }
@@ -130,7 +146,7 @@ export function useUpdateProject() {
       queryClient.invalidateQueries({
         queryKey: projectKeys.detail(variables.id),
       });
-      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: projectKeys.all });
     },
   });
 }
@@ -143,7 +159,7 @@ export function useDeleteProject() {
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/projects/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: projectKeys.all });
     },
   });
 }

@@ -1,6 +1,12 @@
 import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import {
+  badRequestResponse,
+  errorResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 import { projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
@@ -8,15 +14,37 @@ import { createProjectValidator } from "./validators";
  * GET /projects - List all projects
  * Query params:
  *   - teamId: Filter by team
+ *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
  */
 export const GET = withAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
     try {
       const url = new URL(request.url);
-      const teamId = url.searchParams.get("teamId");
 
+      // Validate query parameters
+      const querySchema = z.object({
+        teamId: z.string().optional(),
+        limit: z.coerce.number().int().positive().max(100).optional(),
+      });
+
+      const queryResult = querySchema.safeParse({
+        teamId: url.searchParams.get("teamId"),
+        limit: url.searchParams.get("limit"),
+      });
+
+      if (!queryResult.success) {
+        return badRequestResponse("Invalid query parameters");
+      }
+
+      const { teamId, limit } = queryResult.data;
+
+      // Determine which service method to call based on parameters
       const projects = teamId
-        ? await projectsService.findByTeam(teamId, user.organizationId)
+        ? await projectsService.findByTeam(
+            teamId,
+            user.organizationId,
+            limit ? { limit } : undefined
+          )
         : await projectsService.findByOrganization(user.organizationId);
 
       return successResponse(
