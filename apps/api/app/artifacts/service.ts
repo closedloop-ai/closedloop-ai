@@ -31,6 +31,7 @@ import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
+import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -61,6 +62,28 @@ async function validateOwnerInOrg(
   if (!owner) {
     throw new Error("Invalid owner ID: user not found in this organization");
   }
+}
+
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) return undefined;
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
 }
 
 // Result types for service operations
@@ -933,6 +956,9 @@ ${initialInstructions.trim()}`;
       artifact.content
     );
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -941,6 +967,7 @@ ${initialInstructions.trim()}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -1099,6 +1126,9 @@ ${initialInstructions.trim()}`;
 
 ${changes}`;
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Now trigger the workflow - records already exist for webhook to find
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1107,6 +1137,7 @@ ${changes}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id, // Same session for artifact continuity
+      ...committer,
     });
 
     if (!result.success) {
@@ -1259,15 +1290,21 @@ Please try again or contact support if the issue persists.`,
       }
 
       const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "execution-logs"
+        Number(actionRun.runId)
       );
 
-      if (artifacts.length === 0 || !artifacts[0]) {
+      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      const symphonyArtifact = artifacts.find((a) =>
+        SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
+          a.name.startsWith(prefix)
+        )
+      );
+
+      if (!symphonyArtifact) {
         return createEmptyExecutionTrace();
       }
 
-      return parseExecutionLogs(artifacts[0].data);
+      return parseExecutionLogs(symphonyArtifact.data);
     } catch (error) {
       log.error("[artifacts-service] Failed to get execution log", {
         error: error instanceof Error ? error.message : String(error),
@@ -1579,6 +1616,9 @@ Please try again or contact support if the issue persists.`,
       ]);
     });
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1587,6 +1627,7 @@ Please try again or contact support if the issue persists.`,
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
