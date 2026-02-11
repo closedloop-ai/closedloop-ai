@@ -375,13 +375,13 @@ describe("SidebarTeams", () => {
 
     // Verify project links are present
     const projectLink1 = container.querySelector(
-      'a[href="/projects/project-1"]'
+      'a[href="/teams/team-1/projects/project-1"]'
     );
     const projectLink2 = container.querySelector(
-      'a[href="/projects/project-2"]'
+      'a[href="/teams/team-1/projects/project-2"]'
     );
     const projectLink3 = container.querySelector(
-      'a[href="/projects/project-3"]'
+      'a[href="/teams/team-1/projects/project-3"]'
     );
 
     expect(projectLink1).toBeTruthy();

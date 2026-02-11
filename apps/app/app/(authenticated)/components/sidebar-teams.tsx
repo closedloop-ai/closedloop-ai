@@ -92,7 +92,7 @@ function TeamCollapsible({
             {recentProjects?.map((project) => (
               <SidebarMenuSubItem key={project.id}>
                 <SidebarMenuSubButton asChild>
-                  <Link href={`/projects/${project.id}`}>
+                  <Link href={`/teams/${team.id}/projects/${project.id}`}>
                     <FolderIcon className="h-4 w-4" />
                     <span>{project.name}</span>
                   </Link>
