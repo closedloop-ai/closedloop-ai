@@ -66,7 +66,7 @@ describe("Artifacts Service - PR Batch Fetching", () => {
         },
       ];
 
-      // Mock the two database calls: artifacts query and PRs query
+      // Mock the database calls: artifacts query, PRs query, and GitHub action runs
       vi.mocked(withDb).mockImplementation((callback: any) => {
         const mockDb = {
           artifact: {
@@ -74,6 +74,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           },
           gitHubPullRequest: {
             findMany: vi.fn().mockResolvedValue(mockPRs),
+          },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
           },
         };
         return callback(mockDb);
@@ -110,6 +113,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           artifact: {
             findMany: vi.fn().mockResolvedValue(mockArtifacts),
           },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
         };
         return callback(mockDb);
       });
@@ -141,6 +147,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           },
           gitHubPullRequest: {
             findMany: vi.fn().mockResolvedValue(mockPRs),
+          },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
           },
         };
         return callback(mockDb);
@@ -204,6 +213,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           gitHubPullRequest: {
             findMany: vi.fn().mockResolvedValue(mockPRs),
           },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
         };
         return callback(mockDb);
       });
@@ -252,6 +264,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           gitHubPullRequest: {
             findMany: prQuerySpy,
           },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
+          },
         };
         return callback(mockDb);
       });
@@ -296,6 +311,9 @@ describe("Artifacts Service - PR Batch Fetching", () => {
           },
           gitHubPullRequest: {
             findMany: prQuerySpy,
+          },
+          gitHubActionRun: {
+            findMany: vi.fn().mockResolvedValue([]),
           },
         };
         return callback(mockDb);

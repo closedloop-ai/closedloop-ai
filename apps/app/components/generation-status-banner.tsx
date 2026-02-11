@@ -1,10 +1,11 @@
 "use client";
 
-import type { GenerationStatus } from "@repo/api/src/types/artifact";
+import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusBannerProps = {
   artifactId: string;
@@ -13,27 +14,6 @@ type GenerationStatusBannerProps = {
 const MIN_POLL_INTERVAL = 2000; // 2 seconds
 const MAX_POLL_INTERVAL = 30_000; // 30 seconds
 const BACKOFF_MULTIPLIER = 1.5;
-
-function getStatusMessage(
-  status: GenerationStatus["status"],
-  command: GenerationStatus["command"]
-): string {
-  const isExecute = command === "execute";
-  switch (status) {
-    case "PENDING":
-      return "Waiting to start...";
-    case "QUEUED":
-      return isExecute ? "Queued for execution..." : "Queued for generation...";
-    case "RUNNING":
-      return isExecute
-        ? "Executing plan and creating PR..."
-        : "Generating implementation plan...";
-    case "FAILURE":
-      return isExecute ? "Plan execution failed" : "Plan generation failed";
-    default:
-      return "";
-  }
-}
 
 export function GenerationStatusBanner({
   artifactId,
@@ -115,10 +95,7 @@ export function GenerationStatusBanner({
     return null;
   }
 
-  const isActive =
-    generationStatus.status === "PENDING" ||
-    generationStatus.status === "QUEUED" ||
-    generationStatus.status === "RUNNING";
+  const isActive = isActiveGenerationStatus(generationStatus.status);
   const isFailed = generationStatus.status === "FAILURE";
 
   return (
