@@ -1,4 +1,8 @@
-import { ECSClient, RunTaskCommand } from "@aws-sdk/client-ecs";
+import {
+  ECSClient,
+  RunTaskCommand,
+  StopTaskCommand,
+} from "@aws-sdk/client-ecs";
 import type {
   LoopEvent,
   LoopEventCompleted,
@@ -11,6 +15,7 @@ import { artifactsService } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import { loopsService } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
+import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import {
   type ContextPack,
   downloadMetadata,
@@ -165,31 +170,35 @@ async function fetchContextRefArtifacts(
     return [];
   }
 
-  const results: ContextPack["artifacts"] = [];
-  for (const ref of loop.contextRefs) {
-    if (ref.artifactId === loop.artifactId) {
-      continue;
-    }
+  const refs = loop.contextRefs.filter(
+    (ref) => ref.artifactId !== loop.artifactId
+  );
 
-    const artifact = await artifactsService.findByIdSimple(
-      ref.artifactId,
-      organizationId
-    );
-    if (!artifact) {
-      continue;
-    }
+  const artifacts = await Promise.all(
+    refs.map(async (ref) => {
+      const artifact = await artifactsService.findByIdSimple(
+        ref.artifactId,
+        organizationId
+      );
+      if (!artifact) {
+        return null;
+      }
 
-    results.push({
-      id: artifact.id,
-      type: String(artifact.subtype ?? artifact.type),
-      title: artifact.title,
-      content:
-        ref.include === "summary"
-          ? truncateForSummary(artifact.content ?? "")
-          : (artifact.content ?? ""),
-    });
-  }
-  return results;
+      return {
+        id: artifact.id,
+        type: String(artifact.subtype ?? artifact.type),
+        title: artifact.title,
+        content:
+          ref.include === "summary"
+            ? truncateForSummary(artifact.content ?? "")
+            : (artifact.content ?? ""),
+      };
+    })
+  );
+
+  return artifacts.filter(
+    (artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact)
+  );
 }
 
 async function fetchParentLoopSummary(
@@ -349,23 +358,30 @@ export async function launchLoop(
     }
 
     // 4. Build context pack and upload to S3
-    const s3StateKey = await buildContextPack(loop, organizationId);
+    const s3ContextKey = await buildContextPack(loop, organizationId);
+    const s3StateKey = getStateKeyPrefix(organizationId, loopId);
 
     // 5. Launch ECS task
+    const closedLoopAuthToken = await issueLoopRunnerToken({
+      loopId,
+      organizationId,
+    });
     const taskArn = await runEcsTask({
       loopId,
       organizationId,
       command: loop.command,
       s3StateKey,
+      s3ContextKey,
       anthropicApiKey,
       githubToken,
       repo: loop.repo ?? undefined,
+      closedLoopAuthToken,
     });
 
     // 6. Update loop status to CLAIMED
     await loopsService.updateStatus(loopId, organizationId, "CLAIMED", {
       containerId: taskArn,
-      s3StateKey: getStateKeyPrefix(organizationId, loopId),
+      s3StateKey,
     });
 
     log.info("[loop-orchestrator] Loop launched successfully", {
@@ -402,6 +418,25 @@ export async function launchLoop(
 }
 
 /**
+ * Stop a running ECS task for a loop (best-effort).
+ */
+export async function stopLoopTask(
+  taskArn: string,
+  reason = "Loop cancelled"
+): Promise<void> {
+  const ecs = getEcsClient();
+  const config = getEcsConfig();
+
+  await ecs.send(
+    new StopTaskCommand({
+      cluster: config.cluster,
+      task: taskArn,
+      reason,
+    })
+  );
+}
+
+/**
  * Run an ECS Fargate task with the given configuration.
  * Returns the task ARN.
  */
@@ -410,9 +445,11 @@ async function runEcsTask(opts: {
   organizationId: string;
   command: string;
   s3StateKey: string;
+  s3ContextKey: string;
   anthropicApiKey: string;
   githubToken?: string;
   repo?: { fullName: string; branch: string };
+  closedLoopAuthToken: string;
 }): Promise<string> {
   const ecs = getEcsClient();
   const config = getEcsConfig();
@@ -423,7 +460,9 @@ async function runEcsTask(opts: {
     { name: "ORGANIZATION_ID", value: opts.organizationId },
     { name: "COMMAND", value: opts.command },
     { name: "S3_STATE_KEY", value: opts.s3StateKey },
+    { name: "S3_CONTEXT_KEY", value: opts.s3ContextKey },
     { name: "ANTHROPIC_API_KEY", value: opts.anthropicApiKey },
+    { name: "CLOSEDLOOP_AUTH_TOKEN", value: opts.closedLoopAuthToken },
   ];
 
   if (opts.githubToken) {
@@ -431,14 +470,15 @@ async function runEcsTask(opts: {
   }
 
   if (opts.repo) {
-    environment.push({ name: "REPO_FULL_NAME", value: opts.repo.fullName });
-    environment.push({ name: "REPO_BRANCH", value: opts.repo.branch });
+    environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });
+    environment.push({ name: "TARGET_BRANCH", value: opts.repo.branch });
   }
 
   // Add callback URL so the harness can report events back
-  const callbackUrl = process.env.LOOP_CALLBACK_URL;
-  if (callbackUrl) {
-    environment.push({ name: "CALLBACK_URL", value: callbackUrl });
+  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
+  if (apiBaseUrl) {
+    environment.push({ name: "API_BASE_URL", value: apiBaseUrl });
+    environment.push({ name: "CALLBACK_URL", value: apiBaseUrl });
   }
 
   const command = new RunTaskCommand({
@@ -642,6 +682,29 @@ async function handleLoopError(
   organizationId: string,
   event: { type: "error"; code: string; message: string; timestamp: string }
 ): Promise<void> {
+  if (event.code === "CANCELLED") {
+    await loopsService.addEvent(loopId, {
+      type: "cancelled",
+      data: {
+        reason: event.message,
+        timestamp: event.timestamp,
+      },
+    });
+
+    const loop = await loopsService.findById(loopId, organizationId);
+    if (loop && loop.status !== "CANCELLED") {
+      await loopsService.updateStatus(loopId, organizationId, "CANCELLED", {
+        completedAt: new Date(),
+      });
+    }
+
+    log.info("[loop-orchestrator] Loop cancelled", {
+      loopId,
+      reason: event.message,
+    });
+    return;
+  }
+
   // Store the error event
   await loopsService.addEvent(loopId, {
     type: event.type,

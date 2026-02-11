@@ -130,6 +130,10 @@ async function uploadToS3(key, body, contentType = "application/octet-stream") {
 // ---------------------------------------------------------------------------
 async function reportEvent(event) {
   const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/events`;
+  const payload = {
+    ...event,
+    timestamp: event.timestamp || new Date().toISOString(),
+  };
   try {
     const resp = await fetch(url, {
       method: "POST",
@@ -138,8 +142,8 @@ async function reportEvent(event) {
         Authorization: `Bearer ${config.authToken}`,
       },
       body: JSON.stringify({
-        type: event.type,
-        data: event,
+        type: payload.type,
+        data: payload,
       }),
     });
     if (!resp.ok) {
@@ -297,8 +301,7 @@ function spawnProcess(cmd, args, cwd, env) {
         lastReportedAt = now;
         reportEvent({
           type: "output",
-          stream,
-          line,
+          chunk: line,
           correlationId: config.correlationId,
         }).catch(() => {});
       }
@@ -684,9 +687,9 @@ function setupShutdownHandlers(workDir) {
     // Report cancelled status
     try {
       await reportEvent({
-        type: "status",
-        status: "CANCELLED",
-        reason: signal,
+        type: "error",
+        code: "CANCELLED",
+        message: `Loop cancelled (${signal})`,
         correlationId: config.correlationId,
       });
     } catch (err) {
@@ -725,12 +728,9 @@ async function main() {
   try {
     // Step 1: Report started event
     await reportEvent({
-      type: "status",
-      status: "STARTED",
-      command: config.command,
+      type: "started",
       correlationId: config.correlationId,
       loopId: config.loopId,
-      artifactId: config.artifactId,
     });
     log("info", "Reported STARTED event");
 
@@ -763,12 +763,6 @@ async function main() {
 
     // Step 6: Execute the command
     log("info", `Executing: ${cmd} ${args.join(" ")}`);
-    await reportEvent({
-      type: "status",
-      status: "RUNNING",
-      command: config.command,
-      correlationId: config.correlationId,
-    });
 
     const result = await spawnProcess(cmd, args, workDir, childEnv);
     output = result.output;
@@ -797,23 +791,33 @@ async function main() {
     await uploadMetadata(workDir, output, tokenUsage, startTime);
 
     // Step 9: Report final status with token breakdown
-    const finalStatus = exitCode === 0 ? "COMPLETED" : "FAILED";
-    await reportEvent({
-      type: "status",
-      status: finalStatus,
-      exitCode,
-      signal: result.signal,
-      durationSeconds: Number.parseFloat(duration),
-      tokensUsed: {
-        input: tokenUsage.totalInput,
-        output: tokenUsage.totalOutput,
-      },
-      tokensByModel: tokenUsage.tokensByModel,
-      correlationId: config.correlationId,
-      loopId: config.loopId,
-      artifactId: config.artifactId,
-    });
-    log("info", `Reported ${finalStatus} event`);
+    if (exitCode === 0) {
+      await reportEvent({
+        type: "completed",
+        result: {
+          exitCode,
+          signal: result.signal,
+          durationSeconds: Number.parseFloat(duration),
+        },
+        tokensUsed: {
+          input: tokenUsage.totalInput,
+          output: tokenUsage.totalOutput,
+        },
+        tokensByModel: tokenUsage.tokensByModel,
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+      });
+      log("info", "Reported COMPLETED event");
+    } else {
+      await reportEvent({
+        type: "error",
+        code: "PROCESS_FAILED",
+        message: `Process exited with code ${exitCode}`,
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+      });
+      log("info", "Reported FAILED event");
+    }
 
     // Exit with the child's exit code
     process.exit(exitCode || 0);
@@ -832,13 +836,11 @@ async function main() {
     // Best-effort: report failure
     try {
       await reportEvent({
-        type: "status",
-        status: "FAILED",
-        error: err.message,
-        durationSeconds: Number.parseFloat(duration),
+        type: "error",
+        code: "RUNNER_ERROR",
+        message: err.message,
         correlationId: config.correlationId,
         loopId: config.loopId,
-        artifactId: config.artifactId,
       });
     } catch (reportErr) {
       log("error", `Failed to report error event: ${reportErr.message}`);

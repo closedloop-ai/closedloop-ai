@@ -1,7 +1,9 @@
+import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
+  forbiddenResponse,
   successResponse,
 } from "@/lib/route-utils";
 import { type ComputeMode, computeModeService } from "../compute-mode-service";
@@ -30,8 +32,13 @@ export const GET = withAuth<ComputeModeResponse, "/settings/compute-mode">(
  * Set the organization's compute mode. Requires admin role.
  */
 export const PUT = withAuth<ComputeModeResponse, "/settings/compute-mode">(
-  async ({ user }, request) => {
+  async ({ user, clerkOrgId, clerkUserId }, request) => {
     try {
+      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
+      if (!isAdmin) {
+        return forbiddenResponse();
+      }
+
       const body = (await request.json()) as { computeMode?: string };
       const mode = body.computeMode;
 

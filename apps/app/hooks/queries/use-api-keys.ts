@@ -10,11 +10,15 @@ import { useApiClient } from "@/hooks/use-api-client";
 
 // Types
 type ApiKeyInfo = {
-  org: { isSet: boolean; lastFour: string | null };
-  user: { isSet: boolean; lastFour: string | null };
+  org: { isSet: boolean; lastFour: string | null; setAt?: string | null };
+  user: { isSet: boolean; lastFour: string | null; setAt?: string | null };
 };
 
-type SetKeyResponse = { isSet: boolean; lastFour: string | null };
+type SetKeyResponse = {
+  isSet: boolean;
+  lastFour: string | null;
+  setAt?: string;
+};
 
 // Query key factory
 export const apiKeyKeys = {

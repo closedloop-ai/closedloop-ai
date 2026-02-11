@@ -1,5 +1,103 @@
+import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+
+const ENCRYPTION_CONTEXT = { purpose: "claude-api-key" } as const;
+
+let _kmsClient: KMSClient | null = null;
+function getKmsClient(): KMSClient {
+  if (!_kmsClient) {
+    _kmsClient = new KMSClient({
+      region: process.env.AWS_REGION ?? "us-east-1",
+    });
+  }
+  return _kmsClient;
+}
+
+function requireKmsKeyArn(): string {
+  const arn = process.env.KMS_KEY_ARN;
+  if (!arn) {
+    throw new Error("KMS_KEY_ARN is not configured");
+  }
+  return arn;
+}
+
+async function encryptApiKey(key: string): Promise<string> {
+  const result = await getKmsClient().send(
+    new EncryptCommand({
+      KeyId: requireKmsKeyArn(),
+      Plaintext: Buffer.from(key, "utf-8"),
+      EncryptionContext: ENCRYPTION_CONTEXT,
+    })
+  );
+
+  if (!result.CiphertextBlob) {
+    throw new Error("KMS encryption failed: empty ciphertext");
+  }
+
+  return Buffer.from(result.CiphertextBlob).toString("base64");
+}
+
+async function decryptApiKey(encrypted: string): Promise<string> {
+  const result = await getKmsClient().send(
+    new DecryptCommand({
+      CiphertextBlob: Buffer.from(encrypted, "base64"),
+      EncryptionContext: ENCRYPTION_CONTEXT,
+    })
+  );
+
+  if (!result.Plaintext) {
+    throw new Error("KMS decryption failed: empty plaintext");
+  }
+
+  return Buffer.from(result.Plaintext).toString("utf-8");
+}
+
+function getLastFour(key: string): string {
+  return key.slice(-4);
+}
+
+type ApiKeyInfo = {
+  isSet: boolean;
+  lastFour: string | null;
+  setAt: Date | null;
+};
+
+async function migrateOrgLegacyKey(
+  organizationId: string,
+  key: string
+): Promise<void> {
+  const encrypted = await encryptApiKey(key);
+  await withDb((db) =>
+    db.organization.update({
+      where: { id: organizationId },
+      data: {
+        anthropicApiKey: null,
+        claudeApiKeyEncrypted: encrypted,
+        claudeApiKeyLastFour: getLastFour(key),
+        claudeApiKeySetAt: new Date(),
+      },
+    })
+  );
+}
+
+async function migrateUserLegacyKey(
+  userId: string,
+  key: string
+): Promise<void> {
+  const encrypted = await encryptApiKey(key);
+  await withDb((db) =>
+    db.user.update({
+      where: { id: userId },
+      data: {
+        anthropicApiKey: null,
+        claudeApiKeyEncrypted: encrypted,
+        claudeApiKeyLastFour: getLastFour(key),
+        claudeApiKeySetAt: new Date(),
+      },
+    })
+  );
+}
 
 export const apiKeyService = {
   /**
@@ -49,10 +147,17 @@ export const apiKeyService = {
    * Set org-level API key.
    */
   async setOrgKey(organizationId: string, key: string): Promise<void> {
+    const encrypted = await encryptApiKey(key);
+
     await withDb((db) =>
       db.organization.update({
         where: { id: organizationId },
-        data: { anthropicApiKey: key },
+        data: {
+          anthropicApiKey: null,
+          claudeApiKeyEncrypted: encrypted,
+          claudeApiKeyLastFour: getLastFour(key),
+          claudeApiKeySetAt: new Date(),
+        },
       })
     );
   },
@@ -64,7 +169,12 @@ export const apiKeyService = {
     await withDb((db) =>
       db.organization.update({
         where: { id: organizationId },
-        data: { anthropicApiKey: null },
+        data: {
+          anthropicApiKey: null,
+          claudeApiKeyEncrypted: null,
+          claudeApiKeyLastFour: null,
+          claudeApiKeySetAt: null,
+        },
       })
     );
   },
@@ -72,31 +182,53 @@ export const apiKeyService = {
   /**
    * Get org API key info (never returns full key).
    */
-  async getOrgKeyInfo(
-    organizationId: string
-  ): Promise<{ isSet: boolean; lastFour: string | null }> {
+  async getOrgKeyInfo(organizationId: string): Promise<ApiKeyInfo> {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
-        select: { anthropicApiKey: true },
+        select: {
+          claudeApiKeyEncrypted: true,
+          claudeApiKeyLastFour: true,
+          claudeApiKeySetAt: true,
+          anthropicApiKey: true,
+        },
       })
     );
 
-    if (!org?.anthropicApiKey) {
-      return { isSet: false, lastFour: null };
+    if (org?.claudeApiKeyEncrypted) {
+      return {
+        isSet: true,
+        lastFour: org.claudeApiKeyLastFour ?? null,
+        setAt: org.claudeApiKeySetAt ?? null,
+      };
     }
 
-    return { isSet: true, lastFour: org.anthropicApiKey.slice(-4) };
+    if (org?.anthropicApiKey) {
+      return {
+        isSet: true,
+        lastFour: getLastFour(org.anthropicApiKey),
+        setAt: null,
+      };
+    }
+
+    return { isSet: false, lastFour: null, setAt: null };
   },
 
   /**
    * Set user-level API key.
    */
   async setUserKey(userId: string, key: string): Promise<void> {
+    const encrypted = await encryptApiKey(key);
+
     await withDb((db) =>
       db.user.update({
         where: { id: userId },
-        data: { anthropicApiKey: key },
+        data: {
+          anthropicApiKey: null,
+          claudeApiKeyEncrypted: encrypted,
+          claudeApiKeyLastFour: getLastFour(key),
+          claudeApiKeySetAt: new Date(),
+        },
       })
     );
   },
@@ -108,7 +240,12 @@ export const apiKeyService = {
     await withDb((db) =>
       db.user.update({
         where: { id: userId },
-        data: { anthropicApiKey: null },
+        data: {
+          anthropicApiKey: null,
+          claudeApiKeyEncrypted: null,
+          claudeApiKeyLastFour: null,
+          claudeApiKeySetAt: null,
+        },
       })
     );
   },
@@ -116,21 +253,36 @@ export const apiKeyService = {
   /**
    * Get user API key info (never returns full key).
    */
-  async getUserKeyInfo(
-    userId: string
-  ): Promise<{ isSet: boolean; lastFour: string | null }> {
+  async getUserKeyInfo(userId: string): Promise<ApiKeyInfo> {
     const user = await withDb((db) =>
       db.user.findUnique({
         where: { id: userId },
-        select: { anthropicApiKey: true },
+        select: {
+          claudeApiKeyEncrypted: true,
+          claudeApiKeyLastFour: true,
+          claudeApiKeySetAt: true,
+          anthropicApiKey: true,
+        },
       })
     );
 
-    if (!user?.anthropicApiKey) {
-      return { isSet: false, lastFour: null };
+    if (user?.claudeApiKeyEncrypted) {
+      return {
+        isSet: true,
+        lastFour: user.claudeApiKeyLastFour ?? null,
+        setAt: user.claudeApiKeySetAt ?? null,
+      };
     }
 
-    return { isSet: true, lastFour: user.anthropicApiKey.slice(-4) };
+    if (user?.anthropicApiKey) {
+      return {
+        isSet: true,
+        lastFour: getLastFour(user.anthropicApiKey),
+        setAt: null,
+      };
+    }
+
+    return { isSet: false, lastFour: null, setAt: null };
   },
 
   /**
@@ -146,11 +298,19 @@ export const apiKeyService = {
     const user = await withDb((db) =>
       db.user.findUnique({
         where: { id: userId },
-        select: { anthropicApiKey: true },
+        select: {
+          claudeApiKeyEncrypted: true,
+          anthropicApiKey: true,
+        },
       })
     );
 
+    if (user?.claudeApiKeyEncrypted) {
+      return decryptApiKey(user.claudeApiKeyEncrypted);
+    }
+
     if (user?.anthropicApiKey) {
+      await migrateUserLegacyKey(userId, user.anthropicApiKey);
       return user.anthropicApiKey;
     }
 
@@ -158,10 +318,22 @@ export const apiKeyService = {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
-        select: { anthropicApiKey: true },
+        select: {
+          claudeApiKeyEncrypted: true,
+          anthropicApiKey: true,
+        },
       })
     );
 
-    return org?.anthropicApiKey ?? null;
+    if (org?.claudeApiKeyEncrypted) {
+      return decryptApiKey(org.claudeApiKeyEncrypted);
+    }
+
+    if (org?.anthropicApiKey) {
+      await migrateOrgLegacyKey(organizationId, org.anthropicApiKey);
+      return org.anthropicApiKey;
+    }
+
+    return null;
   },
 };

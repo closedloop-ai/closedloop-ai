@@ -36,6 +36,7 @@ import {
   TextIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useLoopPolling } from "@/hooks/queries/use-loop-polling";
 import {
   type StreamStatus,
   useLoopStream,
@@ -53,6 +54,7 @@ type DisplayStatus =
   | "RUNNING"
   | "COMPLETED"
   | "FAILED"
+  | "CANCELLED"
   | "DISCONNECTED";
 
 function deriveDisplayStatus(
@@ -66,6 +68,9 @@ function deriveDisplayStatus(
   }
   if (lastEvent?.type === "error") {
     return "FAILED";
+  }
+  if (lastEvent?.type === "cancelled") {
+    return "CANCELLED";
   }
 
   // Map stream connection status
@@ -92,6 +97,8 @@ const displayStatusColorMap: Record<DisplayStatus, string> = {
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   FAILED:
     "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+  CANCELLED:
+    "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
   DISCONNECTED:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
@@ -101,6 +108,7 @@ const displayStatusLabels: Record<DisplayStatus, string> = {
   RUNNING: "Running",
   COMPLETED: "Completed",
   FAILED: "Failed",
+  CANCELLED: "Cancelled",
   DISCONNECTED: "Disconnected",
 };
 
@@ -352,6 +360,26 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
   );
 }
 
+function CancelledEvent({ reason }: { reason?: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-orange-100 dark:bg-orange-900/30">
+        <AlertCircleIcon className="size-3 text-orange-600 dark:text-orange-400" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-orange-700 text-sm dark:text-orange-400">
+          Cancelled
+        </div>
+        {reason ? (
+          <div className="mt-1 text-orange-600 text-xs dark:text-orange-300">
+            {reason}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function EventItem({ event }: { event: LoopEvent }) {
   switch (event.type) {
     case "started":
@@ -368,6 +396,8 @@ function EventItem({ event }: { event: LoopEvent }) {
       return <CompletedEvent event={event} />;
     case "error":
       return <ErrorEvent event={event} />;
+    case "cancelled":
+      return <CancelledEvent reason={event.reason} />;
     default:
       return null;
   }
@@ -379,7 +409,13 @@ export function LoopProgressPanel({
   loopId,
   onComplete,
 }: Readonly<LoopProgressPanelProps>) {
-  const { events, status: streamStatus, isComplete } = useLoopStream(loopId);
+  const stream = useLoopStream(loopId);
+  const polling = useLoopPolling(loopId, {
+    enabled: stream.status !== "connected",
+  });
+  const events = stream.status === "connected" ? stream.events : polling.events;
+  const streamStatus = stream.status;
+  const isComplete = stream.isComplete || polling.isComplete;
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const hasCalledOnComplete = useRef(false);
 

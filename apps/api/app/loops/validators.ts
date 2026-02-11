@@ -30,6 +30,11 @@ export const loopEventValidator = z.object({
   data: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const loopEventPayloadValidator = z.union([
+  loopEventValidator,
+  z.object({ type: z.string() }).passthrough(),
+]);
+
 export const listLoopEventsQueryValidator = z.object({
   type: z
     .enum([
@@ -40,6 +45,7 @@ export const listLoopEventsQueryValidator = z.object({
       "artifact_created",
       "completed",
       "error",
+      "cancelled",
     ])
     .optional(),
   limit: z.coerce.number().min(1).max(500).default(100).optional(),

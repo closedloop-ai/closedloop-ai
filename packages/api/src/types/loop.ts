@@ -152,6 +152,12 @@ export type LoopEventError = {
   timestamp: string;
 };
 
+export type LoopEventCancelled = {
+  type: "cancelled";
+  reason?: string;
+  timestamp: string;
+};
+
 export type LoopEvent =
   | LoopEventStarted
   | LoopEventOutput
@@ -159,7 +165,8 @@ export type LoopEvent =
   | LoopEventToolCall
   | LoopEventArtifactCreated
   | LoopEventCompleted
-  | LoopEventError;
+  | LoopEventError
+  | LoopEventCancelled;
 
 export type LoopEventType = LoopEvent["type"];
 

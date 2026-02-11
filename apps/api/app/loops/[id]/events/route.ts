@@ -2,13 +2,20 @@ import type {
   LoopEvent,
   LoopEventsPaginatedResponse,
 } from "@repo/api/src/types/loop";
+import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loop-event-bus";
-import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { handleLoopEvent } from "@/lib/loop-orchestrator";
+import {
+  errorResponse,
+  forbiddenResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import {
   listLoopEventsQueryValidator,
-  loopEventValidator,
+  loopEventPayloadValidator,
 } from "../../validators";
 
 export const GET = withAuth<
@@ -16,6 +23,17 @@ export const GET = withAuth<
   "/loops/[id]/events"
 >(async ({ user }, request, params) => {
   try {
+    const allowedRoles = new Set([
+      "ENGINEER",
+      "TECH_LEAD",
+      "PM",
+      "DESIGNER",
+      "STAKEHOLDER",
+    ]);
+    if (!allowedRoles.has(user.role)) {
+      return forbiddenResponse();
+    }
+
     const { id } = await params;
 
     const url = new URL(request.url);
@@ -57,30 +75,55 @@ export const GET = withAuth<
  * container harnesses will authenticate via a container JWT instead.
  * This will need to change when container auth is implemented.
  */
-export const POST = withAuth<{ received: true }, "/loops/[id]/events">(
-  async ({ user: _ }, request, params) => {
-    try {
-      const { id } = await params;
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<Response> {
+  try {
+    const { id: loopId } = await params;
 
-      const { body, errorResponse: parseError } = await parseBody(
-        request,
-        loopEventValidator
+    const authHeader = request.headers.get("authorization");
+    const token = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length)
+      : null;
+
+    if (!token) {
+      return errorResponse(
+        "Missing runner token",
+        new Error("Unauthorized"),
+        401
       );
-      if (parseError) {
-        return parseError;
-      }
-
-      await loopsService.addEvent(id, body);
-
-      // Publish to the in-memory event bus for any active SSE subscribers
-      loopEventBus.publish(id, {
-        type: body.type,
-        ...body.data,
-      } as LoopEvent);
-
-      return successResponse({ received: true as const });
-    } catch (error) {
-      return errorResponse("Failed to record loop event", error);
     }
+
+    const claims = await verifyLoopRunnerToken(token);
+    if (claims.loopId !== loopId) {
+      return errorResponse(
+        "Token does not match loop",
+        new Error("Forbidden"),
+        403
+      );
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      loopEventPayloadValidator
+    );
+    if (parseError || !body) {
+      return parseError;
+    }
+
+    const event: LoopEvent =
+      "data" in body
+        ? ({ type: body.type, ...body.data } as LoopEvent)
+        : (body as LoopEvent);
+
+    await handleLoopEvent(loopId, claims.organizationId, event);
+
+    // Publish to the in-memory event bus for any active SSE subscribers
+    loopEventBus.publish(loopId, event);
+
+    return successResponse({ received: true as const });
+  } catch (error) {
+    return errorResponse("Failed to record loop event", error);
   }
-);
+}

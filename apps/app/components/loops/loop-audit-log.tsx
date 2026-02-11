@@ -55,6 +55,8 @@ const eventTypeBadgeStyles: Record<LoopEventType, string> = {
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   error:
     "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+  cancelled:
+    "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
 };
 
 const eventTypeLabels: Record<LoopEventType, string> = {
@@ -65,6 +67,7 @@ const eventTypeLabels: Record<LoopEventType, string> = {
   artifact_created: "Artifact Created",
   completed: "Completed",
   error: "Error",
+  cancelled: "Cancelled",
 };
 
 // -- Detail renderers --
@@ -85,6 +88,8 @@ function getEventDetails(event: LoopEvent): string {
       return `Tokens: ${event.tokensUsed.input} in / ${event.tokensUsed.output} out`;
     case "error":
       return `${event.code}: ${event.message}`;
+    case "cancelled":
+      return event.reason ?? "Cancelled";
     default:
       return "";
   }
@@ -98,6 +103,9 @@ function isExpandableEvent(event: LoopEvent): boolean {
     return true;
   }
   if (event.type === "completed" && event.result) {
+    return true;
+  }
+  if (event.type === "cancelled" && event.reason) {
     return true;
   }
   return false;
@@ -119,6 +127,8 @@ function getExpandedContent(event: LoopEvent): string | null {
     }
     case "completed":
       return JSON.stringify(event.result, null, 2);
+    case "cancelled":
+      return event.reason ?? null;
     default:
       return null;
   }
@@ -250,6 +260,7 @@ export function LoopAuditLog({ loopId }: Readonly<LoopAuditLogProps>) {
               <SelectItem value="artifact_created">Artifact Created</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
               <SelectItem value="error">Error</SelectItem>
+              <SelectItem value="cancelled">Cancelled</SelectItem>
             </SelectContent>
           </Select>
         </div>
