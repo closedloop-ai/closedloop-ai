@@ -71,7 +71,7 @@ async function getCommitterInfo(
   userId: string
 ): Promise<{ committerName: string; committerEmail: string } | undefined> {
   const user = await withDb((db) =>
-    db.user.findFirst({
+    db.user.findUnique({
       where: { id: userId },
       select: { email: true, firstName: true, lastName: true },
     })
