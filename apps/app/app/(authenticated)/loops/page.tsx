@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Header } from "../components/header";
 import { LoopsTable } from "./components/loops-table";
 
@@ -12,11 +13,19 @@ export default function LoopsPage() {
     <>
       <Header page="Loops" pages={["Workspace"]} />
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-        <div>
-          <h1 className="font-bold text-2xl">Loops</h1>
-          <p className="text-muted-foreground">
-            Track AI agent executions across your organization
-          </p>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="font-bold text-2xl">Loops</h1>
+            <p className="text-muted-foreground">
+              Track AI agent executions across your organization
+            </p>
+          </div>
+          <Link
+            className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 font-medium text-sm hover:bg-accent hover:text-accent-foreground"
+            href="/loops/usage"
+          >
+            Usage
+          </Link>
         </div>
         <LoopsTable />
       </div>
