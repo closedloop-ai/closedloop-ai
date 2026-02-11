@@ -4,7 +4,7 @@ import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { fetchUser } from "../fetch-user";
+import { fetchUser } from "../../fetch-user";
 
 /**
  * GET /api/collaboration/rooms/resolve?roomIds=id1,id2,...
