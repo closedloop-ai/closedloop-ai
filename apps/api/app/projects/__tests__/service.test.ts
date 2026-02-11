@@ -75,7 +75,7 @@ describe("projectsService.findByTeam", () => {
     });
   });
 
-  it("calls Prisma without take and with orderBy: { createdAt: 'desc' } when no limit provided", async () => {
+  it("calls Prisma without take and with orderBy: { updatedAt: 'desc' } when no limit provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
     mockWithDb.mockImplementation((callback: any) => {
@@ -99,7 +99,7 @@ describe("projectsService.findByTeam", () => {
         organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
-      orderBy: { createdAt: "desc" },
+      orderBy: { updatedAt: "desc" },
     });
 
     // Explicitly verify take is not present

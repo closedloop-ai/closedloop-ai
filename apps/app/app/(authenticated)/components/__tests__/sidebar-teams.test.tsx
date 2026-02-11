@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type React from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SidebarTeams } from "../sidebar-teams";
@@ -152,13 +152,16 @@ vi.mock("@repo/design-system/components/ui/sidebar", () => ({
   SidebarMenuAction: ({
     children,
     className,
+    onClick,
   }: {
     children: React.ReactNode;
     className?: string;
+    onClick?: (e: React.MouseEvent) => void;
   }) => (
     <button
       className={className}
       data-testid="sidebar-menu-action"
+      onClick={onClick}
       type="button"
     >
       {children}
@@ -209,8 +212,6 @@ vi.mock("@repo/design-system/components/ui/sidebar", () => ({
 vi.mock("@repo/design-system/components/ui/collapsible", () => {
   const React = require("react");
 
-  // Track collapsible state per instance using a WeakMap would be ideal,
-  // but for testing we'll track whether onOpenChange gets called
   const CollapsibleContext = React.createContext({
     open: false,
     onOpenChange: undefined as ((open: boolean) => void) | undefined,
@@ -262,7 +263,6 @@ vi.mock("@repo/design-system/components/ui/collapsible", () => {
       };
 
       if (asChild && React.isValidElement(children)) {
-        // Safe type assertion after isValidElement check
         const element = children as React.ReactElement<any>;
         const originalOnClick = element.props?.onClick;
         return React.cloneElement(element, {
@@ -288,7 +288,6 @@ vi.mock("@repo/design-system/components/ui/collapsible", () => {
     },
     CollapsibleContent: ({ children }: { children: React.ReactNode }) => {
       const context = React.useContext(CollapsibleContext);
-      // Always render but mark with data attribute for testing
       return React.createElement(
         "div",
         {
@@ -317,146 +316,112 @@ describe("SidebarTeams", () => {
     });
   });
 
-  test("Test case 2: simulate CollapsibleTrigger click and verify enabled: true", () => {
+  test("clicking trigger opens team and fetches projects with enabled: true", () => {
+    // Return projects once team is expanded
+    mockUseRecentProjectsByTeam.mockImplementation(
+      (teamId: string, options?: { enabled?: boolean }) => {
+        if (teamId === "team-1" && options?.enabled) {
+          return { data: mockProjects, isLoading: false };
+        }
+        return { data: undefined, isLoading: false };
+      }
+    );
+
     render(<SidebarTeams />);
 
-    // Initially, useRecentProjectsByTeam should be called with enabled: false
-    // because openTeamIds Set is empty (line 62 of component: openTeamIds.has(team.id))
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-1", {
-      enabled: false,
-    });
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-2", {
-      enabled: false,
-    });
+    // Initially all teams are collapsed
+    const collapsibles = screen.getAllByTestId("collapsible");
+    expect(collapsibles[0].getAttribute("data-open")).toBe("false");
 
-    // Verify CollapsibleTrigger button exists
+    // Click the first team's trigger to open it
     const triggers = screen.getAllByTestId("sidebar-menu-action");
-    expect(triggers.length).toBe(2); // One per team
+    fireEvent.click(triggers[0]);
 
-    // The component passes onOpenChange to Collapsible (lines 70-80)
-    // which updates the openTeamIds Set state
-    // When a team is added to the Set, useRecentProjectsByTeam is called with enabled: true
-    // This is verified by checking the component logic, not by simulating full React state flow
-    const collapsibles = screen.getAllByTestId("collapsible");
-    expect(collapsibles.length).toBe(2);
-    expect(collapsibles[0].getAttribute("data-open")).toBe("false");
-  });
+    // After clicking, team-1 should be open
+    const updatedCollapsibles = screen.getAllByTestId("collapsible");
+    expect(updatedCollapsibles[0].getAttribute("data-open")).toBe("true");
+    expect(updatedCollapsibles[1].getAttribute("data-open")).toBe("false");
 
-  test("Test case 3: verify recent project names and links render correctly", () => {
-    // Mock useRecentProjectsByTeam to return mock projects for team-1
-    mockUseRecentProjectsByTeam.mockImplementation((teamId: string) => {
-      if (teamId === "team-1") {
-        return {
-          data: mockProjects,
-          isLoading: false,
-        };
-      }
-      return {
-        data: undefined,
-        isLoading: false,
-      };
-    });
-
-    const { container } = render(<SidebarTeams />);
-
-    // Verify the hook was called with team IDs
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith(
-      "team-1",
-      expect.any(Object)
-    );
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith(
-      "team-2",
-      expect.any(Object)
-    );
-
-    // When projects are returned, their names should be rendered (even if hidden by CSS)
-    const html = container.innerHTML;
-    expect(html).toContain("Project Alpha");
-    expect(html).toContain("Project Beta");
-    expect(html).toContain("Project Gamma");
-
-    // Verify project links are present
-    const projectLink1 = container.querySelector(
-      'a[href="/teams/team-1/projects/project-1"]'
-    );
-    const projectLink2 = container.querySelector(
-      'a[href="/teams/team-1/projects/project-2"]'
-    );
-    const projectLink3 = container.querySelector(
-      'a[href="/teams/team-1/projects/project-3"]'
-    );
-
-    expect(projectLink1).toBeTruthy();
-    expect(projectLink2).toBeTruthy();
-    expect(projectLink3).toBeTruthy();
-  });
-
-  test("Test case 4: verify 3 skeleton loaders when isLoading: true", () => {
-    // Mock team-1 as loading
-    mockUseRecentProjectsByTeam.mockImplementation((teamId: string) => {
-      if (teamId === "team-1") {
-        return {
-          data: undefined,
-          isLoading: true,
-        };
-      }
-      return {
-        data: undefined,
-        isLoading: false,
-      };
-    });
-
-    const { container } = render(<SidebarTeams />);
-
-    // The component renders skeleton loaders when isLoading: true AND openTeamIds.has(team.id)
-    // (see lines 97-106 of component)
-    // The skeleton rendering logic is:
-    // [1, 2, 3].map((i) => ( <SidebarMenuSubItem key={`skeleton-${i}`}> ... ))
-    // This renders 3 skeleton items, each with 2 animate-pulse divs (icon + text)
-
-    // Verify the hook was called correctly for both teams
+    // The hook should now be called with enabled: true for team-1
     expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-1", {
-      enabled: false, // Initially closed
+      enabled: true,
     });
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-2", {
-      enabled: false,
-    });
-
-    // The component has the skeleton rendering code in place
-    // When a team IS expanded and isLoading is true, 3 skeleton items would render
-    // We can verify this by checking that SidebarMenuSubItem components exist
-    const menuSubItems = container.querySelectorAll(
-      '[data-testid="sidebar-menu-sub-item"]'
-    );
-    // Each team has "All Projects" + "Settings" = 2 items minimum
-    expect(menuSubItems.length).toBeGreaterThanOrEqual(2);
   });
 
-  test("Test case 5: toggle Collapsible closed and verify Set state", () => {
+  test("expanded team renders project names and links", () => {
+    mockUseRecentProjectsByTeam.mockImplementation((teamId: string) => {
+      if (teamId === "team-1") {
+        return { data: mockProjects, isLoading: false };
+      }
+      return { data: undefined, isLoading: false };
+    });
+
+    const { container } = render(<SidebarTeams />);
+
+    // Project names should be in the DOM (even if collapsible is visually hidden)
+    expect(container.innerHTML).toContain("Project Alpha");
+    expect(container.innerHTML).toContain("Project Beta");
+    expect(container.innerHTML).toContain("Project Gamma");
+
+    // Verify project links have correct href
+    expect(
+      container.querySelector('a[href="/teams/team-1/projects/project-1"]')
+    ).toBeTruthy();
+    expect(
+      container.querySelector('a[href="/teams/team-1/projects/project-2"]')
+    ).toBeTruthy();
+    expect(
+      container.querySelector('a[href="/teams/team-1/projects/project-3"]')
+    ).toBeTruthy();
+  });
+
+  test("shows 3 skeleton loaders when team is expanded and loading", () => {
+    mockUseRecentProjectsByTeam.mockImplementation(
+      (teamId: string, options?: { enabled?: boolean }) => {
+        if (teamId === "team-1" && options?.enabled) {
+          return { data: undefined, isLoading: true };
+        }
+        return { data: undefined, isLoading: false };
+      }
+    );
+
     render(<SidebarTeams />);
 
-    // The component manages openTeamIds state with useState<Set<string>>(new Set()) (line 36)
-    // When onOpenChange is called with isOpen=true, it adds team.id to the Set
-    // When onOpenChange is called with isOpen=false, it deletes team.id from the Set
-    // (lines 70-80)
+    // Click trigger to expand team-1
+    const triggers = screen.getAllByTestId("sidebar-menu-action");
+    fireEvent.click(triggers[0]);
 
-    // Verify initial state: all teams start collapsed (enabled: false)
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-1", {
-      enabled: false,
-    });
-    expect(mockUseRecentProjectsByTeam).toHaveBeenCalledWith("team-2", {
-      enabled: false,
-    });
-
-    // Verify Collapsible components receive the correct open prop (initially false)
+    // Verify team-1 is now open
     const collapsibles = screen.getAllByTestId("collapsible");
-    expect(collapsibles[0].getAttribute("data-open")).toBe("false");
-    expect(collapsibles[1].getAttribute("data-open")).toBe("false");
+    expect(collapsibles[0].getAttribute("data-open")).toBe("true");
 
-    // The onOpenChange callback updates the Set:
-    // - isOpen=true: next.add(team.id)
-    // - isOpen=false: next.delete(team.id)
-    // This state management pattern ensures proper toggle behavior
+    // Find skeleton loaders (animate-pulse divs) inside the first collapsible
+    const firstCollapsible = collapsibles[0];
+    const skeletonDivs = firstCollapsible.querySelectorAll(".animate-pulse");
+    // 3 skeleton items * 2 divs each (icon + text) = 6
+    expect(skeletonDivs.length).toBe(6);
+  });
+
+  test("toggling trigger open then closed collapses the team", () => {
+    render(<SidebarTeams />);
+
+    const triggers = screen.getAllByTestId("sidebar-menu-action");
+
+    // Open team-1
+    fireEvent.click(triggers[0]);
+    let collapsibles = screen.getAllByTestId("collapsible");
+    expect(collapsibles[0].getAttribute("data-open")).toBe("true");
+
+    // Close team-1
+    fireEvent.click(triggers[0]);
+    collapsibles = screen.getAllByTestId("collapsible");
+    expect(collapsibles[0].getAttribute("data-open")).toBe("false");
+
+    // Hook should be called with enabled: false after closing
+    const lastCallForTeam1 = mockUseRecentProjectsByTeam.mock.calls
+      .filter((call: [string, { enabled?: boolean }?]) => call[0] === "team-1")
+      .pop();
+    expect(lastCallForTeam1?.[1]).toEqual({ enabled: false });
   });
 
   test("renders empty state when no teams exist", () => {
@@ -464,32 +429,30 @@ describe("SidebarTeams", () => {
 
     render(<SidebarTeams />);
 
-    // Should show "Create a team" button when mounted and no teams
-    const createButton = screen.getByText("Create a team");
-    expect(createButton).toBeTruthy();
+    expect(screen.getByText("Create a team")).toBeTruthy();
   });
 
-  test("renders team names correctly", () => {
-    render(<SidebarTeams />);
+  test("renders team names and correct links", () => {
+    const { container } = render(<SidebarTeams />);
 
-    // Verify team names are rendered
     expect(screen.getByText("Engineering")).toBeTruthy();
     expect(screen.getByText("Design")).toBeTruthy();
+
+    expect(
+      container.querySelector('a[href="/teams/team-1/projects"]')
+    ).toBeTruthy();
+    expect(
+      container.querySelector('a[href="/teams/team-2/projects"]')
+    ).toBeTruthy();
   });
 
   test("auto-expands team and highlights active project when on project detail page", () => {
     mockUsePathname.mockReturnValue("/teams/team-1/projects/project-1");
     mockUseRecentProjectsByTeam.mockImplementation((teamId: string) => {
       if (teamId === "team-1") {
-        return {
-          data: mockProjects,
-          isLoading: false,
-        };
+        return { data: mockProjects, isLoading: false };
       }
-      return {
-        data: undefined,
-        isLoading: false,
-      };
+      return { data: undefined, isLoading: false };
     });
 
     const { container } = render(<SidebarTeams />);
@@ -505,24 +468,8 @@ describe("SidebarTeams", () => {
     });
 
     // Verify the active project link exists
-    const activeLink = container.querySelector(
-      'a[href="/teams/team-1/projects/project-1"]'
-    );
-    expect(activeLink).toBeTruthy();
-  });
-
-  test("renders correct links for teams", () => {
-    const { container } = render(<SidebarTeams />);
-
-    // Check that team links are correct
-    const engineeringLink = container.querySelector(
-      'a[href="/teams/team-1/projects"]'
-    );
-    const designLink = container.querySelector(
-      'a[href="/teams/team-2/projects"]'
-    );
-
-    expect(engineeringLink).toBeTruthy();
-    expect(designLink).toBeTruthy();
+    expect(
+      container.querySelector('a[href="/teams/team-1/projects/project-1"]')
+    ).toBeTruthy();
   });
 });

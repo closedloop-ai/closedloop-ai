@@ -64,7 +64,7 @@ export const projectsService = {
           organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: options?.limit ? { updatedAt: "desc" } : { createdAt: "desc" },
+        orderBy: { updatedAt: "desc" },
         ...(options?.limit && { take: options.limit }),
       })
     );
