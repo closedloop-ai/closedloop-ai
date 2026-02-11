@@ -43,6 +43,7 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "LINEAR_SUBTASK_CREATED",
   "GITHUB_PR_CREATED",
   "GITHUB_PR_MERGED",
+  "GITHUB_PR_CLOSED",
   "GITHUB_ACTION_TRIGGERED",
   "GITHUB_ACTION_COMPLETED",
   "SLACK_NOTIFICATION_SENT",
@@ -83,8 +84,7 @@ export type CreateWorkstreamInput = {
   title: string;
   description?: string;
   type?: WorkstreamType;
-  createdById: string;
-  assignedToId?: string;
+  assignedToId?: string | null;
   hasUIChanges?: boolean;
 };
 

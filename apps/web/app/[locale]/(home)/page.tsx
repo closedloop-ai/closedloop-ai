@@ -1,3 +1,4 @@
+import { marketing } from "@repo/cms";
 import { showBetaFeature } from "@repo/feature-flags";
 import { getDictionary } from "@repo/internationalization";
 import { createMetadata } from "@repo/seo/metadata";
@@ -30,20 +31,23 @@ const Home = async ({ params }: HomeProps) => {
   const dictionary = await getDictionary(locale);
   const betaFeature = await showBetaFeature();
 
+  // Try to fetch CMS content, fall back to null if it fails
+  const cmsHome = await marketing.getHomePage().catch(() => null);
+
   return (
     <>
-      {betaFeature && (
+      {betaFeature ? (
         <div className="w-full bg-black py-2 text-center text-white">
           Beta feature now available
         </div>
-      )}
-      <Hero dictionary={dictionary} />
-      <Cases dictionary={dictionary} />
-      <Features dictionary={dictionary} />
-      <Stats dictionary={dictionary} />
-      <Testimonials dictionary={dictionary} />
-      <FAQ dictionary={dictionary} />
-      <CTA dictionary={dictionary} />
+      ) : null}
+      <Hero cmsData={cmsHome?.hero} dictionary={dictionary} />
+      <Cases cmsData={cmsHome?.cases} dictionary={dictionary} />
+      <Features cmsData={cmsHome?.features} dictionary={dictionary} />
+      <Stats cmsData={cmsHome?.stats} dictionary={dictionary} />
+      <Testimonials cmsData={cmsHome?.testimonials} dictionary={dictionary} />
+      <FAQ cmsData={cmsHome?.faq} dictionary={dictionary} />
+      <CTA cmsData={cmsHome?.cta} dictionary={dictionary} />
     </>
   );
 };

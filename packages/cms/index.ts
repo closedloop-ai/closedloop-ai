@@ -188,3 +188,109 @@ export const blog = {
 //     return data.legalPages.item;
 //   },
 // };
+
+/* -------------------------------------------------------------------------------------------------
+ * Marketing Pages Fragments & Queries
+ * -----------------------------------------------------------------------------------------------*/
+
+// NOTE: Requires HomePage content type to be created in BaseHub workspace first
+// See PR description for required schema structure
+
+const homePageQuery = fragmentOn("Query", {
+  // @ts-expect-error - homepage content type must be created in BaseHub first
+  homepage: {
+    _id: true,
+    hero: {
+      title: true,
+      description: true,
+      primaryButtonText: true,
+      primaryButtonHref: true,
+      secondaryButtonText: true,
+      secondaryButtonHref: true,
+    },
+    cases: {
+      title: true,
+      logos: {
+        items: {
+          image: imageFragment,
+          alt: true,
+          href: true,
+        },
+      },
+    },
+    features: {
+      title: true,
+      description: true,
+      items: {
+        items: {
+          title: true,
+          description: true,
+          icon: true,
+        },
+      },
+    },
+    stats: {
+      title: true,
+      description: true,
+      items: {
+        items: {
+          title: true,
+          metric: true,
+          delta: true,
+          type: true,
+        },
+      },
+    },
+    testimonials: {
+      title: true,
+      items: {
+        items: {
+          title: true,
+          description: true,
+          authorName: true,
+          authorImage: imageFragment,
+        },
+      },
+    },
+    faq: {
+      title: true,
+      description: true,
+      ctaText: true,
+      items: {
+        items: {
+          question: true,
+          answer: true,
+        },
+      },
+    },
+    cta: {
+      title: true,
+      description: true,
+      secondaryDescription: true,
+      primaryButtonText: true,
+      primaryButtonHref: true,
+      secondaryButtonText: true,
+      secondaryButtonHref: true,
+    },
+  },
+});
+
+type HomePageQueryResult = fragmentOn.infer<typeof homePageQuery>;
+// @ts-expect-error - homepage will exist once BaseHub content type is created
+export type HomePage = NonNullable<HomePageQueryResult["homepage"]>;
+
+export const marketing = {
+  getHomePage: async () => {
+    try {
+      const result = await basehub.query(homePageQuery);
+      // @ts-expect-error - homepage will exist once BaseHub content type is created
+      return result.homepage;
+    } catch (error) {
+      console.warn(
+        "BaseHub homepage query failed, using static fallback",
+        error
+      );
+      return null;
+    }
+  },
+};

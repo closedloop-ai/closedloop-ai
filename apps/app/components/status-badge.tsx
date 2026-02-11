@@ -7,18 +7,21 @@ type StatusBadgeProps = {
   status: string;
   colorMap: Record<string, string>;
   defaultStyle?: string;
+  className?: string;
 };
 
 export function StatusBadge({
   status,
   colorMap,
   defaultStyle,
+  className,
 }: StatusBadgeProps) {
   return (
     <Badge
       className={cn(
         "font-medium",
-        colorMap[status] ?? defaultStyle ?? colorMap[Object.keys(colorMap)[0]]
+        colorMap[status] ?? defaultStyle ?? colorMap[Object.keys(colorMap)[0]],
+        className
       )}
       variant="outline"
     >
@@ -26,6 +29,37 @@ export function StatusBadge({
     </Badge>
   );
 }
+
+const COLOR_SUCCESS =
+  "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800";
+const COLOR_FAILURE =
+  "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800";
+const COLOR_PROGRESS =
+  "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800";
+const COLOR_PENDING =
+  "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800";
+const COLOR_INACTIVE =
+  "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700";
+const COLOR_PURPLE =
+  "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800";
+
+export const pullRequestStateColors: Record<string, string> = {
+  OPEN: COLOR_SUCCESS,
+  MERGED: COLOR_PURPLE,
+  CLOSED: COLOR_FAILURE,
+};
+
+export const previewDeploymentStateColors: Record<string, string> = {
+  READY: COLOR_SUCCESS,
+  SUCCESS: COLOR_SUCCESS,
+  IN_PROGRESS: COLOR_PROGRESS,
+  BUILDING: COLOR_PROGRESS,
+  PENDING: COLOR_PENDING,
+  QUEUED: COLOR_PENDING,
+  INACTIVE: COLOR_INACTIVE,
+  FAILURE: COLOR_FAILURE,
+  ERROR: COLOR_FAILURE,
+};
 
 // Pre-configured color maps for common use cases
 export const artifactStatusColors: Record<string, string> = {

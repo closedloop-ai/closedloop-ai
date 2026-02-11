@@ -143,6 +143,7 @@ web_modules/
 .env
 .env.development.local
 .env.test.local
+.env.test
 .env.production.local
 .env.local
 
@@ -265,7 +266,16 @@ $RECYCLE.BIN/
 .github/copilot-instructions.md
 
 # Symphony
-.claude/.symphony
+.symphony
+.agent-types
+
+# .claude
+.claude/*
+!.claude/agents
+!.claude/commands
+!.claude/settings
+!.claude/skills
+
 
 # Database
 packages/database/generated
@@ -280,3 +290,7 @@ packages/database/generated
 .contentlayer
 .content-collections
 .source
+# Claude Code
+.claude/.token-stats/
+.claude/work/
+.claude/symphony-loop.local.md

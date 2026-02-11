@@ -27,7 +27,7 @@ export const NotificationsProvider = ({
   }
 
   return (
-    <KnockProvider apiKey={knockApiKey} userId={userId}>
+    <KnockProvider apiKey={knockApiKey} user={{ id: userId }}>
       <KnockFeedProvider colorMode={theme} feedId={knockFeedChannelId}>
         {children}
       </KnockFeedProvider>

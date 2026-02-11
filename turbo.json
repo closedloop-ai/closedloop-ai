@@ -1,5 +1,5 @@
 {
-  "$schema": "https://turborepo.com/schema.json",
+  "$schema": "https://v2-7-6.turborepo.dev/schema.json",
   "globalDependencies": ["**/.env.*local"],
   "ui": "tui",
   "envMode": "loose",
@@ -13,6 +13,10 @@
         "storybook-static/**",
         ".react-email/**"
       ]
+    },
+    "@repo/database#build": {
+      "cache": false,
+      "dependsOn": ["^build"]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"]

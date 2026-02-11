@@ -1,6 +1,22 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/core", "ultracite/react", "ultracite/next"],
+  "linter": {
+    "rules": {
+      "style": {
+        "useConsistentTypeDefinitions": {
+          "level": "warn",
+          "options": {
+            "style": "type"
+          }
+        },
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noEmptyBlockStatements": "off"
+      }
+    }
+  },
   "javascript": {
     "globals": ["Liveblocks"]
   },

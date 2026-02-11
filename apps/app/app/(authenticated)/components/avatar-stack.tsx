@@ -12,6 +12,8 @@ import {
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 
+// TODO: Keep or not?
+
 type PresenceAvatarProps = {
   info?: Liveblocks["UserMeta"]["info"];
 };
@@ -52,7 +54,7 @@ export const AvatarStack = () => {
         />
       )}
 
-      {self && <PresenceAvatar info={self.info} />}
+      {!!self && <PresenceAvatar info={self.info} />}
     </div>
   );
 };

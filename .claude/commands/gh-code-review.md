@@ -14,6 +14,18 @@ Run a multi-agent code review that posts inline comments and a summary to GitHub
 /gh-code-review 123          # Review specific PR number
 ```
 
+## Allowed Actions (Read-Only Review + Comment Management)
+
+- ✅ READ files and analyze the PR diff
+- ✅ Create inline review comments for new issues
+- ✅ RESOLVE outdated inline comment threads (authored by `symphony-cl`) when issues are fixed
+- ✅ Write review summary to `.claude/code-review-summary.md` (workflow handles posting)
+- ❌ Do NOT checkout, switch branches, or modify any code
+- ❌ Do NOT create, edit, or modify any files in the repository (except `.claude/code-review-summary.md`)
+- ❌ Do NOT delete inline comments (only resolve threads)
+- ❌ Do NOT merge, close, approve, or request changes on the PR
+- ❌ Do NOT suggest architectural refactoring without evidence of bugs
+
 ---
 
 ## Step 1: Create Todo List
@@ -27,8 +39,8 @@ TodoWrite([
   { content: "Spawn reviewer agents in parallel", status: "pending", activeForm: "Spawning agents" },
   { content: "Collect and validate agent findings", status: "pending", activeForm: "Validating findings" },
   { content: "Clean up outdated inline comments", status: "pending", activeForm: "Cleaning up comments" },
-  { content: "Post inline comments for BLOCKING/HIGH findings", status: "pending", activeForm: "Posting comments" },
-  { content: "Post summary comment with approval decision", status: "pending", activeForm: "Posting summary" }
+  { content: "Post inline comments for validated findings", status: "pending", activeForm: "Posting comments" },
+  { content: "Write summary to .claude/code-review-summary.md", status: "pending", activeForm: "Writing summary" }
 ])
 ```
 
@@ -70,6 +82,26 @@ Extract and store:
 - **FILES_TO_REVIEW**: Array of changed file paths from `files[].path`
 - **OWNER**: First part of REPO before `/`
 - **REPO_NAME**: Second part of REPO after `/`
+
+### Fetch File Patches (CRITICAL)
+
+**You MUST fetch the actual diff patches from GitHub API now**, before spawning any agents. This ensures agents can review the code even if the local checkout is incomplete (e.g., newly added files may not exist on disk).
+
+```bash
+# Fetch full patch data for all changed files
+gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files --paginate
+```
+
+**Rate Limit Handling**: If you receive a 403 or rate limit error:
+1. Wait 60 seconds and retry
+2. For very large PRs (300+ files), fetch in batches using `?per_page=100&page=N`
+
+Parse the response and store:
+- **FILE_PATCHES**: Map of `{ "path/file.ts": "<patch content>", ... }` from each file's `patch` field
+- **CHANGED_LINES**: Map of `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` parsed from patches (only lines starting with `+`)
+- **FILE_STATUSES**: Map of `{ "path/file.ts": "added" | "modified" | "removed", ... }` from each file's `status` field
+
+These will be used in Step 4 (agent prompts) and Step 5 (validation).
 
 Mark todo as `completed`.
 
@@ -125,18 +157,32 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 **Agent Prompt Template:**
 
 ```
-Review ONLY the changed code in these files. Return findings as JSON.
+Review ONLY the changed code in this PR. Return findings as JSON.
 
 **FILES CHANGED IN THIS PR**:
-- {filepath_1}
-- {filepath_2}
+- {filepath_1} ({status_1})
+- {filepath_2} ({status_2})
+...
+
+**DIFF/PATCH CONTENT** (this is the authoritative source of what changed):
+--- {filepath_1} ({status_1}) ---
+{patch_content_1}
+
+--- {filepath_2} ({status_2}) ---
+{patch_content_2}
 ...
 
 **CRITICAL RULES - READ CAREFULLY**:
-1. ONLY flag issues on lines that were ADDED or MODIFIED in this PR
-2. Do NOT flag pre-existing issues in unchanged code - even if you see problems
-3. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
-4. Focus on: new code introduced, modifications to existing code, new patterns being added
+1. Use the DIFF/PATCH CONTENT above as your primary source for reviewing code. Do NOT rely solely on reading local files (they may not exist for newly added files).
+2. ONLY flag issues on lines that were ADDED or MODIFIED in this PR (lines starting with + in the diff)
+3. Do NOT flag pre-existing issues in unchanged code - even if you see problems
+4. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
+5. Focus on: new code introduced, modifications to existing code, new patterns being added
+6. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
+7. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
+8. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
+9. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
+10. Before suggesting custom helper functions, check if utilities already exist in the codebase
 
 **SEVERITY GUIDELINES - BE STRICT**:
 - BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
@@ -207,33 +253,19 @@ Mark todo "Collect and validate agent findings" as `in_progress`.
 
 Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 
-### CRITICAL: Build the Changed Lines Map FIRST
+### Use the Changed Lines Map from Step 2
 
-Before validating ANY findings, build a definitive map of what lines were actually changed:
+Use the **CHANGED_LINES** and **FILE_PATCHES** maps already built in Step 2. Do NOT re-fetch from the API.
 
-```bash
-# Get PR files with patches (handles pagination for large PRs)
-# For PRs with 100+ files, use pagination to avoid rate limits
-gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/files --paginate
-```
-
-**Rate Limit Handling**: If you receive a 403 or rate limit error:
-1. Wait 60 seconds and retry
-2. For very large PRs (300+ files), fetch in batches using `?per_page=100&page=N`
-3. If still failing, report error and suggest running review on smaller scope
-
-Parse each file's `patch` field to extract changed line numbers:
-- **CHANGED_FILES**: Set of file paths that were modified
-- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }`
+- **CHANGED_FILES**: Set of all file paths in FILES_TO_REVIEW
+- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` (already parsed in Step 2)
 
 Only lines starting with `+` (additions) or lines adjacent to changes are valid targets.
 
-### Parse and Filter Findings
+### Parse Findings
 
 1. Parse JSON findings from each agent
-2. **Filter by severity** for inline comments:
-   - **Post inline comments**: BLOCKING and HIGH severity only
-   - **Summary only**: MEDIUM severity (no inline comment, just listed in summary)
+2. **All validated findings** (BLOCKING, HIGH, and MEDIUM) will receive inline comments AND appear in the summary
 
 ### Validate EVERY Finding
 
@@ -246,27 +278,92 @@ For each finding (all severities):
    - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this PR")
    - Allow ±3 lines tolerance for immediate context
 
-3. **Verify severity is appropriate**:
-   - BLOCKING/HIGH claimed but it's a style preference? **DOWNGRADE to MEDIUM**
-   - BLOCKING/HIGH claimed but it's hypothetical? **DOWNGRADE to MEDIUM**
-   - Only keep BLOCKING/HIGH for issues that WILL cause production problems
+3. **Is this an observation or a bug?** Before checking severity, determine if the finding is even actionable:
 
-4. **Read the full file to confirm issue is real**:
-   - Verify the code snippet matches actual code
-   - Check if issue is already handled elsewhere
-   - If issue doesn't exist or is already handled: **DISCARD** (reason: "False positive")
+   **DISCARD if it's just describing a change:**
+   - "Config changed from X to Y" — just change documentation, not a bug
+   - "Dependency updated" — unless proven incorrect, this is intentional
+   - "Feature flag removed" — unless proven to break code, this is intentional
+   - Uses weasel words: "could", "might", "may", "potentially", "risks", "verify that", "ensure that"
 
-5. **Check for duplicates**: Build dedup key `file:line:category`
+   **KEEP if it proves incorrectness:**
+   - Cites concrete evidence: specific errors, documentation violations, proven breakage
+   - Shows a specific crash path, attack vector, or data corruption scenario
+
+   **If a finding just describes what changed without proving it's wrong, DISCARD it.**
+
+4. **Verify severity with evidence requirements**:
+
+   **For BLOCKING findings, verify:**
+   - Is there concrete proof of a security vulnerability, runtime crash, data loss, or broken functionality?
+   - Does the agent cite specific evidence (error that WILL throw, attack vector, data corruption path)?
+   - **If no concrete proof**: Downgrade to HIGH or MEDIUM
+
+   **For HIGH findings, verify:**
+   - Does the agent provide measurable evidence (algorithm complexity, specific type mismatch)?
+   - For "broken pattern" claims: Did the agent find 2+ examples of the pattern in the codebase?
+   - For performance claims: Is there specific analysis (O(n²) vs O(n), unnecessary loops)?
+   - **If claims are subjective or unproven**: Downgrade to MEDIUM
+
+5. **Read the FULL file and verify the issue is real** (CRITICAL — this prevents false positives):
+
+   a. **Get file content**:
+      - For **modified** files: Read the ENTIRE local file (not just the changed lines)
+      - For **added** files (status: "added" in FILE_STATUSES): Use the patch content from FILE_PATCHES as the source of truth. Do NOT try to Read added files from disk.
+
+   b. **Verify the code snippet matches**: Check that the line exists and contains the code the agent referenced
+
+   c. **Check full-file context to avoid false positives**:
+      - Verify imports/dependencies/types exist (avoid "missing import" when it's at the top of the file)
+      - Check for error handling around the flagged code (try-catch, guards, validation)
+      - Look for type definitions, generics, or overloads that resolve claimed type issues
+
+   d. **Evidence checks by severity**:
+      - **For BLOCKING**: Confirm no error handling, guards, or validation exists that would prevent the claimed crash/vulnerability
+      - **For HIGH "broken pattern"**: Search the codebase (not just PR files) to find 2+ examples of the claimed established pattern — if you can't find them, **downgrade or discard** (the claim is unsubstantiated)
+      - **For HIGH "performance"**: Verify the agent provided concrete analysis (algorithm complexity, specific bottleneck), not just "might be slow"
+
+   e. **Ensure the criticism is not based on assumptions**: Discard findings that are theoretical ("what if...") without concrete proof of breakage
+
+   f. **If all checks pass**: Keep the finding
+   g. **If ANY check fails**: **DISCARD** (reason: "False positive") and log which check failed
+
+6. **Check for inline justification comments**: If there are comments near the flagged line like `// Intentionally...`, `// Required for...`, `// This is fine because...` — **DISCARD** the finding (the developer has documented a deliberate choice)
+
+7. **Deduplicate and consolidate by root cause**:
+
+   Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
+   - Keep the finding with the HIGHEST severity as the primary
+   - Include all other occurrences as "Other Locations"
+   - Post a SINGLE inline comment on the primary location that lists all affected locations
+
+   **Inline comment format for consolidated findings:**
+
+   ````markdown
+   **[SEVERITY]** Category
+
+   Issue description
+
+   **Other Locations** (N more):
+   - `path/file.ts:87` - same pattern in `functionName()`
+   - `path/file.ts:124` - same pattern in `otherFunction()`
+
+   **Recommendation:** How to fix
+   ````
+
+   For single-location findings, use the standard format (no "Other Locations" section).
 
 ### Discard or Downgrade Reasons
 
 - **DOWNGRADE_TO_MEDIUM**: Claimed HIGH/BLOCKING but it's a style preference or hypothetical
 - **DISCARD_FILE_NOT_CHANGED**: Finding is in a file not modified by this PR
 - **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
-- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code
-- **DISCARD_DUPLICATE**: Already reported by another agent
+- **DISCARD_OBSERVATION_NOT_BUG**: Finding just describes a change without proving it's wrong
+- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code (verified against full file)
+- **DISCARD_JUSTIFIED**: Developer has inline comment justifying the decision
+- **DISCARD_DUPLICATE**: Already reported by another agent / consolidated into root cause group
 
-**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. Only BLOCKING/HIGH get inline comments posted.
+**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. All validated findings (all severities) get inline comments posted.
 
 Track validated findings and discarded findings with specific reasons.
 
@@ -307,10 +404,12 @@ query($owner:String!, $name:String!, $number:Int!) {
 }' -f owner="<OWNER>" -f name="<REPO_NAME>" -F number=<PR_NUMBER>
 ```
 
-2. **For each unresolved thread from your bot**:
+2. **For each unresolved thread authored by `symphony-cl`**:
    - Check if `isResolved` is true: SKIP
-   - Read current state of file/line
-   - If issue is FIXED or line no longer exists: RESOLVE it
+   - Read current state of file/line (use FILE_PATCHES for added files)
+   - If issue is FIXED or line no longer exists: **RESOLVE** it
+
+**IMPORTANT**: Inline comments must be RESOLVED, never deleted. Resolving preserves the review history while collapsing addressed threads. Symphony summary comments are marked as outdated by the CI workflow, not deleted.
 
 3. **Resolve outdated threads** (with error handling):
 
@@ -342,9 +441,9 @@ Mark todo as `completed`.
 
 ## Step 7: Post Inline Comments
 
-Mark todo "Post inline comments for BLOCKING/HIGH findings" as `in_progress`.
+Mark todo "Post inline comments for validated findings" as `in_progress`.
 
-For each validated BLOCKING/HIGH finding:
+For each validated finding (all severities):
 
 1. **Check dedup map**: If `file:line:category` already has comment, SKIP
 2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
@@ -400,9 +499,9 @@ Mark todo as `completed`.
 
 ---
 
-## Step 8: Post Summary Comment with Approval Decision
+## Step 8: Write Summary to File
 
-Mark todo "Post summary comment with approval decision" as `in_progress`.
+Mark todo "Write summary to .claude/code-review-summary.md" as `in_progress`.
 
 **CRITICAL**: This step is MANDATORY, even if there are no findings.
 
@@ -415,26 +514,18 @@ Based on validated findings, set status label for the summary comment:
 
 **IMPORTANT**: These are LABELS for the summary comment only. Do NOT use `--approve` or `--request-changes` flags.
 
-### Find or Create Summary Comment
+### Write Summary to File
 
-1. **List existing PR comments**:
-```bash
-gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments
-```
-
-2. **Look for existing bot summary** (comment starting with "## Code Review Summary")
-
-3. **Update existing or create new**:
+Write the summary to `.claude/code-review-summary.md`. The CI workflow will handle marking old summaries as outdated and posting the new one deterministically.
 
 ```bash
-# Update existing
-gh api -X PATCH repos/<OWNER>/<REPO_NAME>/issues/comments/<COMMENT_ID> \
-  -f body="<summary>"
-
-# Or create new
-gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
-  -f body="<summary>"
+# Write the summary content to the file
+cat > .claude/code-review-summary.md << 'SUMMARY_EOF'
+<summary content here>
+SUMMARY_EOF
 ```
+
+**Do NOT** post the summary to GitHub directly. Do NOT use `gh api` to create comments or `gh pr review` to submit a review. The workflow handles all GitHub posting after Claude exits.
 
 ### Summary Format
 
@@ -470,36 +561,11 @@ gh api repos/<OWNER>/<REPO_NAME>/issues/<PR_NUMBER>/comments \
 **Recommendation:** [Approve this PR | Address blocking issues before merge | Consider high-priority items]
 ```
 
-### Submit Review
-
-**ENFORCEMENT**: Before executing ANY `gh pr review` command, validate it does not contain forbidden flags:
-
-```bash
-# Validation function - MUST be used before any gh pr review command
-validate_review_command() {
-  local cmd="$1"
-  if echo "$cmd" | grep -qE -- '--(approve|request-changes)'; then
-    echo "ERROR: Forbidden flag detected. This workflow only posts comments."
-    echo "Remove --approve or --request-changes and use --comment instead."
-    return 1
-  fi
-  return 0
-}
-
-# Example usage:
-REVIEW_CMD="gh pr review <PR_NUMBER> --comment --body \"See summary comment above.\""
-validate_review_command "$REVIEW_CMD" && eval "$REVIEW_CMD"
-```
-
-```bash
-# Submit review as comment only - never approve or request changes automatically
-gh pr review <PR_NUMBER> --comment \
-  --body "See summary comment above for details."
-```
-
-**CRITICAL**: Always use `--comment` only. Never use `--approve` or `--request-changes`. Humans make the final approval decision.
-
-**Why no API-level enforcement?** The GitHub App token requires `pull-requests: write` permission to post inline comments, which also grants approval rights. The validation function above provides defense-in-depth at the command level.
+**Summary constraints:**
+- Keep it CONCISE (max 500 words) — no multi-paragraph explanations or lengthy prose
+- Do NOT repeat what inline comments already say — just reference file:line
+- Focus on actionable findings only
+- **NO FOOTER**: Do NOT add any signature, attribution, or footer like "Automated review by Claude Code"
 
 Mark todo as `completed`.
 

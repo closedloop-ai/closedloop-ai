@@ -13,13 +13,13 @@ on:
       - completed
     # Only trigger for Dependabot npm dependency branches
     branches:
-      - 'dependabot/npm_and_yarn/**'
+      - "dependabot/npm_and_yarn/**"
 
   # Allow manual trigger for testing
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to process'
+        description: "PR number to process"
         required: true
         type: string
 
@@ -194,8 +194,8 @@ jobs:
         id: generate_token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.SYMPHONY_APP_ID }}
-          private-key: ${{ secrets.SYMPHONY_APP_SECRET }}
+          app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
+          private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }},claude_code
           permission-contents: write
@@ -219,7 +219,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -236,14 +236,14 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.generate_token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           show_full_output: true
           plugin_marketplaces: |
             https://github.com/closedloop-ai/claude_code.git
           plugins: |
             symphony-core@closedloop
             symphony-fe@closedloop
-          allowed_bots: "dependabot"
+          allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
           prompt: |
             This is an automated Dependabot PR auto-fix workflow.
 

@@ -10,21 +10,18 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  CopyIcon,
   DownloadIcon,
   MoreHorizontalIcon,
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
-import {
-  deleteArtifact,
-  duplicateArtifact,
-  renameArtifact,
-} from "@/app/actions/artifacts";
+import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
+import {
+  useDeleteArtifact,
+  useUpdateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type PRDRowActionsProps = {
@@ -32,36 +29,39 @@ type PRDRowActionsProps = {
 };
 
 export function PRDRowActions({ prd }: PRDRowActionsProps) {
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
+  const updateArtifact = useUpdateArtifact();
+  const deleteArtifact = useDeleteArtifact();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  const handleRename = (newTitle: string, newFileName: string) => {
-    startTransition(async () => {
-      await renameArtifact(prd.id, newTitle, newFileName);
-      setShowRenameDialog(false);
-    });
-  };
+  const isPending = updateArtifact.isPending || deleteArtifact.isPending;
 
-  const handleDuplicate = () => {
-    startTransition(async () => {
-      const result = await duplicateArtifact(prd.id);
-      if (result.success) {
-        router.push(`/prds/${result.data.id}`);
+  const handleRename = async (
+    newTitle: string,
+    newFileName: string
+  ): Promise<boolean> => {
+    const result = await updateArtifact.mutateAsync(
+      { id: prd.id, title: newTitle, fileName: newFileName },
+      {
+        onSuccess: () => {
+          setShowRenameDialog(false);
+        },
       }
-    });
+    );
+    return !!result;
   };
 
   const handleExport = () => {
     downloadAsMarkdown(prd.content ?? "", prd.fileName ?? `${prd.title}.md`);
   };
 
-  const handleDelete = () => {
-    startTransition(async () => {
-      await deleteArtifact(prd.id);
-      setShowDeleteDialog(false);
+  const handleDelete = async (): Promise<boolean> => {
+    const result = await deleteArtifact.mutateAsync(prd.id, {
+      onSuccess: () => {
+        setShowDeleteDialog(false);
+      },
     });
+    return result.deleted ?? false;
   };
 
   return (
@@ -77,10 +77,6 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
           <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
             <PencilIcon className="mr-2 h-4 w-4" />
             Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={isPending} onClick={handleDuplicate}>
-            <CopyIcon className="mr-2 h-4 w-4" />
-            Duplicate
           </DropdownMenuItem>
           <DropdownMenuItem onClick={handleExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />

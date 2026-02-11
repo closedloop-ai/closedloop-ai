@@ -10,8 +10,8 @@
   "dependencies": {
     "@arcjet/next": "1.1.0",
     "@nosecone/next": "1.1.0",
-    "@t3-oss/env-nextjs": "^0.13.8",
-    "zod": "^4.3.5"
+    "@t3-oss/env-nextjs": "^0.13.10",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

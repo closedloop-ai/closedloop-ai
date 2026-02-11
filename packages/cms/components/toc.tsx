@@ -5,7 +5,7 @@ type TableOfContentsProperties = Omit<
   ComponentProps<typeof RichText>,
   "children"
 > & {
-  readonly data: ComponentProps<typeof RichText>["children"];
+  readonly data: ComponentProps<typeof RichText>["content"];
 };
 
 export const TableOfContents = ({
