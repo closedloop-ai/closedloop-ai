@@ -1,15 +1,22 @@
 import type { LoopUsageSummary } from "@repo/api/src/types/loop";
+import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
+  forbiddenResponse,
   successResponse,
 } from "@/lib/route-utils";
 import { loopsService } from "../service";
 
 export const GET = withAuth<LoopUsageSummary, "/loops/usage">(
-  async ({ user }, request) => {
+  async ({ user, clerkOrgId, clerkUserId }, request) => {
     try {
+      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
+      if (!isAdmin) {
+        return forbiddenResponse();
+      }
+
       const searchParams = request.nextUrl.searchParams;
 
       const startDateParam = searchParams.get("startDate");

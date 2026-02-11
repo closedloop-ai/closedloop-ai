@@ -1,6 +1,7 @@
 import type { LoopEvent } from "@repo/api/src/types/loop";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
+import { organizationsService } from "@/app/organizations/service";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { loopsService } from "../../service";
 
@@ -32,13 +33,28 @@ export async function GET(
     return new Response("Unauthorized", { status: 401 });
   }
 
+  // Resolve Clerk org ID to internal organization ID.
+  // withAuth() does this automatically, but SSE routes handle auth inline.
+  let organizationId: string;
+  try {
+    const organization =
+      await organizationsService.findOrCreateByClerkId(clerkOrgId);
+    organizationId = organization.id;
+  } catch (error) {
+    log.error("Failed to resolve organization for SSE stream", {
+      clerkOrgId,
+      error,
+    });
+    return new Response("Unauthorized", { status: 401 });
+  }
+
   const { id: loopId } = await params;
 
   // Verify the loop exists and belongs to the user's organization.
   // loopsService.findById is org-scoped, so this also serves as authorization.
   let loop: Awaited<ReturnType<typeof loopsService.findById>>;
   try {
-    loop = await loopsService.findById(loopId, clerkOrgId);
+    loop = await loopsService.findById(loopId, organizationId);
   } catch (error) {
     log.error("Failed to verify loop for SSE stream", { loopId, error });
     return new Response("Internal Server Error", { status: 500 });
@@ -48,7 +64,7 @@ export async function GET(
     return new Response("Loop not found", { status: 404 });
   }
 
-  log.info("SSE stream opened", { loopId, clerkUserId });
+  log.info("SSE stream opened", { loopId, clerkUserId, organizationId });
 
   // Shared cleanup state - accessible from both start() and cancel()
   let unsubscribe: (() => void) | null = null;
@@ -108,7 +124,11 @@ export async function GET(
         send(event);
 
         // Auto-close the stream on terminal events
-        if (event.type === "completed" || event.type === "error") {
+        if (
+          event.type === "completed" ||
+          event.type === "error" ||
+          event.type === "cancelled"
+        ) {
           cleanup();
           try {
             controller.close();

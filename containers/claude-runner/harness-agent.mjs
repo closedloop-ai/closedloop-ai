@@ -15,7 +15,7 @@
  * 9. Reports final status (COMPLETED / FAILED / CANCELLED)
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -178,7 +178,8 @@ async function downloadContextPack(workDir) {
     // If it's not JSON, treat it as a raw zip/tar — write to disk and extract
     const archivePath = path.join(workDir, "context-pack.tar.gz");
     fs.writeFileSync(archivePath, buf);
-    execSync(`tar -xzf ${archivePath} -C ${contextDir}`, { stdio: "pipe" });
+    // Use execFileSync with array args to prevent shell injection
+    execFileSync("tar", ["-xzf", archivePath, "-C", contextDir], { stdio: "pipe" });
     fs.unlinkSync(archivePath);
     log("info", "Extracted context pack archive");
     return;
@@ -203,17 +204,19 @@ function cloneRepo(workDir) {
   const cloneUrl = `https://x-access-token:${config.githubToken}@github.com/${config.targetRepo}.git`;
   log("info", `Cloning ${config.targetRepo} (branch: ${config.targetBranch})`);
 
-  execSync(
-    `git clone --depth 50 --branch ${config.targetBranch} ${cloneUrl} ${workDir}`,
+  // Use execFileSync with array args to prevent shell injection via branch/repo names
+  execFileSync(
+    "git",
+    ["clone", "--depth", "50", "--branch", config.targetBranch, cloneUrl, workDir],
     { stdio: "pipe" }
   );
 
   // Configure git identity for any commits the agent might make
-  execSync('git config user.name "Symphony Agent"', {
+  execFileSync("git", ["config", "user.name", "Symphony Agent"], {
     cwd: workDir,
     stdio: "pipe",
   });
-  execSync('git config user.email "agent@closedloop.ai"', {
+  execFileSync("git", ["config", "user.email", "agent@closedloop.ai"], {
     cwd: workDir,
     stdio: "pipe",
   });

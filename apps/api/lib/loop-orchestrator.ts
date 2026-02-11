@@ -32,10 +32,19 @@ function getEcsConfig() {
   const taskDefinition = process.env.ECS_TASK_DEFINITION;
   const subnets = process.env.ECS_SUBNETS; // comma-separated
   const securityGroupId = process.env.ECS_SECURITY_GROUP_ID;
+  const capacityProvider = process.env.ECS_CAPACITY_PROVIDER;
 
-  if (!(cluster && taskDefinition && subnets && securityGroupId)) {
+  if (
+    !(
+      cluster &&
+      taskDefinition &&
+      subnets &&
+      securityGroupId &&
+      capacityProvider
+    )
+  ) {
     throw new Error(
-      "Missing ECS configuration. Required env vars: ECS_CLUSTER_NAME, ECS_TASK_DEFINITION, ECS_SUBNETS, ECS_SECURITY_GROUP_ID"
+      "Missing ECS configuration. Required env vars: ECS_CLUSTER_NAME, ECS_TASK_DEFINITION, ECS_SUBNETS, ECS_SECURITY_GROUP_ID, ECS_CAPACITY_PROVIDER"
     );
   }
 
@@ -44,6 +53,7 @@ function getEcsConfig() {
     taskDefinition,
     subnets: subnets.split(",").map((s) => s.trim()),
     securityGroupId,
+    capacityProvider,
   };
 }
 
@@ -304,7 +314,7 @@ function truncateForSummary(content: string, maxLength = 2000): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Launch a Loop as an ECS Fargate task.
+ * Launch a Loop as an ECS task via EC2 capacity provider.
  *
  * This is the main entry point called after loop creation.
  * Steps:
@@ -437,7 +447,7 @@ export async function stopLoopTask(
 }
 
 /**
- * Run an ECS Fargate task with the given configuration.
+ * Run an ECS task via capacity provider with the given configuration.
  * Returns the task ARN.
  */
 async function runEcsTask(opts: {
@@ -476,27 +486,38 @@ async function runEcsTask(opts: {
 
   // Add callback URL so the harness can report events back
   const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
-  if (apiBaseUrl) {
-    environment.push({ name: "API_BASE_URL", value: apiBaseUrl });
-    environment.push({ name: "CALLBACK_URL", value: apiBaseUrl });
+  if (!apiBaseUrl) {
+    throw new Error(
+      "API_BASE_URL (or LOOP_CALLBACK_URL) is not configured. " +
+        "The container will not be able to report events back."
+    );
   }
+  environment.push({ name: "API_BASE_URL", value: apiBaseUrl });
 
   const command = new RunTaskCommand({
     cluster: config.cluster,
     taskDefinition: config.taskDefinition,
-    launchType: "FARGATE",
+    // Use EC2 capacity provider (not Fargate) — matches IaC warm pool config
+    capacityProviderStrategy: [
+      {
+        capacityProvider: config.capacityProvider,
+        weight: 1,
+      },
+    ],
     count: 1,
     networkConfiguration: {
       awsvpcConfiguration: {
         subnets: config.subnets,
         securityGroups: [config.securityGroupId],
-        assignPublicIp: "ENABLED",
+        // DISABLED: tasks run in private subnets with NAT gateway for outbound
+        assignPublicIp: "DISABLED",
       },
     },
     overrides: {
       containerOverrides: [
         {
-          name: "harness-agent",
+          // Must match the container name in the ECS task definition
+          name: "claude-runner",
           environment,
         },
       ],

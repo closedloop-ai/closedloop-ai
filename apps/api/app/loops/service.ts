@@ -72,18 +72,44 @@ function toLoopWithUser(record: Record<string, unknown>): LoopWithUser {
 }
 
 /**
+ * Maximum concurrent active (PENDING/CLAIMED/RUNNING) loops per user.
+ * Prevents resource exhaustion via rapid loop creation.
+ */
+const MAX_CONCURRENT_LOOPS_PER_USER = 5;
+
+/**
  * Loops service - handles database operations for loop management.
  * Loops represent AI execution sessions (plan, execute, chat, etc.).
  */
 export const loopsService = {
   /**
    * Create a new Loop.
+   * Enforces a per-user concurrency limit on active loops.
    */
   async create(
     organizationId: string,
     userId: string,
     input: CreateLoopRequest
   ): Promise<CreateLoopResponse> {
+    // Enforce per-user concurrency limit
+    const activeCount = await withDb((db) =>
+      db.loop.count({
+        where: {
+          userId,
+          organizationId,
+          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        },
+      })
+    );
+
+    if (activeCount >= MAX_CONCURRENT_LOOPS_PER_USER) {
+      throw new Error(
+        `Too many active loops (${activeCount}). ` +
+          `Maximum ${MAX_CONCURRENT_LOOPS_PER_USER} concurrent loops allowed per user. ` +
+          "Wait for existing loops to complete or cancel them."
+      );
+    }
+
     const loop = await withDb((db) =>
       db.loop.create({
         data: {
@@ -198,22 +224,27 @@ export const loopsService = {
       s3StateKey: string;
     }>
   ): Promise<Loop> {
-    // Fetch current loop to validate transition
-    const current = await withDb((db) =>
-      db.loop.findUnique({
-        where: { id, organizationId },
-      })
-    );
+    // Compute the set of valid source statuses for this target status
+    const validFromStatuses = Object.entries(VALID_TRANSITIONS)
+      .filter(([, allowed]) => allowed.has(status))
+      .map(([from]) => from as LoopStatus);
 
-    if (!current) {
-      throw new Error(`Loop not found: ${id}`);
+    if (validFromStatuses.length === 0) {
+      throw new Error(
+        `No valid transition to ${status} exists in the state machine`
+      );
     }
 
-    validateTransition(current.status as LoopStatus, status);
-
-    const loop = await withDb((db) =>
-      db.loop.update({
-        where: { id, organizationId },
+    // Atomic conditional update: only transitions from a valid source status.
+    // This prevents TOCTOU races where two concurrent requests both pass
+    // validation but one clobbers the other's status change.
+    const result = await withDb((db) =>
+      db.loop.updateMany({
+        where: {
+          id,
+          organizationId,
+          status: { in: validFromStatuses },
+        },
         data: {
           status,
           ...(data?.containerId !== undefined
@@ -245,11 +276,38 @@ export const loopsService = {
       })
     );
 
+    if (result.count === 0) {
+      // Either the loop doesn't exist, or it's in a status that doesn't
+      // allow this transition (e.g., it was already cancelled/completed).
+      const current = await withDb((db) =>
+        db.loop.findUnique({
+          where: { id, organizationId },
+          select: { status: true },
+        })
+      );
+
+      if (!current) {
+        throw new Error(`Loop not found: ${id}`);
+      }
+
+      throw new Error(
+        `Invalid status transition: ${current.status} → ${status}`
+      );
+    }
+
     log.info("Loop status updated", {
       loopId: id,
-      from: current.status,
       to: status,
     });
+
+    // Re-fetch the updated record to return the full Loop object
+    const loop = await withDb((db) =>
+      db.loop.findUnique({ where: { id, organizationId } })
+    );
+
+    if (!loop) {
+      throw new Error(`Loop not found after update: ${id}`);
+    }
 
     return toLoop(loop as unknown as Record<string, unknown>);
   },
