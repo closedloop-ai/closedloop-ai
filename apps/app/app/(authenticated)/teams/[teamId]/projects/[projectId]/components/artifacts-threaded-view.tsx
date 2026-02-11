@@ -25,6 +25,7 @@ import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { PreviewLink } from "@/components/preview-link";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
@@ -232,6 +233,7 @@ function ArtifactRow({
     >
       <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate text-sm">{artifact.name}</span>
+      <GenerationStatusIndicator generationStatus={artifact.generationStatus} />
       <ArtifactSubtypeBadge subtype={artifact.subtype} />
       <span
         className={`text-xs ${ARTIFACT_STATUS_COLORS[artifact.status] ?? "text-muted-foreground"}`}

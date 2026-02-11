@@ -204,6 +204,8 @@ export type ArtifactWithWorkstream = Artifact & {
   parent?: ParentArtifactInfo | null;
   previewDeployment?: PreviewDeployment | null;
   pullRequest?: PullRequestInfo | null;
+  /** The latest generation status for this artifact. Omitted when no generation status is available. */
+  generationStatus?: GenerationStatus;
 };
 
 export type FindArtifactsOptions = {
@@ -296,6 +298,20 @@ export type GenerationStatus = {
   completedAt: Date | null;
   correlationId: string | null;
 };
+
+export const ACTIVE_GENERATION_STATUSES = [
+  "PENDING",
+  "QUEUED",
+  "RUNNING",
+] as const;
+
+export function isActiveGenerationStatus(
+  status: GenerationStatus["status"]
+): boolean {
+  return ACTIVE_GENERATION_STATUSES.includes(
+    status as (typeof ACTIVE_GENERATION_STATUSES)[number]
+  );
+}
 
 // Plan JSON types for experimental plugin artifacts
 export type PlanAcceptanceCriterion = {

@@ -216,3 +216,64 @@ export async function prepareArtifactVersion(
 
   return (latestArtifact?.version ?? 0) + 1;
 }
+
+/**
+ * Type definition for validated trigger data.
+ */
+export type TriggerData = {
+  correlationId: string;
+  artifactId: string;
+  command: string;
+};
+
+/**
+ * Type guard to safely parse and validate Prisma Json triggerData fields.
+ * Returns typed TriggerData object if valid, null otherwise.
+ *
+ * @param triggerData - Unknown value from Prisma Json field
+ * @returns Typed TriggerData object or null if validation fails
+ *
+ * @example
+ * const run = await db.gitHubActionRun.findFirst(...);
+ * const trigger = parseTriggerData(run.triggerData);
+ * if (trigger) {
+ *   console.log(trigger.artifactId); // Type-safe access
+ * }
+ */
+export function parseTriggerData(triggerData: unknown): TriggerData | null {
+  // Check if triggerData is an object
+  if (
+    typeof triggerData !== "object" ||
+    triggerData === null ||
+    Array.isArray(triggerData)
+  ) {
+    return null;
+  }
+
+  // Type assertion to access properties for validation
+  const data = triggerData as Record<string, unknown>;
+
+  // Validate required fields exist and are strings
+  if (
+    typeof data.correlationId !== "string" ||
+    typeof data.artifactId !== "string" ||
+    typeof data.command !== "string"
+  ) {
+    return null;
+  }
+
+  // Additional validation: ensure strings are not empty
+  if (
+    data.correlationId.trim() === "" ||
+    data.artifactId.trim() === "" ||
+    data.command.trim() === ""
+  ) {
+    return null;
+  }
+
+  return {
+    correlationId: data.correlationId,
+    artifactId: data.artifactId,
+    command: data.command,
+  };
+}

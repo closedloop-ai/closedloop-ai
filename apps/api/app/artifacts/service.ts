@@ -4,6 +4,7 @@ import {
   type ArtifactWithWorkstream,
   type CreateArtifactInput,
   type FindArtifactsOptions,
+  type GenerationStatus,
   getArtifactType,
   type PreviewDeployment,
   type PullRequestInfo,
@@ -39,6 +40,7 @@ import {
   artifactIncludeWithUser,
   createArtifactVersion,
   generateDocumentSlug,
+  parseTriggerData,
   previewDeploymentSelect,
 } from "./artifact-utils";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
@@ -155,7 +157,55 @@ export const artifactsService = {
       }
     }
 
-    return artifacts.map((a) => toArtifactWithWorkstream(a, prMap));
+    // Batch-fetch GitHubActionRun records for generation status
+    let generationStatusMap: Map<string, GenerationStatus> = new Map();
+    if (uniqueWorkstreamIds.length > 0) {
+      const actionRuns = await withDb((db) =>
+        db.gitHubActionRun.findMany({
+          where: {
+            workstreamId: { in: uniqueWorkstreamIds },
+            workflowName: "symphony-dispatch",
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+          select: {
+            workstreamId: true,
+            status: true,
+            htmlUrl: true,
+            startedAt: true,
+            completedAt: true,
+            triggerData: true,
+          },
+        })
+      );
+
+      // Build map: artifactId -> most recent GenerationStatus
+      generationStatusMap = new Map<string, GenerationStatus>();
+      for (const run of actionRuns) {
+        const triggerData = parseTriggerData(run.triggerData);
+        if (!triggerData) {
+          continue;
+        }
+
+        const artifactId = triggerData.artifactId;
+
+        // Only set if this artifact doesn't have a status yet (first = most recent)
+        if (!generationStatusMap.has(artifactId)) {
+          generationStatusMap.set(artifactId, {
+            status: run.status as GenerationStatus["status"],
+            command: triggerData.command as GenerationStatus["command"],
+            htmlUrl: run.htmlUrl || null,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            correlationId: triggerData.correlationId,
+          });
+        }
+      }
+    }
+
+    return artifacts.map((a) =>
+      toArtifactWithWorkstream(a, prMap, generationStatusMap)
+    );
   },
 
   /**
@@ -1775,12 +1825,15 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
-  prMap?: Map<string, PullRequestInfo>
+  prMap?: Map<string, PullRequestInfo>,
+  generationStatusMap?: Map<string, GenerationStatus>
 ): ArtifactWithWorkstream {
   const pullRequest =
     artifact.workstreamId && prMap
       ? (prMap.get(artifact.workstreamId) ?? null)
       : null;
+
+  const generationStatus = generationStatusMap?.get(artifact.id);
 
   return {
     ...artifact,
@@ -1795,6 +1848,7 @@ function toArtifactWithWorkstream(
       artifact.previewDeployment
     ),
     pullRequest,
+    ...(generationStatus && { generationStatus }),
   };
 }
 

@@ -275,6 +275,7 @@ export function useRegenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: judgesKeys.detail(id),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }
@@ -308,7 +309,6 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: judgesKeys.detail(variables.artifactId),
       });
-      // Invalidate list queries so slug-based containers refetch the latest version
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
@@ -376,6 +376,7 @@ export function useExecuteImplementationPlan() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(artifactId),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }
