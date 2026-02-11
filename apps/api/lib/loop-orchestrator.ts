@@ -242,7 +242,8 @@ async function fetchParentLoopSummary(
 
 export async function buildContextPack(
   loop: LoopForContextPack,
-  organizationId: string
+  organizationId: string,
+  secrets?: { anthropicApiKey: string; githubToken?: string }
 ): Promise<string> {
   const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
     await Promise.all([
@@ -260,6 +261,7 @@ export async function buildContextPack(
     repoInfo: loop.repo ?? undefined,
     priorLoopSummaries:
       priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
+    secrets,
   };
 
   const s3Key = await uploadContextPack(organizationId, loop.id, contextPack);
@@ -367,8 +369,11 @@ export async function launchLoop(
       );
     }
 
-    // 4. Build context pack and upload to S3
-    const s3ContextKey = await buildContextPack(loop, organizationId);
+    // 4. Build context pack and upload to S3 (includes secrets)
+    const s3ContextKey = await buildContextPack(loop, organizationId, {
+      anthropicApiKey,
+      githubToken,
+    });
     const s3StateKey = getStateKeyPrefix(organizationId, loopId);
 
     // 5. Launch ECS task
@@ -382,8 +387,6 @@ export async function launchLoop(
       command: loop.command,
       s3StateKey,
       s3ContextKey,
-      anthropicApiKey,
-      githubToken,
       repo: loop.repo ?? undefined,
       closedLoopAuthToken,
     });
@@ -456,28 +459,24 @@ async function runEcsTask(opts: {
   command: string;
   s3StateKey: string;
   s3ContextKey: string;
-  anthropicApiKey: string;
-  githubToken?: string;
   repo?: { fullName: string; branch: string };
   closedLoopAuthToken: string;
 }): Promise<string> {
   const ecs = getEcsClient();
   const config = getEcsConfig();
 
-  // Build environment variable overrides for the container
+  // Build environment variable overrides for the container.
+  // Note: Secrets (ANTHROPIC_API_KEY, GITHUB_TOKEN) are delivered via the S3
+  // context pack rather than env vars. This keeps them out of
+  // ecs:DescribeTasks API responses.
   const environment = [
     { name: "LOOP_ID", value: opts.loopId },
     { name: "ORGANIZATION_ID", value: opts.organizationId },
     { name: "COMMAND", value: opts.command },
     { name: "S3_STATE_KEY", value: opts.s3StateKey },
     { name: "S3_CONTEXT_KEY", value: opts.s3ContextKey },
-    { name: "ANTHROPIC_API_KEY", value: opts.anthropicApiKey },
     { name: "CLOSEDLOOP_AUTH_TOKEN", value: opts.closedLoopAuthToken },
   ];
-
-  if (opts.githubToken) {
-    environment.push({ name: "GITHUB_TOKEN", value: opts.githubToken });
-  }
 
   if (opts.repo) {
     environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });

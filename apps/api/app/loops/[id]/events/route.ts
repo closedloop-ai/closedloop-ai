@@ -112,10 +112,14 @@ export async function POST(
       return parseError;
     }
 
+    // Normalize envelope format { type, data: {...} } to flat event { type, ... }
     const event: LoopEvent =
-      "data" in body
-        ? ({ type: body.type, ...body.data } as LoopEvent)
-        : (body as LoopEvent);
+      "data" in body && typeof body.data === "object" && body.data !== null
+        ? ({
+            type: body.type,
+            ...(body.data as Record<string, unknown>),
+          } as LoopEvent)
+        : (body as unknown as LoopEvent);
 
     await handleLoopEvent(loopId, claims.organizationId, event);
 

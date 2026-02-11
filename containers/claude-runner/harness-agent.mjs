@@ -50,8 +50,10 @@ function log(level, ...args) {
 const config = {
   loopId: process.env.LOOP_ID,
   command: process.env.COMMAND, // "plan" | "execute" | "chat" | "explore" | "request_changes"
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-  githubToken: process.env.GITHUB_TOKEN,
+  // Secrets are delivered via S3 context pack (not env vars) to keep them out
+  // of ecs:DescribeTasks API responses. Populated after context pack download.
+  anthropicApiKey: null,
+  githubToken: null,
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
   apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
   organizationId: process.env.ORGANIZATION_ID,
@@ -70,19 +72,33 @@ const config = {
 // Validation
 // ---------------------------------------------------------------------------
 function validateConfig() {
-  const required = [
+  // Phase 1: env-var checks (before context pack download)
+  const requiredEnv = [
     "loopId",
     "command",
-    "anthropicApiKey",
-    "githubToken",
     "authToken",
     "apiBaseUrl",
     "targetRepo",
   ];
-  const missing = required.filter((k) => !config[k]);
+  const missing = requiredEnv.filter((k) => !config[k]);
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`
+    );
+  }
+}
+
+/**
+ * Validate that secrets were populated from the context pack.
+ * Called after downloadContextPack().
+ */
+function validateSecrets() {
+  const requiredSecrets = ["anthropicApiKey", "githubToken"];
+  const missing = requiredSecrets.filter((k) => !config[k]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required secrets from context pack: ${missing.join(", ")}. ` +
+        "Secrets are delivered via the S3 context pack, not environment variables."
     );
   }
 }
@@ -170,22 +186,33 @@ async function downloadContextPack(workDir) {
   const contextDir = path.join(workDir, ".claude", "context");
   fs.mkdirSync(contextDir, { recursive: true });
 
-  // The context pack is a JSON blob containing file contents keyed by relative path
+  // Context packs are always JSON (uploaded by the backend via uploadContextPack).
+  // Reject non-JSON payloads rather than attempting archive extraction, which
+  // would introduce tar-slip risk and an unnecessary attack surface.
   let pack;
   try {
     pack = JSON.parse(buf.toString("utf-8"));
   } catch {
-    // If it's not JSON, treat it as a raw zip/tar — write to disk and extract
-    const archivePath = path.join(workDir, "context-pack.tar.gz");
-    fs.writeFileSync(archivePath, buf);
-    // Use execFileSync with array args to prevent shell injection
-    execFileSync("tar", ["-xzf", archivePath, "-C", contextDir], { stdio: "pipe" });
-    fs.unlinkSync(archivePath);
-    log("info", "Extracted context pack archive");
-    return;
+    throw new Error(
+      "Context pack is not valid JSON. Expected JSON from backend uploadContextPack."
+    );
   }
 
-  // JSON context pack: write each file to its relative path
+  // Extract secrets from the context pack into config (never write to disk).
+  // Secrets are delivered via S3 rather than ECS env vars to keep them out of
+  // ecs:DescribeTasks API responses.
+  if (pack.secrets) {
+    if (pack.secrets.anthropicApiKey) {
+      config.anthropicApiKey = pack.secrets.anthropicApiKey;
+    }
+    if (pack.secrets.githubToken) {
+      config.githubToken = pack.secrets.githubToken;
+    }
+    delete pack.secrets;
+    log("info", "Extracted secrets from context pack");
+  }
+
+  // Write remaining context data to disk (without secrets)
   for (const [relPath, content] of Object.entries(pack)) {
     const absPath = path.join(contextDir, relPath);
     fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -741,7 +768,9 @@ async function main() {
     cloneRepo(workDir);
 
     // Step 3: Download and extract context pack from S3
+    // (this also populates config.anthropicApiKey and config.githubToken from secrets)
     await downloadContextPack(workDir);
+    validateSecrets();
 
     // Step 4: Determine execution mode and build command
     const command = config.command.toLowerCase();

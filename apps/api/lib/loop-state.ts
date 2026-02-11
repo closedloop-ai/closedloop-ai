@@ -35,6 +35,14 @@ export type ContextPack = {
     command: string;
     summary: string;
   }>;
+  /**
+   * Sensitive credentials delivered via S3 instead of ECS env vars.
+   * Keeps secrets out of ecs:DescribeTasks API responses.
+   */
+  secrets?: {
+    anthropicApiKey: string;
+    githubToken?: string;
+  };
 };
 
 export async function uploadContextPack(

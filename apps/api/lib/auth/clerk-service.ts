@@ -84,10 +84,20 @@ export const clerkService = {
     userId: string
   ): Promise<string> {
     const client = await clerkClient();
-    const membership = await client.organizations.getOrganizationMembership({
-      organizationId,
-      userId,
-    });
+    const memberships =
+      await client.organizations.getOrganizationMembershipList({
+        organizationId,
+        userId: [userId],
+        limit: 1,
+      });
+
+    const membership = memberships.data[0];
+
+    if (!membership) {
+      throw new Error(
+        `User ${userId} is not a member of organization ${organizationId}`
+      );
+    }
 
     return membership.role;
   },

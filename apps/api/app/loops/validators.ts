@@ -7,8 +7,19 @@ export const createLoopValidator = z.object({
   prompt: z.string().optional(),
   repo: z
     .object({
-      fullName: z.string(),
-      branch: z.string(),
+      // "owner/repo" format — alphanumeric, dots, hyphens, underscores
+      fullName: z
+        .string()
+        .max(256)
+        .regex(
+          /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
+          "Must be in 'owner/repo' format"
+        ),
+      // Git branch name — no shell metacharacters, no path traversal
+      branch: z
+        .string()
+        .max(256)
+        .regex(/^[a-zA-Z0-9._/-]+$/, "Branch name contains invalid characters"),
     })
     .optional(),
   contextRefs: z
@@ -25,14 +36,38 @@ export const resumeLoopValidator = z.object({
   prompt: z.string().optional(),
 });
 
+/**
+ * Known event types from the container harness.
+ * Restricts what the runner can send to prevent arbitrary data injection.
+ */
+const loopEventType = z.enum([
+  "started",
+  "output",
+  "progress",
+  "tool_call",
+  "artifact_created",
+  "completed",
+  "error",
+  "cancelled",
+]);
+
 export const loopEventValidator = z.object({
-  type: z.string(),
+  type: loopEventType,
   data: z.record(z.string(), z.unknown()).default({}),
 });
 
+/**
+ * Accepts either envelope format { type, data } or flattened { type, ...fields }.
+ * The flattened branch limits total payload size to prevent abuse.
+ */
 export const loopEventPayloadValidator = z.union([
   loopEventValidator,
-  z.object({ type: z.string() }).passthrough(),
+  z
+    .object({ type: loopEventType })
+    .catchall(z.unknown())
+    .refine((val) => JSON.stringify(val).length <= 1_000_000, {
+      message: "Event payload too large (max 1MB)",
+    }),
 ]);
 
 export const listLoopEventsQueryValidator = z.object({
