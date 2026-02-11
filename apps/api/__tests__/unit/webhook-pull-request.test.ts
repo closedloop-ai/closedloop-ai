@@ -655,7 +655,7 @@ describe("handlePullRequest", () => {
   });
 
   describe("unsupported actions", () => {
-    it("logs warning and skips update for unsupported action types", async () => {
+    it("logs info and skips DB queries for unsupported action types", async () => {
       const repository = createRepository(444);
       const pullRequest = createPullRequest({
         number: 52,
@@ -671,26 +671,20 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
-        id: "repo-uuid-unsupported",
-      });
-
-      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
-        id: "pr-uuid-unsupported",
-        workstreamId: "ws-uuid-unsupported",
-      });
-
       await handlePullRequest(event);
 
-      // Should log warning for unhandled action
-      expect(log.warn).toHaveBeenCalledWith(
-        "[handlePullRequest] Unhandled action type",
+      // Should log info and skip — no DB queries
+      expect(log.info).toHaveBeenCalledWith(
+        "[handlePullRequest] Skipping unhandled action",
         expect.objectContaining({
           action: "edited",
+          prNumber: 52,
         })
       );
 
-      // Should not update PR
+      // Should not query DB at all
+      expect(mockTx.repository.findUnique).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
