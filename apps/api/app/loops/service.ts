@@ -3,9 +3,13 @@ import type {
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
+  LoopCommand,
   LoopEvent,
+  LoopEventsFilters,
+  LoopEventsPaginatedResponse,
   LoopListFilters,
   LoopStatus,
+  LoopUsageByCommand,
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
@@ -391,8 +395,61 @@ export const loopsService = {
   },
 
   /**
+   * Get events for a Loop with pagination and filtering.
+   * Returns paginated results with total count for audit log views.
+   */
+  async getEventsPaginated(
+    loopId: string,
+    organizationId: string,
+    filters: LoopEventsFilters
+  ): Promise<LoopEventsPaginatedResponse> {
+    const { type, limit = 100, offset = 0 } = filters;
+
+    // Verify loop belongs to org
+    const loop = await withDb((db) =>
+      db.loop.findUnique({
+        where: { id: loopId, organizationId },
+        select: { id: true },
+      })
+    );
+
+    if (!loop) {
+      throw new Error(`Loop not found: ${loopId}`);
+    }
+
+    const where = {
+      loopId,
+      ...(type ? { type } : {}),
+    };
+
+    const [events, total] = await Promise.all([
+      withDb((db) =>
+        db.loopEvent.findMany({
+          where,
+          orderBy: { createdAt: "asc" },
+          take: limit,
+          skip: offset,
+        })
+      ),
+      withDb((db) => db.loopEvent.count({ where })),
+    ]);
+
+    // Transform DB events to API LoopEvent type
+    const data = events.map((e) => ({
+      type: e.type,
+      ...(e.data as Record<string, unknown>),
+      timestamp:
+        (e.data as Record<string, unknown>).timestamp ??
+        e.createdAt.toISOString(),
+    })) as unknown as LoopEvent[];
+
+    return { data, total };
+  },
+
+  /**
    * Get usage summary with filters.
-   * Aggregates token usage and cost across loops for reporting.
+   * Aggregates token usage and cost across loops for reporting,
+   * including a breakdown by command type.
    */
   async getUsageSummary(
     organizationId: string,
@@ -405,35 +462,60 @@ export const loopsService = {
   ): Promise<LoopUsageSummary> {
     const { startDate, endDate, userId, command } = filters;
 
-    const aggregate = await withDb((db) =>
-      db.loop.aggregate({
-        where: {
-          organizationId,
-          ...(userId ? { userId } : {}),
-          ...(command ? { command: command as never } : {}),
-          ...(startDate || endDate
-            ? {
-                createdAt: {
-                  ...(startDate ? { gte: startDate } : {}),
-                  ...(endDate ? { lte: endDate } : {}),
-                },
-              }
-            : {}),
-        },
-        _count: true,
-        _sum: {
-          tokensInput: true,
-          tokensOutput: true,
-          estimatedCost: true,
-        },
-      })
-    );
+    const where = {
+      organizationId,
+      ...(userId ? { userId } : {}),
+      ...(command ? { command: command as never } : {}),
+      ...(startDate || endDate
+        ? {
+            createdAt: {
+              ...(startDate ? { gte: startDate } : {}),
+              ...(endDate ? { lte: endDate } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const [aggregate, groupByCommand] = await Promise.all([
+      withDb((db) =>
+        db.loop.aggregate({
+          where,
+          _count: true,
+          _sum: {
+            tokensInput: true,
+            tokensOutput: true,
+            estimatedCost: true,
+          },
+        })
+      ),
+      withDb((db) =>
+        db.loop.groupBy({
+          by: ["command"],
+          where,
+          _count: true,
+          _sum: {
+            tokensInput: true,
+            tokensOutput: true,
+            estimatedCost: true,
+          },
+        })
+      ),
+    ]);
+
+    const byCommand: LoopUsageByCommand[] = groupByCommand.map((g) => ({
+      command: g.command as LoopCommand,
+      loopCount: g._count,
+      tokensInput: g._sum.tokensInput ?? 0,
+      tokensOutput: g._sum.tokensOutput ?? 0,
+      estimatedCost: Number(g._sum.estimatedCost ?? 0),
+    }));
 
     return {
       totalLoops: aggregate._count,
       totalTokensInput: aggregate._sum.tokensInput ?? 0,
       totalTokensOutput: aggregate._sum.tokensOutput ?? 0,
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
+      byCommand,
     };
   },
 };

@@ -9,6 +9,14 @@ import {
   useRequestPlanChanges,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useRunLoop } from "@/hooks/queries/use-loops";
+
+/**
+ * Check if the Loops compute feature flag is enabled via client-side env var.
+ */
+function isLoopsComputeEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_USE_LOOPS_COMPUTE === "true";
+}
 
 type UsePlanActionsConfig = {
   artifact: ArtifactWithWorkstream;
@@ -21,10 +29,13 @@ type UsePlanActionsConfig = {
  *
  * **What it provides:**
  * - Approve operation (updates status to APPROVED)
- * - Regenerate operation (triggers plan regeneration via symphony-dispatch GitHub Actions workflow)
+ * - Regenerate operation (triggers plan regeneration via GitHub Actions or Loops)
  * - Request changes operation (submits feedback and triggers regeneration with changes)
- * - Execute operation (triggers implementation execution via symphony-dispatch, creates PR)
+ * - Execute operation (triggers implementation execution, creates PR)
  * - Loading states for each operation
+ *
+ * When the `NEXT_PUBLIC_USE_LOOPS_COMPUTE` flag is enabled, regenerate/execute/request-changes
+ * operations create Loops instead of triggering GitHub Actions workflows.
  *
  * **Example usage:**
  * ```tsx
@@ -40,22 +51,33 @@ type UsePlanActionsConfig = {
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifact } = config;
+  const useLoops = isLoopsComputeEnabled();
 
-  // TanStack Query mutations
+  // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
   const regenerateArtifact = useRegenerateArtifact();
   const requestPlanChanges = useRequestPlanChanges();
   const executeImplementationPlan = useExecuteImplementationPlan();
 
+  // TanStack Query mutation - Loops path
+  const runLoop = useRunLoop();
+
   // Derived state
   const isApproving = updateArtifact.isPending;
-  const isRegenerating = regenerateArtifact.isPending;
-  const isRequestingChanges = requestPlanChanges.isPending;
-  const isExecuting = executeImplementationPlan.isPending;
+  const isRegenerating = useLoops
+    ? runLoop.isPending
+    : regenerateArtifact.isPending;
+  const isRequestingChanges = useLoops
+    ? runLoop.isPending
+    : requestPlanChanges.isPending;
+  const isExecuting = useLoops
+    ? runLoop.isPending
+    : executeImplementationPlan.isPending;
 
   /**
    * Approve the implementation plan.
    * Updates the artifact status to APPROVED.
+   * (Approval is always a direct update, not a loop.)
    */
   const handleApprove = useCallback(() => {
     updateArtifact.mutate(
@@ -68,21 +90,50 @@ export function usePlanActions(config: UsePlanActionsConfig) {
 
   /**
    * Regenerate the implementation plan.
-   * Triggers the symphony-dispatch workflow to regenerate the plan via GitHub Actions.
+   * When loops are enabled, creates a Loop with command="plan".
+   * Otherwise, triggers the symphony-dispatch GitHub Actions workflow.
    */
   const handleRegenerate = useCallback(() => {
-    regenerateArtifact.mutate(artifact.id, {
-      onSuccess: () => toast.success("Plan regeneration started"),
-    });
-  }, [artifact.id, regenerateArtifact]);
+    if (useLoops) {
+      runLoop.mutate(
+        { artifactId: artifact.id, command: "plan" },
+        {
+          onSuccess: () => toast.success("Plan regeneration started via Loop"),
+        }
+      );
+    } else {
+      regenerateArtifact.mutate(artifact.id, {
+        onSuccess: () => toast.success("Plan regeneration started"),
+      });
+    }
+  }, [artifact.id, useLoops, runLoop, regenerateArtifact]);
 
   /**
    * Request changes to the implementation plan.
-   * Submits feedback and triggers regeneration with the requested changes.
+   * When loops are enabled, creates a Loop with command="request_changes".
+   * Otherwise, submits feedback and triggers regeneration via GitHub Actions.
    * Returns a promise that resolves to true on success, false on error.
    */
   const handleRequestChanges = useCallback(
     async (changes: string): Promise<boolean> => {
+      if (useLoops) {
+        await runLoop.mutateAsync(
+          {
+            artifactId: artifact.id,
+            command: "request_changes",
+            prompt: changes,
+          },
+          {
+            onSuccess: () => {
+              toast.success(
+                "Change request submitted via Loop - generating updated plan..."
+              );
+            },
+          }
+        );
+        return true;
+      }
+
       const result = await requestPlanChanges.mutateAsync(
         { artifactId: artifact.id, changes },
         {
@@ -95,21 +146,36 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       );
       return result.success ?? false;
     },
-    [artifact.id, requestPlanChanges]
+    [artifact.id, useLoops, runLoop, requestPlanChanges]
   );
 
   /**
    * Execute the approved implementation plan.
-   * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
+   * When loops are enabled, creates a Loop with command="execute".
+   * Otherwise, triggers the symphony-dispatch workflow with command="execute".
    */
   const handleExecute = useCallback(async (): Promise<boolean> => {
+    if (useLoops) {
+      await runLoop.mutateAsync(
+        { artifactId: artifact.id, command: "execute" },
+        {
+          onSuccess: () => {
+            toast.success(
+              "Plan execution started via Loop - a PR will be created shortly"
+            );
+          },
+        }
+      );
+      return true;
+    }
+
     const result = await executeImplementationPlan.mutateAsync(artifact.id, {
       onSuccess: () => {
         toast.success("Plan execution started - a PR will be created shortly");
       },
     });
     return result.success ?? false;
-  }, [artifact.id, executeImplementationPlan]);
+  }, [artifact.id, useLoops, runLoop, executeImplementationPlan]);
 
   return {
     // Action handlers

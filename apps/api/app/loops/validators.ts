@@ -30,6 +30,22 @@ export const loopEventValidator = z.object({
   data: z.record(z.string(), z.unknown()).default({}),
 });
 
+export const listLoopEventsQueryValidator = z.object({
+  type: z
+    .enum([
+      "started",
+      "output",
+      "progress",
+      "tool_call",
+      "artifact_created",
+      "completed",
+      "error",
+    ])
+    .optional(),
+  limit: z.coerce.number().min(1).max(500).default(100).optional(),
+  offset: z.coerce.number().min(0).default(0).optional(),
+});
+
 export const listLoopsQueryValidator = z.object({
   status: z
     .enum([

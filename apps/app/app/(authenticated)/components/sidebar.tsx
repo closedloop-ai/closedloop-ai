@@ -34,6 +34,7 @@ import {
   InboxIcon,
   LifeBuoyIcon,
   LightbulbIcon,
+  RotateCcwIcon,
   SendIcon,
   SettingsIcon,
   UsersIcon,
@@ -131,6 +132,12 @@ const data = {
       url: "/my-documents",
       icon: FileTextIcon,
       disabled: true,
+    },
+    {
+      title: "Loops",
+      url: "/loops",
+      icon: RotateCcwIcon,
+      disabled: false,
     },
     {
       title: "Members",

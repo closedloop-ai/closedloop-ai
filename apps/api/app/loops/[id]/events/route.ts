@@ -1,23 +1,54 @@
-import type { LoopEvent } from "@repo/api/src/types/loop";
+import type {
+  LoopEvent,
+  LoopEventsPaginatedResponse,
+} from "@repo/api/src/types/loop";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
-import { loopEventValidator } from "../../validators";
+import {
+  listLoopEventsQueryValidator,
+  loopEventValidator,
+} from "../../validators";
 
-export const GET = withAuth<LoopEvent[], "/loops/[id]/events">(
-  async ({ user }, _, params) => {
-    try {
-      const { id } = await params;
+export const GET = withAuth<
+  LoopEvent[] | LoopEventsPaginatedResponse,
+  "/loops/[id]/events"
+>(async ({ user }, request, params) => {
+  try {
+    const { id } = await params;
 
+    const url = new URL(request.url);
+    const rawQuery = Object.fromEntries(url.searchParams.entries());
+
+    // If no pagination/filter params provided, return the flat array for
+    // backward compatibility (used by SSE polling and existing consumers)
+    const hasFilters =
+      rawQuery.type !== undefined ||
+      rawQuery.limit !== undefined ||
+      rawQuery.offset !== undefined;
+
+    if (!hasFilters) {
       const events = await loopsService.getEvents(id, user.organizationId);
-
       return successResponse(events);
-    } catch (error) {
-      return errorResponse("Failed to fetch loop events", error);
     }
+
+    const parsed = listLoopEventsQueryValidator.safeParse(rawQuery);
+    if (!parsed.success) {
+      const msg = parsed.error.issues.map((i) => i.message).join(", ");
+      return errorResponse(msg, new Error(msg), 400);
+    }
+
+    const result = await loopsService.getEventsPaginated(
+      id,
+      user.organizationId,
+      parsed.data
+    );
+    return successResponse(result);
+  } catch (error) {
+    return errorResponse("Failed to fetch loop events", error);
   }
-);
+});
 
 /**
  * POST /api/loops/:id/events - Receive events from container harness.

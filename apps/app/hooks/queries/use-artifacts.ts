@@ -317,25 +317,35 @@ export function useRequestPlanChanges() {
 /**
  * Create an artifact and immediately trigger generation workflow.
  * Used for implementation plans generated from a PRD or Issue.
+ *
+ * When `NEXT_PUBLIC_USE_LOOPS_COMPUTE` is enabled, triggers plan generation via
+ * the run-loop endpoint (ECS Loops) instead of the regenerate endpoint (GitHub Actions).
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
+  const useLoops = process.env.NEXT_PUBLIC_USE_LOOPS_COMPUTE === "true";
 
   return useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       // First create the artifact
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
-      // Then trigger regeneration (which dispatches to GitHub)
+      // Then trigger generation via Loops or GitHub Actions
       try {
+        if (useLoops) {
+          await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
+            command: "plan",
+          });
+          return artifact;
+        }
         const regenerated = await apiClient.post<Artifact>(
           `/artifacts/${artifact.id}/regenerate`,
           {}
         );
         return regenerated;
       } catch {
-        // Return original artifact if regeneration fails - user can still navigate to it
+        // Return original artifact if generation fails - user can still navigate to it
         return artifact;
       }
     },

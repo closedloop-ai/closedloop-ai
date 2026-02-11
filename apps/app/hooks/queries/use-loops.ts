@@ -5,7 +5,10 @@ import type {
   CreateLoopResponse,
   Loop,
   LoopEvent,
+  LoopEventsFilters,
+  LoopEventsPaginatedResponse,
   LoopListFilters,
+  LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
@@ -26,6 +29,10 @@ export const loopKeys = {
   details: () => [...loopKeys.all, "detail"] as const,
   detail: (id: string) => [...loopKeys.details(), id] as const,
   events: (id: string) => [...loopKeys.detail(id), "events"] as const,
+  eventsPaginated: (id: string, filters: Record<string, unknown>) =>
+    [...loopKeys.detail(id), "events-paginated", filters] as const,
+  usage: (filters: Record<string, unknown>) =>
+    [...loopKeys.all, "usage", filters] as const,
 };
 
 // Queries
@@ -78,6 +85,34 @@ export function useLoopEvents(
   });
 }
 
+export function useLoopEventsPaginated(
+  loopId: string,
+  filters: LoopEventsFilters = {},
+  options?: Omit<
+    UseQueryOptions<LoopEventsPaginatedResponse>,
+    "queryKey" | "queryFn"
+  >
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: loopKeys.eventsPaginated(loopId, filters),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== null) {
+          params.set(key, value.toString());
+        }
+      }
+      return apiClient.get<LoopEventsPaginatedResponse>(
+        `/loops/${loopId}/events?${params.toString()}`
+      );
+    },
+    enabled: !!loopId,
+    ...options,
+  });
+}
+
 export function useLoopsByArtifact(
   artifactId: string,
   options?: Omit<UseQueryOptions<LoopWithUser[]>, "queryKey" | "queryFn">
@@ -92,6 +127,36 @@ export function useLoopsByArtifact(
       return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
     },
     enabled: !!artifactId,
+    ...options,
+  });
+}
+
+export type LoopUsageFilters = {
+  startDate?: string;
+  endDate?: string;
+  command?: string;
+};
+
+export function useLoopUsage(
+  filters: LoopUsageFilters = {},
+  options?: Omit<UseQueryOptions<LoopUsageSummary>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: loopKeys.usage(filters),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== null) {
+          params.set(key, value);
+        }
+      }
+      const qs = params.toString();
+      return apiClient.get<LoopUsageSummary>(
+        `/loops/usage${qs ? `?${qs}` : ""}`
+      );
+    },
     ...options,
   });
 }
@@ -133,6 +198,42 @@ export function useResumeLoop() {
     onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: loopKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
+    },
+  });
+}
+
+/**
+ * Run a Loop from an artifact action (plan, execute, request_changes).
+ * Posts to the artifact-scoped run-loop endpoint which creates a Loop
+ * and launches it on ECS.
+ */
+export function useRunLoop() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      artifactId,
+      command,
+      prompt,
+    }: {
+      artifactId: string;
+      command: "plan" | "execute" | "request_changes";
+      prompt?: string;
+    }) =>
+      apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {
+        command,
+        prompt,
+      }),
+    onSuccess: (_, { artifactId }) => {
+      queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
+      queryClient.invalidateQueries({
+        queryKey: loopKeys.list({ artifactId }),
+      });
+      // Also invalidate artifact generation status so the UI reflects the pending loop
+      queryClient.invalidateQueries({
+        queryKey: ["artifacts", "detail", artifactId, "generation-status"],
+      });
     },
   });
 }

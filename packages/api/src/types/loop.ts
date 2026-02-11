@@ -159,10 +159,32 @@ export type LoopEvent =
   | LoopEventCompleted
   | LoopEventError;
 
+export type LoopEventType = LoopEvent["type"];
+
+export type LoopEventsFilters = {
+  type?: LoopEventType;
+  limit?: number;
+  offset?: number;
+};
+
+export type LoopEventsPaginatedResponse = {
+  data: LoopEvent[];
+  total: number;
+};
+
 // Usage/cost summary types
+export type LoopUsageByCommand = {
+  command: LoopCommand;
+  loopCount: number;
+  tokensInput: number;
+  tokensOutput: number;
+  estimatedCost: number;
+};
+
 export type LoopUsageSummary = {
   totalLoops: number;
   totalTokensInput: number;
   totalTokensOutput: number;
   totalEstimatedCost: number;
+  byCommand: LoopUsageByCommand[];
 };

@@ -206,3 +206,72 @@ export function WorkstreamTypeBadge({ type }: { type: string }) {
     </Badge>
   );
 }
+
+// Loop status colors
+export const loopStatusColors: Record<string, string> = {
+  PENDING: COLOR_PENDING,
+  CLAIMED: COLOR_PENDING,
+  RUNNING: COLOR_PROGRESS,
+  COMPLETED: COLOR_SUCCESS,
+  FAILED: COLOR_FAILURE,
+  CANCELLED: COLOR_INACTIVE,
+  TIMED_OUT: COLOR_FAILURE,
+};
+
+const loopStatusLabels: Record<string, string> = {
+  PENDING: "Pending",
+  CLAIMED: "Claimed",
+  RUNNING: "Running",
+  COMPLETED: "Completed",
+  FAILED: "Failed",
+  CANCELLED: "Cancelled",
+  TIMED_OUT: "Timed Out",
+};
+
+export function LoopStatusBadge({ status }: { status: string }) {
+  const displayStatus = loopStatusLabels[status] ?? status;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        loopStatusColors[status] ?? loopStatusColors.PENDING
+      )}
+      variant="outline"
+    >
+      {displayStatus}
+    </Badge>
+  );
+}
+
+// Loop command colors
+export const loopCommandColors: Record<string, string> = {
+  PLAN: COLOR_PURPLE,
+  EXECUTE: COLOR_PROGRESS,
+  CHAT: COLOR_PENDING,
+  EXPLORE:
+    "bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-800",
+  REQUEST_CHANGES: COLOR_PENDING,
+};
+
+const loopCommandLabels: Record<string, string> = {
+  PLAN: "Plan",
+  EXECUTE: "Execute",
+  CHAT: "Chat",
+  EXPLORE: "Explore",
+  REQUEST_CHANGES: "Request Changes",
+};
+
+export function LoopCommandBadge({ command }: { command: string }) {
+  const displayCommand = loopCommandLabels[command] ?? command;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        loopCommandColors[command] ?? loopCommandColors.EXECUTE
+      )}
+      variant="outline"
+    >
+      {displayCommand}
+    </Badge>
+  );
+}
