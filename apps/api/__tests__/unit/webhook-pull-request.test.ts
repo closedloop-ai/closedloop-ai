@@ -207,12 +207,7 @@ describe("handlePullRequest", () => {
       },
     };
 
-    // Mock withDb for non-transactional repository lookup (Step 1)
-    mockWithDb.mockImplementation((callback: any) => {
-      return callback(mockTx);
-    });
-
-    // Mock withDb.tx for transactional PR updates (Step 3)
+    // Mock withDb.tx — all reads and writes happen in a single transaction
     mockWithDbTx.mockImplementation((callback: any) => {
       return callback(mockTx);
     });
@@ -691,7 +686,7 @@ describe("handlePullRequest", () => {
   });
 
   describe("transaction behavior", () => {
-    it("executes update and event creation within a single transaction", async () => {
+    it("executes all reads and writes within a single transaction", async () => {
       const repository = createRepository(555);
       const pullRequest = createPullRequest({
         number: 53,
@@ -725,13 +720,13 @@ describe("handlePullRequest", () => {
 
       await handlePullRequest(event);
 
-      // Verify withDb.tx was called (transaction wrapper)
+      // Verify all operations in single transaction
       expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb).not.toHaveBeenCalled();
 
-      // Verify lookups occurred (outside transaction, via withDb)
-      expect(mockWithDb).toHaveBeenCalledTimes(2);
-
-      // Verify mutations occurred (inside transaction, via withDb.tx)
+      // Verify lookups and mutations all occurred within the transaction
+      expect(mockTx.repository.findUnique).toHaveBeenCalled();
+      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
     });

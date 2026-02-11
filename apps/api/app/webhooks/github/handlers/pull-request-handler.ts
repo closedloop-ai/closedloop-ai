@@ -75,27 +75,26 @@ export async function handlePullRequest(
     repositoryId: repository.id,
   });
 
-  // Step 1: Find Repository by githubId
-  const repo = await withDb((db) =>
-    db.repository.findUnique({
+  // All reads and writes in a single transaction to avoid TOCTOU gaps
+  await withDb.tx(async (tx) => {
+    // Step 1: Find Repository by githubId
+    const repo = await tx.repository.findUnique({
       where: { githubId: repository.id },
       select: { id: true },
-    })
-  );
-
-  if (!repo) {
-    log.warn("[handlePullRequest] Repository not found in database", {
-      githubRepoId: repository.id,
-      repositoryFullName: repository.full_name,
-      action,
-      prNumber: pull_request.number,
     });
-    return;
-  }
 
-  // Step 2: Find GitHubPullRequest by repositoryId + number
-  const existingPr = await withDb((db) =>
-    db.gitHubPullRequest.findUnique({
+    if (!repo) {
+      log.warn("[handlePullRequest] Repository not found in database", {
+        githubRepoId: repository.id,
+        repositoryFullName: repository.full_name,
+        action,
+        prNumber: pull_request.number,
+      });
+      return;
+    }
+
+    // Step 2: Find GitHubPullRequest by repositoryId + number
+    const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
           repositoryId: repo.id,
@@ -103,22 +102,19 @@ export async function handlePullRequest(
         },
       },
       select: { id: true, workstreamId: true },
-    })
-  );
-
-  if (!existingPr) {
-    log.warn("[handlePullRequest] Pull request not found in database", {
-      repositoryId: repo.id,
-      prNumber: pull_request.number,
-      action,
-      reason: "PR may have been created outside Symphony workflow",
     });
-    return;
-  }
 
-  // Step 3: Update PR record and create workstream event in a single transaction
-  await withDb.tx(async (tx) => {
-    // Determine update data based on action
+    if (!existingPr) {
+      log.warn("[handlePullRequest] Pull request not found in database", {
+        repositoryId: repo.id,
+        prNumber: pull_request.number,
+        action,
+        reason: "PR may have been created outside Symphony workflow",
+      });
+      return;
+    }
+
+    // Step 3: Update PR record and create workstream event
     switch (action) {
       case "closed": {
         const closedEvent = event as PullRequestClosedEvent;
@@ -237,6 +233,6 @@ export async function handlePullRequest(
   log.info("[handlePullRequest] Successfully processed pull_request event", {
     action,
     prNumber: pull_request.number,
-    repositoryId: repo.id,
+    githubRepoId: repository.id,
   });
 }
