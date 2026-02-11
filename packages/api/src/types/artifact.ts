@@ -241,6 +241,7 @@ export type UpdateArtifactInput = {
   title?: string;
   fileName?: string;
   parentId?: string | null;
+  projectId?: string | null;
   approverId?: string | null;
   status?: ArtifactStatus;
   externalUrl?: string | null;

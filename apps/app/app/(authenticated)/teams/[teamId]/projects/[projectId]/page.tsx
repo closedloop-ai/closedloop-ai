@@ -323,6 +323,7 @@ export default function ProjectDetailPage() {
                 artifacts={artifacts}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             ) : (
               <ArtifactsThreadedView
