@@ -31,6 +31,7 @@ import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
+import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -1259,15 +1260,21 @@ Please try again or contact support if the issue persists.`,
       }
 
       const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "execution-logs"
+        Number(actionRun.runId)
       );
 
-      if (artifacts.length === 0 || !artifacts[0]) {
+      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      const symphonyArtifact = artifacts.find((a) =>
+        SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
+          a.name.startsWith(prefix)
+        )
+      );
+
+      if (!symphonyArtifact) {
         return createEmptyExecutionTrace();
       }
 
-      return parseExecutionLogs(artifacts[0].data);
+      return parseExecutionLogs(symphonyArtifact.data);
     } catch (error) {
       log.error("[artifacts-service] Failed to get execution log", {
         error: error instanceof Error ? error.message : String(error),
