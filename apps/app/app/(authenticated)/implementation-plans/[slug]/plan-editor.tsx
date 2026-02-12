@@ -8,6 +8,7 @@ import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { Editor, JSONContent } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -297,16 +298,19 @@ export function PlanEditor({
   const handleDiscard = () => {
     const snapshot = editorSnapshotRef.current;
     if (snapshot && editorRef.current) {
-      // Restore the full document JSON (preserves Liveblocks thread marks).
+      // Merge current comment marks into the snapshot so thread anchoring
+      // survives the content revert (comments on unchanged text persist).
+      const editor = editorRef.current;
+      const currentJson = editor.getJSON();
+      const merged = mergeCommentMarks(snapshot, currentJson);
       // Must temporarily make editor editable since setIsEditing(false)
       // will set readOnly before the microtask runs.
-      const editor = editorRef.current;
       queueMicrotask(() => {
         const wasEditable = editor.isEditable;
         if (!wasEditable) {
           editor.setEditable(true);
         }
-        editor.commands.setContent(snapshot);
+        editor.commands.setContent(merged);
         if (!wasEditable) {
           editor.setEditable(false);
         }

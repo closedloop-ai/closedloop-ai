@@ -10,6 +10,7 @@ import { useCallback, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -142,16 +143,19 @@ export function PRDEditor({
   const handleDiscard = () => {
     const snapshot = editorSnapshotRef.current;
     if (snapshot && editorRef.current) {
-      // Restore the full document JSON (preserves Liveblocks thread marks).
+      // Merge current comment marks into the snapshot so thread anchoring
+      // survives the content revert (comments on unchanged text persist).
+      const editor = editorRef.current;
+      const currentJson = editor.getJSON();
+      const merged = mergeCommentMarks(snapshot, currentJson);
       // Must temporarily make editor editable since setIsEditing(false)
       // will set readOnly before the microtask runs.
-      const editor = editorRef.current;
       queueMicrotask(() => {
         const wasEditable = editor.isEditable;
         if (!wasEditable) {
           editor.setEditable(true);
         }
-        editor.commands.setContent(snapshot);
+        editor.commands.setContent(merged);
         if (!wasEditable) {
           editor.setEditable(false);
         }
