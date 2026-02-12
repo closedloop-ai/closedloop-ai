@@ -758,27 +758,6 @@ export const githubService = {
   },
 
   /**
-   * Find a repository by its fullName within an organization's GitHub installation.
-   * Returns null if no matching repository is found.
-   */
-  findRepositoryByFullName(
-    organizationId: string,
-    fullName: string
-  ): Promise<GitHubInstallationRepository | null> {
-    return withDb((db) =>
-      db.gitHubInstallationRepository.findFirst({
-        where: {
-          fullName,
-          installation: {
-            organizationId,
-            status: "ACTIVE",
-          },
-        },
-      })
-    );
-  },
-
-  /**
    * Get repositories for an organization's GitHub installation.
    * Returns all repositories associated with the installation.
    *
