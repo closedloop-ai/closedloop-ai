@@ -966,10 +966,13 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Plan's own target repo/branch take priority, then source artifact, then project default
     const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
+      artifact.targetRepo ??
+      sourceArtifact.targetRepo ??
+      existingRepository?.fullName;
     const targetBranch =
+      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
@@ -1119,10 +1122,13 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Plan's own target repo/branch take priority, then source artifact, then project default
     const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
+      artifact.targetRepo ??
+      sourceArtifact.targetRepo ??
+      existingRepository?.fullName;
     const targetBranch =
+      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
@@ -1598,10 +1604,13 @@ Please try again or contact support if the issue persists.`,
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Plan's own target repo/branch take priority, then source artifact, then project default
     const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
+      artifact.targetRepo ??
+      sourceArtifact.targetRepo ??
+      existingRepository?.fullName;
     const targetBranch =
+      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
