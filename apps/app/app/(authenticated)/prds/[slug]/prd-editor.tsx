@@ -4,13 +4,10 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import type { Editor, JSONContent } from "@tiptap/react";
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
-import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -18,6 +15,7 @@ import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-action
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -34,46 +32,20 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [openThreadCount, setOpenThreadCount] = useState(0);
-  const handleThreadCountChange = useCallback((count: number) => {
-    setOpenThreadCount(count);
-  }, []);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>(
-    undefined
-  );
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >(undefined);
-  const editorRef = useRef<Editor | null>(null);
-  const editorSnapshotRef = useRef<JSONContent | null>(null);
-  const handleEditorInstance = useCallback((editor: Editor | null) => {
-    editorRef.current = editor;
-  }, []);
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // Always connect Liveblocks for the latest version so the editor is pre-loaded
-  // and ready when the user clicks to edit. Only skip for historical versions
-  // where content comes from the version prop, not Liveblocks.
-  const liveblocksRoomId =
-    !isViewingHistorical && prd.documentSlug
-      ? generateArtifactRoomId(prd.organizationId, prd.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePRDEditor
   const content = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: prd,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -120,83 +92,35 @@ export function PRDEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      editorSnapshotRef.current = editorRef.current?.getJSON() ?? null;
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(prd.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
-  const handlePublish = () => {
-    content.saveContent();
-    exitEditMode();
-  };
-
-  const handleDiscard = () => {
-    const snapshot = editorSnapshotRef.current;
-    if (snapshot && editorRef.current) {
-      // Merge current comment marks into the snapshot so thread anchoring
-      // survives the content revert (comments on unchanged text persist).
-      const editor = editorRef.current;
-      const currentJson = editor.getJSON();
-      const merged = mergeCommentMarks(snapshot, currentJson);
-      // Must temporarily make editor editable since setIsEditing(false)
-      // will set readOnly before the microtask runs.
-      queueMicrotask(() => {
-        const wasEditable = editor.isEditable;
-        if (!wasEditable) {
-          editor.setEditable(true);
-        }
-        editor.commands.setContent(merged);
-        if (!wasEditable) {
-          editor.setEditable(false);
-        }
-      });
-    } else {
-      // Fallback: reset via markdown (strips thread marks)
-      setContentResetValue(prd.content ?? "");
-      setContentResetKey((key) => (key ?? 0) + 1);
-    }
-    content.discardChanges();
-    editorSnapshotRef.current = null;
-    setIsEditing(false);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
-        canEdit={!isViewingHistorical}
-        isEditing={isEditing}
+        canEdit={!session.isViewingHistorical}
+        isEditing={session.isEditing}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
-        onDiscard={handleDiscard}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={handlePublish}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        openThreadCount={openThreadCount}
+        openThreadCount={session.openThreadCount}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
@@ -205,13 +129,21 @@ export function PRDEditor({
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
       <div
         className="flex min-h-0 flex-1 flex-col"
-        onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
-        onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
       >
         <CollaborativeEditor
-          contentResetKey={contentResetKey}
-          contentResetValue={contentResetValue}
-          liveblocksRoomId={liveblocksRoomId}
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          liveblocksRoomId={session.liveblocksRoomId}
           metadataPanel={
             <PRDMetadataPanel
               approver={metadata.approver}
@@ -231,9 +163,9 @@ export function PRDEditor({
             />
           }
           onChange={content.updateContent}
-          onEditorInstance={handleEditorInstance}
-          onOpenThreadCountChange={handleThreadCountChange}
-          readOnly={!isEditing}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
           showMetadataPanel={uiState.showMetadataPanel}
           value={content.content}
         />

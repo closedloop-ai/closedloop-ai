@@ -4,11 +4,8 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import type { Editor, JSONContent } from "@tiptap/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
-import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
@@ -16,6 +13,7 @@ import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-action
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
@@ -79,44 +77,20 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [openThreadCount, setOpenThreadCount] = useState(0);
-  const handleThreadCountChange = useCallback((count: number) => {
-    setOpenThreadCount(count);
-  }, []);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>();
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >();
-  const editorRef = useRef<Editor | null>(null);
-  const editorSnapshotRef = useRef<JSONContent | null>(null);
-  const handleEditorInstance = useCallback((editor: Editor | null) => {
-    editorRef.current = editor;
-  }, []);
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // Always connect Liveblocks for the latest version so the editor is pre-loaded
-  // and ready when the user clicks to edit. Only skip for historical versions
-  // where content comes from the version prop, not Liveblocks.
-  const liveblocksRoomId =
-    !isViewingHistorical && plan.documentSlug
-      ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePlanEditor
   const content = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: plan,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -275,68 +249,20 @@ export function PlanEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      editorSnapshotRef.current = editorRef.current?.getJSON() ?? null;
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(plan.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
-  const handlePublish = () => {
-    content.saveContent();
-    exitEditMode();
-  };
-
-  const handleDiscard = () => {
-    const snapshot = editorSnapshotRef.current;
-    if (snapshot && editorRef.current) {
-      // Merge current comment marks into the snapshot so thread anchoring
-      // survives the content revert (comments on unchanged text persist).
-      const editor = editorRef.current;
-      const currentJson = editor.getJSON();
-      const merged = mergeCommentMarks(snapshot, currentJson);
-      // Must temporarily make editor editable since setIsEditing(false)
-      // will set readOnly before the microtask runs.
-      queueMicrotask(() => {
-        const wasEditable = editor.isEditable;
-        if (!wasEditable) {
-          editor.setEditable(true);
-        }
-        editor.commands.setContent(merged);
-        if (!wasEditable) {
-          editor.setEditable(false);
-        }
-      });
-    } else {
-      // Fallback: reset via markdown (strips thread marks)
-      setContentResetValue(plan.content ?? "");
-      setContentResetKey((key) => (key ?? 0) + 1);
-    }
-    content.discardChanges();
-    editorSnapshotRef.current = null;
-    setIsEditing(false);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PlanEditorHeader
-        canEdit={!isViewingHistorical}
+        canEdit={!session.isViewingHistorical}
         isApproved={isApproved}
         isDraft={isDraft}
-        isEditing={isEditing}
+        isEditing={session.isEditing}
         isExecuting={planActions.isExecuting}
         isPending={isPending}
         isSaving={content.isSaving}
@@ -344,22 +270,22 @@ export function PlanEditor({
         onApprove={planActions.handleApprove}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
-        onDiscard={handleDiscard}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
         onExportToLinear={openLinearExportDialog}
         onMove={() => setShowMoveDialog(true)}
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={handlePublish}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        openThreadCount={openThreadCount}
+        openThreadCount={session.openThreadCount}
         plan={plan}
         pullRequest={pullRequest ?? null}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
@@ -371,13 +297,21 @@ export function PlanEditor({
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
       <div
         className="flex min-h-0 flex-1 flex-col"
-        onClick={isEditing || isViewingHistorical ? undefined : handleEdit}
-        onKeyDown={isEditing || isViewingHistorical ? undefined : handleEdit}
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
       >
         <CollaborativeEditor
-          contentResetKey={contentResetKey}
-          contentResetValue={contentResetValue}
-          liveblocksRoomId={liveblocksRoomId}
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          liveblocksRoomId={session.liveblocksRoomId}
           metadataPanel={
             <PlanMetadataPanel
               approver={metadata.approver}
@@ -407,9 +341,9 @@ export function PlanEditor({
             />
           }
           onChange={content.updateContent}
-          onEditorInstance={handleEditorInstance}
-          onOpenThreadCountChange={handleThreadCountChange}
-          readOnly={!isEditing}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
           showMetadataPanel={uiState.showMetadataPanel}
           value={content.content}
         />
