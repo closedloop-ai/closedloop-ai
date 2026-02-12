@@ -32,6 +32,7 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { LoaderIcon, PlusIcon, TrashIcon, XIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import {
@@ -43,7 +44,10 @@ import {
   useUpdateTeam,
   useUpdateTeamMemberRole,
 } from "@/hooks/queries/use-teams";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import {
+  useCurrentUser,
+  useOrganizationUsers,
+} from "@/hooks/queries/use-users";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type TeamModalProps = {
@@ -103,6 +107,7 @@ function UserSelectContent({
 }
 
 export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
+  const router = useRouter();
   const isEditMode = !!team;
 
   const [open, setOpen] = useState(false);
@@ -122,12 +127,10 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   // Queries - only fetch when modal is open
+  const { data: currentUser } = useCurrentUser({ enabled: open });
   const { data: orgUsers = [], isLoading: loadingUsers } = useOrganizationUsers(
-    {
-      enabled: open,
-    }
+    { enabled: open }
   );
-
   const { data: members = [], isLoading: loadingMembers } = useTeamMembers(
     team?.id ?? "",
     { enabled: open && isEditMode && !!team?.id }
@@ -240,9 +243,12 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
         { name: name.trim() },
         {
           onSuccess: async (newTeam) => {
-            // Add pending members
+            // Add pending members (excluding current user - already added as owner by backend)
+            const membersToAdd = pendingMembers.filter(
+              (pending) => pending.user.id !== currentUser?.id
+            );
             await Promise.all(
-              pendingMembers.map(async (pending) => {
+              membersToAdd.map(async (pending) => {
                 await addMemberMutation.mutateAsync({
                   teamId: newTeam.id,
                   userId: pending.user.id,
@@ -250,6 +256,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
                 });
               })
             );
+            router.push(`/teams/${newTeam.id}/projects`);
             handleClose();
             onSuccess?.();
           },
@@ -284,7 +291,13 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
       // Reset form state when opening
       setName(team?.name || "");
       setError(null);
-      setPendingMembers([]);
+      // In create mode, pre-populate with current user as OWNER
+      // In edit mode, start with empty list (members loaded from API)
+      if (!team && currentUser) {
+        setPendingMembers([{ user: currentUser, role: "OWNER" }]);
+      } else {
+        setPendingMembers([]);
+      }
       setSelectedUserId("");
       setSelectedRole("MEMBER");
     }
@@ -491,6 +504,7 @@ export function TeamModal({ trigger, team, onSuccess }: TeamModalProps) {
                           </Select>
                           <Button
                             className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            disabled={pending.user.id === currentUser?.id}
                             onClick={() =>
                               handleRemovePendingMember(pending.user.id)
                             }

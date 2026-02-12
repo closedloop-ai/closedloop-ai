@@ -126,12 +126,24 @@ export function TiptapEditorCore({
     }
   }, [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]);
 
-  // Explicit content reset (e.g. restore a version)
+  // Explicit content reset (e.g. restore a version).
+  // Temporarily ensures the editor is editable so the command succeeds
+  // even when readOnly flips to true in the same render batch.
   useEffect(() => {
-    if (editor && contentResetKey && contentResetValue) {
-      setMarkdownContent(contentResetValue);
+    if (editor && contentResetKey && contentResetValue != null) {
+      const markdown = contentResetValue;
+      queueMicrotask(() => {
+        const wasEditable = editor.isEditable;
+        if (!wasEditable) {
+          editor.setEditable(true);
+        }
+        editor.commands.setContent(markdown, { contentType: "markdown" });
+        if (!wasEditable) {
+          editor.setEditable(false);
+        }
+      });
     }
-  }, [editor, contentResetKey, contentResetValue, setMarkdownContent]);
+  }, [editor, contentResetKey, contentResetValue]);
 
   // Update editable state when readOnly changes
   useEffect(() => {

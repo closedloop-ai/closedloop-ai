@@ -712,6 +712,7 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@index([artifactId])
+  @@index([createdAt])
   @@map("artifact_evaluations")
 }
 
@@ -749,4 +750,23 @@ model SlackIntegration {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
+}
+
+// =============================================================================
+// GOOGLE INTEGRATION
+// =============================================================================
+
+model GoogleIntegration {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
+  googleUserId   String    @map("google_user_id")
+  googleEmail    String?   @db.VarChar(255) @map("google_email")
+  accessToken    String    @db.Text @map("access_token")
+  refreshToken   String?   @db.Text @map("refresh_token")
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("google_integrations")
 }

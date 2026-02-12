@@ -68,6 +68,25 @@ vi.mock("@/hooks/queries/use-users", () => ({
   }),
 }));
 
+// Mock GitHub integration hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-github-integration", () => ({
+  useGitHubIntegrationStatus: () => ({
+    data: { connected: false },
+    isLoading: false,
+    error: null,
+  }),
+  useGitHubRepositories: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useGitHubBranches: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;
@@ -95,6 +114,8 @@ const defaultProps = {
   onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
   onParentChange: vi.fn(),
+  targetRepo: "",
+  targetBranch: "",
 };
 
 describe("sortMetricsByScore", () => {

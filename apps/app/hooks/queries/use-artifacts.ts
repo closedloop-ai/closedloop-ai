@@ -18,6 +18,7 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
+import { dashboardKeys } from "./use-dashboard-stats";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
 import { projectKeys } from "./use-projects";
@@ -204,6 +205,7 @@ export function useCreateArtifact() {
       apiClient.post<Artifact>("/artifacts", input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -222,6 +224,7 @@ export function useUpdateArtifact() {
         queryKey: artifactKeys.detail(input.id),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
       if (input.projectId) {
         queryClient.invalidateQueries({ queryKey: projectKeys.all });
       }
@@ -238,6 +241,7 @@ export function useDeleteArtifact() {
       apiClient.delete<{ deleted: true }>(`/artifacts/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.all });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
