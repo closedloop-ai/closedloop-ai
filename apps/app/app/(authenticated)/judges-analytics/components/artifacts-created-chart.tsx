@@ -145,44 +145,68 @@ export function ArtifactsCreatedChart({
       {!(isLoading || isError) &&
         chartData.length > 0 &&
         subtypeKeys.length > 0 && (
-          <ChartContainer className="h-64 w-full" config={chartConfig}>
-            <BarChart
-              accessibilityLayer
-              aria-label="Artifacts created per period by type"
-              data={chartData}
-              margin={{ bottom: 60, left: 20, right: 30, top: 20 }}
+          <div className="space-y-0">
+            <ul
+              aria-label="Artifact types"
+              className="flex flex-wrap items-center justify-center gap-4 pb-3 text-xs"
             >
-              <ChartLegend
-                content={<ChartLegendContent verticalAlign="top" />}
-                verticalAlign="top"
-              />
-              <XAxis
-                angle={-45}
-                dataKey="label"
-                height={80}
-                interval={0}
-                textAnchor="end"
-                tick={{ fontSize: 12 }}
-              />
-              <YAxis
-                allowDecimals={false}
-                label={{
-                  value: "Count",
-                  angle: -90,
-                  position: "insideLeft",
-                }}
-              />
-              <ChartTooltip content={<ChartTooltipContent />} />
-              {subtypeKeys.map((subtype) => (
-                <Bar
-                  dataKey={subtype}
-                  fill={`var(--color-${subtype})`}
-                  key={subtype}
-                  radius={[4, 4, 0, 0]}
+              {subtypeKeys.map((subtype) => {
+                const itemConfig = chartConfig[subtype];
+                return (
+                  <li className="flex items-center gap-1.5" key={subtype}>
+                    <div
+                      className="h-2 w-2 shrink-0 rounded-[2px]"
+                      style={{
+                        backgroundColor:
+                          itemConfig?.color ?? "var(--muted-foreground)",
+                      }}
+                    />
+                    <span>{itemConfig?.label ?? subtype}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            <ChartContainer className="h-64 w-full" config={chartConfig}>
+              <BarChart
+                accessibilityLayer
+                aria-label="Artifacts created per period by type"
+                data={chartData}
+                margin={{ bottom: 60, left: 20, right: 30, top: 20 }}
+              >
+                <ChartLegend
+                  content={({ payload }) => (
+                    <ChartLegendContent payload={payload} verticalAlign="top" />
+                  )}
+                  verticalAlign="top"
                 />
-              ))}
-            </BarChart>
-          </ChartContainer>
+                <XAxis
+                  angle={-45}
+                  dataKey="label"
+                  height={80}
+                  interval={0}
+                  textAnchor="end"
+                  tick={{ fontSize: 12 }}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  label={{
+                    value: "Count",
+                    angle: -90,
+                    position: "insideLeft",
+                  }}
+                />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                {subtypeKeys.map((subtype) => (
+                  <Bar
+                    dataKey={subtype}
+                    fill={`var(--color-${subtype})`}
+                    key={subtype}
+                    radius={[4, 4, 0, 0]}
+                  />
+                ))}
+              </BarChart>
+            </ChartContainer>
+          </div>
         )}
     </section>
   );
