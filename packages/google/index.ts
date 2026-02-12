@@ -79,10 +79,12 @@ export const GOOGLE_DOCS_MIME_TYPE = "application/vnd.google-apps.document";
 
 /**
  * Redact potential tokens from error messages.
- * Matches strings that look like tokens (20+ alphanumeric chars with dashes/underscores).
+ * Matches strings that look like OAuth tokens (40+ chars without spaces/punctuation).
+ * Uses a higher threshold (40+) to avoid redacting error codes, URLs, and descriptions
+ * which are needed for debugging (e.g., "redirect_uri_mismatch", long URLs).
  */
 function redactTokensFromError(errorText: string): string {
-  return errorText.replace(/[a-zA-Z0-9_-]{20,}/g, "[REDACTED]");
+  return errorText.replace(/[a-zA-Z0-9_-]{40,}/g, "[REDACTED]");
 }
 
 /**

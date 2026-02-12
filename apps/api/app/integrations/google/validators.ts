@@ -3,6 +3,7 @@ import { z } from "zod";
 export const connectGoogleValidator = z.object({
   code: z.string().min(1, "Authorization code is required"),
   codeVerifier: z.string().min(1, "PKCE code verifier is required"),
+  redirectUri: z.string().url("Redirect URI is required"),
 });
 
 export const importGoogleDocsValidator = z.object({

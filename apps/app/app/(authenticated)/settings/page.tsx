@@ -67,35 +67,27 @@ export default function SettingsPage() {
   const isAdmin = membership?.role === "org:admin";
   const searchParams = useSearchParams();
 
-  // Handle GitHub OAuth callback results from URL params
+  // Handle OAuth callback results from URL params (GitHub + Google)
   useEffect(() => {
     const githubStatus = searchParams.get("github");
     const errorCode = searchParams.get("code");
+    const googleStatus = searchParams.get("google");
 
     if (githubStatus === "connected") {
       toast.success("GitHub connected successfully");
-      // Clean up URL params
-      window.history.replaceState({}, "", window.location.pathname);
     } else if (githubStatus === "error" && errorCode) {
       const message = GITHUB_ERROR_MESSAGES[errorCode] ?? "An error occurred.";
       toast.error(message);
-      // Clean up URL params
-      window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [searchParams]);
-
-  // Handle Google OAuth callback results from URL params
-  useEffect(() => {
-    const googleStatus = searchParams.get("google");
 
     if (googleStatus === "success") {
       toast.success("Google Drive connected successfully");
-      // Clean up URL params
-      window.history.replaceState({}, "", window.location.pathname);
     } else if (googleStatus === "error") {
-      // Use generic error message to avoid exposing internal errors
       toast.error("Failed to connect Google Drive");
-      // Clean up URL params
+    }
+
+    // Clean up URL params if any integration status was present
+    if (githubStatus || googleStatus) {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, [searchParams]);

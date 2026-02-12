@@ -8,6 +8,7 @@ import {
   GOOGLE_OAUTH_ERRORS,
   GOOGLE_STATE_COOKIE,
   GOOGLE_VERIFIER_COOKIE,
+  getGoogleCallbackUrl,
 } from "../google-utils";
 
 /**
@@ -95,8 +96,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Send code + verifier to API for token exchange
-    // Token exchange happens in API to keep client_secret there
+    // Send code + verifier + redirectUri to API for token exchange.
+    // Token exchange happens in API to keep client_secret there.
+    // We send the redirectUri so the API uses the exact same value that was
+    // sent to Google during authorization (avoids mismatch between app/API builds).
+    const redirectUri = getGoogleCallbackUrl();
     const clerkToken = await getToken();
     const apiResponse = await fetch(
       `${env.NEXT_PUBLIC_API_URL}/integrations/google/connect`,
@@ -109,6 +113,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         body: JSON.stringify({
           code,
           codeVerifier,
+          redirectUri,
         }),
       }
     );

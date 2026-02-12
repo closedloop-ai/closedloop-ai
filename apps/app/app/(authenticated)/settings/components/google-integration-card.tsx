@@ -1,5 +1,15 @@
 "use client";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@repo/design-system/components/ui/alert-dialog";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -26,6 +36,7 @@ import { GoogleImportModal } from "./google-import-modal";
 export function GoogleIntegrationCard() {
   const [connecting, setConnecting] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [disconnectDialogOpen, setDisconnectDialogOpen] = useState(false);
   const { data: status, isLoading: loading } = useGoogleIntegrationStatus();
   const disconnectMutation = useDisconnectGoogle();
 
@@ -36,14 +47,10 @@ export function GoogleIntegrationCard() {
   };
 
   const handleDisconnect = async () => {
-    // biome-ignore lint/suspicious/noAlert: Simple confirmation for destructive action
-    if (!confirm("Are you sure you want to disconnect Google Drive?")) {
-      return;
-    }
-
     try {
       await disconnectMutation.mutateAsync();
       toast.success("Google Drive disconnected successfully");
+      setDisconnectDialogOpen(false);
     } catch {
       toast.error("Failed to disconnect Google Drive");
     }
@@ -122,18 +129,10 @@ export function GoogleIntegrationCard() {
                       Import from Folder
                     </Button>
                     <Button
-                      disabled={disconnectMutation.isPending}
-                      onClick={handleDisconnect}
+                      onClick={() => setDisconnectDialogOpen(true)}
                       variant="outline"
                     >
-                      {disconnectMutation.isPending ? (
-                        <>
-                          <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-                          Disconnecting...
-                        </>
-                      ) : (
-                        "Disconnect"
-                      )}
+                      Disconnect
                     </Button>
                   </>
                 ) : (
@@ -161,6 +160,30 @@ export function GoogleIntegrationCard() {
         onOpenChange={setImportModalOpen}
         open={importModalOpen}
       />
+
+      <AlertDialog
+        onOpenChange={setDisconnectDialogOpen}
+        open={disconnectDialogOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect Google Drive</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to disconnect Google Drive? You will need to
+              reconnect to import documents.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={disconnectMutation.isPending}
+              onClick={handleDisconnect}
+            >
+              {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -24,14 +24,6 @@ export type GoogleOAuthError =
   (typeof GOOGLE_OAUTH_ERRORS)[keyof typeof GOOGLE_OAUTH_ERRORS];
 
 /**
- * Get the OAuth initiation route.
- * This returns the local route that initiates the OAuth flow.
- */
-export function getGoogleOAuthUrl(): string {
-  return "/api/integrations/google";
-}
-
-/**
  * Get the Google OAuth callback URL.
  * This is the URL Google will redirect to after user authorizes.
  */

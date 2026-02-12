@@ -35,6 +35,7 @@ export type ImportDocsResult =
   | {
       success: true;
       importedCount: number;
+      totalDocsInFolder: number;
       artifacts: Array<{
         id: string;
         documentSlug: string;
@@ -188,6 +189,7 @@ export const googleService = {
       }
 
       // Upsert the integration record
+      // TODO: Encrypt tokens at rest before storing (follow-up PR)
       await withDb((db) =>
         db.googleIntegration.upsert({
           where: { organizationId },
@@ -231,6 +233,10 @@ export const googleService = {
   /**
    * Get the Google integration status for an organization.
    * Returns connection status and user email.
+   *
+   * This is a read-only check — no token refresh or lastUsedAt update.
+   * Token refresh happens lazily in operations that need a valid token
+   * (e.g., importDocsFromFolder) via ensureValidAccessToken().
    */
   async getIntegrationStatus(
     organizationId: string
@@ -244,26 +250,6 @@ export const googleService = {
     if (!integration) {
       return { success: true, connected: false };
     }
-
-    // Get valid access token (refresh if needed)
-    const tokenResult = await ensureValidAccessToken(
-      integration,
-      organizationId,
-      "[google]"
-    );
-
-    if (!tokenResult.success) {
-      // Token refresh failed - mark as disconnected
-      return { success: true, connected: false };
-    }
-
-    // Update lastUsedAt
-    await withDb((db) =>
-      db.googleIntegration.update({
-        where: { organizationId },
-        data: { lastUsedAt: new Date() },
-      })
-    );
 
     return {
       success: true,
@@ -391,10 +377,14 @@ export const googleService = {
       return {
         success: true,
         importedCount: 0,
+        totalDocsInFolder: 0,
         artifacts: [],
         failures: [],
       };
     }
+
+    // Track total before potential truncation
+    const totalDocsInFolder = docs.length;
 
     // Limit to 100 docs
     if (docs.length > 100) {
@@ -402,7 +392,7 @@ export const googleService = {
       log.warn("[google/import] Limiting import to 100 docs", {
         organizationId,
         folderId,
-        totalDocs: docs.length,
+        totalDocsInFolder,
       });
     }
 
@@ -544,6 +534,7 @@ export const googleService = {
     return {
       success: true,
       importedCount: artifacts.length,
+      totalDocsInFolder,
       artifacts,
       failures,
     };

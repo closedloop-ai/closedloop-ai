@@ -19,12 +19,6 @@ importers:
       commander:
         specifier: ^14.0.3
         version: 14.0.3
-      p-limit:
-        specifier: ^7.3.0
-        version: 7.3.0
-      sanitize-html:
-        specifier: ^2.17.0
-        version: 2.17.0
     devDependencies:
       '@auto-it/first-time-contributor':
         specifier: ^11.3.6
@@ -140,6 +134,9 @@ importers:
       next:
         specifier: 16.1.6
         version: 16.1.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      p-limit:
+        specifier: ^7.3.0
+        version: 7.3.0
       pg:
         specifier: ^8.18.0
         version: 8.18.0
@@ -152,6 +149,9 @@ importers:
       require-in-the-middle:
         specifier: 8.0.1
         version: 8.0.1
+      sanitize-html:
+        specifier: ^2.17.0
+        version: 2.17.0
       svix:
         specifier: ^1.84.1
         version: 1.84.1
@@ -657,12 +657,6 @@ importers:
 
   packages/api:
     dependencies:
-      p-limit:
-        specifier: ^7.3.0
-        version: 7.3.0
-      sanitize-html:
-        specifier: ^2.17.0
-        version: 2.17.0
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -1123,9 +1117,6 @@ importers:
 
   packages/google:
     dependencies:
-      '@repo/ai':
-        specifier: workspace:*
-        version: link:../ai
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability

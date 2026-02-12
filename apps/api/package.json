@@ -39,6 +39,8 @@
     "react-dom": "19.2.1",
     "require-in-the-middle": "8.0.1",
     "svix": "^1.84.1",
+    "p-limit": "^7.3.0",
+    "sanitize-html": "^2.17.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

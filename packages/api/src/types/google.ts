@@ -15,6 +15,7 @@ export type GoogleIntegrationStatus = {
 export type ConnectGoogleInput = {
   code: string;
   codeVerifier: string;
+  redirectUri: string;
 };
 
 export type ConnectGoogleResponse = {
@@ -29,6 +30,7 @@ export type ImportGoogleDocsInput = {
 
 export type ImportGoogleDocsResponse = {
   importedCount: number;
+  totalDocsInFolder: number;
   artifacts: Array<{
     id: string;
     documentSlug: string;

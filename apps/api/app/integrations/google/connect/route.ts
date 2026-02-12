@@ -1,6 +1,5 @@
 import type { ConnectGoogleResponse } from "@repo/api/src/types/google";
 import { organizationsService } from "@/app/organizations/service";
-import { env } from "@/env";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { googleService } from "../service";
@@ -34,14 +33,13 @@ export const POST = withAuth<
     return errorResponse("Organization not found", null, 404);
   }
 
-  // Build redirect URI (must match what was used in OAuth initiation)
-  const redirectUri = `${env.NEXT_PUBLIC_APP_URL}/api/integrations/google/callback`;
-
-  // Complete OAuth callback using service
+  // Use the redirect URI from the request body (must match what was used in OAuth initiation).
+  // The app sends this so both authorization and token exchange use the exact same URI,
+  // avoiding mismatches when NEXT_PUBLIC_APP_URL differs between app and API builds.
   const result = await googleService.completeOAuthCallback(
     body.code,
     body.codeVerifier,
-    redirectUri,
+    body.redirectUri,
     organization.id
   );
 

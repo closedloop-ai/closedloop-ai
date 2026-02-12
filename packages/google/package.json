@@ -7,7 +7,6 @@
     "typecheck": "tsc --noEmit --emitDeclarationOnly false"
   },
   "dependencies": {
-    "@repo/ai": "workspace:*",
     "@repo/observability": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.10",
     "googleapis": "^146.0.0",
