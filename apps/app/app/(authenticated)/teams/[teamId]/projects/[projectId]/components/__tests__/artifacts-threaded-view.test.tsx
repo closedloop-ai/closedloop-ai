@@ -76,6 +76,7 @@ const createMockArtifact = (
   workstreamId: null,
   workstreamTitle: null,
   workstreamState: null,
+  updatedAt: "2024-01-16T10:00:00Z",
   ...overrides,
 });
 
