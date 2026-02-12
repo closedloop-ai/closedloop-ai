@@ -11,6 +11,7 @@ import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-
 import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
@@ -152,6 +153,9 @@ export function PlanEditor({
     ReturnType<typeof useArtifactUIState>,
     { showRequestChangesModal: boolean }
   >;
+
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
 
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
@@ -345,6 +349,7 @@ export function PlanEditor({
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
         onExportToLinear={openLinearExportDialog}
+        onMove={() => setShowMoveDialog(true)}
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
         onRestoreVersion={handleRestoreVersion}
@@ -427,6 +432,13 @@ export function PlanEditor({
         artifactId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
+      />
+
+      {/* Move Dialog */}
+      <MoveArtifactDialog
+        artifact={plan}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       {/* Execute Plan Modal */}

@@ -12,6 +12,7 @@ import {
 import {
   DownloadIcon,
   MessageSquareIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RotateCcwIcon,
@@ -79,6 +80,10 @@ type PRDEditorHeaderProps = {
    */
   onExport: () => void;
   /**
+   * Callback when move menu item is clicked
+   */
+  onMove: () => void;
+  /**
    * Whether to show the restore option
    */
   showRestore?: boolean;
@@ -119,6 +124,7 @@ export function PRDEditorHeader({
   onSave,
   onRename,
   onExport,
+  onMove,
   showRestore = false,
   onRestoreVersion,
   onDelete,
@@ -206,6 +212,10 @@ export function PRDEditorHeader({
           <DropdownMenuItem onClick={onExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           {showRestore ? (
             <DropdownMenuItem onClick={onRestoreVersion}>

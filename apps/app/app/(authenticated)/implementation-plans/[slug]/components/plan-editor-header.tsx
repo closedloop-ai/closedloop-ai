@@ -14,6 +14,7 @@ import {
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  FolderIcon,
   GitPullRequestIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
@@ -108,6 +109,10 @@ type PlanEditorHeaderProps = {
    */
   onExportMarkdown: () => void;
   /**
+   * Callback when move menu item is clicked
+   */
+  onMove: () => void;
+  /**
    * Callback when export to Linear menu item is clicked
    */
   onExportToLinear: () => void;
@@ -181,6 +186,7 @@ export function PlanEditorHeader({
   onCopyMarkdown,
   onExportMarkdown,
   onExportToLinear,
+  onMove,
   onRegenerate,
   onDelete,
   showRestore = false,
@@ -317,6 +323,10 @@ export function PlanEditorHeader({
           <DropdownMenuItem onClick={onCopyMarkdown}>
             <CopyIcon className="mr-2 h-4 w-4" />
             Copy Markdown
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
