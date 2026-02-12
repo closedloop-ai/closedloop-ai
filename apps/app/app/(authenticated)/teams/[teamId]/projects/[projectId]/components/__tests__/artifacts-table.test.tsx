@@ -65,7 +65,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Verify artifact name is rendered
     expect(screen.getByText("PRD with PR")).toBeInTheDocument();
@@ -91,7 +93,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.getByText("Artifact without PR")).toBeInTheDocument();
     expect(
@@ -125,7 +129,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(
       screen.getByRole("link", { name: "Pull request #10" })
@@ -153,7 +159,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Find the table cell containing the artifact name
     const nameCell = screen.getByText("Artifact with PR").closest("td");
@@ -187,7 +195,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Only one PR link should be rendered
     const prLink = screen.getByRole("link", { name: "Pull request #100" });
@@ -204,7 +214,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
   });
 
   test("renders empty state when no artifacts provided", () => {
-    render(<ArtifactsTable artifacts={[]} />);
+    render(<ArtifactsTable artifacts={[]} projectId="test-project-id" />);
 
     expect(screen.getByText("No artifacts yet")).toBeInTheDocument();
     expect(
@@ -233,7 +243,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Both PR icons should be present regardless of section grouping
     expect(
@@ -263,7 +275,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
     const mockPush = vi.fn();
     mockUseRouter.mockReturnValue({ push: mockPush });
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     const prLink = screen.getByRole("link", { name: "Pull request #75" });
 

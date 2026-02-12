@@ -484,6 +484,19 @@ export const artifactsService = {
     if (input.approverId) {
       await validateOwnerInOrg(input.approverId, organizationId);
     }
+    if (input.projectId) {
+      const project = await withDb((db) =>
+        db.project.findFirst({
+          where: { id: input.projectId!, organizationId },
+          select: { id: true },
+        })
+      );
+      if (!project) {
+        throw new Error(
+          "Invalid project ID: project not found in this organization"
+        );
+      }
+    }
 
     return withDb((db) =>
       db.artifact.update({

@@ -10,6 +10,7 @@ import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/compone
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
@@ -91,6 +92,9 @@ export function PRDEditor({
     { showGeneratePlanModal: boolean }
   >;
 
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
   // Determine if any operation is pending
   const isPending =
     content.isSaving ||
@@ -135,6 +139,7 @@ export function PRDEditor({
         onEdit={handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
+        onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
         onRestoreVersion={handleRestoreVersion}
         onSave={content.saveContent}
@@ -184,6 +189,13 @@ export function PRDEditor({
         onRename={actions.handleRename}
         open={showRenameDialog}
         title="Rename PRD"
+      />
+
+      {/* Move Dialog */}
+      <MoveArtifactDialog
+        artifact={prd}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       {/* Delete Confirmation Dialog */}
