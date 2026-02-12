@@ -67,7 +67,7 @@ class JudgeScoreAggregator {
   }
 }
 
-type EvaluationInput = {
+export type EvaluationInput = {
   artifactId: string;
   artifact: { subtype: ArtifactSubtype };
   reportData: unknown;
@@ -79,7 +79,7 @@ type EvaluationInput = {
  * @param evaluations - Array of artifact evaluations with their artifact subtype
  * @returns Nested map structure: artifactSubtype -> judgeName -> { scores, artifactIds }
  */
-function extractJudgeScores(
+export function extractJudgeScores(
   evaluations: EvaluationInput[]
 ): Map<
   ArtifactSubtype,

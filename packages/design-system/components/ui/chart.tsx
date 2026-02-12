@@ -250,7 +250,12 @@ function ChartTooltipContent({
   )
 }
 
-const ChartLegend = RechartsPrimitive.Legend
+// Type assertion needed: Recharts Legend type doesn't satisfy React 19's JSX component typing
+// (Missing 'props' property - see recharts/recharts#4558, React 19 compatibility)
+const ChartLegend =
+  RechartsPrimitive.Legend as React.ComponentType<
+    React.ComponentProps<typeof RechartsPrimitive.Legend>
+  >
 
 function ChartLegendContent({
   className,
