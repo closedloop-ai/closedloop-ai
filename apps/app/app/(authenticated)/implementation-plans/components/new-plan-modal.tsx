@@ -352,6 +352,7 @@ export function NewPlanModal({
           <Button
             disabled={
               createAndGeneratePlan.isPending ||
+              createAndGeneratePlan.isComputeModeLoading ||
               !selectedSource ||
               !title.trim()
             }

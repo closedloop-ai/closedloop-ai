@@ -45,7 +45,8 @@ type UsePlanActionsConfig = {
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifact } = config;
-  const useLoops = useIsLoopsEnabled();
+  const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
+    useIsLoopsEnabled();
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
@@ -183,5 +184,6 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     isRegenerating,
     isRequestingChanges,
     isExecuting,
+    isComputeModeLoading,
   };
 }

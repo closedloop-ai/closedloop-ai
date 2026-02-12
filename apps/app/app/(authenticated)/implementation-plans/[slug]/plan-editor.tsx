@@ -251,7 +251,8 @@ export function PlanEditor({
     actions.isDeleting ||
     planActions.isApproving ||
     planActions.isRegenerating ||
-    planActions.isExecuting;
+    planActions.isExecuting ||
+    planActions.isComputeModeLoading;
 
   // Create version display component for header
   const versionDisplay = (

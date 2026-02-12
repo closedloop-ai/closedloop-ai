@@ -70,6 +70,30 @@ const config = {
   maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || "50", 10),
 };
 
+const ERROR_CODES = {
+  runner: "RUNNER_ERROR",
+  config: "CONFIG_VALIDATION_FAILED",
+  secrets: "SECRETS_VALIDATION_FAILED",
+  contextPackDownload: "CONTEXT_PACK_DOWNLOAD_FAILED",
+  contextPackInvalid: "CONTEXT_PACK_INVALID",
+  contextPackWrite: "CONTEXT_PACK_WRITE_FAILED",
+  gitClone: "GIT_CLONE_FAILED",
+  branchCreate: "BRANCH_CREATE_FAILED",
+  preRunValidation: "PRE_RUN_VALIDATION_FAILED",
+  runLoopNotFound: "RUN_LOOP_NOT_FOUND",
+};
+
+class HarnessError extends Error {
+  constructor(code, message, cause) {
+    super(message);
+    this.name = "HarnessError";
+    this.code = code;
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+  }
+}
+
 function redactSensitive(value) {
   if (typeof value !== "string" || value.length === 0) {
     return value;
@@ -126,7 +150,8 @@ function validateConfig() {
 
   const missing = requiredEnv.filter((k) => !config[k]);
   if (missing.length > 0) {
-    throw new Error(
+    throw new HarnessError(
+      ERROR_CODES.config,
       `Missing required environment variables: ${missing.join(", ")}`
     );
   }
@@ -135,9 +160,17 @@ function validateConfig() {
 function validateSecrets() {
   // Validate secrets extracted from S3 context pack.
   const requiredSecrets = ["anthropicApiKey"];
+
+  // Repo commands need a GitHub token for clone/push operations.
+  const repoCommands = new Set(["plan", "execute", "request_changes"]);
+  if (repoCommands.has(config.command?.toLowerCase())) {
+    requiredSecrets.push("githubToken");
+  }
+
   const missing = requiredSecrets.filter((k) => !config[k]);
   if (missing.length > 0) {
-    throw new Error(
+    throw new HarnessError(
+      ERROR_CODES.secrets,
       `Missing required secrets from context pack: ${missing.join(", ")}. ` +
         "Ensure the backend included secrets in the context pack."
     );
@@ -218,15 +251,22 @@ async function reportEvent(event) {
 // ---------------------------------------------------------------------------
 // Context pack handling
 // ---------------------------------------------------------------------------
-async function downloadContextPack(workDir) {
+async function downloadContextPack() {
   if (!config.s3ContextKey) {
     log("info", "No S3_CONTEXT_KEY set, skipping context pack download");
-    return;
+    return null;
   }
 
-  const buf = await downloadFromS3(config.s3ContextKey);
-  const contextDir = path.join(workDir, ".claude", "context");
-  fs.mkdirSync(contextDir, { recursive: true });
+  let buf;
+  try {
+    buf = await downloadFromS3(config.s3ContextKey);
+  } catch (err) {
+    throw new HarnessError(
+      ERROR_CODES.contextPackDownload,
+      "Failed to download context pack from S3",
+      err
+    );
+  }
 
   // Context packs are always JSON (uploaded by the backend via uploadContextPack).
   // Reject non-JSON payloads rather than attempting archive extraction, which
@@ -235,7 +275,8 @@ async function downloadContextPack(workDir) {
   try {
     pack = JSON.parse(buf.toString("utf-8"));
   } catch {
-    throw new Error(
+    throw new HarnessError(
+      ERROR_CODES.contextPackInvalid,
       "Context pack is not valid JSON. Expected JSON from backend uploadContextPack."
     );
   }
@@ -252,60 +293,96 @@ async function downloadContextPack(workDir) {
     log("info", "Extracted secrets from context pack");
   }
 
-  // Write structured context pack fields as specific files that the CLI expects.
-  // The pack schema is: { command, prompt?, artifacts[], repoInfo?, priorLoopSummaries?, secrets? }
+  return pack;
+}
 
-  let filesWritten = 0;
-
-  // Write prompt as prompt.md (used by buildClaudeDirectArgs and run-loop.sh)
-  if (pack.prompt) {
-    fs.writeFileSync(path.join(contextDir, "prompt.md"), pack.prompt);
-    filesWritten++;
+function writeContextPackFiles(workDir, pack) {
+  if (!pack) {
+    return;
   }
+  try {
+    const contextDir = path.join(workDir, ".claude", "context");
+    fs.mkdirSync(contextDir, { recursive: true });
 
-  // Write each artifact as artifacts/<type>-<id>.md
-  if (Array.isArray(pack.artifacts) && pack.artifacts.length > 0) {
-    const artifactsDir = path.join(contextDir, "artifacts");
-    fs.mkdirSync(artifactsDir, { recursive: true });
-    for (const artifact of pack.artifacts) {
-      const safeName = (artifact.type || "artifact")
-        .toLowerCase()
-        .replace(/[^a-z0-9_-]/g, "_");
-      const fileName = `${safeName}-${artifact.id}.md`;
-      const header = `# ${artifact.title || "Untitled"}\n\n`;
+    // Write structured context pack fields as specific files that the CLI expects.
+    // The pack schema is: { command, prompt?, artifacts[], repoInfo?, priorLoopSummaries?, secrets? }
+
+    let filesWritten = 0;
+
+    // Write prompt as prompt.md (used by buildClaudeDirectArgs and run-loop.sh)
+    if (pack.prompt) {
+      fs.writeFileSync(path.join(contextDir, "prompt.md"), pack.prompt);
+      filesWritten++;
+    }
+
+    // Write each artifact as artifacts/<type>-<id>.md
+    if (Array.isArray(pack.artifacts) && pack.artifacts.length > 0) {
+      const artifactsDir = path.join(contextDir, "artifacts");
+      fs.mkdirSync(artifactsDir, { recursive: true });
+      for (const artifact of pack.artifacts) {
+        const safeName = (artifact.type || "artifact")
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, "_");
+        const fileName = `${safeName}-${artifact.id}.md`;
+        const header = `# ${artifact.title || "Untitled"}\n\n`;
+        fs.writeFileSync(
+          path.join(artifactsDir, fileName),
+          header + (artifact.content || "")
+        );
+        filesWritten++;
+      }
+    }
+
+    // Write repo info as repo-info.json (informational for CLAUDE.md context)
+    if (pack.repoInfo) {
       fs.writeFileSync(
-        path.join(artifactsDir, fileName),
-        header + (artifact.content || "")
+        path.join(contextDir, "repo-info.json"),
+        JSON.stringify(pack.repoInfo, null, 2)
       );
       filesWritten++;
     }
-  }
 
-  // Write repo info as repo-info.json (informational for CLAUDE.md context)
-  if (pack.repoInfo) {
-    fs.writeFileSync(
-      path.join(contextDir, "repo-info.json"),
-      JSON.stringify(pack.repoInfo, null, 2)
-    );
-    filesWritten++;
-  }
+    // Write prior loop summaries as prior-loops.md
+    if (
+      Array.isArray(pack.priorLoopSummaries) &&
+      pack.priorLoopSummaries.length > 0
+    ) {
+      const lines = pack.priorLoopSummaries.map(
+        (s) => `## Loop ${s.loopId} (${s.command})\n\n${s.summary}`
+      );
+      fs.writeFileSync(
+        path.join(contextDir, "prior-loops.md"),
+        lines.join("\n\n---\n\n")
+      );
+      filesWritten++;
+    }
 
-  // Write prior loop summaries as prior-loops.md
-  if (
-    Array.isArray(pack.priorLoopSummaries) &&
-    pack.priorLoopSummaries.length > 0
-  ) {
-    const lines = pack.priorLoopSummaries.map(
-      (s) => `## Loop ${s.loopId} (${s.command})\n\n${s.summary}`
+    log("info", `Wrote ${filesWritten} context pack files`);
+  } catch (err) {
+    throw new HarnessError(
+      ERROR_CODES.contextPackWrite,
+      "Failed to write context pack files",
+      err
     );
-    fs.writeFileSync(
-      path.join(contextDir, "prior-loops.md"),
-      lines.join("\n\n---\n\n")
-    );
-    filesWritten++;
   }
+}
 
-  log("info", `Wrote ${filesWritten} context pack files`);
+// ---------------------------------------------------------------------------
+// Git auth helper (shared between clone and safety commit)
+// ---------------------------------------------------------------------------
+function buildGitAuthEnv() {
+  const authHeader = Buffer.from(
+    `x-access-token:${config.githubToken}`,
+    "utf-8"
+  ).toString("base64");
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME || os.homedir(),
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authHeader}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +390,6 @@ async function downloadContextPack(workDir) {
 // ---------------------------------------------------------------------------
 function cloneRepo(workDir) {
   const cloneUrl = `https://github.com/${config.targetRepo}.git`;
-  const authHeader = Buffer.from(
-    `x-access-token:${config.githubToken}`,
-    "utf-8"
-  ).toString("base64");
   log("info", `Cloning ${config.targetRepo} (branch: ${config.targetBranch})`);
 
   // Use execFileSync with array args to prevent shell injection via branch/repo names
@@ -333,14 +406,7 @@ function cloneRepo(workDir) {
     ],
     {
       stdio: "pipe",
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME || os.homedir(),
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-        GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authHeader}`,
-      },
+      env: buildGitAuthEnv(),
     }
   );
 
@@ -356,6 +422,174 @@ function cloneRepo(workDir) {
 
   log("info", "Repository cloned successfully");
 }
+
+// ---------------------------------------------------------------------------
+// Safety commit (best-effort on SIGTERM / timeout)
+// ---------------------------------------------------------------------------
+function attemptSafetyCommit(workDir) {
+  if (!(config.targetRepo && config.githubToken)) {
+    return;
+  }
+  try {
+    // Stage everything except .claude directory (matches dispatch pattern)
+    execFileSync("git", ["add", "-A", "--", ":!.claude"], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 5000,
+    });
+
+    // Check if there are staged changes (exit 1 = changes exist)
+    try {
+      execFileSync("git", ["diff", "--cached", "--quiet"], {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 5000,
+      });
+      // Exit 0 means no changes — nothing to commit
+      log("info", "Safety commit: no uncommitted changes");
+      return;
+    } catch {
+      // Exit non-zero means there are staged changes — proceed
+    }
+
+    execFileSync(
+      "git",
+      ["commit", "-m", "[INCOMPLETE] WIP: Safety commit — loop interrupted"],
+      { cwd: workDir, stdio: "pipe", timeout: 10_000 }
+    );
+
+    const currentBranch = execFileSync(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 5000,
+      }
+    )
+      .toString()
+      .trim();
+
+    // Never push an [INCOMPLETE] safety commit directly to the target branch.
+    if (currentBranch === config.targetBranch) {
+      log(
+        "error",
+        `Safety commit created on target branch (${currentBranch}); skipping push`
+      );
+      return;
+    }
+
+    execFileSync("git", ["push", "origin", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 15_000,
+      env: buildGitAuthEnv(),
+    });
+
+    log("info", "Safety commit pushed successfully");
+  } catch (err) {
+    log("error", `Safety commit failed (best-effort): ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PR info parsing
+// ---------------------------------------------------------------------------
+const RE_GITHUB_PR_URL = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/;
+
+/**
+ * Try to read execution-result.json from the most recent run directory.
+ */
+function readExecutionResult(workDir) {
+  const runsDir = path.join(workDir, ".claude", "runs");
+  if (!fs.existsSync(runsDir)) {
+    return null;
+  }
+  const runs = fs.readdirSync(runsDir).sort().reverse();
+  for (const run of runs) {
+    const resultFile = path.join(runsDir, run, "execution-result.json");
+    if (!fs.existsSync(resultFile)) {
+      continue;
+    }
+    const result = JSON.parse(fs.readFileSync(resultFile, "utf-8"));
+    const prUrl = result.pr_url || result.prUrl;
+    if (!prUrl) {
+      continue;
+    }
+    const prMatch = prUrl.match(RE_GITHUB_PR_URL);
+    return {
+      prUrl,
+      prNumber: prMatch
+        ? Number.parseInt(prMatch[1], 10)
+        : (result.pr_number ?? result.prNumber ?? null),
+      branchName: result.branch_name || result.branchName || null,
+      commitSha: result.commit_sha || result.commitSha || null,
+    };
+  }
+  return null;
+}
+
+/**
+ * Try to detect the current branch name (if different from target).
+ */
+function detectBranchName(workDir) {
+  try {
+    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 5000,
+    })
+      .toString()
+      .trim();
+    if (branch && branch !== config.targetBranch && branch !== "HEAD") {
+      return branch;
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
+}
+
+function parsePrInfo(workDir, outputLines) {
+  // Strategy 1: Check for execution-result.json written by run-loop.sh
+  try {
+    const fromFile = readExecutionResult(workDir);
+    if (fromFile) {
+      return fromFile;
+    }
+  } catch (err) {
+    log("info", `execution-result.json parse attempt: ${err.message}`);
+  }
+
+  // Strategy 2: Regex scan output lines (reverse order) for PR URL
+  for (let i = outputLines.length - 1; i >= 0; i--) {
+    const line = outputLines[i].line || "";
+    const match = line.match(RE_GITHUB_PR_URL);
+    if (match) {
+      return {
+        prUrl: match[0],
+        prNumber: Number.parseInt(match[1], 10),
+        branchName: null,
+        commitSha: null,
+      };
+    }
+  }
+
+  // Strategy 3: Get branch name from git if we have a workdir
+  const branch = detectBranchName(workDir);
+  if (branch) {
+    return { prUrl: null, prNumber: null, branchName: branch, commitSha: null };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Session ID capture
+// ---------------------------------------------------------------------------
+let capturedSessionId = null;
+const RE_SESSION_ID =
+  /(?:Session:\s*|"session_id"\s*:\s*")([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 // ---------------------------------------------------------------------------
 // Run-loop discovery
@@ -424,6 +658,15 @@ function spawnProcess(cmd, args, cwd, env) {
     function handleLine(stream, line) {
       const safeLine = redactSensitive(line);
       outputChunks.push({ stream, line: safeLine, ts: Date.now() });
+
+      // Capture session ID from output (first match wins)
+      if (!capturedSessionId) {
+        const sessionMatch = line.match(RE_SESSION_ID);
+        if (sessionMatch) {
+          capturedSessionId = sessionMatch[1];
+          log("info", `Captured session ID: ${capturedSessionId}`);
+        }
+      }
 
       // Log to container stdout/stderr
       if (stream === "stderr") {
@@ -628,12 +871,32 @@ async function uploadState(workDir, output) {
     }
   }
 
+  // 2b. Upload Claude HOME session state needed for --resume.
+  // Claude stores resumable sessions under ~/.claude/{projects,sessions}.
+  const homeClaudeDir = path.join(process.env.HOME || os.homedir(), ".claude");
+  const homeStateDirs = ["projects", "sessions"];
+  for (const relDir of homeStateDirs) {
+    const absDir = path.join(homeClaudeDir, relDir);
+    if (!fs.existsSync(absDir)) {
+      continue;
+    }
+    try {
+      await uploadDirectoryToS3(
+        absDir,
+        `${statePrefix}/home-claude-state/${relDir}`
+      );
+    } catch (err) {
+      log("error", `Failed to upload ~/.claude/${relDir}: ${err.message}`);
+    }
+  }
+
   // 3. Upload key work directory files (plan.json, plan.md, etc.)
   const keyFiles = [
     "plan.json",
     "plan.md",
     "implementation-plan.md",
     ".claude/symphony-loop.local.md",
+    "execution-result.json",
   ];
   for (const relPath of keyFiles) {
     const absPath = path.join(workDir, relPath);
@@ -748,7 +1011,7 @@ function buildRunLoopArgs(runLoopPath, _workDir) {
 
 function buildClaudeDirectArgs(workDir) {
   const command = config.command.toLowerCase();
-  const args = ["claude"];
+  const args = [];
 
   switch (command) {
     case "request_changes": {
@@ -782,7 +1045,7 @@ function buildClaudeDirectArgs(workDir) {
       );
   }
 
-  return { cmd: "npx", args };
+  return { cmd: "claude", args };
 }
 
 // ---------------------------------------------------------------------------
@@ -800,19 +1063,35 @@ function setupShutdownHandlers(workDir) {
 
     log("info", `Received ${signal}, initiating graceful shutdown...`);
 
-    // Kill the child process if still running
+    // Kill the child process and wait for it to exit
     if (currentChild && !currentChild.killed) {
       log("info", "Terminating child process...");
       currentChild.kill("SIGTERM");
 
-      // Give it 10 seconds, then force kill
-      setTimeout(() => {
-        if (currentChild && !currentChild.killed) {
-          log("info", "Force killing child process...");
-          currentChild.kill("SIGKILL");
+      // Wait for child to exit (up to 10s), then force kill
+      await new Promise((resolve) => {
+        const forceKillTimer = setTimeout(() => {
+          if (currentChild && !currentChild.killed) {
+            log("info", "Force killing child process...");
+            currentChild.kill("SIGKILL");
+          }
+        }, 10_000);
+
+        const onExit = () => {
+          clearTimeout(forceKillTimer);
+          resolve();
+        };
+
+        if (currentChild) {
+          currentChild.once("close", onExit);
+        } else {
+          onExit();
         }
-      }, 10_000);
+      });
     }
+
+    // Attempt safety commit before uploading state
+    await attemptSafetyCommit(workDir);
 
     // Try to upload whatever state we have
     try {
@@ -855,10 +1134,103 @@ function setupShutdownHandlers(workDir) {
 // ---------------------------------------------------------------------------
 function prepareWorkspace(workDir) {
   if (config.targetRepo) {
-    cloneRepo(workDir);
+    try {
+      cloneRepo(workDir);
+    } catch (err) {
+      throw new HarnessError(
+        ERROR_CODES.gitClone,
+        `Failed to clone repository ${config.targetRepo}@${config.targetBranch}`,
+        err
+      );
+    }
   } else {
     fs.mkdirSync(workDir, { recursive: true });
     log("info", "No targetRepo — skipping clone, using empty workDir");
+  }
+}
+
+function shouldCreateWorkingBranch() {
+  const command = config.command?.toLowerCase();
+  return command === "execute" || command === "request_changes";
+}
+
+function createWorkingBranch(workDir) {
+  if (!config.targetRepo) {
+    return null;
+  }
+  const currentBranch = execFileSync(
+    "git",
+    ["rev-parse", "--abbrev-ref", "HEAD"],
+    {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 5000,
+    }
+  )
+    .toString()
+    .trim();
+
+  if (
+    currentBranch &&
+    currentBranch !== "HEAD" &&
+    currentBranch !== config.targetBranch
+  ) {
+    log("info", `Working branch already set: ${currentBranch}`);
+    return currentBranch;
+  }
+
+  const loopSuffix = (config.loopId || randomUUID())
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .slice(0, 50);
+  const branchName = `symphony/${loopSuffix}`;
+
+  try {
+    try {
+      execFileSync("git", ["checkout", "-b", branchName], {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 5000,
+      });
+    } catch {
+      // Branch may already exist in local clone (e.g., retry). Reuse it.
+      execFileSync("git", ["checkout", branchName], {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 5000,
+      });
+    }
+  } catch (err) {
+    throw new HarnessError(
+      ERROR_CODES.branchCreate,
+      `Failed to create or checkout working branch ${branchName}`,
+      err
+    );
+  }
+
+  log("info", `Created/checked out working branch: ${branchName}`);
+  return branchName;
+}
+
+function validatePreRunInputs(command, contextPack) {
+  const normalized = command.toLowerCase();
+  const hasPrompt =
+    typeof contextPack?.prompt === "string" &&
+    contextPack.prompt.trim().length > 0;
+  const hasArtifacts =
+    Array.isArray(contextPack?.artifacts) && contextPack.artifacts.length > 0;
+
+  if (normalized === "execute" && !(hasArtifacts || hasPrompt)) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: EXECUTE requires prompt or artifacts in context pack"
+    );
+  }
+  if (normalized === "request_changes" && !hasPrompt) {
+    throw new HarnessError(
+      ERROR_CODES.preRunValidation,
+      "Pre-run validation failed: REQUEST_CHANGES requires a non-empty prompt"
+    );
   }
 }
 
@@ -867,10 +1239,160 @@ function buildCommand(workDir) {
   const usesRunLoop = command === "plan" || command === "execute";
 
   if (usesRunLoop) {
-    const runLoopPath = findRunLoop();
+    let runLoopPath;
+    try {
+      runLoopPath = findRunLoop();
+    } catch (err) {
+      throw new HarnessError(
+        ERROR_CODES.runLoopNotFound,
+        "run-loop.sh not found for plan/execute command",
+        err
+      );
+    }
     return buildRunLoopArgs(runLoopPath, workDir);
   }
   return buildClaudeDirectArgs(workDir);
+}
+
+function toHarnessError(err) {
+  if (err instanceof HarnessError) {
+    return err;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return new HarnessError(ERROR_CODES.runner, message, err);
+}
+
+// ---------------------------------------------------------------------------
+// Harness-level timeout (Layer 1 of timeout enforcement)
+// ---------------------------------------------------------------------------
+const MAX_RUNTIME_MS = 55 * 60 * 1000; // 55 minutes (GitHub installation token safe window)
+
+/**
+ * Kill the current child process with SIGTERM, wait 5s, then SIGKILL.
+ * Returns a promise that resolves when the child exits.
+ */
+function killChild() {
+  return new Promise((resolve) => {
+    if (!currentChild || currentChild.killed) {
+      resolve();
+      return;
+    }
+    currentChild.kill("SIGTERM");
+    const forceKillTimer = setTimeout(() => {
+      if (currentChild && !currentChild.killed) {
+        currentChild.kill("SIGKILL");
+      }
+    }, 5000);
+
+    currentChild.once("close", () => {
+      clearTimeout(forceKillTimer);
+      resolve();
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Execute command with timeout enforcement
+// ---------------------------------------------------------------------------
+async function executeWithTimeout(cmd, args, workDir, childEnv) {
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("HARNESS_TIMEOUT")), MAX_RUNTIME_MS);
+  });
+
+  try {
+    const result = await Promise.race([
+      spawnProcess(cmd, args, workDir, childEnv),
+      timeoutPromise,
+    ]);
+    return { result, timedOut: false };
+  } catch (err) {
+    if (err.message === "HARNESS_TIMEOUT") {
+      log("error", `Harness timeout reached (${MAX_RUNTIME_MS / 1000}s)`);
+      await killChild();
+      return {
+        result: { code: null, signal: "SIGKILL", output: [] },
+        timedOut: true,
+      };
+    }
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Report final status (completed, failed, or timed out)
+// ---------------------------------------------------------------------------
+async function reportFinalStatus(
+  workDir,
+  output,
+  { timedOut, exitCode, signal, duration, tokenUsage, startTime }
+) {
+  const prInfo = parsePrInfo(workDir, output);
+  if (prInfo) {
+    log(
+      "info",
+      `PR info: url=${prInfo.prUrl}, number=${prInfo.prNumber}, branch=${prInfo.branchName}`
+    );
+  }
+  if (capturedSessionId) {
+    log("info", `Session ID: ${capturedSessionId}`);
+  }
+
+  if (timedOut) {
+    attemptSafetyCommit(workDir);
+    await uploadState(workDir, output);
+    await uploadMetadata(workDir, output, tokenUsage, startTime);
+    await reportEvent({
+      type: "error",
+      code: "TIMED_OUT",
+      message: `Loop exceeded maximum runtime of ${MAX_RUNTIME_MS / 1000}s`,
+      result: {
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+        durationSeconds: Number.parseFloat(duration),
+      },
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+    log("info", "Reported TIMED_OUT event");
+    process.exit(1);
+  }
+
+  await uploadState(workDir, output);
+  await uploadMetadata(workDir, output, tokenUsage, startTime);
+
+  if (exitCode === 0) {
+    await reportEvent({
+      type: "completed",
+      result: {
+        exitCode,
+        signal,
+        durationSeconds: Number.parseFloat(duration),
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+      },
+      tokensUsed: {
+        input: tokenUsage.totalInput,
+        output: tokenUsage.totalOutput,
+      },
+      tokensByModel: tokenUsage.tokensByModel,
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+    log("info", "Reported COMPLETED event");
+  } else {
+    await reportEvent({
+      type: "error",
+      code: "PROCESS_FAILED",
+      message: `Process exited with code ${exitCode}`,
+      result: {
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+      },
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+    log("info", "Reported FAILED event");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -890,6 +1412,7 @@ async function main() {
   log("info", `Target Branch:  ${config.targetBranch}`);
   log("info", `Correlation ID: ${config.correlationId}`);
   log("info", `Max Iterations: ${config.maxIterations}`);
+  log("info", `Max Runtime:    ${MAX_RUNTIME_MS / 1000}s`);
 
   validateConfig();
   setupShutdownHandlers(workDir);
@@ -907,11 +1430,21 @@ async function main() {
 
     // Step 2: Download context pack and validate secrets BEFORE clone,
     // because cloneRepo needs config.githubToken which is extracted from the pack.
-    await downloadContextPack(workDir);
+    const contextPack = await downloadContextPack();
     validateSecrets();
 
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);
+
+    // Step 3b: Write context files into the prepared workspace.
+    // This must happen after clone, otherwise git clone fails on non-empty dir.
+    writeContextPackFiles(workDir, contextPack);
+
+    // Step 3c: Command-level validation and branch hardening.
+    validatePreRunInputs(config.command, contextPack);
+    if (shouldCreateWorkingBranch()) {
+      createWorkingBranch(workDir);
+    }
 
     // Step 4: Determine execution mode and build command
     const { cmd, args } = buildCommand(workDir);
@@ -926,21 +1459,24 @@ async function main() {
       LANG: process.env.LANG || "C.UTF-8",
     };
 
-    // Step 6: Execute the command
+    // Step 6: Execute with timeout
     log("info", `Executing: ${cmd} ${args.join(" ")}`);
-
-    const result = await spawnProcess(cmd, args, workDir, childEnv);
+    const { result, timedOut } = await executeWithTimeout(
+      cmd,
+      args,
+      workDir,
+      childEnv
+    );
     output = result.output;
 
-    const exitCode = result.code;
+    const exitCode = timedOut ? null : result.code;
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-
     log(
       "info",
       `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`
     );
 
-    // Step 7: Parse token usage from output
+    // Step 7: Parse token usage
     const tokenUsage = parseTokenUsage(output);
     log(
       "info",
@@ -951,48 +1487,26 @@ async function main() {
       }`
     );
 
-    // Step 8: Upload state + metadata to S3
-    await uploadState(workDir, output);
-    await uploadMetadata(workDir, output, tokenUsage, startTime);
-
-    // Step 9: Report final status with token breakdown
-    if (exitCode === 0) {
-      await reportEvent({
-        type: "completed",
-        result: {
-          exitCode,
-          signal: result.signal,
-          durationSeconds: Number.parseFloat(duration),
-        },
-        tokensUsed: {
-          input: tokenUsage.totalInput,
-          output: tokenUsage.totalOutput,
-        },
-        tokensByModel: tokenUsage.tokensByModel,
-        correlationId: config.correlationId,
-        loopId: config.loopId,
-      });
-      log("info", "Reported COMPLETED event");
-    } else {
-      await reportEvent({
-        type: "error",
-        code: "PROCESS_FAILED",
-        message: `Process exited with code ${exitCode}`,
-        correlationId: config.correlationId,
-        loopId: config.loopId,
-      });
-      log("info", "Reported FAILED event");
-    }
+    // Step 8: Report final status + upload
+    await reportFinalStatus(workDir, output, {
+      timedOut,
+      exitCode,
+      signal: result.signal,
+      duration,
+      tokenUsage,
+      startTime,
+    });
 
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
+    const harnessError = toHarnessError(err);
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorMessage = harnessError.message;
     const errorStack = err instanceof Error ? err.stack : undefined;
     log(
       "error",
-      `Fatal error after ${duration}s: ${redactSensitive(errorMessage)}`
+      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
     );
     if (errorStack) {
       log("error", redactSensitive(errorStack));
@@ -1008,12 +1522,17 @@ async function main() {
       );
     }
 
-    // Best-effort: report failure
+    // Best-effort: report failure with PR info if available
     try {
+      const prInfo = parsePrInfo(workDir, output);
       await reportEvent({
         type: "error",
-        code: "RUNNER_ERROR",
+        code: harnessError.code,
         message: redactSensitive(errorMessage),
+        result: {
+          ...(prInfo || {}),
+          sessionId: capturedSessionId,
+        },
         correlationId: config.correlationId,
         loopId: config.loopId,
       });

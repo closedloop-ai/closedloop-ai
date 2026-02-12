@@ -12,14 +12,105 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { isReplayDetectedError, loopsService } from "../../service";
+import {
+  type InvalidStatusTransitionError,
+  isInvalidStatusTransitionError,
+  isReplayDetectedError,
+  loopsService,
+} from "../../service";
 import {
   listLoopEventsQueryValidator,
   loopEventPayloadValidator,
+  validateNormalizedEvent,
 } from "../../validators";
 
 const NONCE_UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TERMINAL_STATUSES = new Set([
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+]);
+const TERMINAL_EVENTS = new Set(["completed", "error", "cancelled"]);
+
+function extractBearerToken(request: Request): string | Response {
+  const authHeader = request.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length)
+    : null;
+  if (!token) {
+    return errorResponse(
+      "Missing runner token",
+      new Error("Unauthorized"),
+      401
+    );
+  }
+  return token;
+}
+
+function extractEventNonce(request: Request): string | Response {
+  const nonce = request.headers.get("x-loop-event-nonce");
+  if (!nonce) {
+    return errorResponse(
+      "Missing runner event nonce",
+      new Error("Unauthorized"),
+      401
+    );
+  }
+  if (!NONCE_UUID_REGEX.test(nonce)) {
+    return errorResponse(
+      "Invalid runner event nonce",
+      new Error("Bad Request"),
+      400
+    );
+  }
+  return nonce;
+}
+
+function normalizeLoopEvent(body: unknown): LoopEvent {
+  if (
+    body &&
+    typeof body === "object" &&
+    "data" in body &&
+    typeof (body as { data?: unknown }).data === "object" &&
+    (body as { data?: unknown }).data !== null
+  ) {
+    const b = body as {
+      type: LoopEvent["type"];
+      data: Record<string, unknown>;
+    };
+    return { type: b.type, ...b.data } as LoopEvent;
+  }
+  return body as LoopEvent;
+}
+
+function isIgnoredForTerminalLoop(status: string, eventType: string): boolean {
+  return TERMINAL_STATUSES.has(status) && !TERMINAL_EVENTS.has(eventType);
+}
+
+function mapEventHandlingError(error: unknown): Response | null {
+  if (isReplayDetectedError(error)) {
+    return errorResponse("Replay detected", new Error("Conflict"), 409);
+  }
+
+  if (isInvalidStatusTransitionError(error)) {
+    const transitionError = error as InvalidStatusTransitionError;
+    if (TERMINAL_STATUSES.has(transitionError.from)) {
+      return successResponse({
+        received: true as const,
+        ignored: true as const,
+      });
+    }
+    return errorResponse(
+      `Invalid status transition from ${transitionError.from}`,
+      error,
+      409
+    );
+  }
+
+  return null;
+}
 
 export const GET = withAuth<
   LoopEvent[] | LoopEventsPaginatedResponse,
@@ -85,17 +176,9 @@ export async function POST(
   try {
     const { id: loopId } = await params;
 
-    const authHeader = request.headers.get("authorization");
-    const token = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : null;
-
-    if (!token) {
-      return errorResponse(
-        "Missing runner token",
-        new Error("Unauthorized"),
-        401
-      );
+    const token = extractBearerToken(request);
+    if (token instanceof Response) {
+      return token;
     }
 
     const claims = await verifyLoopRunnerToken(token);
@@ -107,21 +190,9 @@ export async function POST(
       );
     }
 
-    const nonce = request.headers.get("x-loop-event-nonce");
-    if (!nonce) {
-      return errorResponse(
-        "Missing runner event nonce",
-        new Error("Unauthorized"),
-        401
-      );
-    }
-
-    if (!NONCE_UUID_REGEX.test(nonce)) {
-      return errorResponse(
-        "Invalid runner event nonce",
-        new Error("Bad Request"),
-        400
-      );
+    const nonce = extractEventNonce(request);
+    if (nonce instanceof Response) {
+      return nonce;
     }
 
     const { body, errorResponse: parseError } = await parseBody(
@@ -132,58 +203,53 @@ export async function POST(
       return parseError;
     }
 
-    // Normalize envelope format { type, data: {...} } to flat event { type, ... }
-    const event: LoopEvent =
-      "data" in body && typeof body.data === "object" && body.data !== null
-        ? ({
-            type: body.type,
-            ...(body.data as Record<string, unknown>),
-          } as LoopEvent)
-        : (body as unknown as LoopEvent);
+    const event = normalizeLoopEvent(body);
+
+    // Validate terminal event required fields post-normalization.
+    // This catches malformed events from both envelope and flattened formats.
+    const normalizedError = validateNormalizedEvent(
+      event as unknown as Record<string, unknown>
+    );
+    if (normalizedError) {
+      return errorResponse(normalizedError, new Error("Bad Request"), 400);
+    }
 
     const loop = await loopsService.findById(loopId, claims.organizationId);
     if (!loop) {
       return errorResponse("Loop not found", new Error("Forbidden"), 403);
     }
 
-    const terminalStatuses = new Set([
-      "COMPLETED",
-      "FAILED",
-      "CANCELLED",
-      "TIMED_OUT",
-    ]);
-    const terminalEvents = new Set(["completed", "error", "cancelled"]);
-    if (terminalStatuses.has(loop.status) && !terminalEvents.has(event.type)) {
+    if (isIgnoredForTerminalLoop(loop.status, event.type)) {
       return successResponse({
         received: true as const,
         ignored: true as const,
       });
     }
 
+    let canonicalEvents: LoopEvent[];
     try {
-      await handleLoopEvent(loopId, claims.organizationId, event, {
-        tokenJti: claims.tokenId,
-        nonce,
-      });
+      canonicalEvents = await handleLoopEvent(
+        loopId,
+        claims.organizationId,
+        event,
+        {
+          tokenJti: claims.tokenId,
+          nonce,
+        }
+      );
     } catch (eventError) {
-      if (isReplayDetectedError(eventError)) {
-        return errorResponse("Replay detected", new Error("Conflict"), 409);
-      }
-      // Idempotency guard: duplicate/replayed terminal events should not 500.
-      if (
-        eventError instanceof Error &&
-        eventError.message.includes("Invalid status transition")
-      ) {
-        return successResponse({
-          received: true as const,
-          ignored: true as const,
-        });
+      const mapped = mapEventHandlingError(eventError);
+      if (mapped) {
+        return mapped;
       }
       throw eventError;
     }
 
-    // Publish to the in-memory event bus for any active SSE subscribers
-    loopEventBus.publish(loopId, event);
+    // Publish canonical events to SSE subscribers (may differ from raw input,
+    // e.g. error+CANCELLED is normalized to a "cancelled" event)
+    for (const canonical of canonicalEvents) {
+      loopEventBus.publish(loopId, canonical);
+    }
 
     return successResponse({ received: true as const });
   } catch (error) {

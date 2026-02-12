@@ -30,7 +30,9 @@ import {
   CheckCircle2Icon,
   ChevronDownIcon,
   ClockIcon,
+  ExternalLinkIcon,
   FileOutputIcon,
+  GitPullRequestIcon,
   LoaderIcon,
   PlayIcon,
   TerminalIcon,
@@ -335,6 +337,11 @@ function ArtifactCreatedEvent({ event }: { event: LoopEventArtifactCreated }) {
 }
 
 function CompletedEvent({ event }: { event: LoopEventCompleted }) {
+  // Extract PR info from event.result (typed as JsonObject)
+  const result = event.result as Record<string, unknown>;
+  const prUrl = typeof result.prUrl === "string" ? result.prUrl : null;
+  const prNumber = typeof result.prNumber === "number" ? result.prNumber : null;
+
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
@@ -344,6 +351,18 @@ function CompletedEvent({ event }: { event: LoopEventCompleted }) {
         <div className="font-medium text-green-700 text-sm dark:text-green-400">
           Completed successfully
         </div>
+        {prUrl && (
+          <a
+            className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+            href={prUrl}
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <GitPullRequestIcon className="size-3" />
+            {prNumber ? `PR #${prNumber}` : "View Pull Request"}
+            <ExternalLinkIcon className="size-2.5" />
+          </a>
+        )}
         <div className="mt-1 text-muted-foreground text-xs">
           {formatTimestamp(event.timestamp)} | Tokens:{" "}
           {formatTokenCount(event.tokensUsed.input)} in /{" "}

@@ -13,13 +13,17 @@ import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { artifactsService } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
-import { loopsService } from "@/app/loops/service";
+import {
+  isInvalidStatusTransitionError,
+  loopsService,
+} from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import {
   type ContextPack,
   downloadMetadata,
   getStateKeyPrefix,
+  scrubContextPackSecrets,
   uploadContextPack,
 } from "./loop-state";
 
@@ -319,6 +323,90 @@ function truncateForSummary(content: string, maxLength = 2000): string {
   return `${content.slice(0, maxLength)}\n\n[... truncated for summary ...]`;
 }
 
+async function getPendingLoopOrThrow(
+  loopId: string,
+  organizationId: string
+): Promise<NonNullable<Awaited<ReturnType<typeof loopsService.findById>>>> {
+  const loop = await loopsService.findById(loopId, organizationId);
+  if (!loop) {
+    throw new Error(`Loop not found: ${loopId}`);
+  }
+  if (loop.status !== "PENDING") {
+    throw new Error(
+      `Cannot launch loop in ${loop.status} status. Only PENDING loops can be launched.`
+    );
+  }
+  return loop;
+}
+
+async function claimOrPersistRunning(
+  loopId: string,
+  organizationId: string,
+  taskArn: string,
+  s3StateKey: string
+): Promise<void> {
+  try {
+    await loopsService.updateStatus(loopId, organizationId, "CLAIMED", {
+      containerId: taskArn,
+      s3StateKey,
+    });
+    return;
+  } catch (claimError) {
+    if (isInvalidStatusTransitionError(claimError)) {
+      const currentLoop = await loopsService.findById(loopId, organizationId);
+      if (currentLoop && currentLoop.status === "RUNNING") {
+        await loopsService.persistLaunchInfo(loopId, organizationId, {
+          containerId: taskArn,
+          s3StateKey,
+        });
+        log.info(
+          "[loop-orchestrator] Loop already RUNNING (runner raced ahead), persisted launch info",
+          { loopId, taskArn }
+        );
+        return;
+      }
+    }
+    throw claimError;
+  }
+}
+
+async function stopOrphanedTaskIfNeeded(
+  taskArn: string | undefined,
+  loopId: string
+): Promise<void> {
+  if (!taskArn) {
+    return;
+  }
+
+  try {
+    await stopLoopTask(taskArn, "Launch failed after task start");
+    log.info("[loop-orchestrator] Stopped orphaned ECS task", {
+      loopId,
+      taskArn,
+    });
+  } catch (stopError) {
+    log.error("[loop-orchestrator] Failed to stop orphaned ECS task", {
+      loopId,
+      taskArn,
+      stopError,
+    });
+  }
+}
+
+async function cancelLoopAfterLaunchFailure(
+  loopId: string,
+  organizationId: string
+): Promise<void> {
+  try {
+    await loopsService.cancel(loopId, organizationId);
+  } catch (cancelError) {
+    log.error("[loop-orchestrator] Failed to cancel loop after launch error", {
+      loopId,
+      cancelError,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ECS task launch
 // ---------------------------------------------------------------------------
@@ -341,17 +429,7 @@ export async function launchLoop(
   loopId: string,
   organizationId: string
 ): Promise<string> {
-  // 1. Fetch loop record
-  const loop = await loopsService.findById(loopId, organizationId);
-  if (!loop) {
-    throw new Error(`Loop not found: ${loopId}`);
-  }
-
-  if (loop.status !== "PENDING") {
-    throw new Error(
-      `Cannot launch loop in ${loop.status} status. Only PENDING loops can be launched.`
-    );
-  }
+  const loop = await getPendingLoopOrThrow(loopId, organizationId);
 
   log.info("[loop-orchestrator] Launching loop", {
     loopId,
@@ -405,11 +483,8 @@ export async function launchLoop(
       artifactId: loop.artifactId ?? undefined,
     });
 
-    // 6. Update loop status to CLAIMED
-    await loopsService.updateStatus(loopId, organizationId, "CLAIMED", {
-      containerId: taskArn,
-      s3StateKey,
-    });
+    // 6. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
+    await claimOrPersistRunning(loopId, organizationId, taskArn, s3StateKey);
 
     log.info("[loop-orchestrator] Loop launched successfully", {
       loopId,
@@ -426,35 +501,8 @@ export async function launchLoop(
       error: errorMessage,
     });
 
-    // If the ECS task was already started, stop it to prevent orphaned tasks
-    if (taskArn) {
-      try {
-        await stopLoopTask(taskArn, "Launch failed after task start");
-        log.info("[loop-orchestrator] Stopped orphaned ECS task", {
-          loopId,
-          taskArn,
-        });
-      } catch (stopError) {
-        log.error("[loop-orchestrator] Failed to stop orphaned ECS task", {
-          loopId,
-          taskArn,
-          stopError,
-        });
-      }
-    }
-
-    // Transition PENDING -> CANCELLED (not FAILED, since it never ran)
-    try {
-      await loopsService.cancel(loopId, organizationId);
-    } catch (cancelError) {
-      log.error(
-        "[loop-orchestrator] Failed to cancel loop after launch error",
-        {
-          loopId,
-          cancelError,
-        }
-      );
-    }
+    await stopOrphanedTaskIfNeeded(taskArn, loopId);
+    await cancelLoopAfterLaunchFailure(loopId, organizationId);
 
     throw error;
   }
@@ -599,7 +647,7 @@ export async function handleLoopEvent(
   organizationId: string,
   event: LoopEvent,
   replayContext?: RunnerReplayContext
-): Promise<void> {
+): Promise<LoopEvent[]> {
   log.info("[loop-orchestrator] Handling loop event", {
     loopId,
     eventType: event.type,
@@ -607,8 +655,16 @@ export async function handleLoopEvent(
 
   switch (event.type) {
     case "started": {
+      // Extract sessionId if present on the started event
+      const startedData = event as Record<string, unknown>;
+      const startSessionId =
+        typeof startedData.sessionId === "string"
+          ? startedData.sessionId
+          : undefined;
+
       await loopsService.updateStatus(loopId, organizationId, "RUNNING", {
         startedAt: new Date(),
+        ...(startSessionId ? { sessionId: startSessionId } : {}),
       });
       await loopsService.addEvent(
         loopId,
@@ -619,7 +675,13 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      // Scrub secrets from the S3 context pack now that the container is running.
+      // The container has already consumed the secrets at this point.
+      const loop = await loopsService.findById(loopId, organizationId);
+      if (loop?.s3StateKey) {
+        scrubContextPackSecrets(loop.s3StateKey).catch(() => {});
+      }
+      return [event];
     }
 
     case "output": {
@@ -632,7 +694,7 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      return [event];
     }
 
     case "progress": {
@@ -649,7 +711,7 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      return [event];
     }
 
     case "tool_call": {
@@ -668,7 +730,7 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      return [event];
     }
 
     case "artifact_created": {
@@ -685,17 +747,22 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      return [event];
     }
 
     case "completed": {
       await handleLoopCompleted(loopId, organizationId, event, replayContext);
-      break;
+      return [event];
     }
 
     case "error": {
-      await handleLoopError(loopId, organizationId, event, replayContext);
-      break;
+      const canonicalEvents = await handleLoopError(
+        loopId,
+        organizationId,
+        event,
+        replayContext
+      );
+      return canonicalEvents;
     }
 
     default: {
@@ -709,7 +776,7 @@ export async function handleLoopEvent(
         },
         replayContext
       );
-      break;
+      return [event];
     }
   }
 }
@@ -752,12 +819,18 @@ async function handleLoopCompleted(
   // Calculate cost per model if we have breakdown, otherwise fall back to Opus pricing
   const estimatedCost = calculateCost(tokensInput, tokensOutput, tokensByModel);
 
+  // Extract PR info + session ID from event.result
+  const prSession = extractPrSessionInfo(
+    event as unknown as Record<string, unknown>
+  );
+
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
     completedAt: new Date(),
     tokensInput,
     tokensOutput,
     tokensByModel: tokensByModel ?? undefined,
     estimatedCost,
+    ...prSession,
   });
 
   log.info("[loop-orchestrator] Loop completed", {
@@ -766,7 +839,33 @@ async function handleLoopCompleted(
     tokensOutput,
     tokensByModel,
     estimatedCost,
+    ...prSession,
   });
+}
+
+/**
+ * Extract PR and session info from an event's result field.
+ * The harness agent attaches these to completed, error, and timed-out events.
+ */
+function extractPrSessionInfo(event: Record<string, unknown>): {
+  prUrl?: string;
+  prNumber?: number;
+  branchName?: string;
+  sessionId?: string;
+} {
+  const result = (event.result as Record<string, unknown>) ?? {};
+  return {
+    ...(typeof result.prUrl === "string" ? { prUrl: result.prUrl } : {}),
+    ...(typeof result.prNumber === "number"
+      ? { prNumber: result.prNumber }
+      : {}),
+    ...(typeof result.branchName === "string"
+      ? { branchName: result.branchName }
+      : {}),
+    ...(typeof result.sessionId === "string"
+      ? { sessionId: result.sessionId }
+      : {}),
+  };
 }
 
 /**
@@ -777,8 +876,14 @@ async function handleLoopError(
   organizationId: string,
   event: { type: "error"; code: string; message: string; timestamp: string },
   replayContext?: RunnerReplayContext
-): Promise<void> {
+): Promise<LoopEvent[]> {
   if (event.code === "CANCELLED") {
+    const canonicalEvent = {
+      type: "cancelled" as const,
+      reason: event.message,
+      timestamp: event.timestamp,
+    };
+
     await loopsService.addEvent(
       loopId,
       organizationId,
@@ -803,8 +908,41 @@ async function handleLoopError(
       loopId,
       reason: event.message,
     });
-    return;
+    return [canonicalEvent as unknown as LoopEvent];
   }
+
+  if (event.code === "TIMED_OUT") {
+    const prSession = extractPrSessionInfo(event as Record<string, unknown>);
+
+    await loopsService.addEvent(
+      loopId,
+      organizationId,
+      {
+        type: event.type,
+        data: {
+          code: event.code,
+          message: event.message,
+          timestamp: event.timestamp,
+        },
+      },
+      replayContext
+    );
+
+    await loopsService.updateStatus(loopId, organizationId, "TIMED_OUT", {
+      completedAt: new Date(),
+      error: { code: event.code, message: event.message },
+      ...prSession,
+    });
+
+    log.info("[loop-orchestrator] Loop timed out", {
+      loopId,
+      message: event.message,
+    });
+    return [event as unknown as LoopEvent];
+  }
+
+  // Extract PR/session info from error event (harness includes these even on failure)
+  const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
   // Store the error event
   await loopsService.addEvent(
@@ -824,6 +962,7 @@ async function handleLoopError(
   await loopsService.updateStatus(loopId, organizationId, "FAILED", {
     completedAt: new Date(),
     error: { code: event.code, message: event.message },
+    ...prSession,
   });
 
   log.error("[loop-orchestrator] Loop failed", {
@@ -831,4 +970,6 @@ async function handleLoopError(
     errorCode: event.code,
     errorMessage: event.message,
   });
+
+  return [event as unknown as LoopEvent];
 }

@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     ca-certificates \
     unzip \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -45,4 +46,5 @@ WORKDIR /workspace
 # Copy the harness agent
 COPY harness-agent.mjs /opt/harness/harness-agent.mjs
 
-ENTRYPOINT ["node", "/opt/harness/harness-agent.mjs"]
+ENTRYPOINT ["tini", "--"]
+CMD ["node", "/opt/harness/harness-agent.mjs"]

@@ -78,6 +78,8 @@ export const apiKeyService = {
 
     // Live validation: call Claude API to verify key works
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10_000);
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -90,15 +92,63 @@ export const apiKeyService = {
           max_tokens: 1,
           messages: [{ role: "user", content: "hi" }],
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
+      // 200: success, 400: bad request but authenticated, 429: rate limited but authenticated
+      if (
+        response.status === 200 ||
+        response.status === 400 ||
+        response.status === 429
+      ) {
+        return { valid: true };
+      }
+
+      // 401: invalid or missing API key
       if (response.status === 401) {
         return { valid: false, error: "Invalid API key" };
       }
 
-      // Any non-401 response means the key is valid (even if rate limited, etc.)
-      return { valid: true };
+      // 403: could be disabled account OR valid key with model permission restriction.
+      // Parse the error body to distinguish.
+      if (response.status === 403) {
+        try {
+          const body = (await response.json()) as {
+            error?: { type?: string; message?: string };
+          };
+          const errorType = body?.error?.type;
+          // permission_error with model-related message → key is valid but lacks model access
+          if (
+            errorType === "permission_error" &&
+            body?.error?.message?.toLowerCase().includes("model")
+          ) {
+            return { valid: true };
+          }
+        } catch {
+          // JSON parse failed — fall through to default
+        }
+        return { valid: false, error: "API key is disabled or unauthorized" };
+      }
+
+      // 5xx / other: Anthropic API issue — can't confirm key validity
+      log.warn("Unexpected status from Claude API key validation", {
+        status: response.status,
+      });
+      return {
+        valid: false,
+        error:
+          "Could not verify key - Anthropic API returned an unexpected response",
+      };
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        log.warn("Claude API key validation timed out");
+        return {
+          valid: false,
+          error:
+            "Validation timed out - Anthropic API did not respond. Please try again.",
+        };
+      }
       log.error("Failed to validate Claude API key", { error });
       return {
         valid: false,

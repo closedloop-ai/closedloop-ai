@@ -43,6 +43,10 @@ export type Loop = {
   }> | null;
   containerId: string | null;
   s3StateKey: string | null;
+  prUrl: string | null;
+  prNumber: number | null;
+  branchName: string | null;
+  sessionId: string | null;
   tokensInput: number;
   tokensOutput: number;
   tokensByModel: TokensByModel | null;

@@ -590,6 +590,12 @@ model Loop {
   containerId String? @map("container_id") // ECS task ARN
   s3StateKey  String? @map("s3_state_key") // S3 prefix for state
 
+  // PR and session tracking (populated by harness agent on completion)
+  prUrl      String? @map("pr_url")
+  prNumber   Int?    @map("pr_number")
+  branchName String? @map("branch_name")
+  sessionId  String? @map("session_id")
+
   // Cost tracking
   tokensInput    Int      @default(0) @map("tokens_input")
   tokensOutput   Int      @default(0) @map("tokens_output")

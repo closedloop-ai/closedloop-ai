@@ -325,9 +325,10 @@ export function useRequestPlanChanges() {
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
-  const useLoops = useIsLoopsEnabled();
+  const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
+    useIsLoopsEnabled();
 
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       // First create the artifact
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
@@ -362,6 +363,8 @@ export function useCreateAndGenerateArtifact() {
       });
     },
   });
+
+  return { ...mutation, isComputeModeLoading };
 }
 
 type ExecuteResult = {

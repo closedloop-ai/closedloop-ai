@@ -45,12 +45,19 @@ export function useLoopPolling(
   // Track whether we've already invalidated for this loop to avoid repeated invalidations
   const hasInvalidatedRef = useRef(false);
 
-  // Poll the loop detail to check status for stopping condition
+  // Poll the loop detail to check status for stopping condition.
+  // Once terminal, stop polling — the final state is immutable.
   const loopQuery = useQuery({
     queryKey: loopKeys.detail(loopId ?? ""),
     queryFn: () => apiClient.get<Loop>(`/loops/${loopId}`),
     enabled,
-    refetchInterval: POLL_INTERVAL_MS,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status && TERMINAL_STATUSES.has(status)) {
+        return false;
+      }
+      return POLL_INTERVAL_MS;
+    },
   });
 
   const isTerminal = loopQuery.data

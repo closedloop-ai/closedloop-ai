@@ -131,6 +131,34 @@ export async function downloadContextPack(
   }
 }
 
+/**
+ * Scrub secrets from an already-uploaded context pack.
+ * Called after the container sends "started" event — the container has already
+ * consumed the secrets, so we overwrite the S3 object with secrets stripped.
+ * This limits the exposure window for API keys stored in the bucket.
+ */
+export async function scrubContextPackSecrets(
+  stateKeyPrefix: string
+): Promise<void> {
+  try {
+    const contextPack = await downloadContextPack(stateKeyPrefix);
+    if (!contextPack?.secrets) {
+      return;
+    }
+
+    const scrubbed: ContextPack = { ...contextPack, secrets: undefined };
+    const key = `${stateKeyPrefix}/context-pack.json`;
+    await putObject(key, JSON.stringify(scrubbed, null, 2), "application/json");
+    log.info("Context pack secrets scrubbed", { stateKeyPrefix });
+  } catch (error) {
+    // Best-effort — don't fail the event pipeline if scrubbing fails
+    log.warn("Failed to scrub context pack secrets", {
+      stateKeyPrefix,
+      error,
+    });
+  }
+}
+
 // --- Conversation History (uploaded by container after completion) ---
 
 export async function downloadConversation(

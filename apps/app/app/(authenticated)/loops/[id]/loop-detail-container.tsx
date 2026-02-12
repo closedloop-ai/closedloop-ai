@@ -20,7 +20,9 @@ import {
   ArrowLeftIcon,
   ClockIcon,
   CoinsIcon,
+  ExternalLinkIcon,
   GitBranchIcon,
+  GitPullRequestIcon,
   Loader2Icon,
   TerminalIcon,
   UserIcon,
@@ -219,8 +221,20 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
               <>
                 <p className="font-medium text-sm">{loop.repo.fullName}</p>
                 <p className="text-muted-foreground text-xs">
-                  {loop.repo.branch}
+                  {loop.branchName || loop.repo.branch}
                 </p>
+                {loop.prUrl && (
+                  <a
+                    className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+                    href={loop.prUrl}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    <GitPullRequestIcon className="h-3.5 w-3.5" />
+                    PR #{loop.prNumber}
+                    <ExternalLinkIcon className="h-3 w-3" />
+                  </a>
+                )}
               </>
             ) : (
               <p className="text-muted-foreground text-sm">-</p>
@@ -249,6 +263,14 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
           <div className="flex items-center gap-1.5">
             <ClockIcon className="h-3.5 w-3.5" />
             <span>Completed: {formatDateTime(loop.completedAt)}</span>
+          </div>
+        )}
+        {loop.sessionId && (
+          <div className="flex items-center gap-1.5">
+            <TerminalIcon className="h-3.5 w-3.5" />
+            <span title={loop.sessionId}>
+              Session: {loop.sessionId.slice(0, 8)}...
+            </span>
           </div>
         )}
       </div>

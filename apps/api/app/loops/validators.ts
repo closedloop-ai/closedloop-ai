@@ -67,7 +67,8 @@ export const loopEventValidator = z
 
 /**
  * Accepts either envelope format { type, data } or flattened { type, ...fields }.
- * The flattened branch limits total payload size to prevent abuse.
+ * Shape-level validation only — terminal field enforcement happens post-normalization
+ * via validateNormalizedEvent() so both branches are covered by one check.
  */
 export const loopEventPayloadValidator = z.union([
   loopEventValidator,
@@ -78,6 +79,40 @@ export const loopEventPayloadValidator = z.union([
       message: "Event payload too large (max 1MB)",
     }),
 ]);
+
+/**
+ * Validate required fields on a normalized (flat) loop event.
+ * Applied post-normalization so both envelope and flattened paths are covered.
+ * Returns an error string if validation fails, or null if valid.
+ */
+export function validateNormalizedEvent(
+  event: Record<string, unknown>
+): string | null {
+  if (event.type === "completed") {
+    const tu = event.tokensUsed;
+    if (
+      !tu ||
+      typeof tu !== "object" ||
+      typeof (tu as Record<string, unknown>).input !== "number" ||
+      typeof (tu as Record<string, unknown>).output !== "number"
+    ) {
+      return "completed event requires tokensUsed with numeric input and output";
+    }
+    if (typeof event.timestamp !== "string") {
+      return "completed event requires a timestamp string";
+    }
+  }
+  if (
+    event.type === "error" &&
+    (typeof event.code !== "string" || typeof event.message !== "string")
+  ) {
+    return "error event requires code and message strings";
+  }
+  if (event.type === "cancelled" && typeof event.timestamp !== "string") {
+    return "cancelled event requires a timestamp string";
+  }
+  return null;
+}
 
 export const listLoopEventsQueryValidator = z.object({
   type: z

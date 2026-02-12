@@ -28,12 +28,29 @@ export function isReplayDetectedError(error: unknown): boolean {
   return error instanceof ReplayDetectedError;
 }
 
+export class InvalidStatusTransitionError extends Error {
+  readonly from: string;
+  readonly to: string;
+  constructor(from: string, to: string) {
+    super(`Invalid status transition: ${from} → ${to}`);
+    this.name = "InvalidStatusTransitionError";
+    this.from = from;
+    this.to = to;
+  }
+}
+
+export function isInvalidStatusTransitionError(error: unknown): boolean {
+  return error instanceof InvalidStatusTransitionError;
+}
+
 /**
  * Valid status transitions for loops.
  * Key = current status, Value = set of allowed next statuses.
  */
 const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
-  PENDING: new Set(["CLAIMED", "CANCELLED"]),
+  // PENDING → RUNNING covers the race where the container sends "started"
+  // before the backend has finished transitioning to CLAIMED.
+  PENDING: new Set(["CLAIMED", "RUNNING", "CANCELLED"]),
   CLAIMED: new Set(["RUNNING", "CANCELLED"]),
   RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
   COMPLETED: new Set(),
@@ -234,6 +251,10 @@ export const loopsService = {
       estimatedCost: number;
       error: { code: string; message: string };
       s3StateKey: string;
+      prUrl: string;
+      prNumber: number;
+      branchName: string;
+      sessionId: string;
     }>
   ): Promise<Loop> {
     // Compute the set of valid source statuses for this target status
@@ -247,6 +268,32 @@ export const loopsService = {
       );
     }
 
+    // Build the update payload outside the lambda to keep it simple.
+    // Only include fields that are explicitly provided (not undefined).
+    const updateData: Record<string, unknown> = { status };
+    if (data) {
+      const optionalFields = [
+        "containerId",
+        "startedAt",
+        "completedAt",
+        "tokensInput",
+        "tokensOutput",
+        "tokensByModel",
+        "estimatedCost",
+        "error",
+        "s3StateKey",
+        "prUrl",
+        "prNumber",
+        "branchName",
+        "sessionId",
+      ] as const;
+      for (const field of optionalFields) {
+        if (data[field] !== undefined) {
+          updateData[field] = data[field];
+        }
+      }
+    }
+
     // Atomic conditional update: only transitions from a valid source status.
     // This prevents TOCTOU races where two concurrent requests both pass
     // validation but one clobbers the other's status change.
@@ -257,34 +304,7 @@ export const loopsService = {
           organizationId,
           status: { in: validFromStatuses },
         },
-        data: {
-          status,
-          ...(data?.containerId !== undefined
-            ? { containerId: data.containerId }
-            : {}),
-          ...(data?.startedAt !== undefined
-            ? { startedAt: data.startedAt }
-            : {}),
-          ...(data?.completedAt !== undefined
-            ? { completedAt: data.completedAt }
-            : {}),
-          ...(data?.tokensInput !== undefined
-            ? { tokensInput: data.tokensInput }
-            : {}),
-          ...(data?.tokensOutput !== undefined
-            ? { tokensOutput: data.tokensOutput }
-            : {}),
-          ...(data?.tokensByModel !== undefined
-            ? { tokensByModel: data.tokensByModel }
-            : {}),
-          ...(data?.estimatedCost !== undefined
-            ? { estimatedCost: data.estimatedCost }
-            : {}),
-          ...(data?.error !== undefined ? { error: data.error } : {}),
-          ...(data?.s3StateKey !== undefined
-            ? { s3StateKey: data.s3StateKey }
-            : {}),
-        },
+        data: updateData,
       })
     );
 
@@ -302,9 +322,7 @@ export const loopsService = {
         throw new Error(`Loop not found: ${id}`);
       }
 
-      throw new Error(
-        `Invalid status transition: ${current.status} → ${status}`
-      );
+      throw new InvalidStatusTransitionError(current.status, status);
     }
 
     log.info("Loop status updated", {
@@ -322,6 +340,27 @@ export const loopsService = {
     }
 
     return toLoop(loop);
+  },
+
+  /**
+   * Persist launch metadata (containerId, s3StateKey) without changing status.
+   * Used when the runner races ahead of launchLoop — the loop is already RUNNING
+   * but we still need to record which container is executing it.
+   */
+  async persistLaunchInfo(
+    id: string,
+    organizationId: string,
+    data: { containerId: string; s3StateKey: string }
+  ): Promise<void> {
+    await withDb((db) =>
+      db.loop.updateMany({
+        where: { id, organizationId },
+        data: {
+          containerId: data.containerId,
+          s3StateKey: data.s3StateKey,
+        },
+      })
+    );
   },
 
   /**
@@ -362,9 +401,7 @@ export const loopsService = {
         throw new Error(`Loop not found: ${id}`);
       }
 
-      throw new Error(
-        `Invalid status transition: ${current.status} → CANCELLED`
-      );
+      throw new InvalidStatusTransitionError(current.status, "CANCELLED");
     }
 
     log.info("Loop cancelled", { loopId: id });

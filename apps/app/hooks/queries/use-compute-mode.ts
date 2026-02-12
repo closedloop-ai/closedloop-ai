@@ -25,11 +25,15 @@ export function useComputeMode() {
 }
 
 /**
- * Convenience hook: returns true when the org uses Loops compute.
+ * Convenience hook: returns whether the org uses Loops compute,
+ * along with loading state to prevent wrong-backend routing during initial fetch.
  */
-export function useIsLoopsEnabled(): boolean {
-  const { data } = useComputeMode();
-  return data?.computeMode === "LOOPS";
+export function useIsLoopsEnabled(): {
+  isLoopsEnabled: boolean;
+  isLoading: boolean;
+} {
+  const { data, isLoading } = useComputeMode();
+  return { isLoopsEnabled: data?.computeMode === "LOOPS", isLoading };
 }
 
 /**
