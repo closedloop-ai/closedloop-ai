@@ -52,6 +52,7 @@ import {
 } from "@/components/artifact-editor/metadata-panel";
 import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import {
@@ -135,6 +136,30 @@ type PlanMetadataPanelProps = {
    * Handler called when parent artifact is changed
    */
   onParentChange: (parentId: string | null) => void;
+  /**
+   * Current target repository value
+   */
+  targetRepo: string;
+  /**
+   * Current target branch value
+   */
+  targetBranch: string;
+  /**
+   * Handler called when target repository input value changes
+   */
+  onTargetRepoChange: (targetRepo: string) => void;
+  /**
+   * Handler called when target repository input loses focus
+   */
+  onTargetRepoBlur: () => void;
+  /**
+   * Handler called when target branch input value changes
+   */
+  onTargetBranchChange: (targetBranch: string) => void;
+  /**
+   * Handler called when target branch input loses focus
+   */
+  onTargetBranchBlur: () => void;
 };
 
 /**
@@ -157,6 +182,12 @@ export function PlanMetadataPanel({
   onApproverSelect,
   onOwnerChange,
   onParentChange,
+  targetRepo,
+  targetBranch,
+  onTargetRepoChange,
+  onTargetRepoBlur,
+  onTargetBranchChange,
+  onTargetBranchBlur,
 }: PlanMetadataPanelProps) {
   // Fetch org users for approver dropdown
   const { data: orgUsers = [] } = useOrganizationUsers();
@@ -227,6 +258,16 @@ export function PlanMetadataPanel({
               owner={owner}
               status={status}
               teamMembers={teamMembers}
+            />
+
+            <TargetRepositoryFields
+              onTargetBranchBlur={onTargetBranchBlur}
+              onTargetBranchChange={onTargetBranchChange}
+              onTargetRepoBlur={onTargetRepoBlur}
+              onTargetRepoChange={onTargetRepoChange}
+              targetBranch={targetBranch}
+              targetRepo={targetRepo}
+              title="Target Repository"
             />
 
             <MetadataSection separator>

@@ -419,7 +419,9 @@ describe("SidebarTeams", () => {
 
     // Hook should be called with enabled: false after closing
     const lastCallForTeam1 = mockUseRecentProjectsByTeam.mock.calls
-      .filter((call: [string, { enabled?: boolean }?]) => call[0] === "team-1")
+      .filter((call: unknown[]): call is [string, { enabled?: boolean }?] => {
+        return Array.isArray(call) && call[0] === "team-1";
+      })
       .pop();
     expect(lastCallForTeam1?.[1]).toEqual({ enabled: false });
   });
