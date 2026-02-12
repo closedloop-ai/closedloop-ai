@@ -17,9 +17,8 @@ import {
 } from "@repo/design-system/components/ui/chart";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, parse } from "date-fns";
-import { useMemo, useState } from "react";
-import type { LegendProps } from "recharts";
-import { Bar, BarChart, XAxis, YAxis } from "recharts";
+import { type ComponentType, useMemo, useState } from "react";
+import { Bar, BarChart, type LegendProps, XAxis, YAxis } from "recharts";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
@@ -46,6 +45,16 @@ function formatBucketLabel(
 }
 
 const CHART_COLORS = 5;
+const RechartsBarChart = BarChart as unknown as ComponentType<
+  Record<string, unknown>
+>;
+const RechartsXAxis = XAxis as unknown as ComponentType<
+  Record<string, unknown>
+>;
+const RechartsYAxis = YAxis as unknown as ComponentType<
+  Record<string, unknown>
+>;
+const RechartsBar = Bar as unknown as ComponentType<Record<string, unknown>>;
 
 export function ArtifactsCreatedChart({
   startDate,
@@ -168,7 +177,7 @@ export function ArtifactsCreatedChart({
               })}
             </ul>
             <ChartContainer className="h-64 w-full" config={chartConfig}>
-              <BarChart
+              <RechartsBarChart
                 accessibilityLayer
                 aria-label="Artifacts created per period by type"
                 data={chartData}
@@ -185,7 +194,7 @@ export function ArtifactsCreatedChart({
                   }
                   verticalAlign="top"
                 />
-                <XAxis
+                <RechartsXAxis
                   angle={-45}
                   dataKey="label"
                   height={80}
@@ -193,7 +202,7 @@ export function ArtifactsCreatedChart({
                   textAnchor="end"
                   tick={{ fontSize: 12 }}
                 />
-                <YAxis
+                <RechartsYAxis
                   allowDecimals={false}
                   label={{
                     value: "Count",
@@ -203,14 +212,14 @@ export function ArtifactsCreatedChart({
                 />
                 <ChartTooltip content={<ChartTooltipContent />} />
                 {subtypeKeys.map((subtype) => (
-                  <Bar
+                  <RechartsBar
                     dataKey={subtype}
                     fill={`var(--color-${subtype})`}
                     key={subtype}
                     radius={[4, 4, 0, 0]}
                   />
                 ))}
-              </BarChart>
+              </RechartsBarChart>
             </ChartContainer>
           </div>
         )}

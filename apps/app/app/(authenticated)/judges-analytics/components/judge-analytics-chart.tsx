@@ -23,6 +23,19 @@ type BoxPlotDataPoint = {
   count: number;
 };
 
+const RechartsBarChart = BarChart as unknown as React.ComponentType<
+  Record<string, unknown>
+>;
+const RechartsXAxis = XAxis as unknown as React.ComponentType<
+  Record<string, unknown>
+>;
+const RechartsYAxis = YAxis as unknown as React.ComponentType<
+  Record<string, unknown>
+>;
+const RechartsBar = Bar as unknown as React.ComponentType<
+  Record<string, unknown>
+>;
+
 // Box plot vertical positions use the chart's global Y scale; the Bar slot is only for x/width.
 type BoxPlotShapeProps = {
   x?: number;
@@ -253,13 +266,13 @@ export function JudgeAnalyticsChart({
 
   return (
     <ChartContainer className="h-64 w-full" config={chartConfig}>
-      <BarChart
+      <RechartsBarChart
         accessibilityLayer
         aria-label={`Box plot showing judge score distributions for ${artifactSubtype}`}
         data={boxPlotData}
         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
       >
-        <XAxis
+        <RechartsXAxis
           angle={-45}
           dataKey="name"
           height={80}
@@ -267,12 +280,12 @@ export function JudgeAnalyticsChart({
           textAnchor="end"
           tick={{ fontSize: 12 }}
         />
-        <YAxis
+        <RechartsYAxis
           domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
         />
         <ChartTooltip content={<BoxPlotTooltip />} />
-        <Bar
+        <RechartsBar
           dataKey="median"
           fill="#8884d8"
           shape={(props: unknown) => (
@@ -283,7 +296,7 @@ export function JudgeAnalyticsChart({
             />
           )}
         />
-      </BarChart>
+      </RechartsBarChart>
     </ChartContainer>
   );
 }

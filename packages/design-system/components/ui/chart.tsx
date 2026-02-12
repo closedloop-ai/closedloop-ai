@@ -250,8 +250,6 @@ function ChartTooltipContent({
   )
 }
 
-// Wrapper needed: Recharts Legend type doesn't satisfy React 19's JSX component typing
-// (Missing 'props' property - see recharts/recharts#4558, React 19 compatibility).
 // Use LegendProps directly since React.ComponentProps<Legend> resolves to {} under React 19.
 // Omit ref to avoid React 19 ref typing mismatch (Legend is a class component).
 function ChartLegend(
@@ -357,9 +355,9 @@ function getPayloadConfigFromPayload(
 
 export {
   ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
   ChartLegend,
   ChartLegendContent,
   ChartStyle,
+  ChartTooltip,
+  ChartTooltipContent,
 }
