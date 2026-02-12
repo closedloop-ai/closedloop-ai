@@ -35,10 +35,14 @@ export type JudgeAggregateStats = {
  * Attributes:
  * - artifactSubtype: The artifact subtype (e.g., PRD, IMPLEMENTATION_PLAN)
  * - judges: Array of aggregate statistics per judge, sorted descending by mean score
+ * - humanRatingsCount: Number of human ratings (ArtifactRating) created in the same date range for artifacts of this subtype in the org
+ * - humanCommentsCount: Number of human comments (Comment with artifactId) created in the same date range for artifacts of this subtype in the org
  */
 export type ArtifactSubtypeGroup = {
   artifactSubtype: ArtifactSubtype;
   judges: JudgeAggregateStats[];
+  humanRatingsCount: number;
+  humanCommentsCount: number;
 };
 
 /**

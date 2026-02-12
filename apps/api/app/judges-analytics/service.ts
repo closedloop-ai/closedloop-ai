@@ -134,6 +134,94 @@ function getISOWeekStartDate(date: Date): Date {
 }
 
 /**
+ * Fetches human ratings and comments counts per artifact subtype (same org and date range).
+ * Returns maps with 0 for each subtype when there are no artifacts or no feedback.
+ */
+async function getHumanCountsBySubtype(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  subtypes: ArtifactSubtype[]
+): Promise<{
+  humanRatingsBySubtype: Map<ArtifactSubtype, number>;
+  humanCommentsBySubtype: Map<ArtifactSubtype, number>;
+}> {
+  const humanRatingsBySubtype = new Map<ArtifactSubtype, number>();
+  const humanCommentsBySubtype = new Map<ArtifactSubtype, number>();
+
+  for (const subtype of subtypes) {
+    humanRatingsBySubtype.set(subtype, 0);
+    humanCommentsBySubtype.set(subtype, 0);
+  }
+
+  if (subtypes.length === 0) {
+    return { humanRatingsBySubtype, humanCommentsBySubtype };
+  }
+
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        subtype: { in: subtypes },
+      },
+      select: { id: true, subtype: true },
+    })
+  );
+
+  const idToSubtype = new Map(artifacts.map((a) => [a.id, a.subtype] as const));
+  const orgArtifactIds = artifacts.map((a) => a.id);
+
+  if (orgArtifactIds.length === 0) {
+    return { humanRatingsBySubtype, humanCommentsBySubtype };
+  }
+
+  const [ratings, comments] = await Promise.all([
+    withDb((db) =>
+      db.artifactRating.findMany({
+        where: {
+          artifactId: { in: orgArtifactIds },
+          createdAt: { gte: startDate, lte: endDate },
+        },
+        select: { artifactId: true },
+      })
+    ),
+    withDb((db) =>
+      db.comment.findMany({
+        where: {
+          artifactId: { in: orgArtifactIds },
+          createdAt: { gte: startDate, lte: endDate },
+        },
+        select: { artifactId: true },
+      })
+    ),
+  ]);
+
+  for (const r of ratings) {
+    const subtype = idToSubtype.get(r.artifactId);
+    if (subtype !== undefined) {
+      humanRatingsBySubtype.set(
+        subtype,
+        (humanRatingsBySubtype.get(subtype) ?? 0) + 1
+      );
+    }
+  }
+  for (const c of comments) {
+    if (c.artifactId === null) {
+      continue;
+    }
+    const subtype = idToSubtype.get(c.artifactId);
+    if (subtype !== undefined) {
+      humanCommentsBySubtype.set(
+        subtype,
+        (humanCommentsBySubtype.get(subtype) ?? 0) + 1
+      );
+    }
+  }
+
+  return { humanRatingsBySubtype, humanCommentsBySubtype };
+}
+
+/**
  * Aggregation service for judges analytics.
  *
  * Queries ArtifactEvaluation records within a date range, extracts judge scores
@@ -180,6 +268,15 @@ export const judgesAnalyticsService = {
     // Extract scores from reportData JSON using the "metric_name === case_id" rule
     const aggregator = extractJudgeScores(evaluations);
 
+    const subtypes = Array.from(aggregator.keys());
+    const { humanRatingsBySubtype, humanCommentsBySubtype } =
+      await getHumanCountsBySubtype(
+        organizationId,
+        startDate,
+        endDate,
+        subtypes
+      );
+
     // Compute statistics for each judge within each artifact subtype
     const groups: ArtifactSubtypeGroup[] = [];
 
@@ -221,6 +318,8 @@ export const judgesAnalyticsService = {
       groups.push({
         artifactSubtype,
         judges,
+        humanRatingsCount: humanRatingsBySubtype.get(artifactSubtype) ?? 0,
+        humanCommentsCount: humanCommentsBySubtype.get(artifactSubtype) ?? 0,
       });
     }
 

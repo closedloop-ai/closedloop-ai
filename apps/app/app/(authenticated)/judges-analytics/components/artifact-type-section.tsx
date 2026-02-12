@@ -15,7 +15,11 @@ export function ArtifactTypeSection({ group }: ArtifactTypeSectionProps) {
           artifactSubtype={group.artifactSubtype}
           data={group.judges}
         />
-        <JudgeAnalyticsTable data={group.judges} />
+        <JudgeAnalyticsTable
+          data={group.judges}
+          humanCommentsCount={group.humanCommentsCount}
+          humanRatingsCount={group.humanRatingsCount}
+        />
       </div>
     </section>
   );
