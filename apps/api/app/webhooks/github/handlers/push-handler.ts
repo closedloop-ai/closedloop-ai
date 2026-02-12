@@ -41,10 +41,14 @@ export async function handlePush(event: PushEvent): Promise<Response> {
         githubRepoId: repository.id,
       };
 
+  const lastPushedAt = repository.pushed_at
+    ? new Date(repository.pushed_at)
+    : new Date();
+
   const { count } = await withDb((db) =>
     db.gitHubInstallationRepository.updateMany({
       where: whereClause,
-      data: { lastPushedAt: new Date() },
+      data: { lastPushedAt },
     })
   );
 

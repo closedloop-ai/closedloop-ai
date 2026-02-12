@@ -74,7 +74,7 @@ function createRepository(githubId: number, fullName: string) {
     url: "",
     created_at: "2021-01-01T00:00:00Z",
     updated_at: "2021-01-01T00:00:00Z",
-    pushed_at: "2021-01-01T00:00:00Z",
+    pushed_at: "2024-06-15T10:30:00Z",
     git_url: "",
     ssh_url: "",
     clone_url: "",
@@ -205,7 +205,7 @@ describe("handlePush", () => {
   });
 
   describe("tracked repository", () => {
-    it("updates lastPushedAt timestamp when repository exists", async () => {
+    it("updates lastPushedAt from payload timestamp when repository exists", async () => {
       const event = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
@@ -231,7 +231,7 @@ describe("handlePush", () => {
           githubRepoId: 123,
           installation: { installationId: 123_456 },
         },
-        data: { lastPushedAt: expect.any(Date) },
+        data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
 
@@ -255,7 +255,7 @@ describe("handlePush", () => {
           githubRepoId: 456,
           installation: { installationId: 123_456 },
         },
-        data: { lastPushedAt: expect.any(Date) },
+        data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
   });
@@ -282,36 +282,33 @@ describe("handlePush", () => {
   });
 
   describe("multiple pushes", () => {
-    it("updates timestamp to most recent when multiple pushes occur", async () => {
+    it("uses payload timestamp so redeliveries preserve correct ordering", async () => {
       mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
         count: 1,
       });
 
-      // First push
-      await handlePush(
-        createPushEvent({
-          repositoryId: 123,
-          repositoryFullName: "owner/repo",
-          after: "abc123",
-        })
-      );
+      // First push — earlier payload timestamp
+      const event1 = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        after: "abc123",
+      });
+      (event1.repository as any).pushed_at = "2024-06-15T10:00:00Z";
+      await handlePush(event1);
 
       const firstCallTime = (
         mockDb.gitHubInstallationRepository.updateMany.mock.calls[0][0].data
           .lastPushedAt as Date
       ).getTime();
 
-      // Wait a bit to ensure different timestamp
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Second push
-      await handlePush(
-        createPushEvent({
-          repositoryId: 123,
-          repositoryFullName: "owner/repo",
-          after: "def456",
-        })
-      );
+      // Second push — later payload timestamp
+      const event2 = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        after: "def456",
+      });
+      (event2.repository as any).pushed_at = "2024-06-15T11:00:00Z";
+      await handlePush(event2);
 
       const secondCallTime = (
         mockDb.gitHubInstallationRepository.updateMany.mock.calls[1][0].data
@@ -345,7 +342,7 @@ describe("handlePush", () => {
           githubRepoId: 789,
           installation: { installationId: 123_456 },
         },
-        data: { lastPushedAt: expect.any(Date) },
+        data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
 
@@ -368,7 +365,7 @@ describe("handlePush", () => {
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: { githubRepoId: 789 },
-        data: { lastPushedAt: expect.any(Date) },
+        data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
   });
