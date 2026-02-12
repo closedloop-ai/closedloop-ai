@@ -80,7 +80,9 @@ async function getCommitterInfo(
       select: { email: true, firstName: true, lastName: true },
     })
   );
-  if (!user?.email) return undefined;
+  if (!user?.email) {
+    return undefined;
+  }
   const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
   return {
     committerName: name || user.email,
