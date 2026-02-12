@@ -156,26 +156,6 @@ export function ArtifactsCreatedChart({
         chartData.length > 0 &&
         subtypeKeys.length > 0 && (
           <div className="space-y-0">
-            <ul
-              aria-label="Artifact types"
-              className="flex flex-wrap items-center justify-center gap-4 pb-3 text-xs"
-            >
-              {subtypeKeys.map((subtype) => {
-                const itemConfig = chartConfig[subtype];
-                return (
-                  <li className="flex items-center gap-1.5" key={subtype}>
-                    <div
-                      className="h-2 w-2 shrink-0 rounded-[2px]"
-                      style={{
-                        backgroundColor:
-                          itemConfig?.color ?? "var(--muted-foreground)",
-                      }}
-                    />
-                    <span>{itemConfig?.label ?? subtype}</span>
-                  </li>
-                );
-              })}
-            </ul>
             <ChartContainer className="h-64 w-full" config={chartConfig}>
               <RechartsBarChart
                 accessibilityLayer
