@@ -1,6 +1,6 @@
 import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { useThreads } from "@repo/collaboration/hooks";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import {
   EditorWithComments,
   type EditorWithCommentsProps,
@@ -41,12 +41,18 @@ export function CollaborativeEditor({
 }: Readonly<CollaborativeEditorProps>) {
   return (
     <OptionalArtifactRoom roomId={liveblocksRoomId}>
-      {/* Presence Indicators */}
-      {!!liveblocksRoomId && <Presence />}
+      {/* Presence Indicators (suspends on useOthers/useSelf) */}
+      {!!liveblocksRoomId && (
+        <Suspense fallback={null}>
+          <Presence />
+        </Suspense>
+      )}
 
-      {/* Thread count reporter (renders nothing, just lifts count to parent) */}
+      {/* Thread count reporter — suspends on useThreads */}
       {!!liveblocksRoomId && onOpenThreadCountChange && (
-        <ThreadCountReporter onCountChange={onOpenThreadCountChange} />
+        <Suspense fallback={null}>
+          <ThreadCountReporter onCountChange={onOpenThreadCountChange} />
+        </Suspense>
       )}
 
       {/* Content Area with Optional Metadata Panel */}

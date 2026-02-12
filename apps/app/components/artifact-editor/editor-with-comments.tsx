@@ -2,7 +2,7 @@
 
 import { OptionalComments } from "@repo/collaboration";
 import type { Editor } from "@tiptap/react";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 
 export type EditorWithCommentsProps = {
@@ -54,7 +54,7 @@ export function EditorWithComments({
         </div>
 
         {liveblocksEnabled && (
-          <>
+          <Suspense fallback={null}>
             {/* Floating comments on mobile/tablet (< 1280px) */}
             <div className="xl:hidden">
               <OptionalComments
@@ -72,7 +72,7 @@ export function EditorWithComments({
                 roomId={liveblocksRoomId}
               />
             </div>
-          </>
+          </Suspense>
         )}
       </div>
     </div>
