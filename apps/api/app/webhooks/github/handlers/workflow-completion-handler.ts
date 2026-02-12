@@ -230,16 +230,25 @@ export async function handleWorkflowSuccess(
   }
 
   await withDb(async (db) => {
-    // TODO: These artifact queries need to include the organizationId for proper isolation!
-    // Verify artifact exists before updating
+    const workstream = await db.workstream.findUnique({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
+
+    if (!workstream) {
+      throw new Error(
+        `Workstream ${workstreamId} not found - cannot update artifact`
+      );
+    }
+
     const existingArtifact = await db.artifact.findUnique({
-      where: { id: artifactId },
-      select: { id: true, content: true },
+      where: { id: artifactId, organizationId: workstream.organizationId },
+      select: { id: true, content: true, organizationId: true },
     });
 
     if (!existingArtifact) {
       throw new Error(
-        `Artifact ${artifactId} not found - cannot update with workflow results`
+        `Artifact ${artifactId} not found in organization - cannot update with workflow results`
       );
     }
 
@@ -250,7 +259,10 @@ export async function handleWorkflowSuccess(
     });
 
     await db.artifact.update({
-      where: { id: artifactId },
+      where: {
+        id: artifactId,
+        organizationId: existingArtifact.organizationId,
+      },
       data: {
         status: "DRAFT",
         content: finalContent || undefined,
@@ -281,7 +293,6 @@ export async function handleWorkflowSuccess(
       },
     });
 
-    // Persist judges report if available
     if (judgesReport && ctx.actionRunId) {
       await db.artifactEvaluation.upsert({
         where: {
