@@ -1,10 +1,7 @@
 "use client";
 
 import type { DashboardStats } from "@repo/api/src/types/dashboard";
-import {
-  type UseQueryOptions,
-  useQuery,
-} from "@tanstack/react-query";
+import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
 // Query keys

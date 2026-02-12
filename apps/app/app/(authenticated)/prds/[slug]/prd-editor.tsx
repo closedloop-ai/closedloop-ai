@@ -4,7 +4,6 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
@@ -16,6 +15,7 @@ import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-action
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -32,36 +32,20 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>(
-    undefined
-  );
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >(undefined);
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // The existence of a room ID controls whether liveblocks is loaded.
-  // Liveblocks can't function properly when the editor is read-only.
-  const liveblocksRoomId =
-    isEditing && prd.documentSlug
-      ? generateArtifactRoomId(prd.organizationId, prd.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePRDEditor
   const content = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: prd,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -108,76 +92,84 @@ export function PRDEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(prd.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
-        canEdit={!isViewingHistorical}
-        isEditing={isEditing}
+        canEdit={!session.isViewingHistorical}
+        isEditing={session.isEditing}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
         onDelete={uiState.openDeleteDialog}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={session.openThreadCount}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PRDMetadataPanel
-            approver={metadata.approver}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            owner={metadata.owner}
-            prd={prd}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
         }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+      >
+        <CollaborativeEditor
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          liveblocksRoomId={session.liveblocksRoomId}
+          metadataPanel={
+            <PRDMetadataPanel
+              approver={metadata.approver}
+              onApproverSelect={metadata.handleApproverSelect}
+              onOwnerChange={metadata.handleOwnerChange}
+              onStatusChange={metadata.handleStatusChange}
+              onTargetBranchBlur={metadata.handleTargetBranchBlur}
+              onTargetBranchChange={metadata.handleTargetBranchChange}
+              onTargetRepoBlur={metadata.handleTargetRepoBlur}
+              onTargetRepoChange={metadata.handleTargetRepoChange}
+              owner={metadata.owner}
+              prd={prd}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Rename Dialog */}
       <RenameDialog

@@ -18,11 +18,11 @@ export default async function App() {
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
         <div className="space-y-8">
           <section>
-            <h2 className="mb-4 text-2xl font-bold">Overview</h2>
+            <h2 className="mb-4 font-bold text-2xl">Overview</h2>
             <DashboardStatsGrid />
           </section>
           <section>
-            <h2 className="mb-4 text-2xl font-bold">Active Workstreams</h2>
+            <h2 className="mb-4 font-bold text-2xl">Active Workstreams</h2>
             <InProgressWorkstreamsTable />
           </section>
         </div>

@@ -2,6 +2,15 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectModal } from "../create-project-modal";
 
+// Mock useCurrentUser to avoid Clerk authentication context
+vi.mock("@/hooks/queries/use-users", () => ({
+  useCurrentUser: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Mock team members data
 const mockMembers = vi.fn();
 
@@ -112,7 +121,7 @@ describe("CreateProjectModal", () => {
 
       // The transformed data should be used internally
       // We verify the hook was called with correct params
-      expect(mockMembers).toHaveBeenCalledTimes(1);
+      expect(mockMembers).toHaveBeenCalledWith(mockTeamId);
     });
 
     it("should handle empty members gracefully", async () => {

@@ -1,6 +1,9 @@
 "use client";
 
-import { Alert, AlertDescription } from "@repo/design-system/components/ui/alert";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { useDashboardStats } from "@/hooks/queries/use-dashboard-stats";
 import { StatCard } from "./stat-card";
@@ -16,10 +19,20 @@ export function DashboardStatsGrid() {
 
   // Loading state with skeleton grid
   if (isLoading && !stats) {
+    const skeletonKeys = [
+      "skeleton-prds",
+      "skeleton-issues",
+      "skeleton-plans",
+      "skeleton-landed-code",
+      "skeleton-agentic-workflows",
+      "skeleton-agents-skills-plugins",
+      "skeleton-leaderboards",
+    ] as const;
+
     return (
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {Array.from({ length: 7 }).map((_, i) => (
-          <Skeleton key={i} className="h-[200px]" />
+        {skeletonKeys.map((key) => (
+          <Skeleton className="h-[200px]" key={key} />
         ))}
       </div>
     );
@@ -43,46 +56,54 @@ export function DashboardStatsGrid() {
   return (
     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
       {/* 1. PRDs */}
-      <StatCard value={stats.prds.count} label="PRDs" trendData={stats.prds.trend} />
+      <StatCard
+        label="PRDs"
+        trendData={stats.prds.trend}
+        value={stats.prds.count}
+      />
 
       {/* 2. Issues */}
-      <StatCard value={stats.issues.count} label="Issues" trendData={stats.issues.trend} />
+      <StatCard
+        label="Issues"
+        trendData={stats.issues.trend}
+        value={stats.issues.count}
+      />
 
       {/* 3. Implementation Plans */}
       <StatCard
-        value={stats.plans.count}
         label="Implementation Plans"
         trendData={stats.plans.trend}
+        value={stats.plans.count}
       />
 
       {/* 4. Landed Code */}
       <StatCard
-        value={stats.landedCode.count}
         label="Landed Code"
         trendData={stats.landedCode.trend}
+        value={stats.landedCode.count}
       />
 
       {/* 5. Agentic Workflows */}
       <StatCard
-        value={stats.agenticWorkflows.count}
         label="Agentic Workflows"
         trendData={stats.agenticWorkflows.trend}
+        value={stats.agenticWorkflows.count}
       />
 
       {/* 6. Agents/Skills/Plugins (placeholder) */}
       <StatCard
-        value={stats.agentsCount ?? 0}
+        comingSoon={true}
         label="Agents, Skills & Plugins"
         trendData={[]}
-        comingSoon={true}
+        value={stats.agentsCount ?? 0}
       />
 
       {/* 7. Active Leaderboards (placeholder) */}
       <StatCard
-        value={stats.leaderboardsCount ?? 0}
+        comingSoon={true}
         label="Active Leaderboards"
         trendData={[]}
-        comingSoon={true}
+        value={stats.leaderboardsCount ?? 0}
       />
     </div>
   );
