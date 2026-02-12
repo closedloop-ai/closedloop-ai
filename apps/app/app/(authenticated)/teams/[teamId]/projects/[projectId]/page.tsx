@@ -347,7 +347,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* Right Sidebar */}
-          <div className="w-[300px] space-y-4 overflow-y-auto border-l p-4">
+          <div className="w-[300px] space-y-4 border-l p-4">
             <PropertiesPanel
               onUpdateOwner={handleUpdateOwner}
               onUpdatePriority={handleUpdatePriority}
