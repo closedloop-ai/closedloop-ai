@@ -6,7 +6,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { Editor, JSONContent } from "@tiptap/react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -46,6 +46,7 @@ export function PRDEditor({
   >(undefined);
   const editorRef = useRef<Editor | null>(null);
   const editorSnapshotRef = useRef<JSONContent | null>(null);
+  const wasEditingRef = useRef(false);
   const handleEditorInstance = useCallback((editor: Editor | null) => {
     editorRef.current = editor;
   }, []);
@@ -110,12 +111,34 @@ export function PRDEditor({
     actions.isDeleting ||
     actions.isRenaming;
 
+  // Re-enter edit mode when returning to latest after a version switch while editing
+  useEffect(() => {
+    if (wasEditingRef.current && !isViewingHistorical) {
+      wasEditingRef.current = false;
+      editorSnapshotRef.current = editorRef.current?.getJSON() ?? null;
+      setIsEditing(true);
+    }
+  }, [isViewingHistorical]);
+
   // Create version display component for header
   const versionDisplay = (
     <VersionSelector
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
+        if (isEditing) {
+          // Synchronously restore pre-edit content before React unmounts
+          // the Liveblocks editor (a deferred microtask would be too late).
+          const snapshot = editorSnapshotRef.current;
+          if (snapshot && editorRef.current) {
+            const currentJson = editorRef.current.getJSON();
+            const merged = mergeCommentMarks(snapshot, currentJson);
+            editorRef.current.commands.setContent(merged);
+          }
+          content.discardChanges();
+          editorSnapshotRef.current = null;
+          wasEditingRef.current = true;
+        }
         exitEditMode();
         onVersionChange(version);
       }}
