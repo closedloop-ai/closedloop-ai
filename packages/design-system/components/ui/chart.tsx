@@ -42,9 +42,7 @@ function ChartContainer({
   ...props
 }: React.ComponentProps<"div"> & {
   config: ChartConfig
-  children: React.ComponentProps<
-    typeof RechartsPrimitive.ResponsiveContainer
-  >["children"]
+  children: React.ReactElement
 }) {
   const uniqueId = React.useId()
   const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`
@@ -102,15 +100,8 @@ ${colorConfig
   )
 }
 
-// Omit ref to avoid React 19 ref typing mismatch (Tooltip is a class component).
-function ChartTooltip(
-  props: Omit<
-    RechartsPrimitive.TooltipProps<number, string>,
-    "ref"
-  >
-) {
-  return <RechartsPrimitive.Tooltip {...props} />
-}
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const ChartTooltip = RechartsPrimitive.Tooltip as unknown as React.FC<any>
 
 function ChartTooltipContent({
   active,
@@ -126,8 +117,8 @@ function ChartTooltipContent({
   color,
   nameKey,
   labelKey,
-}: React.ComponentProps<typeof RechartsPrimitive.Tooltip> &
-  React.ComponentProps<"div"> & {
+}: // biome-ignore lint/suspicious/noExplicitAny: recharts types incompatible with React 19 JSX
+  any & {
     hideLabel?: boolean
     hideIndicator?: boolean
     indicator?: "line" | "dot" | "dashed"
@@ -188,8 +179,8 @@ function ChartTooltipContent({
       {!nestLabel ? tooltipLabel : null}
       <div className="grid gap-1.5">
         {payload
-          .filter((item) => item.type !== "none")
-          .map((item, index) => {
+          .filter((item: any) => item.type !== "none")
+          .map((item: any, index: number) => {
             const key = `${nameKey || item.name || item.dataKey || "value"}`
             const itemConfig = getPayloadConfigFromPayload(config, item, key)
             const indicatorColor = color || item.payload.fill || item.color
@@ -258,13 +249,8 @@ function ChartTooltipContent({
   )
 }
 
-// Use LegendProps directly since React.ComponentProps<Legend> resolves to {} under React 19.
-// Omit ref to avoid React 19 ref typing mismatch (Legend is a class component).
-function ChartLegend(
-  props: Omit<RechartsPrimitive.LegendProps, "ref">
-) {
-  return <RechartsPrimitive.Legend {...props} />
-}
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const ChartLegend = RechartsPrimitive.Legend as unknown as React.FC<any>
 
 function ChartLegendContent({
   className,
@@ -272,8 +258,10 @@ function ChartLegendContent({
   payload,
   verticalAlign = "bottom",
   nameKey,
-}: React.ComponentProps<"div"> &
-  Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
+}: React.ComponentProps<"div"> & {
+    // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+    payload?: any[]
+    verticalAlign?: "top" | "bottom"
     hideIcon?: boolean
     nameKey?: string
   }) {
@@ -367,5 +355,6 @@ export {
   ChartLegendContent,
   ChartStyle,
   ChartTooltip,
-  ChartTooltipContent,
+  ChartTooltipContent
 }
+
