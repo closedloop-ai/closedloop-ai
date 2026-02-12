@@ -318,7 +318,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(
       screen.getByText("Executing plan and creating PR...")
@@ -342,7 +344,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Indicator component should render nothing for NONE status
     expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
@@ -364,7 +368,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
     expect(
@@ -389,7 +395,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     const link = screen.getByRole("link", {
       name: GENERATING_PLAN_REGEX,
@@ -410,7 +418,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.getByText("OPEN")).toBeInTheDocument();
   });
@@ -423,7 +433,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.getByText("MERGED")).toBeInTheDocument();
   });
@@ -436,7 +448,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.getByText("CLOSED")).toBeInTheDocument();
   });
@@ -449,7 +463,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
     expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
@@ -473,7 +489,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    const { rerender } = render(<ArtifactsTable artifacts={artifacts} />);
+    const { rerender } = render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     // Initially shows PENDING state
     expect(screen.getByText("Waiting to start...")).toBeInTheDocument();
@@ -495,7 +513,12 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    rerender(<ArtifactsTable artifacts={updatedArtifacts} />);
+    rerender(
+      <ArtifactsTable
+        artifacts={updatedArtifacts}
+        projectId="test-project-id"
+      />
+    );
 
     // SUCCESS state shows green checkmark, no message
     expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
@@ -520,7 +543,9 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(<ArtifactsTable artifacts={artifacts} />);
+    render(
+      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+    );
 
     const link = screen.getByRole("link", {
       name: EXECUTING_PLAN_REGEX,
