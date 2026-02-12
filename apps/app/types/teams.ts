@@ -1,3 +1,7 @@
+import type {
+  GenerationStatus,
+  PullRequestInfo,
+} from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 
 // TODO: Move all types to packages/api.
@@ -75,7 +79,10 @@ export type ProjectArtifact = {
   parentId?: string | null;
   link?: string;
   previewUrl?: string;
+  pullRequest?: PullRequestInfo | null;
   workstreamId?: string | null;
   workstreamTitle?: string | null;
   workstreamState?: string | null;
+  /** Latest generation status. TODO: Include this field when migrating ProjectArtifact to @repo/api/src/types/ */
+  generationStatus?: GenerationStatus;
 };

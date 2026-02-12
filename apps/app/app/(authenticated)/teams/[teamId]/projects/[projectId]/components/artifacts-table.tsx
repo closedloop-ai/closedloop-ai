@@ -31,15 +31,20 @@ import {
   ChevronDown,
   ExternalLinkIcon,
   FileTextIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { PreviewLink } from "@/components/preview-link";
+import { PullRequestLink } from "@/components/pull-request-link";
+import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -60,6 +65,7 @@ import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
 
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
+  projectId: string;
   onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
@@ -128,6 +134,7 @@ function ArtifactLinkCell({
 type ArtifactSectionProps = {
   title: string;
   artifacts: ProjectArtifact[];
+  projectId: string;
   onRowClick: (artifact: ProjectArtifact) => void;
   onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
   onRequestDelete: (artifact: ProjectArtifact) => void;
@@ -136,10 +143,15 @@ type ArtifactSectionProps = {
 function ArtifactSection({
   title,
   artifacts,
+  projectId,
   onRowClick,
   onStatusChange,
   onRequestDelete,
 }: ArtifactSectionProps) {
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] =
+    useState<ProjectArtifact | null>(null);
+
   return (
     <Collapsible defaultOpen>
       <CollapsibleTrigger className="group flex w-full items-center gap-2 px-0 py-3 text-left font-semibold text-lg hover:opacity-80">
@@ -178,6 +190,17 @@ function ArtifactSection({
                     <div className="flex items-center gap-2">
                       <Icon className="h-4 w-4 text-muted-foreground" />
                       <span className="font-medium">{artifact.name}</span>
+                      <GenerationStatusIndicator
+                        generationStatus={artifact.generationStatus}
+                      />
+                      {artifact.pullRequest && (
+                        <div className="hidden sm:flex">
+                          <PullRequestStatusBadge
+                            pullRequest={artifact.pullRequest}
+                          />
+                        </div>
+                      )}
+                      <PullRequestLink pullRequest={artifact.pullRequest} />
                     </div>
                   </TableCell>
                   <TableCell>
@@ -241,6 +264,15 @@ function ArtifactSection({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
+                          onClick={() => {
+                            setSelectedArtifact(artifact);
+                            setMoveDialogOpen(true);
+                          }}
+                        >
+                          <FolderIcon className="mr-2 h-4 w-4" />
+                          Move...
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
                           className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                           onClick={() => onRequestDelete(artifact)}
                         >
@@ -256,12 +288,21 @@ function ArtifactSection({
           </TableBody>
         </Table>
       </CollapsibleContent>
+      {selectedArtifact && (
+        <MoveArtifactDialog
+          artifact={selectedArtifact}
+          currentProjectId={projectId}
+          onOpenChange={setMoveDialogOpen}
+          open={moveDialogOpen}
+        />
+      )}
     </Collapsible>
   );
 }
 
 export function ArtifactsTable({
   artifacts,
+  projectId,
   onStatusChange,
   onDelete,
 }: ArtifactsTableProps) {
@@ -309,6 +350,7 @@ export function ArtifactsTable({
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
           onStatusChange={onStatusChange}
+          projectId={projectId}
           title={section.title}
         />
       ))}

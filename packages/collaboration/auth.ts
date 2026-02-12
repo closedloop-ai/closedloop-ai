@@ -5,36 +5,52 @@ import { parseArtifactRoomId } from "./room-utils";
 
 type AuthenticateOptions = {
   userId: string;
-  roomId: string;
+  roomId?: string;
+  organizationId?: string;
   userInfo: Liveblocks["UserMeta"]["info"];
 };
 
 const secret = keys().LIVEBLOCKS_SECRET;
 
-export const authenticate = async ({
+function extractTenantId(roomId: string): string | undefined {
+  try {
+    return parseArtifactRoomId(roomId).organizationId;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function authenticate({
   userId,
   roomId,
+  organizationId,
   userInfo,
-}: AuthenticateOptions) => {
+}: AuthenticateOptions): Promise<{ token: string; status: number }> {
   if (!secret) {
     throw new Error("LIVEBLOCKS_SECRET is not set");
   }
 
-  const liveblocks = new LiveblocksNode({ secret });
-  let tenantId: string | undefined;
+  if (!(roomId || organizationId)) {
+    throw new Error(
+      "organizationId is required for global tokens (when roomId is not provided)"
+    );
+  }
 
-  try {
-    const { organizationId } = parseArtifactRoomId(roomId);
-    tenantId = organizationId;
-  } catch {}
+  const liveblocks = new LiveblocksNode({ secret });
+  const tenantId = roomId
+    ? (extractTenantId(roomId) ?? organizationId)
+    : organizationId;
 
   const session = liveblocks.prepareSession(userId, {
     userInfo,
     tenantId,
   });
 
-  session.allow(roomId, session.FULL_ACCESS);
+  // Room-scoped token when roomId is provided; user-scoped via tenantId otherwise
+  if (roomId) {
+    session.allow(roomId, session.FULL_ACCESS);
+  }
 
   const { status, body } = await session.authorize();
   return { token: body, status };
-};
+}

@@ -90,7 +90,7 @@ try {
     sslCaSource = `PGSSLROOTCERT (${process.env.PGSSLROOTCERT})`;
   }
 } catch (error) {
-  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`); 
+  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`);
   console.error(error?.message || error);
   process.exit(1);
 }
@@ -109,7 +109,11 @@ const originalSslMode = parsedUrl.searchParams.get("sslmode");
 parsedUrl.searchParams.delete("sslmode");
 
 const clientConfig = { connectionString: parsedUrl.toString() };
-if ((originalSslMode && originalSslMode !== "disable") || sslCa || !sslRejectUnauthorized) {
+if (
+  (originalSslMode && originalSslMode !== "disable") ||
+  sslCa ||
+  !sslRejectUnauthorized
+) {
   clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
   if (sslCa) {
     clientConfig.ssl.ca = sslCa;

@@ -1,5 +1,4 @@
 import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import {
   EditorWithComments,
   type EditorWithCommentsProps,
@@ -17,11 +16,8 @@ export function CollaborativeEditor({
   metadataPanel,
   ...props
 }: Readonly<CollaborativeEditorProps>) {
-  // Fetch organization users for @mentions in comments
-  const { data: users } = useOrganizationUsers();
-
   return (
-    <OptionalArtifactRoom roomId={liveblocksRoomId} users={users}>
+    <OptionalArtifactRoom roomId={liveblocksRoomId}>
       {/* Presence Indicators */}
       {!!liveblocksRoomId && <Presence />}
 

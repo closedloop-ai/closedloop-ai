@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { createMockPullRequest } from "@/__tests__/fixtures/artifacts";
 import type { ProjectArtifact } from "@/types/teams";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
@@ -56,6 +57,10 @@ vi.mock("../artifact-subtype-badge", () => ({
 }));
 
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Feature Branch/;
+const GENERATING_PLAN_REGEX =
+  /Generating implementation plan\.\.\. - View workflow/i;
+const EXECUTING_PLAN_REGEX =
+  /Executing plan and creating PR\.\.\. - View workflow/i;
 
 const createMockArtifact = (
   overrides: Partial<ProjectArtifact>
@@ -452,5 +457,346 @@ describe("ArtifactsThreadedView - Navigation", () => {
 
     const row = screen.getByText("Template").closest("div.flex");
     expect(row?.className).not.toContain("cursor-pointer");
+  });
+});
+
+describe("ArtifactsThreadedView - Generation Status Indicator", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(cleanup);
+
+  test("renders generation status indicator for artifact with active status", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Generating Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "Active Workstream",
+        generationStatus: {
+          status: "RUNNING",
+          command: "execute",
+          htmlUrl: "https://github.com/org/repo/actions/runs/123",
+          startedAt: new Date(),
+          completedAt: null,
+          correlationId: "test-correlation-id",
+        },
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("Active Workstream").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(
+      screen.getByText("Executing plan and creating PR...")
+    ).toBeInTheDocument();
+  });
+
+  test("does not render indicator when status is NONE", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: {
+          status: "NONE",
+          command: null,
+          htmlUrl: null,
+          startedAt: null,
+          completedAt: null,
+          correlationId: null,
+        },
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // Indicator component should render nothing for NONE status
+    expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
+  });
+
+  test("does not render indicator when generationStatus is undefined", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: undefined,
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Executing plan and creating PR...")
+    ).not.toBeInTheDocument();
+  });
+
+  test("renders clickable link when htmlUrl is provided", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Running Artifact",
+        subtype: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: {
+          status: "RUNNING",
+          command: "plan",
+          htmlUrl: "https://github.com/org/repo/actions/runs/456",
+          startedAt: new Date(),
+          completedAt: null,
+          correlationId: "test-id",
+        },
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    const link = screen.getByRole("link", {
+      name: GENERATING_PLAN_REGEX,
+    });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/org/repo/actions/runs/456"
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  test("status transitions from PENDING to SUCCESS", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Transitioning Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: {
+          status: "PENDING",
+          command: "execute",
+          htmlUrl: null,
+          startedAt: null,
+          completedAt: null,
+          correlationId: "test-id",
+        },
+      }),
+    ];
+
+    const { rerender } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // Initially shows PENDING state
+    expect(screen.getByText("Waiting to start...")).toBeInTheDocument();
+
+    // Update to SUCCESS state
+    const updatedArtifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Transitioning Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: {
+          status: "SUCCESS",
+          command: "execute",
+          htmlUrl: "https://github.com/org/repo/actions/runs/789",
+          startedAt: new Date(),
+          completedAt: new Date(),
+          correlationId: "test-id",
+        },
+      }),
+    ];
+
+    rerender(<ArtifactsThreadedView artifacts={updatedArtifacts} />);
+
+    // SUCCESS state shows green checkmark, no message
+    expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
+    const container = screen.getByText("Transitioning Artifact").closest("div");
+    expect(container?.querySelector(".text-green-600")).toBeInTheDocument();
+  });
+
+  test("screen reader announcements via aria-label", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Accessible Artifact",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        generationStatus: {
+          status: "RUNNING",
+          command: "execute",
+          htmlUrl: "https://github.com/org/repo/actions/runs/999",
+          startedAt: new Date(),
+          completedAt: null,
+          correlationId: "test-id",
+        },
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    const link = screen.getByRole("link", {
+      name: EXECUTING_PLAN_REGEX,
+    });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("aria-label");
+  });
+
+  test("indicator placement does not conflict with workstream badges", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact with Status",
+        subtype: "PRD",
+        workstreamId: "ws-1",
+        workstreamTitle: "Active Workstream",
+        workstreamState: "IMPLEMENTATION_IN_PROGRESS",
+        generationStatus: {
+          status: "RUNNING",
+          command: "execute",
+          htmlUrl: "https://github.com/org/repo/actions/runs/111",
+          startedAt: new Date(),
+          completedAt: null,
+          correlationId: "test-id",
+        },
+      }),
+    ];
+
+    render(<ArtifactsThreadedView artifacts={artifacts} />);
+
+    // Verify workstream badge is rendered in trigger
+    expect(screen.getByText("Implementing")).toBeInTheDocument();
+
+    const trigger = screen.getByText("Active Workstream").closest("button");
+    fireEvent.click(trigger!);
+
+    // Verify both badge and indicator are rendered in artifact row
+    expect(screen.getByTestId("badge-PRD")).toBeInTheDocument();
+    expect(
+      screen.getByText("Executing plan and creating PR...")
+    ).toBeInTheDocument();
+
+    // Verify they're both in the same artifact row (outer div has gap-3)
+    const row = screen.getByText("Artifact with Status").closest(".rounded-md");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".text-muted-foreground")).toBeInTheDocument(); // file type icon
+    expect(screen.queryByText("OPEN")).toBeNull();
+    expect(screen.queryByText("MERGED")).toBeNull();
+  });
+});
+
+describe("ArtifactsThreadedView - Workstream PR Border", () => {
+  afterEach(cleanup);
+
+  test("shows blue border when workstream has OPEN PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+  });
+
+  test("shows green border when workstream has MERGED PR", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-green-500");
+  });
+
+  test("prioritizes OPEN over MERGED when multiple PRs in workstream", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+      createMockArtifact({
+        id: "2",
+        name: "Artifact 2",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
+  });
+
+  test("shows no border when workstream has no PRs", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Artifact 1",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+        pullRequest: null,
+      }),
+    ];
+
+    const { container } = render(
+      <ArtifactsThreadedView artifacts={artifacts} />
+    );
+
+    const collapsible = container.querySelector("[data-state]");
+    expect(collapsible?.className).not.toContain("border-l-blue-500");
+    expect(collapsible?.className).not.toContain("border-l-green-500");
   });
 });
