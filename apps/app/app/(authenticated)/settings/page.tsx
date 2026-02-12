@@ -25,6 +25,7 @@ import {
 import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
+import { GoogleIntegrationCard } from "./components/google-integration-card";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
 
 /**
@@ -66,19 +67,27 @@ export default function SettingsPage() {
   const isAdmin = membership?.role === "org:admin";
   const searchParams = useSearchParams();
 
-  // Handle GitHub OAuth callback results from URL params
+  // Handle OAuth callback results from URL params (GitHub + Google)
   useEffect(() => {
     const githubStatus = searchParams.get("github");
     const errorCode = searchParams.get("code");
+    const googleStatus = searchParams.get("google");
 
     if (githubStatus === "connected") {
       toast.success("GitHub connected successfully");
-      // Clean up URL params
-      window.history.replaceState({}, "", window.location.pathname);
     } else if (githubStatus === "error" && errorCode) {
       const message = GITHUB_ERROR_MESSAGES[errorCode] ?? "An error occurred.";
       toast.error(message);
-      // Clean up URL params
+    }
+
+    if (googleStatus === "success") {
+      toast.success("Google Drive connected successfully");
+    } else if (googleStatus === "error") {
+      toast.error("Failed to connect Google Drive");
+    }
+
+    // Clean up URL params if any integration status was present
+    if (githubStatus || googleStatus) {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, [searchParams]);
@@ -186,6 +195,7 @@ export default function SettingsPage() {
 
         <TabsContent className="mt-6 space-y-6" value="integrations">
           <GitHubIntegrationCard />
+          <GoogleIntegrationCard />
           <LinearIntegrationCard />
 
           <Card>

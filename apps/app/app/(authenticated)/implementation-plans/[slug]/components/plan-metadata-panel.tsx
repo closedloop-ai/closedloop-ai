@@ -52,7 +52,6 @@ import {
 } from "@/components/artifact-editor/metadata-panel";
 import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
-import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import {
@@ -137,29 +136,13 @@ type PlanMetadataPanelProps = {
    */
   onParentChange: (parentId: string | null) => void;
   /**
-   * Current target repository value
+   * Current target repository value (read-only, inherited from source PRD)
    */
   targetRepo: string;
   /**
-   * Current target branch value
+   * Current target branch value (read-only, inherited from source PRD)
    */
   targetBranch: string;
-  /**
-   * Handler called when target repository input value changes
-   */
-  onTargetRepoChange: (targetRepo: string) => void;
-  /**
-   * Handler called when target repository input loses focus
-   */
-  onTargetRepoBlur: () => void;
-  /**
-   * Handler called when target branch input value changes
-   */
-  onTargetBranchChange: (targetBranch: string) => void;
-  /**
-   * Handler called when target branch input loses focus
-   */
-  onTargetBranchBlur: () => void;
 };
 
 /**
@@ -182,12 +165,8 @@ export function PlanMetadataPanel({
   onApproverSelect,
   onOwnerChange,
   onParentChange,
-  targetRepo,
-  targetBranch,
-  onTargetRepoChange,
-  onTargetRepoBlur,
-  onTargetBranchChange,
-  onTargetBranchBlur,
+  targetRepo = "Inherited from project",
+  targetBranch = "main",
 }: PlanMetadataPanelProps) {
   // Fetch org users for approver dropdown
   const { data: orgUsers = [] } = useOrganizationUsers();
@@ -260,15 +239,19 @@ export function PlanMetadataPanel({
               teamMembers={teamMembers}
             />
 
-            <TargetRepositoryFields
-              onTargetBranchBlur={onTargetBranchBlur}
-              onTargetBranchChange={onTargetBranchChange}
-              onTargetRepoBlur={onTargetRepoBlur}
-              onTargetRepoChange={onTargetRepoChange}
-              targetBranch={targetBranch}
-              targetRepo={targetRepo}
-              title="Target Repository"
-            />
+            <MetadataSection separator>
+              <h4 className="font-medium text-sm">Target Repository</h4>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs">
+                  Repository
+                </Label>
+                <p className="text-muted-foreground text-sm">{targetRepo}</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs">Branch</Label>
+                <p className="text-muted-foreground text-sm">{targetBranch}</p>
+              </div>
+            </MetadataSection>
 
             <MetadataSection separator>
               <Label className="text-muted-foreground text-xs">

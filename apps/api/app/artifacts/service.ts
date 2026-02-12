@@ -966,7 +966,7 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
       sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
@@ -1119,7 +1119,7 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
       sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
@@ -1598,7 +1598,7 @@ Please try again or contact support if the issue persists.`,
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Use source artifact's target repo (fallback to project's primary)
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
       sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
