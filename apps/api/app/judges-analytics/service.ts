@@ -136,8 +136,10 @@ function getISOWeekStartDate(date: Date): Date {
 /**
  * Fetches human ratings and comments counts per artifact subtype (same org and date range).
  * Returns maps with 0 for each subtype when there are no artifacts or no feedback.
+ *
+ * @internal Exported for unit testing.
  */
-async function getHumanCountsBySubtype(
+export async function getHumanCountsBySubtype(
   organizationId: string,
   startDate: Date,
   endDate: Date,
@@ -175,26 +177,15 @@ async function getHumanCountsBySubtype(
     return { humanRatingsBySubtype, humanCommentsBySubtype };
   }
 
-  const [ratings, comments] = await Promise.all([
-    withDb((db) =>
-      db.artifactRating.findMany({
-        where: {
-          artifactId: { in: orgArtifactIds },
-          createdAt: { gte: startDate, lte: endDate },
-        },
-        select: { artifactId: true },
-      })
-    ),
-    withDb((db) =>
-      db.comment.findMany({
-        where: {
-          artifactId: { in: orgArtifactIds },
-          createdAt: { gte: startDate, lte: endDate },
-        },
-        select: { artifactId: true },
-      })
-    ),
-  ]);
+  const ratings = await withDb((db) =>
+    db.artifactRating.findMany({
+      where: {
+        artifactId: { in: orgArtifactIds },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { artifactId: true, comment: true },
+    })
+  );
 
   for (const r of ratings) {
     const subtype = idToSubtype.get(r.artifactId);
@@ -203,18 +194,12 @@ async function getHumanCountsBySubtype(
         subtype,
         (humanRatingsBySubtype.get(subtype) ?? 0) + 1
       );
-    }
-  }
-  for (const c of comments) {
-    if (c.artifactId === null) {
-      continue;
-    }
-    const subtype = idToSubtype.get(c.artifactId);
-    if (subtype !== undefined) {
-      humanCommentsBySubtype.set(
-        subtype,
-        (humanCommentsBySubtype.get(subtype) ?? 0) + 1
-      );
+      if (r.comment != null && r.comment.trim() !== "") {
+        humanCommentsBySubtype.set(
+          subtype,
+          (humanCommentsBySubtype.get(subtype) ?? 0) + 1
+        );
+      }
     }
   }
 
