@@ -758,11 +758,39 @@ export const githubService = {
   },
 
   /**
+   * Find a repository by its fullName within an organization's GitHub installation.
+   * Returns null if no matching repository is found.
+   */
+  findRepositoryByFullName(
+    organizationId: string,
+    fullName: string
+  ): Promise<GitHubInstallationRepository | null> {
+    return withDb((db) =>
+      db.gitHubInstallationRepository.findFirst({
+        where: {
+          fullName,
+          installation: {
+            organizationId,
+            status: "ACTIVE",
+          },
+        },
+      })
+    );
+  },
+
+  /**
    * Get repositories for an organization's GitHub installation.
    * Returns all repositories associated with the installation.
+   *
+   * @param organizationId - Organization ID to scope the query
+   * @param orderBy - Optional sort order (default: lastPushedAt desc with nulls last, then name asc)
    */
   async getRepositories(
-    organizationId: string
+    organizationId: string,
+    orderBy?: Array<{
+      lastPushedAt?: { sort: "asc" | "desc"; nulls?: "first" | "last" };
+      name?: "asc" | "desc";
+    }>
   ): Promise<GitHubInstallationRepository[]> {
     const installation = await withDb((db) =>
       db.gitHubInstallation.findFirst({
@@ -771,7 +799,12 @@ export const githubService = {
           status: "ACTIVE",
         },
         include: {
-          repositories: true,
+          repositories: {
+            orderBy: orderBy ?? [
+              { lastPushedAt: { sort: "desc", nulls: "last" } },
+              { name: "asc" },
+            ],
+          },
         },
       })
     );

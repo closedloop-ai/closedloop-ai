@@ -1,3 +1,4 @@
+import type { PushEvent } from "@octokit/webhooks-types";
 import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -8,6 +9,7 @@ import {
   type HandledPullRequestEvent,
   handlePullRequest,
 } from "./handlers/pull-request-handler";
+import { handlePush } from "./handlers/push-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
 import {
@@ -65,6 +67,9 @@ export async function POST(request: Request): Promise<Response> {
 
       case "pull_request":
         return await handlePullRequest(parsedBody as HandledPullRequestEvent);
+
+      case "push":
+        return await handlePush(parsedBody as PushEvent);
 
       default: {
         log.info("[webhook/github] Ignoring unsupported event type", {
