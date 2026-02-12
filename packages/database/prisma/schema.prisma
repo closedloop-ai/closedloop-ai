@@ -712,7 +712,7 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@index([artifactId])
-  @@index([createdAt, artifactId])
+  @@index([createdAt])
   @@map("artifact_evaluations")
 }
 
