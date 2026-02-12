@@ -110,7 +110,12 @@ export async function handlePullRequest(
           number: pull_request.number,
         },
       },
-      select: { id: true, workstreamId: true },
+      select: {
+        id: true,
+        workstreamId: true,
+        artifactId: true,
+        artifact: { select: { documentSlug: true } },
+      },
     });
 
     if (!existingPr) {
@@ -152,6 +157,8 @@ export async function handlePullRequest(
               prNumber: pull_request.number,
               prTitle: pull_request.title,
               prUrl: pull_request.html_url,
+              artifactId: existingPr.artifactId,
+              documentSlug: existingPr.artifact?.documentSlug,
               ...(isMerged
                 ? {
                     mergedAt: pull_request.merged_at,

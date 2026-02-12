@@ -4,6 +4,7 @@ import {
   type ArtifactWithWorkstream,
   type CreateArtifactInput,
   type FindArtifactsOptions,
+  type GenerationStatus,
   getArtifactType,
   type PreviewDeployment,
   type PullRequestInfo,
@@ -31,6 +32,7 @@ import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
+import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -39,6 +41,7 @@ import {
   artifactIncludeWithUser,
   createArtifactVersion,
   generateDocumentSlug,
+  parseTriggerData,
   previewDeploymentSelect,
 } from "./artifact-utils";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
@@ -61,6 +64,28 @@ async function validateOwnerInOrg(
   if (!owner) {
     throw new Error("Invalid owner ID: user not found in this organization");
   }
+}
+
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) return undefined;
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
 }
 
 // Result types for service operations
@@ -155,7 +180,60 @@ export const artifactsService = {
       }
     }
 
-    return artifacts.map((a) => toArtifactWithWorkstream(a, prMap));
+    // Batch-fetch GitHubActionRun records for generation status
+    let generationStatusMap: Map<string, GenerationStatus> = new Map();
+    if (uniqueWorkstreamIds.length > 0) {
+      const actionRuns = await withDb((db) =>
+        db.gitHubActionRun.findMany({
+          where: {
+            workstreamId: { in: uniqueWorkstreamIds },
+            workflowName: "symphony-dispatch",
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+          select: {
+            workstreamId: true,
+            status: true,
+            htmlUrl: true,
+            startedAt: true,
+            completedAt: true,
+            triggerData: true,
+          },
+        })
+      );
+
+      // Build map: artifactId -> most recent GenerationStatus
+      generationStatusMap = new Map<string, GenerationStatus>();
+      for (const run of actionRuns) {
+        const triggerData = parseTriggerData(run.triggerData);
+        if (!triggerData) {
+          continue;
+        }
+
+        const artifactId = triggerData.artifactId;
+
+        // Map Prisma GitHubActionStatus to GenerationStatus.
+        // CANCELLED maps to FAILURE since both are terminal non-success states.
+        const status: GenerationStatus["status"] =
+          run.status === "CANCELLED" ? "FAILURE" : run.status;
+
+        // Only set if this artifact doesn't have a status yet (first = most recent)
+        if (!generationStatusMap.has(artifactId)) {
+          generationStatusMap.set(artifactId, {
+            status,
+            command: triggerData.command,
+            htmlUrl: run.htmlUrl || null,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            correlationId: triggerData.correlationId,
+          });
+        }
+      }
+    }
+
+    return artifacts.map((a) =>
+      toArtifactWithWorkstream(a, prMap, generationStatusMap)
+    );
   },
 
   /**
@@ -946,6 +1024,9 @@ ${initialInstructions.trim()}`;
       artifact.content
     );
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -954,6 +1035,7 @@ ${initialInstructions.trim()}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -1112,6 +1194,9 @@ ${initialInstructions.trim()}`;
 
 ${changes}`;
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Now trigger the workflow - records already exist for webhook to find
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1120,6 +1205,7 @@ ${changes}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id, // Same session for artifact continuity
+      ...committer,
     });
 
     if (!result.success) {
@@ -1272,15 +1358,21 @@ Please try again or contact support if the issue persists.`,
       }
 
       const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "execution-logs"
+        Number(actionRun.runId)
       );
 
-      if (artifacts.length === 0 || !artifacts[0]) {
+      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      const symphonyArtifact = artifacts.find((a) =>
+        SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
+          a.name.startsWith(prefix)
+        )
+      );
+
+      if (!symphonyArtifact) {
         return createEmptyExecutionTrace();
       }
 
-      return parseExecutionLogs(artifacts[0].data);
+      return parseExecutionLogs(symphonyArtifact.data);
     } catch (error) {
       log.error("[artifacts-service] Failed to get execution log", {
         error: error instanceof Error ? error.message : String(error),
@@ -1592,6 +1684,9 @@ Please try again or contact support if the issue persists.`,
       ]);
     });
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1600,6 +1695,7 @@ Please try again or contact support if the issue persists.`,
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -1788,12 +1884,15 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
-  prMap?: Map<string, PullRequestInfo>
+  prMap?: Map<string, PullRequestInfo>,
+  generationStatusMap?: Map<string, GenerationStatus>
 ): ArtifactWithWorkstream {
   const pullRequest =
     artifact.workstreamId && prMap
       ? (prMap.get(artifact.workstreamId) ?? null)
       : null;
+
+  const generationStatus = generationStatusMap?.get(artifact.id);
 
   return {
     ...artifact,
@@ -1808,6 +1907,7 @@ function toArtifactWithWorkstream(
       artifact.previewDeployment
     ),
     pullRequest,
+    ...(generationStatus && { generationStatus }),
   };
 }
 

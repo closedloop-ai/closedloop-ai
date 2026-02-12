@@ -234,10 +234,12 @@ describe("handlePullRequest", () => {
         id: "repo-uuid-123",
       });
 
-      // Mock PR lookup
+      // Mock PR lookup (includes artifact via relation)
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
+        artifactId: "artifact-uuid-123",
+        artifact: { documentSlug: "plan-feature-x" },
       });
 
       // Mock update
@@ -254,7 +256,7 @@ describe("handlePullRequest", () => {
         select: { id: true },
       });
 
-      // Verify PR lookup
+      // Verify PR lookup (includes artifact via relation)
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
         where: {
           repositoryId_number: {
@@ -262,7 +264,12 @@ describe("handlePullRequest", () => {
             number: 42,
           },
         },
-        select: { id: true, workstreamId: true },
+        select: {
+          id: true,
+          workstreamId: true,
+          artifactId: true,
+          artifact: { select: { documentSlug: true } },
+        },
       });
 
       // Verify PR update
@@ -276,7 +283,7 @@ describe("handlePullRequest", () => {
         },
       });
 
-      // Verify workstream event creation
+      // Verify workstream event creation with artifactId and documentSlug
       expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
         data: {
           workstreamId: "ws-uuid-789",
@@ -286,6 +293,8 @@ describe("handlePullRequest", () => {
             prNumber: 42,
             prTitle: "Add feature X",
             prUrl: "https://github.com/owner/test-repo/pull/1",
+            artifactId: "artifact-uuid-123",
+            documentSlug: "plan-feature-x",
             mergedAt: "2026-02-10T12:00:00Z",
             mergeCommitSha: "def456",
           },
@@ -322,6 +331,8 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-789",
         workstreamId: "ws-uuid-abc",
+        artifactId: null,
+        artifact: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -348,6 +359,8 @@ describe("handlePullRequest", () => {
             prNumber: 43,
             prTitle: "Feature rejected",
             prUrl: "https://github.com/owner/test-repo/pull/1",
+            artifactId: null,
+            documentSlug: undefined,
           },
         },
       });
@@ -626,6 +639,8 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-tx",
         workstreamId: "ws-uuid-tx",
+        artifactId: "artifact-uuid-tx",
+        artifact: { documentSlug: "plan-tx" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});

@@ -41,8 +41,10 @@ import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { PreviewLink } from "@/components/preview-link";
 import { PullRequestLink } from "@/components/pull-request-link";
+import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -188,6 +190,16 @@ function ArtifactSection({
                     <div className="flex items-center gap-2">
                       <Icon className="h-4 w-4 text-muted-foreground" />
                       <span className="font-medium">{artifact.name}</span>
+                      <GenerationStatusIndicator
+                        generationStatus={artifact.generationStatus}
+                      />
+                      {artifact.pullRequest && (
+                        <div className="hidden sm:flex">
+                          <PullRequestStatusBadge
+                            pullRequest={artifact.pullRequest}
+                          />
+                        </div>
+                      )}
                       <PullRequestLink pullRequest={artifact.pullRequest} />
                     </div>
                   </TableCell>

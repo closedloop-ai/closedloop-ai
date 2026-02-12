@@ -111,6 +111,32 @@ export function shouldGenerateDocumentSlug(subtype: ArtifactSubtype): boolean {
   return NAVIGABLE_DOCUMENT_TYPES.has(subtype);
 }
 
+/**
+ * Maps navigable artifact subtypes to their URL route prefixes.
+ * Single source of truth for subtype→route mapping used by:
+ * - apps/app/lib/artifact-navigation.ts (frontend navigation)
+ * - apps/app/app/(authenticated)/artifacts/[slug]/page.tsx (redirect fallback)
+ * - packages/collaboration/room-metadata.ts (Liveblocks notification URLs)
+ */
+export const SUBTYPE_ROUTE_PREFIX: Partial<Record<ArtifactSubtype, string>> = {
+  PRD: "prds",
+  IMPLEMENTATION_PLAN: "implementation-plans",
+  IMPLEMENTATION_STRATEGY: "implementation-plans",
+  ISSUE: "issues",
+  BUG: "issues",
+};
+
+/**
+ * Returns the route prefix for a navigable artifact subtype, or null if not navigable.
+ * Accepts raw strings (e.g. from Liveblocks room metadata) in addition to typed subtypes.
+ */
+export function getRoutePrefixForSubtype(subtype: string): string | null {
+  if (subtype in SUBTYPE_ROUTE_PREFIX) {
+    return SUBTYPE_ROUTE_PREFIX[subtype as ArtifactSubtype] ?? null;
+  }
+  return null;
+}
+
 // Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",
@@ -204,6 +230,8 @@ export type ArtifactWithWorkstream = Artifact & {
   parent?: ParentArtifactInfo | null;
   previewDeployment?: PreviewDeployment | null;
   pullRequest?: PullRequestInfo | null;
+  /** The latest generation status for this artifact. Omitted when no generation status is available. */
+  generationStatus?: GenerationStatus;
 };
 
 export type FindArtifactsOptions = {
@@ -297,6 +325,20 @@ export type GenerationStatus = {
   completedAt: Date | null;
   correlationId: string | null;
 };
+
+export const ACTIVE_GENERATION_STATUSES = [
+  "PENDING",
+  "QUEUED",
+  "RUNNING",
+] as const;
+
+export function isActiveGenerationStatus(
+  status: GenerationStatus["status"]
+): boolean {
+  return ACTIVE_GENERATION_STATUSES.includes(
+    status as (typeof ACTIVE_GENERATION_STATUSES)[number]
+  );
+}
 
 // Plan JSON types for experimental plugin artifacts
 export type PlanAcceptanceCriterion = {

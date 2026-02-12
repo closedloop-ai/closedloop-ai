@@ -1,6 +1,9 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -61,6 +64,7 @@ import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { PropertiesPanel } from "./components/properties-panel";
+import { useMergeNotification } from "./hooks/use-merge-notification";
 
 /** Workstream states that indicate an async workflow is actively running. */
 const ACTIVE_WORKSTREAM_STATES = new Set([
@@ -106,23 +110,30 @@ export default function ProjectDetailPage() {
   } = useProject(projectId);
   const { data: activityData, isLoading: loadingActivity } =
     useProjectActivity(projectId);
+
+  // Show toast notification when PRs are merged
+  useMergeNotification(activityData, projectId, teamId);
+
   // Poll artifacts when any workstream is actively running (e.g., execution in progress).
   // This ensures webhook-created artifacts (like PRs) appear without a manual refresh.
   // Uses TanStack Query's function form of refetchInterval to access query data directly,
   // avoiding a circular dependency between the memo and the query declaration.
   const { data: artifactsData = [], isLoading: loadingArtifacts } =
     useArtifactsByProject(projectId, true, {
+      staleTime: 4000,
       refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        const hasActive = data.some(
+        const artifacts = query.state.data ?? [];
+        const hasActiveWorkstream = artifacts.some(
           (a) =>
             a.workstream?.state &&
             ACTIVE_WORKSTREAM_STATES.has(a.workstream.state)
         );
-        return hasActive ? 5000 : false;
+        const hasActiveGeneration = artifacts.some(
+          (a) =>
+            a.generationStatus &&
+            isActiveGenerationStatus(a.generationStatus.status)
+        );
+        return hasActiveWorkstream || hasActiveGeneration ? 5000 : false;
       },
     });
 
@@ -145,6 +156,7 @@ export default function ProjectDetailPage() {
         workstreamId: artifact.workstreamId,
         workstreamTitle: artifact.workstream?.title,
         workstreamState: artifact.workstream?.state,
+        generationStatus: artifact.generationStatus,
       })),
     [artifactsData]
   );

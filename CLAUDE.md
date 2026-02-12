@@ -227,6 +227,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 - **[convention]**: `Artifact.subtype` is non-nullable in both the DB schema and API type. All creation paths require a subtype — don't make it nullable for speculative forward-compatibility. (context: prisma|schema-design|api-contract|artifact)
 - **[pattern]**: When checking if an artifact is a document (or other category), use `artifact.type === ArtifactType.DOCUMENT` instead of enumerating subtypes (PRD, IMPLEMENTATION_PLAN, ISSUE). The `type` field is the canonical categorization after the type/subtype split. (context: artifact-types|schema-design|categorization|type-subtype)
+- **[mistake]**: When looking up route prefixes or navigation paths, use `artifact.subtype` not `artifact.type`. Type is the broad category (DOCUMENT/WORKFLOW/BRANCH), subtype is specific (PRD/ISSUE/etc). Route maps like `ARTIFACT_TYPE_ROUTES` are keyed by subtype values. (context: artifact|routing|type-subtype|navigation)
 
 ### API & Service Layer
 - **[pattern]**: For artifact routes in `apps/api/app/artifacts/[id]/`, use `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` - the org-scoped query ensures authorization. (context: auth|artifacts|org-scoping)
@@ -234,6 +235,8 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[convention]**: API routes must not set Cache-Control headers manually. Caching is handled by TanStack Query on the frontend. Server-side caching goes in the service layer (in-memory or Redis), not HTTP headers. (context: api-routes|caching)
 - **[convention]**: For Prisma-to-API type conversions in the service layer, use a centralized mapping function (e.g., `toArtifact()`, `toArtifactWithWorkstream()`) that validates required fields and throws on contract violations, rather than scattering `as Type` casts across call sites. (context: service-layer|type-mapping|prisma|api-types|validation)
 - **[convention]**: When catching expected errors in webhook handlers (e.g., Prisma P2025 for record-not-found), catch only the specific error code and re-throw everything else. Do not use generic catch blocks that swallow all errors. See `handleOrganizationMembershipDeleted` pattern in `auth-hooks.ts:238-255`. (context: webhooks|error-handling|prisma|expected-errors|api-routes)
+- **[mistake]**: When implementing Liveblocks auth with global tokens (no roomId), must pass organizationId as tenantId. Without tenant scoping, inbox notifications are broken. The Liveblocks auth route already has `user.organizationId` available - pass it through to `authenticate()`. (context: liveblocks|auth|multi-tenant|global-tokens|tenant-scoping|inbox)
+- **[pattern]**: When extracting tenant ID from a room ID in Liveblocks auth, use fallback chain: `extractTenantId(roomId) ?? organizationId`. This provides defense-in-depth if room ID parsing fails (malformed input) - still get tenant scoping from the explicit organizationId. (context: liveblocks|auth|multi-tenant|defensive-programming|fallback-chain)
 
 ### TanStack Query
 - **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
@@ -246,12 +249,17 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[convention]**: New parser/utility modules in domain packages must include unit tests. PR reviewers will reject parsers without test coverage. (context: testing|code-review)
 - **[convention]**: Do not assert on logging statements (`expect(log.info)`, `expect(log.warn)`, etc.) in unit tests. Log messages are implementation details — tests should assert on observable behavior (DB calls, return values, side effects), not that a particular string was logged. (context: testing|unit-tests|logging|anti-pattern)
 - **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
+- **[insight]**: `@repo/observability/log` exports `console` directly and does not import `server-only`, so it is safe to use in client components despite `server-only` being a package-level dependency of `@repo/observability`. (context: observability|client-components|server-only|module-resolution)
+- **[pattern]**: When shared mappings (e.g., artifact subtype-to-route prefix) are needed by both server packages (`packages/collaboration`) and frontend code (`apps/app`), place them in `packages/api/src/types/` since server packages cannot import from `apps/app/lib/`. (context: monorepo|code-organization|shared-types|cross-package-dependencies)
 
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
+- **[mistake]**: Biome's import order rules in this monorepo require `@repo/*` package imports before `@/*` path alias imports. Run `pnpm lint:fix` to auto-fix after adding shared package imports. (context: biome|import-order|lint|monorepo)
+- **[convention]**: To lint a single file with Biome, use `npx biome check <file>` directly. The monorepo's `pnpm lint -- --filter=<file>` does not support single-file targeting. (context: biome|linting|cli|single-file)
+- **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
 
 ### Domain Concepts
 - **[convention]**: The 'Workflow' artifact category in Symphony represents user-defined step sequences that orchestrate execution (e.g., plan → code → test → review), NOT artifacts generated during execution or external tool integrations. Workflows let users define what steps get executed. (context: artifact-category|workflow|symphony-concepts)
@@ -267,3 +275,9 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### React & Components
 - **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)
+
+### Liveblocks
+- **[mistake]**: RoomProvider requires a LiveblocksProvider ancestor. When LiveblocksProvider is conditionally mounted based on user data loading, and artifact data resolves first, RoomProvider descendants crash. Always mount at least a minimal LiveblocksProvider (auth endpoint only) during loading states. (context: liveblocks|RoomProvider|react-providers|loading-state|race-condition)
+- **[mistake]**: When mounting LiveblocksProvider in loading/bootstrap branches, must include LiveblocksErrorBoundary to contain auth/runtime errors. Without it, Liveblocks errors during bootstrap bubble up and crash the app before the full provider mounts. (context: liveblocks|error-boundary|bootstrap|error-handling|react)
+- **[pattern]**: When nesting LiveblocksErrorBoundary with a manual LiveblocksAvailabilityContext.Provider, place the manual override inside the error boundary. The inner provider wins, ensuring isAvailable=false during loading regardless of auth errors. (context: react-context|error-boundaries|liveblocks|context-nesting)
+- **[mistake]**: When reading Liveblocks room metadata, must use the same key that was stored at room creation. Room creation stores `artifactSubtype` in `room-utils.ts` but room resolution was reading `artifactType` in `room-metadata.ts`, causing fallback to generic URLs. Always verify read keys match write keys. (context: liveblocks|room-metadata|metadata-keys|consistency|read-write-mismatch)

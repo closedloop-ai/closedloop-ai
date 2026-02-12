@@ -50,7 +50,11 @@ export const projectsService = {
   /**
    * Find projects by team ID
    */
-  findByTeam(teamId: string, organizationId: string) {
+  findByTeam(
+    teamId: string,
+    organizationId: string,
+    options?: { limit?: number }
+  ) {
     return withDb((db) =>
       db.project.findMany({
         where: {
@@ -60,7 +64,8 @@ export const projectsService = {
           organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { createdAt: "desc" },
+        orderBy: { updatedAt: "desc" },
+        ...(options?.limit && { take: options.limit }),
       })
     );
   },
