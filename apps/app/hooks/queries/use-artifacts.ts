@@ -20,6 +20,7 @@ import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
+import { projectKeys } from "./use-projects";
 
 // Query keys
 export const artifactKeys = {
@@ -216,11 +217,14 @@ export function useUpdateArtifact() {
       const { id, ...body } = input;
       return apiClient.put<Artifact>(`/artifacts/${id}`, body);
     },
-    onSuccess: (_, { id }) => {
+    onSuccess: (_, input) => {
       queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(id),
+        queryKey: artifactKeys.detail(input.id),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      if (input.projectId) {
+        queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      }
     },
   });
 }

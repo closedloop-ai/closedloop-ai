@@ -18,11 +18,10 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useQueryClient } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { useState } from "react";
-import { artifactKeys, useUpdateArtifact } from "@/hooks/queries/use-artifacts";
-import { projectKeys, useProjects } from "@/hooks/queries/use-projects";
+import { useUpdateArtifact } from "@/hooks/queries/use-artifacts";
+import { useProjects } from "@/hooks/queries/use-projects";
 
 /**
  * Minimal artifact shape required for the move dialog.
@@ -50,7 +49,6 @@ export function MoveArtifactDialog({
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const { data: projects = [] } = useProjects();
   const updateArtifact = useUpdateArtifact();
-  const queryClient = useQueryClient();
 
   // Use projectId from artifact if available, otherwise use the explicit prop
   const artifactProjectId = artifact.projectId ?? currentProjectId;
@@ -63,30 +61,6 @@ export function MoveArtifactDialog({
         id: artifact.id,
         projectId: selectedProjectId,
       });
-
-      // Comprehensive cache invalidation
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: artifactKeys.detail(artifact.id),
-        }),
-        artifactProjectId
-          ? queryClient.invalidateQueries({
-              queryKey: artifactKeys.list({ projectId: artifactProjectId }),
-            })
-          : Promise.resolve(),
-        queryClient.invalidateQueries({
-          queryKey: artifactKeys.list({ projectId: selectedProjectId }),
-        }),
-        artifactProjectId
-          ? queryClient.invalidateQueries({
-              queryKey: projectKeys.detail(artifactProjectId),
-            })
-          : Promise.resolve(),
-        queryClient.invalidateQueries({
-          queryKey: projectKeys.detail(selectedProjectId),
-        }),
-        queryClient.invalidateQueries({ queryKey: projectKeys.all }),
-      ]);
 
       toast.success("Artifact moved successfully");
       onOpenChange(false);
