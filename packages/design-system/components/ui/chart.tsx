@@ -102,7 +102,15 @@ ${colorConfig
   )
 }
 
-const ChartTooltip = RechartsPrimitive.Tooltip
+// Omit ref to avoid React 19 ref typing mismatch (Tooltip is a class component).
+function ChartTooltip(
+  props: Omit<
+    RechartsPrimitive.TooltipProps<number, string>,
+    "ref"
+  >
+) {
+  return <RechartsPrimitive.Tooltip {...props} />
+}
 
 function ChartTooltipContent({
   active,
