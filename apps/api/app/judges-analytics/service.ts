@@ -1,5 +1,5 @@
 import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { CaseScore, JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
@@ -10,6 +10,69 @@ import type {
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
 
+/** Validates and extracts a JudgesReport from unknown reportData. Returns null if invalid. */
+function parseJudgesReport(reportData: unknown): JudgesReport | null {
+  if (
+    !(reportData && typeof reportData === "object" && "stats" in reportData)
+  ) {
+    return null;
+  }
+  const report = reportData as JudgesReport;
+  return report?.stats && Array.isArray(report.stats) ? report : null;
+}
+
+/** Extracts judge name and score from a CaseScore. Returns null if no matching metric. */
+function extractJudgeMetric(
+  caseScore: CaseScore
+): { name: string; score: number } | null {
+  const judgeName = caseScore.case_id;
+  const judgeMetric = caseScore.metrics?.find(
+    (metric) => metric.metric_name === caseScore.case_id
+  );
+  return judgeMetric ? { name: judgeName, score: judgeMetric.score } : null;
+}
+
+/** Aggregates judge scores by artifact subtype and judge name. */
+class JudgeScoreAggregator {
+  private readonly data = new Map<
+    ArtifactSubtype,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  >();
+
+  addScore(
+    artifactSubtype: ArtifactSubtype,
+    judgeName: string,
+    score: number,
+    artifactId: string
+  ): void {
+    if (!this.data.has(artifactSubtype)) {
+      this.data.set(artifactSubtype, new Map());
+    }
+
+    const judgeMap = this.data.get(artifactSubtype)!;
+    if (!judgeMap.has(judgeName)) {
+      judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
+    }
+
+    const judgeData = judgeMap.get(judgeName)!;
+    judgeData.scores.push(score);
+    judgeData.artifactIds.add(artifactId);
+  }
+
+  getResults(): Map<
+    ArtifactSubtype,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  > {
+    return this.data;
+  }
+}
+
+type EvaluationInput = {
+  artifactId: string;
+  artifact: { subtype: ArtifactSubtype };
+  reportData: unknown;
+};
+
 /**
  * Extracts judge scores from evaluation reportData and aggregates them by artifact subtype and judge name.
  *
@@ -17,61 +80,57 @@ import { withDb } from "@repo/database";
  * @returns Nested map structure: artifactSubtype -> judgeName -> { scores, artifactIds }
  */
 function extractJudgeScores(
-  evaluations: Array<{
-    artifactId: string;
-    artifact: { subtype: ArtifactSubtype };
-    reportData: unknown;
-  }>
+  evaluations: EvaluationInput[]
 ): Map<
   ArtifactSubtype,
   Map<string, { scores: number[]; artifactIds: Set<string> }>
 > {
-  const aggregator = new Map<
-    ArtifactSubtype,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  >();
+  const aggregator = new JudgeScoreAggregator();
 
   for (const evaluation of evaluations) {
-    const artifactSubtype = evaluation.artifact.subtype;
-    const reportData = evaluation.reportData as JudgesReport;
-
-    if (!(reportData?.stats && Array.isArray(reportData.stats))) {
+    const report = parseJudgesReport(evaluation.reportData);
+    if (!report) {
       continue;
     }
 
-    for (const caseScore of reportData.stats) {
-      const judgeName = caseScore.case_id;
-
-      // Find the MetricStatistics entry where metric_name matches case_id (judge name)
-      const judgeMetric = caseScore.metrics?.find(
-        (metric) => metric.metric_name === caseScore.case_id
-      );
-
-      if (!judgeMetric) {
+    for (const caseScore of report.stats) {
+      const metric = extractJudgeMetric(caseScore);
+      if (!metric) {
         continue;
       }
 
-      // Initialize nested maps if needed
-      if (!aggregator.has(artifactSubtype)) {
-        aggregator.set(artifactSubtype, new Map());
-      }
-
-      const judgeMap = aggregator.get(artifactSubtype)!;
-
-      if (!judgeMap.has(judgeName)) {
-        judgeMap.set(judgeName, {
-          scores: [],
-          artifactIds: new Set(),
-        });
-      }
-
-      const judgeData = judgeMap.get(judgeName)!;
-      judgeData.scores.push(judgeMetric.score);
-      judgeData.artifactIds.add(evaluation.artifactId);
+      aggregator.addScore(
+        evaluation.artifact.subtype,
+        metric.name,
+        metric.score,
+        evaluation.artifactId
+      );
     }
   }
 
-  return aggregator;
+  return aggregator.getResults();
+}
+
+/** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
+const SUNDAY_INDEX = 0;
+/** Days from Sunday back to the previous Monday. */
+const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
+
+function formatDateKey(year: number, month: number, day: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function getISOWeekStartDate(date: Date): Date {
+  const dow = date.getUTCDay();
+  const mondayOffset =
+    dow === SUNDAY_INDEX ? ISO_WEEK_OFFSET_FROM_SUNDAY : 1 - dow;
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate() + mondayOffset
+    )
+  );
 }
 
 /**
@@ -199,18 +258,23 @@ export const judgesAnalyticsService = {
       const y = date.getUTCFullYear();
       const m = date.getUTCMonth();
       const day = date.getUTCDate();
-      const dow = date.getUTCDay(); // 0 = Sun, 1 = Mon, ...
 
-      if (groupBy === "day") {
-        return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      switch (groupBy) {
+        case "day":
+          return formatDateKey(y, m, day);
+        case "month":
+          return formatDateKey(y, m, 1);
+        case "week": {
+          const monday = getISOWeekStartDate(date);
+          return formatDateKey(
+            monday.getUTCFullYear(),
+            monday.getUTCMonth(),
+            monday.getUTCDate()
+          );
+        }
+        default:
+          throw new Error(`Unknown groupBy value: ${groupBy}`);
       }
-      if (groupBy === "month") {
-        return `${y}-${String(m + 1).padStart(2, "0")}-01`;
-      }
-      // week: ISO week start (Monday)
-      const mondayOffset = dow === 0 ? -6 : 1 - dow;
-      const monday = new Date(Date.UTC(y, m, day + mondayOffset));
-      return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, "0")}-${String(monday.getUTCDate()).padStart(2, "0")}`;
     };
 
     const bucketSubtypeCounts = new Map<string, Map<string, number>>();

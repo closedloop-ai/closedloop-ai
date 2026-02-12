@@ -2,6 +2,10 @@
 
 import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { ARTIFACT_SUBTYPE_OPTIONS } from "@repo/api/src/types/artifact";
+import {
+  ARTIFACT_COUNTS_GROUP_BY_OPTIONS,
+  type ArtifactCountsGroupBy,
+} from "@repo/api/src/types/judges-analytics";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type ChartConfig,
@@ -15,7 +19,6 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, parse } from "date-fns";
 import { useMemo, useState } from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
-import type { ArtifactCountsGroupBy } from "@/hooks/queries/use-judges-analytics";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
 
@@ -103,7 +106,7 @@ export function ArtifactsCreatedChart({
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground text-sm">Group by:</span>
           <div className="flex gap-1">
-            {(["day", "week", "month"] as const).map((value) => (
+            {ARTIFACT_COUNTS_GROUP_BY_OPTIONS.map((value) => (
               <Button
                 className={groupBy === value ? "bg-accent" : ""}
                 key={value}

@@ -59,6 +59,15 @@ export async function parseBody<T extends z.ZodType>(
 /**
  * Parse and validate query parameters against a zod schema.
  * Returns an object with either body (on success) or errorResponse (on failure).
+ *
+ * @example
+ * const { body, errorResponse } = parseQueryParams(request, myValidator);
+ * if (errorResponse) return errorResponse;
+ * // body is now typed as z.infer<typeof myValidator>
+ *
+ * @param request - NextRequest with searchParams
+ * @param validator - Zod schema to validate against
+ * @returns ParseBodyResult with typed body or error response
  */
 export function parseQueryParams<T extends z.ZodType>(
   request: { nextUrl: { searchParams: URLSearchParams } },
