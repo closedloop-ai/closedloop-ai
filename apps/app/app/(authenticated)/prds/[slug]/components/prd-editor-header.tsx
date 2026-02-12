@@ -11,6 +11,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   DownloadIcon,
+  MessageSquareIcon,
   FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -67,6 +68,10 @@ type PRDEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when rename menu item is clicked
    */
   onRename: () => void;
@@ -98,6 +103,10 @@ type PRDEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
 
 export function PRDEditorHeader({
@@ -110,6 +119,7 @@ export function PRDEditorHeader({
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onDiscard,
   onEdit,
   onSave,
   onRename,
@@ -118,6 +128,7 @@ export function PRDEditorHeader({
   showRestore = false,
   onRestoreVersion,
   onDelete,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PRDEditorHeaderProps) {
@@ -134,11 +145,33 @@ export function PRDEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
+          {openThreadCount > 0 ? (
+            <Button
+              onClick={onEdit}
+              size="sm"
+              title="View comments"
+              variant="ghost"
+            >
+              <MessageSquareIcon className="mr-1 h-4 w-4" />
+              {openThreadCount}
+            </Button>
+          ) : null}
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"
