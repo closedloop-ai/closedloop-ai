@@ -18,6 +18,7 @@ import {
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, parse } from "date-fns";
 import { useMemo, useState } from "react";
+import type { LegendProps } from "recharts";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
 import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
@@ -174,9 +175,14 @@ export function ArtifactsCreatedChart({
                 margin={{ bottom: 60, left: 20, right: 30, top: 20 }}
               >
                 <ChartLegend
-                  content={({ payload }) => (
-                    <ChartLegendContent payload={payload} verticalAlign="top" />
-                  )}
+                  content={
+                    (({ payload }: Pick<LegendProps, "payload">) => (
+                      <ChartLegendContent
+                        payload={payload}
+                        verticalAlign="top"
+                      />
+                    )) as LegendProps["content"]
+                  }
                   verticalAlign="top"
                 />
                 <XAxis
