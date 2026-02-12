@@ -116,10 +116,6 @@ const defaultProps = {
   onParentChange: vi.fn(),
   targetRepo: "",
   targetBranch: "",
-  onTargetRepoChange: vi.fn(),
-  onTargetRepoBlur: vi.fn(),
-  onTargetBranchChange: vi.fn(),
-  onTargetBranchBlur: vi.fn(),
 };
 
 describe("sortMetricsByScore", () => {

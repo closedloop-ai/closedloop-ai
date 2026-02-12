@@ -966,13 +966,10 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Plan's own target repo/branch take priority, then source artifact, then project default
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
-      artifact.targetRepo ??
-      sourceArtifact.targetRepo ??
-      existingRepository?.fullName;
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
@@ -1122,13 +1119,10 @@ ${initialInstructions.trim()}`;
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Plan's own target repo/branch take priority, then source artifact, then project default
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
-      artifact.targetRepo ??
-      sourceArtifact.targetRepo ??
-      existingRepository?.fullName;
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
@@ -1604,13 +1598,10 @@ Please try again or contact support if the issue persists.`,
     const project = workstream.project;
     const existingRepository = project.repositories[0];
 
-    // Plan's own target repo/branch take priority, then source artifact, then project default
+    // Source artifact (PRD) target repo/branch take priority, then project default
     const targetRepo =
-      artifact.targetRepo ??
-      sourceArtifact.targetRepo ??
-      existingRepository?.fullName;
+      sourceArtifact.targetRepo ?? existingRepository?.fullName;
     const targetBranch =
-      artifact.targetBranch ??
       sourceArtifact.targetBranch ??
       existingRepository?.defaultBranch ??
       "main";
