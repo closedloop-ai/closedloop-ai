@@ -84,9 +84,21 @@ export async function handleExecutionSuccess(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
-    // Query plan artifact for organizationId, projectId, generatedBy, documentSlug
+    // Look up workstream to get organizationId for org-scoped queries
+    const workstream = await tx.workstream.findUnique({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
+
+    if (!workstream) {
+      throw new Error(
+        `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
+      );
+    }
+
+    // Query plan artifact scoped to organization for defense-in-depth
     const planArtifact = await tx.artifact.findUnique({
-      where: { id: ctx.artifactId },
+      where: { id: ctx.artifactId, organizationId: workstream.organizationId },
       select: {
         organizationId: true,
         projectId: true,
@@ -97,7 +109,7 @@ export async function handleExecutionSuccess(
 
     if (!planArtifact) {
       throw new Error(
-        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found for correlation ${correlationId}`
+        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found in organization for correlation ${correlationId}`
       );
     }
 
