@@ -1,19 +1,22 @@
 "use client";
 
-import { memo, useMemo } from "react";
-import { Area, AreaChart } from "recharts";
-
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Card } from "@repo/design-system/components/ui/card";
-import { ChartContainer } from "@repo/design-system/components/ui/chart";
 import { cn } from "@repo/design-system/lib/utils";
+import dynamic from "next/dynamic";
+import { memo, useMemo } from "react";
 
-interface StatCardProps {
+const StatSparkline = dynamic(
+  () => import("./stat-sparkline").then((mod) => mod.StatSparkline),
+  { ssr: false }
+);
+
+type StatCardProps = {
   value: number;
   label: string;
   trendData: Array<{ date: string; count: number }>;
   comingSoon?: boolean;
-}
+};
 
 export const StatCard = memo(
   ({ value, label, trendData, comingSoon }: StatCardProps) => {
@@ -30,54 +33,33 @@ export const StatCard = memo(
 
     return (
       <Card
-        className={cn(
-          "relative",
-          comingSoon && "opacity-60"
-        )}
+        className={cn("relative", comingSoon && "opacity-60")}
         style={{
-          background: "linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--muted)))",
+          background:
+            "linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--muted)))",
         }}
       >
         <div className="p-6">
           {/* Main stat display */}
-          <div className="text-4xl font-bold">{value.toLocaleString()}</div>
+          <div className="font-bold text-4xl">{value.toLocaleString()}</div>
 
           {/* Label */}
-          <p className="text-sm text-muted-foreground mt-1">{label}</p>
+          <p className="mt-1 text-muted-foreground text-sm">{label}</p>
 
           {/* Sparkline chart */}
           {chartData.length > 0 && (
-            <div className="mt-4 h-[50px]" aria-label={`${label} trend over last 2 weeks`}>
-              <ChartContainer
-                config={{
-                  count: {
-                    label: "Count",
-                    color: "hsl(var(--primary))",
-                  },
-                }}
-              >
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0.1} />
-                    </linearGradient>
-                  </defs>
-                  <Area
-                    type="monotone"
-                    dataKey="count"
-                    stroke="hsl(var(--primary))"
-                    fill={`url(#${gradientId})`}
-                    strokeWidth={2}
-                  />
-                </AreaChart>
-              </ChartContainer>
+            <div
+              aria-label={`${label} trend over last 2 weeks`}
+              className="mt-4 h-[50px]"
+              role="img"
+            >
+              <StatSparkline chartData={chartData} gradientId={gradientId} />
             </div>
           )}
 
           {/* Coming Soon badge */}
           {comingSoon && (
-            <Badge variant="secondary" className="mt-2">
+            <Badge className="mt-2" variant="secondary">
               Coming Soon
             </Badge>
           )}

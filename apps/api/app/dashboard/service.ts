@@ -1,5 +1,10 @@
-import type { DashboardStats, DailyTrend } from "@repo/api/src/types/dashboard";
-import { ArtifactSubtype, GitHubActionStatus, GitHubPRState, withDb } from "@repo/database";
+import type { DailyTrend, DashboardStats } from "@repo/api/src/types/dashboard";
+import {
+  ArtifactSubtype,
+  GitHubActionStatus,
+  GitHubPRState,
+  withDb,
+} from "@repo/database";
 import { log } from "@repo/observability/log";
 
 /**
@@ -15,6 +20,15 @@ export const dashboardService = {
       // Calculate date 14 days ago for trend queries
       const fourteenDaysAgo = new Date();
       fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+
+      // Pre-fetch workstream IDs for org (GitHubPullRequest/GitHubActionRun
+      // don't have a direct workstream relation, so we filter by ID list)
+      const orgWorkstreamIds = await withDb((db) =>
+        db.workstream.findMany({
+          where: { organizationId },
+          select: { id: true },
+        })
+      ).then((ws) => ws.map((w) => w.id));
 
       // Execute all queries in parallel for performance
       const [
@@ -42,14 +56,17 @@ export const dashboardService = {
         ),
         withDb((db) =>
           db.artifact.count({
-            where: { organizationId, subtype: ArtifactSubtype.IMPLEMENTATION_PLAN },
+            where: {
+              organizationId,
+              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+            },
           })
         ),
         // Landed code: merged PRs with defensive null check on mergedAt
         withDb((db) =>
           db.gitHubPullRequest.count({
             where: {
-              workstream: { organizationId },
+              workstreamId: { in: orgWorkstreamIds },
               state: GitHubPRState.MERGED,
               mergedAt: { not: null },
             },
@@ -59,7 +76,7 @@ export const dashboardService = {
         withDb((db) =>
           db.gitHubActionRun.count({
             where: {
-              workstream: { organizationId },
+              workstreamId: { in: orgWorkstreamIds },
               status: { not: GitHubActionStatus.PENDING },
             },
           })
@@ -100,7 +117,7 @@ export const dashboardService = {
         withDb((db) =>
           db.gitHubPullRequest.findMany({
             where: {
-              workstream: { organizationId },
+              workstreamId: { in: orgWorkstreamIds },
               state: GitHubPRState.MERGED,
               mergedAt: { gte: fourteenDaysAgo, not: null },
             },
@@ -110,7 +127,7 @@ export const dashboardService = {
         withDb((db) =>
           db.gitHubActionRun.findMany({
             where: {
-              workstream: { organizationId },
+              workstreamId: { in: orgWorkstreamIds },
               status: { not: GitHubActionStatus.PENDING },
               createdAt: { gte: fourteenDaysAgo },
             },
@@ -123,8 +140,14 @@ export const dashboardService = {
       const prdsTrend = aggregateTrendData(prdsTrendData, "createdAt");
       const issuesTrend = aggregateTrendData(issuesTrendData, "createdAt");
       const plansTrend = aggregateTrendData(plansTrendData, "createdAt");
-      const landedCodeTrend = aggregateTrendData(landedCodeTrendData, "mergedAt");
-      const agenticWorkflowsTrend = aggregateTrendData(agenticWorkflowsTrendData, "createdAt");
+      const landedCodeTrend = aggregateTrendData(
+        landedCodeTrendData,
+        "mergedAt"
+      );
+      const agenticWorkflowsTrend = aggregateTrendData(
+        agenticWorkflowsTrendData,
+        "createdAt"
+      );
 
       // Return structured DashboardStats
       return {
@@ -132,7 +155,10 @@ export const dashboardService = {
         issues: { count: issuesCount, trend: issuesTrend },
         plans: { count: plansCount, trend: plansTrend },
         landedCode: { count: landedCodeCount, trend: landedCodeTrend },
-        agenticWorkflows: { count: agenticWorkflowsCount, trend: agenticWorkflowsTrend },
+        agenticWorkflows: {
+          count: agenticWorkflowsCount,
+          trend: agenticWorkflowsTrend,
+        },
         // Set undefined for placeholders that lack data models
         agentsCount: undefined,
         leaderboardsCount: undefined,
@@ -151,15 +177,17 @@ export const dashboardService = {
  * Aggregate trend data by date, counting occurrences per day.
  * Maps raw database records to DailyTrend[] format with YYYY-MM-DD date strings.
  */
-function aggregateTrendData<T extends { [K in DateField]: Date | null }>(
-  data: T[],
-  dateField: DateField
+function aggregateTrendData<K extends DateField>(
+  data: Record<K, Date | null>[],
+  dateField: K
 ): DailyTrend[] {
   const countsByDate = new Map<string, number>();
 
   for (const item of data) {
     const dateValue = item[dateField];
-    if (!dateValue) continue;
+    if (!dateValue) {
+      continue;
+    }
 
     // Truncate timestamp to YYYY-MM-DD string
     const dateString = dateValue.toISOString().split("T")[0];
