@@ -326,10 +326,6 @@ export function PlanEditor({
                 return result ?? null;
               }}
               onStatusChange={metadata.handleStatusChange}
-              onTargetBranchBlur={metadata.handleTargetBranchBlur}
-              onTargetBranchChange={metadata.handleTargetBranchChange}
-              onTargetRepoBlur={metadata.handleTargetRepoBlur}
-              onTargetRepoChange={metadata.handleTargetRepoChange}
               owner={metadata.owner}
               plan={plan}
               previewDeployment={previewDeployment ?? null}
