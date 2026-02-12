@@ -302,7 +302,7 @@ export default function ProjectDetailPage() {
         </div>
       </header>
       <main className="flex-1 overflow-auto">
-        <div className="flex">
+        <div className="flex h-full">
           {/* Main Content Area */}
           <div className="flex-1 p-6">
             <div className="mb-6">
