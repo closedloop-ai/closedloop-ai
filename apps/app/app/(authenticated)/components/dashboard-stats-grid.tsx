@@ -19,9 +19,19 @@ export function DashboardStatsGrid() {
 
   // Loading state with skeleton grid
   if (isLoading && !stats) {
+    const skeletonKeys = [
+      "skeleton-prds",
+      "skeleton-issues",
+      "skeleton-plans",
+      "skeleton-landed-code",
+      "skeleton-agentic-workflows",
+      "skeleton-agents-skills-plugins",
+      "skeleton-leaderboards",
+    ] as const;
+
     return (
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {["s1", "s2", "s3", "s4", "s5", "s6", "s7"].map((key) => (
+        {skeletonKeys.map((key) => (
           <Skeleton className="h-[200px]" key={key} />
         ))}
       </div>
