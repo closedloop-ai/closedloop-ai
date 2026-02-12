@@ -6,7 +6,9 @@ import { dashboardService } from "../service";
 export const GET = withAuth<DashboardStats, "/dashboard/stats">(
   async ({ user }) => {
     try {
-      const stats = await dashboardService.getDashboardStats(user.organizationId);
+      const stats = await dashboardService.getDashboardStats(
+        user.organizationId
+      );
       return successResponse(stats);
     } catch (error) {
       return errorResponse("Failed to fetch dashboard stats", error);

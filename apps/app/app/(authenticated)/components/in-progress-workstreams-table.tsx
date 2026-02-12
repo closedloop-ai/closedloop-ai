@@ -1,6 +1,10 @@
 "use client";
 
 import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
+import {
   Table,
   TableBody,
   TableCell,
@@ -8,7 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
-import { Alert, AlertDescription } from "@repo/design-system/components/ui/alert";
 import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import {
@@ -32,7 +35,9 @@ export function InProgressWorkstreamsTable() {
   if (error) {
     return (
       <Alert variant="destructive">
-        <AlertDescription>Failed to load in-progress workstreams</AlertDescription>
+        <AlertDescription>
+          Failed to load in-progress workstreams
+        </AlertDescription>
       </Alert>
     );
   }

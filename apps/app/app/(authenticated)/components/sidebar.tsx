@@ -31,6 +31,7 @@ import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
@@ -154,6 +155,12 @@ const data: {
     },
   ],
   navSecondary: [
+    {
+      title: "Judges",
+      url: "/judges-analytics",
+      icon: BarChart3,
+      disabled: false,
+    },
     {
       title: "Settings",
       url: "/settings",

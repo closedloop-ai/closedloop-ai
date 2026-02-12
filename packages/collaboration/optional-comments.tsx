@@ -1,5 +1,9 @@
 "use client";
 
+import "@liveblocks/react-tiptap/styles.css";
+import "@liveblocks/react-ui/styles.css";
+import "./comments.css";
+
 import { useThreads } from "@liveblocks/react/suspense";
 import type { AnchoredThreadsProps } from "@liveblocks/react-tiptap";
 import {
