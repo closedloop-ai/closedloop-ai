@@ -97,6 +97,10 @@ type PlanEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when copy markdown menu item is clicked
    */
   onCopyMarkdown: () => void;
@@ -136,7 +140,29 @@ type PlanEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
+
+function ThreadCountBadge({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick?: () => void;
+}) {
+  if (count <= 0) {
+    return null;
+  }
+  return (
+    <Button onClick={onClick} size="sm" title="View comments" variant="ghost">
+      <MessageSquareIcon className="mr-1 h-4 w-4" />
+      {count}
+    </Button>
+  );
+}
 
 export function PlanEditorHeader({
   plan,
@@ -151,6 +177,7 @@ export function PlanEditorHeader({
   pullRequest,
   isExecuting,
   onToggleMetadataPanel,
+  onDiscard,
   onEdit,
   onApprove,
   onRequestChanges,
@@ -164,6 +191,7 @@ export function PlanEditorHeader({
   onDelete,
   showRestore = false,
   onRestoreVersion,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PlanEditorHeaderProps) {
@@ -180,11 +208,23 @@ export function PlanEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
+          <ThreadCountBadge count={openThreadCount} onClick={onEdit} />
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"

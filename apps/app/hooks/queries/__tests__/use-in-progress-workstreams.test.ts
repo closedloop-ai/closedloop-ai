@@ -128,7 +128,7 @@ describe("useInProgressWorkstreams", () => {
     // This is tested by the behavior of the hook configuration
   });
 
-  test("allows options to be passed through", async () => {
+  test("allows options to be passed through", () => {
     mockApiClient.get.mockResolvedValueOnce([]);
 
     const { result } = renderHook(
