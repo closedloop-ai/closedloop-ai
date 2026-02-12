@@ -5,6 +5,7 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
+import type { Editor, JSONContent } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
@@ -85,6 +86,11 @@ export function PlanEditor({
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
   >();
+  const editorRef = useRef<Editor | null>(null);
+  const editorSnapshotRef = useRef<JSONContent | null>(null);
+  const handleEditorInstance = useCallback((editor: Editor | null) => {
+    editorRef.current = editor;
+  }, []);
 
   const isViewingHistorical = currentVersion !== latestVersion;
   // Always connect Liveblocks for the latest version so the editor is pre-loaded
@@ -272,6 +278,7 @@ export function PlanEditor({
 
   const handleEdit = () => {
     if (!isViewingHistorical) {
+      editorSnapshotRef.current = editorRef.current?.getJSON() ?? null;
       setIsEditing(true);
     }
   };
@@ -288,9 +295,29 @@ export function PlanEditor({
   };
 
   const handleDiscard = () => {
-    setContentResetValue(plan.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
+    const snapshot = editorSnapshotRef.current;
+    if (snapshot && editorRef.current) {
+      // Restore the full document JSON (preserves Liveblocks thread marks).
+      // Must temporarily make editor editable since setIsEditing(false)
+      // will set readOnly before the microtask runs.
+      const editor = editorRef.current;
+      queueMicrotask(() => {
+        const wasEditable = editor.isEditable;
+        if (!wasEditable) {
+          editor.setEditable(true);
+        }
+        editor.commands.setContent(snapshot);
+        if (!wasEditable) {
+          editor.setEditable(false);
+        }
+      });
+    } else {
+      // Fallback: reset via markdown (strips thread marks)
+      setContentResetValue(plan.content ?? "");
+      setContentResetKey((key) => (key ?? 0) + 1);
+    }
     content.discardChanges();
+    editorSnapshotRef.current = null;
     setIsEditing(false);
   };
 
@@ -365,6 +392,7 @@ export function PlanEditor({
             />
           }
           onChange={content.updateContent}
+          onEditorInstance={handleEditorInstance}
           onOpenThreadCountChange={handleThreadCountChange}
           readOnly={!isEditing}
           showMetadataPanel={uiState.showMetadataPanel}

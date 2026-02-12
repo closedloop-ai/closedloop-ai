@@ -5,7 +5,8 @@ import {
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useCallback, useState } from "react";
+import type { Editor, JSONContent } from "@tiptap/react";
+import { useCallback, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -42,6 +43,11 @@ export function PRDEditor({
   const [contentResetValue, setContentResetValue] = useState<
     string | undefined
   >(undefined);
+  const editorRef = useRef<Editor | null>(null);
+  const editorSnapshotRef = useRef<JSONContent | null>(null);
+  const handleEditorInstance = useCallback((editor: Editor | null) => {
+    editorRef.current = editor;
+  }, []);
 
   const isViewingHistorical = currentVersion !== latestVersion;
   // Always connect Liveblocks for the latest version so the editor is pre-loaded
@@ -117,6 +123,7 @@ export function PRDEditor({
 
   const handleEdit = () => {
     if (!isViewingHistorical) {
+      editorSnapshotRef.current = editorRef.current?.getJSON() ?? null;
       setIsEditing(true);
     }
   };
@@ -133,9 +140,29 @@ export function PRDEditor({
   };
 
   const handleDiscard = () => {
-    setContentResetValue(prd.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
+    const snapshot = editorSnapshotRef.current;
+    if (snapshot && editorRef.current) {
+      // Restore the full document JSON (preserves Liveblocks thread marks).
+      // Must temporarily make editor editable since setIsEditing(false)
+      // will set readOnly before the microtask runs.
+      const editor = editorRef.current;
+      queueMicrotask(() => {
+        const wasEditable = editor.isEditable;
+        if (!wasEditable) {
+          editor.setEditable(true);
+        }
+        editor.commands.setContent(snapshot);
+        if (!wasEditable) {
+          editor.setEditable(false);
+        }
+      });
+    } else {
+      // Fallback: reset via markdown (strips thread marks)
+      setContentResetValue(prd.content ?? "");
+      setContentResetKey((key) => (key ?? 0) + 1);
+    }
     content.discardChanges();
+    editorSnapshotRef.current = null;
     setIsEditing(false);
   };
 
@@ -195,6 +222,7 @@ export function PRDEditor({
             />
           }
           onChange={content.updateContent}
+          onEditorInstance={handleEditorInstance}
           onOpenThreadCountChange={handleThreadCountChange}
           readOnly={!isEditing}
           showMetadataPanel={uiState.showMetadataPanel}
