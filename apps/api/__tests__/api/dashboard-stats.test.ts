@@ -1,6 +1,6 @@
 import { vi } from "vitest";
-import { GET } from "@/app/dashboard/stats/route";
 import { dashboardService } from "@/app/dashboard/service";
+import { GET } from "@/app/dashboard/stats/route";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,
@@ -28,7 +28,10 @@ describe("GET /api/dashboard/stats", () => {
       issues: { count: 10, trend: [{ date: "2025-01-20", count: 3 }] },
       plans: { count: 3, trend: [{ date: "2025-01-20", count: 1 }] },
       landedCode: { count: 8, trend: [{ date: "2025-01-20", count: 4 }] },
-      agenticWorkflows: { count: 12, trend: [{ date: "2025-01-20", count: 5 }] },
+      agenticWorkflows: {
+        count: 12,
+        trend: [{ date: "2025-01-20", count: 5 }],
+      },
       agentsCount: undefined,
       leaderboardsCount: undefined,
     };
@@ -66,7 +69,9 @@ describe("GET /api/dashboard/stats", () => {
     });
     await GET(request, createMockRouteContext({}));
 
-    expect(dashboardService.getDashboardStats).toHaveBeenCalledWith("org-abc-123");
+    expect(dashboardService.getDashboardStats).toHaveBeenCalledWith(
+      "org-abc-123"
+    );
   });
 
   it("returns error response when service fails", async () => {

@@ -25,7 +25,10 @@ describe("useDashboardStats", () => {
       issues: { count: 10, trend: [{ date: "2025-01-20", count: 3 }] },
       plans: { count: 3, trend: [{ date: "2025-01-20", count: 1 }] },
       landedCode: { count: 8, trend: [{ date: "2025-01-20", count: 4 }] },
-      agenticWorkflows: { count: 12, trend: [{ date: "2025-01-20", count: 5 }] },
+      agenticWorkflows: {
+        count: 12,
+        trend: [{ date: "2025-01-20", count: 5 }],
+      },
       agentsCount: undefined,
       leaderboardsCount: undefined,
     };
@@ -135,7 +138,7 @@ describe("useDashboardStats", () => {
     expect(result.current.data?.leaderboardsCount).toBeUndefined();
   });
 
-  test("allows options to be passed through", async () => {
+  test("allows options to be passed through", () => {
     const mockStats = {
       prds: { count: 0, trend: [] },
       issues: { count: 0, trend: [] },
@@ -148,12 +151,9 @@ describe("useDashboardStats", () => {
 
     mockApiClient.get.mockResolvedValueOnce(mockStats);
 
-    const { result } = renderHook(
-      () => useDashboardStats({ enabled: false }),
-      {
-        wrapper: createWrapper(),
-      }
-    );
+    const { result } = renderHook(() => useDashboardStats({ enabled: false }), {
+      wrapper: createWrapper(),
+    });
 
     // Query should not run when enabled is false
     expect(result.current.fetchStatus).toBe("idle");
