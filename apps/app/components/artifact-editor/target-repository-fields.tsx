@@ -34,17 +34,19 @@ type TargetRepositoryFieldsProps = {
    */
   onTargetRepoChange: (targetRepo: string) => void;
   /**
-   * Handler called when target repository input loses focus
+   * Handler called when target repository input loses focus.
+   * Accepts optional override value to avoid stale closure issues.
    */
-  onTargetRepoBlur: () => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
   /**
    * Handler called when target branch input value changes
    */
   onTargetBranchChange: (targetBranch: string) => void;
   /**
-   * Handler called when target branch input loses focus
+   * Handler called when target branch input loses focus.
+   * Accepts optional override value to avoid stale closure issues.
    */
-  onTargetBranchBlur: () => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 /**
@@ -104,7 +106,7 @@ export function TargetRepositoryFields({
       const defaultBranch = branchesData.branches.find((b) => b.isDefault);
       if (defaultBranch) {
         onTargetBranchChange(defaultBranch.name);
-        onTargetBranchBlur();
+        onTargetBranchBlur(defaultBranch.name);
       }
     }
   }, [branchesData, targetBranch, onTargetBranchChange, onTargetBranchBlur]);
@@ -125,16 +127,16 @@ export function TargetRepositoryFields({
     if (selectedRepo) {
       setSelectedRepoId(repoId);
       onTargetRepoChange(selectedRepo.fullName);
-      onTargetRepoBlur();
+      onTargetRepoBlur(selectedRepo.fullName);
       // Clear branch when repository changes - will be auto-set by useEffect
       onTargetBranchChange("");
-      onTargetBranchBlur();
+      onTargetBranchBlur("");
     }
   };
 
   const handleBranchChange = (branch: string) => {
     onTargetBranchChange(branch);
-    onTargetBranchBlur();
+    onTargetBranchBlur(branch);
   };
 
   return (

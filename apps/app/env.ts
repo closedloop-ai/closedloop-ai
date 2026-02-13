@@ -4,6 +4,7 @@ import { keys as collaboration } from "@repo/collaboration/keys";
 import { keys as email } from "@repo/email/keys";
 import { keys as flags } from "@repo/feature-flags/keys";
 import { clientKeys as github } from "@repo/github/keys";
+import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as notifications } from "@repo/notifications/keys";
@@ -21,6 +22,7 @@ export const env = createEnv({
     email(),
     flags(),
     github(),
+    google(),
     linear(),
     notifications(),
     observability(),

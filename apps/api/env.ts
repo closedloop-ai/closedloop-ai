@@ -3,6 +3,7 @@ import { keys as analytics } from "@repo/analytics/keys";
 import { keys as auth } from "@repo/auth/keys";
 import { keys as database } from "@repo/database/keys";
 import { keys as email } from "@repo/email/keys";
+import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
@@ -22,6 +23,7 @@ export const env = createEnv({
     core(),
     database(),
     email(),
+    google(),
     linear(),
     observability(),
     payments(),
