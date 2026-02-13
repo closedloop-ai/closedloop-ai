@@ -1,6 +1,9 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import {
+  ArtifactSubtype,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -117,17 +120,20 @@ export default function ProjectDetailPage() {
   // avoiding a circular dependency between the memo and the query declaration.
   const { data: artifactsData = [], isLoading: loadingArtifacts } =
     useArtifactsByProject(projectId, true, {
+      staleTime: 4000,
       refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        const hasActive = data.some(
+        const artifacts = query.state.data ?? [];
+        const hasActiveWorkstream = artifacts.some(
           (a) =>
             a.workstream?.state &&
             ACTIVE_WORKSTREAM_STATES.has(a.workstream.state)
         );
-        return hasActive ? 5000 : false;
+        const hasActiveGeneration = artifacts.some(
+          (a) =>
+            a.generationStatus &&
+            isActiveGenerationStatus(a.generationStatus.status)
+        );
+        return hasActiveWorkstream || hasActiveGeneration ? 5000 : false;
       },
     });
 
@@ -150,6 +156,9 @@ export default function ProjectDetailPage() {
         workstreamId: artifact.workstreamId,
         workstreamTitle: artifact.workstream?.title,
         workstreamState: artifact.workstream?.state,
+        generationStatus: artifact.generationStatus,
+        updatedAt: artifact.updatedAt.toISOString(),
+        owner: artifact.owner ?? null,
       })),
     [artifactsData]
   );
@@ -328,18 +337,20 @@ export default function ProjectDetailPage() {
                 artifacts={artifacts}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             ) : (
               <ArtifactsThreadedView
                 artifacts={artifacts}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             )}
           </div>
 
           {/* Right Sidebar */}
-          <div className="w-[300px] space-y-4 overflow-y-auto border-l p-4">
+          <div className="w-[300px] space-y-4 border-l p-4">
             <PropertiesPanel
               onUpdateOwner={handleUpdateOwner}
               onUpdatePriority={handleUpdatePriority}

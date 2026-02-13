@@ -66,7 +66,7 @@ type PRDMetadataPanelProps = {
   /**
    * Handler called when target repository input loses focus
    */
-  onTargetRepoBlur: () => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
   /**
    * Handler called when target branch input value changes
    */
@@ -74,7 +74,7 @@ type PRDMetadataPanelProps = {
   /**
    * Handler called when target branch input loses focus
    */
-  onTargetBranchBlur: () => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 /**

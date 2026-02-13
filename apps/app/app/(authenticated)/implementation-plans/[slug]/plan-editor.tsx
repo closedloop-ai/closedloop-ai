@@ -4,15 +4,16 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import { useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
@@ -76,34 +77,20 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>();
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >();
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // The existence of a room ID controls whether liveblocks is loaded.
-  // Liveblocks can't function properly when the editor is read-only.
-  const liveblocksRoomId =
-    isEditing && plan.documentSlug
-      ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePlanEditor
   const content = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: plan,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -140,6 +127,9 @@ export function PlanEditor({
     ReturnType<typeof useArtifactUIState>,
     { showRequestChangesModal: boolean }
   >;
+
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
 
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
@@ -259,32 +249,20 @@ export function PlanEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(plan.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PlanEditorHeader
-        canEdit={!isViewingHistorical}
+        canEdit={!session.isViewingHistorical}
         isApproved={isApproved}
         isDraft={isDraft}
-        isEditing={isEditing}
+        isEditing={session.isEditing}
         isExecuting={planActions.isExecuting}
         isPending={isPending}
         isSaving={content.isSaving}
@@ -292,19 +270,22 @@ export function PlanEditor({
         onApprove={planActions.handleApprove}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
         onExportToLinear={openLinearExportDialog}
+        onMove={() => setShowMoveDialog(true)}
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={session.openThreadCount}
         plan={plan}
         pullRequest={pullRequest ?? null}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
@@ -312,37 +293,57 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PlanMetadataPanel
-            approver={metadata.approver}
-            generationStatus={generationStatus ?? null}
-            isPreviewRefreshing={isRefreshingPreviewDeployment}
-            judgesReport={judgesReport ?? null}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onParentChange={metadata.handleParentChange}
-            onPreviewRefresh={async () => {
-              const result = await refreshPreviewDeployment();
-              return result ?? null;
-            }}
-            onStatusChange={metadata.handleStatusChange}
-            owner={metadata.owner}
-            plan={plan}
-            previewDeployment={previewDeployment ?? null}
-            pullRequest={pullRequest ?? null}
-            status={metadata.status}
-            teamMembers={metadata.teamMembers}
-          />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
         }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+      >
+        <CollaborativeEditor
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          liveblocksRoomId={session.liveblocksRoomId}
+          metadataPanel={
+            <PlanMetadataPanel
+              approver={metadata.approver}
+              generationStatus={generationStatus ?? null}
+              isPreviewRefreshing={isRefreshingPreviewDeployment}
+              judgesReport={judgesReport ?? null}
+              onApproverSelect={metadata.handleApproverSelect}
+              onOwnerChange={metadata.handleOwnerChange}
+              onParentChange={metadata.handleParentChange}
+              onPreviewRefresh={async () => {
+                const result = await refreshPreviewDeployment();
+                return result ?? null;
+              }}
+              onStatusChange={metadata.handleStatusChange}
+              owner={metadata.owner}
+              plan={plan}
+              previewDeployment={previewDeployment ?? null}
+              pullRequest={pullRequest ?? null}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
@@ -367,6 +368,13 @@ export function PlanEditor({
         artifactId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
+      />
+
+      {/* Move Dialog */}
+      <MoveArtifactDialog
+        artifact={plan}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       {/* Execute Plan Modal */}

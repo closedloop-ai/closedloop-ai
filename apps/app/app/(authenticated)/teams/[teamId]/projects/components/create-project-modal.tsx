@@ -24,7 +24,8 @@ import {
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
 import { PlusIcon } from "lucide-react";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useTeamMembers } from "@/hooks/use-team-members";
 
 type CreateProjectInput = {
@@ -56,11 +57,32 @@ export function CreateProjectModal({
     name: string;
     avatarUrl?: string;
   } | null>(null);
+  const [ownerInitialized, setOwnerInitialized] = useState(false);
   const [targetDate, setTargetDate] = useState<Date | null>(null);
+
+  const { data: currentUser } = useCurrentUser({ enabled: open });
 
   // Memoize teamIds to avoid unnecessary re-fetches
   const teamIds = useMemo(() => [teamId], [teamId]);
   const { members: teamMembers } = useTeamMembers({ teamIds, enabled: open });
+
+  // Default owner to current user when dialog opens
+  useEffect(() => {
+    if (open && !ownerInitialized && currentUser) {
+      const name = [currentUser.firstName, currentUser.lastName]
+        .filter(Boolean)
+        .join(" ");
+      setOwner({
+        id: currentUser.id,
+        name: name || currentUser.email,
+        avatarUrl: currentUser.avatarUrl ?? undefined,
+      });
+      setOwnerInitialized(true);
+    }
+    if (!open) {
+      setOwnerInitialized(false);
+    }
+  }, [open, ownerInitialized, currentUser]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();

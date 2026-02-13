@@ -12,7 +12,7 @@ import {
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { Loader2Icon } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import {
   useCreateProject,
   useDeleteProject,
@@ -26,6 +26,7 @@ import { ProjectsTable } from "./components/projects-table";
 
 export default function TeamProjectsPage() {
   const params = useParams();
+  const router = useRouter();
   const teamId = params.teamId as string;
 
   // Queries
@@ -65,21 +66,28 @@ export default function TeamProjectsPage() {
     targetDate?: string;
     teamIds: string[];
   }) => {
-    createProjectMutation.mutate({
-      name: projectData.name,
-      description: projectData.description,
-      priority: projectData.priority as
-        | "NOT_SET"
-        | "LOW"
-        | "MEDIUM"
-        | "HIGH"
-        | undefined,
-      ownerId: projectData.ownerId || null,
-      targetDate: projectData.targetDate
-        ? new Date(projectData.targetDate)
-        : null,
-      teamIds: projectData.teamIds,
-    });
+    createProjectMutation.mutate(
+      {
+        name: projectData.name,
+        description: projectData.description,
+        priority: projectData.priority as
+          | "NOT_SET"
+          | "LOW"
+          | "MEDIUM"
+          | "HIGH"
+          | undefined,
+        ownerId: projectData.ownerId || null,
+        targetDate: projectData.targetDate
+          ? new Date(projectData.targetDate)
+          : null,
+        teamIds: projectData.teamIds,
+      },
+      {
+        onSuccess: (newProject) => {
+          router.push(`/teams/${teamId}/projects/${newProject.id}`);
+        },
+      }
+    );
   };
 
   const handleDeleteProject = async (projectId: string) => {

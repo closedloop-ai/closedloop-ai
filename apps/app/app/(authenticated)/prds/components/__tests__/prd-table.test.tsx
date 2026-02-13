@@ -11,6 +11,19 @@ const mockUseRouter = vi.fn();
 const mockUseArtifactsBySubtype = vi.fn();
 const mockUseUpdateArtifact = vi.fn();
 const mockUseDeleteArtifact = vi.fn();
+const mockUseProjects = vi.fn();
+
+// Mock TanStack Query's useQueryClient
+const mockInvalidateQueries = vi.fn();
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual("@tanstack/react-query");
+  return {
+    ...actual,
+    useQueryClient: () => ({
+      invalidateQueries: mockInvalidateQueries,
+    }),
+  };
+});
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
@@ -23,6 +36,14 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
     useArtifactsBySubtype: () => mockUseArtifactsBySubtype(),
     useUpdateArtifact: () => mockUseUpdateArtifact(),
     useDeleteArtifact: () => mockUseDeleteArtifact(),
+  };
+});
+
+vi.mock("@/hooks/queries/use-projects", async () => {
+  const actual = await vi.importActual("@/hooks/queries/use-projects");
+  return {
+    ...actual,
+    useProjects: () => mockUseProjects(),
   };
 });
 
@@ -42,6 +63,12 @@ describe("PRDTable - PR Icon Display", () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
+    mockUseProjects.mockReturnValue({
+      data: [],
+      isLoading: false,
+      error: null,
+    });
+    mockInvalidateQueries.mockResolvedValue(undefined);
   });
 
   afterEach(() => {

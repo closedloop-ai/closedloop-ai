@@ -8,32 +8,26 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
-import { Loader2Icon } from "lucide-react";
 import Link from "next/link";
 import {
   WorkstreamStateBadge,
   WorkstreamTypeBadge,
 } from "@/components/status-badge";
+import { TableErrorState, TableLoadingState } from "@/components/table-states";
 import { useWorkstreams } from "@/hooks/queries/use-workstreams";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { sortByDateDesc } from "@/lib/table-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 
 export function WorkstreamsList() {
   const { data: workstreams = [], isLoading, error } = useWorkstreams();
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <TableLoadingState />;
   }
 
   if (error) {
-    return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message}
-      </div>
-    );
+    return <TableErrorState error={error} />;
   }
 
   if (workstreams.length === 0) {
@@ -55,11 +49,12 @@ export function WorkstreamsList() {
             <TableHead>Title</TableHead>
             <TableHead>Type</TableHead>
             <TableHead>State</TableHead>
+            <TableHead>Creator</TableHead>
             <TableHead>Updated</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {workstreams.map((workstream) => (
+          {sortByDateDesc(workstreams, "updatedAt").map((workstream) => (
             <TableRow key={workstream.id}>
               <TableCell>
                 <Link
@@ -79,6 +74,11 @@ export function WorkstreamsList() {
               </TableCell>
               <TableCell>
                 <WorkstreamStateBadge state={workstream.state} />
+              </TableCell>
+              <TableCell className="text-muted-foreground text-sm">
+                {workstream.createdBy
+                  ? getUserDisplayName(workstream.createdBy)
+                  : "-"}
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">
                 {formatRelativeTime(new Date(workstream.updatedAt))}

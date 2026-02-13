@@ -4,10 +4,12 @@ import {
   ArtifactSubtype,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
@@ -61,6 +63,9 @@ export function IssueEditor({
     { showGeneratePlanModal: boolean }
   >;
 
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
   const isPending =
     content.isSaving ||
     metadata.isUpdating ||
@@ -85,6 +90,7 @@ export function IssueEditor({
         onDelete={uiState.openDeleteDialog}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
+        onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
         onSave={content.saveContent}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
@@ -129,6 +135,12 @@ export function IssueEditor({
         onRename={actions.handleRename}
         open={showRenameDialog}
         title="Rename Issue"
+      />
+
+      <MoveArtifactDialog
+        artifact={issue}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       <DeleteConfirmationDialog

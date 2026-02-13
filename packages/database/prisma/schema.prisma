@@ -210,11 +210,12 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization      Organization @relation(fields: [organizationId], references: [id])
-  teamMemberships   TeamMember[]
-  ownedProjects     Project[]    @relation("ProjectOwner")
-  ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
-  approvedArtifacts Artifact[]   @relation("ArtifactApprover")
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  teamMemberships    TeamMember[]
+  ownedProjects      Project[]     @relation("ProjectOwner")
+  ownedArtifacts     Artifact[]    @relation("ArtifactOwner")
+  approvedArtifacts  Artifact[]    @relation("ArtifactApprover")
+  createdWorkstreams Workstream[]  @relation("WorkstreamCreatedBy")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -352,12 +353,14 @@ model Workstream {
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id])
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy    User         @relation("WorkstreamCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   artifacts    Artifact[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
   @@index([organizationId, assignedToId])
   @@index([projectId])
+  @@index([createdById])
   @@map("workstreams")
 }
 
@@ -629,15 +632,16 @@ model GitHubInstallation {
 }
 
 model GitHubInstallationRepository {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  installationId String   @map("installation_id") @db.Uuid
-  githubRepoId   Int      @map("github_repo_id")
-  fullName       String   @map("full_name")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  installationId String    @map("installation_id") @db.Uuid
+  githubRepoId   Int       @map("github_repo_id")
+  fullName       String    @map("full_name")
   name           String
   owner          String
   private        Boolean
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastPushedAt   DateTime? @map("last_pushed_at")
 
   // Relations
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
@@ -712,6 +716,7 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@index([artifactId])
+  @@index([createdAt])
   @@map("artifact_evaluations")
 }
 
@@ -749,4 +754,23 @@ model SlackIntegration {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
+}
+
+// =============================================================================
+// GOOGLE INTEGRATION
+// =============================================================================
+
+model GoogleIntegration {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
+  googleUserId   String    @map("google_user_id")
+  googleEmail    String?   @db.VarChar(255) @map("google_email")
+  accessToken    String    @db.Text @map("access_token")
+  refreshToken   String?   @db.Text @map("refresh_token")
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("google_integrations")
 }

@@ -3,6 +3,7 @@ import type {
   UpdateWorkstreamInput,
   Workstream,
   WorkstreamState,
+  WorkstreamWithProject,
 } from "@repo/api/src/types/workstream";
 import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
@@ -13,6 +14,10 @@ export type FindWorkstreamsOptions = {
   state?: WorkstreamState;
   search?: string;
   limit?: number;
+};
+
+export type FindAllByOrganizationOptions = {
+  excludeStates?: WorkstreamState[];
 };
 
 /**
@@ -40,6 +45,16 @@ export const workstreamsService = {
               }
             : {}),
         },
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              avatarUrl: true,
+            },
+          },
+        },
         orderBy: { createdAt: "desc" },
         ...(limit ? { take: limit } : {}),
       })
@@ -53,6 +68,54 @@ export const workstreamsService = {
     return withDb((db) =>
       db.workstream.findUnique({
         where: { id, organizationId },
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      })
+    );
+  },
+
+  /**
+   * Find all workstreams for an organization across all projects
+   * Excludes terminal states (COMPLETED, CANCELLED, DEPLOYED) by default
+   */
+  findAllByOrganization(
+    organizationId: string,
+    options: FindAllByOrganizationOptions = {}
+  ): Promise<WorkstreamWithProject[]> {
+    const excludeStates = options.excludeStates ?? [
+      "COMPLETED" as WorkstreamState,
+      "CANCELLED" as WorkstreamState,
+      "DEPLOYED" as WorkstreamState,
+    ];
+
+    return withDb((db) =>
+      db.workstream.findMany({
+        where: {
+          organizationId,
+          state: { notIn: excludeStates },
+        },
+        include: {
+          createdBy: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              avatarUrl: true,
+            },
+          },
+          project: {
+            select: { name: true },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
       })
     );
   },

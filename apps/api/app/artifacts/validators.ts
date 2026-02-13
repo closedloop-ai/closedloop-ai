@@ -54,6 +54,7 @@ export const updateArtifactValidator = z.object({
     .nullable()
     .optional(),
   targetBranch: z.string().nullable().optional(),
+  projectId: z.uuidv7().nullable().optional(),
   ownerId: z.uuidv7().nullable().optional(),
 });
 

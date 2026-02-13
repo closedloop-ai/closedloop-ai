@@ -1,6 +1,8 @@
 // Workstream types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+import type { ArtifactUser } from "./artifact";
+
 export const WORKSTREAM_TYPE_OPTIONS = [
   "FEATURE_DELIVERY",
   "BUG_FIX",
@@ -64,6 +66,7 @@ export type Workstream = {
   state: WorkstreamState;
   stateChangedAt: Date;
   createdById: string;
+  createdBy?: ArtifactUser | null;
   assignedToId: string | null;
   hasUIChanges: boolean;
   startedAt: Date;
