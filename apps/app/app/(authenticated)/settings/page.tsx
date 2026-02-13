@@ -142,19 +142,23 @@ export default function SettingsPage() {
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="admin">
-          {/* biome-ignore lint/a11y/useValidAriaRole: This is a Clerk role prop, not an ARIA role */}
           <Protect
+            condition={(
+              has: (
+                params: { role: string } | { permission: string }
+              ) => boolean
+            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
             fallback={
               <Card>
                 <CardHeader>
                   <CardTitle>Access Denied</CardTitle>
                   <CardDescription>
-                    You must be an organization admin to view this section.
+                    You must be an organization admin or owner to view this
+                    section.
                   </CardDescription>
                 </CardHeader>
               </Card>
             }
-            role="org:admin"
           >
             <Card>
               <CardHeader>

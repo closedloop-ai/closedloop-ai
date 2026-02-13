@@ -56,6 +56,7 @@ export const updateArtifactValidator = z.object({
   targetBranch: z.string().nullable().optional(),
   projectId: z.uuidv7().nullable().optional(),
   ownerId: z.uuidv7().nullable().optional(),
+  sortOrder: z.number().nullable().optional(),
 });
 
 export const newVersionValidator = z.object({
@@ -82,4 +83,15 @@ export const findArtifactsQueryValidator = z.object({
       const parsed = Number.parseInt(val, 10);
       return Number.isNaN(parsed) ? undefined : parsed;
     }),
+});
+
+export const reorderArtifactsValidator = z.object({
+  artifactIds: z.array(z.string().uuid()),
+});
+
+export const batchMoveArtifactsValidator = z.object({
+  artifactIds: z
+    .array(z.string().uuid())
+    .min(1, "At least one artifact ID required"),
+  targetProjectId: z.uuidv7(),
 });
