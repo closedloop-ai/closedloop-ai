@@ -760,9 +760,16 @@ export const githubService = {
   /**
    * Get repositories for an organization's GitHub installation.
    * Returns all repositories associated with the installation.
+   *
+   * @param organizationId - Organization ID to scope the query
+   * @param orderBy - Optional sort order (default: lastPushedAt desc with nulls last, then name asc)
    */
   async getRepositories(
-    organizationId: string
+    organizationId: string,
+    orderBy?: Array<{
+      lastPushedAt?: { sort: "asc" | "desc"; nulls?: "first" | "last" };
+      name?: "asc" | "desc";
+    }>
   ): Promise<GitHubInstallationRepository[]> {
     const installation = await withDb((db) =>
       db.gitHubInstallation.findFirst({
@@ -771,7 +778,12 @@ export const githubService = {
           status: "ACTIVE",
         },
         include: {
-          repositories: true,
+          repositories: {
+            orderBy: orderBy ?? [
+              { lastPushedAt: { sort: "desc", nulls: "last" } },
+              { name: "asc" },
+            ],
+          },
         },
       })
     );
