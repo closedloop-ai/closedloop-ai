@@ -13,11 +13,13 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   CopyIcon,
   DownloadIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useDeleteArtifact } from "@/hooks/queries/use-artifacts";
 import { copyToClipboard } from "@/lib/clipboard-utils";
 import { downloadAsMarkdown } from "@/lib/download-utils";
@@ -28,6 +30,7 @@ type PlanRowActionsProps = {
 
 export function PlanRowActions({ plan }: PlanRowActionsProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
   const deleteArtifact = useDeleteArtifact();
 
   const handleExport = () => {
@@ -71,6 +74,10 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => setShowMoveDialog(true)}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive focus:text-destructive"
@@ -81,6 +88,12 @@ export function PlanRowActions({ plan }: PlanRowActionsProps) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <MoveArtifactDialog
+        artifact={plan}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
+      />
 
       <DeleteConfirmationDialog
         isPending={deleteArtifact.isPending}

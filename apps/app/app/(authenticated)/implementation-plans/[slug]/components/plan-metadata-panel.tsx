@@ -56,7 +56,7 @@ import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dia
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import {
   previewDeploymentStateColors,
-  pullRequestStateColors,
+  prStatusColors,
   StatusBadge,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
@@ -135,6 +135,14 @@ type PlanMetadataPanelProps = {
    * Handler called when parent artifact is changed
    */
   onParentChange: (parentId: string | null) => void;
+  /**
+   * Current target repository value (read-only, inherited from source PRD)
+   */
+  targetRepo: string;
+  /**
+   * Current target branch value (read-only, inherited from source PRD)
+   */
+  targetBranch: string;
 };
 
 /**
@@ -157,6 +165,8 @@ export function PlanMetadataPanel({
   onApproverSelect,
   onOwnerChange,
   onParentChange,
+  targetRepo = "Inherited from project",
+  targetBranch = "main",
 }: PlanMetadataPanelProps) {
   // Fetch org users for approver dropdown
   const { data: orgUsers = [] } = useOrganizationUsers();
@@ -228,6 +238,20 @@ export function PlanMetadataPanel({
               status={status}
               teamMembers={teamMembers}
             />
+
+            <MetadataSection separator>
+              <h4 className="font-medium text-sm">Target Repository</h4>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs">
+                  Repository
+                </Label>
+                <p className="text-muted-foreground text-sm">{targetRepo}</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-muted-foreground text-xs">Branch</Label>
+                <p className="text-muted-foreground text-sm">{targetBranch}</p>
+              </div>
+            </MetadataSection>
 
             <MetadataSection separator>
               <Label className="text-muted-foreground text-xs">
@@ -353,7 +377,7 @@ export function PlanMetadataPanel({
                 <div className="flex items-center gap-2 text-muted-foreground text-xs">
                   <StatusBadge
                     className="px-2 py-0.5 text-xs uppercase"
-                    colorMap={pullRequestStateColors}
+                    colorMap={prStatusColors}
                     status={pullRequest.state}
                   />
                   <span>

@@ -13,19 +13,24 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   ChevronDown,
   ExternalLinkIcon,
   FileTextIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { PreviewLink } from "@/components/preview-link";
+import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -42,6 +47,7 @@ import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
 
 type ArtifactsThreadedViewProps = {
   artifacts: ProjectArtifact[];
+  projectId: string;
   onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
@@ -129,6 +135,25 @@ function deriveGroupTitle(
   return prd?.name ?? "Unassigned";
 }
 
+/**
+ * Aggregates PR states across multiple artifacts to determine the workstream's visual state.
+ * Priority: OPEN > MERGED > null (no PR state indicator).
+ * CLOSED PRs intentionally return null — abandoned/closed-without-merge PRs
+ * don't warrant a visual indicator, same as workstreams with no PRs.
+ */
+function getWorkstreamPrState(
+  artifacts: ProjectArtifact[]
+): "OPEN" | "MERGED" | null {
+  const states = artifacts.map((a) => a.pullRequest?.state).filter(Boolean);
+  if (states.includes("OPEN")) {
+    return "OPEN";
+  }
+  if (states.includes("MERGED")) {
+    return "MERGED";
+  }
+  return null;
+}
+
 function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
   const groups = new Map<string | null, WorkstreamGroup>();
 
@@ -201,10 +226,12 @@ function ArtifactRow({
   artifact,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
 }: {
   artifact: ProjectArtifact;
   onRowClick: (artifact: ProjectArtifact) => void;
   onRequestDelete: (artifact: ProjectArtifact) => void;
+  onRequestMove: (artifact: ProjectArtifact) => void;
 }) {
   const Icon = ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
   const isClickable = isNavigableArtifact(artifact);
@@ -231,7 +258,15 @@ function ArtifactRow({
       }`}
     >
       <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate text-sm">{artifact.name}</span>
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate text-sm">{artifact.name}</span>
+        <GenerationStatusIndicator
+          generationStatus={artifact.generationStatus}
+        />
+        {artifact.pullRequest && (
+          <PullRequestStatusBadge pullRequest={artifact.pullRequest} />
+        )}
+      </div>
       <ArtifactSubtypeBadge subtype={artifact.subtype} />
       <span
         className={`text-xs ${ARTIFACT_STATUS_COLORS[artifact.status] ?? "text-muted-foreground"}`}
@@ -260,6 +295,10 @@ function ArtifactRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onRequestMove(artifact)}>
+              <FolderIcon className="mr-2 h-4 w-4" />
+              Move to project
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => onRequestDelete(artifact)}
@@ -278,13 +317,23 @@ function WorkstreamSection({
   group,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
 }: {
   group: WorkstreamGroup;
   onRowClick: (artifact: ProjectArtifact) => void;
   onRequestDelete: (artifact: ProjectArtifact) => void;
+  onRequestMove: (artifact: ProjectArtifact) => void;
 }) {
+  const prState = getWorkstreamPrState(group.artifacts);
+
   return (
-    <Collapsible className="rounded-lg border">
+    <Collapsible
+      className={cn(
+        "rounded-lg border",
+        prState === "OPEN" && "border-l-[3px] border-l-blue-500",
+        prState === "MERGED" && "border-l-[3px] border-l-green-500"
+      )}
+    >
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
         <span className="min-w-0 flex-1 truncate font-medium text-sm">
@@ -307,6 +356,7 @@ function WorkstreamSection({
               artifact={artifact}
               key={artifact.id}
               onRequestDelete={onRequestDelete}
+              onRequestMove={onRequestMove}
               onRowClick={onRowClick}
             />
           ))}
@@ -318,6 +368,7 @@ function WorkstreamSection({
 
 export function ArtifactsThreadedView({
   artifacts,
+  projectId,
   onStatusChange: _onStatusChange,
   onDelete,
 }: ArtifactsThreadedViewProps) {
@@ -326,6 +377,10 @@ export function ArtifactsThreadedView({
     onDelete: onDelete ?? (async () => false),
     getId: (artifact: ProjectArtifact) => artifact.id,
   });
+
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] =
+    useState<ProjectArtifact | null>(null);
 
   const workstreamGroups = useMemo(
     () => groupByWorkstream(artifacts),
@@ -339,6 +394,11 @@ export function ArtifactsThreadedView({
         router.push(route);
       }
     }
+  }
+
+  function handleRequestMove(artifact: ProjectArtifact): void {
+    setSelectedArtifact(artifact);
+    setMoveDialogOpen(true);
   }
 
   if (artifacts.length === 0) {
@@ -359,6 +419,7 @@ export function ArtifactsThreadedView({
           group={group}
           key={group.id ?? "unassigned"}
           onRequestDelete={deleteConfirmation.requestDelete}
+          onRequestMove={handleRequestMove}
           onRowClick={handleRowClick}
         />
       ))}
@@ -371,6 +432,15 @@ export function ArtifactsThreadedView({
         open={deleteConfirmation.isOpen}
         title="Artifact"
       />
+
+      {selectedArtifact && (
+        <MoveArtifactDialog
+          artifact={selectedArtifact}
+          currentProjectId={projectId}
+          onOpenChange={setMoveDialogOpen}
+          open={moveDialogOpen}
+        />
+      )}
     </div>
   );
 }

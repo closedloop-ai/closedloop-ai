@@ -19,8 +19,10 @@ import {
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { ApiError } from "@/lib/api-error";
+import { dashboardKeys } from "./use-dashboard-stats";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
+import { projectKeys } from "./use-projects";
 
 // Query keys
 export const artifactKeys = {
@@ -204,6 +206,7 @@ export function useCreateArtifact() {
       apiClient.post<Artifact>("/artifacts", input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -217,11 +220,15 @@ export function useUpdateArtifact() {
       const { id, ...body } = input;
       return apiClient.put<Artifact>(`/artifacts/${id}`, body);
     },
-    onSuccess: (_, { id }) => {
+    onSuccess: (_, input) => {
       queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(id),
+        queryKey: artifactKeys.detail(input.id),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      if (input.projectId) {
+        queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      }
     },
   });
 }
@@ -235,6 +242,7 @@ export function useDeleteArtifact() {
       apiClient.delete<{ deleted: true }>(`/artifacts/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.all });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -276,6 +284,7 @@ export function useRegenerateArtifact() {
       queryClient.invalidateQueries({
         queryKey: judgesKeys.detail(id),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }
@@ -309,7 +318,6 @@ export function useRequestPlanChanges() {
       queryClient.invalidateQueries({
         queryKey: judgesKeys.detail(variables.artifactId),
       });
-      // Invalidate list queries so slug-based containers refetch the latest version
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
@@ -390,6 +398,7 @@ export function useExecuteImplementationPlan() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(artifactId),
       });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
     },
   });
 }

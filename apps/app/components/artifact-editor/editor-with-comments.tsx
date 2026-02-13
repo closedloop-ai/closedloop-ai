@@ -2,7 +2,7 @@
 
 import { OptionalComments } from "@repo/collaboration";
 import type { Editor } from "@tiptap/react";
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 
 export type EditorWithCommentsProps = {
@@ -11,6 +11,7 @@ export type EditorWithCommentsProps = {
   contentResetKey?: number;
   contentResetValue?: string;
   liveblocksRoomId?: string | null;
+  onEditorInstance?: (editor: Editor | null) => void;
   placeholder?: string;
   readOnly?: boolean;
   scrollMode?: "inner" | "outer";
@@ -22,11 +23,16 @@ export function EditorWithComments({
   contentResetKey,
   contentResetValue,
   liveblocksRoomId,
+  onEditorInstance,
   placeholder,
   readOnly,
   scrollMode = "outer",
 }: Readonly<EditorWithCommentsProps>) {
   const [editor, setEditor] = useState<Editor | null>(null);
+
+  useEffect(() => {
+    onEditorInstance?.(editor);
+  }, [editor, onEditorInstance]);
 
   const liveblocksEnabled = !!liveblocksRoomId;
 
@@ -48,7 +54,7 @@ export function EditorWithComments({
         </div>
 
         {liveblocksEnabled && (
-          <>
+          <Suspense fallback={null}>
             {/* Floating comments on mobile/tablet (< 1280px) */}
             <div className="xl:hidden">
               <OptionalComments
@@ -66,7 +72,7 @@ export function EditorWithComments({
                 roomId={liveblocksRoomId}
               />
             </div>
-          </>
+          </Suspense>
         )}
       </div>
     </div>

@@ -11,6 +11,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   DownloadIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
   SettingsIcon,
@@ -30,6 +31,7 @@ type IssueEditorHeaderProps = {
   onSave: () => void;
   onRename: () => void;
   onExport: () => void;
+  onMove: () => void;
   onDelete: () => void;
   versionDisplay?: React.ReactNode;
   isPending?: boolean;
@@ -46,6 +48,7 @@ export function IssueEditorHeader({
   onSave,
   onRename,
   onExport,
+  onMove,
   onDelete,
   versionDisplay,
   isPending = false,
@@ -90,6 +93,10 @@ export function IssueEditorHeader({
           <DropdownMenuItem onClick={onExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

@@ -236,12 +236,13 @@ model User {
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization      Organization @relation(fields: [organizationId], references: [id])
-  teamMemberships   TeamMember[]
-  ownedProjects     Project[]    @relation("ProjectOwner")
-  ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
-  approvedArtifacts Artifact[]   @relation("ArtifactApprover")
-  loops             Loop[]
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  teamMemberships    TeamMember[]
+  ownedProjects      Project[]     @relation("ProjectOwner")
+  ownedArtifacts     Artifact[]    @relation("ArtifactOwner")
+  approvedArtifacts  Artifact[]    @relation("ArtifactApprover")
+  createdWorkstreams Workstream[]  @relation("WorkstreamCreatedBy")
+  loops              Loop[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -379,6 +380,7 @@ model Workstream {
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id])
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy    User         @relation("WorkstreamCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   artifacts    Artifact[]
   loops        Loop[]
 
@@ -386,6 +388,7 @@ model Workstream {
   @@index([organizationId, projectId, state])
   @@index([organizationId, assignedToId])
   @@index([projectId])
+  @@index([createdById])
   @@map("workstreams")
 }
 
@@ -447,6 +450,7 @@ model Artifact {
   ratings           ArtifactRating[]
   evaluations       ArtifactEvaluation[]
   previewDeployment PreviewDeployment?
+  pullRequests      GitHubPullRequest[]
   loops             Loop[]
 
   @@unique([organizationId, templateForSubtype])
@@ -741,15 +745,16 @@ model GitHubInstallation {
 }
 
 model GitHubInstallationRepository {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  installationId String   @map("installation_id") @db.Uuid
-  githubRepoId   Int      @map("github_repo_id")
-  fullName       String   @map("full_name")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  installationId String    @map("installation_id") @db.Uuid
+  githubRepoId   Int       @map("github_repo_id")
+  fullName       String    @map("full_name")
   name           String
   owner          String
   private        Boolean
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastPushedAt   DateTime? @map("last_pushed_at")
 
   // Relations
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
@@ -762,6 +767,7 @@ model GitHubPullRequest {
   id             String        @id @default(uuid(7)) @db.Uuid
   workstreamId   String        @map("workstream_id") @db.Uuid
   repositoryId   String        @map("repository_id") @db.Uuid
+  artifactId     String?       @map("artifact_id") @db.Uuid
   githubId       Int           @map("github_id")
   number         Int
   title          String
@@ -777,6 +783,9 @@ model GitHubPullRequest {
   mergeCommitSha String?       @map("merge_commit_sha")
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
@@ -820,6 +829,7 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@index([artifactId])
+  @@index([createdAt])
   @@map("artifact_evaluations")
 }
 
@@ -857,4 +867,23 @@ model SlackIntegration {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
+}
+
+// =============================================================================
+// GOOGLE INTEGRATION
+// =============================================================================
+
+model GoogleIntegration {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
+  googleUserId   String    @map("google_user_id")
+  googleEmail    String?   @db.VarChar(255) @map("google_email")
+  accessToken    String    @db.Text @map("access_token")
+  refreshToken   String?   @db.Text @map("refresh_token")
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("google_integrations")
 }

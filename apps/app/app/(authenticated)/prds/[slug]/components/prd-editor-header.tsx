@@ -11,6 +11,8 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   DownloadIcon,
+  FolderIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RotateCcwIcon,
@@ -66,6 +68,10 @@ type PRDEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when rename menu item is clicked
    */
   onRename: () => void;
@@ -73,6 +79,10 @@ type PRDEditorHeaderProps = {
    * Callback when export menu item is clicked
    */
   onExport: () => void;
+  /**
+   * Callback when move menu item is clicked
+   */
+  onMove: () => void;
   /**
    * Whether to show the restore option
    */
@@ -93,6 +103,10 @@ type PRDEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
 
 export function PRDEditorHeader({
@@ -105,13 +119,16 @@ export function PRDEditorHeader({
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onDiscard,
   onEdit,
   onSave,
   onRename,
   onExport,
+  onMove,
   showRestore = false,
   onRestoreVersion,
   onDelete,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PRDEditorHeaderProps) {
@@ -128,11 +145,33 @@ export function PRDEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
+          {openThreadCount > 0 ? (
+            <Button
+              onClick={onEdit}
+              size="sm"
+              title="View comments"
+              variant="ghost"
+            >
+              <MessageSquareIcon className="mr-1 h-4 w-4" />
+              {openThreadCount}
+            </Button>
+          ) : null}
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"
@@ -173,6 +212,10 @@ export function PRDEditorHeader({
           <DropdownMenuItem onClick={onExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           {showRestore ? (
             <DropdownMenuItem onClick={onRestoreVersion}>

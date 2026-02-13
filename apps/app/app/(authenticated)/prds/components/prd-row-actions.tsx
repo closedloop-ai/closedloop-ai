@@ -11,12 +11,14 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
   DownloadIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import {
   useDeleteArtifact,
@@ -32,6 +34,7 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
   const updateArtifact = useUpdateArtifact();
   const deleteArtifact = useDeleteArtifact();
   const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const isPending = updateArtifact.isPending || deleteArtifact.isPending;
@@ -82,6 +85,10 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => setShowMoveDialog(true)}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive focus:text-destructive"
@@ -102,6 +109,12 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
         onRename={handleRename}
         open={showRenameDialog}
         title="Rename PRD"
+      />
+
+      <MoveArtifactDialog
+        artifact={prd}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       <DeleteConfirmationDialog

@@ -30,9 +30,9 @@ type IssueMetadataPanelProps = {
   onApproverSelect: (user: User | null) => void;
   onOwnerChange: (user: User | null) => void;
   onTargetRepoChange: (targetRepo: string) => void;
-  onTargetRepoBlur: () => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
   onTargetBranchChange: (targetBranch: string) => void;
-  onTargetBranchBlur: () => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 export function IssueMetadataPanel({

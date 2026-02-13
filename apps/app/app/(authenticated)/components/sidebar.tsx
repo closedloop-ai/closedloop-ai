@@ -29,7 +29,9 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import { useQueryClient } from "@tanstack/react-query";
+import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
@@ -43,6 +45,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useRef } from "react";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
+import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
 
@@ -112,14 +115,26 @@ type GlobalSidebarProperties = {
   readonly children: ReactNode;
 };
 
-const data = {
+const data: {
+  workspace: {
+    title: string;
+    url: string;
+    icon: LucideIcon;
+    disabled: boolean;
+  }[];
+  navSecondary: {
+    title: string;
+    url: string;
+    icon: LucideIcon;
+    disabled: boolean;
+  }[];
+} = {
   workspace: [
     {
       title: "Inbox",
       url: "/inbox",
       icon: InboxIcon,
-      badge: 1,
-      disabled: true,
+      disabled: false,
     },
     {
       title: "Initiatives",
@@ -147,6 +162,12 @@ const data = {
     },
   ],
   navSecondary: [
+    {
+      title: "Judges",
+      url: "/judges-analytics",
+      icon: BarChart3,
+      disabled: false,
+    },
     {
       title: "Settings",
       url: "/settings",
@@ -253,21 +274,12 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                       <span className="flex items-center gap-2">
                         <item.icon />
                         <span>{item.title}</span>
-                        {item.badge ? (
-                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
-                            {item.badge}
-                          </span>
-                        ) : null}
                       </span>
                     ) : (
                       <Link href={item.url}>
                         <item.icon />
                         <span>{item.title}</span>
-                        {item.badge ? (
-                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
-                            {item.badge}
-                          </span>
-                        ) : null}
+                        {item.title === "Inbox" && <InboxBadge />}
                       </Link>
                     )}
                   </SidebarMenuButton>

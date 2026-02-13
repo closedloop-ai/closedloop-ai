@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
 import {
   useGitHubBranches,
@@ -34,17 +35,19 @@ type TargetRepositoryFieldsProps = {
    */
   onTargetRepoChange: (targetRepo: string) => void;
   /**
-   * Handler called when target repository input loses focus
+   * Handler called when target repository input loses focus.
+   * Accepts optional override value to avoid stale closure issues.
    */
-  onTargetRepoBlur: () => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
   /**
    * Handler called when target branch input value changes
    */
   onTargetBranchChange: (targetBranch: string) => void;
   /**
-   * Handler called when target branch input loses focus
+   * Handler called when target branch input loses focus.
+   * Accepts optional override value to avoid stale closure issues.
    */
-  onTargetBranchBlur: () => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 /**
@@ -71,7 +74,19 @@ export function TargetRepositoryFields({
   const sortedRepositories = useMemo(
     () =>
       repositories
-        ? [...repositories].sort((a, b) => a.name.localeCompare(b.name))
+        ? [...repositories].sort((a, b) => {
+            // Sort by lastPushedAt desc (nulls to bottom), then by name asc
+            if (a.lastPushedAt && b.lastPushedAt) {
+              return (
+                new Date(b.lastPushedAt).getTime() -
+                new Date(a.lastPushedAt).getTime()
+              );
+            }
+            if (a.lastPushedAt !== b.lastPushedAt) {
+              return a.lastPushedAt ? -1 : 1;
+            }
+            return a.name.localeCompare(b.name);
+          })
         : [],
     [repositories]
   );
@@ -104,7 +119,7 @@ export function TargetRepositoryFields({
       const defaultBranch = branchesData.branches.find((b) => b.isDefault);
       if (defaultBranch) {
         onTargetBranchChange(defaultBranch.name);
-        onTargetBranchBlur();
+        onTargetBranchBlur(defaultBranch.name);
       }
     }
   }, [branchesData, targetBranch, onTargetBranchChange, onTargetBranchBlur]);
@@ -125,16 +140,16 @@ export function TargetRepositoryFields({
     if (selectedRepo) {
       setSelectedRepoId(repoId);
       onTargetRepoChange(selectedRepo.fullName);
-      onTargetRepoBlur();
+      onTargetRepoBlur(selectedRepo.fullName);
       // Clear branch when repository changes - will be auto-set by useEffect
       onTargetBranchChange("");
-      onTargetBranchBlur();
+      onTargetBranchBlur("");
     }
   };
 
   const handleBranchChange = (branch: string) => {
     onTargetBranchChange(branch);
-    onTargetBranchBlur();
+    onTargetBranchBlur(branch);
   };
 
   return (
@@ -168,7 +183,17 @@ export function TargetRepositoryFields({
             <SelectContent>
               {sortedRepositories.map((repo) => (
                 <SelectItem key={repo.id} value={repo.id}>
-                  {repo.fullName}
+                  <div className="flex flex-col">
+                    <span>{repo.fullName}</span>
+                    {repo.lastPushedAt && (
+                      <span className="text-muted-foreground text-xs">
+                        Last active{" "}
+                        {formatDistanceToNow(new Date(repo.lastPushedAt), {
+                          addSuffix: true,
+                        })}
+                      </span>
+                    )}
+                  </div>
                 </SelectItem>
               ))}
             </SelectContent>
