@@ -275,6 +275,7 @@ $RECYCLE.BIN/
 !.claude/commands
 !.claude/settings
 !.claude/skills
+apps/*/.claude/
 
 
 # Database

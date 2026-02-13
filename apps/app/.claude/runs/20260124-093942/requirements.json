@@ -1,3 +1,0 @@
-{
-  "ticket": "In Account settings, expose all of the Clerk embeddable UI for account management. This includes:\n\n1. OrgSelector - organization selector/switcher\n2. Admin Org controls (for org admins):\n   - Add/remove organization members\n   - Enable/configure 2FA requirements\n   - Manage org roles and permissions\n3. Individual user settings:\n   - Password reset\n   - Profile management\n   - Security settings (personal 2FA, sessions, etc.)\n4. Special 'Admin' section that only appears for users with org admin roles, containing all administrative controls\n\nThe /settings page should be restructured to have clear sections for personal user settings and (when applicable) organization admin settings."
-}
