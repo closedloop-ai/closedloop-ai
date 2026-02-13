@@ -157,7 +157,7 @@ export default function ProjectDetailPage() {
         workstreamTitle: artifact.workstream?.title,
         workstreamState: artifact.workstream?.state,
         generationStatus: artifact.generationStatus,
-        updatedAt: artifact.updatedAt.toISOString(),
+        updatedAt: String(artifact.updatedAt),
         owner: artifact.owner ?? null,
       })),
     [artifactsData]
