@@ -16,7 +16,6 @@ const TypedAreaChart = AreaChart as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedArea = Area as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
-// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedXAxis = XAxis as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedChartTooltip = ChartTooltip as unknown as FC<any>;
@@ -30,7 +29,10 @@ type StatSparklineProps = {
 
 function formatDateLabel(dateStr: string): string {
   const date = new Date(`${dateStr}T00:00:00`);
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (Number.isNaN(date.getTime())) {
+    return dateStr;
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 export function StatSparkline({ chartData, gradientId }: StatSparklineProps) {
