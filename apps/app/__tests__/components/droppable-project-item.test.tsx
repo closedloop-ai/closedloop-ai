@@ -31,7 +31,10 @@ describe("DroppableProjectItem", () => {
       </DroppableProjectItem>
     );
 
-    expect(useDroppable).toHaveBeenCalledWith({ id: projectId });
+    expect(useDroppable).toHaveBeenCalledWith({
+      id: projectId,
+      data: { type: "project", projectId },
+    });
   });
 
   it("visual feedback on hover", () => {
