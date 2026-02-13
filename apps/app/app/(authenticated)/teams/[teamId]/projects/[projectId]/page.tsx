@@ -157,6 +157,8 @@ export default function ProjectDetailPage() {
         workstreamTitle: artifact.workstream?.title,
         workstreamState: artifact.workstream?.state,
         generationStatus: artifact.generationStatus,
+        updatedAt: artifact.updatedAt.toISOString(),
+        owner: artifact.owner ?? null,
       })),
     [artifactsData]
   );
@@ -342,6 +344,7 @@ export default function ProjectDetailPage() {
                 artifacts={artifacts}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             )}
           </div>

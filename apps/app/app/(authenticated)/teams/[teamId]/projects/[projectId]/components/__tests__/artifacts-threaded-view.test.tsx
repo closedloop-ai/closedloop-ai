@@ -50,10 +50,57 @@ vi.mock("@/hooks/use-delete-confirmation", () => ({
   }),
 }));
 
+// Mock Radix dropdown to render inline (no portal) so menu items are queryable
+vi.mock("@repo/design-system/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuTrigger: ({
+    children,
+    asChild,
+    ...props
+  }: {
+    children: React.ReactNode;
+    asChild?: boolean;
+  }) => <div {...props}>{children}</div>,
+  DropdownMenuContent: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuItem: ({
+    children,
+    onClick,
+  }: {
+    children: React.ReactNode;
+    onClick?: () => void;
+  }) => (
+    <button onClick={onClick} type="button">
+      {children}
+    </button>
+  ),
+}));
+
 vi.mock("../artifact-subtype-badge", () => ({
   ArtifactSubtypeBadge: ({ subtype }: { subtype: string }) => (
     <div data-testid={`badge-${subtype}`}>{subtype}</div>
   ),
+}));
+
+vi.mock("@/components/move-artifact-dialog", () => ({
+  MoveArtifactDialog: ({
+    open,
+    onOpenChange,
+  }: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) =>
+    open ? (
+      <div data-testid="move-artifact-dialog">
+        Move Artifact Dialog
+        <button onClick={() => onOpenChange(false)} type="button">
+          Close
+        </button>
+      </div>
+    ) : null,
 }));
 
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Feature Branch/;
@@ -76,6 +123,7 @@ const createMockArtifact = (
   workstreamId: null,
   workstreamTitle: null,
   workstreamState: null,
+  updatedAt: "2024-01-16T10:00:00Z",
   ...overrides,
 });
 
@@ -83,7 +131,7 @@ describe("ArtifactsThreadedView - Empty State", () => {
   afterEach(cleanup);
 
   test("renders empty state when no artifacts provided", () => {
-    render(<ArtifactsThreadedView artifacts={[]} />);
+    render(<ArtifactsThreadedView artifacts={[]} projectId="project-1" />);
 
     expect(screen.getByTestId("empty-state")).toBeDefined();
     expect(screen.getByText("No artifacts yet")).toBeDefined();
@@ -124,7 +172,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("Feature X")).toBeDefined();
     expect(screen.getByText("Feature Y")).toBeDefined();
@@ -147,7 +197,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("2 artifacts")).toBeDefined();
   });
@@ -162,7 +214,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("1 artifact")).toBeDefined();
   });
@@ -177,7 +231,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("Orphan PRD")).toBeDefined();
     expect(screen.queryByText("Unassigned")).toBeNull();
@@ -194,7 +250,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("Unassigned")).toBeDefined();
   });
@@ -224,7 +282,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -246,7 +306,9 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     expect(screen.getByText("Implementing")).toBeDefined();
   });
@@ -265,7 +327,9 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     // The trigger should exist but content should be collapsed
     const trigger = screen.getByText("Feature X").closest("button");
@@ -283,7 +347,9 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("Feature X").closest("button");
     expect(trigger).not.toBeNull();
@@ -309,7 +375,9 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     // Expand the section
     const trigger = screen.getByText("Test WS").closest("button");
@@ -345,7 +413,9 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -371,7 +441,9 @@ describe("ArtifactsThreadedView - Links", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -395,7 +467,9 @@ describe("ArtifactsThreadedView - Links", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -427,7 +501,9 @@ describe("ArtifactsThreadedView - Navigation", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -450,7 +526,9 @@ describe("ArtifactsThreadedView - Navigation", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -486,7 +564,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("Active Workstream").closest("button");
     fireEvent.click(trigger!);
@@ -515,7 +595,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -536,7 +618,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -566,7 +650,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -602,7 +688,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     ];
 
     const { rerender } = render(
-      <ArtifactsThreadedView artifacts={artifacts} />
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -630,7 +716,12 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    rerender(<ArtifactsThreadedView artifacts={updatedArtifacts} />);
+    rerender(
+      <ArtifactsThreadedView
+        artifacts={updatedArtifacts}
+        projectId="project-1"
+      />
+    );
 
     // SUCCESS state shows green checkmark, no message
     expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
@@ -657,7 +748,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     const trigger = screen.getByText("WS").closest("button");
     fireEvent.click(trigger!);
@@ -689,7 +782,9 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
       }),
     ];
 
-    render(<ArtifactsThreadedView artifacts={artifacts} />);
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
 
     // Verify workstream badge is rendered in trigger
     expect(screen.getByText("Implementing")).toBeInTheDocument();
@@ -727,7 +822,7 @@ describe("ArtifactsThreadedView - Workstream PR Border", () => {
     ];
 
     const { container } = render(
-      <ArtifactsThreadedView artifacts={artifacts} />
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
     const collapsible = container.querySelector("[data-state]");
@@ -746,7 +841,7 @@ describe("ArtifactsThreadedView - Workstream PR Border", () => {
     ];
 
     const { container } = render(
-      <ArtifactsThreadedView artifacts={artifacts} />
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
     const collapsible = container.querySelector("[data-state]");
@@ -772,7 +867,7 @@ describe("ArtifactsThreadedView - Workstream PR Border", () => {
     ];
 
     const { container } = render(
-      <ArtifactsThreadedView artifacts={artifacts} />
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
     const collapsible = container.querySelector("[data-state]");
@@ -792,11 +887,106 @@ describe("ArtifactsThreadedView - Workstream PR Border", () => {
     ];
 
     const { container } = render(
-      <ArtifactsThreadedView artifacts={artifacts} />
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
     const collapsible = container.querySelector("[data-state]");
     expect(collapsible?.className).not.toContain("border-l-blue-500");
     expect(collapsible?.className).not.toContain("border-l-green-500");
+  });
+});
+
+describe("ArtifactsThreadedView - Move Artifact", () => {
+  afterEach(cleanup);
+
+  test("renders 'Move to project' menu item in dropdown", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Test Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // Find and click the dropdown menu trigger
+    const dropdownTrigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(dropdownTrigger);
+
+    // Verify 'Move to project' menu item is rendered
+    expect(screen.getByText("Move to project")).toBeInTheDocument();
+  });
+
+  test("clicking 'Move to project' opens MoveArtifactDialog", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Test Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // Open dropdown menu
+    const dropdownTrigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(dropdownTrigger);
+
+    // Click 'Move to project'
+    const moveMenuItem = screen.getByText("Move to project");
+    fireEvent.click(moveMenuItem);
+
+    // Verify dialog opens
+    expect(screen.getByTestId("move-artifact-dialog")).toBeInTheDocument();
+    expect(screen.getByText("Move Artifact Dialog")).toBeInTheDocument();
+  });
+
+  test("closing MoveArtifactDialog hides it", () => {
+    const artifacts: ProjectArtifact[] = [
+      createMockArtifact({
+        id: "1",
+        name: "Test Artifact",
+        workstreamId: "ws-1",
+        workstreamTitle: "WS",
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // Open dropdown and click move
+    const dropdownTrigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(dropdownTrigger);
+    const moveMenuItem = screen.getByText("Move to project");
+    fireEvent.click(moveMenuItem);
+
+    // Verify dialog is open
+    expect(screen.getByTestId("move-artifact-dialog")).toBeInTheDocument();
+
+    // Close dialog
+    const closeButton = screen.getByRole("button", { name: "Close" });
+    fireEvent.click(closeButton);
+
+    // Verify dialog is closed
+    expect(
+      screen.queryByTestId("move-artifact-dialog")
+    ).not.toBeInTheDocument();
   });
 });

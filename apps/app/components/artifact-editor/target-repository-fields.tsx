@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { formatDistanceToNow } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
 import {
   useGitHubBranches,
@@ -73,7 +74,19 @@ export function TargetRepositoryFields({
   const sortedRepositories = useMemo(
     () =>
       repositories
-        ? [...repositories].sort((a, b) => a.name.localeCompare(b.name))
+        ? [...repositories].sort((a, b) => {
+            // Sort by lastPushedAt desc (nulls to bottom), then by name asc
+            if (a.lastPushedAt && b.lastPushedAt) {
+              return (
+                new Date(b.lastPushedAt).getTime() -
+                new Date(a.lastPushedAt).getTime()
+              );
+            }
+            if (a.lastPushedAt !== b.lastPushedAt) {
+              return a.lastPushedAt ? -1 : 1;
+            }
+            return a.name.localeCompare(b.name);
+          })
         : [],
     [repositories]
   );
@@ -170,7 +183,17 @@ export function TargetRepositoryFields({
             <SelectContent>
               {sortedRepositories.map((repo) => (
                 <SelectItem key={repo.id} value={repo.id}>
-                  {repo.fullName}
+                  <div className="flex flex-col">
+                    <span>{repo.fullName}</span>
+                    {repo.lastPushedAt && (
+                      <span className="text-muted-foreground text-xs">
+                        Last active{" "}
+                        {formatDistanceToNow(new Date(repo.lastPushedAt), {
+                          addSuffix: true,
+                        })}
+                      </span>
+                    )}
+                  </div>
                 </SelectItem>
               ))}
             </SelectContent>
