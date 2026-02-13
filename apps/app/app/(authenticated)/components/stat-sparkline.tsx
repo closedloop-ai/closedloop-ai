@@ -6,7 +6,7 @@ import {
   ChartTooltipContent,
 } from "@repo/design-system/components/ui/chart";
 import type { FC } from "react";
-import { Area, AreaChart } from "recharts";
+import { Area, AreaChart, XAxis } from "recharts";
 
 // Cast recharts components to work around React 19 JSX type incompatibility.
 // recharts types don't expose a 'props' property required by React 19's JSX transform,
@@ -15,6 +15,9 @@ import { Area, AreaChart } from "recharts";
 const TypedAreaChart = AreaChart as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedArea = Area as unknown as FC<any>;
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const TypedXAxis = XAxis as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedChartTooltip = ChartTooltip as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
@@ -56,6 +59,7 @@ export function StatSparkline({ chartData, gradientId }: StatSparklineProps) {
             />
           </linearGradient>
         </defs>
+        <TypedXAxis dataKey="date" hide />
         <TypedChartTooltip
           content={
             <TypedChartTooltipContent
