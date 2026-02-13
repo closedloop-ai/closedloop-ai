@@ -42,20 +42,38 @@ enum WorkstreamState {
   CANCELLED
 }
 
-enum ArtifactSubtype {
-  PRD
-  ISSUE
-  BUG
-  FIGMA_DESIGN
-  IMPLEMENTATION_PLAN
-  IMPLEMENTATION_STRATEGY
-  CODE_REVIEW_REPORT
-  VISUAL_QA_REPORT
-  ACCESSIBILITY_REPORT
-  TEST_REPORT
-  COMPLETION_SUMMARY
+enum IssueStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  CLOSED
+}
+
+enum IssuePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ExternalLinkType {
   PULL_REQUEST
-  TEMPLATE
+  FIGMA_DESIGN
+  PREVIEW_DEPLOYMENT
+}
+
+// Entity types for polymorphic EntityLink
+enum EntityType {
+  ARTIFACT
+  ISSUE
+  EXTERNAL_LINK
+}
+
+// Relationship types between entities (source → target, where source is the origin/cause)
+enum LinkType {
+  PRODUCES // source produces target (PRD → Plan, Plan → PR, PR → Preview)
+  BLOCKS // source blocks target (Issue blocks Issue)
+  RELATES_TO // bidirectional association (Issue ↔ Issue)
 }
 
 enum ArtifactStatus {
@@ -66,16 +84,9 @@ enum ArtifactStatus {
 }
 
 enum ArtifactType {
-  DOCUMENT
-  WORKFLOW
-  BRANCH
-}
-
-enum ApprovalStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  REVISION_REQUESTED
+  PRD
+  IMPLEMENTATION_PLAN
+  TEMPLATE
 }
 
 enum ApproverRole {
@@ -84,12 +95,6 @@ enum ApproverRole {
   TECH_LEAD
   ENGINEER
   STAKEHOLDER
-}
-
-enum FileUploadType {
-  SCREENSHOT
-  ATTACHMENT
-  REPORT_IMAGE
 }
 
 enum WorkstreamEventType {
@@ -140,7 +145,6 @@ enum GitHubInstallationStatus {
   PENDING_CLAIM
   ACTIVE
   SUSPENDED
-  REMOVED // @deprecated - kept for backwards compatibility, use UNINSTALLED instead
   UNINSTALLED
 }
 
@@ -187,6 +191,8 @@ model Organization {
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
+  issues             Issue[]
+  externalLinks      ExternalLink[]
   githubInstallation GitHubInstallation?
 
   @@map("organizations")
@@ -215,6 +221,8 @@ model User {
   ownedProjects     Project[]    @relation("ProjectOwner")
   ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
   approvedArtifacts Artifact[]   @relation("ArtifactApprover")
+  assignedIssues    Issue[]      @relation("IssueAssignee")
+  createdIssues     Issue[]      @relation("IssueCreator")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -240,36 +248,18 @@ model Project {
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization  @relation(fields: [organizationId], references: [id])
-  owner        User?         @relation("ProjectOwner", fields: [ownerId], references: [id])
-  workstreams  Workstream[]
-  repositories Repository[]
-  artifacts    Artifact[]
-  teams        ProjectTeam[]
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  owner         User?          @relation("ProjectOwner", fields: [ownerId], references: [id])
+  workstreams   Workstream[]
+  repositories  Repository[]
+  artifacts     Artifact[]
+  issues        Issue[]
+  externalLinks ExternalLink[]
+  teams         ProjectTeam[]
 
   @@index([organizationId])
   @@index([ownerId])
   @@map("projects")
-}
-
-model Repository {
-  id            String   @id @default(uuid(7)) @db.Uuid
-  projectId     String   @map("project_id") @db.Uuid
-  githubId      Int      @unique @map("github_id")
-  owner         String
-  name          String
-  fullName      String   @map("full_name")
-  defaultBranch String   @default("main") @map("default_branch")
-  isPrimary     Boolean  @default(false) @map("is_primary")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@unique([owner, name])
-  @@index([projectId])
-  @@map("repositories")
 }
 
 // =============================================================================
@@ -330,7 +320,6 @@ model ProjectTeam {
 // WORKSTREAM
 // =============================================================================
 
-/// Note: Displayed as "Initiative" in the UI
 model Workstream {
   id             String          @id @default(uuid(7)) @db.Uuid
   organizationId String          @map("organization_id") @db.Uuid
@@ -350,9 +339,11 @@ model Workstream {
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization @relation(fields: [organizationId], references: [id])
-  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  artifacts    Artifact[]
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  artifacts     Artifact[]
+  issues        Issue[]
+  externalLinks ExternalLink[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
@@ -383,30 +374,25 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id                 String            @id @default(uuid(7)) @db.Uuid
-  organizationId     String            @map("organization_id") @db.Uuid
-  workstreamId       String?           @map("workstream_id") @db.Uuid
-  projectId          String?           @map("project_id") @db.Uuid
-  parentId           String?           @map("parent_id") @db.Uuid
-  subtype            ArtifactSubtype   @map("subtype")
-  type               ArtifactType      @default(DOCUMENT) @map("type")
-  title              String
-  fileName           String?           @map("file_name")
-  approverId         String?           @map("approver_id") @db.Uuid
-  status             ArtifactStatus    @default(DRAFT)
-  content            String?           @db.Text
-  externalUrl        String?           @map("external_url")
-  version            Int               @default(1)
-  isLatest           Boolean           @default(true) @map("is_latest")
-  documentSlug       String?           @map("document_slug")
-  generatedBy        String?           @map("generated_by") @db.Uuid
-  ownerId            String?           @map("owner_id") @db.Uuid
-  tokenUsage         Json?             @map("token_usage")
-  targetRepo         String?           @map("target_repo")
-  targetBranch       String?           @map("target_branch")
-  templateForSubtype ArtifactSubtype?  @map("template_for_subtype")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
+  id              String         @id @default(uuid(7)) @db.Uuid
+  organizationId  String         @map("organization_id") @db.Uuid
+  workstreamId    String?        @map("workstream_id") @db.Uuid
+  projectId       String?        @map("project_id") @db.Uuid
+  type            ArtifactType   @map("type")
+  title           String
+  slug            String         @unique
+  fileName        String?        @map("file_name")
+  ownerId         String?        @map("owner_id") @db.Uuid
+  approverId      String?        @map("approver_id") @db.Uuid
+  status          ArtifactStatus @default(DRAFT)
+  latestVersion   Int            @default(1) @map("latest_version")
+  generatedBy     String?        @map("generated_by") @db.Uuid
+  tokenUsage      Json?          @map("token_usage")
+  targetRepo      String?        @map("target_repo")
+  targetBranch    String?        @map("target_branch")
+  templateForType ArtifactType?  @map("template_for_type")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
 
   // Relations
   organization Organization         @relation(fields: [organizationId], references: [id])
@@ -414,24 +400,49 @@ model Artifact {
   project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]           @relation("ArtifactSource")
+  versions     ArtifactVersion[]
   ratings      ArtifactRating[]
   evaluations  ArtifactEvaluation[]
-  previewDeployment  PreviewDeployment?
   pullRequests GitHubPullRequest[]
 
-  @@unique([organizationId, templateForSubtype])
-  @@index([organizationId, workstreamId, subtype, isLatest])
-  @@index([organizationId, projectId, subtype, isLatest])
-  @@index([organizationId, parentId, subtype, isLatest])
-  @@index([organizationId, subtype, templateForSubtype])
+  @@unique([organizationId, templateForType])
+  @@index([organizationId, workstreamId, type])
+  @@index([organizationId, projectId, type])
+  @@index([organizationId, type, templateForType])
   @@index([workstreamId])
   @@index([projectId])
-  @@index([parentId])
   @@index([ownerId])
   @@index([approverId])
   @@map("artifacts")
+}
+
+model ArtifactVersion {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  version     Int
+  content     String?  @db.Text
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, version])
+  @@map("artifact_versions")
+}
+
+model ArtifactEvaluation {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  actionRunId String?  @map("action_run_id") @db.Uuid
+  reportId    String   @map("report_id")
+  reportData  Json     @map("report_data")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, reportId])
+  @@map("artifact_evaluations")
 }
 
 model ArtifactRating {
@@ -454,45 +465,81 @@ model ArtifactRating {
   @@map("artifact_ratings")
 }
 
-model FileUpload {
-  id         String         @id @default(uuid(7)) @db.Uuid
-  artifactId String?        @map("artifact_id") @db.Uuid
-  type       FileUploadType
-  bucket     String
-  key        String
-  filename   String
-  mimeType   String         @map("mime_type")
-  sizeBytes  Int            @map("size_bytes")
-  viewport   Json?
-  pageUrl    String?        @map("page_url")
-  createdAt  DateTime       @default(now()) @map("created_at")
+// =============================================================================
+// OTHER ENTITIES
+// =============================================================================
 
-  @@index([artifactId])
-  @@index([bucket, key])
-  @@map("file_uploads")
+model Issue {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  workstreamId   String?       @map("workstream_id") @db.Uuid
+  projectId      String?       @map("project_id") @db.Uuid
+  title          String
+  slug           String        @unique
+  description    String?       @db.Text
+  status         IssueStatus   @default(TODO)
+  priority       IssuePriority @default(MEDIUM)
+  assigneeId     String?       @map("assignee_id") @db.Uuid
+  createdById    String        @map("created_by_id") @db.Uuid
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee     User?        @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdBy    User         @relation("IssueCreator", fields: [createdById], references: [id])
+
+  @@index([organizationId, workstreamId, status])
+  @@index([organizationId, projectId, status])
+  @@index([organizationId, assigneeId, status])
+  @@index([workstreamId])
+  @@index([projectId])
+  @@index([assigneeId])
+  @@index([createdById])
+  @@map("issues")
 }
 
-// =============================================================================
-// APPROVALS
-// =============================================================================
+model ExternalLink {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  workstreamId   String?          @map("workstream_id") @db.Uuid
+  projectId      String?          @map("project_id") @db.Uuid
+  type           ExternalLinkType
+  title          String
+  externalUrl    String           @map("external_url")
+  metadata       Json?
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
 
-model Approval {
-  id           String         @id @default(uuid(7)) @db.Uuid
-  projectId    String         @map("project_id") @db.Uuid
-  workstreamId String         @map("workstream_id") @db.Uuid
-  artifactId   String         @map("artifact_id") @db.Uuid
-  requiredRole ApproverRole   @map("required_role")
-  approverId   String?        @map("approver_id") @db.Uuid
-  status       ApprovalStatus @default(PENDING)
-  feedback     String?        @db.Text
-  requestedAt  DateTime       @default(now()) @map("requested_at")
-  decidedAt    DateTime?      @map("decided_at")
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  @@index([organizationId, workstreamId, type])
+  @@index([organizationId, projectId, type])
+  @@index([workstreamId])
   @@index([projectId])
-  @@index([workstreamId, status])
-  @@index([artifactId])
-  @@index([approverId, status])
-  @@map("approvals")
+  @@map("external_links")
+}
+
+model EntityLink {
+  id            String     @id @default(uuid(7)) @db.Uuid
+  sourceId      String     @map("source_id") @db.Uuid
+  sourceType    EntityType @map("source_type")
+  sourceVersion Int?       @map("source_version")
+  targetId      String     @map("target_id") @db.Uuid
+  targetType    EntityType @map("target_type")
+  targetVersion Int?       @map("target_version")
+  linkType      LinkType   @map("link_type")
+  metadata      Json?
+  createdAt     DateTime   @default(now()) @map("created_at")
+
+  @@index([sourceId, sourceType, linkType])
+  @@index([targetId, targetType, linkType])
+  @@map("entity_links")
 }
 
 // =============================================================================
@@ -598,6 +645,26 @@ model LinearSubtask {
 // GITHUB INTEGRATION
 // =============================================================================
 
+model Repository {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  githubId      Int      @unique @map("github_id")
+  owner         String
+  name          String
+  fullName      String   @map("full_name")
+  defaultBranch String   @default("main") @map("default_branch")
+  isPrimary     Boolean  @default(false) @map("is_primary")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([owner, name])
+  @@index([projectId])
+  @@map("repositories")
+}
+
 model GitHubInstallation {
   id                  String                   @id @default(uuid(7)) @db.Uuid
   organizationId      String?                  @unique @map("organization_id") @db.Uuid
@@ -672,7 +739,7 @@ model GitHubPullRequest {
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
-  @@index([repositoryId])
+  @@index([artifactId])
   @@map("github_pull_requests")
 }
 
@@ -698,39 +765,6 @@ model GitHubActionRun {
   @@index([workstreamId, status])
   @@index([workstreamId, workflowName])
   @@map("github_action_runs")
-}
-
-model ArtifactEvaluation {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  artifactId  String   @map("artifact_id") @db.Uuid
-  actionRunId String?  @map("action_run_id") @db.Uuid
-  reportId    String   @map("report_id")
-  reportData  Json     @map("report_data")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-
-  @@unique([artifactId, reportId])
-  @@index([artifactId])
-  @@index([createdAt])
-  @@map("artifact_evaluations")
-}
-
-model PreviewDeployment {
-  id          String    @id @default(uuid(7)) @db.Uuid
-  artifactId  String    @unique @map("artifact_id") @db.Uuid
-  url         String?
-  state       String?
-  environment String?
-  ref         String?
-  sha         String?
-  updatedAt   DateTime? @map("updated_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-
-  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-
-  @@index([ref, updatedAt])
-  @@map("preview_deployments")
 }
 
 // =============================================================================
