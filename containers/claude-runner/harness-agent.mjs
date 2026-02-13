@@ -1420,18 +1420,19 @@ async function main() {
   let output = [];
 
   try {
-    // Step 1: Report started event
+    // Step 1: Download context pack and validate secrets BEFORE reporting started.
+    // The "started" event triggers secret scrubbing on the backend, so we must
+    // consume the secrets first to avoid a race condition.
+    const contextPack = await downloadContextPack();
+    validateSecrets();
+
+    // Step 2: Report started event (triggers backend secret scrubbing)
     await reportEvent({
       type: "started",
       correlationId: config.correlationId,
       loopId: config.loopId,
     });
     log("info", "Reported STARTED event");
-
-    // Step 2: Download context pack and validate secrets BEFORE clone,
-    // because cloneRepo needs config.githubToken which is extracted from the pack.
-    const contextPack = await downloadContextPack();
-    validateSecrets();
 
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);

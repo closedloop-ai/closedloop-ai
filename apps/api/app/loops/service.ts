@@ -51,7 +51,16 @@ const VALID_TRANSITIONS: Record<LoopStatus, Set<LoopStatus>> = {
   // PENDING → RUNNING covers the race where the container sends "started"
   // before the backend has finished transitioning to CLAIMED.
   PENDING: new Set(["CLAIMED", "RUNNING", "CANCELLED"]),
-  CLAIMED: new Set(["RUNNING", "CANCELLED"]),
+  // CLAIMED → terminal states covers the case where the "started" event was
+  // dropped (network issue, transient failure). Without this, a lost "started"
+  // event would strand the loop in CLAIMED until the cron timeout safety net.
+  CLAIMED: new Set([
+    "RUNNING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "TIMED_OUT",
+  ]),
   RUNNING: new Set(["COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"]),
   COMPLETED: new Set(),
   FAILED: new Set(),
@@ -329,6 +338,17 @@ export const loopsService = {
       loopId: id,
       to: status,
     });
+
+    // If transitioning directly to a terminal state (e.g., from CLAIMED when
+    // "started" event was lost), backfill startedAt so the record is consistent.
+    if (TERMINAL_STATUSES.has(status) && !updateData.startedAt) {
+      await withDb((db) =>
+        db.loop.updateMany({
+          where: { id, organizationId, startedAt: null },
+          data: { startedAt: new Date() },
+        })
+      );
+    }
 
     // Re-fetch the updated record to return the full Loop object
     const loop = await withDb((db) =>
