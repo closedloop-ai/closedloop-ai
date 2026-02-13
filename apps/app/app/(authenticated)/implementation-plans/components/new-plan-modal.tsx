@@ -481,12 +481,7 @@ export function NewPlanModal({
             Cancel
           </Button>
           <Button
-            disabled={
-              createAndGeneratePlan.isPending ||
-              createAndGeneratePlan.isComputeModeLoading ||
-              !selectedSource ||
-              !title.trim()
-            }
+            disabled={isSubmitting || !title.trim()}
             onClick={handleSubmit}
           >
             {isSubmitting ? (
