@@ -14,7 +14,7 @@ export async function GET(_request: Request, { params }: RouteParams) {
 
   const artifact = await withDb((db) =>
     db.artifact.findFirst({
-      where: { documentSlug: slug, isLatest: true },
+      where: { slug },
       select: { title: true, type: true },
     })
   );

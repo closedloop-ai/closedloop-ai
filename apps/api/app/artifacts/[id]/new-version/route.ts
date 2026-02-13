@@ -26,6 +26,7 @@ export const POST = withAuth<Artifact, "/artifacts/[id]/new-version">(
       const newVersion = await artifactsService.createNewVersion(
         id,
         user.organizationId,
+        user.id,
         body.content
       );
 
