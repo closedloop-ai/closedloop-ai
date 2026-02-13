@@ -17,7 +17,7 @@ export default async function WorkstreamPage({ params }: WorkstreamPageProps) {
   return (
     <>
       <Header page="Workstream" pages={["Workstreams", "Details"]} />
-      <main className="flex flex-1 flex-col p-4 pt-0">
+      <main className="flex min-h-0 flex-1 flex-col overflow-auto p-4 pt-0">
         <WorkstreamDetailContainer id={id} />
       </main>
     </>
