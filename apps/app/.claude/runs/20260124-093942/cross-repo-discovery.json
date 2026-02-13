@@ -1,0 +1,9 @@
+{
+  "affectedServices": [],
+  "authImpacts": [],
+  "confidence": "high",
+  "crossRepoChangesRequired": false,
+  "dataContracts": [],
+  "rationale": "Orchestrator determined this is local-only work",
+  "supportingEvidence": []
+}

@@ -1835,6 +1835,240 @@ Please try again or contact support if the issue persists.`,
       };
     });
   },
+
+  /**
+   * Reorder artifacts by setting sortOrder values atomically.
+   * Validates that all artifacts belong to the user's organization.
+   * Sets sortOrder to index (0-based) for each artifact in the provided array.
+   *
+   * @param artifactIds - Array of artifact IDs in the desired order
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of updated artifact IDs
+   */
+  reorder(artifactIds: string[], organizationId: string): Promise<string[]> {
+    // Early return for empty array
+    if (artifactIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    // Remove duplicates while preserving order
+    const uniqueIds = [...new Set(artifactIds)];
+
+    return withDb.tx(async (tx) => {
+      // Verify all artifacts exist and belong to the organization
+      const artifacts = await tx.artifact.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      // Check if any artifacts were not found or don't belong to the org
+      if (artifacts.length !== uniqueIds.length) {
+        const foundIds = new Set(artifacts.map((a) => a.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      // Update sortOrder for each artifact atomically
+      await Promise.all(
+        uniqueIds.map((id, index) =>
+          tx.artifact.update({
+            where: { id, organizationId },
+            data: { sortOrder: index },
+          })
+        )
+      );
+
+      return uniqueIds;
+    });
+  },
+
+  /**
+   * Move multiple artifacts to a target project atomically.
+   * Validates that all artifacts and the target project belong to the user's organization.
+   * Updates projectId for all specified artifacts in a single transaction.
+   *
+   * @param artifactIds - Array of artifact IDs to move
+   * @param targetProjectId - Target project ID
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of updated artifact IDs
+   */
+  batchMove(
+    artifactIds: string[],
+    targetProjectId: string,
+    organizationId: string
+  ): Promise<string[]> {
+    // Remove duplicates while preserving order
+    const uniqueIds = [...new Set(artifactIds)];
+
+    return withDb.tx(async (tx) => {
+      // Validate target project exists and belongs to organization
+      const targetProject = await tx.project.findFirst({
+        where: { id: targetProjectId, organizationId },
+        select: { id: true },
+      });
+
+      if (!targetProject) {
+        throw new Error(
+          "Invalid project ID: project not found in this organization"
+        );
+      }
+
+      // Verify all artifacts exist and belong to the organization
+      const artifacts = await tx.artifact.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      // Check if any artifacts were not found or don't belong to the org
+      if (artifacts.length !== uniqueIds.length) {
+        const foundIds = new Set(artifacts.map((a) => a.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      // Batch update all artifacts to the target project
+      await tx.artifact.updateMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        data: {
+          projectId: targetProjectId,
+        },
+      });
+
+      return uniqueIds;
+    });
+  },
+
+  /**
+   * Find all related artifacts by traversing the parentId hierarchy.
+   * Returns array of artifact IDs including:
+   * - All ancestors (traverse up via parentId to find root)
+   * - All descendants (traverse down from root to find all children)
+   *
+   * Handles circular references with max depth limit.
+   *
+   * @param artifactId - Starting artifact ID
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of related artifact IDs (including the starting artifact)
+   */
+  async findRelatedArtifacts(
+    artifactId: string,
+    organizationId: string
+  ): Promise<string[]> {
+    const MAX_DEPTH = 50; // Prevent infinite loops from circular references
+    const visited = new Set<string>();
+    const relatedIds = new Set<string>();
+
+    // Helper: Traverse up the parentId chain to find root
+    async function findRoot(currentId: string, depth = 0): Promise<string> {
+      if (depth > MAX_DEPTH) {
+        log.error(
+          "[artifacts-service] Max depth exceeded traversing up hierarchy",
+          {
+            artifactId: currentId,
+            depth,
+          }
+        );
+        return currentId;
+      }
+
+      if (visited.has(currentId)) {
+        log.error(
+          "[artifacts-service] Circular reference detected in parentId chain",
+          {
+            artifactId: currentId,
+          }
+        );
+        return currentId;
+      }
+
+      visited.add(currentId);
+
+      const artifact = await withDb((db) =>
+        db.artifact.findUnique({
+          where: { id: currentId, organizationId },
+          select: { parentId: true },
+        })
+      );
+
+      if (!artifact) {
+        return currentId; // Not found, treat as root
+      }
+
+      if (!artifact.parentId) {
+        return currentId; // No parent, this is the root
+      }
+
+      return findRoot(artifact.parentId, depth + 1);
+    }
+
+    // Helper: Traverse down to collect all descendants
+    async function collectDescendants(
+      currentId: string,
+      depth = 0
+    ): Promise<void> {
+      if (depth > MAX_DEPTH) {
+        log.error(
+          "[artifacts-service] Max depth exceeded traversing down hierarchy",
+          {
+            artifactId: currentId,
+            depth,
+          }
+        );
+        return;
+      }
+
+      relatedIds.add(currentId);
+
+      const children = await withDb((db) =>
+        db.artifact.findMany({
+          where: {
+            parentId: currentId,
+            organizationId,
+          },
+          select: { id: true },
+        })
+      );
+
+      for (const child of children) {
+        if (!relatedIds.has(child.id)) {
+          await collectDescendants(child.id, depth + 1);
+        }
+      }
+    }
+
+    // Verify starting artifact exists
+    const startingArtifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true },
+      })
+    );
+
+    if (!startingArtifact) {
+      return [];
+    }
+
+    // Step 1: Find the root by traversing up
+    const rootId = await findRoot(artifactId);
+
+    // Step 2: Collect all descendants from root (including root itself)
+    await collectDescendants(rootId);
+
+    return Array.from(relatedIds);
+  },
 };
 
 export type ExecuteResult =
