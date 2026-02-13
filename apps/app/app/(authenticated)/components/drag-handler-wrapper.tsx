@@ -3,16 +3,18 @@
 import type { DragEndEvent } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
 import type { Artifact } from "@repo/api/src/types/artifact";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { DndProvider } from "@/components/dnd/dnd-provider";
 import { MoveRelatedConfirmationDialog } from "@/components/move-related-confirmation-dialog";
 import {
+  artifactKeys,
   useArtifact,
   useBatchMoveArtifacts,
-  useRelatedArtifacts,
   useReorderArtifacts,
 } from "@/hooks/queries/use-artifacts";
+import { useApiClient } from "@/hooks/use-api-client";
 
 type DragHandlerWrapperProps = {
   children: ReactNode;
@@ -29,12 +31,10 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
     targetProjectId: null,
   });
 
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
   const batchMoveMutation = useBatchMoveArtifacts();
   const reorderArtifacts = useReorderArtifacts();
-
-  // Fetch related artifacts only when dialog is triggered
-  const { data: relatedIds = [], refetch: refetchRelated } =
-    useRelatedArtifacts(dialogState.artifactId ?? "", { enabled: false });
 
   // Fetch the dragged artifact data for dialog display
   const { data: draggedArtifact } = useArtifact(dialogState.artifactId ?? "", {
@@ -43,8 +43,6 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
 
   // Fetch related artifact details for display
   const relatedArtifacts: Artifact[] = [];
-  // Note: In a production implementation, you'd fetch these artifacts in parallel
-  // For now, we'll rely on the artifact IDs for the move operation
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
@@ -59,7 +57,11 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
       const draggedArtifactId = active.id as string;
 
       try {
-        const { data: relatedIds } = await refetchRelated();
+        const relatedIds = await queryClient.fetchQuery({
+          queryKey: artifactKeys.related(draggedArtifactId),
+          queryFn: () =>
+            apiClient.get<string[]>(`/artifacts/${draggedArtifactId}/related`),
+        });
 
         if (relatedIds && relatedIds.length > 0) {
           setDialogState({
@@ -104,8 +106,13 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
       return;
     }
 
+    const cachedRelatedIds =
+      queryClient.getQueryData<string[]>(
+        artifactKeys.related(dialogState.artifactId)
+      ) ?? [];
+
     const artifactIds = moveAll
-      ? [dialogState.artifactId, ...relatedIds]
+      ? [dialogState.artifactId, ...cachedRelatedIds]
       : [dialogState.artifactId];
 
     await batchMoveMutation.mutateAsync({

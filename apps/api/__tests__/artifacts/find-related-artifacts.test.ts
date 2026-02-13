@@ -215,7 +215,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
   it("artifact not found returns empty array", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
-      const fakeId = "01FAKE000000000000000000";
+      const fakeId = "00000000-0000-0000-0000-000000000000";
 
       const relatedIds = await artifactsService.findRelatedArtifacts(
         fakeId,
