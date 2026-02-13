@@ -524,6 +524,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-123" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -627,6 +630,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-456" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
@@ -678,6 +684,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-789" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
@@ -792,6 +801,11 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-bad-artifact" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
