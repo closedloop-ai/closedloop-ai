@@ -1,0 +1,7 @@
+{
+  "description": "Investigate codebase and populate investigation log",
+  "investigation_file": ".claude/runs/20260124-093942/investigation-log.md",
+  "requirements_file": ".claude/runs/20260124-093942/requirements.json",
+  "run_dir": ".claude/runs/20260124-093942",
+  "task": "manual-investigation"
+}

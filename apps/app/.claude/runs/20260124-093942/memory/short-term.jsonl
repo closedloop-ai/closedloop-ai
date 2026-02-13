@@ -1,0 +1,2 @@
+{"timestamp": "2026-01-24T09:39:42.623144", "type": "WorldModelSnapshot", "payload": {"repoMetadata": {}, "recentRuns": [{"runId": "20260124-093942", "phases": [], "durationMs": 0}], "criticPerformance": {}}}
+{"timestamp": "2026-01-24T09:39:42.623269", "type": "MemoryInitialized", "payload": {"message": "Seeded plan memory store", "runDir": ".claude/runs/20260124-093942"}}

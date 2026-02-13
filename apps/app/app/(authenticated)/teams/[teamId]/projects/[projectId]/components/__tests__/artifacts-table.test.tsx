@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockPullRequest } from "@/__tests__/fixtures/artifacts";
 import type { ProjectArtifact } from "@/types/teams";
@@ -17,8 +19,68 @@ vi.mock("@/hooks/use-delete-confirmation", () => ({
     itemToDelete: null,
     confirmDelete: vi.fn(),
     cancelDelete: vi.fn(),
-    showConfirmation: vi.fn(),
+    requestDelete: vi.fn(),
+    setOpen: vi.fn(),
+    isPending: false,
   }),
+}));
+
+// Mock @dnd-kit/core
+vi.mock("@dnd-kit/core", () => ({
+  DndContext: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+}));
+
+// Mock @dnd-kit/sortable
+vi.mock("@dnd-kit/sortable", () => ({
+  SortableContext: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  verticalListSortingStrategy: {},
+  arrayMove: vi.fn((arr, from, to) => {
+    const result = [...arr];
+    const [removed] = result.splice(from, 1);
+    result.splice(to, 0, removed);
+    return result;
+  }),
+  useSortable: vi.fn(() => ({
+    attributes: {},
+    listeners: {},
+    setNodeRef: vi.fn(),
+    transform: null,
+    transition: undefined,
+    isDragging: false,
+  })),
+}));
+
+// Mock DropdownMenu components (needed to avoid rendering issues)
+vi.mock("@repo/design-system/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuTrigger: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => (
+    <div>{children}</div>
+  ),
+  DropdownMenuItem: ({ children, onClick }: any) => (
+    <button onClick={onClick} type="button">
+      {children}
+    </button>
+  ),
+}));
+
+// Mock useApiClient
+const mockApiClient = {
+  get: vi.fn(),
+  post: vi.fn(),
+  put: vi.fn(),
+  delete: vi.fn(),
+  patch: vi.fn(),
+};
+
+vi.mock("@/hooks/use-api-client", () => ({
+  useApiClient: () => mockApiClient,
 }));
 
 const PULL_REQUEST_REGEX = /Pull request/;
@@ -39,6 +101,30 @@ function createMockProjectArtifact(
     updatedAt: "2024-01-16T10:00:00Z",
     ...overrides,
   };
+}
+
+// Test wrapper with QueryClientProvider
+function createTestWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        gcTime: 0,
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  });
+
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+
+function renderWithProviders(ui: ReactNode) {
+  const Wrapper = createTestWrapper();
+  return render(<Wrapper>{ui}</Wrapper>);
 }
 
 describe("ArtifactsTable - PR Icon Display", () => {
@@ -66,7 +152,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -94,7 +180,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -130,7 +216,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -160,7 +246,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -196,7 +282,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -215,7 +301,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
   });
 
   test("renders empty state when no artifacts provided", () => {
-    render(<ArtifactsTable artifacts={[]} projectId="test-project-id" />);
+    renderWithProviders(
+      <ArtifactsTable artifacts={[]} projectId="test-project-id" />
+    );
 
     expect(screen.getByText("No artifacts yet")).toBeInTheDocument();
     expect(
@@ -244,7 +332,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -276,7 +364,7 @@ describe("ArtifactsTable - PR Icon Display", () => {
     const mockPush = vi.fn();
     mockUseRouter.mockReturnValue({ push: mockPush });
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -319,7 +407,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -345,7 +433,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -369,7 +457,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -396,7 +484,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -419,7 +507,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -434,7 +522,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -449,7 +537,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -464,7 +552,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
@@ -490,8 +578,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
+    const Wrapper = createTestWrapper();
     const { rerender } = render(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <Wrapper>
+        <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      </Wrapper>
     );
 
     // Initially shows PENDING state
@@ -515,10 +606,12 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
     ];
 
     rerender(
-      <ArtifactsTable
-        artifacts={updatedArtifacts}
-        projectId="test-project-id"
-      />
+      <Wrapper>
+        <ArtifactsTable
+          artifacts={updatedArtifacts}
+          projectId="test-project-id"
+        />
+      </Wrapper>
     );
 
     // SUCCESS state shows green checkmark, no message
@@ -544,7 +637,7 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
       }),
     ];
 
-    render(
+    renderWithProviders(
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 

@@ -1,0 +1,13 @@
+AC-ID,AC-Description,Task-ID,Task-Anchor,Validation-Artifact,Validation-Type
+AC-001,Integrate OrganizationSwitcher for organization selection,task-001,task:restructure-tabbed-navigation,apps/app/app/(authenticated)/settings/__tests__/page.test.tsx,unit
+AC-001,Integrate OrganizationSwitcher for organization selection,task-004,task:admin-tab-protect-wrapper,apps/app/e2e/settings.spec.ts,e2e
+AC-002,Provide organization admin controls (add/remove members and manage roles),task-003,task:organization-tab-orgprofile,apps/app/app/(authenticated)/settings/__tests__/integration.test.tsx,integration
+AC-002,Provide organization admin controls (add/remove members and manage roles),task-004,task:admin-tab-protect-wrapper,apps/app/e2e/settings.spec.ts,e2e
+AC-002,Provide organization admin controls (add/remove members and manage roles),task-007,task:update-authprovider-theme,manual-verification,manual
+AC-003,Provide individual user settings (password reset and profile management),task-002,task:profile-tab-userprofile,apps/app/app/(authenticated)/settings/__tests__/page.test.tsx,unit
+AC-003,Provide individual user settings (password reset and profile management),task-006,task:remove-obsolete-account-card,apps/app/app/(authenticated)/settings/__tests__/page.test.tsx,unit
+AC-003,Provide individual user settings (password reset and profile management),task-007,task:update-authprovider-theme,manual-verification,manual
+AC-004,Implement admin-only section using Protect component for role-based visibility,task-004,task:admin-tab-protect-wrapper,apps/app/app/(authenticated)/settings/__tests__/integration.test.tsx,integration
+AC-004,Implement admin-only section using Protect component for role-based visibility,task-001,task:restructure-tabbed-navigation,apps/app/e2e/settings.spec.ts,e2e
+AC-005,Restructure settings page into clear sections for personal and organization settings,task-001,task:restructure-tabbed-navigation,apps/app/app/(authenticated)/settings/__tests__/page.test.tsx,unit
+AC-005,Restructure settings page into clear sections for personal and organization settings,task-005,task:integrations-tab-linear,apps/app/app/(authenticated)/settings/__tests__/page.test.tsx,unit

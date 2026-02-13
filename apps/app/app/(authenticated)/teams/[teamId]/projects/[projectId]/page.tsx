@@ -152,6 +152,7 @@ export default function ProjectDetailPage() {
         parentId: artifact.parentId,
         link: artifact.externalUrl || undefined,
         previewUrl: artifact.previewDeployment?.url ?? undefined,
+        sortOrder: artifact.sortOrder ?? null,
         pullRequest: artifact.pullRequest ?? null,
         workstreamId: artifact.workstreamId,
         workstreamTitle: artifact.workstream?.title,
