@@ -41,6 +41,7 @@ describe("SortableArtifactRow", () => {
     subtype: "PRD",
     status: "NOT_STARTED",
     documentSlug: "test-artifact",
+    updatedAt: new Date().toISOString(),
   };
 
   it("renders drag handle", () => {
