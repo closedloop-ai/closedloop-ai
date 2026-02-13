@@ -146,9 +146,11 @@ export default function SettingsPage() {
 
         <TabsContent className="mt-6 space-y-6" value="admin">
           <Protect
-            condition={(has) =>
-              has({ role: "org:admin" }) || has({ role: "org:owner" })
-            }
+            condition={(
+              has: (
+                params: { role: string } | { permission: string }
+              ) => boolean
+            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
             fallback={
               <Card>
                 <CardHeader>
