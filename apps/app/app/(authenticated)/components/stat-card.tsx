@@ -32,30 +32,15 @@ export const StatCard = memo(
     const gradientId = `gradient-${label.replace(/\s+/g, "-").toLowerCase()}`;
 
     return (
-      <Card
-        className={cn("relative", comingSoon && "opacity-60")}
-        style={{
-          background:
-            "linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--muted)))",
-        }}
-      >
-        <div className="p-6">
+      <Card className={cn("overflow-hidden", comingSoon && "opacity-60")}>
+        <div className="p-4 pb-0">
           {/* Main stat display */}
-          <div className="font-bold text-4xl">{value.toLocaleString()}</div>
+          <div className="font-bold text-3xl tabular-nums">
+            {value.toLocaleString()}
+          </div>
 
           {/* Label */}
-          <p className="mt-1 text-muted-foreground text-sm">{label}</p>
-
-          {/* Sparkline chart */}
-          {chartData.length > 0 && (
-            <div
-              aria-label={`${label} trend over last 2 weeks`}
-              className="mt-4 h-[50px]"
-              role="img"
-            >
-              <StatSparkline chartData={chartData} gradientId={gradientId} />
-            </div>
-          )}
+          <p className="mt-0.5 text-muted-foreground text-sm">{label}</p>
 
           {/* Coming Soon badge */}
           {comingSoon && (
@@ -64,6 +49,17 @@ export const StatCard = memo(
             </Badge>
           )}
         </div>
+
+        {/* Sparkline chart */}
+        {chartData.length > 0 && (
+          <div
+            aria-label={`${label} trend over last 2 weeks`}
+            className="h-[120px] px-2 pt-1 pb-2"
+            role="img"
+          >
+            <StatSparkline chartData={chartData} gradientId={gradientId} />
+          </div>
+        )}
       </Card>
     );
   }
