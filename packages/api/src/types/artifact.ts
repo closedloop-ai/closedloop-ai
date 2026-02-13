@@ -195,6 +195,7 @@ export type Artifact = {
   targetRepo: string | null;
   targetBranch: string | null;
   templateForSubtype: ArtifactSubtype | null;
+  sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
 };

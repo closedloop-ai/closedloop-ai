@@ -13,7 +13,10 @@ export function DroppableProjectItem({
   projectId,
   children,
 }: DroppableProjectItemProps) {
-  const { isOver, setNodeRef } = useDroppable({ id: projectId });
+  const { isOver, setNodeRef } = useDroppable({
+    id: projectId,
+    data: { type: "project", projectId },
+  });
 
   return (
     <div

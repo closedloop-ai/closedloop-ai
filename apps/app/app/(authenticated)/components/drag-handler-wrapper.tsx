@@ -1,6 +1,7 @@
 "use client";
 
 import type { DragEndEvent } from "@dnd-kit/core";
+import { arrayMove } from "@dnd-kit/sortable";
 import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ReactNode } from "react";
 import { useState } from "react";
@@ -10,6 +11,7 @@ import {
   useArtifact,
   useBatchMoveArtifacts,
   useRelatedArtifacts,
+  useReorderArtifacts,
 } from "@/hooks/queries/use-artifacts";
 
 type DragHandlerWrapperProps = {
@@ -28,6 +30,7 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
   });
 
   const batchMoveMutation = useBatchMoveArtifacts();
+  const reorderArtifacts = useReorderArtifacts();
 
   // Fetch related artifacts only when dialog is triggered
   const { data: relatedIds = [], refetch: refetchRelated } =
@@ -46,44 +49,53 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
 
-    if (!over) {
+    if (!over || active.id === over.id) {
       return;
     }
 
-    // Check if this is a cross-project move (dropping on a project in sidebar)
-    // vs in-section reorder (dropping on another artifact row)
-    // Project IDs are ULIDs starting with "01" and are used as droppable IDs
-    // Artifact IDs are also ULIDs but will be within a sortable context
-    const targetProjectId = over.id as string;
-    const draggedArtifactId = active.id as string;
+    // Cross-project move: dropping on a sidebar project droppable
+    if (over.data.current?.type === "project") {
+      const targetProjectId = over.data.current.projectId as string;
+      const draggedArtifactId = active.id as string;
 
-    // If the drop target looks like a project ID (from sidebar droppable)
-    // we treat it as a cross-project move
-    // This is detected by the droppable context - if it's a DroppableProjectItem
-    // Check if we have related artifacts to show confirmation
-    try {
-      const { data: relatedIds } = await refetchRelated();
+      try {
+        const { data: relatedIds } = await refetchRelated();
 
-      if (relatedIds && relatedIds.length > 0) {
-        // Show confirmation dialog
-        setDialogState({
-          open: true,
-          artifactId: draggedArtifactId,
-          targetProjectId,
-        });
-      } else {
-        // No related artifacts, move immediately
+        if (relatedIds && relatedIds.length > 0) {
+          setDialogState({
+            open: true,
+            artifactId: draggedArtifactId,
+            targetProjectId,
+          });
+        } else {
+          await batchMoveMutation.mutateAsync({
+            artifactIds: [draggedArtifactId],
+            targetProjectId,
+          });
+        }
+      } catch {
         await batchMoveMutation.mutateAsync({
           artifactIds: [draggedArtifactId],
           targetProjectId,
         });
       }
-    } catch {
-      // If fetching related fails, move just the dragged artifact
-      await batchMoveMutation.mutateAsync({
-        artifactIds: [draggedArtifactId],
-        targetProjectId,
-      });
+      return;
+    }
+
+    // Within-section reorder: dropping on another artifact in the same section
+    const activeSortable = active.data.current?.sortable;
+    const overSortable = over.data.current?.sortable;
+    if (
+      activeSortable &&
+      overSortable &&
+      activeSortable.containerId === overSortable.containerId
+    ) {
+      const newOrder = arrayMove(
+        activeSortable.items as string[],
+        activeSortable.index,
+        overSortable.index
+      );
+      reorderArtifacts.mutate(newOrder);
     }
   };
 
