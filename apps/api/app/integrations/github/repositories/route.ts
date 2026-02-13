@@ -25,6 +25,7 @@ export const GET = withAuth<
       owner: repo.owner,
       private: repo.private,
       githubRepoId: repo.githubRepoId,
+      lastPushedAt: repo.lastPushedAt?.toISOString() ?? null,
     }));
 
     return successResponse(response);

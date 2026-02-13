@@ -55,11 +55,14 @@ import {
   isExternalLink,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
+import { formatRelativeTime } from "@/lib/date-utils";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_SUBTYPE_ICONS,
 } from "@/lib/project-constants";
+import { sortByDateDesc } from "@/lib/table-utils";
+import { getUserDisplayName } from "@/lib/user-utils";
 import type {
   ArtifactDisplayStatus,
   ProjectArtifact,
@@ -180,6 +183,8 @@ function ArtifactSection({
               <TableHead>Artifact</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Creator</TableHead>
+              <TableHead>Updated</TableHead>
               <TableHead>Link</TableHead>
               <TableHead>Preview</TableHead>
               <TableHead className="w-[50px]" />
@@ -267,6 +272,18 @@ function ArtifactSection({
                         </SelectContent>
                       </Select>
                     </TableCell>
+                    <TableCell>
+                      <span className="text-muted-foreground text-sm">
+                        {artifact.owner
+                          ? getUserDisplayName(artifact.owner)
+                          : "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-muted-foreground text-sm">
+                        {formatRelativeTime(artifact.updatedAt)}
+                      </span>
+                    </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <ArtifactLinkCell
                         artifact={artifact}
@@ -344,7 +361,10 @@ export function ArtifactsTable({
     () =>
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
-        artifacts: artifacts.filter((a) => section.subtypes.has(a.subtype)),
+        artifacts: sortByDateDesc(
+          artifacts.filter((a) => section.subtypes.has(a.subtype)),
+          "updatedAt"
+        ),
       })).filter((section) => section.artifacts.length > 0),
     [artifacts]
   );

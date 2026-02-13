@@ -98,6 +98,7 @@ function createMockProjectArtifact(
     name: "Test Artifact",
     subtype: "PRD",
     status: "NOT_STARTED",
+    updatedAt: "2024-01-16T10:00:00Z",
     ...overrides,
   };
 }
