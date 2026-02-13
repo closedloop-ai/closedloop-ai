@@ -30,6 +30,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRecentProjectsByTeam } from "@/hooks/queries/use-projects";
 import { useTeams } from "@/hooks/queries/use-teams";
 import { useIsMounted } from "@/hooks/use-is-mounted";
+import { DroppableProjectItem } from "./droppable-project-item";
 import { TeamModal } from "./team-modal";
 
 const PROJECT_DETAIL_PATTERN = /^\/teams\/([^/]+)\/projects\/[^/]+/;
@@ -96,17 +97,19 @@ function TeamCollapsible({
               ))}
             {recentProjects?.map((project) => (
               <SidebarMenuSubItem key={project.id}>
-                <SidebarMenuSubButton
-                  asChild
-                  isActive={
-                    pathname === `/teams/${team.id}/projects/${project.id}`
-                  }
-                >
-                  <Link href={`/teams/${team.id}/projects/${project.id}`}>
-                    <FolderIcon className="h-4 w-4" />
-                    <span>{project.name}</span>
-                  </Link>
-                </SidebarMenuSubButton>
+                <DroppableProjectItem projectId={project.id}>
+                  <SidebarMenuSubButton
+                    asChild
+                    isActive={
+                      pathname === `/teams/${team.id}/projects/${project.id}`
+                    }
+                  >
+                    <Link href={`/teams/${team.id}/projects/${project.id}`}>
+                      <FolderIcon className="h-4 w-4" />
+                      <span>{project.name}</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </DroppableProjectItem>
               </SidebarMenuSubItem>
             ))}
             {mounted ? (
