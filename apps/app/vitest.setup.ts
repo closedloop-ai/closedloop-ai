@@ -17,3 +17,6 @@ process.env.API_URL = "http://localhost:3002";
 
 // Import jest-dom matchers for toBeInTheDocument, toHaveAttribute, etc.
 import "@testing-library/jest-dom/vitest";
+
+// Mock scrollIntoView which is not implemented in jsdom
+Element.prototype.scrollIntoView = () => {};
