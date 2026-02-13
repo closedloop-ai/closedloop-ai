@@ -632,15 +632,16 @@ model GitHubInstallation {
 }
 
 model GitHubInstallationRepository {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  installationId String   @map("installation_id") @db.Uuid
-  githubRepoId   Int      @map("github_repo_id")
-  fullName       String   @map("full_name")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  installationId String    @map("installation_id") @db.Uuid
+  githubRepoId   Int       @map("github_repo_id")
+  fullName       String    @map("full_name")
   name           String
   owner          String
   private        Boolean
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastPushedAt   DateTime? @map("last_pushed_at")
 
   // Relations
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
