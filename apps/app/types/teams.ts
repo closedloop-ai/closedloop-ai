@@ -76,6 +76,7 @@ export type ProjectArtifact = {
   name: string;
   subtype: ProjectArtifactSubtype;
   status: ArtifactDisplayStatus;
+  sortOrder?: number | null;
   parentId?: string | null;
   link?: string;
   previewUrl?: string;

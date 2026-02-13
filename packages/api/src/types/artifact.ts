@@ -276,6 +276,7 @@ export type UpdateArtifactInput = {
   targetRepo?: string | null;
   targetBranch?: string | null;
   ownerId?: string | null;
+  sortOrder?: number | null;
 };
 
 export type Approval = {

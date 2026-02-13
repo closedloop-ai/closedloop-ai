@@ -1,5 +1,12 @@
 "use client";
 
+import type { DragEndEvent } from "@dnd-kit/core";
+import { DndContext } from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -45,6 +52,7 @@ import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { PreviewLink } from "@/components/preview-link";
 import { PullRequestLink } from "@/components/pull-request-link";
 import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
+import { useReorderArtifacts } from "@/hooks/queries/use-artifacts";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -62,6 +70,7 @@ import type {
   ProjectArtifactSubtype,
 } from "@/types/teams";
 import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
+import { SortableArtifactRow } from "./sortable-artifact-row";
 
 type ArtifactsTableProps = {
   artifacts: ProjectArtifact[];
@@ -151,6 +160,40 @@ function ArtifactSection({
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
     useState<ProjectArtifact | null>(null);
+  const reorderArtifacts = useReorderArtifacts();
+
+  // Sort artifacts by sortOrder (ascending, nulls last)
+  const sortedArtifacts = useMemo(() => {
+    return [...artifacts].sort((a, b) => {
+      const orderA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+      return orderA - orderB;
+    });
+  }, [artifacts]);
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+
+    if (!over || active.id === over.id) {
+      return;
+    }
+
+    const oldIndex = sortedArtifacts.findIndex((a) => a.id === active.id);
+    const newIndex = sortedArtifacts.findIndex((a) => a.id === over.id);
+
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+
+    // Reorder the local array to get the new order
+    const reorderedArtifacts = arrayMove(sortedArtifacts, oldIndex, newIndex);
+
+    // Extract artifact IDs in the new order
+    const artifactIds = reorderedArtifacts.map((a) => a.id);
+
+    // Call mutation to persist the new order
+    reorderArtifacts.mutate(artifactIds);
+  }
 
   return (
     <Collapsible defaultOpen>
@@ -159,134 +202,149 @@ function ArtifactSection({
         {title}
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Artifact</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Link</TableHead>
-              <TableHead>Preview</TableHead>
-              <TableHead className="w-[50px]" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {artifacts.map((artifact) => {
-              const Icon =
-                ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
-              const route = getArtifactRoute(artifact);
-              const isExternal = isExternalLink(artifact);
-              const isClickable = isNavigableArtifact(artifact);
+        <DndContext onDragEnd={handleDragEnd}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-8" />
+                <TableHead>Artifact</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Link</TableHead>
+                <TableHead>Preview</TableHead>
+                <TableHead className="w-[50px]" />
+              </TableRow>
+            </TableHeader>
+            <SortableContext
+              items={sortedArtifacts.map((a) => a.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <TableBody>
+                {sortedArtifacts.map((artifact) => {
+                  const Icon =
+                    ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
+                  const route = getArtifactRoute(artifact);
+                  const isExternal = isExternalLink(artifact);
+                  const isClickable = isNavigableArtifact(artifact);
 
-              return (
-                <TableRow
-                  className={
-                    isClickable ? "cursor-pointer hover:bg-muted/50" : ""
-                  }
-                  key={artifact.id}
-                  onClick={() => onRowClick(artifact)}
-                >
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Icon className="h-4 w-4 text-muted-foreground" />
-                      <span className="font-medium">{artifact.name}</span>
-                      <GenerationStatusIndicator
-                        generationStatus={artifact.generationStatus}
-                      />
-                      {artifact.pullRequest && (
-                        <div className="hidden sm:flex">
-                          <PullRequestStatusBadge
-                            pullRequest={artifact.pullRequest}
-                          />
-                        </div>
-                      )}
-                      <PullRequestLink pullRequest={artifact.pullRequest} />
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <ArtifactSubtypeBadge subtype={artifact.subtype} />
-                  </TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <Select
-                      onValueChange={(value) =>
-                        onStatusChange?.(
-                          artifact.id,
-                          value as ArtifactDisplayStatus
-                        )
+                  return (
+                    <SortableArtifactRow
+                      artifact={artifact}
+                      className={
+                        isClickable ? "cursor-pointer hover:bg-muted/50" : ""
                       }
-                      value={artifact.status}
+                      key={artifact.id}
+                      onClick={() => onRowClick(artifact)}
                     >
-                      <SelectTrigger className="h-7 w-[140px] border-0 bg-input/30 px-2 text-sm hover:bg-input/50 focus:ring-0 focus:ring-offset-0">
-                        <SelectValue>
-                          <span
-                            className={ARTIFACT_STATUS_COLORS[artifact.status]}
-                          >
-                            {ARTIFACT_STATUS_LABELS[artifact.status]}
-                          </span>
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {Object.entries(ARTIFACT_STATUS_LABELS).map(
-                          ([value, label]) => (
-                            <SelectItem key={value} value={value}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Icon className="h-4 w-4 text-muted-foreground" />
+                          <span className="font-medium">{artifact.name}</span>
+                          <GenerationStatusIndicator
+                            generationStatus={artifact.generationStatus}
+                          />
+                          {artifact.pullRequest && (
+                            <div className="hidden sm:flex">
+                              <PullRequestStatusBadge
+                                pullRequest={artifact.pullRequest}
+                              />
+                            </div>
+                          )}
+                          <PullRequestLink pullRequest={artifact.pullRequest} />
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <ArtifactSubtypeBadge subtype={artifact.subtype} />
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Select
+                          onValueChange={(value) =>
+                            onStatusChange?.(
+                              artifact.id,
+                              value as ArtifactDisplayStatus
+                            )
+                          }
+                          value={artifact.status}
+                        >
+                          <SelectTrigger className="h-7 w-[140px] border-0 bg-input/30 px-2 text-sm hover:bg-input/50 focus:ring-0 focus:ring-offset-0">
+                            <SelectValue>
                               <span
                                 className={
-                                  ARTIFACT_STATUS_COLORS[
-                                    value as ArtifactDisplayStatus
-                                  ]
+                                  ARTIFACT_STATUS_COLORS[artifact.status]
                                 }
                               >
-                                {label}
+                                {ARTIFACT_STATUS_LABELS[artifact.status]}
                               </span>
-                            </SelectItem>
-                          )
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <ArtifactLinkCell
-                      artifact={artifact}
-                      isExternal={isExternal}
-                      route={route}
-                    />
-                  </TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <PreviewLink url={artifact.previewUrl} />
-                  </TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button className="h-8 w-8" size="icon" variant="ghost">
-                          <MoreHorizontalIcon className="h-4 w-4" />
-                          <span className="sr-only">Open menu</span>
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setSelectedArtifact(artifact);
-                            setMoveDialogOpen(true);
-                          }}
-                        >
-                          <FolderIcon className="mr-2 h-4 w-4" />
-                          Move...
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                          onClick={() => onRequestDelete(artifact)}
-                        >
-                          <TrashIcon className="mr-2 h-4 w-4" />
-                          Delete artifact
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.entries(ARTIFACT_STATUS_LABELS).map(
+                              ([value, label]) => (
+                                <SelectItem key={value} value={value}>
+                                  <span
+                                    className={
+                                      ARTIFACT_STATUS_COLORS[
+                                        value as ArtifactDisplayStatus
+                                      ]
+                                    }
+                                  >
+                                    {label}
+                                  </span>
+                                </SelectItem>
+                              )
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <ArtifactLinkCell
+                          artifact={artifact}
+                          isExternal={isExternal}
+                          route={route}
+                        />
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <PreviewLink url={artifact.previewUrl} />
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              className="h-8 w-8"
+                              size="icon"
+                              variant="ghost"
+                            >
+                              <MoreHorizontalIcon className="h-4 w-4" />
+                              <span className="sr-only">Open menu</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => {
+                                setSelectedArtifact(artifact);
+                                setMoveDialogOpen(true);
+                              }}
+                            >
+                              <FolderIcon className="mr-2 h-4 w-4" />
+                              Move...
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                              onClick={() => onRequestDelete(artifact)}
+                            >
+                              <TrashIcon className="mr-2 h-4 w-4" />
+                              Delete artifact
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </SortableArtifactRow>
+                  );
+                })}
+              </TableBody>
+            </SortableContext>
+          </Table>
+        </DndContext>
       </CollapsibleContent>
       {selectedArtifact && (
         <MoveArtifactDialog

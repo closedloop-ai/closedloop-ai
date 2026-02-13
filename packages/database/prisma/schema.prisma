@@ -383,43 +383,44 @@ model WorkstreamEvent {
 // =============================================================================
 
 model Artifact {
-  id                 String            @id @default(uuid(7)) @db.Uuid
-  organizationId     String            @map("organization_id") @db.Uuid
-  workstreamId       String?           @map("workstream_id") @db.Uuid
-  projectId          String?           @map("project_id") @db.Uuid
-  parentId           String?           @map("parent_id") @db.Uuid
-  subtype            ArtifactSubtype   @map("subtype")
-  type               ArtifactType      @default(DOCUMENT) @map("type")
+  id                 String           @id @default(uuid(7)) @db.Uuid
+  organizationId     String           @map("organization_id") @db.Uuid
+  workstreamId       String?          @map("workstream_id") @db.Uuid
+  projectId          String?          @map("project_id") @db.Uuid
+  parentId           String?          @map("parent_id") @db.Uuid
+  subtype            ArtifactSubtype  @map("subtype")
+  type               ArtifactType     @default(DOCUMENT) @map("type")
   title              String
-  fileName           String?           @map("file_name")
-  approverId         String?           @map("approver_id") @db.Uuid
-  status             ArtifactStatus    @default(DRAFT)
-  content            String?           @db.Text
-  externalUrl        String?           @map("external_url")
-  version            Int               @default(1)
-  isLatest           Boolean           @default(true) @map("is_latest")
-  documentSlug       String?           @map("document_slug")
-  generatedBy        String?           @map("generated_by") @db.Uuid
-  ownerId            String?           @map("owner_id") @db.Uuid
-  tokenUsage         Json?             @map("token_usage")
-  targetRepo         String?           @map("target_repo")
-  targetBranch       String?           @map("target_branch")
-  templateForSubtype ArtifactSubtype?  @map("template_for_subtype")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
+  fileName           String?          @map("file_name")
+  approverId         String?          @map("approver_id") @db.Uuid
+  status             ArtifactStatus   @default(DRAFT)
+  content            String?          @db.Text
+  externalUrl        String?          @map("external_url")
+  version            Int              @default(1)
+  isLatest           Boolean          @default(true) @map("is_latest")
+  documentSlug       String?          @map("document_slug")
+  generatedBy        String?          @map("generated_by") @db.Uuid
+  ownerId            String?          @map("owner_id") @db.Uuid
+  tokenUsage         Json?            @map("token_usage")
+  targetRepo         String?          @map("target_repo")
+  targetBranch       String?          @map("target_branch")
+  templateForSubtype ArtifactSubtype? @map("template_for_subtype")
+  sortOrder          Int?             @map("sort_order")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  organization Organization         @relation(fields: [organizationId], references: [id])
-  workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  parent       Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  children     Artifact[]           @relation("ArtifactSource")
-  ratings      ArtifactRating[]
-  evaluations  ArtifactEvaluation[]
-  previewDeployment  PreviewDeployment?
-  pullRequests GitHubPullRequest[]
+  organization      Organization         @relation(fields: [organizationId], references: [id])
+  workstream        Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  project           Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner             User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  approver          User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
+  parent            Artifact?            @relation("ArtifactSource", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children          Artifact[]           @relation("ArtifactSource")
+  ratings           ArtifactRating[]
+  evaluations       ArtifactEvaluation[]
+  previewDeployment PreviewDeployment?
+  pullRequests      GitHubPullRequest[]
 
   @@unique([organizationId, templateForSubtype])
   @@index([organizationId, workstreamId, subtype, isLatest])
@@ -760,9 +761,9 @@ model GoogleIntegration {
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String    @unique @map("organization_id") @db.Uuid
   googleUserId   String    @map("google_user_id")
-  googleEmail    String?   @db.VarChar(255) @map("google_email")
-  accessToken    String    @db.Text @map("access_token")
-  refreshToken   String?   @db.Text @map("refresh_token")
+  googleEmail    String?   @map("google_email") @db.VarChar(255)
+  accessToken    String    @map("access_token") @db.Text
+  refreshToken   String?   @map("refresh_token") @db.Text
   tokenExpiresAt DateTime? @map("token_expires_at")
   lastUsedAt     DateTime? @map("last_used_at")
   createdAt      DateTime  @default(now()) @map("created_at")
