@@ -1,8 +1,8 @@
 "use client";
 
 import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
+  type ArtifactDetail,
+  ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
@@ -20,7 +20,7 @@ import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
 type PRDEditorProps = {
-  prd: ArtifactWithWorkstream;
+  prd: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
@@ -60,7 +60,7 @@ export function PRDEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.Prd,
+    artifactType: ArtifactType.Prd,
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch

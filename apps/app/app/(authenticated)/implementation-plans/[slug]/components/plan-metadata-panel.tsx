@@ -1,13 +1,15 @@
 "use client";
 
-import type {
-  ArtifactStatus,
-  ArtifactWithWorkstream,
-  GenerationStatus,
-  PreviewDeployment,
-  PullRequestInfo,
+import {
+  type ArtifactDetail,
+  type ArtifactStatus,
+  ArtifactType,
+  type GenerationStatus,
+  type PullRequestInfo,
 } from "@repo/api/src/types/artifact";
+import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PreviewDeploymentMetadata } from "@repo/api/src/types/external-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -60,95 +62,47 @@ import {
   StatusBadge,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
+import {
+  useCreateEntityLink,
+  useDeleteEntityLink,
+  useSourceLinks,
+} from "@/hooks/queries/use-entity-links";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import { getArtifactDetailUrl } from "@/lib/artifact-url-utils";
 import {
   calculateAcceptanceRate,
   sortMetricsByScore,
 } from "@/lib/evaluation-utils";
 import {
-  ARTIFACT_SUBTYPE_ICONS,
-  ARTIFACT_SUBTYPE_LABELS,
+  ARTIFACT_TYPE_ICONS,
+  ARTIFACT_TYPE_LABELS,
 } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { JudgeResultCard } from "./judge-result-card";
 
+type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
+  url: string | null;
+};
+
 type PlanMetadataPanelProps = {
-  /**
-   * Plan artifact with workstream data
-   */
-  plan: ArtifactWithWorkstream;
-  /**
-   * Current artifact status
-   */
+  plan: ArtifactDetail;
   status: ArtifactStatus;
-  /**
-   * Current approver (User or null if not selected)
-   */
   approver: User | null;
-  /**
-   * Current owner (User or null if not selected)
-   */
   owner: User | null;
-  /**
-   * List of team members to choose from for owner selection
-   */
   teamMembers: User[];
-  /**
-   * Generation status information (GitHub Actions workflow)
-   */
   generationStatus: GenerationStatus | null;
-  /**
-   * Pull request information if plan has been executed
-   */
   pullRequest: PullRequestInfo | null;
-  /**
-   * Preview deployment information if available
-   */
-  previewDeployment: PreviewDeployment | null;
-  /**
-   * Refresh preview deployment status
-   */
-  onPreviewRefresh: () => Promise<PreviewDeployment | null>;
-  /**
-   * Whether a preview refresh is in flight
-   */
+  previewDeployment: PreviewDeploymentInfo | null;
+  onPreviewRefresh: () => Promise<PreviewDeploymentInfo | null>;
   isPreviewRefreshing: boolean;
-  /**
-   * Judges report containing evaluation results for all judges
-   */
   judgesReport: JudgesReport | null;
-  /**
-   * Handler called when status is changed
-   */
   onStatusChange: (status: ArtifactStatus) => void;
-  /**
-   * Handler called when approver is selected
-   */
   onApproverSelect: (user: User | null) => void;
-  /**
-   * Handler called when owner is changed
-   */
   onOwnerChange: (user: User | null) => void;
-  /**
-   * Handler called when parent artifact is changed
-   */
-  onParentChange: (parentId: string | null) => void;
-  /**
-   * Current target repository value (read-only, inherited from source PRD)
-   */
   targetRepo: string;
-  /**
-   * Current target branch value (read-only, inherited from source PRD)
-   */
   targetBranch: string;
 };
 
-/**
- * Metadata panel for Plan editor.
- * Displays status, approver, generation workflow link, pull request info, and artifact metadata.
- */
 export function PlanMetadataPanel({
   plan,
   status,
@@ -164,7 +118,6 @@ export function PlanMetadataPanel({
   onStatusChange,
   onApproverSelect,
   onOwnerChange,
-  onParentChange,
   targetRepo = "Inherited from project",
   targetBranch = "main",
 }: PlanMetadataPanelProps) {
@@ -189,26 +142,58 @@ export function PlanMetadataPanel({
   const [isRatingOpen, setIsRatingOpen] = useState(true);
   const [isParentSelectorOpen, setIsParentSelectorOpen] = useState(false);
 
-  // Fetch artifacts in the same project for parent selection (PRDs, Issues, Bugs)
+  // Source artifact via EntityLink (PRODUCES relationship)
+  const { data: sourceLinks = [] } = useSourceLinks(
+    plan.id,
+    EntityType.Artifact,
+    LinkType.Produces
+  );
+  const createEntityLink = useCreateEntityLink();
+  const deleteEntityLink = useDeleteEntityLink();
+
+  // Fetch artifacts in the same project for source selection (PRDs only)
   const projectId = plan.projectId ?? plan.project?.id;
   const { data: projectArtifacts = [] } = useArtifactsByProject(
     projectId ?? "",
-    true,
     { enabled: !!projectId }
   );
 
-  // Filter to only PRDs, Issues, and Bugs (valid parent types)
+  // The first source link is the "parent" (source PRD)
+  const sourceLink = sourceLinks[0] ?? null;
+
+  // Resolve source artifact from project artifacts list
+  const sourceArtifact = useMemo(() => {
+    if (!sourceLink) {
+      return null;
+    }
+    return projectArtifacts.find((a) => a.id === sourceLink.sourceId) ?? null;
+  }, [sourceLink, projectArtifacts]);
+
+  // Filter to only PRDs (valid source types for an impl plan)
   const parentCandidates = useMemo(
     () =>
       projectArtifacts.filter(
-        (a) =>
-          (a.subtype === "PRD" ||
-            a.subtype === "ISSUE" ||
-            a.subtype === "BUG") &&
-          a.id !== plan.id
+        (a) => a.type === ArtifactType.Prd && a.id !== plan.id
       ),
     [projectArtifacts, plan.id]
   );
+
+  const handleLinkSource = (artifactId: string) => {
+    createEntityLink.mutate({
+      sourceId: artifactId,
+      sourceType: EntityType.Artifact,
+      targetId: plan.id,
+      targetType: EntityType.Artifact,
+      linkType: LinkType.Produces,
+    });
+    setIsParentSelectorOpen(false);
+  };
+
+  const handleUnlinkSource = () => {
+    if (sourceLink) {
+      deleteEntityLink.mutate(sourceLink.id);
+    }
+  };
 
   // Calculate acceptance rate from all judges in the report
   const allMetrics =
@@ -257,32 +242,27 @@ export function PlanMetadataPanel({
               <Label className="text-muted-foreground text-xs">
                 Source Artifact
               </Label>
-              {plan.parent ? (
+              {sourceArtifact ? (
                 <div className="flex items-center justify-between gap-2">
                   <Link
                     className="flex min-w-0 items-center gap-1.5 text-primary text-sm hover:underline"
-                    href={
-                      getArtifactDetailUrl(
-                        plan.parent.subtype,
-                        plan.parent.documentSlug
-                      ) ?? "#"
-                    }
+                    href={`/prds/${sourceArtifact.slug}`}
                   >
                     {(() => {
                       const Icon =
-                        ARTIFACT_SUBTYPE_ICONS[plan.parent.subtype] ??
+                        ARTIFACT_TYPE_ICONS[sourceArtifact.type] ??
                         FileTextIcon;
                       return <Icon className="h-3.5 w-3.5 shrink-0" />;
                     })()}
-                    <span className="truncate">{plan.parent.title}</span>
+                    <span className="truncate">{sourceArtifact.title}</span>
                     <span className="shrink-0 text-muted-foreground text-xs">
-                      {ARTIFACT_SUBTYPE_LABELS[plan.parent.subtype] ??
-                        plan.parent.subtype}
+                      {ARTIFACT_TYPE_LABELS[sourceArtifact.type] ??
+                        sourceArtifact.type}
                     </span>
                   </Link>
                   <Button
                     aria-label="Unlink source artifact"
-                    onClick={() => onParentChange(null)}
+                    onClick={handleUnlinkSource}
                     size="icon"
                     variant="ghost"
                   >
@@ -312,24 +292,21 @@ export function PlanMetadataPanel({
                         <CommandGroup>
                           {parentCandidates.map((artifact) => {
                             const Icon =
-                              ARTIFACT_SUBTYPE_ICONS[artifact.subtype] ??
+                              ARTIFACT_TYPE_ICONS[artifact.type] ??
                               FileTextIcon;
                             return (
                               <CommandItem
                                 key={artifact.id}
-                                onSelect={() => {
-                                  onParentChange(artifact.id);
-                                  setIsParentSelectorOpen(false);
-                                }}
-                                value={`${artifact.title} ${ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ?? artifact.subtype}`}
+                                onSelect={() => handleLinkSource(artifact.id)}
+                                value={`${artifact.title} ${ARTIFACT_TYPE_LABELS[artifact.type] ?? artifact.type}`}
                               >
                                 <Icon className="mr-2 h-3.5 w-3.5 shrink-0" />
                                 <span className="truncate">
                                   {artifact.title}
                                 </span>
                                 <span className="ml-auto shrink-0 text-muted-foreground text-xs">
-                                  {ARTIFACT_SUBTYPE_LABELS[artifact.subtype] ??
-                                    artifact.subtype}
+                                  {ARTIFACT_TYPE_LABELS[artifact.type] ??
+                                    artifact.type}
                                 </span>
                               </CommandItem>
                             );
@@ -451,9 +428,9 @@ export function PlanMetadataPanel({
             ) : null}
 
             <ArtifactVersionInfo
-              createdAt={plan.createdAt}
+              createdAt={plan.version.createdAt}
               updatedAt={plan.updatedAt}
-              version={plan.version}
+              version={plan.version.version}
             />
           </CollapsibleSection>
 
@@ -493,7 +470,6 @@ export function PlanMetadataPanel({
               )}
               {judgesReport !== null && judgesReport.stats.length > 0 && (
                 <div className="space-y-3">
-                  {/* Progress bar showing acceptance rate */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">
@@ -506,7 +482,6 @@ export function PlanMetadataPanel({
                     <Progress className="h-2" value={acceptanceRate} />
                   </div>
 
-                  {/* Judge result cards - all judges from the report */}
                   <div className="space-y-2">
                     {judgesReport.stats.map((caseScore) =>
                       sortMetricsByScore(caseScore.metrics).map((metric) => (
@@ -529,7 +504,7 @@ export function PlanMetadataPanel({
           >
             <RatingSection
               artifactId={plan.id}
-              currentPlanVersion={plan.version}
+              currentPlanVersion={plan.version.version}
             />
           </CollapsibleSection>
 

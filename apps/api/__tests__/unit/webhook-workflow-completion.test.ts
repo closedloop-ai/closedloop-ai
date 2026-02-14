@@ -14,11 +14,6 @@
  * - @repo/observability/log (logging)
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import {
-  ArtifactStatus,
-  ArtifactSubtype,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -49,10 +44,17 @@ vi.mock("@/app/webhooks/github/webhook-service", () => ({
   findActionRunByCorrelationId: vi.fn(),
 }));
 
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
+    createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 1 }),
+  },
+}));
+
 // Import after mocking
 import { uploadArtifact } from "@repo/aws";
 import { withDb } from "@repo/database";
 import { downloadWorkflowArtifacts } from "@repo/github";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
   handleExecutionSuccess,
   handleWorkflowFailure,
@@ -69,6 +71,8 @@ const mockDownloadWorkflowArtifacts =
 const mockUploadArtifact = uploadArtifact as unknown as Mock;
 const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
+const mockCreateVersion =
+  artifactVersionService.createVersion as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -115,12 +119,11 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 0,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -134,12 +137,16 @@ describe("handleWorkflowSuccess", () => {
 
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).toHaveBeenCalled();
+    expect(mockCreateVersion).toHaveBeenCalledWith(
+      artifactId,
+      null,
+      planContent
+    );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: artifactId },
-      data: expect.objectContaining({
+      data: {
         status: "DRAFT",
-        content: planContent,
-      }),
+      },
     });
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -193,12 +200,11 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 0,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -212,12 +218,16 @@ describe("handleWorkflowSuccess", () => {
 
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).not.toHaveBeenCalled();
+    expect(mockCreateVersion).toHaveBeenCalledWith(
+      artifactId,
+      null,
+      planContent
+    );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
       where: { id: artifactId },
-      data: expect.objectContaining({
+      data: {
         status: "DRAFT",
-        content: planContent,
-      }),
+      },
     });
   });
 
@@ -281,12 +291,11 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 0,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -446,14 +455,7 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-123",
           projectId: "project-123",
           generatedBy: "user-123",
-        }),
-        create: vi.fn().mockResolvedValue({
-          id: "pr-artifact-123",
-          type: ArtifactType.Branch,
-          subtype: ArtifactSubtype.PullRequest,
-          title: executionResult.pr_title,
-          externalUrl: executionResult.pr_url,
-          status: ArtifactStatus.Review,
+          slug: "plan-slug-123",
         }),
       },
       gitHubPullRequest: {
@@ -462,8 +464,14 @@ describe("handleExecutionSuccess", () => {
           number: 42,
         }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-123" }),
+      externalLink: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "ext-link-pr-123" })
+          .mockResolvedValueOnce({ id: "ext-link-preview-123" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-123" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-123" }),
@@ -492,17 +500,23 @@ describe("handleExecutionSuccess", () => {
       },
     });
 
-    expect(mockTx.artifact.create).toHaveBeenCalledWith({
-      data: {
+    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
         organizationId: "org-123",
         workstreamId,
-        projectId: "project-123",
-        type: ArtifactType.Branch,
-        subtype: ArtifactSubtype.PullRequest,
+        type: "PULL_REQUEST",
         title: executionResult.pr_title,
         externalUrl: executionResult.pr_url,
-        status: ArtifactStatus.Review,
-        generatedBy: "user-123",
+      }),
+    });
+
+    expect(mockTx.entityLink.create).toHaveBeenCalledWith({
+      data: {
+        sourceId: artifactId,
+        sourceType: "ARTIFACT",
+        targetId: "ext-link-pr-123",
+        targetType: "EXTERNAL_LINK",
+        linkType: "PRODUCES",
       },
     });
 
@@ -519,7 +533,7 @@ describe("handleExecutionSuccess", () => {
           prTitle: executionResult.pr_title,
           branch: executionResult.branch_name,
           runId,
-          documentSlug: undefined,
+          slug: "plan-slug-123",
         },
       },
     });
@@ -549,14 +563,20 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-456",
           projectId: "project-456",
           generatedBy: "user-456",
+          slug: null,
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-456" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-456" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-456" }),
+      externalLink: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "ext-link-pr-456" })
+          .mockResolvedValueOnce({ id: "ext-link-preview-456" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-456" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-456" }),
@@ -600,14 +620,20 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-789",
           projectId: "project-789",
           generatedBy: "user-789",
+          slug: null,
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-789" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-789" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-789" }),
+      externalLink: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "ext-link-pr-789" })
+          .mockResolvedValueOnce({ id: "ext-link-preview-789" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-789" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-789" }),
@@ -620,7 +646,7 @@ describe("handleExecutionSuccess", () => {
 
     await handleExecutionSuccess(ctx, executionResult);
 
-    expect(mockTx.artifact.create).toHaveBeenCalledWith({
+    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         title: "Symphony: symphony/no-title-feature",
       }),
@@ -872,12 +898,11 @@ describe("processWorkflowCompletion", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 0,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -1099,14 +1124,20 @@ describe("processWorkflowCompletion", () => {
           organizationId: "org-exec",
           projectId: "project-exec",
           generatedBy: "user-exec",
+          slug: "exec-slug",
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-exec" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-exec" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-exec" }),
+      externalLink: {
+        create: vi
+          .fn()
+          .mockResolvedValueOnce({ id: "ext-link-pr-exec" })
+          .mockResolvedValueOnce({ id: "ext-link-preview-exec" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-exec" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec" }),
@@ -1134,11 +1165,9 @@ describe("processWorkflowCompletion", () => {
     );
 
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
-    expect(mockDb.artifact.create).toHaveBeenCalledWith({
+    expect(mockDb.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        type: ArtifactType.Branch,
-        subtype: ArtifactSubtype.PullRequest,
-        status: ArtifactStatus.Review,
+        type: "PULL_REQUEST",
       }),
     });
 

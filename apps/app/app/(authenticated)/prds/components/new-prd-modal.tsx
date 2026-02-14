@@ -158,7 +158,7 @@ export function NewPRDModal() {
 
     createArtifact.mutate(
       {
-        subtype: "PRD",
+        type: "PRD",
         title: title.trim(),
         fileName: fileName.trim() || undefined,
         approverId: selectedApprover?.id,
@@ -171,7 +171,7 @@ export function NewPRDModal() {
         onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/prds/${artifact.documentSlug}`);
+          router.push(`/prds/${artifact.slug}`);
         },
       }
     );

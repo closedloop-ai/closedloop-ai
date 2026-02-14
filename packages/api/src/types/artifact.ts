@@ -109,9 +109,13 @@ export type ArtifactWithWorkstream = Artifact & {
     teams?: { id: string; name: string }[];
   } | null;
   owner?: ProjectOwner | null;
-  currentVersion?: ArtifactVersion | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
+};
+
+/** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */
+export type ArtifactDetail = ArtifactWithWorkstream & {
+  version: ArtifactVersion;
 };
 
 export type FindArtifactsOptions = {

@@ -25,7 +25,7 @@ import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  useArtifactsBySubtype,
+  useArtifacts,
   useCreateAndGenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { getUserDisplayName } from "@/lib/user-utils";
@@ -159,9 +159,8 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
-  const { data: prds = [], isLoading: loadingPrds } = useArtifactsBySubtype(
-    "PRD",
-    true,
+  const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
+    { type: "PRD" },
     {
       enabled: open && !sourceArtifact,
     }
@@ -220,13 +219,12 @@ export function NewPlanModal({
 
     createAndGeneratePlan.mutate(
       {
-        subtype: "IMPLEMENTATION_PLAN",
+        type: "IMPLEMENTATION_PLAN",
         title: title.trim(),
         fileName: finalFileName,
         approverId: selectedSource.approver?.id,
         status: "DRAFT",
         content: content.trim() || "",
-        parentId: selectedSource.id,
         projectId: selectedSource.projectId ?? undefined,
         workstreamId: selectedSource.workstreamId ?? undefined,
         targetRepo: selectedSource.targetRepo ?? undefined,
@@ -236,7 +234,7 @@ export function NewPlanModal({
         onSuccess: (artifact) => {
           setOpen(false);
           resetForm();
-          router.push(`/implementation-plans/${artifact.documentSlug}`);
+          router.push(`/implementation-plans/${artifact.slug}`);
         },
       }
     );

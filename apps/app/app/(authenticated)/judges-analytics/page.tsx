@@ -1,6 +1,5 @@
 "use client";
 
-import type { ArtifactSubtypeGroup } from "@repo/api/src/types/judges-analytics";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, subDays } from "date-fns";
 import { useState } from "react";
@@ -78,8 +77,8 @@ export default function JudgesAnalyticsPage() {
 
       {data && data.groups.length > 0 && (
         <div className="space-y-8">
-          {data.groups.map((group: ArtifactSubtypeGroup) => (
-            <ArtifactTypeSection group={group} key={group.artifactSubtype} />
+          {data.groups.map((group) => (
+            <ArtifactTypeSection group={group} key={group.artifactType} />
           ))}
         </div>
       )}

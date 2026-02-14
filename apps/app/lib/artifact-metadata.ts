@@ -2,10 +2,7 @@ import type { Metadata } from "next";
 
 const ARTIFACT_TYPE_DISPLAY: Record<string, string> = {
   PRD: "Product Requirements Document",
-  ISSUE: "Issue",
-  BUG: "Bug Report",
   IMPLEMENTATION_PLAN: "Implementation Plan",
-  IMPLEMENTATION_STRATEGY: "Implementation Strategy",
 };
 
 /**

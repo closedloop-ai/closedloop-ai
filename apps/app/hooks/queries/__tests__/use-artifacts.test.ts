@@ -6,7 +6,6 @@ import {
   useArtifact,
   useArtifacts,
   useArtifactsByProject,
-  useArtifactsBySubtype,
   useCreateArtifact,
   useCreateNewVersion,
   useDeleteArtifact,
@@ -33,25 +32,22 @@ describe("Artifact Query Hooks", () => {
 
   describe("useArtifacts", () => {
     test("fetches artifacts with search params", async () => {
-      const mockArtifacts = [createMockArtifact({ id: "1", subtype: "PRD" })];
+      const mockArtifacts = [createMockArtifact({ id: "1", type: "PRD" })];
 
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
-      const { result } = renderHook(
-        () => useArtifacts({ subtype: "PRD", latestOnly: true }),
-        { wrapper: createWrapper() }
-      );
+      const { result } = renderHook(() => useArtifacts({ type: "PRD" }), {
+        wrapper: createWrapper(),
+      });
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-      expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?subtype=PRD&latestOnly=true"
-      );
+      expect(mockApiClient.get).toHaveBeenCalledWith("/artifacts?type=PRD");
       expect(result.current.data).toEqual(mockArtifacts);
     });
 
     test("uses correct query key", () => {
-      const searchParams = { subtype: "PRD" as const, latestOnly: true };
+      const searchParams = { type: "PRD" as const };
       const expectedKey = artifactKeys.list(searchParams);
 
       renderHook(() => useArtifacts(searchParams), {
@@ -59,40 +55,6 @@ describe("Artifact Query Hooks", () => {
       });
 
       expect(expectedKey).toEqual(["artifacts", "list", searchParams]);
-    });
-  });
-
-  describe("useArtifactsBySubtype", () => {
-    test("fetches artifacts by subtype with latestOnly=true", async () => {
-      const mockArtifacts = [createMockArtifact({ id: "1", subtype: "PRD" })];
-
-      mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
-
-      const { result } = renderHook(() => useArtifactsBySubtype("PRD", true), {
-        wrapper: createWrapper(),
-      });
-
-      await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-      expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?subtype=PRD&latestOnly=true"
-      );
-      expect(result.current.data).toEqual(mockArtifacts);
-    });
-
-    test("fetches artifacts by subtype with latestOnly=false", async () => {
-      mockApiClient.get.mockResolvedValueOnce([]);
-
-      const { result } = renderHook(
-        () => useArtifactsBySubtype("IMPLEMENTATION_PLAN", false),
-        { wrapper: createWrapper() }
-      );
-
-      await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-      expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?subtype=IMPLEMENTATION_PLAN&latestOnly=false"
-      );
     });
   });
 
@@ -105,14 +67,14 @@ describe("Artifact Query Hooks", () => {
       mockApiClient.get.mockResolvedValueOnce(mockArtifacts);
 
       const { result } = renderHook(
-        () => useArtifactsByProject("project-123", true),
+        () => useArtifactsByProject("project-123"),
         { wrapper: createWrapper() }
       );
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
       expect(mockApiClient.get).toHaveBeenCalledWith(
-        "/artifacts?projectId=project-123&latestOnly=true"
+        "/artifacts?projectId=project-123"
       );
       expect(result.current.data).toEqual(mockArtifacts);
     });
@@ -164,7 +126,7 @@ describe("Artifact Mutation Hooks", () => {
       const mockArtifact = {
         id: "new-artifact",
         title: "New PRD",
-        subtype: "PRD",
+        type: "PRD",
       };
 
       mockApiClient.post.mockResolvedValueOnce(mockArtifact);
@@ -175,7 +137,7 @@ describe("Artifact Mutation Hooks", () => {
 
       result.current.mutate({
         title: "New PRD",
-        subtype: "PRD",
+        type: "PRD",
         content: "Content here",
       });
 
@@ -183,7 +145,7 @@ describe("Artifact Mutation Hooks", () => {
 
       expect(mockApiClient.post).toHaveBeenCalledWith("/artifacts", {
         title: "New PRD",
-        subtype: "PRD",
+        type: "PRD",
         content: "Content here",
       });
       expect(result.current.data).toEqual(mockArtifact);
@@ -199,7 +161,7 @@ describe("Artifact Mutation Hooks", () => {
 
       result.current.mutate({
         title: "New PRD",
-        subtype: "PRD",
+        type: "PRD",
         content: "Content",
       });
 
@@ -303,7 +265,7 @@ describe("Artifact Mutation Hooks", () => {
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
       expect(mockApiClient.post).toHaveBeenCalledWith(
-        "/artifacts/artifact-123/new-version",
+        "/artifacts/artifact-123/versions",
         { content: "New version content" }
       );
       expect(result.current.data).toEqual(mockVersion);

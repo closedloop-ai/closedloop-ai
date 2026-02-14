@@ -9,9 +9,8 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
-import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
+import { useArtifacts } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PRDRowActions } from "./prd-row-actions";
@@ -23,7 +22,6 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     render: (prd) => (
       <div className="flex items-center gap-2">
         <span className="font-medium">{prd.title}</span>
-        <PullRequestLink pullRequest={prd.pullRequest} />
       </div>
     ),
   },
@@ -37,9 +35,11 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     ),
   },
   {
-    key: "version",
+    key: "latestVersion",
     header: "Version",
-    render: (prd) => <span className="font-mono text-sm">v{prd.version}</span>,
+    render: (prd) => (
+      <span className="font-mono text-sm">v{prd.latestVersion}</span>
+    ),
   },
   {
     key: "status",
@@ -69,8 +69,8 @@ const sortOptions: SortOption[] = [
   { label: "Oldest First", value: "updatedAt:asc" },
   { label: "Title A-Z", value: "title:asc" },
   { label: "Title Z-A", value: "title:desc" },
-  { label: "Version (High to Low)", value: "version:desc" },
-  { label: "Version (Low to High)", value: "version:asc" },
+  { label: "Version (High to Low)", value: "latestVersion:desc" },
+  { label: "Version (Low to High)", value: "latestVersion:asc" },
 ];
 
 const filterOptions: FilterOption[] = [
@@ -82,10 +82,10 @@ const filterOptions: FilterOption[] = [
 
 export function PRDTable() {
   const router = useRouter();
-  const { data: prds = [], isLoading, error } = useArtifactsBySubtype("PRD");
+  const { data: prds = [], isLoading, error } = useArtifacts({ type: "PRD" });
 
   const handleRowClick = (prd: ArtifactWithWorkstream) => {
-    router.push(`/prds/${prd.documentSlug}`);
+    router.push(`/prds/${prd.slug}`);
   };
 
   if (isLoading) {

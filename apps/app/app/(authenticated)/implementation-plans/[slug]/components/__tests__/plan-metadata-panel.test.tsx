@@ -1,4 +1,7 @@
-import type { ArtifactStatus } from "@repo/api/src/types/artifact";
+import type {
+  ArtifactDetail,
+  ArtifactStatus,
+} from "@repo/api/src/types/artifact";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -95,11 +98,22 @@ const GITHUB_WORKFLOW_PATTERN = /view github workflow/i;
 const PR_NUMBER_PATTERN = /#42:/i;
 const PR_TITLE_PATTERN = /add new feature/i;
 
+const createMockPlan = (overrides?: Partial<ArtifactDetail>): ArtifactDetail =>
+  ({
+    ...createMockArtifact({ type: "IMPLEMENTATION_PLAN" }),
+    version: {
+      id: "version-1",
+      artifactId: "artifact-123",
+      version: 1,
+      content: "# Plan content",
+      createdById: null,
+      createdAt: new Date("2024-01-15T10:00:00Z"),
+    },
+    ...overrides,
+  }) as ArtifactDetail;
+
 const defaultProps = {
-  plan: createMockArtifact({
-    type: "DOCUMENT",
-    subtype: "IMPLEMENTATION_PLAN",
-  }),
+  plan: createMockPlan(),
   status: "DRAFT" as ArtifactStatus,
   approver: null,
   owner: null,
@@ -113,7 +127,6 @@ const defaultProps = {
   onStatusChange: vi.fn(),
   onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
-  onParentChange: vi.fn(),
   targetRepo: "",
   targetBranch: "",
 };

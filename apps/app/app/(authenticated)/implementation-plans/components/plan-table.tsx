@@ -9,10 +9,8 @@ import {
 } from "@repo/design-system/components/ui/data-table";
 import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { PreviewLink } from "@/components/preview-link";
-import { PullRequestLink } from "@/components/pull-request-link";
 import { ArtifactStatusBadge } from "@/components/status-badge";
-import { useArtifactsBySubtype } from "@/hooks/queries/use-artifacts";
+import { useArtifacts } from "@/hooks/queries/use-artifacts";
 import { formatDate } from "@/lib/date-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PlanRowActions } from "./plan-row-actions";
@@ -24,15 +22,14 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     render: (plan) => (
       <div className="flex items-center gap-2">
         <span className="font-medium">{plan.title}</span>
-        <PullRequestLink pullRequest={plan.pullRequest} />
       </div>
     ),
   },
   {
-    key: "version",
+    key: "latestVersion",
     header: "Version",
     render: (plan) => (
-      <span className="font-mono text-sm">v{plan.version}</span>
+      <span className="font-mono text-sm">v{plan.latestVersion}</span>
     ),
   },
   {
@@ -50,11 +47,6 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     ),
   },
   {
-    key: "previewDeployment",
-    header: "Preview",
-    render: (plan) => <PreviewLink url={plan.previewDeployment?.url} />,
-  },
-  {
     key: "updatedAt",
     header: "Updated",
     render: (plan) => (
@@ -70,8 +62,8 @@ const sortOptions: SortOption[] = [
   { label: "Oldest First", value: "updatedAt:asc" },
   { label: "Name A-Z", value: "title:asc" },
   { label: "Name Z-A", value: "title:desc" },
-  { label: "Version (High to Low)", value: "version:desc" },
-  { label: "Version (Low to High)", value: "version:asc" },
+  { label: "Version (High to Low)", value: "latestVersion:desc" },
+  { label: "Version (Low to High)", value: "latestVersion:asc" },
 ];
 
 const filterOptions: FilterOption[] = [
@@ -87,10 +79,10 @@ export function PlanTable() {
     data: plans = [],
     isLoading,
     error,
-  } = useArtifactsBySubtype("IMPLEMENTATION_PLAN");
+  } = useArtifacts({ type: "IMPLEMENTATION_PLAN" });
 
   const handleRowClick = (plan: ArtifactWithWorkstream) => {
-    router.push(`/implementation-plans/${plan.documentSlug}`);
+    router.push(`/implementation-plans/${plan.slug}`);
   };
 
   if (isLoading) {

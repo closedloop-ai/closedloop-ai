@@ -1,7 +1,8 @@
 "use client";
 
 import {
-  ArtifactSubtype,
+  type ArtifactStatus,
+  ArtifactType,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
@@ -27,15 +28,13 @@ import {
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
-  AlertCircleIcon,
-  BugIcon,
   ChevronDownIcon,
+  ClipboardListIcon,
   FileTextIcon,
-  ListTodoIcon,
   Loader2Icon,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   useArtifactsByProject,
@@ -50,15 +49,6 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
-import {
-  mapArtifactStatusToDisplay,
-  mapDisplayStatusToArtifact,
-} from "@/lib/project-constants";
-import type {
-  ArtifactDisplayStatus,
-  ProjectArtifact,
-  ProjectArtifactSubtype,
-} from "@/types/teams";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
@@ -76,25 +66,14 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
   "MERGING",
 ]);
 
-/**
- * Map backend ArtifactSubtype to frontend ProjectArtifactSubtype.
- * PULL_REQUEST artifacts are displayed under the BRANCH section.
- */
-function toProjectArtifactSubtype(subtype: string): ProjectArtifactSubtype {
-  if (subtype === "PULL_REQUEST") {
-    return "BRANCH";
-  }
-  return subtype as ProjectArtifactSubtype;
-}
-
 export default function ProjectDetailPage() {
   const params = useParams();
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [selectedArtifactSubtype, setSelectedArtifactSubtype] =
-    useState<ArtifactSubtype>(ArtifactSubtype.Prd);
+  const [selectedArtifactType, setSelectedArtifactType] =
+    useState<ArtifactType>(ArtifactType.Prd);
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
 
   // Queries
@@ -115,20 +94,17 @@ export default function ProjectDetailPage() {
   useMergeNotification(activityData, projectId, teamId);
 
   // Poll artifacts when any workstream is actively running (e.g., execution in progress).
-  // This ensures webhook-created artifacts (like PRs) appear without a manual refresh.
-  // Uses TanStack Query's function form of refetchInterval to access query data directly,
-  // avoiding a circular dependency between the memo and the query declaration.
-  const { data: artifactsData = [], isLoading: loadingArtifacts } =
-    useArtifactsByProject(projectId, true, {
+  const { data: artifacts = [], isLoading: loadingArtifacts } =
+    useArtifactsByProject(projectId, {
       staleTime: 4000,
       refetchInterval: (query) => {
-        const artifacts = query.state.data ?? [];
-        const hasActiveWorkstream = artifacts.some(
+        const data = query.state.data ?? [];
+        const hasActiveWorkstream = data.some(
           (a) =>
             a.workstream?.state &&
             ACTIVE_WORKSTREAM_STATES.has(a.workstream.state)
         );
-        const hasActiveGeneration = artifacts.some(
+        const hasActiveGeneration = data.some(
           (a) =>
             a.generationStatus &&
             isActiveGenerationStatus(a.generationStatus.status)
@@ -139,27 +115,6 @@ export default function ProjectDetailPage() {
 
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
-
-  // Map API artifacts to ProjectArtifact format
-  const artifacts: ProjectArtifact[] = useMemo(
-    () =>
-      artifactsData.map((artifact) => ({
-        id: artifact.id,
-        documentSlug: artifact.documentSlug,
-        name: artifact.title,
-        subtype: toProjectArtifactSubtype(artifact.subtype),
-        status: mapArtifactStatusToDisplay(artifact.status),
-        parentId: artifact.parentId,
-        link: artifact.externalUrl || undefined,
-        previewUrl: artifact.previewDeployment?.url ?? undefined,
-        pullRequest: artifact.pullRequest ?? null,
-        workstreamId: artifact.workstreamId,
-        workstreamTitle: artifact.workstream?.title,
-        workstreamState: artifact.workstream?.state,
-        generationStatus: artifact.generationStatus,
-      })),
-    [artifactsData]
-  );
 
   const loading =
     loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
@@ -176,7 +131,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updatePriorityMutation.mutate({ projectId: project.id, priority });
   };
 
@@ -184,7 +138,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updateOwnerMutation.mutate({ projectId: project.id, ownerId });
   };
 
@@ -192,7 +145,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updateTargetDateMutation.mutate({
       projectId: project.id,
       targetDate: date,
@@ -201,17 +153,13 @@ export default function ProjectDetailPage() {
 
   const handleArtifactStatusChange = (
     artifactId: string,
-    status: ArtifactDisplayStatus
+    status: ArtifactStatus
   ) => {
-    const apiStatus = mapDisplayStatusToArtifact(status);
-    updateArtifactMutation.mutate({
-      id: artifactId,
-      status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
-    });
+    updateArtifactMutation.mutate({ id: artifactId, status });
   };
 
-  const handleCreateArtifact = (subtype: ArtifactSubtype) => {
-    setSelectedArtifactSubtype(subtype);
+  const handleCreateArtifact = (type: ArtifactType) => {
+    setSelectedArtifactType(type);
     setCreateModalOpen(true);
   };
 
@@ -264,38 +212,18 @@ export default function ProjectDetailPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Prd)}
+                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
               >
                 <FileTextIcon className="mr-2 h-4 w-4" />
                 PRD
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() =>
-                  handleCreateArtifact(ArtifactSubtype.ImplementationPlan)
+                  handleCreateArtifact(ArtifactType.ImplementationPlan)
                 }
               >
-                <ListTodoIcon className="mr-2 h-4 w-4" />
+                <ClipboardListIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() =>
-                  handleCreateArtifact(ArtifactSubtype.ImplementationStrategy)
-                }
-              >
-                <ListTodoIcon className="mr-2 h-4 w-4" />
-                Implementation Strategy
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Issue)}
-              >
-                <AlertCircleIcon className="mr-2 h-4 w-4" />
-                Issue
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Bug)}
-              >
-                <BugIcon className="mr-2 h-4 w-4" />
-                Bug
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -360,7 +288,7 @@ export default function ProjectDetailPage() {
         </div>
       </main>
       <CreateArtifactModal
-        artifactSubtype={selectedArtifactSubtype}
+        artifactType={selectedArtifactType}
         onOpenChange={setCreateModalOpen}
         open={createModalOpen}
         projectId={projectId}
