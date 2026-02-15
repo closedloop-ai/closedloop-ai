@@ -1,8 +1,12 @@
 "use client";
 
-import { ChartContainer } from "@repo/design-system/components/ui/chart";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@repo/design-system/components/ui/chart";
 import type { FC } from "react";
-import { Area, AreaChart } from "recharts";
+import { Area, AreaChart, XAxis } from "recharts";
 
 // Cast recharts components to work around React 19 JSX type incompatibility.
 // recharts types don't expose a 'props' property required by React 19's JSX transform,
@@ -11,15 +15,30 @@ import { Area, AreaChart } from "recharts";
 const TypedAreaChart = AreaChart as unknown as FC<any>;
 // biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
 const TypedArea = Area as unknown as FC<any>;
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const TypedXAxis = XAxis as unknown as FC<any>;
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const TypedChartTooltip = ChartTooltip as unknown as FC<any>;
+// biome-ignore lint/suspicious/noExplicitAny: recharts React 19 type workaround
+const TypedChartTooltipContent = ChartTooltipContent as unknown as FC<any>;
 
 type StatSparklineProps = {
   chartData: Array<{ date: string; count: number }>;
   gradientId: string;
 };
 
+function formatDateLabel(dateStr: string): string {
+  const date = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return dateStr;
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 export function StatSparkline({ chartData, gradientId }: StatSparklineProps) {
   return (
     <ChartContainer
+      className="aspect-auto h-full w-full"
       config={{
         count: {
           label: "Count",
@@ -42,6 +61,15 @@ export function StatSparkline({ chartData, gradientId }: StatSparklineProps) {
             />
           </linearGradient>
         </defs>
+        <TypedXAxis dataKey="date" hide />
+        <TypedChartTooltip
+          content={
+            <TypedChartTooltipContent
+              indicator="line"
+              labelFormatter={formatDateLabel}
+            />
+          }
+        />
         <TypedArea
           dataKey="count"
           fill={`url(#${gradientId})`}

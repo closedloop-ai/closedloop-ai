@@ -333,11 +333,6 @@ export function CreateArtifactModal({
       return;
     }
 
-    if (isImplementationPlan && !selectedPrdId) {
-      setError("Please select a PRD");
-      return;
-    }
-
     createArtifact.mutate(
       {
         projectId,
@@ -395,7 +390,10 @@ export function CreateArtifactModal({
           {isImplementationPlan ? (
             <div className="space-y-2">
               <Label htmlFor="source-prd">
-                Source PRD<span className="text-destructive">*</span>
+                Source PRD{" "}
+                <span className="text-muted-foreground text-xs">
+                  (optional)
+                </span>
               </Label>
               <Select onValueChange={setSelectedPrdId} value={selectedPrdId}>
                 <SelectTrigger id="source-prd">
@@ -567,11 +565,7 @@ export function CreateArtifactModal({
             Cancel
           </Button>
           <Button
-            disabled={
-              createArtifact.isPending ||
-              !title.trim() ||
-              (isImplementationPlan ? !selectedPrdId : false)
-            }
+            disabled={createArtifact.isPending || !title.trim()}
             onClick={handleSubmit}
           >
             {createArtifact.isPending ? (

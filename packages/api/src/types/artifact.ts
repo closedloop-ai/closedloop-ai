@@ -94,6 +94,7 @@ export type Artifact = {
   targetRepo: string | null;
   targetBranch: string | null;
   templateForType: ArtifactType | null;
+  sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -153,6 +154,7 @@ export type UpdateArtifactInput = {
   targetRepo?: string | null;
   targetBranch?: string | null;
   ownerId?: string | null;
+  sortOrder?: number | null;
 };
 
 // Pull Request info returned when an implementation plan is executed

@@ -7,11 +7,11 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
-import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ArtifactStatusBadge } from "@/components/status-badge";
+import { TableErrorState, TableLoadingState } from "@/components/table-states";
 import { useArtifacts } from "@/hooks/queries/use-artifacts";
-import { formatDate } from "@/lib/date-utils";
+import { formatRelativeTime } from "@/lib/date-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PRDRowActions } from "./prd-row-actions";
 
@@ -56,10 +56,21 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     ),
   },
   {
+    key: "owner",
+    header: "Creator",
+    render: (prd) => (
+      <span className="text-muted-foreground">
+        {prd.owner ? getUserDisplayName(prd.owner) : "-"}
+      </span>
+    ),
+  },
+  {
     key: "updatedAt",
     header: "Updated",
     render: (prd) => (
-      <span className="text-muted-foreground">{formatDate(prd.updatedAt)}</span>
+      <span className="text-muted-foreground">
+        {formatRelativeTime(prd.updatedAt)}
+      </span>
     ),
   },
 ];
@@ -89,19 +100,11 @@ export function PRDTable() {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <TableLoadingState />;
   }
 
   if (error) {
-    return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message}
-      </div>
-    );
+    return <TableErrorState error={error} />;
   }
 
   return (

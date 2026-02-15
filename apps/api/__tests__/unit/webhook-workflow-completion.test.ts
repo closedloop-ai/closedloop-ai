@@ -117,10 +117,17 @@ describe("handleWorkflowSuccess", () => {
     mockUploadArtifact.mockResolvedValue(undefined);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -136,6 +143,10 @@ describe("handleWorkflowSuccess", () => {
 
     await handleWorkflowSuccess(ctx, true);
 
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).toHaveBeenCalled();
     expect(mockCreateVersion).toHaveBeenCalledWith(
@@ -144,7 +155,7 @@ describe("handleWorkflowSuccess", () => {
       planContent
     );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
-      where: { id: artifactId },
+      where: { id: artifactId, organizationId: "test-org-id" },
       data: {
         status: "DRAFT",
       },
@@ -198,10 +209,17 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -217,6 +235,10 @@ describe("handleWorkflowSuccess", () => {
 
     await handleWorkflowSuccess(ctx, false);
 
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).not.toHaveBeenCalled();
     expect(mockCreateVersion).toHaveBeenCalledWith(
@@ -225,7 +247,7 @@ describe("handleWorkflowSuccess", () => {
       planContent
     );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
-      where: { id: artifactId },
+      where: { id: artifactId, organizationId: "test-org-id" },
       data: {
         status: "DRAFT",
       },
@@ -289,10 +311,17 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -315,6 +344,10 @@ describe("handleWorkflowSuccess", () => {
 
     await handleWorkflowSuccess(ctx, false);
 
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
       where: {
         artifactId_reportId: {
@@ -332,6 +365,51 @@ describe("handleWorkflowSuccess", () => {
         reportData: judgesReport,
       },
     });
+  });
+
+  it("throws error when workstream does not exist", async () => {
+    const correlationId = "test-correlation-no-workstream";
+    const artifactId = "artifact-no-workstream";
+    const workstreamId = "ws-no-workstream";
+    const runId = 8_888_888_888;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    };
+
+    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+
+    await expect(handleWorkflowSuccess(ctx, false)).rejects.toThrow(
+      `Workstream ${workstreamId} not found - cannot update artifact`
+    );
   });
 
   it("throws error when artifact does not exist", async () => {
@@ -367,6 +445,12 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
@@ -375,7 +459,7 @@ describe("handleWorkflowSuccess", () => {
     mockWithDb.mockImplementation((callback: any) => callback(mockDb));
 
     await expect(handleWorkflowSuccess(ctx, false)).rejects.toThrow(
-      `Artifact ${artifactId} not found`
+      `Artifact ${artifactId} not found in organization - cannot update with workflow results`
     );
   });
 
@@ -450,6 +534,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-123" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -553,6 +640,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-456" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
@@ -607,6 +697,9 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-789" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
@@ -724,6 +817,11 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-bad-artifact" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
@@ -885,10 +983,17 @@ describe("processWorkflowCompletion", () => {
     } as WorkflowRunCompletedEvent;
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -1108,6 +1213,12 @@ describe("processWorkflowCompletion", () => {
     } as WorkflowRunCompletedEvent;
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-exec",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,

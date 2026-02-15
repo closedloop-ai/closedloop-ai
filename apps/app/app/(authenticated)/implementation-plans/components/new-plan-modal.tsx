@@ -27,7 +27,9 @@ import { useEffect, useState } from "react";
 import {
   useArtifacts,
   useCreateAndGenerateArtifact,
+  useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useProjects } from "@/hooks/queries/use-projects";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 type NewPlanModalProps = {
@@ -44,6 +46,28 @@ function generatePlanFileName(prd: ArtifactWithWorkstream): string {
     .toLowerCase()
     .replaceAll(/[^a-z0-9\s]/g, "")
     .replaceAll(/\s+/g, "-")}-impl-plan.md`;
+}
+
+function generateFileNameFromTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9\s]/g, "")
+    .replaceAll(/\s+/g, "-")
+    .concat("-impl-plan.md");
+}
+
+function getFinalFileName(
+  fileName: string,
+  title: string,
+  selectedSource?: ArtifactWithWorkstream
+): string {
+  if (fileName.trim()) {
+    return fileName.trim();
+  }
+  if (selectedSource) {
+    return generatePlanFileName(selectedSource);
+  }
+  return generateFileNameFromTitle(title);
 }
 
 function PrdSelector({
@@ -74,6 +98,41 @@ function PrdSelector({
         {prds.map((prd) => (
           <SelectItem key={prd.id} value={prd.id}>
             {prd.title}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function ProjectSelector({
+  projects,
+  isLoading,
+  selectedProjectId,
+  onSelect,
+}: {
+  projects: { id: string; name: string }[];
+  isLoading: boolean;
+  selectedProjectId: string;
+  onSelect: (id: string) => void;
+}) {
+  const placeholder = isLoading ? "Loading projects..." : "Select a project";
+  const isEmpty = projects.length === 0 && !isLoading;
+
+  return (
+    <Select onValueChange={onSelect} value={selectedProjectId}>
+      <SelectTrigger id="project">
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {isEmpty ? (
+          <div className="p-2 text-center text-muted-foreground text-sm">
+            No projects available. Create a project first.
+          </div>
+        ) : null}
+        {projects.map((project) => (
+          <SelectItem key={project.id} value={project.id}>
+            {project.name}
           </SelectItem>
         ))}
       </SelectContent>
@@ -131,25 +190,78 @@ function PlanPreview({
   );
 }
 
+type FormState = {
+  selectedSourceId: string;
+  selectedProjectId: string;
+  title: string;
+  fileName: string;
+  content: string;
+};
+
+function buildCreateInput(
+  formState: FormState,
+  finalFileName: string,
+  selectedSource: ArtifactWithWorkstream | undefined
+) {
+  const baseInput = {
+    type: "IMPLEMENTATION_PLAN" as const,
+    title: formState.title.trim(),
+    fileName: finalFileName,
+    approverId: selectedSource?.approver?.id,
+    status: "DRAFT" as const,
+    content: formState.content.trim() || "",
+    projectId:
+      selectedSource?.projectId ?? (formState.selectedProjectId || undefined),
+  };
+
+  if (!selectedSource) {
+    return { type: "create" as const, input: baseInput };
+  }
+
+  return {
+    type: "createAndGenerate" as const,
+    input: {
+      ...baseInput,
+      sourceId: selectedSource.id,
+      sourceType: "ARTIFACT" as const,
+      sourceVersion: selectedSource.latestVersion,
+      workstreamId: selectedSource.workstreamId ?? undefined,
+      targetRepo: selectedSource.targetRepo ?? undefined,
+      targetBranch: selectedSource.targetBranch ?? undefined,
+    },
+  };
+}
+
+function useModalOpenState(
+  controlledOpen?: boolean,
+  controlledOnOpenChange?: (open: boolean) => void
+) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
+  const setOpen = controlledOnOpenChange ?? setInternalOpen;
+  return { open, setOpen, isControlled };
+}
+
 export function NewPlanModal({
   sourceArtifact,
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
   const router = useRouter();
+  const createPlan = useCreateArtifact();
   const createAndGeneratePlan = useCreateAndGenerateArtifact();
-  const [internalOpen, setInternalOpen] = useState(false);
+  const { open, setOpen, isControlled } = useModalOpenState(
+    controlledOpen,
+    controlledOnOpenChange
+  );
   const [error, setError] = useState<string | null>(null);
-
-  // Support both controlled and uncontrolled modes
-  const isControlled = controlledOpen !== undefined;
-  const open = isControlled ? controlledOpen : internalOpen;
-  const setOpen = controlledOnOpenChange ?? setInternalOpen;
 
   // Form state
   const [selectedSourceId, setSelectedSourceId] = useState(
     sourceArtifact?.id ?? ""
   );
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [title, setTitle] = useState(() =>
     sourceArtifact ? `Implementation Plan: ${sourceArtifact.title}` : ""
   );
@@ -164,6 +276,14 @@ export function NewPlanModal({
     { type: "PRD" },
     {
       enabled: open && !sourceArtifact,
+    }
+  );
+
+  // Fetch projects when modal opens and no source is selected
+  const { data: projects = [], isLoading: loadingProjects } = useProjects(
+    undefined,
+    {
+      enabled: open && !sourceArtifact && !selectedSourceId,
     }
   );
 
@@ -182,12 +302,7 @@ export function NewPlanModal({
   const handleTitleChange = (value: string): void => {
     setTitle(value);
     if (value.trim()) {
-      const generatedFileName = value
-        .toLowerCase()
-        .replaceAll(/[^a-z0-9\s]/g, "")
-        .replaceAll(/\s+/g, "-")
-        .concat("-impl-plan.md");
-      setFileName(generatedFileName);
+      setFileName(generateFileNameFromTitle(value));
     } else {
       setFileName("");
     }
@@ -195,6 +310,7 @@ export function NewPlanModal({
 
   const resetForm = () => {
     setSelectedSourceId(sourceArtifact?.id ?? "");
+    setSelectedProjectId("");
     setTitle("");
     setFileName("");
     setContent("");
@@ -204,46 +320,41 @@ export function NewPlanModal({
   const handleSubmit = () => {
     setError(null);
 
-    if (!selectedSource) {
-      setError("Please select a source PRD");
-      return;
-    }
-
     if (!title.trim()) {
       setError("Please enter a title");
       return;
     }
 
-    // Fallback fileName in case useEffect hasn't populated it yet
-    const finalFileName =
-      fileName.trim() || generatePlanFileName(selectedSource);
+    const formState: FormState = {
+      selectedSourceId,
+      selectedProjectId,
+      title,
+      fileName,
+      content,
+    };
 
-    createAndGeneratePlan.mutate(
-      {
-        type: "IMPLEMENTATION_PLAN",
-        title: title.trim(),
-        fileName: finalFileName,
-        approverId: selectedSource.approver?.id,
-        status: "DRAFT",
-        content: content.trim() || "",
-        projectId: selectedSource.projectId ?? undefined,
-        workstreamId: selectedSource.workstreamId ?? undefined,
-        targetRepo: selectedSource.targetRepo ?? undefined,
-        targetBranch: selectedSource.targetBranch ?? undefined,
-        ...(selectedSource && {
-          sourceId: selectedSource.id,
-          sourceType: "ARTIFACT",
-          sourceVersion: selectedSource.latestVersion,
-        }),
-      },
-      {
-        onSuccess: (artifact) => {
-          setOpen(false);
-          resetForm();
-          router.push(`/implementation-plans/${artifact.slug}`);
-        },
-      }
+    const finalFileName = getFinalFileName(
+      formState.fileName,
+      formState.title,
+      selectedSource
     );
+    const createConfig = buildCreateInput(
+      formState,
+      finalFileName,
+      selectedSource
+    );
+
+    const onSuccess = (artifact: ArtifactWithWorkstream) => {
+      setOpen(false);
+      resetForm();
+      router.push(`/implementation-plans/${artifact.slug}`);
+    };
+
+    if (createConfig.type === "createAndGenerate") {
+      createAndGeneratePlan.mutate(createConfig.input, { onSuccess });
+    } else {
+      createPlan.mutate(createConfig.input, { onSuccess });
+    }
   };
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -252,6 +363,9 @@ export function NewPlanModal({
       resetForm();
     }
   };
+
+  const showProjectSelector = !(sourceArtifact || selectedSourceId);
+  const isSubmitting = createPlan.isPending || createAndGeneratePlan.isPending;
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -313,8 +427,8 @@ export function NewPlanModal({
 
           <div className="space-y-2">
             <Label htmlFor="source-prd">
-              Source{sourceArtifact ? "" : " PRD"}
-              <span className="text-destructive">*</span>
+              Source{sourceArtifact ? "" : " PRD"}{" "}
+              <span className="text-muted-foreground">(optional)</span>
             </Label>
             {sourceArtifact ? (
               <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted px-3 py-2 text-sm">
@@ -329,6 +443,21 @@ export function NewPlanModal({
               />
             )}
           </div>
+
+          {showProjectSelector ? (
+            <div className="space-y-2">
+              <Label htmlFor="project">
+                Project{" "}
+                <span className="text-muted-foreground">(optional)</span>
+              </Label>
+              <ProjectSelector
+                isLoading={loadingProjects}
+                onSelect={setSelectedProjectId}
+                projects={projects}
+                selectedProjectId={selectedProjectId}
+              />
+            </div>
+          ) : null}
 
           {selectedSource ? (
             <PlanPreview
@@ -350,18 +479,14 @@ export function NewPlanModal({
         </div>
 
         <DialogFooter>
-          <Button onClick={() => setOpen(false)} variant="outline">
+          <Button onClick={() => handleOpenChange(false)} variant="outline">
             Cancel
           </Button>
           <Button
-            disabled={
-              createAndGeneratePlan.isPending ||
-              !selectedSource ||
-              !title.trim()
-            }
+            disabled={isSubmitting || !title.trim()}
             onClick={handleSubmit}
           >
-            {createAndGeneratePlan.isPending ? (
+            {isSubmitting ? (
               <>
                 <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
                 Creating...
@@ -369,7 +494,7 @@ export function NewPlanModal({
             ) : (
               <>
                 <SparklesIcon className="mr-2 h-4 w-4" />
-                Generate Plan
+                {selectedSource ? "Generate Plan" : "Create Plan"}
               </>
             )}
           </Button>

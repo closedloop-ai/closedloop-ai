@@ -216,13 +216,14 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization      Organization @relation(fields: [organizationId], references: [id])
-  teamMemberships   TeamMember[]
-  ownedProjects     Project[]    @relation("ProjectOwner")
-  ownedArtifacts    Artifact[]   @relation("ArtifactOwner")
-  approvedArtifacts Artifact[]   @relation("ArtifactApprover")
-  assignedIssues    Issue[]      @relation("IssueAssignee")
-  createdIssues     Issue[]      @relation("IssueCreator")
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  teamMemberships    TeamMember[]
+  ownedProjects      Project[]    @relation("ProjectOwner")
+  ownedArtifacts     Artifact[]   @relation("ArtifactOwner")
+  approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
+  assignedIssues     Issue[]      @relation("IssueAssignee")
+  createdIssues      Issue[]      @relation("IssueCreator")
+  createdWorkstreams Workstream[] @relation("WorkstreamCreatedBy")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -341,6 +342,7 @@ model Workstream {
   // Relations
   organization  Organization   @relation(fields: [organizationId], references: [id])
   project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy     User           @relation("WorkstreamCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   artifacts     Artifact[]
   issues        Issue[]
   externalLinks ExternalLink[]
@@ -349,6 +351,7 @@ model Workstream {
   @@index([organizationId, projectId, state])
   @@index([organizationId, assignedToId])
   @@index([projectId])
+  @@index([createdById])
   @@map("workstreams")
 }
 
@@ -391,6 +394,7 @@ model Artifact {
   targetRepo      String?        @map("target_repo")
   targetBranch    String?        @map("target_branch")
   templateForType ArtifactType?  @map("template_for_type")
+  sortOrder       Int?           @map("sort_order")
   createdAt       DateTime       @default(now()) @map("created_at")
   updatedAt       DateTime       @updatedAt @map("updated_at")
 
@@ -696,15 +700,16 @@ model GitHubInstallation {
 }
 
 model GitHubInstallationRepository {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  installationId String   @map("installation_id") @db.Uuid
-  githubRepoId   Int      @map("github_repo_id")
-  fullName       String   @map("full_name")
+  id             String    @id @default(uuid(7)) @db.Uuid
+  installationId String    @map("installation_id") @db.Uuid
+  githubRepoId   Int       @map("github_repo_id")
+  fullName       String    @map("full_name")
   name           String
   owner          String
   private        Boolean
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  lastPushedAt   DateTime? @map("last_pushed_at")
 
   // Relations
   installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
@@ -784,4 +789,23 @@ model SlackIntegration {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
+}
+
+// =============================================================================
+// GOOGLE INTEGRATION
+// =============================================================================
+
+model GoogleIntegration {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @unique @map("organization_id") @db.Uuid
+  googleUserId   String    @map("google_user_id")
+  googleEmail    String?   @map("google_email") @db.VarChar(255)
+  accessToken    String    @map("access_token") @db.Text
+  refreshToken   String?   @map("refresh_token") @db.Text
+  tokenExpiresAt DateTime? @map("token_expires_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("google_integrations")
 }

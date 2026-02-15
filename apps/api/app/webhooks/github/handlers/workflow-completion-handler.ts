@@ -84,9 +84,21 @@ export async function handleExecutionSuccess(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
-    // Query plan artifact for organizationId, projectId, generatedBy, slug
+    // Look up workstream to get organizationId for org-scoped queries
+    const workstream = await tx.workstream.findUnique({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
+
+    if (!workstream) {
+      throw new Error(
+        `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
+      );
+    }
+
+    // Query plan artifact scoped to organization for defense-in-depth
     const planArtifact = await tx.artifact.findUnique({
-      where: { id: ctx.artifactId },
+      where: { id: ctx.artifactId, organizationId: workstream.organizationId },
       select: {
         organizationId: true,
         projectId: true,
@@ -97,7 +109,7 @@ export async function handleExecutionSuccess(
 
     if (!planArtifact) {
       throw new Error(
-        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found for correlation ${correlationId}`
+        `[handleExecutionSuccess] Implementation plan artifact ${ctx.artifactId} not found in organization for correlation ${correlationId}`
       );
     }
 
@@ -257,15 +269,25 @@ export async function handleWorkflowSuccess(
   }
 
   await withDb(async (db) => {
-    // Verify artifact exists before updating
+    const workstream = await db.workstream.findUnique({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
+
+    if (!workstream) {
+      throw new Error(
+        `Workstream ${workstreamId} not found - cannot update artifact`
+      );
+    }
+
     const existingArtifact = await db.artifact.findUnique({
-      where: { id: artifactId },
-      select: { id: true, latestVersion: true },
+      where: { id: artifactId, organizationId: workstream.organizationId },
+      select: { id: true, organizationId: true, latestVersion: true },
     });
 
     if (!existingArtifact) {
       throw new Error(
-        `Artifact ${artifactId} not found - cannot update with workflow results`
+        `Artifact ${artifactId} not found in organization - cannot update with workflow results`
       );
     }
 
@@ -284,7 +306,10 @@ export async function handleWorkflowSuccess(
     }
 
     await db.artifact.update({
-      where: { id: artifactId },
+      where: {
+        id: artifactId,
+        organizationId: existingArtifact.organizationId,
+      },
       data: {
         status: "DRAFT",
       },
@@ -310,7 +335,6 @@ export async function handleWorkflowSuccess(
       },
     });
 
-    // Persist judges report if available
     if (judgesReport && ctx.actionRunId) {
       await db.artifactEvaluation.upsert({
         where: {

@@ -20,15 +20,17 @@ import {
 import {
   ChevronDown,
   FileTextIcon,
+  FolderIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -43,6 +45,7 @@ import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsThreadedViewProps = {
   artifacts: ArtifactWithWorkstream[];
+  projectId: string;
   onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
@@ -180,10 +183,12 @@ function ArtifactRow({
   artifact,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
 }: {
   artifact: ArtifactWithWorkstream;
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
 }) {
   const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
   const isClickable = isNavigableArtifact(artifact);
@@ -243,6 +248,10 @@ function ArtifactRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onRequestMove(artifact)}>
+              <FolderIcon className="mr-2 h-4 w-4" />
+              Move to project
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => onRequestDelete(artifact)}
@@ -261,10 +270,12 @@ function WorkstreamSection({
   group,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
 }: {
   group: WorkstreamGroup;
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
 }) {
   return (
     <Collapsible className="rounded-lg border">
@@ -290,6 +301,7 @@ function WorkstreamSection({
               artifact={artifact}
               key={artifact.id}
               onRequestDelete={onRequestDelete}
+              onRequestMove={onRequestMove}
               onRowClick={onRowClick}
             />
           ))}
@@ -301,6 +313,7 @@ function WorkstreamSection({
 
 export function ArtifactsThreadedView({
   artifacts,
+  projectId,
   onStatusChange: _onStatusChange,
   onDelete,
 }: ArtifactsThreadedViewProps) {
@@ -309,6 +322,10 @@ export function ArtifactsThreadedView({
     onDelete: onDelete ?? (async () => false),
     getId: (artifact: ArtifactWithWorkstream) => artifact.id,
   });
+
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] =
+    useState<ArtifactWithWorkstream | null>(null);
 
   const workstreamGroups = useMemo(
     () => groupByWorkstream(artifacts),
@@ -322,6 +339,11 @@ export function ArtifactsThreadedView({
         router.push(route);
       }
     }
+  }
+
+  function handleRequestMove(artifact: ArtifactWithWorkstream): void {
+    setSelectedArtifact(artifact);
+    setMoveDialogOpen(true);
   }
 
   if (artifacts.length === 0) {
@@ -342,6 +364,7 @@ export function ArtifactsThreadedView({
           group={group}
           key={group.id ?? "unassigned"}
           onRequestDelete={deleteConfirmation.requestDelete}
+          onRequestMove={handleRequestMove}
           onRowClick={handleRowClick}
         />
       ))}
@@ -354,6 +377,15 @@ export function ArtifactsThreadedView({
         open={deleteConfirmation.isOpen}
         title="Artifact"
       />
+
+      {selectedArtifact && (
+        <MoveArtifactDialog
+          artifact={selectedArtifact}
+          currentProjectId={projectId}
+          onOpenChange={setMoveDialogOpen}
+          open={moveDialogOpen}
+        />
+      )}
     </div>
   );
 }

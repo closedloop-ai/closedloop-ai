@@ -33,7 +33,7 @@ export const StatCard = memo(
 
     return (
       <Card
-        className={cn("relative", comingSoon && "opacity-60")}
+        className={cn("relative overflow-hidden", comingSoon && "opacity-60")}
         style={{
           background:
             "linear-gradient(to bottom right, hsl(var(--card)), hsl(var(--muted)))",

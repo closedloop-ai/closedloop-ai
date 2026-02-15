@@ -43,7 +43,12 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
-import { ensureDate, formatDateCompact } from "@/lib/date-utils";
+import {
+  ensureDate,
+  formatDateCompact,
+  formatRelativeTime,
+} from "@/lib/date-utils";
+import { sortByDateDesc } from "@/lib/table-utils";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
 
 type ProjectsTableProps = {
@@ -127,11 +132,12 @@ export function ProjectsTable({
             <TableHead>Owner</TableHead>
             <TableHead>Target Date</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead>Updated</TableHead>
             <TableHead className="w-[50px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {projects.map((project) => (
+          {sortByDateDesc(projects, "updatedAt").map((project) => (
             <TableRow
               className="cursor-pointer"
               key={project.id}
@@ -224,6 +230,11 @@ export function ProjectsTable({
               </TableCell>
               <TableCell>
                 <HexagonProgress value={project.status} />
+              </TableCell>
+              <TableCell>
+                <span className="text-muted-foreground text-sm">
+                  {formatRelativeTime(project.updatedAt)}
+                </span>
               </TableCell>
               <TableCell onClick={(e) => e.stopPropagation()}>
                 <DropdownMenu>

@@ -7,11 +7,11 @@ import {
   type FilterOption,
   type SortOption,
 } from "@repo/design-system/components/ui/data-table";
-import { Loader2Icon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ArtifactStatusBadge } from "@/components/status-badge";
+import { TableErrorState, TableLoadingState } from "@/components/table-states";
 import { useArtifacts } from "@/hooks/queries/use-artifacts";
-import { formatDate } from "@/lib/date-utils";
+import { formatRelativeTime } from "@/lib/date-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { PlanRowActions } from "./plan-row-actions";
 
@@ -47,11 +47,20 @@ const columns: Column<ArtifactWithWorkstream>[] = [
     ),
   },
   {
+    key: "owner",
+    header: "Creator",
+    render: (plan) => (
+      <span className="text-muted-foreground">
+        {plan.owner ? getUserDisplayName(plan.owner) : "-"}
+      </span>
+    ),
+  },
+  {
     key: "updatedAt",
     header: "Updated",
     render: (plan) => (
       <span className="text-muted-foreground">
-        {formatDate(plan.updatedAt)}
+        {formatRelativeTime(plan.updatedAt)}
       </span>
     ),
   },
@@ -86,19 +95,11 @@ export function PlanTable() {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <TableLoadingState />;
   }
 
   if (error) {
-    return (
-      <div className="rounded-md border border-destructive/20 bg-destructive/10 p-4 text-destructive">
-        {error.message ?? "Failed to load implementation plans"}
-      </div>
-    );
+    return <TableErrorState error={error} />;
   }
 
   return (
