@@ -163,7 +163,7 @@ export function NewPRDModal() {
         fileName: fileName.trim() || undefined,
         approverId: selectedApprover?.id,
         status,
-        content: content.trim() || undefined,
+        content: content.trim(),
         targetRepo: targetRepo.trim() || undefined,
         targetBranch: targetBranch.trim() || undefined,
       },

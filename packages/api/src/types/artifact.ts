@@ -2,6 +2,7 @@
 // These are explicitly defined to keep packages/api independent of database
 
 import type { ArtifactVersion } from "./artifact-version";
+import type { EntityType } from "./entity-link";
 import type { ProjectOwner } from "./organization";
 
 /**
@@ -120,21 +121,22 @@ export type ArtifactDetail = ArtifactWithWorkstream & {
 
 export type FindArtifactsOptions = {
   type?: ArtifactType;
-  latestOnly?: boolean;
   workstreamId?: string;
   projectId?: string;
-  version?: number;
 };
 
 export type CreateArtifactInput = {
   workstreamId?: string;
   projectId?: string;
+  sourceId?: string;
+  sourceType?: EntityType;
+  sourceVersion?: number;
   type: ArtifactType;
   title: string;
   fileName?: string;
-  approverId?: string;
+  approverId?: string | null;
   status?: ArtifactStatus;
-  content?: string;
+  content: string;
   targetRepo?: string;
   targetBranch?: string;
   ownerId?: string;

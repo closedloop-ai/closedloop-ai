@@ -67,7 +67,7 @@ describe("ArtifactsTable - Artifact Display", () => {
       }),
       createMockProjectArtifact({
         id: "artifact-2",
-        title: "Implementation Plan",
+        title: "My Feature Plan",
         type: "IMPLEMENTATION_PLAN",
       }),
     ];
@@ -77,7 +77,7 @@ describe("ArtifactsTable - Artifact Display", () => {
     );
 
     expect(screen.getByText("PRD Document")).toBeInTheDocument();
-    expect(screen.getByText("Implementation Plan")).toBeInTheDocument();
+    expect(screen.getByText("My Feature Plan")).toBeInTheDocument();
   });
 
   test("renders empty state when no artifacts provided", () => {

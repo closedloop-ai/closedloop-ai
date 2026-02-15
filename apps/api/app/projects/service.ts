@@ -188,7 +188,6 @@ const PROJECT_DETAIL_INCLUDE = {
     },
   },
   artifacts: {
-    where: { isLatest: true },
     select: { status: true },
   },
 } as const;

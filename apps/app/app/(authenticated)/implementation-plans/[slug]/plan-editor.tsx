@@ -135,11 +135,12 @@ export function PlanEditor({
     if (!link) {
       return null;
     }
+    const meta = link.metadata as PreviewDeploymentMetadata | null;
     return {
-      state: (link.metadata?.state as string) ?? null,
-      environment: (link.metadata?.environment as string) ?? null,
-      ref: (link.metadata?.ref as string) ?? null,
-      sha: (link.metadata?.sha as string) ?? null,
+      state: meta?.state ?? null,
+      environment: meta?.environment ?? null,
+      ref: meta?.ref ?? null,
+      sha: meta?.sha ?? null,
       url: link.externalUrl || null,
     };
   }, [previewLinks]);

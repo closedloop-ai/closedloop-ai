@@ -1,10 +1,10 @@
 /**
- * Unit tests for getHumanCountsBySubtype — fetches human ratings and comments
- * counts per artifact subtype within an org and date range.
+ * Unit tests for getHumanCountsByType -- fetches human ratings and comments
+ * counts per artifact type within an org and date range.
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
@@ -12,13 +12,13 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { withDb } from "@repo/database";
-import { getHumanCountsBySubtype } from "@/app/judges-analytics/service";
+import { getHumanCountsByType } from "@/app/judges-analytics/service";
 
 // ---------------------------------------------------------------------------
 // Helper types
 // ---------------------------------------------------------------------------
 
-type ArtifactRow = { id: string; subtype: ArtifactSubtype };
+type ArtifactRow = { id: string; type: ArtifactType };
 type RatingRow = { artifactId: string; comment: string | null };
 
 type ScenarioConfig = {
@@ -27,7 +27,7 @@ type ScenarioConfig = {
   organizationId: string;
   startDate: Date;
   endDate: Date;
-  subtypes: ArtifactSubtype[];
+  types: ArtifactType[];
   artifacts: ArtifactRow[];
   ratings: RatingRow[];
   expectedRatings: Record<string, number>;
@@ -45,12 +45,12 @@ function mapToObject(m: Map<string, number>): Record<string, number> {
 
 const SCENARIO_REGISTRY: ScenarioConfig[] = [
   {
-    name: "empty_subtypes",
-    description: "Empty subtypes returns empty maps",
+    name: "empty_types",
+    description: "Empty types returns empty maps",
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [],
+    types: [],
     artifacts: [],
     ratings: [],
     expectedRatings: {},
@@ -58,15 +58,15 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
   },
   {
     name: "no_artifacts_in_org",
-    description: "No artifacts yields zeros for all subtypes",
+    description: "No artifacts yields zeros for all types",
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd],
+    types: [ArtifactType.Prd],
     artifacts: [],
     ratings: [],
-    expectedRatings: { [ArtifactSubtype.Prd]: 0 },
-    expectedComments: { [ArtifactSubtype.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 0 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "artifacts_exist_no_ratings_in_range",
@@ -74,11 +74,11 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd],
-    artifacts: [{ id: "a1", subtype: ArtifactSubtype.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [],
-    expectedRatings: { [ArtifactSubtype.Prd]: 0 },
-    expectedComments: { [ArtifactSubtype.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 0 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "single_rating_with_comment",
@@ -86,11 +86,11 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd],
-    artifacts: [{ id: "a1", subtype: ArtifactSubtype.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: "Looks good" }],
-    expectedRatings: { [ArtifactSubtype.Prd]: 1 },
-    expectedComments: { [ArtifactSubtype.Prd]: 1 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 1 },
   },
   {
     name: "rating_without_comment",
@@ -98,11 +98,11 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd],
-    artifacts: [{ id: "a1", subtype: ArtifactSubtype.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: null }],
-    expectedRatings: { [ArtifactSubtype.Prd]: 1 },
-    expectedComments: { [ArtifactSubtype.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
     name: "rating_with_empty_comment",
@@ -111,35 +111,35 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd],
-    artifacts: [{ id: "a1", subtype: ArtifactSubtype.Prd }],
+    types: [ArtifactType.Prd],
+    artifacts: [{ id: "a1", type: ArtifactType.Prd }],
     ratings: [{ artifactId: "a1", comment: "   " }],
-    expectedRatings: { [ArtifactSubtype.Prd]: 1 },
-    expectedComments: { [ArtifactSubtype.Prd]: 0 },
+    expectedRatings: { [ArtifactType.Prd]: 1 },
+    expectedComments: { [ArtifactType.Prd]: 0 },
   },
   {
-    name: "multiple_subtypes_partitioned",
-    description: "Ratings counted in correct subtype buckets",
+    name: "multiple_types_partitioned",
+    description: "Ratings counted in correct type buckets",
     organizationId: "org-1",
     startDate: new Date("2026-01-01"),
     endDate: new Date("2026-01-31"),
-    subtypes: [ArtifactSubtype.Prd, ArtifactSubtype.Issue],
+    types: [ArtifactType.Prd, ArtifactType.ImplementationPlan],
     artifacts: [
-      { id: "a1", subtype: ArtifactSubtype.Prd },
-      { id: "a2", subtype: ArtifactSubtype.Issue },
+      { id: "a1", type: ArtifactType.Prd },
+      { id: "a2", type: ArtifactType.ImplementationPlan },
     ],
     ratings: [
       { artifactId: "a1", comment: "PRD feedback" },
-      { artifactId: "a2", comment: "Issue feedback" },
+      { artifactId: "a2", comment: "Plan feedback" },
       { artifactId: "a1", comment: "Another PRD comment" },
     ],
     expectedRatings: {
-      [ArtifactSubtype.Prd]: 2,
-      [ArtifactSubtype.Issue]: 1,
+      [ArtifactType.Prd]: 2,
+      [ArtifactType.ImplementationPlan]: 1,
     },
     expectedComments: {
-      [ArtifactSubtype.Prd]: 2,
-      [ArtifactSubtype.Issue]: 1,
+      [ArtifactType.Prd]: 2,
+      [ArtifactType.ImplementationPlan]: 1,
     },
   },
 ];
@@ -148,7 +148,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
 // Parametrized test
 // ---------------------------------------------------------------------------
 
-describe("getHumanCountsBySubtype", () => {
+describe("getHumanCountsByType", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -169,20 +169,20 @@ describe("getHumanCountsBySubtype", () => {
         )
       );
 
-      const { humanRatingsBySubtype, humanCommentsBySubtype } =
-        await getHumanCountsBySubtype(
+      const { humanRatingsByType, humanCommentsByType } =
+        await getHumanCountsByType(
           scenario.organizationId,
           scenario.startDate,
           scenario.endDate,
-          scenario.subtypes
+          scenario.types
         );
 
-      expect(mapToObject(humanRatingsBySubtype as Map<string, number>)).toEqual(
+      expect(mapToObject(humanRatingsByType as Map<string, number>)).toEqual(
         scenario.expectedRatings
       );
-      expect(
-        mapToObject(humanCommentsBySubtype as Map<string, number>)
-      ).toEqual(scenario.expectedComments);
+      expect(mapToObject(humanCommentsByType as Map<string, number>)).toEqual(
+        scenario.expectedComments
+      );
     });
   });
 });

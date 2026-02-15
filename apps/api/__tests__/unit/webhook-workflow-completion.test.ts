@@ -15,6 +15,7 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
@@ -46,7 +47,7 @@ vi.mock("@/app/webhooks/github/webhook-service", () => ({
 
 vi.mock("@/app/artifacts/artifact-version-service", () => ({
   artifactVersionService: {
-    createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 1 }),
+    createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
   },
 }));
 
@@ -119,7 +120,7 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          latestVersion: 0,
+          latestVersion: 1,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -200,7 +201,7 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          latestVersion: 0,
+          latestVersion: 1,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -291,7 +292,7 @@ describe("handleWorkflowSuccess", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          latestVersion: 0,
+          latestVersion: 1,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -455,7 +456,7 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-123",
           projectId: "project-123",
           generatedBy: "user-123",
-          slug: "plan-slug-123",
+          slug: undefined,
         }),
       },
       gitHubPullRequest: {
@@ -465,10 +466,7 @@ describe("handleExecutionSuccess", () => {
         }),
       },
       externalLink: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce({ id: "ext-link-pr-123" })
-          .mockResolvedValueOnce({ id: "ext-link-preview-123" }),
+        create: vi.fn().mockResolvedValue({ id: "ext-link-123" }),
       },
       entityLink: {
         create: vi.fn().mockResolvedValue({ id: "entity-link-123" }),
@@ -501,22 +499,20 @@ describe("handleExecutionSuccess", () => {
     });
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+      data: {
         organizationId: "org-123",
         workstreamId,
-        type: "PULL_REQUEST",
+        projectId: "project-123",
+        type: ExternalLinkType.PullRequest,
         title: executionResult.pr_title,
         externalUrl: executionResult.pr_url,
-      }),
-    });
-
-    expect(mockTx.entityLink.create).toHaveBeenCalledWith({
-      data: {
-        sourceId: artifactId,
-        sourceType: "ARTIFACT",
-        targetId: "ext-link-pr-123",
-        targetType: "EXTERNAL_LINK",
-        linkType: "PRODUCES",
+        metadata: {
+          number: 42,
+          githubId: executionResult.github_id,
+          headBranch: executionResult.branch_name,
+          baseBranch: executionResult.base_ref,
+          state: "OPEN",
+        },
       },
     });
 
@@ -533,7 +529,7 @@ describe("handleExecutionSuccess", () => {
           prTitle: executionResult.pr_title,
           branch: executionResult.branch_name,
           runId,
-          slug: "plan-slug-123",
+          slug: undefined,
         },
       },
     });
@@ -563,17 +559,14 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-456",
           projectId: "project-456",
           generatedBy: "user-456",
-          slug: null,
+          slug: undefined,
         }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-456" }),
       },
       externalLink: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce({ id: "ext-link-pr-456" })
-          .mockResolvedValueOnce({ id: "ext-link-preview-456" }),
+        create: vi.fn().mockResolvedValue({ id: "ext-link-456" }),
       },
       entityLink: {
         create: vi.fn().mockResolvedValue({ id: "entity-link-456" }),
@@ -620,17 +613,14 @@ describe("handleExecutionSuccess", () => {
           organizationId: "org-789",
           projectId: "project-789",
           generatedBy: "user-789",
-          slug: null,
+          slug: undefined,
         }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-789" }),
       },
       externalLink: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce({ id: "ext-link-pr-789" })
-          .mockResolvedValueOnce({ id: "ext-link-preview-789" }),
+        create: vi.fn().mockResolvedValue({ id: "ext-link-789" }),
       },
       entityLink: {
         create: vi.fn().mockResolvedValue({ id: "entity-link-789" }),
@@ -898,7 +888,7 @@ describe("processWorkflowCompletion", () => {
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          latestVersion: 0,
+          latestVersion: 1,
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
@@ -1124,17 +1114,14 @@ describe("processWorkflowCompletion", () => {
           organizationId: "org-exec",
           projectId: "project-exec",
           generatedBy: "user-exec",
-          slug: "exec-slug",
+          slug: undefined,
         }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-exec" }),
       },
       externalLink: {
-        create: vi
-          .fn()
-          .mockResolvedValueOnce({ id: "ext-link-pr-exec" })
-          .mockResolvedValueOnce({ id: "ext-link-preview-exec" }),
+        create: vi.fn().mockResolvedValue({ id: "ext-link-exec" }),
       },
       entityLink: {
         create: vi.fn().mockResolvedValue({ id: "entity-link-exec" }),
@@ -1167,7 +1154,7 @@ describe("processWorkflowCompletion", () => {
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
     expect(mockDb.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        type: "PULL_REQUEST",
+        type: ExternalLinkType.PullRequest,
       }),
     });
 

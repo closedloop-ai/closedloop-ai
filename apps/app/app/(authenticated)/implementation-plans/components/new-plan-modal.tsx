@@ -159,6 +159,7 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
+  // TODO: This is returning all PRDs in the organization, not just the project.
   const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
     { type: "PRD" },
     {
@@ -229,6 +230,11 @@ export function NewPlanModal({
         workstreamId: selectedSource.workstreamId ?? undefined,
         targetRepo: selectedSource.targetRepo ?? undefined,
         targetBranch: selectedSource.targetBranch ?? undefined,
+        ...(selectedSource && {
+          sourceId: selectedSource.id,
+          sourceType: "ARTIFACT",
+          sourceVersion: selectedSource.latestVersion,
+        }),
       },
       {
         onSuccess: (artifact) => {

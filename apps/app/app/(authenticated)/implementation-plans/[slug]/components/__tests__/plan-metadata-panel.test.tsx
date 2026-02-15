@@ -71,6 +71,23 @@ vi.mock("@/hooks/queries/use-users", () => ({
   }),
 }));
 
+// Mock entity links hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-entity-links", () => ({
+  useSourceLinks: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useCreateEntityLink: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+  useDeleteEntityLink: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+}));
+
 // Mock GitHub integration hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-github-integration", () => ({
   useGitHubIntegrationStatus: () => ({

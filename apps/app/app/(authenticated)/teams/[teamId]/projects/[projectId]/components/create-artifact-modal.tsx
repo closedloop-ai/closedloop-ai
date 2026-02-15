@@ -45,7 +45,7 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
-import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
@@ -188,10 +188,9 @@ export function CreateArtifactModal({
   );
 
   // Fetch template for PRD type (two-step: get template artifact, then fetch its content via detail)
-  const { data: template } = useOrgTemplateBySubtype(
-    isPrd ? artifactType : "",
-    { enabled: open && isPrd }
-  );
+  const { data: template } = useOrgTemplateByType(isPrd ? artifactType : "", {
+    enabled: open && isPrd,
+  });
   const { data: templateDetail } = useArtifact(template?.id ?? "", undefined, {
     enabled: !!template?.id,
   });
@@ -345,11 +344,18 @@ export function CreateArtifactModal({
         type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
-        content: content.trim() || undefined,
+        content: content.trim(),
         approverId: selectedApprover?.id ?? undefined,
         status,
         targetRepo: targetRepo.trim() || undefined,
         targetBranch: targetBranch.trim() || undefined,
+        ...(isImplementationPlan &&
+          selectedPrdId && {
+            sourceId: selectedPrdId,
+            sourceType: "ARTIFACT",
+            sourceVersion: prds.find((p) => p.id === selectedPrdId)
+              ?.latestVersion,
+          }),
       },
       {
         onSuccess: (artifact) => {

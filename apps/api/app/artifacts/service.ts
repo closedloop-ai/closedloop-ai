@@ -344,7 +344,7 @@ export const artifactsService = {
     }
 
     // Cast state enum to literal union type
-    return pr as PullRequestInfo;
+    return pr;
   },
 
   /**
@@ -403,14 +403,26 @@ export const artifactsService = {
         include: artifactIncludeWithUser,
       });
 
-      // Create initial version with content (if provided)
-      if (input.content !== undefined) {
-        await tx.artifactVersion.create({
+      // Create initial artifact version
+      await tx.artifactVersion.create({
+        data: {
+          artifactId: artifact.id,
+          version: 1,
+          content: input.content,
+          createdById: userId,
+        },
+      });
+
+      if (input.sourceId && input.sourceType) {
+        await tx.entityLink.create({
           data: {
-            artifactId: artifact.id,
-            version: 1,
-            content: input.content ?? null,
-            createdById: userId,
+            sourceId: input.sourceId,
+            sourceType: input.sourceType,
+            sourceVersion: input.sourceVersion,
+            targetId: artifact.id,
+            targetType: "ARTIFACT",
+            targetVersion: artifact.latestVersion,
+            linkType: LinkType.PRODUCES,
           },
         });
       }
@@ -419,8 +431,8 @@ export const artifactsService = {
     });
 
     if (createdArtifact) {
-      // Create Liveblocks room for all artifacts (they all have slugs now)
-      createArtifactRoom(createdArtifact);
+      // Create Liveblocks room for all artifacts
+      await createArtifactRoom(createdArtifact);
     }
 
     return createdArtifact;
@@ -494,8 +506,7 @@ export const artifactsService = {
       await tx.artifact.delete({ where: { id } });
     });
 
-    // Asynchronously delete Liveblocks room (fire and forget)
-    deleteArtifactRoom(organizationId, artifact.slug);
+    await deleteArtifactRoom(organizationId, artifact.slug);
   },
 
   /**

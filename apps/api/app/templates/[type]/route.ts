@@ -1,7 +1,7 @@
 import {
-  ARTIFACT_SUBTYPE_OPTIONS,
+  ARTIFACT_TYPE_OPTIONS,
   type Artifact,
-  type ArtifactSubtype,
+  type ArtifactType,
 } from "@repo/api/src/types/artifact";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
@@ -13,26 +13,26 @@ import {
 import { artifactsService } from "../../artifacts/service";
 
 /**
- * GET /templates/[subtype] - Get a single template by artifact subtype
+ * GET /templates/[type] - Get a single template by artifact type
  * Ensures default templates exist (lazy seeding) before returning the requested template
  */
-export const GET = withAuth<Artifact, "/templates/[subtype]">(
+export const GET = withAuth<Artifact, "/templates/[type]">(
   async ({ user }, _request, params) => {
     try {
-      const { subtype } = await params;
+      const { type } = await params;
 
-      // Validate that subtype is a valid ArtifactSubtype
-      if (!ARTIFACT_SUBTYPE_OPTIONS.includes(subtype as ArtifactSubtype)) {
-        return badRequestResponse("Invalid artifact subtype");
+      // Validate that type is a valid ArtifactType
+      if (!ARTIFACT_TYPE_OPTIONS.includes(type as ArtifactType)) {
+        return badRequestResponse("Invalid artifact type");
       }
 
       // Lazy seeding: ensure default templates exist
       await artifactsService.ensureDefaultTemplates(user.organizationId);
 
-      // Fetch the template for this subtype
+      // Fetch the template for this type
       const template = await artifactsService.findOrgTemplate(
         user.organizationId,
-        subtype as ArtifactSubtype
+        type as ArtifactType
       );
 
       if (!template) {
