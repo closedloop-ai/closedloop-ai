@@ -665,41 +665,9 @@ function ensureBranchPushed(workDir) {
 }
 
 // ---------------------------------------------------------------------------
-// PR info parsing
+// Branch / PR info detection
 // ---------------------------------------------------------------------------
 const RE_GITHUB_PR_URL = /https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/;
-
-/**
- * Try to read execution-result.json from the most recent run directory.
- */
-function readExecutionResult(workDir) {
-  const runsDir = path.join(workDir, ".claude", "runs");
-  if (!fs.existsSync(runsDir)) {
-    return null;
-  }
-  const runs = fs.readdirSync(runsDir).sort().reverse();
-  for (const run of runs) {
-    const resultFile = path.join(runsDir, run, "execution-result.json");
-    if (!fs.existsSync(resultFile)) {
-      continue;
-    }
-    const result = JSON.parse(fs.readFileSync(resultFile, "utf-8"));
-    const prUrl = result.pr_url || result.prUrl;
-    if (!prUrl) {
-      continue;
-    }
-    const prMatch = prUrl.match(RE_GITHUB_PR_URL);
-    return {
-      prUrl,
-      prNumber: prMatch
-        ? Number.parseInt(prMatch[1], 10)
-        : (result.pr_number ?? result.prNumber ?? null),
-      branchName: result.branch_name || result.branchName || null,
-      commitSha: result.commit_sha || result.commitSha || null,
-    };
-  }
-  return null;
-}
 
 /**
  * Try to detect the current branch name (if different from target).
@@ -722,18 +690,19 @@ function detectBranchName(workDir) {
   return null;
 }
 
+/**
+ * Detect branch/PR info from the working directory and process output.
+ *
+ * NOTE: run-loop.sh does NOT create PRs or write execution-result.json with
+ * PR URLs. PR creation is owned by the harness (createPullRequest), mirroring
+ * the pattern from symphony-dispatch.yml. This function only detects branch
+ * info and checks if Claude happened to create a PR during execution.
+ */
 function parsePrInfo(workDir, outputLines) {
-  // Strategy 1: Check for execution-result.json written by run-loop.sh
-  try {
-    const fromFile = readExecutionResult(workDir);
-    if (fromFile) {
-      return fromFile;
-    }
-  } catch (err) {
-    log("info", `execution-result.json parse attempt: ${err.message}`);
-  }
+  // Strategy 1: Get branch name from git (primary — always available after execute)
+  const branch = detectBranchName(workDir);
 
-  // Strategy 2: Regex scan output lines (reverse order) for PR URL
+  // Strategy 2: Scan output for PR URL (rare — only if Claude created one during execution)
   for (let i = outputLines.length - 1; i >= 0; i--) {
     const line = outputLines[i].line || "";
     const match = line.match(RE_GITHUB_PR_URL);
@@ -741,14 +710,12 @@ function parsePrInfo(workDir, outputLines) {
       return {
         prUrl: match[0],
         prNumber: Number.parseInt(match[1], 10),
-        branchName: null,
+        branchName: branch,
         commitSha: null,
       };
     }
   }
 
-  // Strategy 3: Get branch name from git if we have a workdir
-  const branch = detectBranchName(workDir);
   if (branch) {
     return { prUrl: null, prNumber: null, branchName: branch, commitSha: null };
   }
@@ -757,9 +724,18 @@ function parsePrInfo(workDir, outputLines) {
 }
 
 // ---------------------------------------------------------------------------
-// Fallback PR creation (best-effort if Claude didn't create one)
+// PR creation (harness owns this — mirrors symphony-dispatch.yml behavior)
 // ---------------------------------------------------------------------------
-function ensurePrExists(workDir, existingPrInfo) {
+/**
+ * Create a pull request for the working branch. This is the primary PR
+ * creation path — run-loop.sh does NOT create PRs, so the harness is
+ * responsible, just like the "Commit and Push Changes" + "Create Pull
+ * Request" steps in symphony-dispatch.yml.
+ *
+ * Skips creation if a PR was already detected (e.g., Claude created one
+ * during execution) or if there are no commits ahead of the target branch.
+ */
+function createPullRequest(workDir, existingPrInfo) {
   if (existingPrInfo?.prUrl) {
     return existingPrInfo;
   }
@@ -823,7 +799,7 @@ function ensurePrExists(workDir, existingPrInfo) {
 
     const prUrl = result.toString().trim();
     const prMatch = prUrl.match(/\/pull\/(\d+)/);
-    log("info", `Fallback PR created: ${prUrl}`);
+    log("info", `PR created: ${prUrl}`);
     return {
       prUrl,
       prNumber: prMatch ? Number.parseInt(prMatch[1], 10) : null,
@@ -833,7 +809,7 @@ function ensurePrExists(workDir, existingPrInfo) {
   } catch (err) {
     log(
       "error",
-      `Fallback PR creation failed (best-effort): ${err.message}`
+      `PR creation failed (best-effort): ${err.message}`
     );
     return existingPrInfo;
   }
@@ -1675,11 +1651,11 @@ async function reportFinalStatus(
   attemptSafetyCommit(workDir, commitMsg);
   ensureBranchPushed(workDir);
 
-  // Step 2: Parse PR info (may have been created by Claude/run-loop during execution)
+  // Step 2: Detect branch info and any PR Claude may have created during execution
   let prInfo = parsePrInfo(workDir, output);
 
-  // Step 3: Fallback PR creation if Claude didn't create one
-  prInfo = ensurePrExists(workDir, prInfo);
+  // Step 3: Create PR (harness owns PR creation, not run-loop — mirrors dispatch workflow)
+  prInfo = createPullRequest(workDir, prInfo);
 
   // Step 4: Label incomplete PRs
   if (isIncomplete && prInfo?.prNumber) {
