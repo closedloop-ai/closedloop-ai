@@ -14,6 +14,7 @@ import {
   useBatchMoveArtifacts,
   useReorderArtifacts,
 } from "@/hooks/queries/use-artifacts";
+import { useReorderProjects } from "@/hooks/queries/use-projects";
 import { useApiClient } from "@/hooks/use-api-client";
 
 type DragHandlerWrapperProps = {
@@ -35,6 +36,7 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
   const apiClient = useApiClient();
   const batchMoveMutation = useBatchMoveArtifacts();
   const reorderArtifacts = useReorderArtifacts();
+  const reorderProjects = useReorderProjects();
 
   // Fetch the dragged artifact data for dialog display
   const { data: draggedArtifact } = useArtifact(dialogState.artifactId ?? "", {
@@ -84,7 +86,7 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
       return;
     }
 
-    // Within-section reorder: dropping on another artifact in the same section
+    // Within-section reorder: dropping on another item in the same section
     const activeSortable = active.data.current?.sortable;
     const overSortable = over.data.current?.sortable;
     if (
@@ -97,7 +99,12 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
         activeSortable.index,
         overSortable.index
       );
-      reorderArtifacts.mutate(newOrder);
+
+      if (activeSortable.containerId === "projects-list") {
+        reorderProjects.mutate(newOrder);
+      } else {
+        reorderArtifacts.mutate(newOrder);
+      }
     }
   };
 

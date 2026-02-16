@@ -111,6 +111,7 @@ export type Project = {
   codebaseSummary: string | null;
   lastIndexedAt: Date | null;
   settings: JsonObject;
+  sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
 };

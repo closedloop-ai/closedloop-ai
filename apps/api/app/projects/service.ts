@@ -42,7 +42,7 @@ export const projectsService = {
       db.project.findMany({
         where: { organizationId },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
     );
   },
@@ -64,7 +64,7 @@ export const projectsService = {
           organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { updatedAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -152,6 +152,47 @@ export const projectsService = {
       // Remove team associations first
       await tx.projectTeam.deleteMany({ where: { projectId: id } });
       return tx.project.delete({ where: { id, organizationId } });
+    });
+  },
+
+  /**
+   * Reorder projects by setting sortOrder values.
+   * Accepts an array of project IDs in the desired order.
+   */
+  reorder(projectIds: string[], organizationId: string): Promise<string[]> {
+    if (projectIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    const uniqueIds = [...new Set(projectIds)];
+
+    return withDb.tx(async (tx) => {
+      const projects = await tx.project.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      if (projects.length !== uniqueIds.length) {
+        const foundIds = new Set(projects.map((p) => p.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid project IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      await Promise.all(
+        uniqueIds.map((id, index) =>
+          tx.project.update({
+            where: { id, organizationId },
+            data: { sortOrder: index },
+          })
+        )
+      );
+
+      return uniqueIds;
     });
   },
 
