@@ -62,8 +62,8 @@ export const issuesService = {
     organizationId: string
   ): Promise<IssueWithWorkstream | null> {
     const issue = await withDb((db) =>
-      db.issue.findFirst({
-        where: { slug, organizationId },
+      db.issue.findUnique({
+        where: { organizationId_slug: { organizationId, slug } },
         include: issueIncludeWithContext,
       })
     );

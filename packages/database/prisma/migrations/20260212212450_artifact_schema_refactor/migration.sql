@@ -141,6 +141,17 @@ SET "slug" = left(replace(gen_random_uuid()::text, '-', ''), 14)
 WHERE "slug" IS NULL
   AND "subtype" NOT IN ('ISSUE', 'BUG', 'PULL_REQUEST', 'FIGMA_DESIGN');
 
+-- 1c. Deduplicate slugs: append random suffix to all but the oldest occurrence
+UPDATE "artifacts" a
+SET "slug" = a."slug" || '-' || left(replace(gen_random_uuid()::text, '-', ''), 6)
+FROM (
+    SELECT "id", ROW_NUMBER() OVER (PARTITION BY "slug" ORDER BY "created_at" ASC) AS rn
+    FROM "artifacts"
+    WHERE "slug" IS NOT NULL
+) dupes
+WHERE a."id" = dupes."id"
+  AND dupes.rn > 1;
+
 -- Step 2: Populate latest_version on artifacts
 
 -- For versioned documents (sharing a document_slug), set latest_version = MAX(version) in the group

@@ -383,7 +383,7 @@ model Artifact {
   projectId       String?        @map("project_id") @db.Uuid
   type            ArtifactType   @map("type")
   title           String
-  slug            String         @unique
+  slug            String
   fileName        String?        @map("file_name")
   ownerId         String?        @map("owner_id") @db.Uuid
   approverId      String?        @map("approver_id") @db.Uuid
@@ -409,6 +409,7 @@ model Artifact {
   evaluations  ArtifactEvaluation[]
   pullRequests GitHubPullRequest[]
 
+  @@unique([organizationId, slug])
   @@unique([organizationId, templateForType])
   @@index([organizationId, workstreamId, type])
   @@index([organizationId, projectId, type])
@@ -479,7 +480,7 @@ model Issue {
   workstreamId   String?       @map("workstream_id") @db.Uuid
   projectId      String?       @map("project_id") @db.Uuid
   title          String
-  slug           String        @unique
+  slug           String
   description    String?       @db.Text
   status         IssueStatus   @default(TODO)
   priority       IssuePriority @default(MEDIUM)
@@ -495,6 +496,7 @@ model Issue {
   assignee     User?        @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
   createdBy    User         @relation("IssueCreator", fields: [createdById], references: [id])
 
+  @@unique([organizationId, slug])
   @@index([organizationId, workstreamId, status])
   @@index([organizationId, projectId, status])
   @@index([organizationId, assigneeId, status])

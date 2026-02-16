@@ -209,8 +209,8 @@ export const artifactsService = {
     organizationId: string
   ): Promise<ArtifactWithWorkstream | null> {
     const artifact = await withDb((db) =>
-      db.artifact.findFirst({
-        where: { slug, organizationId },
+      db.artifact.findUnique({
+        where: { organizationId_slug: { organizationId, slug } },
         include: artifactIncludeWithContext,
       })
     );
