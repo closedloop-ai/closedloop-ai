@@ -11,13 +11,13 @@ import {
   StatusBadge,
 } from "@/components/status-badge";
 
-type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
+export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
   url: string | null;
 };
 
-type PreviewDeploymentSectionProps = {
+export type PreviewDeploymentSectionProps = {
   previewDeployment: PreviewDeploymentInfo;
-  onRefresh: () => Promise<PreviewDeploymentInfo | null>;
+  onRefresh: () => void;
   isRefreshing: boolean;
 };
 
@@ -33,14 +33,7 @@ export function PreviewDeploymentSection({
         <Button
           aria-label="Refresh preview deployment status"
           disabled={isRefreshing}
-          onClick={() => {
-            onRefresh().catch((error: unknown) => {
-              console.warn(
-                "[preview-refresh] Failed to refresh preview deployment",
-                error
-              );
-            });
-          }}
+          onClick={onRefresh}
           size="icon"
           variant="ghost"
         >

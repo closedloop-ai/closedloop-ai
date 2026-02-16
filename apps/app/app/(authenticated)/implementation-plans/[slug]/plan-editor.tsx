@@ -129,9 +129,7 @@ export function PlanEditor({
         url: string | null;
       })
     | null => {
-    const link = previewLinks?.find(
-      (link) => link.type === ExternalLinkType.PreviewDeployment
-    );
+    const link = previewLinks?.[0];
     if (!link) {
       return null;
     }
@@ -338,10 +336,7 @@ export function PlanEditor({
               judgesReport={judgesReport ?? null}
               onApproverSelect={metadata.handleApproverSelect}
               onOwnerChange={metadata.handleOwnerChange}
-              onPreviewRefresh={async () => {
-                await refetchPreviewLinks();
-                return previewDeployment;
-              }}
+              onPreviewRefresh={refetchPreviewLinks}
               onStatusChange={metadata.handleStatusChange}
               owner={metadata.owner}
               plan={plan}
