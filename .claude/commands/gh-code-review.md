@@ -867,10 +867,11 @@ Issue description
 - `posted_count = 0`
 - `skipped_dedup = 0`
 - `skipped_line = 0`
+- `failed_api = 0`
 
-Increment within the loop: `posted_count++` after a successful post, `skipped_dedup++` when the dedup map matches, `skipped_line++` when the line is not in the diff.
+Increment within the loop: `posted_count++` after a successful post, `skipped_dedup++` when the dedup map matches, `skipped_line++` when the line is not in the diff, `failed_api++` when the API call fails for any reason (line resolution error, rate limit, permission denied, etc.).
 
-**After posting**: Report counts (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff)"). If `posted_count + skipped_dedup + skipped_line < inline_eligible_count`, some findings were silently lost — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped.
+**After posting**: Report counts (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff), 1 failed"). If `posted_count + skipped_dedup + skipped_line + failed_api < inline_eligible_count`, some findings were silently lost — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped or failed.
 
 Mark todo as `completed`.
 
