@@ -1,9 +1,12 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
+import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useQueries } from "@tanstack/react-query";
+import { useEffect, useRef, useMemo } from "react";
+import { artifactKeys } from "@/hooks/queries/use-artifacts";
+import { useApiClient } from "@/hooks/use-api-client";
 
 /**
  * Hook to detect new GITHUB_PR_MERGED events in activity feed and show toast notifications.
@@ -14,9 +17,54 @@ export function useMergeNotification(
   projectId: string,
   teamId: string
 ): void {
-  const router = useRouter();
   const seenEventIds = useRef<Set<string>>(new Set());
   const initialized = useRef(false);
+  const apiClient = useApiClient();
+
+  // Extract artifactIds from ALL unseen GITHUB_PR_MERGED events
+  const unseenArtifactIds = useMemo(() => {
+    if (!activityData?.activities) return [];
+
+    const ids: string[] = [];
+    for (const activity of activityData.activities) {
+      if (
+        activity.type === "GITHUB_PR_MERGED" &&
+        !seenEventIds.current.has(activity.id)
+      ) {
+        const artifactId = (activity.metadata as { artifactId?: string })?.artifactId;
+        if (artifactId) {
+          ids.push(artifactId);
+        }
+      }
+    }
+    return ids;
+  }, [activityData]);
+
+  // Fetch preview deployments for all unseen merge events
+  const previewDeploymentQueries = useQueries({
+    queries: unseenArtifactIds.map((artifactId) => ({
+      queryKey: artifactKeys.previewDeployment(artifactId),
+      queryFn: () =>
+        apiClient.get<ExternalLink | null>(
+          `/artifacts/${artifactId}/preview-deployment`
+        ),
+      enabled: !!artifactId,
+      staleTime: 0, // Always fetch fresh
+    })),
+  });
+
+  // Build artifactId → previewDeployment map
+  const previewDeploymentMap = useMemo(() => {
+    const map = new Map<string, ExternalLink>();
+    for (let i = 0; i < unseenArtifactIds.length; i++) {
+      const artifactId = unseenArtifactIds[i];
+      const result = previewDeploymentQueries[i];
+      if (result?.data?.externalUrl) {
+        map.set(artifactId, result.data);
+      }
+    }
+    return map;
+  }, [unseenArtifactIds, ...previewDeploymentQueries.map(q => q.data)]);
 
   useEffect(() => {
     if (!activityData?.activities) {
@@ -32,6 +80,11 @@ export function useMergeNotification(
       return;
     }
 
+    // Wait for all preview deployment queries to finish before showing toasts
+    if (unseenArtifactIds.length > 0 && previewDeploymentQueries.some(q => q.isLoading)) {
+      return;
+    }
+
     for (const activity of activityData.activities) {
       // Only process GITHUB_PR_MERGED events we haven't seen before
       if (
@@ -40,9 +93,10 @@ export function useMergeNotification(
       ) {
         seenEventIds.current.add(activity.id);
 
-        const { prTitle, slug } = activity.metadata as {
+        const { prTitle, slug, artifactId: eventArtifactId } = activity.metadata as {
           prTitle?: string;
           slug?: string;
+          artifactId?: string;
         };
 
         // Build route to implementation plan if we have slug
@@ -51,17 +105,31 @@ export function useMergeNotification(
           ? `/implementation-plans/${slug}`
           : fallbackRoute;
 
+        // Look up preview deployment for this event's artifact
+        const previewDeployment = eventArtifactId
+          ? previewDeploymentMap.get(eventArtifactId)
+          : undefined;
+        const hasPreview = !!previewDeployment?.externalUrl;
+
+        const description = hasPreview
+          ? `Preview deployment: ${previewDeployment.externalUrl}`
+          : "Pull request has been merged";
+
         toast.success(prTitle || "Pull request merged", {
-          description: "Pull request has been merged",
+          description,
           action: {
-            label: "View Artifact",
+            label: hasPreview ? "View Preview" : "View Artifact",
             onClick: (event: React.MouseEvent) => {
               event.preventDefault();
-              router.push(artifactRoute);
+              if (hasPreview) {
+                window.open(previewDeployment.externalUrl, "_blank");
+              } else {
+                window.open(artifactRoute, "_blank");
+              }
             },
           },
         });
       }
     }
-  }, [activityData, projectId, teamId, router]);
+  }, [activityData, projectId, teamId, previewDeploymentMap, unseenArtifactIds, previewDeploymentQueries]);
 }

@@ -97,6 +97,12 @@ vi.mock("@/components/move-artifact-dialog", () => ({
     ) : null,
 }));
 
+// Mock for useExternalLinks hook
+const mockUseExternalLinks = vi.fn();
+vi.mock("@/hooks/queries/use-external-links", () => ({
+  useExternalLinks: () => mockUseExternalLinks(),
+}));
+
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Template/;
 
 const createWorkstreamArtifact = (
@@ -107,6 +113,10 @@ const createWorkstreamArtifact = (
   }) as ArtifactWithWorkstream;
 
 describe("ArtifactsThreadedView - Empty State", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("renders empty state when no artifacts provided", () => {
@@ -123,6 +133,10 @@ describe("ArtifactsThreadedView - Empty State", () => {
 });
 
 describe("ArtifactsThreadedView - Workstream Grouping", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("groups artifacts by workstream", () => {
@@ -306,6 +320,10 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 });
 
 describe("ArtifactsThreadedView - Collapsible Behavior", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("sections are collapsed by default", () => {
@@ -352,6 +370,10 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
 });
 
 describe("ArtifactsThreadedView - Artifact Display", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("renders artifact with type badge and status", () => {
@@ -410,6 +432,10 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
 });
 
 describe("ArtifactsThreadedView - Links", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("renders internal link for PRD artifact", () => {
@@ -442,6 +468,7 @@ describe("ArtifactsThreadedView - Links", () => {
 describe("ArtifactsThreadedView - Navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseExternalLinks.mockReturnValue({ data: [] });
   });
 
   afterEach(cleanup);
@@ -498,6 +525,7 @@ describe("ArtifactsThreadedView - Navigation", () => {
 describe("ArtifactsThreadedView - Generation Status Indicator", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseExternalLinks.mockReturnValue({ data: [] });
   });
 
   afterEach(cleanup);
@@ -654,7 +682,86 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
   });
 });
 
+describe("ArtifactsThreadedView - Preview Links", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(cleanup);
+
+  test("renders PreviewLink when preview URL is available for workstream", () => {
+    // Mock external links data with a preview URL
+    mockUseExternalLinks.mockReturnValue({
+      data: [
+        {
+          id: "link-1",
+          workstreamId: "ws-1",
+          externalUrl: "https://preview.example.com/feature-x",
+          type: "PREVIEW_DEPLOYMENT",
+        },
+      ],
+    });
+
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "PRD Alpha",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Feature X",
+          state: "IMPLEMENTATION_IN_PROGRESS",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    // PreviewLink should be rendered in the trigger section
+    const previewLink = screen.getByText("Preview");
+    expect(previewLink).toBeInTheDocument();
+    expect(previewLink.closest("a")).toHaveAttribute(
+      "href",
+      "https://preview.example.com/feature-x"
+    );
+    expect(previewLink.closest("a")).toHaveAttribute("target", "_blank");
+  });
+
+  test("does not render PreviewLink when no preview URL is available", () => {
+    // Mock external links with empty data
+    mockUseExternalLinks.mockReturnValue({
+      data: [],
+    });
+
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "PRD Beta",
+        workstreamId: "ws-2",
+        workstream: {
+          id: "ws-2",
+          title: "Feature Y",
+          state: "INITIATED",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    // PreviewLink should not be rendered
+    expect(screen.queryByText("Preview")).not.toBeInTheDocument();
+  });
+});
+
 describe("ArtifactsThreadedView - Move Artifact", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
   afterEach(cleanup);
 
   test("renders 'Move to project' menu item in dropdown", () => {
