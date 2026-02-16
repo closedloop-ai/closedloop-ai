@@ -167,6 +167,12 @@ export type PullRequestInfo = {
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  reviewDecision:
+    | "APPROVED"
+    | "CHANGES_REQUESTED"
+    | "COMMENTED"
+    | "DISMISSED"
+    | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions

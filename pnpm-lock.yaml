@@ -104,6 +104,9 @@ importers:
       '@repo/github':
         specifier: workspace:*
         version: link:../../packages/github
+      '@repo/google':
+        specifier: workspace:*
+        version: link:../../packages/google
       '@repo/linear':
         specifier: workspace:*
         version: link:../../packages/linear
@@ -231,6 +234,9 @@ importers:
       '@repo/feature-flags':
         specifier: workspace:*
         version: link:../../packages/feature-flags
+      '@repo/google':
+        specifier: workspace:*
+        version: link:../../packages/google
       '@repo/linear':
         specifier: workspace:*
         version: link:../../packages/linear
