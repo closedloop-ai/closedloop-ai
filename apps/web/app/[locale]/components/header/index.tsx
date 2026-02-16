@@ -62,13 +62,13 @@ export function Header({ dictionary }: HeaderProps) {
             viewBox="0 0 235 203"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <title>Symphony</title>
+            <title>ClosedLoop.AI</title>
             <path
               d="M117.082 0L234.164 202.794H0L117.082 0Z"
               fill="currentColor"
             />
           </svg>
-          <p className="whitespace-nowrap font-semibold">Symphony</p>
+          <p className="whitespace-nowrap font-semibold">ClosedLoop.AI</p>
         </div>
         <div className="flex w-full justify-end gap-4">
           <Button asChild className="hidden md:inline" variant="ghost">

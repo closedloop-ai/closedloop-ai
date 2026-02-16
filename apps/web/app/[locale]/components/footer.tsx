@@ -28,7 +28,7 @@ export const Footer = () => {
             <div className="flex flex-col items-start gap-8">
               <div className="flex flex-col gap-2">
                 <h2 className="max-w-xl text-left font-regular text-3xl tracking-tighter md:text-5xl">
-                  Symphony
+                  ClosedLoop.AI
                 </h2>
                 <p className="max-w-lg text-left text-foreground/75 text-lg leading-relaxed tracking-tight">
                   From intent to implementation, faster.
