@@ -1857,6 +1857,35 @@ async function main() {
       log("error", redactSensitive(errorStack));
     }
 
+    // Best-effort: refresh token, safety commit, push, create PR, label
+    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+    // even on fatal errors.
+    try {
+      await refreshGitHubToken();
+    } catch (_) {
+      // ignore
+    }
+    try {
+      attemptSafetyCommit(
+        workDir,
+        "[INCOMPLETE] WIP: Safety commit — harness error"
+      );
+      ensureBranchPushed(workDir);
+    } catch (_) {
+      // ignore — attemptSafetyCommit is already best-effort internally
+    }
+
+    let prInfo = null;
+    try {
+      prInfo = parsePrInfo(workDir, output);
+      prInfo = createPullRequest(workDir, prInfo);
+      if (prInfo?.prNumber) {
+        labelPrIncomplete(workDir, prInfo.prNumber);
+      }
+    } catch (_) {
+      // ignore
+    }
+
     // Best-effort: upload whatever state we have
     try {
       await uploadState(workDir, output);
@@ -1867,9 +1896,8 @@ async function main() {
       );
     }
 
-    // Best-effort: report failure with PR info if available
+    // Best-effort: report failure with PR info
     try {
-      const prInfo = parsePrInfo(workDir, output);
       await reportEvent({
         type: "error",
         code: harnessError.code,
