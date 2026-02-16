@@ -857,7 +857,7 @@ Issue description
 **Recommendation:** How to fix
 ````
 
-**After posting**: Report how many inline comments were posted (e.g., "Posted 5 inline comments, 1 skipped due to line resolution error"). If the count is 0 and there ARE validated findings with `inline !== false`, something went wrong — re-check the findings list.
+**After posting**: Report how many inline comments were posted and how many were skipped (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff)"). Track skip reasons: `skipped_dedup` (dedup map match) and `skipped_line` (line not in diff). If `posted_count == 0` and there are validated inline findings where `posted + skipped_dedup + skipped_line` does NOT account for all of them, something went wrong — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped.
 
 Mark todo as `completed`.
 
