@@ -2,21 +2,19 @@ import Link from "next/link";
 import { env } from "@/env";
 
 export const Footer = () => {
-  const navigationItems = [
+  const navigationItems: Array<{ title: string; href: string }> = [
     {
       title: "Home",
       href: "/",
-      description: "",
     },
     {
-      title: "Pages",
-      description: "Managing a small business today is already tough.",
-      items: [] as Array<{ title: string; href: string }>,
+      title: "Contact",
+      href: "/contact",
     },
   ];
 
   if (env.NEXT_PUBLIC_DOCS_URL) {
-    navigationItems.at(1)?.items?.push({
+    navigationItems.push({
       title: "Docs",
       href: env.NEXT_PUBLIC_DOCS_URL,
     });
@@ -30,59 +28,30 @@ export const Footer = () => {
             <div className="flex flex-col items-start gap-8">
               <div className="flex flex-col gap-2">
                 <h2 className="max-w-xl text-left font-regular text-3xl tracking-tighter md:text-5xl">
-                  symphony
+                  Symphony
                 </h2>
                 <p className="max-w-lg text-left text-foreground/75 text-lg leading-relaxed tracking-tight">
-                  This is the start of something new.
+                  From intent to implementation, faster.
                 </p>
               </div>
             </div>
-            <div className="grid items-start gap-10 lg:grid-cols-3">
+            <div className="flex flex-col items-start gap-2 text-base lg:items-end">
               {navigationItems.map((item) => (
-                <div
-                  className="flex flex-col items-start gap-1 text-base"
+                <Link
+                  className="flex items-center justify-between"
+                  href={item.href}
                   key={item.title}
+                  rel={
+                    item.href.includes("http")
+                      ? "noopener noreferrer"
+                      : undefined
+                  }
+                  target={item.href.includes("http") ? "_blank" : undefined}
                 >
-                  <div className="flex flex-col gap-2">
-                    {item.href ? (
-                      <Link
-                        className="flex items-center justify-between"
-                        href={item.href}
-                        rel={
-                          item.href.includes("http")
-                            ? "noopener noreferrer"
-                            : undefined
-                        }
-                        target={
-                          item.href.includes("http") ? "_blank" : undefined
-                        }
-                      >
-                        <span className="text-xl">{item.title}</span>
-                      </Link>
-                    ) : (
-                      <p className="text-xl">{item.title}</p>
-                    )}
-                    {item.items?.map((subItem) => (
-                      <Link
-                        className="flex items-center justify-between"
-                        href={subItem.href}
-                        key={subItem.title}
-                        rel={
-                          subItem.href.includes("http")
-                            ? "noopener noreferrer"
-                            : undefined
-                        }
-                        target={
-                          subItem.href.includes("http") ? "_blank" : undefined
-                        }
-                      >
-                        <span className="text-foreground/75">
-                          {subItem.title}
-                        </span>
-                      </Link>
-                    ))}
-                  </div>
-                </div>
+                  <span className="text-foreground/75 hover:text-foreground">
+                    {item.title}
+                  </span>
+                </Link>
               ))}
             </div>
           </div>

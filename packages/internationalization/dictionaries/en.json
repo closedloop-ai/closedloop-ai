@@ -6,11 +6,6 @@
     },
     "header": {
       "home": "Home",
-      "product": {
-        "title": "Product",
-        "description": "From requirements to production-ready code in minutes.",
-        "pricing": "Pricing"
-      },
       "blog": "Blog",
       "docs": "Docs",
       "contact": "Contact",
@@ -24,9 +19,6 @@
       },
       "hero": {
         "announcement": "Introducing AI-powered architecture planning"
-      },
-      "cases": {
-        "title": "Trusted by Engineering Teams Worldwide"
       },
       "features": {
         "title": "The missing step between PRD and build",
@@ -47,73 +39,6 @@
           {
             "title": "Right-sized workflows",
             "description": "Pick a preset workflow for the work at hand. Run lean for quick fixes or add gates for higher stakes work. Human touchpoints are explicit, owned, and tracked."
-          }
-        ]
-      },
-      "stats": {
-        "title": "Faster execution, less rework",
-        "description": "Symphony reduces planning churn by turning ephemeral plans into approved artifacts. Track time-to-approval, revision count, and plan quality so velocity compounds over time.",
-        "items": [
-          {
-            "title": "PRDs processed",
-            "metric": "50000",
-            "delta": "35",
-            "type": "unit"
-          },
-          {
-            "title": "Lines of code generated",
-            "metric": "10000000",
-            "delta": "42",
-            "type": "unit"
-          },
-          {
-            "title": "Development hours saved",
-            "metric": "500000",
-            "delta": "28",
-            "type": "unit"
-          },
-          {
-            "title": "Average code quality score",
-            "metric": "95",
-            "delta": "5",
-            "type": "unit"
-          }
-        ]
-      },
-      "testimonials": {
-        "title": "Built for the handoff",
-        "items": [
-          {
-            "title": "Game-changing for our velocity",
-            "description": "We went from PRD to working prototype in hours instead of weeks. The generated code is cleaner than what some of our junior devs write, and it passes our strict code review standards.",
-            "author": {
-              "name": "Hayden Bleasel",
-              "image": "https://github.com/haydenbleasel.png"
-            }
-          },
-          {
-            "title": "Finally, AI that understands architecture",
-            "description": "This isn't just code generation—it's architectural thinking. The plans are thoughtful, the code is production-ready, and my team actually enjoys working with the output.",
-            "author": {
-              "name": "Lee Robinson",
-              "image": "https://github.com/leerob.png"
-            }
-          },
-          {
-            "title": "The code quality blew me away",
-            "description": "Type-safe, tested, documented, and following all our conventions. It's like having a senior engineer who never gets tired and always follows best practices.",
-            "author": {
-              "name": "shadcn",
-              "image": "https://github.com/shadcn.png"
-            }
-          },
-          {
-            "title": "Reduced our sprint planning by 80%",
-            "description": "We feed in the PRD and get back a complete technical plan with component breakdowns, API contracts, and even implementation estimates. Our planning meetings are now 30 minutes instead of 3 hours.",
-            "author": {
-              "name": "Pontus Abrahamsson",
-              "image": "https://github.com/pontusab.png"
-            }
           }
         ]
       },
