@@ -361,6 +361,38 @@ async function reportEvent(event) {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub token refresh (best-effort, never throws)
+// ---------------------------------------------------------------------------
+async function refreshGitHubToken() {
+  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+    return;
+  }
+  try {
+    const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/github-token`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.authToken}`,
+      },
+    });
+    if (!resp.ok) {
+      log(
+        "warn",
+        `GitHub token refresh failed (${resp.status}): ${redactSensitive(await resp.text())}`
+      );
+      return;
+    }
+    const body = await resp.json();
+    if (body.data?.token) {
+      config.githubToken = body.data.token;
+      log("info", "Refreshed GitHub token from API");
+    }
+  } catch (err) {
+    log("warn", `GitHub token refresh error: ${redactSensitive(err.message)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Context pack handling
 // ---------------------------------------------------------------------------
 async function downloadContextPack() {
@@ -1354,6 +1386,9 @@ function setupShutdownHandlers(workDir) {
       });
     }
 
+    // Refresh token before safety commit (may have expired during run)
+    await refreshGitHubToken();
+
     // Attempt safety commit before uploading state
     attemptSafetyCommit(
       workDir,
@@ -1626,6 +1661,10 @@ async function reportFinalStatus(
   output,
   { timedOut, exitCode, signal, duration, tokenUsage, startTime }
 ) {
+  // Step 0: Refresh GitHub token before safety commit (token may have expired
+  // during the 55-minute run window)
+  await refreshGitHubToken();
+
   // Step 1: Safety commit + push on ALL exit paths (matches dispatch `if: always()` pattern)
   const isIncomplete = timedOut || exitCode !== 0;
   const commitMsg = timedOut
@@ -1752,6 +1791,10 @@ async function main() {
       loopId: config.loopId,
     });
     log("info", "Reported STARTED event");
+
+    // Step 2a: Refresh GitHub token (installation tokens expire after 1h;
+    // ECS placement + S3 downloads may have consumed most of that window)
+    await refreshGitHubToken();
 
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);

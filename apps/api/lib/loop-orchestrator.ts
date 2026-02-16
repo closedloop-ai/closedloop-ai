@@ -103,7 +103,7 @@ async function resolveAnthropicApiKey(
  * Looks up the org's GitHub App installation, then creates an installation token
  * scoped to the target repository.
  */
-async function resolveGitHubToken(
+export async function resolveGitHubToken(
   organizationId: string,
   repoFullName: string
 ): Promise<string> {
