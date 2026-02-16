@@ -783,11 +783,13 @@ fi
 
 4. **Build dedup map** of remaining unresolved threads: `{file:line:category}`
 
-Mark todo as `completed`.
+Mark todo as `completed`. **Then proceed to Step 7** — posting NEW inline comments is a separate step.
 
 ---
 
 ## Step 7: Post Inline Comments
+
+**CRITICAL**: This step posts NEW findings from the review agents. It is INDEPENDENT from Step 6 (cleanup). Even if Step 6 found zero existing comments, you MUST still execute this step to post inline comments for each validated finding. Do NOT skip this step.
 
 Mark todo "Post inline comments for validated findings" as `in_progress`.
 
@@ -854,6 +856,8 @@ Issue description
 
 **Recommendation:** How to fix
 ````
+
+**After posting**: Report how many inline comments were posted (e.g., "Posted 5 inline comments, 1 skipped due to line resolution error"). If the count is 0 and there ARE validated findings with `inline !== false`, something went wrong — re-check the findings list.
 
 Mark todo as `completed`.
 
