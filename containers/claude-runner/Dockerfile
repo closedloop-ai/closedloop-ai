@@ -1,6 +1,6 @@
 # Claude Code Runner Container
 # Executes Symphony loop runs inside an isolated container environment.
-# Designed to run on ECS Fargate with IAM role credentials for S3 access.
+# Designed to run on ECS with IAM role credentials for S3 access.
 
 FROM node:20-slim
 
@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     unzip \
     tini \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install GitHub CLI
@@ -40,11 +42,17 @@ RUN claude plugin marketplace add closedloop-ai/claude_code && \
     claude plugin install experimental@closedloop && \
     claude plugin install symphony-core@closedloop
 
-# Set up working directory
-WORKDIR /workspace
-
-# Copy the harness agent
+# Copy the harness agent (must happen as root for /opt write access)
 COPY harness-agent.mjs /opt/harness/harness-agent.mjs
+
+# Create non-root user for runtime.
+# The harness, git clone, and Claude Code all run as this user.
+# System installs above require root; only the runtime switches to runner.
+RUN useradd -m -s /bin/bash runner && \
+    mkdir -p /workspace && chown runner:runner /workspace
+
+USER runner
+WORKDIR /workspace
 
 ENTRYPOINT ["tini", "--"]
 CMD ["node", "/opt/harness/harness-agent.mjs"]
