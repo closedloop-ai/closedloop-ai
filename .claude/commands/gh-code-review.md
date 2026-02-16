@@ -103,6 +103,26 @@ Parse the response and store:
 
 These will be used in Step 4 (agent prompts) and Step 5 (validation).
 
+### Write Patches to Disk (Required)
+
+Write the complete patch data to `.claude/pr-review-patches.json` so the validation step (Step 5) can reference patches without re-fetching from the API:
+
+```json
+{
+  "pr": PR_NUMBER,
+  "headSha": HEAD_SHA,
+  "patches": FILE_PATCHES,
+  "changedLines": CHANGED_LINES,
+  "statuses": FILE_STATUSES
+}
+```
+
+```bash
+# Write the JSON file (use node/python/jq to build valid JSON from the stored data)
+```
+
+This file is the single source of truth for all patch data used in subsequent steps.
+
 Mark todo as `completed`.
 
 ---
@@ -152,6 +172,33 @@ Mark todo as `completed`.
 
 Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
+### File Partitioning (Critical for Large PRs)
+
+Background agents do NOT have Bash tool access. All review data MUST be provided inline in the agent prompt.
+
+**Partition files across agents to stay within token limits:**
+
+1. **Small PRs (≤30 files)**: Include ALL file patches in each agent's prompt
+2. **Medium PRs (31-80 files)**: Partition files so each agent gets at most 30 files. Assign files based on relevance to the critic's domain (e.g., database-architect gets `prisma/`, `database/` files). Base critics (typescript-expert, dry-kiss-reviewer) get all files split across multiple agent instances if needed.
+3. **Large PRs (81+ files)**: Same as medium, but cap at 25 files per agent. Create multiple instances of base critics to cover all files (e.g., `typescript-expert-1`, `typescript-expert-2`).
+
+**Partitioning algorithm:**
+```python
+MAX_FILES_PER_AGENT = 30 if len(files) <= 80 else 25
+
+for critic in selected_critics:
+    # Domain critics: only get files matching their patterns from critic-gates.json
+    # Base critics: get ALL files, split into chunks if needed
+    if critic in base_critics:
+        chunks = split_files_into_chunks(all_files, MAX_FILES_PER_AGENT)
+        for i, chunk in enumerate(chunks):
+            spawn_agent(critic, chunk, suffix=f"-{i+1}" if len(chunks) > 1 else "")
+    else:
+        relevant_files = filter_files_by_critic_patterns(all_files, critic)
+        if relevant_files:
+            spawn_agent(critic, relevant_files[:MAX_FILES_PER_AGENT])
+```
+
 **In a SINGLE message, spawn ALL agents with `run_in_background: true`.**
 
 **Agent Prompt Template:**
@@ -159,7 +206,13 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 ```
 Review ONLY the changed code in this PR. Return findings as JSON.
 
-**FILES CHANGED IN THIS PR**:
+**TOOL RESTRICTIONS - READ CAREFULLY**:
+- You MUST NOT use the Bash tool. You do not have Bash access.
+- You MUST NOT try to run shell commands, gh api calls, or any terminal commands.
+- You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
+- All patch/diff data you need is provided below in this prompt. Do NOT try to fetch it from GitHub.
+
+**FILES ASSIGNED TO YOU FOR REVIEW** ({N} of {TOTAL} changed files):
 - {filepath_1} ({status_1})
 - {filepath_2} ({status_2})
 ...
@@ -173,16 +226,18 @@ Review ONLY the changed code in this PR. Return findings as JSON.
 ...
 
 **CRITICAL RULES - READ CAREFULLY**:
-1. Use the DIFF/PATCH CONTENT above as your primary source for reviewing code. Do NOT rely solely on reading local files (they may not exist for newly added files).
-2. ONLY flag issues on lines that were ADDED or MODIFIED in this PR (lines starting with + in the diff)
-3. Do NOT flag pre-existing issues in unchanged code - even if you see problems
-4. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
-5. Focus on: new code introduced, modifications to existing code, new patterns being added
-6. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
-7. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
-8. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
-9. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
-10. Before suggesting custom helper functions, check if utilities already exist in the codebase
+1. You MUST NOT use the Bash tool. You do not have Bash access. Do NOT attempt shell commands, gh api calls, or any terminal operations.
+2. Use the DIFF/PATCH CONTENT above as your primary source for reviewing code. Do NOT rely solely on reading local files (they may not exist for newly added files).
+3. ONLY flag issues on lines that were ADDED or MODIFIED in this PR (lines starting with + in the diff)
+4. Do NOT flag pre-existing issues in unchanged code - even if you see problems
+5. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
+6. Focus on: new code introduced, modifications to existing code, new patterns being added
+7. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
+8. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
+9. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
+10. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
+11. Before suggesting custom helper functions, use Grep/Glob (NOT Bash) to check if utilities already exist in the codebase
+12. You may use Read, Grep, and Glob tools to explore the local codebase for additional context (e.g., checking imports, type definitions, existing patterns)
 
 **SEVERITY GUIDELINES - BE STRICT**:
 - BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
@@ -242,6 +297,10 @@ Empty findings is a valid response for clean code.
 | observability-architect | symphony-fe:observability-architect |
 | analytics-integration-expert | symphony-fe:analytics-integration-expert |
 | code-reviewer | symphony-core:code-reviewer |
+
+**Agent Configuration:**
+- Use `model: "sonnet"` for all critic agents
+- Background agents do NOT have Bash access — all review data must be in the prompt or accessible via Read/Grep/Glob tools
 
 Mark todo as `completed`.
 
