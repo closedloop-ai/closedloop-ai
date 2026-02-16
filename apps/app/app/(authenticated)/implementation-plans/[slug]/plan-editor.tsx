@@ -1,10 +1,14 @@
 "use client";
 
 import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
+  type ArtifactDetail,
+  ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { useEffect, useRef, useState } from "react";
+import {
+  ExternalLinkType,
+  type PreviewDeploymentMetadata,
+} from "@repo/api/src/types/external-link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -17,12 +21,10 @@ import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
-  useArtifactPreviewDeployment,
   useArtifactPullRequest,
-  useRefreshPreviewDeployment,
 } from "@/hooks/queries/use-artifacts";
+import { useExternalLinksByWorkstream } from "@/hooks/queries/use-external-links";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { ApiError } from "@/lib/api-error";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -31,7 +33,7 @@ import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
 
 type PlanEditorProps = {
-  plan: ArtifactWithWorkstream;
+  plan: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
@@ -41,35 +43,6 @@ const PREVIEW_POLL_MAX_MS = 45 * 60_000;
 const PREVIEW_POLL_FAST_MS = 15_000;
 const PREVIEW_POLL_MEDIUM_MS = 30_000;
 const PREVIEW_POLL_SLOW_MS = 60_000;
-
-const POLL_STOP_STATUSES = new Set([401, 403, 429, 404, 422]);
-
-async function executePollRefresh(
-  refreshRef: React.MutableRefObject<() => Promise<unknown>>,
-  emptyRefreshCountRef: React.MutableRefObject<number>,
-  pollStoppedRef: React.MutableRefObject<boolean>
-) {
-  try {
-    const result = await refreshRef.current();
-    if (result) {
-      emptyRefreshCountRef.current = 0;
-    } else {
-      emptyRefreshCountRef.current += 1;
-      if (emptyRefreshCountRef.current >= 3) {
-        pollStoppedRef.current = true;
-      }
-    }
-  } catch (err) {
-    const status = err instanceof ApiError ? err.status : undefined;
-    if (status && POLL_STOP_STATUSES.has(status)) {
-      pollStoppedRef.current = true;
-    }
-    console.warn("[preview-poll] refresh failed:", {
-      status,
-      message: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 export function PlanEditor({
   plan,
@@ -109,7 +82,7 @@ export function PlanEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.ImplementationPlan,
+    artifactType: ArtifactType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -136,19 +109,49 @@ export function PlanEditor({
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = useJudgesFeedback(plan.id);
 
-  // Preview deployment polling
-  const { data: previewDeployment } = useArtifactPreviewDeployment(plan.id);
+  // Preview deployment via ExternalLink
+  const workstreamId = plan.workstreamId ?? "";
   const {
-    mutateAsync: refreshPreviewDeployment,
-    isPending: isRefreshingPreviewDeployment,
-  } = useRefreshPreviewDeployment(plan.id);
+    data: previewLinks,
+    refetch: refetchPreviewLinks,
+    isRefetching: isRefreshingPreviewDeployment,
+  } = useExternalLinksByWorkstream(
+    workstreamId,
+    ExternalLinkType.PreviewDeployment,
+    {
+      enabled: !!workstreamId,
+    }
+  );
 
+  // Parse the first preview deployment external link into PreviewDeploymentMetadata
+  const previewDeployment = useMemo(():
+    | (PreviewDeploymentMetadata & {
+        url: string | null;
+      })
+    | null => {
+    const link = previewLinks?.find(
+      (link) => link.type === ExternalLinkType.PreviewDeployment
+    );
+    if (!link) {
+      return null;
+    }
+    const meta = link.metadata as PreviewDeploymentMetadata | null;
+    return {
+      state: meta?.state ?? null,
+      environment: meta?.environment ?? null,
+      ref: meta?.ref ?? null,
+      sha: meta?.sha ?? null,
+      url: link.externalUrl || null,
+    };
+  }, [previewLinks]);
+
+  // Preview deployment polling
   const pollStartRef = useRef<number | null>(null);
   const pollStoppedRef = useRef(false);
   const emptyRefreshCountRef = useRef(0);
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const refreshRef = useRef(refreshPreviewDeployment);
-  refreshRef.current = refreshPreviewDeployment;
+  const refetchRef = useRef(refetchPreviewLinks);
+  refetchRef.current = refetchPreviewLinks;
 
   // Reset poll start when the PR changes (new execution = new deployment)
   const pullRequestNumber = pullRequest?.number;
@@ -192,6 +195,13 @@ export function PlanEditor({
       pollStartRef.current = Date.now();
     }
 
+    function trackEmptyPollResponse() {
+      emptyRefreshCountRef.current += 1;
+      if (emptyRefreshCountRef.current >= 3) {
+        pollStoppedRef.current = true;
+      }
+    }
+
     // Self-scheduling poll loop: each tick schedules the next via setTimeout
     function schedulePoll() {
       if (pollStoppedRef.current || pollStartRef.current === null) {
@@ -211,11 +221,19 @@ export function PlanEditor({
       }
 
       pollTimeoutRef.current = setTimeout(async () => {
-        await executePollRefresh(
-          refreshRef,
-          emptyRefreshCountRef,
-          pollStoppedRef
-        );
+        try {
+          const result = await refetchRef.current();
+          if (result.data?.length) {
+            emptyRefreshCountRef.current = 0;
+          } else {
+            trackEmptyPollResponse();
+          }
+        } catch (err) {
+          console.warn("[preview-poll] refetch failed:", {
+            message: err instanceof Error ? err.message : String(err),
+          });
+          trackEmptyPollResponse();
+        }
         schedulePoll();
       }, interval);
     }
@@ -320,15 +338,14 @@ export function PlanEditor({
               judgesReport={judgesReport ?? null}
               onApproverSelect={metadata.handleApproverSelect}
               onOwnerChange={metadata.handleOwnerChange}
-              onParentChange={metadata.handleParentChange}
               onPreviewRefresh={async () => {
-                const result = await refreshPreviewDeployment();
-                return result ?? null;
+                await refetchPreviewLinks();
+                return previewDeployment;
               }}
               onStatusChange={metadata.handleStatusChange}
               owner={metadata.owner}
               plan={plan}
-              previewDeployment={previewDeployment ?? null}
+              previewDeployment={previewDeployment}
               pullRequest={pullRequest ?? null}
               status={metadata.status}
               targetBranch={metadata.targetBranch}

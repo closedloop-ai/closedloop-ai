@@ -3,7 +3,7 @@
 import {
   type Artifact,
   ArtifactStatus,
-  ArtifactSubtype,
+  ArtifactType,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -36,6 +36,7 @@ import {
   type HiddenFileInputHandle,
 } from "@/components/hidden-file-input";
 import {
+  useArtifact,
   useArtifactsByProject,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
@@ -44,9 +45,9 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
-import { useOrgTemplateBySubtype } from "@/hooks/queries/use-templates";
+import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
-import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
+import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
 function PrdSelectContent({
@@ -133,7 +134,7 @@ function populateFieldsFromPrd(
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  artifactSubtype: ArtifactSubtype;
+  artifactType: ArtifactType;
   projectId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
@@ -141,7 +142,7 @@ type CreateArtifactModalProps = {
 export function CreateArtifactModal({
   open,
   onOpenChange,
-  artifactSubtype,
+  artifactType,
   projectId,
   onSuccess,
 }: CreateArtifactModalProps) {
@@ -162,13 +163,9 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
-  const typeLabel = ARTIFACT_SUBTYPE_LABELS[artifactSubtype] || artifactSubtype;
-  const isImplementationPlan =
-    artifactSubtype === ArtifactSubtype.ImplementationPlan;
-  const isDocumentArtifact =
-    artifactSubtype === ArtifactSubtype.Prd ||
-    artifactSubtype === ArtifactSubtype.Issue ||
-    artifactSubtype === ArtifactSubtype.Bug;
+  const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] ?? artifactType;
+  const isImplementationPlan = artifactType === ArtifactType.ImplementationPlan;
+  const isPrd = artifactType === ArtifactType.Prd;
 
   // GitHub integration queries
   const { data: githubStatus, isLoading: isLoadingGitHubStatus } =
@@ -190,21 +187,23 @@ export function CreateArtifactModal({
     [repositories]
   );
 
-  // Fetch template for subtypes that have templates
-  const { data: template } = useOrgTemplateBySubtype(
-    isDocumentArtifact ? artifactSubtype : "",
-    { enabled: open && isDocumentArtifact }
-  );
+  // Fetch template for PRD type (two-step: get template artifact, then fetch its content via detail)
+  const { data: template } = useOrgTemplateByType(isPrd ? artifactType : "", {
+    enabled: open && isPrd,
+  });
+  const { data: templateDetail } = useArtifact(template?.id ?? "", undefined, {
+    enabled: !!template?.id,
+  });
 
   // Fetch PRDs when modal opens for implementation plan
   const { data: artifacts = [], isLoading: loadingPrds } =
-    useArtifactsByProject(projectId, true, {
+    useArtifactsByProject(projectId, {
       enabled: open && isImplementationPlan,
     });
 
   // Filter to get only PRDs
   const prds = useMemo(
-    () => artifacts.filter((a) => a.subtype === "PRD"),
+    () => artifacts.filter((a) => a.type === "PRD"),
     [artifacts]
   );
 
@@ -259,10 +258,11 @@ export function CreateArtifactModal({
 
   // Prefill content from template when loaded (only on initial load)
   useEffect(() => {
-    if (template?.content) {
-      setContent((current) => current || (template.content ?? ""));
+    const templateContent = templateDetail?.version?.content;
+    if (templateContent) {
+      setContent((current) => current || templateContent);
     }
-  }, [template]);
+  }, [templateDetail]);
 
   // Compute branch placeholder based on state
   const getBranchPlaceholder = () => {
@@ -336,16 +336,21 @@ export function CreateArtifactModal({
     createArtifact.mutate(
       {
         projectId,
-        subtype: artifactSubtype,
+        type: artifactType,
         title: title.trim(),
         fileName: fileName.trim() || undefined,
-        content: content.trim() || undefined,
-        parentId:
-          isImplementationPlan && selectedPrdId ? selectedPrdId : undefined,
+        content: content.trim(),
         approverId: selectedApprover?.id ?? undefined,
         status,
         targetRepo: targetRepo.trim() || undefined,
         targetBranch: targetBranch.trim() || undefined,
+        ...(isImplementationPlan &&
+          selectedPrdId && {
+            sourceId: selectedPrdId,
+            sourceType: "ARTIFACT",
+            sourceVersion: prds.find((p) => p.id === selectedPrdId)
+              ?.latestVersion,
+          }),
       },
       {
         onSuccess: (artifact) => {
@@ -518,7 +523,7 @@ export function CreateArtifactModal({
             </Select>
           </div>
 
-          {isDocumentArtifact && (
+          {isPrd && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="artifact-content">

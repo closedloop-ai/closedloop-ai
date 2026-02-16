@@ -240,7 +240,7 @@ describe("useMergeNotification", () => {
           metadata: {
             prTitle: "Navigation Test",
             artifactId: "abc",
-            documentSlug: "abc",
+            slug: "abc",
           },
           actor: undefined,
         },
@@ -266,7 +266,7 @@ describe("useMergeNotification", () => {
     expect(mockRouterPush).toHaveBeenCalledWith("/implementation-plans/abc");
   });
 
-  it("falls back to project route when documentSlug is unavailable", () => {
+  it("falls back to project route when slug is unavailable", () => {
     const initialActivity: ActivityResponse = {
       activities: [],
       pagination: { page: 1, pageSize: 10, total: 0 },

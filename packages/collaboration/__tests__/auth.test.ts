@@ -30,7 +30,7 @@ vi.mock("../room-utils", () => ({
     }
     return {
       organizationId: parts[0],
-      documentSlug: parts[2],
+      slug: parts[2],
     };
   },
 }));

@@ -295,3 +295,4 @@ packages/database/generated
 .claude/.token-stats/
 .claude/work/
 .claude/symphony-loop.local.md
+plan-docs

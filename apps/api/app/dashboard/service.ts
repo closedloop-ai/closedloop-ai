@@ -1,6 +1,6 @@
 import type { DailyTrend, DashboardStats } from "@repo/api/src/types/dashboard";
 import {
-  ArtifactSubtype,
+  ArtifactType,
   GitHubActionStatus,
   GitHubPRState,
   withDb,
@@ -46,19 +46,20 @@ export const dashboardService = {
         // Aggregate counts
         withDb((db) =>
           db.artifact.count({
-            where: { organizationId, subtype: ArtifactSubtype.PRD },
+            where: { organizationId, type: ArtifactType.PRD },
           })
         ),
+        // Issues are a separate entity (Issue table)
         withDb((db) =>
-          db.artifact.count({
-            where: { organizationId, subtype: ArtifactSubtype.ISSUE },
+          db.issue.count({
+            where: { organizationId },
           })
         ),
         withDb((db) =>
           db.artifact.count({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+              type: ArtifactType.IMPLEMENTATION_PLAN,
             },
           })
         ),
@@ -87,7 +88,17 @@ export const dashboardService = {
           db.artifact.findMany({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.PRD,
+              type: ArtifactType.PRD,
+              createdAt: { gte: fourteenDaysAgo },
+            },
+            select: { createdAt: true },
+          })
+        ),
+        // Issues trend from separate Issue table
+        withDb((db) =>
+          db.issue.findMany({
+            where: {
+              organizationId,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
@@ -97,17 +108,7 @@ export const dashboardService = {
           db.artifact.findMany({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.ISSUE,
-              createdAt: { gte: fourteenDaysAgo },
-            },
-            select: { createdAt: true },
-          })
-        ),
-        withDb((db) =>
-          db.artifact.findMany({
-            where: {
-              organizationId,
-              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+              type: ArtifactType.IMPLEMENTATION_PLAN,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },

@@ -1,4 +1,4 @@
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   cleanup,
   fireEvent,
@@ -12,18 +12,20 @@ import { CreateArtifactModal } from "../create-artifact-modal";
 
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
+const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseOrganizationUsers = vi.fn();
 const mockUseGitHubIntegrationStatus = vi.fn();
 const mockUseGitHubRepositories = vi.fn();
 const mockUseGitHubBranches = vi.fn();
-const mockUseOrgTemplateBySubtype = vi.fn();
+const mockUseOrgTemplateByType = vi.fn();
 
 vi.mock("@/hooks/queries/use-artifacts", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-artifacts");
   return {
     ...actual,
     useCreateArtifact: () => mockUseCreateArtifact(),
+    useArtifact: (...args: unknown[]) => mockUseArtifact(...args),
     useArtifactsByProject: (...args: unknown[]) =>
       mockUseArtifactsByProject(...args),
   };
@@ -42,8 +44,8 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
 }));
 
 vi.mock("@/hooks/queries/use-templates", () => ({
-  useOrgTemplateBySubtype: (subtype: string, options?: unknown) =>
-    mockUseOrgTemplateBySubtype(subtype, options),
+  useOrgTemplateByType: (type: string, options?: unknown) =>
+    mockUseOrgTemplateByType(type, options),
 }));
 
 // Regex constants for testing
@@ -57,7 +59,7 @@ const TARGET_REPOSITORY_REGEX = /target repository/i;
 const TARGET_BRANCH_REGEX = /target branch/i;
 const _STATUS_REGEX = /^status$/i;
 const CANCEL_REGEX = /cancel/i;
-const CREATE_IMPL_PLAN_REGEX = /create impl plan/i;
+const CREATE_IMPL_PLAN_REGEX = /create implementation plan/i;
 const CREATE_PRD_REGEX = /create prd/i;
 const PASTE_MARKDOWN_CONTENT_REGEX = /paste markdown content here/i;
 const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
@@ -76,6 +78,11 @@ describe("CreateArtifactModal", () => {
     mockUseCreateArtifact.mockReturnValue({
       mutate: mockMutate,
       isPending: false,
+    });
+
+    mockUseArtifact.mockReturnValue({
+      data: null,
+      isLoading: false,
     });
 
     mockUseArtifactsByProject.mockReturnValue({
@@ -103,7 +110,7 @@ describe("CreateArtifactModal", () => {
       isLoading: false,
     });
 
-    mockUseOrgTemplateBySubtype.mockReturnValue({
+    mockUseOrgTemplateByType.mockReturnValue({
       data: null,
       isLoading: false,
     });
@@ -117,7 +124,7 @@ describe("CreateArtifactModal", () => {
     it("should render PRD selector with 'optional' label for implementation plans", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -135,7 +142,7 @@ describe("CreateArtifactModal", () => {
           createMockArtifact({
             id: "prd-1",
             title: "Test PRD",
-            subtype: "PRD",
+            type: "PRD",
           }),
         ],
         isLoading: false,
@@ -143,7 +150,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -165,18 +172,18 @@ describe("CreateArtifactModal", () => {
       });
     });
 
-    it("should submit without parentId when no PRD is selected", async () => {
+    it("should submit without sourceId when no PRD is selected", async () => {
       mockMutate.mockImplementation((input, options) => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          documentSlug: "standalone-plan",
+          slug: "standalone-plan",
         });
       });
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           onSuccess={mockOnSuccess}
           open={true}
@@ -198,23 +205,23 @@ describe("CreateArtifactModal", () => {
         expect(mockMutate).toHaveBeenCalled();
       });
 
-      // Verify mutation input does NOT include parentId
+      // Verify mutation input does NOT include sourceId
       const mutationInput = mockMutate.mock.calls[0][0];
       expect(mutationInput).toMatchObject({
         projectId: "project-1",
-        subtype: ArtifactSubtype.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         title: "Standalone Plan",
         status: "DRAFT",
       });
-      expect(mutationInput.parentId).toBeUndefined();
+      expect(mutationInput.sourceId).toBeUndefined();
     });
 
-    it("should include parentId when PRD is selected", async () => {
+    it("should include sourceId when PRD is selected", async () => {
       const mockPrds = [
         createMockArtifact({
           id: "prd-1",
           title: "Test PRD",
-          subtype: "PRD",
+          type: "PRD",
           targetRepo: "org/repo",
           targetBranch: "main",
         }),
@@ -229,13 +236,13 @@ describe("CreateArtifactModal", () => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          documentSlug: "plan-from-prd",
+          slug: "plan-from-prd",
         });
       });
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -265,13 +272,13 @@ describe("CreateArtifactModal", () => {
         expect(mockMutate).toHaveBeenCalled();
       });
 
-      // Verify mutation input INCLUDES parentId
+      // Verify mutation input INCLUDES sourceId
       const mutationInput = mockMutate.mock.calls[0][0];
       expect(mutationInput).toMatchObject({
         projectId: "project-1",
-        subtype: ArtifactSubtype.ImplementationPlan,
+        type: ArtifactType.ImplementationPlan,
         title: "Plan from PRD",
-        parentId: "prd-1",
+        sourceId: "prd-1",
       });
     });
 
@@ -280,7 +287,7 @@ describe("CreateArtifactModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Test PRD",
-          subtype: "PRD",
+          type: "PRD",
           targetRepo: "org/repo",
           targetBranch: "develop",
           status: "APPROVED",
@@ -307,7 +314,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -325,7 +332,6 @@ describe("CreateArtifactModal", () => {
 
       // Verify status is pre-populated from PRD
       await waitFor(() => {
-        // Status select should show "Approved" (the fourth combobox: PRD, Title, Approver, Repo, Branch, Status)
         const comboboxes = screen.getAllByRole("combobox");
         const statusCombobox = comboboxes.find((cb) =>
           cb.textContent?.includes("Approved")
@@ -339,7 +345,7 @@ describe("CreateArtifactModal", () => {
     it("should not show PRD selector for PRD artifacts", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.Prd}
+          artifactType={ArtifactType.Prd}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -352,7 +358,7 @@ describe("CreateArtifactModal", () => {
     it("should show content textarea for PRD artifacts", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.Prd}
+          artifactType={ArtifactType.Prd}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -368,14 +374,13 @@ describe("CreateArtifactModal", () => {
     it("should render correct modal title for PRD", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.Prd}
+          artifactType={ArtifactType.Prd}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Use getByRole to specifically target the dialog title
       const dialog = screen.getByRole("dialog");
       expect(dialog).toHaveTextContent("Create PRD");
     });
@@ -383,7 +388,7 @@ describe("CreateArtifactModal", () => {
     it("should render correct submit button text for PRD", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.Prd}
+          artifactType={ArtifactType.Prd}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -401,7 +406,7 @@ describe("CreateArtifactModal", () => {
     it("should require title field", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -411,7 +416,6 @@ describe("CreateArtifactModal", () => {
       const titleLabel = screen.getByText(TITLE_REGEX);
       expect(titleLabel.textContent).toMatch(REQUIRED_REGEX);
 
-      // Submit button should be disabled when title is empty
       const submitButton = screen.getByRole("button", {
         name: CREATE_IMPL_PLAN_REGEX,
       });
@@ -421,18 +425,16 @@ describe("CreateArtifactModal", () => {
     it("should enable submit button when title is filled", async () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Fill in title
       const titleInput = screen.getByLabelText(TITLE_REGEX);
       fireEvent.change(titleInput, { target: { value: "My Plan" } });
 
-      // Submit button should be enabled
       await waitFor(() => {
         const submitButton = screen.getByRole("button", {
           name: CREATE_IMPL_PLAN_REGEX,
@@ -444,25 +446,22 @@ describe("CreateArtifactModal", () => {
     it("should auto-generate filename from title", async () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Enter title with special characters and spaces
       const titleInput = screen.getByLabelText(TITLE_REGEX);
       fireEvent.change(titleInput, {
         target: { value: "My Dashboard Plan! @#$ 2024" },
       });
 
-      // Verify filename is auto-generated with sanitization
       await waitFor(() => {
         const fileNameInput = screen.getByLabelText(
           FILE_NAME_REGEX
         ) as HTMLInputElement;
-        // Special characters are removed, then spaces become dashes
         expect(fileNameInput.value).toBe("my-dashboard-plan-2024.md");
       });
     });
@@ -470,7 +469,7 @@ describe("CreateArtifactModal", () => {
     it("should allow manual filename editing", async () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -490,7 +489,6 @@ describe("CreateArtifactModal", () => {
     });
 
     it("should render all form fields for implementation plan", () => {
-      // Enable GitHub to ensure repository and branch selects render
       mockUseGitHubIntegrationStatus.mockReturnValue({
         data: { connected: true },
         isLoading: false,
@@ -498,14 +496,13 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Fields with proper form associations
       expect(screen.getByLabelText(SOURCE_PRD_REGEX)).toBeInTheDocument();
       expect(screen.getByLabelText(TITLE_REGEX)).toBeInTheDocument();
       expect(screen.getByLabelText(FILE_NAME_REGEX)).toBeInTheDocument();
@@ -514,7 +511,6 @@ describe("CreateArtifactModal", () => {
       ).toBeInTheDocument();
       expect(screen.getByLabelText(TARGET_BRANCH_REGEX)).toBeInTheDocument();
 
-      // Fields without proper form associations - check by label text
       expect(screen.getByText("Approver")).toBeInTheDocument();
       expect(screen.getByText("Status")).toBeInTheDocument();
     });
@@ -529,7 +525,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -555,7 +551,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -592,14 +588,13 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Select repository
       const repoSelector = screen.getByRole("combobox", {
         name: TARGET_REPOSITORY_REGEX,
       });
@@ -610,7 +605,6 @@ describe("CreateArtifactModal", () => {
         repoOption.click();
       });
 
-      // Verify branches are loaded - useGitHubBranches should have been called
       await waitFor(() => {
         expect(mockUseGitHubBranches).toHaveBeenCalledWith(
           "repo-1",
@@ -627,7 +621,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -645,7 +639,7 @@ describe("CreateArtifactModal", () => {
     it("should call onOpenChange when cancel is clicked", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -662,7 +656,7 @@ describe("CreateArtifactModal", () => {
       const mockArtifact = {
         id: "new-artifact-123",
         title: "Test Artifact",
-        documentSlug: "test-artifact",
+        slug: "test-artifact",
       };
 
       mockMutate.mockImplementation((_input, options) => {
@@ -671,7 +665,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           onSuccess={mockOnSuccess}
           open={true}
@@ -679,11 +673,9 @@ describe("CreateArtifactModal", () => {
         />
       );
 
-      // Fill in title
       const titleInput = screen.getByLabelText(TITLE_REGEX);
       fireEvent.change(titleInput, { target: { value: "Test Artifact" } });
 
-      // Submit
       const submitButton = screen.getByRole("button", {
         name: CREATE_IMPL_PLAN_REGEX,
       });
@@ -698,26 +690,23 @@ describe("CreateArtifactModal", () => {
     it("should reset form when modal is closed", async () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
         />
       );
 
-      // Fill in some fields
       const titleInput = screen.getByLabelText(TITLE_REGEX);
       fireEvent.change(titleInput, { target: { value: "Test Title" } });
 
-      // Close modal
       const cancelButton = screen.getByRole("button", { name: CANCEL_REGEX });
       cancelButton.click();
 
-      // Reopen modal - form should be reset
       cleanup();
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={vi.fn()}
           open={true}
           projectId="project-1"
@@ -740,7 +729,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -755,7 +744,7 @@ describe("CreateArtifactModal", () => {
     it("should fetch PRDs when modal opens for implementation plan", () => {
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -764,7 +753,6 @@ describe("CreateArtifactModal", () => {
 
       expect(mockUseArtifactsByProject).toHaveBeenCalledWith(
         "project-1",
-        true,
         expect.objectContaining({ enabled: true })
       );
     });
@@ -774,7 +762,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.Prd}
+          artifactType={ArtifactType.Prd}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -783,7 +771,6 @@ describe("CreateArtifactModal", () => {
 
       expect(mockUseArtifactsByProject).toHaveBeenCalledWith(
         "project-1",
-        true,
         expect.objectContaining({ enabled: false })
       );
     });
@@ -796,7 +783,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -806,7 +793,6 @@ describe("CreateArtifactModal", () => {
       const prdSelector = screen.getByLabelText(SOURCE_PRD_REGEX);
       prdSelector.click();
 
-      // Should show loading spinner inside the dropdown (lucide LoaderIcon with animate-spin class)
       await waitFor(() => {
         const loadingIcon = document.querySelector(".animate-spin");
         expect(loadingIcon).toBeInTheDocument();
@@ -821,7 +807,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -838,13 +824,13 @@ describe("CreateArtifactModal", () => {
 
     it("should filter artifacts to show only PRDs", async () => {
       const mockArtifacts = [
-        createMockArtifact({ id: "prd-1", title: "PRD 1", subtype: "PRD" }),
+        createMockArtifact({ id: "prd-1", title: "PRD 1", type: "PRD" }),
         createMockArtifact({
           id: "plan-1",
           title: "Plan 1",
-          subtype: "IMPLEMENTATION_PLAN",
+          type: "IMPLEMENTATION_PLAN",
         }),
-        createMockArtifact({ id: "prd-2", title: "PRD 2", subtype: "PRD" }),
+        createMockArtifact({ id: "prd-2", title: "PRD 2", type: "PRD" }),
       ];
 
       mockUseArtifactsByProject.mockReturnValue({
@@ -854,7 +840,7 @@ describe("CreateArtifactModal", () => {
 
       render(
         <CreateArtifactModal
-          artifactSubtype={ArtifactSubtype.ImplementationPlan}
+          artifactType={ArtifactType.ImplementationPlan}
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
@@ -864,7 +850,6 @@ describe("CreateArtifactModal", () => {
       const prdSelector = screen.getByLabelText(SOURCE_PRD_REGEX);
       prdSelector.click();
 
-      // Should only show PRDs, not the implementation plan
       await waitFor(() => {
         expect(screen.getByText("PRD 1")).toBeInTheDocument();
         expect(screen.getByText("PRD 2")).toBeInTheDocument();

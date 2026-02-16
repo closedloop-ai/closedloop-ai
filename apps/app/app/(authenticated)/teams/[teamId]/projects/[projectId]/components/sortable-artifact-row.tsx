@@ -2,13 +2,13 @@
 
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { TableRow } from "@repo/design-system/components/ui/table";
 import { GripVertical } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ProjectArtifact } from "@/types/teams";
 
 type SortableArtifactRowProps = {
-  artifact: ProjectArtifact;
+  artifact: ArtifactWithWorkstream;
   children: ReactNode;
   onClick?: () => void;
   className?: string;

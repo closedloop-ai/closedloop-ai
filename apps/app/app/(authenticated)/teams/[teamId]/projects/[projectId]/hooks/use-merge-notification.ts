@@ -40,15 +40,15 @@ export function useMergeNotification(
       ) {
         seenEventIds.current.add(activity.id);
 
-        const { prTitle, documentSlug } = activity.metadata as {
+        const { prTitle, slug } = activity.metadata as {
           prTitle?: string;
-          documentSlug?: string;
+          slug?: string;
         };
 
-        // Build route to implementation plan if we have documentSlug
+        // Build route to implementation plan if we have slug
         const fallbackRoute = `/teams/${teamId}/projects/${projectId}`;
-        const artifactRoute = documentSlug
-          ? `/implementation-plans/${documentSlug}`
+        const artifactRoute = slug
+          ? `/implementation-plans/${slug}`
           : fallbackRoute;
 
         toast.success(prTitle || "Pull request merged", {

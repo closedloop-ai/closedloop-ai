@@ -6,6 +6,7 @@ import type {
 } from "@repo/api/src/types/organization";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
+import { basicUserSelect } from "@/lib/db-utils";
 
 /**
  * Projects service - handles database operations for project management
@@ -175,14 +176,7 @@ export const projectsService = {
  * Standard include pattern for project queries with owner, teams, and artifacts
  */
 const PROJECT_DETAIL_INCLUDE = {
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
+  owner: basicUserSelect,
   teams: {
     include: {
       team: {
@@ -194,7 +188,6 @@ const PROJECT_DETAIL_INCLUDE = {
     },
   },
   artifacts: {
-    where: { isLatest: true },
     select: { status: true },
   },
 } as const;

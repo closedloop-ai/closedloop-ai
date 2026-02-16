@@ -1,13 +1,12 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import {
-  ArtifactStatus,
-  ArtifactSubtype,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
-import { getArtifactUrl } from "@repo/aws";
+  ExternalLinkType,
+  type PreviewDeploymentMetadata,
+} from "@repo/api/src/types/external-link";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import type { WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import type { ExecutionResult } from "../zip-parser";
@@ -21,7 +20,7 @@ type PrEventMetadata = {
   prTitle: string;
   prUrl: string;
   artifactId: string;
-  documentSlug?: string;
+  slug?: string;
   branch: string;
   prNumber: number;
   correlationId: string;
@@ -29,7 +28,8 @@ type PrEventMetadata = {
 };
 
 /**
- * Handle successful execution workflow - creates a PR record if changes were made.
+ * Handle successful execution workflow - creates a PR record and
+ * ExternalLink/EntityLink entries if changes were made.
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
@@ -103,7 +103,7 @@ export async function handleExecutionSuccess(
         organizationId: true,
         projectId: true,
         generatedBy: true,
-        documentSlug: true,
+        slug: true,
       },
     });
 
@@ -129,40 +129,67 @@ export async function handleExecutionSuccess(
       },
     });
 
-    // Create Artifact record for the PR
-    await tx.artifact.create({
+    // Create ExternalLink for the PR
+    const prLink = await tx.externalLink.create({
       data: {
         organizationId: planArtifact.organizationId,
         workstreamId,
         projectId: planArtifact.projectId,
-        type: ArtifactType.Branch,
-        subtype: ArtifactSubtype.PullRequest,
+        type: ExternalLinkType.PullRequest,
         title: prTitle,
         externalUrl: executionResult.pr_url,
-        status: ArtifactStatus.Review,
-        generatedBy: planArtifact.generatedBy,
+        metadata: {
+          number: prNumber,
+          githubId: executionResult.github_id ?? prNumber,
+          headBranch: executionResult.branch_name,
+          baseBranch,
+          state: "OPEN",
+        },
       },
     });
 
-    // Create preview deployment record for the branch.
-    // Don't set updatedAt here — let the polling refresh set it from GitHub
-    // once an actual deployment exists.
-    if (ctx.artifactId) {
-      await tx.previewDeployment.upsert({
-        where: { artifactId: ctx.artifactId },
-        create: {
-          artifactId: ctx.artifactId,
-          ref: executionResult.branch_name,
-          sha: executionResult.commit_sha ?? null,
-          environment: "preview",
-        },
-        update: {
-          ref: executionResult.branch_name,
-          sha: executionResult.commit_sha ?? null,
-          environment: "preview",
-        },
-      });
-    }
+    // Create EntityLink: plan artifact → PRODUCES → PR external link
+    await tx.entityLink.create({
+      data: {
+        sourceId: ctx.artifactId,
+        sourceType: "ARTIFACT",
+        targetId: prLink.id,
+        targetType: "EXTERNAL_LINK",
+        linkType: "PRODUCES",
+      },
+    });
+
+    // Create skeleton ExternalLink for preview deployment
+    // This will be updated with the actual preview deployment information later
+    const metadata: PreviewDeploymentMetadata = {
+      ref: executionResult.branch_name,
+      sha: executionResult.commit_sha ?? null,
+      environment: "preview",
+      state: null,
+    };
+
+    const previewLink = await tx.externalLink.create({
+      data: {
+        organizationId: planArtifact.organizationId,
+        workstreamId,
+        projectId: planArtifact.projectId,
+        type: ExternalLinkType.PreviewDeployment,
+        title: `Preview: ${executionResult.branch_name}`,
+        externalUrl: "",
+        metadata,
+      },
+    });
+
+    // Create EntityLink: PR → PRODUCES → preview deployment
+    await tx.entityLink.create({
+      data: {
+        sourceId: prLink.id,
+        sourceType: "EXTERNAL_LINK",
+        targetId: previewLink.id,
+        targetType: "EXTERNAL_LINK",
+        linkType: "PRODUCES",
+      },
+    });
 
     // Create workstream event
     await tx.workstreamEvent.create({
@@ -178,7 +205,7 @@ export async function handleExecutionSuccess(
           branch: executionResult.branch_name,
           runId,
           artifactId: ctx.artifactId,
-          documentSlug: planArtifact.documentSlug,
+          slug: planArtifact.slug,
         } as PrEventMetadata,
       },
     });
@@ -255,7 +282,7 @@ export async function handleWorkflowSuccess(
 
     const existingArtifact = await db.artifact.findUnique({
       where: { id: artifactId, organizationId: workstream.organizationId },
-      select: { id: true, content: true, organizationId: true },
+      select: { id: true, organizationId: true, latestVersion: true },
     });
 
     if (!existingArtifact) {
@@ -266,9 +293,17 @@ export async function handleWorkflowSuccess(
 
     log.info("[handleWorkflowSuccess] Found existing artifact", {
       artifactId,
-      hasExistingContent: !!existingArtifact.content,
-      existingContentLength: existingArtifact.content?.length ?? 0,
+      latestVersion: existingArtifact.latestVersion,
     });
+
+    // Store content via ArtifactVersion instead of directly on Artifact
+    if (finalContent) {
+      await artifactVersionService.createVersion(
+        artifactId,
+        null,
+        finalContent
+      );
+    }
 
     await db.artifact.update({
       where: {
@@ -277,11 +312,6 @@ export async function handleWorkflowSuccess(
       },
       data: {
         status: "DRAFT",
-        content: finalContent || undefined,
-        externalUrl:
-          artifactKeys.length > 0
-            ? getArtifactUrl(`plans/${correlationId}/`)
-            : undefined,
       },
     });
 

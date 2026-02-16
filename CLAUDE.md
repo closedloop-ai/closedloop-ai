@@ -268,6 +268,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: Biome's import order rules in this monorepo require `@repo/*` package imports before `@/*` path alias imports. Run `pnpm lint:fix` to auto-fix after adding shared package imports. (context: biome|import-order|lint|monorepo)
 - **[convention]**: To lint a single file with Biome, use `npx biome check <file>` directly. The monorepo's `pnpm lint -- --filter=<file>` does not support single-file targeting. (context: biome|linting|cli|single-file)
 - **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
+- **[mistake]**: Do not mark service methods as `async` if they only `return withDb(...)` or `return withDb.tx(...)` without any `await` in the function body. Biome's `useAwait` rule flags `async` functions that lack `await` expressions. Only use `async` when the function body itself needs to `await` something before returning. (context: biome|useAwait|async|service-layer|withDb)
 - **[pattern]**: When importing multiple named exports in Next.js App Router routes, Biome requires alphabetical order: constants/types first (UPPERCASE), then functions (camelCase). Run pnpm lint:fix to auto-fix import ordering. (context: biome|import-order|next.js|api-routes)
 
 ### OAuth Integrations

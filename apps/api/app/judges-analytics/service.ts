@@ -1,10 +1,10 @@
-import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import type { CaseScore, JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
   ArtifactCountsResponse,
-  ArtifactSubtypeGroup,
+  ArtifactTypeGroup,
   JudgeAggregateStats,
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
@@ -32,24 +32,24 @@ function extractJudgeMetric(
   return judgeMetric ? { name: judgeName, score: judgeMetric.score } : null;
 }
 
-/** Aggregates judge scores by artifact subtype and judge name. */
+/** Aggregates judge scores by artifact type and judge name. */
 class JudgeScoreAggregator {
   private readonly data = new Map<
-    ArtifactSubtype,
+    ArtifactType,
     Map<string, { scores: number[]; artifactIds: Set<string> }>
   >();
 
   addScore(
-    artifactSubtype: ArtifactSubtype,
+    artifactType: ArtifactType,
     judgeName: string,
     score: number,
     artifactId: string
   ): void {
-    if (!this.data.has(artifactSubtype)) {
-      this.data.set(artifactSubtype, new Map());
+    if (!this.data.has(artifactType)) {
+      this.data.set(artifactType, new Map());
     }
 
-    const judgeMap = this.data.get(artifactSubtype)!;
+    const judgeMap = this.data.get(artifactType)!;
     if (!judgeMap.has(judgeName)) {
       judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
     }
@@ -60,7 +60,7 @@ class JudgeScoreAggregator {
   }
 
   getResults(): Map<
-    ArtifactSubtype,
+    ArtifactType,
     Map<string, { scores: number[]; artifactIds: Set<string> }>
   > {
     return this.data;
@@ -69,20 +69,20 @@ class JudgeScoreAggregator {
 
 export type EvaluationInput = {
   artifactId: string;
-  artifact: { subtype: ArtifactSubtype };
+  artifact: { type: ArtifactType };
   reportData: unknown;
 };
 
 /**
- * Extracts judge scores from evaluation reportData and aggregates them by artifact subtype and judge name.
+ * Extracts judge scores from evaluation reportData and aggregates them by artifact type and judge name.
  *
- * @param evaluations - Array of artifact evaluations with their artifact subtype
- * @returns Nested map structure: artifactSubtype -> judgeName -> { scores, artifactIds }
+ * @param evaluations - Array of artifact evaluations with their artifact type
+ * @returns Nested map structure: artifactType -> judgeName -> { scores, artifactIds }
  */
 export function extractJudgeScores(
   evaluations: EvaluationInput[]
 ): Map<
-  ArtifactSubtype,
+  ArtifactType,
   Map<string, { scores: number[]; artifactIds: Set<string> }>
 > {
   const aggregator = new JudgeScoreAggregator();
@@ -100,7 +100,7 @@ export function extractJudgeScores(
       }
 
       aggregator.addScore(
-        evaluation.artifact.subtype,
+        evaluation.artifact.type,
         metric.name,
         metric.score,
         evaluation.artifactId
@@ -134,47 +134,47 @@ function getISOWeekStartDate(date: Date): Date {
 }
 
 /**
- * Fetches human ratings and comments counts per artifact subtype (same org and date range).
- * Returns maps with 0 for each subtype when there are no artifacts or no feedback.
+ * Fetches human ratings and comments counts per artifact type (same org and date range).
+ * Returns maps with 0 for each type when there are no artifacts or no feedback.
  *
  * @internal Exported for unit testing.
  */
-export async function getHumanCountsBySubtype(
+export async function getHumanCountsByType(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  subtypes: ArtifactSubtype[]
+  types: ArtifactType[]
 ): Promise<{
-  humanRatingsBySubtype: Map<ArtifactSubtype, number>;
-  humanCommentsBySubtype: Map<ArtifactSubtype, number>;
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
 }> {
-  const humanRatingsBySubtype = new Map<ArtifactSubtype, number>();
-  const humanCommentsBySubtype = new Map<ArtifactSubtype, number>();
+  const humanRatingsByType = new Map<ArtifactType, number>();
+  const humanCommentsByType = new Map<ArtifactType, number>();
 
-  for (const subtype of subtypes) {
-    humanRatingsBySubtype.set(subtype, 0);
-    humanCommentsBySubtype.set(subtype, 0);
+  for (const type of types) {
+    humanRatingsByType.set(type, 0);
+    humanCommentsByType.set(type, 0);
   }
 
-  if (subtypes.length === 0) {
-    return { humanRatingsBySubtype, humanCommentsBySubtype };
+  if (types.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
   }
 
   const artifacts = await withDb((db) =>
     db.artifact.findMany({
       where: {
         organizationId,
-        subtype: { in: subtypes },
+        type: { in: types },
       },
-      select: { id: true, subtype: true },
+      select: { id: true, type: true },
     })
   );
 
-  const idToSubtype = new Map(artifacts.map((a) => [a.id, a.subtype] as const));
+  const idToType = new Map(artifacts.map((a) => [a.id, a.type] as const));
   const orgArtifactIds = artifacts.map((a) => a.id);
 
   if (orgArtifactIds.length === 0) {
-    return { humanRatingsBySubtype, humanCommentsBySubtype };
+    return { humanRatingsByType, humanCommentsByType };
   }
 
   const ratings = await withDb((db) =>
@@ -188,22 +188,16 @@ export async function getHumanCountsBySubtype(
   );
 
   for (const r of ratings) {
-    const subtype = idToSubtype.get(r.artifactId);
-    if (subtype !== undefined) {
-      humanRatingsBySubtype.set(
-        subtype,
-        (humanRatingsBySubtype.get(subtype) ?? 0) + 1
-      );
+    const type = idToType.get(r.artifactId);
+    if (type !== undefined) {
+      humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
       if (r.comment != null && r.comment.trim() !== "") {
-        humanCommentsBySubtype.set(
-          subtype,
-          (humanCommentsBySubtype.get(subtype) ?? 0) + 1
-        );
+        humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
       }
     }
   }
 
-  return { humanRatingsBySubtype, humanCommentsBySubtype };
+  return { humanRatingsByType, humanCommentsByType };
 }
 
 /**
@@ -211,7 +205,7 @@ export async function getHumanCountsBySubtype(
  *
  * Queries ArtifactEvaluation records within a date range, extracts judge scores
  * from the reportData JSON, and computes aggregate statistics (min, mean, max, stdDev)
- * grouped by artifact subtype and judge name.
+ * grouped by artifact type and judge name.
  */
 export const judgesAnalyticsService = {
   /**
@@ -220,14 +214,14 @@ export const judgesAnalyticsService = {
    * @param organizationId - Organization ID to scope the query
    * @param startDate - Start date (inclusive)
    * @param endDate - End date (inclusive)
-   * @returns Aggregate statistics grouped by artifact subtype and judge name
+   * @returns Aggregate statistics grouped by artifact type and judge name
    */
   async getAggregateStats(
     organizationId: string,
     startDate: Date,
     endDate: Date
   ): Promise<JudgeStatsResponse> {
-    // Query ArtifactEvaluation records with artifact subtype, filtered by date range and organization
+    // Query ArtifactEvaluation records with artifact type, filtered by date range and organization
     const evaluations = await withDb((db) =>
       db.artifactEvaluation.findMany({
         where: {
@@ -242,7 +236,7 @@ export const judgesAnalyticsService = {
         select: {
           artifactId: true,
           reportData: true,
-          artifact: { select: { subtype: true } },
+          artifact: { select: { type: true } },
         },
         orderBy: {
           createdAt: "desc",
@@ -253,19 +247,14 @@ export const judgesAnalyticsService = {
     // Extract scores from reportData JSON using the "metric_name === case_id" rule
     const aggregator = extractJudgeScores(evaluations);
 
-    const subtypes = Array.from(aggregator.keys());
-    const { humanRatingsBySubtype, humanCommentsBySubtype } =
-      await getHumanCountsBySubtype(
-        organizationId,
-        startDate,
-        endDate,
-        subtypes
-      );
+    const types = Array.from(aggregator.keys());
+    const { humanRatingsByType, humanCommentsByType } =
+      await getHumanCountsByType(organizationId, startDate, endDate, types);
 
-    // Compute statistics for each judge within each artifact subtype
-    const groups: ArtifactSubtypeGroup[] = [];
+    // Compute statistics for each judge within each artifact type
+    const groups: ArtifactTypeGroup[] = [];
 
-    for (const [artifactSubtype, judgeMap] of aggregator) {
+    for (const [artifactType, judgeMap] of aggregator) {
       const judges: JudgeAggregateStats[] = [];
 
       for (const [judgeName, judgeData] of judgeMap) {
@@ -301,10 +290,10 @@ export const judgesAnalyticsService = {
       judges.sort((a, b) => b.mean - a.mean);
 
       groups.push({
-        artifactSubtype,
+        artifactType,
         judges,
-        humanRatingsCount: humanRatingsBySubtype.get(artifactSubtype) ?? 0,
-        humanCommentsCount: humanCommentsBySubtype.get(artifactSubtype) ?? 0,
+        humanRatingsCount: humanRatingsByType.get(artifactType) ?? 0,
+        humanCommentsCount: humanCommentsByType.get(artifactType) ?? 0,
       });
     }
 
@@ -312,14 +301,14 @@ export const judgesAnalyticsService = {
   },
 
   /**
-   * Get artifact creation counts grouped by time bucket and artifact subtype.
+   * Get artifact creation counts grouped by time bucket and artifact type.
    * Uses findMany + in-memory grouping so it works with any Prisma schema/adapter.
    *
    * @param organizationId - Organization ID to scope the query
    * @param startDate - Start date (inclusive)
    * @param endDate - End date (inclusive)
    * @param groupBy - Time bucket: "day", "week", or "month"
-   * @returns Buckets with ISO date string (start of period) and countsBySubtype
+   * @returns Buckets with ISO date string (start of period) and countsByType
    */
   async getArtifactCounts(
     organizationId: string,
@@ -333,7 +322,7 @@ export const judgesAnalyticsService = {
           organizationId,
           createdAt: { gte: startDate, lte: endDate },
         },
-        select: { createdAt: true, subtype: true },
+        select: { createdAt: true, type: true },
       })
     );
 
@@ -361,27 +350,27 @@ export const judgesAnalyticsService = {
       }
     };
 
-    const bucketSubtypeCounts = new Map<string, Map<string, number>>();
-    for (const { createdAt, subtype } of artifacts) {
+    const bucketTypeCounts = new Map<string, Map<string, number>>();
+    for (const { createdAt, type } of artifacts) {
       const key = bucketKey(createdAt);
-      if (!bucketSubtypeCounts.has(key)) {
-        bucketSubtypeCounts.set(key, new Map());
+      if (!bucketTypeCounts.has(key)) {
+        bucketTypeCounts.set(key, new Map());
       }
-      const subtypeMap = bucketSubtypeCounts.get(key)!;
-      const subtypeStr = subtype;
-      subtypeMap.set(subtypeStr, (subtypeMap.get(subtypeStr) ?? 0) + 1);
+      const typeMap = bucketTypeCounts.get(key)!;
+      const typeStr = type;
+      typeMap.set(typeStr, (typeMap.get(typeStr) ?? 0) + 1);
     }
 
-    const buckets: ArtifactCountBucket[] = [...bucketSubtypeCounts.entries()]
+    const buckets: ArtifactCountBucket[] = [...bucketTypeCounts.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([bucket, subtypeMap]) => {
-        const countsBySubtype: Record<string, number> = {};
-        for (const [subtype, count] of subtypeMap) {
+      .map(([bucket, typeMap]) => {
+        const countsByType: Record<string, number> = {};
+        for (const [type, count] of typeMap) {
           if (count > 0) {
-            countsBySubtype[subtype] = count;
+            countsByType[type] = count;
           }
         }
-        return { bucket, countsBySubtype };
+        return { bucket, countsByType };
       });
     return { buckets };
   },

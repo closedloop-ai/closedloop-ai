@@ -11,7 +11,7 @@ import { NewPlanModal } from "../new-plan-modal";
 
 // Mock the hooks
 const mockUseRouter = vi.fn();
-const mockUseArtifactsBySubtype = vi.fn();
+const mockUseArtifacts = vi.fn();
 const mockUseCreateArtifact = vi.fn();
 const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseProjects = vi.fn();
@@ -24,7 +24,7 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-artifacts");
   return {
     ...actual,
-    useArtifactsBySubtype: () => mockUseArtifactsBySubtype(),
+    useArtifacts: () => mockUseArtifacts(),
     useCreateArtifact: () => mockUseCreateArtifact(),
     useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
   };
@@ -68,7 +68,7 @@ describe("NewPlanModal", () => {
       mutate: vi.fn(),
       isPending: false,
     });
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: false,
       error: null,
@@ -130,12 +130,12 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          subtype: "PRD",
+          type: "PRD",
           projectId: "project-1",
         }),
       ];
 
-      mockUseArtifactsBySubtype.mockReturnValue({
+      mockUseArtifacts.mockReturnValue({
         data: mockPrds,
         isLoading: false,
         error: null,
@@ -169,7 +169,7 @@ describe("NewPlanModal", () => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          documentSlug: "standalone-plan",
+          slug: "standalone-plan",
         });
       });
 
@@ -189,14 +189,14 @@ describe("NewPlanModal", () => {
         expect(mockMutate).toHaveBeenCalled();
       });
 
-      // Verify mutation input does NOT include parentId, workstreamId, targetRepo, targetBranch
+      // Verify mutation input
       const mutationInput = mockMutate.mock.calls[0][0];
       expect(mutationInput).toMatchObject({
-        subtype: "IMPLEMENTATION_PLAN",
+        type: "IMPLEMENTATION_PLAN",
         title: "Standalone Plan",
         status: "DRAFT",
       });
-      expect(mutationInput.parentId).toBeUndefined();
+      expect(mutationInput.sourceId).toBeUndefined();
       expect(mutationInput.workstreamId).toBeUndefined();
       expect(mutationInput.targetRepo).toBeUndefined();
       expect(mutationInput.targetBranch).toBeUndefined();
@@ -208,7 +208,7 @@ describe("NewPlanModal", () => {
       const mockSourceArtifact = createMockArtifact({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        subtype: "PRD",
+        type: "PRD",
         fileName: "dashboard-redesign.md",
       });
 
@@ -231,7 +231,7 @@ describe("NewPlanModal", () => {
       const mockSourceArtifact = createMockArtifact({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        subtype: "PRD",
+        type: "PRD",
       });
 
       render(<NewPlanModal open={true} sourceArtifact={mockSourceArtifact} />);
@@ -251,7 +251,7 @@ describe("NewPlanModal", () => {
       const mockSourceArtifact = createMockArtifact({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        subtype: "PRD",
+        type: "PRD",
         projectId: "project-1",
       });
 
@@ -273,7 +273,7 @@ describe("NewPlanModal", () => {
       const mockSourceArtifact = createMockArtifact({
         id: "prd-1",
         title: "Dashboard PRD",
-        subtype: "PRD",
+        type: "PRD",
         projectId: "project-1",
         workstreamId: "ws-1",
         targetRepo: "org/repo",
@@ -284,7 +284,7 @@ describe("NewPlanModal", () => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          documentSlug: "dashboard-impl-plan",
+          slug: "dashboard-impl-plan",
         });
       });
 
@@ -303,8 +303,8 @@ describe("NewPlanModal", () => {
       // Verify mutation input includes source-derived fields
       const mutationInput = mockCreateAndGenerateMutate.mock.calls[0][0];
       expect(mutationInput).toMatchObject({
-        subtype: "IMPLEMENTATION_PLAN",
-        parentId: "prd-1",
+        type: "IMPLEMENTATION_PLAN",
+        sourceId: "prd-1",
         projectId: "project-1",
         workstreamId: "ws-1",
         targetRepo: "org/repo",
@@ -319,16 +319,16 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          subtype: "PRD",
+          type: "PRD",
         }),
         createMockArtifact({
           id: "prd-2",
           title: "Authentication PRD",
-          subtype: "PRD",
+          type: "PRD",
         }),
       ];
 
-      mockUseArtifactsBySubtype.mockReturnValue({
+      mockUseArtifacts.mockReturnValue({
         data: mockPrds,
         isLoading: false,
         error: null,
@@ -352,12 +352,12 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard Redesign",
-          subtype: "PRD",
+          type: "PRD",
           fileName: "dashboard-redesign.md",
         }),
       ];
 
-      mockUseArtifactsBySubtype.mockReturnValue({
+      mockUseArtifacts.mockReturnValue({
         data: mockPrds,
         isLoading: false,
         error: null,
@@ -394,13 +394,13 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          subtype: "PRD",
+          type: "PRD",
           targetRepo: "org/repo",
           targetBranch: "main",
         }),
       ];
 
-      mockUseArtifactsBySubtype.mockReturnValue({
+      mockUseArtifacts.mockReturnValue({
         data: mockPrds,
         isLoading: false,
         error: null,
@@ -518,7 +518,7 @@ describe("NewPlanModal", () => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          documentSlug: "test-plan",
+          slug: "test-plan",
         });
       });
 

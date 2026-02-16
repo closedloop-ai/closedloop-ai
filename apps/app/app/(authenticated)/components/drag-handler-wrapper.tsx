@@ -37,9 +37,13 @@ export function DragHandlerWrapper({ children }: DragHandlerWrapperProps) {
   const reorderArtifacts = useReorderArtifacts();
 
   // Fetch the dragged artifact data for dialog display
-  const { data: draggedArtifact } = useArtifact(dialogState.artifactId ?? "", {
-    enabled: !!dialogState.artifactId,
-  });
+  const { data: draggedArtifact } = useArtifact(
+    dialogState.artifactId ?? "",
+    undefined,
+    {
+      enabled: !!dialogState.artifactId,
+    }
+  );
 
   // Fetch related artifact details for display
   const relatedArtifacts: Artifact[] = [];

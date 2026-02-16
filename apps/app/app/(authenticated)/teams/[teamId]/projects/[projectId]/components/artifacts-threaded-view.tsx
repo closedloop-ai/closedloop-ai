@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+  ArtifactStatus,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -13,10 +17,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { cn } from "@repo/design-system/lib/utils";
 import {
   ChevronDown,
-  ExternalLinkIcon,
   FileTextIcon,
   FolderIcon,
   MoreHorizontalIcon,
@@ -29,26 +31,22 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
-import { PreviewLink } from "@/components/preview-link";
-import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
-  isExternalLink,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
-  ARTIFACT_SUBTYPE_ICONS,
+  ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
-import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
-import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
+import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsThreadedViewProps = {
-  artifacts: ProjectArtifact[];
+  artifacts: ArtifactWithWorkstream[];
   projectId: string;
-  onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
+  onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
 
@@ -93,68 +91,43 @@ type WorkstreamGroup = {
   id: string | null;
   title: string;
   state: string | null;
-  artifacts: ProjectArtifact[];
-  /** Raw workstream title from API, used during group construction. */
+  artifacts: ArtifactWithWorkstream[];
   _workstreamTitle?: string | null;
 };
 
-/** Defines display order of artifact subtypes within a workstream group. */
-const SUBTYPE_ORDER: Record<string, number> = {
+/** Defines display order of artifact types within a workstream group. */
+const TYPE_ORDER: Record<string, number> = {
   PRD: 0,
   IMPLEMENTATION_PLAN: 1,
-  IMPLEMENTATION_STRATEGY: 2,
-  ISSUE: 3,
-  BUG: 4,
-  BRANCH: 5,
-  DESIGNS: 6,
-  PROJECT_BRIEF: 7,
-  TEMPLATE: 8,
+  TEMPLATE: 2,
 };
 
-function sortArtifactsBySubtype(
-  artifacts: ProjectArtifact[]
-): ProjectArtifact[] {
+function sortArtifactsByType(
+  artifacts: ArtifactWithWorkstream[]
+): ArtifactWithWorkstream[] {
   return [...artifacts].sort(
-    (a, b) =>
-      (SUBTYPE_ORDER[a.subtype] ?? 99) - (SUBTYPE_ORDER[b.subtype] ?? 99)
+    (a, b) => (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99)
   );
 }
 
 /**
  * Derive a group title. For groups with a workstream title, use it directly.
- * For unassigned groups, use the PRD artifact's name if one exists.
+ * For unassigned groups, use the PRD artifact's title if one exists.
  */
 function deriveGroupTitle(
   workstreamTitle: string | null | undefined,
-  artifacts: ProjectArtifact[]
+  artifacts: ArtifactWithWorkstream[]
 ): string {
   if (workstreamTitle) {
     return workstreamTitle;
   }
-  const prd = artifacts.find((a) => a.subtype === "PRD");
-  return prd?.name ?? "Unassigned";
+  const prd = artifacts.find((a) => a.type === "PRD");
+  return prd?.title ?? "Unassigned";
 }
 
-/**
- * Aggregates PR states across multiple artifacts to determine the workstream's visual state.
- * Priority: OPEN > MERGED > null (no PR state indicator).
- * CLOSED PRs intentionally return null — abandoned/closed-without-merge PRs
- * don't warrant a visual indicator, same as workstreams with no PRs.
- */
-function getWorkstreamPrState(
-  artifacts: ProjectArtifact[]
-): "OPEN" | "MERGED" | null {
-  const states = artifacts.map((a) => a.pullRequest?.state).filter(Boolean);
-  if (states.includes("OPEN")) {
-    return "OPEN";
-  }
-  if (states.includes("MERGED")) {
-    return "MERGED";
-  }
-  return null;
-}
-
-function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
+function groupByWorkstream(
+  artifacts: ArtifactWithWorkstream[]
+): WorkstreamGroup[] {
   const groups = new Map<string | null, WorkstreamGroup>();
 
   for (const artifact of artifacts) {
@@ -163,22 +136,20 @@ function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
     if (!groups.has(key)) {
       groups.set(key, {
         id: key,
-        title: "", // resolved after all artifacts are collected
-        state: artifact.workstreamState ?? null,
+        title: "",
+        state: artifact.workstream?.state ?? null,
         artifacts: [],
-        _workstreamTitle: artifact.workstreamTitle,
+        _workstreamTitle: artifact.workstream?.title,
       });
     }
     groups.get(key)!.artifacts.push(artifact);
   }
 
-  // Resolve titles and sort artifacts within each group
   for (const group of groups.values()) {
     group.title = deriveGroupTitle(group._workstreamTitle, group.artifacts);
-    group.artifacts = sortArtifactsBySubtype(group.artifacts);
+    group.artifacts = sortArtifactsByType(group.artifacts);
   }
 
-  // Sort: workstreams with IDs first (by title), unassigned last
   const sorted = [...groups.values()].sort((a, b) => {
     if (a.id === null) {
       return 1;
@@ -192,24 +163,10 @@ function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
   return sorted;
 }
 
-function ArtifactLink({ artifact }: { artifact: ProjectArtifact }) {
+function ArtifactLink({ artifact }: { artifact: ArtifactWithWorkstream }) {
   const route = getArtifactRoute(artifact);
   if (!route) {
     return null;
-  }
-  if (isExternalLink(artifact)) {
-    return (
-      <a
-        className="inline-flex items-center gap-1 text-primary text-xs hover:underline"
-        href={route}
-        onClick={(e) => e.stopPropagation()}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        View
-        <ExternalLinkIcon className="h-3 w-3" />
-      </a>
-    );
   }
   return (
     <Link
@@ -228,12 +185,12 @@ function ArtifactRow({
   onRequestDelete,
   onRequestMove,
 }: {
-  artifact: ProjectArtifact;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
-  onRequestMove: (artifact: ProjectArtifact) => void;
+  artifact: ArtifactWithWorkstream;
+  onRowClick: (artifact: ArtifactWithWorkstream) => void;
+  onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
 }) {
-  const Icon = ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
+  const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
   const isClickable = isNavigableArtifact(artifact);
 
   const interactiveProps = isClickable
@@ -259,15 +216,12 @@ function ArtifactRow({
     >
       <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-sm">{artifact.name}</span>
+        <span className="truncate text-sm">{artifact.title}</span>
         <GenerationStatusIndicator
           generationStatus={artifact.generationStatus}
         />
-        {artifact.pullRequest && (
-          <PullRequestStatusBadge pullRequest={artifact.pullRequest} />
-        )}
       </div>
-      <ArtifactSubtypeBadge subtype={artifact.subtype} />
+      <ArtifactTypeBadge type={artifact.type} />
       <span
         className={`text-xs ${ARTIFACT_STATUS_COLORS[artifact.status] ?? "text-muted-foreground"}`}
       >
@@ -279,7 +233,6 @@ function ArtifactRow({
         onKeyDown={(e) => e.stopPropagation()}
         role="none"
       >
-        <PreviewLink url={artifact.previewUrl} />
         <ArtifactLink artifact={artifact} />
       </div>
       <div
@@ -320,20 +273,12 @@ function WorkstreamSection({
   onRequestMove,
 }: {
   group: WorkstreamGroup;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
-  onRequestMove: (artifact: ProjectArtifact) => void;
+  onRowClick: (artifact: ArtifactWithWorkstream) => void;
+  onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
 }) {
-  const prState = getWorkstreamPrState(group.artifacts);
-
   return (
-    <Collapsible
-      className={cn(
-        "rounded-lg border",
-        prState === "OPEN" && "border-l-[3px] border-l-blue-500",
-        prState === "MERGED" && "border-l-[3px] border-l-green-500"
-      )}
-    >
+    <Collapsible className="rounded-lg border">
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
         <span className="min-w-0 flex-1 truncate font-medium text-sm">
@@ -375,19 +320,19 @@ export function ArtifactsThreadedView({
   const router = useRouter();
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
-    getId: (artifact: ProjectArtifact) => artifact.id,
+    getId: (artifact: ArtifactWithWorkstream) => artifact.id,
   });
 
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
-    useState<ProjectArtifact | null>(null);
+    useState<ArtifactWithWorkstream | null>(null);
 
   const workstreamGroups = useMemo(
     () => groupByWorkstream(artifacts),
     [artifacts]
   );
 
-  function handleRowClick(artifact: ProjectArtifact): void {
+  function handleRowClick(artifact: ArtifactWithWorkstream): void {
     if (isNavigableArtifact(artifact)) {
       const route = getArtifactRoute(artifact);
       if (route) {
@@ -396,7 +341,7 @@ export function ArtifactsThreadedView({
     }
   }
 
-  function handleRequestMove(artifact: ProjectArtifact): void {
+  function handleRequestMove(artifact: ArtifactWithWorkstream): void {
     setSelectedArtifact(artifact);
     setMoveDialogOpen(true);
   }
@@ -426,7 +371,7 @@ export function ArtifactsThreadedView({
 
       <DeleteConfirmationDialog
         isPending={deleteConfirmation.isPending}
-        itemName={deleteConfirmation.itemToDelete?.name ?? ""}
+        itemName={deleteConfirmation.itemToDelete?.title ?? ""}
         onConfirm={deleteConfirmation.confirmDelete}
         onOpenChange={deleteConfirmation.setOpen}
         open={deleteConfirmation.isOpen}

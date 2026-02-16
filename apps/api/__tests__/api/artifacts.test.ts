@@ -39,15 +39,13 @@ describe("GET /api/artifacts", () => {
         id: "1",
         title: "PRD 1",
         project: null,
-        subtype: "PRD",
-        isLatest: true,
+        type: "PRD",
       },
       {
         id: "2",
         title: "PLAN 1",
         project: null,
-        subtype: "IMPLEMENTATION_PLAN",
-        isLatest: true,
+        type: "IMPLEMENTATION_PLAN",
       },
     ];
 
@@ -69,27 +67,13 @@ describe("GET /api/artifacts", () => {
     vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
     const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?subtype=PRD",
+      url: "http://localhost:3002/api/artifacts?type=PRD",
     });
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
     expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ subtype: "PRD" })
-    );
-  });
-
-  it("includes all versions when latestOnly=false", async () => {
-    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?latestOnly=false",
-    });
-    const routeContext = createMockRouteContext({});
-    await GET(request, routeContext);
-
-    expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ latestOnly: false })
+      expect.objectContaining({ type: "PRD" })
     );
   });
 
@@ -151,65 +135,20 @@ describe("GET /api/artifacts", () => {
     expect(response.headers.get("Content-Type")).toContain("application/json");
   });
 
-  it("filters by documentSlug query param", async () => {
+  it("filters by type and projectId together", async () => {
     vi.mocked(artifactsService.findAll).mockResolvedValue([]);
 
+    const projectId = uuidv7();
     const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?documentSlug=my-feature-prd",
-    });
-    const routeContext = createMockRouteContext({});
-    await GET(request, routeContext);
-
-    expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ documentSlug: "my-feature-prd" })
-    );
-  });
-
-  it("filters by specific version number", async () => {
-    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?documentSlug=my-prd&version=2",
-    });
-    const routeContext = createMockRouteContext({});
-    await GET(request, routeContext);
-
-    expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ documentSlug: "my-prd", version: 2 })
-    );
-  });
-
-  it("ignores invalid version parameter (non-numeric)", async () => {
-    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?documentSlug=my-prd&version=abc",
-    });
-    const routeContext = createMockRouteContext({});
-    await GET(request, routeContext);
-
-    expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.objectContaining({ documentSlug: "my-prd" })
-    );
-    expect(artifactsService.findAll).toHaveBeenCalledWith(
-      expect.not.objectContaining({ version: expect.anything() })
-    );
-  });
-
-  it("combines documentSlug, type, and version filters", async () => {
-    vi.mocked(artifactsService.findAll).mockResolvedValue([]);
-
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/artifacts?subtype=IMPLEMENTATION_PLAN&documentSlug=auth-feature&version=3",
+      url: `http://localhost:3002/api/artifacts?type=IMPLEMENTATION_PLAN&projectId=${projectId}`,
     });
     const routeContext = createMockRouteContext({});
     await GET(request, routeContext);
 
     expect(artifactsService.findAll).toHaveBeenCalledWith(
       expect.objectContaining({
-        subtype: "IMPLEMENTATION_PLAN",
-        documentSlug: "auth-feature",
-        version: 3,
+        type: "IMPLEMENTATION_PLAN",
+        projectId,
       })
     );
   });
@@ -229,9 +168,7 @@ describe("POST /api/artifacts", () => {
     const mockArtifact = {
       id: "new-artifact-id",
       title: "New PRD",
-      subtype: "PRD",
-      version: 1,
-      isLatest: true,
+      type: "PRD",
     };
 
     vi.mocked(artifactsService.create).mockResolvedValue(mockArtifact as any);
@@ -239,7 +176,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "New PRD",
         content: "# Content",
         projectId: uuidv7(),
@@ -258,7 +195,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         // missing title
       },
     });
@@ -276,8 +213,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Test",
+        content: "# Test",
         projectId: uuidv7(),
       },
     });
@@ -302,8 +240,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# My PRD",
         fileName: "my-prd.md",
         projectId: uuidv7(),
       },
@@ -315,8 +254,9 @@ describe("POST /api/artifacts", () => {
       "test-org-id",
       "user-123",
       expect.objectContaining({
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# My PRD",
         fileName: "my-prd.md",
       })
     );
@@ -326,8 +266,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Standalone PRD",
+        content: "# Standalone",
       },
     });
     const routeContext = createMockRouteContext({});
@@ -337,7 +278,7 @@ describe("POST /api/artifacts", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
     expect(json.error).toContain(
-      "Either workstreamId or projectId is required"
+      "Either workstreamId or projectId is required (except for templates)"
     );
   });
 
@@ -347,8 +288,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# Test",
         projectId: uuidv7(),
       },
     });
@@ -369,8 +311,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# Test",
         projectId: uuidv7(),
       },
     });
@@ -396,8 +339,9 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# Test",
         projectId,
       },
     });
@@ -410,8 +354,9 @@ describe("POST /api/artifacts", () => {
       "test-org-id",
       "user-123",
       expect.objectContaining({
-        subtype: "PRD",
+        type: "PRD",
         title: "Test PRD",
+        content: "# Test",
         projectId,
       })
     );
