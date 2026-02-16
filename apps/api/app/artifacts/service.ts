@@ -600,12 +600,18 @@ export const artifactsService = {
   },
 
   /**
-   * Build context for plan generation from source artifact content and optional initial instructions.
-   * Appends "assume defaults" instruction to skip Q&A flow.
+   * Build context base with source content, optional initial instructions, and assume defaults instruction.
+   * This is the common pattern used by both PRD and Plan context builders.
+   *
+   * @param sourceContent - The base content to start from
+   * @param initialInstructions - Optional instructions to append (skipped if it's a failure message)
+   * @param assumeDefaultsMessage - The specific message about assuming defaults
+   * @returns Context string with all sections combined
    */
-  buildPlanContext(
+  buildContextBase(
     sourceContent: string,
-    initialInstructions: string | null
+    initialInstructions: string | null,
+    assumeDefaultsMessage: string
   ): string {
     let context = sourceContent;
 
@@ -628,7 +634,51 @@ ${initialInstructions.trim()}`;
 
 ---
 
-**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment.`;
+${assumeDefaultsMessage}`;
+
+    return context;
+  },
+
+  /**
+   * Build context for plan generation from source artifact content and optional initial instructions.
+   * Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPlanContext(
+    sourceContent: string,
+    initialInstructions: string | null
+  ): string {
+    return this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+  },
+
+  /**
+   * Build context for PRD generation from source artifact content, optional initial instructions,
+   * and optional reverse synthesis link. Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPRDContext(
+    sourceContent: string,
+    initialInstructions: string | null,
+    reverseSynthesisLink: string | null
+  ): string {
+    let context = this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the PRD, please assume reasonable defaults for any questions that arise. You may document those as open questions for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+
+    // Add reverse synthesis link section if provided
+    if (reverseSynthesisLink?.trim()) {
+      context += `
+
+---
+
+**Reverse Synthesis Link:** ${reverseSynthesisLink}
+
+Analyze the content at this link and identify capabilities or features that could be adapted for this application.`;
+    }
 
     return context;
   },
@@ -645,6 +695,7 @@ ${initialInstructions.trim()}`;
     correlationId: string;
     targetRepo: string;
     targetBranch: string;
+    command: "plan" | "execute" | "answer" | "chat";
   }): Promise<Artifact> {
     const {
       organizationId,
@@ -655,6 +706,7 @@ ${initialInstructions.trim()}`;
       correlationId,
       targetRepo,
       targetBranch,
+      command,
     } = params;
 
     return withDb(async (db) => {
@@ -672,7 +724,7 @@ ${initialInstructions.trim()}`;
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
               prdId,
-              command: "plan",
+              command,
             },
             sessionId: prdId,
             jobType: "generate",
@@ -694,7 +746,7 @@ ${initialInstructions.trim()}`;
             actorType: "system",
             data: {
               workflowName: "symphony-dispatch",
-              command: "plan",
+              command,
               correlationId,
               artifactId,
               prdId,
@@ -907,6 +959,148 @@ ${initialInstructions.trim()}`;
       correlationId,
       targetRepo,
       targetBranch,
+      command: "plan",
+    });
+
+    return { success: true, artifact: updatedArtifact };
+  },
+
+  /**
+   * Generate a PRD artifact by triggering symphony-dispatch workflow.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  async generatePRD(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    reverseSynthesisLink: string | null
+  ): Promise<RegenerateResult> {
+    // Find artifact with regeneration context
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+
+    if (!artifact) {
+      return { success: false, error: "Artifact not found", status: 404 };
+    }
+
+    if (artifact.type !== PrismaArtifactType.PRD) {
+      return {
+        success: false,
+        error: "Only PRDs can be generated with this method",
+        status: 400,
+      };
+    }
+
+    if (!artifact.workstream) {
+      return {
+        success: false,
+        error: "Artifact must have a workstream to generate",
+        status: 400,
+      };
+    }
+
+    const project = artifact.workstream.project;
+    const existingRepository = project.repositories[0];
+
+    // Artifact's target repo/branch take priority, then project default
+    const targetRepo = artifact.targetRepo ?? existingRepository?.fullName;
+    const targetBranch =
+      artifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
+
+    if (!targetRepo) {
+      return {
+        success: false,
+        error: "No repository configured for this artifact or project",
+        status: 400,
+      };
+    }
+
+    // Ensure repository record exists
+    const repoResult = await ensureRepository(
+      targetRepo,
+      project.id,
+      existingRepository
+    );
+    if (!repoResult.success) {
+      return { success: false, error: repoResult.error, status: 400 };
+    }
+    const repository = repoResult.repository;
+
+    // Fall back to placeholder content when GitHub is not configured
+    if (!isGitHubConfigured()) {
+      const updatedArtifact = await this.updateWithPlaceholder(
+        artifactId,
+        organizationId,
+        userId,
+        getPlaceholderContent(artifact.title, artifact.latestVersion + 1)
+      );
+      return { success: true, artifact: updatedArtifact };
+    }
+
+    // Check for existing running job
+    const existingRun = await this.findPendingWorkflowRun(
+      artifact.workstream.id,
+      "symphony-dispatch"
+    );
+
+    if (existingRun) {
+      return {
+        success: false,
+        error: "PRD generation already in progress",
+        status: 409,
+      };
+    }
+
+    const correlationId = createId();
+
+    // Build context: artifact's current content + reverse synthesis link
+    // Load the PRD's latest version content as initial instructions
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    const context = this.buildPRDContext(
+      latestVersion?.content ?? "",
+      null,
+      reverseSynthesisLink
+    );
+
+    // Determine which skill to invoke
+    const commandArgs = reverseSynthesisLink ? "self-improve" : "prd-creator";
+
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
+    // Trigger the workflow
+    const result = await triggerWorkflowDispatch({
+      targetRepo,
+      ref: targetBranch,
+      command: "plan",
+      commandArgs,
+      context,
+      correlationId,
+      sessionId: artifactId,
+      ...committer,
+    });
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to trigger PRD generation: ${result.error}`,
+        status: 500,
+      };
+    }
+
+    // Create all workflow trigger records
+    const updatedArtifact = await this.createWorkflowTriggerRecords({
+      organizationId,
+      workstreamId: artifact.workstream.id,
+      repositoryId: repository.id,
+      artifactId: artifact.id,
+      prdId: artifactId, // PRD generates itself, not from another PRD
+      correlationId,
+      targetRepo,
+      targetBranch,
+      command: "plan",
     });
 
     return { success: true, artifact: updatedArtifact };

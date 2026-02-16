@@ -241,16 +241,11 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: When calling artifactsService.create, pass organizationId and userId as separate arguments BEFORE the CreateArtifactInput object. The service method signature is: create(organizationId: string, userId: string, input: CreateArtifactInput). (context: service-layer|artifacts|api-signature|method-calls)
 - **[pattern]**: Routes must transform service Result types to API contract types. Service layer returns Result types with success/connected discriminants, but API contract types need flat structure. Check Linear vs Google integration routes - transformation may be explicit or match naturally. (context: service-layer|api-contract|result-pattern|type-transformation)
 - **[mistake]**: When implementing OAuth connect routes, verify service method signature before copying parameter destructuring from reference implementation - not all integrations need userId. (context: oauth|service-signature|parameter-destructuring|implementation-patterns)
-- **[pattern]**: The /artifacts/:id/regenerate endpoint is type-agnostic at route level but type-specific at service level. Extend route handler with type-based dispatch rather than creating new endpoints. (context: artifacts|regenerate|type-dispatch|service-layer)
-- **[pattern]**: Always check regenerateImplementationPlan() as the reference implementation for artifact service methods - it demonstrates the canonical pattern for artifact lookup, repository extraction, and workflow triggering. (context: artifacts|service-layer|reference-implementation|regenerate)
-- **[pattern]**: For routes that handle multiple entity types: use parseBody() from route-utils, look up entity first to determine type, then use if/else with PrismaArtifactType enum for type-based routing. (context: api-routes|multi-type|type-dispatch|prisma)
 
 ### TanStack Query
 - **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
 
 - **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
-
-- **[pattern]**: When extending TanStack Query mutation hooks with optional parameters, use object destructuring in mutationFn signature and ensure onSuccess callback also destructures correctly. (context: tanstack-query|mutation|optional-parameters|destructuring)
 
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
@@ -264,7 +259,6 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 - **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)
-- **[pattern]**: Follow the established pattern: add generatingArtifactId state, use useArtifactGenerationStatus with 2s polling, conditionally render status UI vs form, prevent modal close during generation, navigate on SUCCESS status. (context: react|components|generation-feedback|modal|polling)
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)
