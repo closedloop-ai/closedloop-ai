@@ -30,7 +30,7 @@ export const CTA = ({ dictionary }: CTAProps) => {
             </Button>
             <Button asChild className="gap-2" size="lg" variant="outline">
               <a
-                href="https://github.com/closedloop-ai/claude-marketplace"
+                href="https://github.com/closedloop-ai/claude_code"
                 rel="noopener noreferrer"
                 target="_blank"
               >
