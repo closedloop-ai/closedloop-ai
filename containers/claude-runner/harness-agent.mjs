@@ -30,6 +30,7 @@ const {
   S3Client,
   GetObjectCommand,
   PutObjectCommand,
+  ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,10 @@ const config = {
   s3Region: process.env.S3_REGION || "us-east-1",
   correlationId: process.env.CORRELATION_ID,
   maxIterations: Number.parseInt(process.env.MAX_ITERATIONS || "50", 10),
+  // Parent state for resume: used to download prior run's .claude directory
+  s3ParentStateKey: process.env.S3_PARENT_STATE_KEY || null,
+  parentSessionId: process.env.PARENT_SESSION_ID || null,
+  parentBranchName: process.env.PARENT_BRANCH_NAME || null,
 };
 
 const ERROR_CODES = {
@@ -213,6 +218,113 @@ async function uploadToS3(key, body, contentType = "application/octet-stream") {
       ContentType: contentType,
     })
   );
+}
+
+/**
+ * List all objects under an S3 prefix (handles pagination).
+ * Returns an array of { Key, Size } objects.
+ */
+async function listS3Objects(prefix) {
+  const client = getS3Client();
+  const objects = [];
+  let continuationToken;
+
+  do {
+    const resp = await client.send(
+      new ListObjectsV2Command({
+        Bucket: config.s3Bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+    if (resp.Contents) {
+      for (const obj of resp.Contents) {
+        objects.push({ Key: obj.Key, Size: obj.Size ?? 0 });
+      }
+    }
+    continuationToken = resp.IsTruncated
+      ? resp.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  return objects;
+}
+
+/**
+ * Download an entire S3 "directory" (prefix) to a local directory.
+ * Preserves relative paths. Skips files >50MB (mirrors upload limit).
+ */
+async function downloadDirectoryFromS3(s3Prefix, localDir) {
+  const MAX_FILE_SIZE = 50 * 1024 * 1024;
+  const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
+  const objects = await listS3Objects(normalizedPrefix);
+
+  let downloaded = 0;
+  for (const obj of objects) {
+    if (obj.Size > MAX_FILE_SIZE) {
+      log("info", `Skipping large file (${obj.Size} bytes): ${obj.Key}`);
+      continue;
+    }
+
+    const relativePath = obj.Key.slice(normalizedPrefix.length);
+    if (!relativePath) {
+      continue; // skip the prefix itself
+    }
+
+    const localPath = path.join(localDir, relativePath);
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+
+    const data = await downloadFromS3(obj.Key);
+    fs.writeFileSync(localPath, data);
+    downloaded++;
+  }
+
+  log("info", `Downloaded ${downloaded} files from s3://${config.s3Bucket}/${normalizedPrefix}`);
+  return downloaded;
+}
+
+/**
+ * Download and restore prior run state from the parent loop.
+ * Restores:
+ *   - {parentPrefix}/claude-state/ → {workDir}/.claude/  (run state, conversation history)
+ *   - {parentPrefix}/home-claude-state/ → ~/.claude/      (session state for --resume)
+ *
+ * This is the counterpart to uploadState() — ensures resumed loops start
+ * with the same .claude directory as the parent run.
+ */
+async function downloadState(workDir) {
+  if (!config.s3ParentStateKey) {
+    return;
+  }
+
+  log("info", "Downloading prior run state from parent loop...");
+  const parentPrefix = config.s3ParentStateKey;
+
+  // 1. Restore workDir/.claude from parent's claude-state
+  try {
+    const claudeStatePrefix = `${parentPrefix}/claude-state`;
+    const claudeDir = path.join(workDir, ".claude");
+    const count = await downloadDirectoryFromS3(claudeStatePrefix, claudeDir);
+    log("info", `Restored ${count} files to ${claudeDir}`);
+  } catch (err) {
+    log(
+      "error",
+      `Failed to download claude-state (best-effort): ${err.message}`
+    );
+  }
+
+  // 2. Restore ~/.claude/{projects,sessions} from parent's home-claude-state
+  try {
+    const homeClaudePrefix = `${parentPrefix}/home-claude-state`;
+    const homeClaudeDir = path.join(os.homedir(), ".claude");
+    const count = await downloadDirectoryFromS3(homeClaudePrefix, homeClaudeDir);
+    log("info", `Restored ${count} files to ${homeClaudeDir}`);
+  } catch (err) {
+    log(
+      "error",
+      `Failed to download home-claude-state (best-effort): ${err.message}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1272,11 @@ function buildClaudeDirectArgs(workDir) {
   const command = config.command.toLowerCase();
   const args = [];
 
+  // If resuming from a parent loop, use --resume to continue the session
+  if (config.parentSessionId) {
+    args.push("--resume", config.parentSessionId);
+  }
+
   switch (command) {
     case "request_changes": {
       // Use the amend-plan skill
@@ -1327,6 +1444,39 @@ function createWorkingBranch(workDir) {
   ) {
     log("info", `Working branch already set: ${currentBranch}`);
     return currentBranch;
+  }
+
+  // If resuming from a parent loop, checkout the parent's branch (with its commits)
+  if (config.parentBranchName) {
+    try {
+      execFileSync(
+        "git",
+        ["fetch", "origin", config.parentBranchName],
+        {
+          cwd: workDir,
+          stdio: "pipe",
+          timeout: 30_000,
+          env: buildGitAuthEnv(),
+        }
+      );
+      execFileSync(
+        "git",
+        ["checkout", config.parentBranchName],
+        {
+          cwd: workDir,
+          stdio: "pipe",
+          timeout: 5000,
+        }
+      );
+      log("info", `Checked out parent branch: ${config.parentBranchName}`);
+      return config.parentBranchName;
+    } catch (err) {
+      log(
+        "error",
+        `Failed to checkout parent branch ${config.parentBranchName}: ${err.message}`
+      );
+      // Fall through to create a new branch
+    }
   }
 
   const loopSuffix = (config.loopId || randomUUID())
@@ -1606,8 +1756,14 @@ async function main() {
     // Step 3: Clone the target repository or prepare an empty workspace
     prepareWorkspace(workDir);
 
+    // Step 3a: Restore prior run state from parent loop (if resuming).
+    // This restores .claude/ and ~/.claude/ so run-loop can continue
+    // where the parent left off.
+    await downloadState(workDir);
+
     // Step 3b: Write context files into the prepared workspace.
-    // This must happen after clone, otherwise git clone fails on non-empty dir.
+    // This must happen after clone AND after downloadState — clone fails on
+    // non-empty dir, and we want fresh context to overwrite .claude/context/.
     writeContextPackFiles(workDir, contextPack);
 
     // Step 3c: Command-level validation and branch hardening.

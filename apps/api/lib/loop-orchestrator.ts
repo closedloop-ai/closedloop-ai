@@ -124,6 +124,32 @@ async function resolveGitHubToken(
   return getInstallationAccessToken(installationId);
 }
 
+/**
+ * When launching a child loop (resume), resolve the parent's state info
+ * so the container can download prior run state and continue from where
+ * the parent left off.
+ */
+async function resolveParentLoopInfo(
+  parentLoopId: string,
+  organizationId: string
+): Promise<
+  | { s3StateKey: string; sessionId: string | null; branchName: string | null }
+  | undefined
+> {
+  const parent = await loopsService.findById(parentLoopId, organizationId);
+  if (!parent?.s3StateKey) {
+    log.warn("[loop-orchestrator] Parent loop has no s3StateKey", {
+      parentLoopId,
+    });
+    return undefined;
+  }
+  return {
+    s3StateKey: parent.s3StateKey,
+    sessionId: parent.sessionId ?? null,
+    branchName: parent.branchName ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Context pack assembly
 // ---------------------------------------------------------------------------
@@ -467,7 +493,12 @@ export async function launchLoop(
       { anthropicApiKey, githubToken }
     );
 
-    // 5. Launch ECS task (secrets travel via S3 context pack, not env vars)
+    // 5. Resolve parent state info for resume (if this is a child loop)
+    const parentInfo = loop.parentLoopId
+      ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
+      : undefined;
+
+    // 6. Launch ECS task (secrets travel via S3 context pack, not env vars)
     const closedLoopAuthToken = await issueLoopRunnerToken({
       loopId,
       organizationId,
@@ -481,9 +512,12 @@ export async function launchLoop(
       repo: loop.repo ?? undefined,
       closedLoopAuthToken,
       artifactId: loop.artifactId ?? undefined,
+      parentS3StateKey: parentInfo?.s3StateKey,
+      parentSessionId: parentInfo?.sessionId ?? undefined,
+      parentBranchName: parentInfo?.branchName ?? undefined,
     });
 
-    // 6. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
+    // 7. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
     await claimOrPersistRunning(loopId, organizationId, taskArn, s3StateKey);
 
     log.info("[loop-orchestrator] Loop launched successfully", {
@@ -540,6 +574,9 @@ async function runEcsTask(opts: {
   repo?: { fullName: string; branch: string };
   closedLoopAuthToken: string;
   artifactId?: string;
+  parentS3StateKey?: string;
+  parentSessionId?: string;
+  parentBranchName?: string;
 }): Promise<string> {
   const ecs = getEcsClient();
   const config = getEcsConfig();
@@ -564,6 +601,26 @@ async function runEcsTask(opts: {
   if (opts.repo) {
     environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });
     environment.push({ name: "TARGET_BRANCH", value: opts.repo.branch });
+  }
+
+  // Parent state for resume: lets the container download prior run state
+  if (opts.parentS3StateKey) {
+    environment.push({
+      name: "S3_PARENT_STATE_KEY",
+      value: opts.parentS3StateKey,
+    });
+  }
+  if (opts.parentSessionId) {
+    environment.push({
+      name: "PARENT_SESSION_ID",
+      value: opts.parentSessionId,
+    });
+  }
+  if (opts.parentBranchName) {
+    environment.push({
+      name: "PARENT_BRANCH_NAME",
+      value: opts.parentBranchName,
+    });
   }
 
   // Add callback URL so the harness can report events back
