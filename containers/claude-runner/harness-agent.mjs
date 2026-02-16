@@ -424,9 +424,12 @@ function cloneRepo(workDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Safety commit (best-effort on SIGTERM / timeout)
+// Safety commit (best-effort on any exit path)
 // ---------------------------------------------------------------------------
-function attemptSafetyCommit(workDir) {
+function attemptSafetyCommit(
+  workDir,
+  commitMessage = "[INCOMPLETE] WIP: Safety commit — loop interrupted"
+) {
   if (!(config.targetRepo && config.githubToken)) {
     return;
   }
@@ -452,11 +455,11 @@ function attemptSafetyCommit(workDir) {
       // Exit non-zero means there are staged changes — proceed
     }
 
-    execFileSync(
-      "git",
-      ["commit", "-m", "[INCOMPLETE] WIP: Safety commit — loop interrupted"],
-      { cwd: workDir, stdio: "pipe", timeout: 10_000 }
-    );
+    execFileSync("git", ["commit", "-m", commitMessage], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 10_000,
+    });
 
     const currentBranch = execFileSync(
       "git",
@@ -470,7 +473,7 @@ function attemptSafetyCommit(workDir) {
       .toString()
       .trim();
 
-    // Never push an [INCOMPLETE] safety commit directly to the target branch.
+    // Never push a safety commit directly to the target branch.
     if (currentBranch === config.targetBranch) {
       log(
         "error",
@@ -489,6 +492,31 @@ function attemptSafetyCommit(workDir) {
     log("info", "Safety commit pushed successfully");
   } catch (err) {
     log("error", `Safety commit failed (best-effort): ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ensure working branch is pushed (even if safety commit was a no-op)
+// ---------------------------------------------------------------------------
+function ensureBranchPushed(workDir) {
+  if (!(config.targetRepo && config.githubToken)) {
+    return;
+  }
+  const branchName = detectBranchName(workDir);
+  if (!branchName) {
+    return; // on target branch, don't push
+  }
+  try {
+    execFileSync("git", ["push", "origin", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 30_000,
+      env: buildGitAuthEnv(),
+    });
+  } catch (err) {
+    // Push may fail if already up to date (non-fast-forward), or token expired.
+    // This is best-effort — the safety commit push may have already succeeded.
+    log("error", `Branch push failed (best-effort): ${err.message}`);
   }
 }
 
@@ -582,6 +610,125 @@ function parsePrInfo(workDir, outputLines) {
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Fallback PR creation (best-effort if Claude didn't create one)
+// ---------------------------------------------------------------------------
+function ensurePrExists(workDir, existingPrInfo) {
+  if (existingPrInfo?.prUrl) {
+    return existingPrInfo;
+  }
+  if (!(config.targetRepo && config.githubToken)) {
+    return existingPrInfo;
+  }
+
+  const branchName = detectBranchName(workDir);
+  if (!branchName) {
+    return existingPrInfo; // still on target branch
+  }
+
+  // Check if there are commits ahead of the target branch
+  try {
+    const count = execFileSync(
+      "git",
+      ["rev-list", "--count", `origin/${config.targetBranch}..HEAD`],
+      { cwd: workDir, stdio: "pipe", timeout: 5000 }
+    )
+      .toString()
+      .trim();
+    if (count === "0") {
+      return existingPrInfo;
+    }
+  } catch {
+    // Remote tracking may not exist; proceed with PR attempt anyway
+  }
+
+  try {
+    const title = `Symphony: ${config.command} — loop ${config.loopId}`;
+    const body = [
+      "Automated PR created by Symphony loop runner.",
+      "",
+      `**Loop:** \`${config.loopId}\``,
+      `**Command:** \`${config.command}\``,
+    ].join("\n");
+
+    const result = execFileSync(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--title",
+        title,
+        "--body",
+        body,
+        "--label",
+        "symphony",
+        "--head",
+        branchName,
+        "--base",
+        config.targetBranch,
+      ],
+      {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 30_000,
+        env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
+      }
+    );
+
+    const prUrl = result.toString().trim();
+    const prMatch = prUrl.match(/\/pull\/(\d+)/);
+    log("info", `Fallback PR created: ${prUrl}`);
+    return {
+      prUrl,
+      prNumber: prMatch ? Number.parseInt(prMatch[1], 10) : null,
+      branchName,
+      commitSha: null,
+    };
+  } catch (err) {
+    log(
+      "error",
+      `Fallback PR creation failed (best-effort): ${err.message}`
+    );
+    return existingPrInfo;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Incomplete-implementation labeling (best-effort)
+// ---------------------------------------------------------------------------
+function labelPrIncomplete(workDir, prNumber) {
+  if (!prNumber || !config.githubToken) {
+    return;
+  }
+  try {
+    execFileSync(
+      "gh",
+      [
+        "pr",
+        "edit",
+        String(prNumber),
+        "--add-label",
+        "incomplete-implementation",
+      ],
+      {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 15_000,
+        env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
+      }
+    );
+    log(
+      "info",
+      `Added 'incomplete-implementation' label to PR #${prNumber}`
+    );
+  } catch (err) {
+    log(
+      "error",
+      `Failed to label PR #${prNumber} (best-effort): ${err.message}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1238,10 @@ function setupShutdownHandlers(workDir) {
     }
 
     // Attempt safety commit before uploading state
-    await attemptSafetyCommit(workDir);
+    attemptSafetyCommit(
+      workDir,
+      "[INCOMPLETE] WIP: Safety commit — loop cancelled"
+    );
 
     // Try to upload whatever state we have
     try {
@@ -1326,7 +1476,27 @@ async function reportFinalStatus(
   output,
   { timedOut, exitCode, signal, duration, tokenUsage, startTime }
 ) {
-  const prInfo = parsePrInfo(workDir, output);
+  // Step 1: Safety commit + push on ALL exit paths (matches dispatch `if: always()` pattern)
+  const isIncomplete = timedOut || exitCode !== 0;
+  const commitMsg = timedOut
+    ? "[INCOMPLETE] WIP: Safety commit — loop timed out"
+    : exitCode !== 0
+      ? "[INCOMPLETE] WIP: Safety commit — process failed"
+      : "Post-run: uncommitted changes from loop execution";
+  attemptSafetyCommit(workDir, commitMsg);
+  ensureBranchPushed(workDir);
+
+  // Step 2: Parse PR info (may have been created by Claude/run-loop during execution)
+  let prInfo = parsePrInfo(workDir, output);
+
+  // Step 3: Fallback PR creation if Claude didn't create one
+  prInfo = ensurePrExists(workDir, prInfo);
+
+  // Step 4: Label incomplete PRs
+  if (isIncomplete && prInfo?.prNumber) {
+    labelPrIncomplete(workDir, prInfo.prNumber);
+  }
+
   if (prInfo) {
     log(
       "info",
@@ -1337,10 +1507,12 @@ async function reportFinalStatus(
     log("info", `Session ID: ${capturedSessionId}`);
   }
 
+  // Step 5: Upload state + metadata
+  await uploadState(workDir, output);
+  await uploadMetadata(workDir, output, tokenUsage, startTime);
+
+  // Step 6: Report event
   if (timedOut) {
-    attemptSafetyCommit(workDir);
-    await uploadState(workDir, output);
-    await uploadMetadata(workDir, output, tokenUsage, startTime);
     await reportEvent({
       type: "error",
       code: "TIMED_OUT",
@@ -1356,9 +1528,6 @@ async function reportFinalStatus(
     log("info", "Reported TIMED_OUT event");
     process.exit(1);
   }
-
-  await uploadState(workDir, output);
-  await uploadMetadata(workDir, output, tokenUsage, startTime);
 
   if (exitCode === 0) {
     await reportEvent({
