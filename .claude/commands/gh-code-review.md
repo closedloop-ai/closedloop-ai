@@ -255,12 +255,13 @@ Take top 5. Feed these to an Opus agent for direct review.
 Read `.claude/settings/critic-gates.json` and extract:
 - **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
 - **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional domain critics (default: 2 for Layer 4)
+- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
 
 ```python
 # Only select domain critics for high-stakes areas
 selected_domain_critics = []
-pr_context = " ".join(changed_files).lower()
+pr_context = " ".join(FILES_TO_REVIEW).lower()
+max_domain_critics = min(critic_config["defaults"]["reviewBudget"], 2)
 
 # Only trigger for security, database, payment modules
 high_stakes_modules = [m for m in critic_config["moduleCritics"]
@@ -273,8 +274,8 @@ for module in high_stakes_modules:
             selected_domain_critics.extend(module["critics"])
             break
 
-# Cap at 2 domain critics (sort for deterministic selection across runs)
-selected_domain_critics = sorted(set(selected_domain_critics))[:2]
+# Cap at reviewBudget domain critics (sort for deterministic selection across runs)
+selected_domain_critics = sorted(set(selected_domain_critics))[:max_domain_critics]
 ```
 
 Report to user: model routing decision, which agents will run, and domain critics (if any).
