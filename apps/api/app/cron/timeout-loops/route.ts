@@ -17,6 +17,11 @@ type StuckLoop = {
  * 3. Record an audit event
  *
  * Returns true if the loop was actually timed out.
+ *
+ * NOTE: If stopLoopTask fails, the loop is still marked TIMED_OUT in the DB
+ * but the ECS task may continue running as an orphan. This is acceptable for
+ * V1 — ECS tasks self-terminate via the harness 55-minute timeout, and orphaned
+ * tasks are bounded by ECS task-level stopTimeout configuration.
  */
 async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
   if (loop.containerId) {

@@ -194,7 +194,7 @@ model Organization {
   active          Boolean  @default(true) @map("active")
   name            String
   slug            String   @unique
-  anthropicApiKey String?  @map("anthropic_api_key") // @deprecated - use claudeApiKeyEncrypted
+  anthropicApiKey String?  @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
@@ -228,7 +228,7 @@ model User {
   linearId        String?      @map("linear_id")
   slackId         String?      @map("slack_id")
   githubUsername  String?      @map("github_username")
-  anthropicApiKey String?      @map("anthropic_api_key") // @deprecated - use claudeApiKeyEncrypted
+  anthropicApiKey String?      @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
