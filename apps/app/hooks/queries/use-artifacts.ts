@@ -11,6 +11,7 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import type { ExternalLink } from "@repo/api/src/types/external-link";
 import {
   type UseQueryOptions,
   useMutation,
@@ -554,5 +555,26 @@ export function useRelatedArtifacts(
     queryKey: artifactKeys.related(artifactId),
     queryFn: () => apiClient.get<string[]>(`/artifacts/${artifactId}/related`),
     enabled: options?.enabled ?? !!artifactId,
+  });
+}
+
+/**
+ * Fetch the preview deployment URL for an artifact's workstream.
+ * Returns null if no preview deployment exists.
+ */
+export function usePreviewDeployment(
+  artifactId: string,
+  options?: Omit<UseQueryOptions<ExternalLink | null>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: artifactKeys.previewDeployment(artifactId),
+    queryFn: () =>
+      apiClient.get<ExternalLink | null>(
+        `/artifacts/${artifactId}/preview-deployment`
+      ),
+    enabled: !!artifactId,
+    ...options,
   });
 }
