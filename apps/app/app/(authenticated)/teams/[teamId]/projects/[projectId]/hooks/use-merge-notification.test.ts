@@ -20,7 +20,12 @@ vi.mock("@/hooks/use-api-client", () => ({
 
 vi.mock("@/hooks/queries/use-artifacts", () => ({
   artifactKeys: {
-    previewDeployment: (id: string) => ["artifacts", "detail", id, "preview-deployment"],
+    previewDeployment: (id: string) => [
+      "artifacts",
+      "detail",
+      id,
+      "preview-deployment",
+    ],
   },
 }));
 
@@ -30,6 +35,9 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   },
 }));
 
+// Import after mocks — vi.mock is hoisted, so this gets the mocked version
+import { useQueries } from "@tanstack/react-query";
+
 describe("useMergeNotification", () => {
   const mockWindowOpen = vi.fn();
 
@@ -38,7 +46,6 @@ describe("useMergeNotification", () => {
     // Mock window.open
     window.open = mockWindowOpen;
     // Mock useQueries to return empty array by default (no preview deployments)
-    const { useQueries } = require("@tanstack/react-query");
     vi.mocked(useQueries).mockReturnValue([]);
   });
 
@@ -282,7 +289,10 @@ describe("useMergeNotification", () => {
     onClick?.(mockEvent);
 
     expect(mockEvent.preventDefault).toHaveBeenCalled();
-    expect(mockWindowOpen).toHaveBeenCalledWith("/implementation-plans/abc", "_blank");
+    expect(mockWindowOpen).toHaveBeenCalledWith(
+      "/implementation-plans/abc",
+      "_blank"
+    );
   });
 
   it("falls back to project route when slug is unavailable", () => {
@@ -333,7 +343,6 @@ describe("useMergeNotification", () => {
   });
 
   it("shows preview deployment URL when available", () => {
-    const { useQueries } = require("@tanstack/react-query");
     vi.mocked(useQueries).mockReturnValue([
       {
         data: {
@@ -394,7 +403,6 @@ describe("useMergeNotification", () => {
   });
 
   it("opens preview deployment URL in new tab when action button clicked", () => {
-    const { useQueries } = require("@tanstack/react-query");
     vi.mocked(useQueries).mockReturnValue([
       {
         data: {
@@ -456,11 +464,13 @@ describe("useMergeNotification", () => {
     onClick?.(mockEvent);
 
     expect(mockEvent.preventDefault).toHaveBeenCalled();
-    expect(mockWindowOpen).toHaveBeenCalledWith("https://preview.example.com", "_blank");
+    expect(mockWindowOpen).toHaveBeenCalledWith(
+      "https://preview.example.com",
+      "_blank"
+    );
   });
 
   it("fetches preview deployments for multiple merge events simultaneously", () => {
-    const { useQueries } = require("@tanstack/react-query");
     vi.mocked(useQueries).mockReturnValue([
       {
         data: {

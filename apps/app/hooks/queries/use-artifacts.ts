@@ -564,10 +564,7 @@ export function useRelatedArtifacts(
  */
 export function usePreviewDeployment(
   artifactId: string,
-  options?: Omit<
-    UseQueryOptions<ExternalLink | null>,
-    "queryKey" | "queryFn"
-  >
+  options?: Omit<UseQueryOptions<ExternalLink | null>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 

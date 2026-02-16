@@ -4,6 +4,7 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -32,8 +33,8 @@ import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { PreviewLink } from "@/components/preview-link";
-import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useExternalLinks } from "@/hooks/queries/use-external-links";
+import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
   isNavigableArtifact,
@@ -43,7 +44,6 @@ import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsThreadedViewProps = {

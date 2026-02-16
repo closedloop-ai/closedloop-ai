@@ -1,12 +1,16 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, test } from "vitest";
 import { PreviewLink } from "../preview-link";
+
+const PREVIEW_REGEX = /preview/i;
+
+afterEach(cleanup);
 
 describe("PreviewLink", () => {
   test("renders link with correct attributes when URL is provided", () => {
     render(<PreviewLink url="https://preview.example.com" />);
 
-    const link = screen.getByRole("link", { name: /preview/i });
+    const link = screen.getByRole("link", { name: PREVIEW_REGEX });
     expect(link).toHaveAttribute("href", "https://preview.example.com");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
@@ -44,7 +48,7 @@ describe("PreviewLink", () => {
   test("link has correct styling classes", () => {
     render(<PreviewLink url="https://preview.example.com" />);
 
-    const link = screen.getByRole("link", { name: /preview/i });
+    const link = screen.getByRole("link", { name: PREVIEW_REGEX });
     expect(link).toHaveClass("inline-flex");
     expect(link).toHaveClass("items-center");
     expect(link).toHaveClass("gap-1");
