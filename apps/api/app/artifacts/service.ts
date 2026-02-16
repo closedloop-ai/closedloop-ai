@@ -389,7 +389,8 @@ export const artifactsService = {
       }
 
       const slug = generateSlug();
-      const { content, ...artifactInput } = input;
+      const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+        input;
 
       const artifact = await tx.artifact.create({
         data: {
@@ -408,17 +409,17 @@ export const artifactsService = {
         data: {
           artifactId: artifact.id,
           version: 1,
-          content: input.content,
+          content,
           createdById: userId,
         },
       });
 
-      if (input.sourceId && input.sourceType) {
+      if (sourceId && sourceType) {
         await tx.entityLink.create({
           data: {
-            sourceId: input.sourceId,
-            sourceType: input.sourceType,
-            sourceVersion: input.sourceVersion,
+            sourceId,
+            sourceType,
+            sourceVersion,
             targetId: artifact.id,
             targetType: "ARTIFACT",
             targetVersion: artifact.latestVersion,
