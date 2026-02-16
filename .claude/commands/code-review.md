@@ -217,7 +217,7 @@ for module in high_stakes_modules:
             selected_domain_critics.extend(module["critics"])
             break
 
-# Cap at reviewBudget domain critics (sort for deterministic selection across runs)
+# Cap at min(reviewBudget, 2) domain critics (sort for deterministic selection across runs)
 selected_domain_critics = sorted(set(selected_domain_critics))[:max_domain_critics]
 ```
 
