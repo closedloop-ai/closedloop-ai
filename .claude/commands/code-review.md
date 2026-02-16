@@ -7,6 +7,12 @@ argument-hint: [scope] - optional: "staged", "branch", or file paths
 
 Run a multi-agent code review with 4-layer architecture, deterministic hygiene checks, model routing, and validated findings.
 
+<!-- MAINTENANCE: Steps 2.5, 3, 4, and 5 share architecture with gh-code-review.md.
+     Sections that must stay in sync: hygiene checks, agent prompts, severity routing,
+     model routing table, domain critic selection, and validation pipeline.
+     Key difference: this command uses git diff (local), gh-code-review uses GitHub API.
+     This command outputs to terminal; gh-code-review posts inline comments. -->
+
 ## Usage
 
 ```
@@ -104,6 +110,11 @@ git check-ignore --no-index <added_file> 2>/dev/null
 # Check if any added/modified files match: *.env*, credentials*, *.pem, *.key, *secret*
 ```
 
+**Line fallback for file-level findings** (applies to all checks):
+- If a grep matched a specific content line → use that line number
+- If the finding is file-level (e.g., Check 3/4 matched by filename pattern, not content) and file status is "added" → use `line: 1` (all lines are changed)
+- If the finding is file-level and file status is "modified" → use the first entry in CHANGED_LINES[file]
+
 ### Severity Routing for Hygiene Findings
 
 **Skip entirely** (allowlist — no finding generated):
@@ -131,7 +142,7 @@ Store hygiene findings in the same format as agent findings. Use the actual matc
   "category": "Repo Hygiene",
   "issue": "[P1] CI artifact committed — file contains /home/runner/ paths",
   "explanation": "Line 23 contains '/home/runner/work/project/dist/bundle.js'. This is a CI-generated path that should not be committed.",
-  "recommendation": "Add this file to .gitignore and remove it from the PR.",
+  "recommendation": "Add this file to .gitignore and remove it from the branch.",
   "priority": 1,
   "confidence": 1.0
 }
@@ -187,12 +198,13 @@ Take top 5. Feed these to an Opus agent for direct review.
 Read `.claude/settings/critic-gates.json` and extract:
 - **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
 - **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional domain critics (default: 2 for Layer 4)
+- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
 
 ```python
 # Only select domain critics for high-stakes areas
 selected_domain_critics = []
-pr_context = " ".join(changed_files).lower()
+file_context = " ".join(FILES_TO_REVIEW).lower()
+max_domain_critics = min(critic_config["defaults"]["reviewBudget"], 2)
 
 # Only trigger for security, database, payment modules
 high_stakes_modules = [m for m in critic_config["moduleCritics"]
@@ -201,12 +213,12 @@ high_stakes_modules = [m for m in critic_config["moduleCritics"]
 
 for module in high_stakes_modules:
     for pattern in module["patterns"]:
-        if pattern.lower() in pr_context:
+        if pattern.lower() in file_context:
             selected_domain_critics.extend(module["critics"])
             break
 
-# Cap at 2 domain critics (sort for deterministic selection across runs)
-selected_domain_critics = sorted(set(selected_domain_critics))[:2]
+# Cap at reviewBudget domain critics (sort for deterministic selection across runs)
+selected_domain_critics = sorted(set(selected_domain_critics))[:max_domain_critics]
 ```
 
 Report to user: model routing decision, which agents will run, and domain critics (if any).
@@ -544,7 +556,7 @@ Then for each finding:
 
 1. **File in scope?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
-3. **Duplicate?** Same file + line + category → **MERGE** (keep highest severity)
+3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
 4. **Confidence threshold** (severity-gated to prevent suppression):
    - P0/P1 (BLOCKING/HIGH): **never discard on confidence** — always send to validation
    - P2/P3 (MEDIUM): discard if `confidence < 0.5`
@@ -619,7 +631,12 @@ Apply validation results:
 
 ### Step 5.5: Deduplication and Consolidation
 
-Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
+Group findings by root cause. Two findings share a root cause when ANY of these match:
+- Same category + similar issue text
+- Same file + overlapping line (±3) + same or equivalent recommendation
+- Different categories but describing the same underlying code problem
+
+When multiple findings share the same underlying issue:
 - Keep the finding with the HIGHEST severity as the primary
 - Include all other occurrences as "Other Locations"
 
