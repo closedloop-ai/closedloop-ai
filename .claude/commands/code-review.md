@@ -198,7 +198,7 @@ Take top 5. Feed these to an Opus agent for direct review.
 Read `.claude/settings/critic-gates.json` and extract:
 - **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
 - **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
+- **reviewBudget**: Max additional domain critics (capped at 2 for Layer 4)
 
 ```python
 # Only select domain critics for high-stakes areas
