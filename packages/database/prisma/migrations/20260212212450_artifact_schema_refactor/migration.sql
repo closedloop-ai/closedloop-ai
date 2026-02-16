@@ -18,7 +18,7 @@
   - A unique constraint covering the columns `[organization_id,template_for_type]` on the table `artifacts` will be added. If there are existing duplicate values, this will fail.
   - Added the required column `slug` to the `artifacts` table without a default value. This is not possible if the table is not empty.
 */
-BEGIN;
+-- NOTE: Do NOT wrap in BEGIN/COMMIT — Prisma migrate deploy manages transactions.
 
 -- ============================================================================
 -- PHASE 1: Create new enums and tables (DDL that data migration depends on)
@@ -44,12 +44,14 @@ CREATE TYPE "LinkType" AS ENUM ('PRODUCES', 'BLOCKS', 'RELATES_TO');
 -- new enum (PRD/IMPLEMENTATION_PLAN/TEMPLATE). We must migrate/delete those rows first.
 
 -- AlterEnum (GitHubInstallationStatus — independent, safe to do now)
+-- First, migrate any REMOVED rows to UNINSTALLED before swapping the enum
+UPDATE "github_installations" SET "status" = 'UNINSTALLED' WHERE "status" = 'REMOVED';
 CREATE TYPE "GitHubInstallationStatus_new" AS ENUM ('PENDING_CLAIM', 'ACTIVE', 'SUSPENDED', 'UNINSTALLED');
-ALTER TABLE "public"."github_installations" ALTER COLUMN "status" DROP DEFAULT;
+ALTER TABLE "github_installations" ALTER COLUMN "status" DROP DEFAULT;
 ALTER TABLE "github_installations" ALTER COLUMN "status" TYPE "GitHubInstallationStatus_new" USING ("status"::text::"GitHubInstallationStatus_new");
 ALTER TYPE "GitHubInstallationStatus" RENAME TO "GitHubInstallationStatus_old";
 ALTER TYPE "GitHubInstallationStatus_new" RENAME TO "GitHubInstallationStatus";
-DROP TYPE "public"."GitHubInstallationStatus_old";
+DROP TYPE "GitHubInstallationStatus_old";
 ALTER TABLE "github_installations" ALTER COLUMN "status" SET DEFAULT 'PENDING_CLAIM';
 
 -- CreateTable
@@ -387,7 +389,7 @@ ALTER TABLE "artifacts" ALTER COLUMN "slug" SET NOT NULL;
 CREATE TYPE "ArtifactType_new" AS ENUM ('PRD', 'IMPLEMENTATION_PLAN', 'TEMPLATE');
 
 -- Step B: Convert type column to TEXT so we can update values freely
-ALTER TABLE "public"."artifacts" ALTER COLUMN "type" DROP DEFAULT;
+ALTER TABLE "artifacts" ALTER COLUMN "type" DROP DEFAULT;
 ALTER TABLE "artifacts" ALTER COLUMN "type" TYPE TEXT USING ("type"::text);
 
 -- Step C: Update the type column on surviving rows from the old category (DOCUMENT/WORKFLOW/BRANCH)
@@ -400,7 +402,7 @@ ALTER TABLE "artifacts" ALTER COLUMN "type" TYPE "ArtifactType_new" USING ("type
 ALTER TABLE "artifacts" ALTER COLUMN "template_for_type" TYPE "ArtifactType_new" USING ("template_for_type"::text::"ArtifactType_new");
 ALTER TYPE "ArtifactType" RENAME TO "ArtifactType_old";
 ALTER TYPE "ArtifactType_new" RENAME TO "ArtifactType";
-DROP TYPE "public"."ArtifactType_old";
+DROP TYPE "ArtifactType_old";
 
 -- DropIndex (old indexes that reference dropped columns)
 DROP INDEX "artifact_evaluations_artifact_id_idx";
@@ -507,5 +509,3 @@ CREATE UNIQUE INDEX "artifacts_organization_id_template_for_type_key" ON "artifa
 
 -- CreateIndex
 CREATE INDEX "github_pull_requests_artifact_id_idx" ON "github_pull_requests"("artifact_id");
-
-COMMIT;
