@@ -615,7 +615,7 @@ Then for each finding:
    - Exception: findings with `inline === false` skip this check (summary-only findings from Step 2.5 may reference files outside the PR, e.g., missing .gitignore patterns)
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
    - Exception: findings with `inline === false` skip this check (summary-only)
-3. **Duplicate?** Same file + line + category → **MERGE** (keep highest severity)
+3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
 4. **Confidence threshold** (severity-gated to prevent suppression):
    - P0/P1 (BLOCKING/HIGH): **never discard on confidence** — always send to validation
    - P2/P3 (MEDIUM): discard if `confidence < 0.5`
@@ -690,7 +690,12 @@ Apply validation results:
 
 ### Step 5.5: Deduplication and Consolidation
 
-Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
+Group findings by root cause. Two findings share a root cause when ANY of these match:
+- Same category + similar issue text
+- Same file + overlapping line (±3) + same or equivalent recommendation
+- Different categories but describing the same underlying code problem
+
+When multiple findings share the same underlying issue:
 - Keep the finding with the HIGHEST severity as the primary
 - Include all other occurrences as "Other Locations"
 - Post a SINGLE inline comment on the primary location that lists all affected locations
@@ -857,7 +862,15 @@ Issue description
 **Recommendation:** How to fix
 ````
 
-**After posting**: Report how many inline comments were posted and how many were skipped (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff)"). Track skip reasons: `skipped_dedup` (dedup map match) and `skipped_line` (line not in diff). If `posted_count == 0` and there are validated inline findings where `posted + skipped_dedup + skipped_line` does NOT account for all of them, something went wrong — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped.
+**Counter tracking**: Before iterating findings, initialize counters:
+- `inline_eligible_count` = number of validated findings where `inline !== false`
+- `posted_count = 0`
+- `skipped_dedup = 0`
+- `skipped_line = 0`
+
+Increment within the loop: `posted_count++` after a successful post, `skipped_dedup++` when the dedup map matches, `skipped_line++` when the line is not in the diff.
+
+**After posting**: Report counts (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff)"). If `posted_count + skipped_dedup + skipped_line < inline_eligible_count`, some findings were silently lost — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped.
 
 Mark todo as `completed`.
 
