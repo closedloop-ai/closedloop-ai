@@ -15,7 +15,8 @@
       "docs": "Docs",
       "contact": "Contact",
       "signIn": "Sign in",
-      "signUp": "Get started"
+      "signUp": "Get started",
+      "developers": "Developers"
     },
     "home": {
       "meta": {
@@ -154,6 +155,149 @@
       "meta": {
         "title": "Blog",
         "description": "Insights on AI-powered development, code generation, and engineering best practices."
+      }
+    },
+    "developers": {
+      "meta": {
+        "title": "Enterprise AI Agent Orchestration | Claude Code Plugin",
+        "description": "Plan-first workflows, specialized agents, multi-phase execution, and critic-gated reviews. Ship production-ready code with full traceability and zero drift."
+      },
+      "hero": {
+        "badge": "Claude Code Plugin",
+        "title": "Enterprise AI Agent",
+        "titleHighlight": "Orchestration",
+        "description": "Plan-first workflows, specialized agents, multi-phase execution, and critic-gated reviews. Ship production-ready code with full traceability and zero drift.",
+        "installButton": "Install in 30 Seconds",
+        "githubButton": "View on GitHub"
+      },
+      "features": {
+        "label": "Features",
+        "title": "Plan, Execute, Verify",
+        "description": "ClosedLoop transforms how you build software with AI. Structured workflows ensure quality at every step.",
+        "items": [
+          {
+            "title": "PRD-Driven Planning",
+            "description": "Start with requirements. The PRD Analyst extracts user stories, acceptance criteria, and constraints. Plan Writer creates detailed implementation plans with full traceability."
+          },
+          {
+            "title": "Staged Execution",
+            "description": "Large features are automatically broken into LOC-budgeted stages. Each stage is implemented, tested, and verified before moving on. No context window overflows."
+          },
+          {
+            "title": "Specialized Agents",
+            "description": "20+ purpose-built agents: Plan Writer, Code Reviewer, Feature Locator, Stage Implementer, and more. Each agent has deep domain expertise."
+          },
+          {
+            "title": "Critic-Gated Reviews",
+            "description": "Plan Verifier red-teams your approach. Code Reviewer catches bugs before they ship. Configurable critic gates ensure nothing slips through."
+          },
+          {
+            "title": "Full Traceability",
+            "description": "Every requirement maps to tasks, tasks map to code, code maps to tests. Traceability CSV and anchors.json provide audit-ready documentation."
+          },
+          {
+            "title": "Linear or Jira Export",
+            "description": "Export implementation plans directly to Linear issues or Jira epics and stories. PRDs can be published to Confluence. Seamless integration with your existing tools."
+          }
+        ]
+      },
+      "commands": {
+        "label": "Slash Commands",
+        "title": "Powerful Workflows at Your Fingertips",
+        "description": "Simple commands orchestrate complex multi-agent workflows.",
+        "items": [
+          {
+            "name": "/plan",
+            "description": "Create detailed implementation plans from PRDs"
+          },
+          {
+            "name": "/execute",
+            "description": "Run staged implementation with testing & review"
+          },
+          {
+            "name": "/amend-plan",
+            "description": "Apply targeted changes to existing plans"
+          },
+          {
+            "name": "/implement-stage",
+            "description": "Execute a specific stage from a staged plan"
+          },
+          {
+            "name": "/code-review",
+            "description": "Comprehensive code review with critic agents"
+          },
+          {
+            "name": "/prd-creator",
+            "description": "Interactive PRD drafting with AI assistance"
+          }
+        ]
+      },
+      "agents": {
+        "label": "Specialized Agents",
+        "title": "Purpose-Built AI Teammates",
+        "description": "Each agent is optimized for a specific task in the software delivery lifecycle.",
+        "items": [
+          {
+            "name": "plan-writer",
+            "description": "Drafts implementation plans with detailed specs and traceability"
+          },
+          {
+            "name": "plan-verifier",
+            "description": "Red-teams plans for realism and parity coverage"
+          },
+          {
+            "name": "code-reviewer",
+            "description": "Reviews code for quality, security, and best practices"
+          },
+          {
+            "name": "feature-locator",
+            "description": "Maps requirements to existing code locations"
+          },
+          {
+            "name": "stage-implementer",
+            "description": "Implements code for specific plan stages"
+          },
+          {
+            "name": "prd-analyst",
+            "description": "Extracts user stories and acceptance criteria"
+          },
+          {
+            "name": "questions-curator",
+            "description": "Identifies and deduplicates open questions"
+          },
+          {
+            "name": "plan-stager",
+            "description": "Partitions tasks into LOC-budgeted stages"
+          }
+        ]
+      },
+      "installation": {
+        "label": "Get Started",
+        "title": "Install in 30 Seconds",
+        "description": "Zero dependencies. Install via the plugin marketplace.",
+        "steps": [
+          {
+            "title": "Add the Plugin Marketplace",
+            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude-marketplace"
+          },
+          {
+            "title": "Install ClosedLoop Core",
+            "description": "Install the plugin from the marketplace:",
+            "code": "/plugin install symphony-core"
+          },
+          {
+            "title": "Start Planning",
+            "description": "You're ready! Create your first implementation plan:",
+            "code": "/symphony-core:plan \"Your feature description here\""
+          }
+        ]
+      },
+      "cta": {
+        "title": "Ready to Ship Better Software?",
+        "description": "Join teams using ClosedLoop to build production-ready features with AI.",
+        "primaryButton": "Get Started Free",
+        "secondaryButton": "Read the Docs"
       }
     },
     "contact": {

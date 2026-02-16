@@ -15,6 +15,11 @@ export const Footer = () => {
     },
   ];
 
+  navigationItems.at(1)?.items?.push({
+    title: "Developers",
+    href: "/developers",
+  });
+
   if (env.NEXT_PUBLIC_DOCS_URL) {
     navigationItems.at(1)?.items?.push({
       title: "Docs",
