@@ -14,7 +14,10 @@ describe("entityLinksService", () => {
   });
 
   describe("createLink metadata handling", () => {
-    it("uses DbNull when metadata is null", async () => {
+    it.each([
+      { label: "null", metadata: null },
+      { label: "undefined", metadata: undefined },
+    ])("uses DbNull when metadata is $label", async ({ metadata }) => {
       const mockDb = {
         entityLink: {
           create: vi.fn().mockResolvedValue({ id: "el-1" }),
@@ -28,30 +31,7 @@ describe("entityLinksService", () => {
         targetId: "a-2",
         targetType: "ARTIFACT" as const,
         linkType: "RELATES_TO" as const,
-        metadata: null,
-      });
-
-      expect(mockDb.entityLink.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          metadata: "DbNull",
-        }),
-      });
-    });
-
-    it("uses DbNull when metadata is undefined", async () => {
-      const mockDb = {
-        entityLink: {
-          create: vi.fn().mockResolvedValue({ id: "el-1" }),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      await entityLinksService.createLink({
-        sourceId: "a-1",
-        sourceType: "ARTIFACT" as const,
-        targetId: "a-2",
-        targetType: "ARTIFACT" as const,
-        linkType: "BLOCKS" as const,
+        ...(metadata !== undefined && { metadata }),
       });
 
       expect(mockDb.entityLink.create).toHaveBeenCalledWith({
@@ -63,14 +43,18 @@ describe("entityLinksService", () => {
   });
 
   describe("findLinks builds bidirectional OR query", () => {
-    it("queries both source and target sides", async () => {
-      const mockDb = {
+    let mockDb: { entityLink: { findMany: ReturnType<typeof vi.fn> } };
+
+    beforeEach(() => {
+      mockDb = {
         entityLink: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };
       mockWithDbCall(mockDb);
+    });
 
+    it("queries both source and target sides", async () => {
       await entityLinksService.findLinks("artifact-1", "ARTIFACT");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
@@ -85,13 +69,6 @@ describe("entityLinksService", () => {
     });
 
     it("adds linkType filter to both OR branches", async () => {
-      const mockDb = {
-        entityLink: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      };
-      mockWithDbCall(mockDb);
-
       await entityLinksService.findLinks("artifact-1", "ARTIFACT", "PRODUCES");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
@@ -115,14 +92,18 @@ describe("entityLinksService", () => {
   });
 
   describe("directional queries", () => {
-    it("findSourceLinks queries by targetId (incoming links)", async () => {
-      const mockDb = {
+    let mockDb: { entityLink: { findMany: ReturnType<typeof vi.fn> } };
+
+    beforeEach(() => {
+      mockDb = {
         entityLink: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };
       mockWithDbCall(mockDb);
+    });
 
+    it("findSourceLinks queries by targetId (incoming links)", async () => {
       await entityLinksService.findSourceLinks("artifact-1", "ARTIFACT");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
@@ -135,13 +116,6 @@ describe("entityLinksService", () => {
     });
 
     it("findTargetLinks queries by sourceId (outgoing links)", async () => {
-      const mockDb = {
-        entityLink: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      };
-      mockWithDbCall(mockDb);
-
       await entityLinksService.findTargetLinks("artifact-1", "ARTIFACT");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({

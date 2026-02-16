@@ -11,6 +11,13 @@ import {
 const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
 
+async function setupTestData() {
+  const testOrgId = await createTestOrganization();
+  const testProjectId = await createTestProject(testOrgId);
+  const testUser = await createTestUser(testOrgId);
+  return { testOrgId, testProjectId, testUser };
+}
+
 describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
   it("creates and retrieves an external link", async () => {
     await autoRollbackTransaction(async () => {
@@ -37,9 +44,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
 
   it("creates link with workstream and metadata", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
       const workstream = await workstreamsService.create(
         testOrgId,
@@ -69,9 +74,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
 
   it("finds links by workstream", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
       const workstream = await workstreamsService.create(
         testOrgId,

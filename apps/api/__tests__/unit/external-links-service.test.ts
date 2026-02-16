@@ -14,14 +14,18 @@ describe("externalLinksService", () => {
   });
 
   describe("findAll filter precedence", () => {
-    it("filters by projectId when workstreamId is absent", async () => {
-      const mockDb = {
+    let mockDb: { externalLink: { findMany: ReturnType<typeof vi.fn> } };
+
+    beforeEach(() => {
+      mockDb = {
         externalLink: {
           findMany: vi.fn().mockResolvedValue([]),
         },
       };
       mockWithDbCall(mockDb);
+    });
 
+    it("filters by projectId when workstreamId is absent", async () => {
       await externalLinksService.findAll({
         organizationId: "org-1",
         projectId: "proj-1",
@@ -34,13 +38,6 @@ describe("externalLinksService", () => {
     });
 
     it("ignores projectId when workstreamId is present", async () => {
-      const mockDb = {
-        externalLink: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      };
-      mockWithDbCall(mockDb);
-
       await externalLinksService.findAll({
         organizationId: "org-1",
         workstreamId: "ws-1",
@@ -55,7 +52,25 @@ describe("externalLinksService", () => {
   });
 
   describe("create metadata handling", () => {
-    it("uses DbNull when metadata is null", async () => {
+    it.each([
+      {
+        label: "null",
+        input: {
+          type: "FIGMA_DESIGN" as const,
+          title: "Design",
+          externalUrl: "https://figma.com/file/abc",
+          metadata: null,
+        },
+      },
+      {
+        label: "undefined",
+        input: {
+          type: "FIGMA_DESIGN" as const,
+          title: "Design",
+          externalUrl: "https://figma.com/file/abc",
+        },
+      },
+    ])("uses DbNull when metadata is $label", async ({ input }) => {
       const mockDb = {
         externalLink: {
           create: vi.fn().mockResolvedValue({ id: "link-1" }),
@@ -63,33 +78,7 @@ describe("externalLinksService", () => {
       };
       mockWithDbCall(mockDb);
 
-      await externalLinksService.create("org-1", {
-        type: "FIGMA_DESIGN" as const,
-        title: "Design",
-        externalUrl: "https://figma.com/file/abc",
-        metadata: null,
-      });
-
-      expect(mockDb.externalLink.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          metadata: "DbNull",
-        }),
-      });
-    });
-
-    it("uses DbNull when metadata is undefined", async () => {
-      const mockDb = {
-        externalLink: {
-          create: vi.fn().mockResolvedValue({ id: "link-1" }),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      await externalLinksService.create("org-1", {
-        type: "FIGMA_DESIGN" as const,
-        title: "Design",
-        externalUrl: "https://figma.com/file/abc",
-      });
+      await externalLinksService.create("org-1", input);
 
       expect(mockDb.externalLink.create).toHaveBeenCalledWith({
         data: expect.objectContaining({

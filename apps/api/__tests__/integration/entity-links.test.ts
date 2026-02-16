@@ -1,3 +1,4 @@
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import { keys } from "@repo/database/keys";
 import { artifactsService } from "@/app/artifacts/service";
 import { entityLinksService } from "@/app/entity-links/service";
@@ -12,48 +13,67 @@ import {
 const env = keys();
 const hasDatabase = !!env.DATABASE_URL;
 
+async function setupTestData() {
+  const testOrgId = await createTestOrganization();
+  const testProjectId = await createTestProject(testOrgId);
+  const testUser = await createTestUser(testOrgId);
+  return { testOrgId, testProjectId, testUser };
+}
+
+async function createArtifact(
+  orgId: string,
+  userId: string,
+  projectId: string,
+  overrides: { type: ArtifactType; title: string }
+) {
+  const artifact = await artifactsService.create(orgId, userId, {
+    projectId,
+    type: overrides.type,
+    title: overrides.title,
+    content: "Content",
+  });
+  if (!artifact) {
+    throw new Error("Failed to create test artifact");
+  }
+  return artifact;
+}
+
 describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
   it("creates and finds bidirectional entity links", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact1 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "Feature PRD",
-        content: "PRD content",
-      });
-      expect(artifact1).not.toBeNull();
+      const artifact1 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "Feature PRD" }
+      );
+      const artifact2 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Implementation Plan" }
+      );
 
-      const artifact2 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Implementation Plan",
-        content: "Plan content",
-      });
-      expect(artifact2).not.toBeNull();
-
-      // Create entity link: PRD PRODUCES Plan
       const link = await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         sourceVersion: 1,
-        targetId: artifact2!.id,
+        targetId: artifact2.id,
         targetType: "ARTIFACT",
         targetVersion: 1,
         linkType: "PRODUCES",
       });
 
       expect(link.id).toBeDefined();
-      expect(link.sourceId).toBe(artifact1!.id);
-      expect(link.targetId).toBe(artifact2!.id);
+      expect(link.sourceId).toBe(artifact1.id);
+      expect(link.targetId).toBe(artifact2.id);
       expect(link.linkType).toBe("PRODUCES");
 
       // Find bidirectional links for artifact1
       const links1 = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT"
       );
       expect(links1).toHaveLength(1);
@@ -61,7 +81,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Find bidirectional links for artifact2
       const links2 = await entityLinksService.findLinks(
-        artifact2!.id,
+        artifact2.id,
         "ARTIFACT"
       );
       expect(links2).toHaveLength(1);
@@ -71,55 +91,50 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("finds source and target links directionally", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact1 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "Feature PRD",
-        content: "PRD content",
-      });
-      expect(artifact1).not.toBeNull();
-
-      const artifact2 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Plan",
-        content: "Plan content",
-      });
-      expect(artifact2).not.toBeNull();
+      const artifact1 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "Feature PRD" }
+      );
+      const artifact2 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+      );
 
       await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact2!.id,
+        targetId: artifact2.id,
         targetType: "ARTIFACT",
         linkType: "PRODUCES",
       });
 
       // Source links for artifact2 (what produced it?) -> artifact1
       const sourceLinks = await entityLinksService.findSourceLinks(
-        artifact2!.id,
+        artifact2.id,
         "ARTIFACT",
         "PRODUCES"
       );
       expect(sourceLinks).toHaveLength(1);
-      expect(sourceLinks[0].sourceId).toBe(artifact1!.id);
+      expect(sourceLinks[0].sourceId).toBe(artifact1.id);
 
       // Target links for artifact1 (what did it produce?) -> artifact2
       const targetLinks = await entityLinksService.findTargetLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT",
         "PRODUCES"
       );
       expect(targetLinks).toHaveLength(1);
-      expect(targetLinks[0].targetId).toBe(artifact2!.id);
+      expect(targetLinks[0].targetId).toBe(artifact2.id);
 
       // Source links for artifact1 (what produced it?) -> nothing
       const noSourceLinks = await entityLinksService.findSourceLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT",
         "PRODUCES"
       );
@@ -129,17 +144,14 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("links artifact to external link", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Plan",
-        content: "Plan content",
-      });
-      expect(artifact).not.toBeNull();
+      const artifact = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+      );
 
       const externalLink = await externalLinksService.create(testOrgId, {
         type: "PULL_REQUEST",
@@ -148,7 +160,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       });
 
       const link = await entityLinksService.createLink({
-        sourceId: artifact!.id,
+        sourceId: artifact.id,
         sourceType: "ARTIFACT",
         targetId: externalLink.id,
         targetType: "EXTERNAL_LINK",
@@ -160,7 +172,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Verify bidirectional lookup works
       const fromArtifact = await entityLinksService.findLinks(
-        artifact!.id,
+        artifact.id,
         "ARTIFACT"
       );
       expect(fromArtifact).toHaveLength(1);
@@ -175,26 +187,23 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("resolves entities by type", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "Test PRD",
-        content: "Content",
-      });
-      expect(artifact).not.toBeNull();
+      const artifact = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "Test PRD" }
+      );
 
       const resolved = await entityLinksService.resolveEntity(
-        artifact!.id,
+        artifact.id,
         "ARTIFACT"
       );
 
       expect(resolved).not.toBeNull();
       expect(resolved!.type).toBe("ARTIFACT");
-      expect(resolved!.entity.id).toBe(artifact!.id);
+      expect(resolved!.entity.id).toBe(artifact.id);
     });
   });
 
@@ -231,30 +240,25 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("deletes a single entity link", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact1 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "PRD",
-        content: "Content",
-      });
-      expect(artifact1).not.toBeNull();
-
-      const artifact2 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Plan",
-        content: "Content",
-      });
-      expect(artifact2).not.toBeNull();
+      const artifact1 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "PRD" }
+      );
+      const artifact2 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+      );
 
       const link = await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact2!.id,
+        targetId: artifact2.id,
         targetType: "ARTIFACT",
         linkType: "PRODUCES",
       });
@@ -262,7 +266,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       await entityLinksService.deleteLink(link.id);
 
       const links = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT"
       );
       expect(links).toHaveLength(0);
@@ -271,63 +275,56 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("deletes all links for an entity", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact1 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "PRD",
-        content: "Content",
-      });
-      expect(artifact1).not.toBeNull();
-
-      const artifact2 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Plan",
-        content: "Content",
-      });
-      expect(artifact2).not.toBeNull();
-
-      const artifact3 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Another Plan",
-        content: "Content",
-      });
-      expect(artifact3).not.toBeNull();
+      const artifact1 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "PRD" }
+      );
+      const artifact2 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+      );
+      const artifact3 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Another Plan" }
+      );
 
       // Create links: artifact1 -> artifact2, artifact1 -> artifact3
       await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact2!.id,
+        targetId: artifact2.id,
         targetType: "ARTIFACT",
         linkType: "PRODUCES",
       });
 
       await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact3!.id,
+        targetId: artifact3.id,
         targetType: "ARTIFACT",
         linkType: "PRODUCES",
       });
 
       // Verify links exist
       const before = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT"
       );
       expect(before).toHaveLength(2);
 
       // Delete all links for artifact1
-      await entityLinksService.deleteAllLinks(artifact1!.id, "ARTIFACT");
+      await entityLinksService.deleteAllLinks(artifact1.id, "ARTIFACT");
 
       const after = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT"
       );
       expect(after).toHaveLength(0);
@@ -336,57 +333,50 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("filters links by linkType", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
-      const testUser = await createTestUser(testOrgId);
+      const { testOrgId, testProjectId, testUser } = await setupTestData();
 
-      const artifact1 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "PRD",
-        title: "PRD",
-        content: "Content",
-      });
-      expect(artifact1).not.toBeNull();
-
-      const artifact2 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Plan",
-        content: "Content",
-      });
-      expect(artifact2).not.toBeNull();
-
-      const artifact3 = await artifactsService.create(testOrgId, testUser.id, {
-        projectId: testProjectId,
-        type: "IMPLEMENTATION_PLAN",
-        title: "Another Plan",
-        content: "Content",
-      });
-      expect(artifact3).not.toBeNull();
+      const artifact1 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "PRD", title: "PRD" }
+      );
+      const artifact2 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+      );
+      const artifact3 = await createArtifact(
+        testOrgId,
+        testUser.id,
+        testProjectId,
+        { type: "IMPLEMENTATION_PLAN", title: "Another Plan" }
+      );
 
       await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact2!.id,
+        targetId: artifact2.id,
         targetType: "ARTIFACT",
         linkType: "PRODUCES",
       });
 
       await entityLinksService.createLink({
-        sourceId: artifact1!.id,
+        sourceId: artifact1.id,
         sourceType: "ARTIFACT",
-        targetId: artifact3!.id,
+        targetId: artifact3.id,
         targetType: "ARTIFACT",
         linkType: "RELATES_TO",
       });
 
       // All links
-      const all = await entityLinksService.findLinks(artifact1!.id, "ARTIFACT");
+      const all = await entityLinksService.findLinks(artifact1.id, "ARTIFACT");
       expect(all).toHaveLength(2);
 
       // Only PRODUCES links
       const produces = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT",
         "PRODUCES"
       );
@@ -395,7 +385,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Only RELATES_TO links
       const relatesTo = await entityLinksService.findLinks(
-        artifact1!.id,
+        artifact1.id,
         "ARTIFACT",
         "RELATES_TO"
       );
