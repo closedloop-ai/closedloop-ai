@@ -2,10 +2,8 @@ import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-
 import { vi } from "vitest";
 import { GET, PUT } from "@/app/pull-requests/[id]/rating/route";
 import { submitPullRequestRatingSchema } from "@/app/pull-requests/[id]/rating/validators";
-import {
-  PullRequestNotFoundError,
-  pullRequestRatingsService,
-} from "@/app/pull-requests/service";
+import { PullRequestNotFoundError } from "@/app/pull-requests/errors";
+import { pullRequestRatingsService } from "@/app/pull-requests/service";
 import type { AuthContext } from "@/lib/auth/with-auth";
 import {
   createMockRequest,

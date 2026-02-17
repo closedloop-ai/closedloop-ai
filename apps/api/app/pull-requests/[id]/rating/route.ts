@@ -4,10 +4,8 @@ import { rateLimit } from "@repo/security";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
-import {
-  PullRequestNotFoundError,
-  pullRequestRatingsService,
-} from "../../service";
+import { PullRequestNotFoundError } from "../../errors";
+import { pullRequestRatingsService } from "../../service";
 import { submitPullRequestRatingSchema } from "./validators";
 
 export const GET = withAuth<

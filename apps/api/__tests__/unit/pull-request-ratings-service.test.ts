@@ -5,10 +5,8 @@ vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
-import {
-  PullRequestNotFoundError,
-  pullRequestRatingsService,
-} from "@/app/pull-requests/service";
+import { PullRequestNotFoundError } from "@/app/pull-requests/errors";
+import { pullRequestRatingsService } from "@/app/pull-requests/service";
 
 describe("pullRequestRatingsService", () => {
   beforeEach(() => {
