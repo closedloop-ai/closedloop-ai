@@ -44,15 +44,7 @@ const COLOR_PURPLE =
   "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800";
 
 /**
- * PR status colors mapping to PRD requirements for AC3.1.
- * Separate from pullRequestStateColors - this maps specific status strings
- * (OPEN, MERGED, CLOSED) to semantic colors based on PRD acceptance criteria:
- * - OPEN → blue (in progress)
- * - MERGED → green (success)
- * - CLOSED → red (failure/abandoned)
- */
-/**
- * Unified PR status colors per PRD requirements (AC3.1):
+ * PR status colors per PRD requirements (AC3.1):
  * - OPEN → blue (in progress)
  * - MERGED → green (success)
  * - CLOSED → red (failure/abandoned)
@@ -61,6 +53,20 @@ export const prStatusColors: Record<string, string> = {
   OPEN: COLOR_PROGRESS,
   MERGED: COLOR_SUCCESS,
   CLOSED: COLOR_FAILURE,
+};
+
+/**
+ * PR review decision colors per PRD requirements (AC3.2):
+ * - APPROVED → green (success)
+ * - CHANGES_REQUESTED → red (needs work)
+ * - COMMENTED → yellow (feedback provided)
+ * - DISMISSED → gray (inactive/cancelled)
+ */
+export const prReviewDecisionColors: Record<string, string> = {
+  APPROVED: COLOR_SUCCESS,
+  CHANGES_REQUESTED: COLOR_FAILURE,
+  COMMENTED: COLOR_PENDING,
+  DISMISSED: COLOR_INACTIVE,
 };
 
 export const previewDeploymentStateColors: Record<string, string> = {

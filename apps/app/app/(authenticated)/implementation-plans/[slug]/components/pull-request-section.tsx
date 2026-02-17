@@ -4,7 +4,11 @@ import type { PullRequestInfo } from "@repo/api/src/types/artifact";
 import { Label } from "@repo/design-system/components/ui/label";
 import { ExternalLinkIcon, GitPullRequestIcon } from "lucide-react";
 import { MetadataSection } from "@/components/artifact-editor/metadata-panel";
-import { prStatusColors, StatusBadge } from "@/components/status-badge";
+import {
+  prReviewDecisionColors,
+  prStatusColors,
+  StatusBadge,
+} from "@/components/status-badge";
 
 type PullRequestSectionProps = {
   pullRequest: PullRequestInfo;
@@ -30,6 +34,13 @@ export function PullRequestSection({ pullRequest }: PullRequestSectionProps) {
           colorMap={prStatusColors}
           status={pullRequest.state}
         />
+        {pullRequest.reviewDecision && (
+          <StatusBadge
+            className="px-2 py-0.5 text-xs uppercase"
+            colorMap={prReviewDecisionColors}
+            status={pullRequest.reviewDecision}
+          />
+        )}
         <span>
           {pullRequest.headBranch} → {pullRequest.baseBranch}
         </span>
