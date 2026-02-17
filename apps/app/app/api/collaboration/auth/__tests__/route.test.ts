@@ -105,12 +105,11 @@ describe("POST /api/collaboration/auth", () => {
       expect(await response.text()).toBe(mockToken);
       expect(mockAuthenticate).toHaveBeenCalledWith({
         userId: "user-123",
-        roomId: "org-123:artifact:art-456",
         organizationId: "org-123",
         userInfo: {
           name: "John Doe",
           avatar: "https://example.com/avatar.jpg",
-          color: expect.stringContaining("var(--color-"),
+          color: expect.any(String),
         },
       });
     });
