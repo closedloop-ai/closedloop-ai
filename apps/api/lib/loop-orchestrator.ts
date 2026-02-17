@@ -503,7 +503,11 @@ export async function launchLoop(
       ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
       : undefined;
 
-    // 7. Launch ECS task (secrets travel via S3 context pack, not env vars)
+    // 7. Launch ECS task
+    // CLOSEDLOOP_AUTH_TOKEN is intentionally passed as an env var, not in the
+    // context pack. The harness reads it but the sandboxed child process (Claude)
+    // cannot access parent env vars, making this more secure than the context
+    // pack which is fully visible to the child process via S3.
     const closedLoopAuthToken = await issueLoopRunnerToken({
       loopId,
       organizationId,
@@ -589,8 +593,11 @@ async function runEcsTask(opts: {
   const config = getEcsConfig();
 
   // Build environment variable overrides for the container.
-  // Note: secrets (API keys, tokens) are delivered via S3 context pack,
-  // NOT as env vars — env vars are visible via ecs:DescribeTasks API.
+  // Auth tokens (CLOSEDLOOP_AUTH_TOKEN) are passed here as env vars because the
+  // harness process reads them directly while the sandboxed child process (Claude)
+  // cannot access parent env vars. This is more secure than the context pack,
+  // which the child process can read via S3. API keys and GitHub tokens still
+  // travel via the context pack since the child process needs them directly.
   const environment = [
     { name: "LOOP_ID", value: opts.loopId },
     { name: "ORGANIZATION_ID", value: opts.organizationId },
