@@ -1,14 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  createMockArtifact,
-  createMockPullRequest,
-} from "@/__tests__/fixtures/artifacts";
+import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { PlanTable } from "../plan-table";
 
 // Mock the hooks
 const mockUseRouter = vi.fn();
-const mockUseArtifactsBySubtype = vi.fn();
+const mockUseArtifacts = vi.fn();
 const mockUseDeleteArtifact = vi.fn();
 const mockUseUpdateArtifact = vi.fn();
 const mockUseProjects = vi.fn();
@@ -33,7 +30,7 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-artifacts");
   return {
     ...actual,
-    useArtifactsBySubtype: () => mockUseArtifactsBySubtype(),
+    useArtifacts: () => mockUseArtifacts(),
     useUpdateArtifact: () => mockUseUpdateArtifact(),
     useDeleteArtifact: () => mockUseDeleteArtifact(),
   };
@@ -47,9 +44,7 @@ vi.mock("@/hooks/queries/use-projects", async () => {
   };
 });
 
-const PULL_REQUEST_REGEX = /Pull request/;
-
-describe("PlanTable - PR Icon Display", () => {
+describe("PlanTable", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseRouter.mockReturnValue({ push: vi.fn() });
@@ -75,20 +70,14 @@ describe("PlanTable - PR Icon Display", () => {
     cleanup();
   });
 
-  test("displays PR icon with link when plan has pullRequest", () => {
-    const mockPR = createMockPullRequest({
-      number: 99,
-      htmlUrl: "https://github.com/org/repo/pull/99",
-    });
-
+  test("renders plan artifacts", () => {
     const mockPlan = createMockArtifact({
       id: "plan-1",
-      title: "Implementation Plan with PR",
-      subtype: "IMPLEMENTATION_PLAN",
-      pullRequest: mockPR,
+      title: "Implementation Plan Alpha",
+      type: "IMPLEMENTATION_PLAN",
     });
 
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [mockPlan],
       isLoading: false,
       error: null,
@@ -96,77 +85,11 @@ describe("PlanTable - PR Icon Display", () => {
 
     render(<PlanTable />);
 
-    expect(screen.getByText("Implementation Plan with PR")).toBeInTheDocument();
-
-    const prLink = screen.getByRole("link", { name: "Pull request #99" });
-    expect(prLink).toBeInTheDocument();
-    expect(prLink).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/pull/99"
-    );
-    expect(prLink).toHaveAttribute("target", "_blank");
-    expect(prLink).toHaveAttribute("rel", "noopener noreferrer");
-  });
-
-  test("does not display PR icon when plan has no pullRequest", () => {
-    const mockPlan = createMockArtifact({
-      id: "plan-2",
-      title: "Plan without PR",
-      subtype: "IMPLEMENTATION_PLAN",
-      pullRequest: null,
-    });
-
-    mockUseArtifactsBySubtype.mockReturnValue({
-      data: [mockPlan],
-      isLoading: false,
-      error: null,
-    });
-
-    render(<PlanTable />);
-
-    expect(screen.getByText("Plan without PR")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: PULL_REQUEST_REGEX })
-    ).not.toBeInTheDocument();
-  });
-
-  test("displays correct PR numbers for different plans", () => {
-    const mockPR1 = createMockPullRequest({ number: 100 });
-    const mockPR2 = createMockPullRequest({ number: 101 });
-
-    const mockPlans = [
-      createMockArtifact({
-        id: "plan-1",
-        title: "Plan 1",
-        subtype: "IMPLEMENTATION_PLAN",
-        pullRequest: mockPR1,
-      }),
-      createMockArtifact({
-        id: "plan-2",
-        title: "Plan 2",
-        subtype: "IMPLEMENTATION_PLAN",
-        pullRequest: mockPR2,
-      }),
-    ];
-
-    mockUseArtifactsBySubtype.mockReturnValue({
-      data: mockPlans,
-      isLoading: false,
-      error: null,
-    });
-
-    render(<PlanTable />);
-
-    expect(
-      screen.getByRole("link", { name: "Pull request #100" })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Pull request #101" })
-    ).toBeInTheDocument();
+    expect(screen.getByText("Implementation Plan Alpha")).toBeInTheDocument();
   });
 
   test("renders loading state correctly", () => {
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: true,
       error: null,
@@ -181,7 +104,7 @@ describe("PlanTable - PR Icon Display", () => {
 
   test("renders error state without crashing", () => {
     const errorMessage = "Failed to fetch plans";
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: false,
       error: { message: errorMessage } as Error,
@@ -193,7 +116,7 @@ describe("PlanTable - PR Icon Display", () => {
   });
 
   test("renders empty state when no plans exist", () => {
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: false,
       error: null,
@@ -206,5 +129,31 @@ describe("PlanTable - PR Icon Display", () => {
         "No implementation plans found. Create your first plan to get started."
       )
     ).toBeInTheDocument();
+  });
+
+  test("renders multiple plan artifacts", () => {
+    const mockPlans = [
+      createMockArtifact({
+        id: "plan-1",
+        title: "Plan 1",
+        type: "IMPLEMENTATION_PLAN",
+      }),
+      createMockArtifact({
+        id: "plan-2",
+        title: "Plan 2",
+        type: "IMPLEMENTATION_PLAN",
+      }),
+    ];
+
+    mockUseArtifacts.mockReturnValue({
+      data: mockPlans,
+      isLoading: false,
+      error: null,
+    });
+
+    render(<PlanTable />);
+
+    expect(screen.getByText("Plan 1")).toBeInTheDocument();
+    expect(screen.getByText("Plan 2")).toBeInTheDocument();
   });
 });

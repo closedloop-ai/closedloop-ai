@@ -10,7 +10,7 @@ import { Bar, BarChart, XAxis, YAxis } from "recharts";
 
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
-  artifactSubtype: string;
+  artifactType: string;
 };
 
 type BoxPlotDataPoint = {
@@ -225,7 +225,7 @@ const BoxPlotTooltip: React.FC<{
 
 export function JudgeAnalyticsChart({
   data,
-  artifactSubtype,
+  artifactType,
 }: JudgeAnalyticsChartProps) {
   // Assumes data is pre-sorted descending by mean from API
   const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => ({
@@ -268,7 +268,7 @@ export function JudgeAnalyticsChart({
     <ChartContainer className="h-64 w-full" config={chartConfig}>
       <RechartsBarChart
         accessibilityLayer
-        aria-label={`Box plot showing judge score distributions for ${artifactSubtype}`}
+        aria-label={`Box plot showing judge score distributions for ${artifactType}`}
         data={boxPlotData}
         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
       >

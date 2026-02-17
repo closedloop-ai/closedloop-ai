@@ -1,11 +1,11 @@
-import { getRoutePrefixForSubtype } from "@repo/api/src/types/artifact";
+import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
 import { auth } from "@repo/auth/server";
 import { notFound, redirect } from "next/navigation";
 import { env } from "@/env";
 
 /**
  * Catch-all artifact redirect route.
- * Resolves a document slug to the correct type-specific route.
+ * Resolves an artifact slug to the correct type-specific route.
  *
  * This route exists as a fallback for Liveblocks inbox notification URLs
  * when room metadata is missing (fire-and-forget room creation).
@@ -32,7 +32,7 @@ export default async function ArtifactRedirectPage({
     }
 
     const response = await fetch(
-      `${env.NEXT_PUBLIC_API_URL}/artifacts?documentSlug=${encodeURIComponent(slug)}&latestOnly=true`,
+      `${env.NEXT_PUBLIC_API_URL}/artifacts/by-slug/${encodeURIComponent(slug)}`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -43,12 +43,12 @@ export default async function ArtifactRedirectPage({
 
     if (response.ok) {
       const result = await response.json();
-      if (result.success && result.data?.length > 0) {
-        const artifact = result.data[0];
-        const routePrefix = getRoutePrefixForSubtype(artifact.subtype);
+      if (result.success && result.data) {
+        const artifact = result.data;
+        const routePrefix = getRoutePrefixForType(artifact.type);
 
-        if (routePrefix && artifact.documentSlug) {
-          redirect(`/${routePrefix}/${artifact.documentSlug}`);
+        if (routePrefix && artifact.slug) {
+          redirect(`/${routePrefix}/${artifact.slug}`);
         }
       }
     }

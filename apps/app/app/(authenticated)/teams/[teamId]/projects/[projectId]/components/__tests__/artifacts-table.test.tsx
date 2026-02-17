@@ -1,9 +1,9 @@
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createMockPullRequest } from "@/__tests__/fixtures/artifacts";
-import type { ProjectArtifact } from "@/types/teams";
+import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { ArtifactsTable } from "../artifacts-table";
 
 // Mock next/navigation
@@ -83,24 +83,15 @@ vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 
-const PULL_REQUEST_REGEX = /Pull request/;
 const GENERATING_PLAN_REGEX =
   /Generating implementation plan\.\.\. - View workflow/i;
 const EXECUTING_PLAN_REGEX =
   /Executing plan and creating PR\.\.\. - View workflow/i;
 
 function createMockProjectArtifact(
-  overrides?: Partial<ProjectArtifact>
-): ProjectArtifact {
-  return {
-    id: "artifact-123",
-    documentSlug: "test-artifact",
-    name: "Test Artifact",
-    subtype: "PRD",
-    status: "NOT_STARTED",
-    updatedAt: "2024-01-16T10:00:00Z",
-    ...overrides,
-  };
+  overrides?: Partial<ArtifactWithWorkstream>
+): ArtifactWithWorkstream {
+  return createMockArtifact(overrides) as ArtifactWithWorkstream;
 }
 
 // Test wrapper with QueryClientProvider
@@ -127,7 +118,7 @@ function renderWithProviders(ui: ReactNode) {
   return render(<Wrapper>{ui}</Wrapper>);
 }
 
-describe("ArtifactsTable - PR Icon Display", () => {
+describe("ArtifactsTable - Artifact Display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseRouter.mockReturnValue({ push: vi.fn() });
@@ -137,18 +128,12 @@ describe("ArtifactsTable - PR Icon Display", () => {
     cleanup();
   });
 
-  test("displays PR icon after artifact name when artifact has pullRequest", () => {
-    const mockPR = createMockPullRequest({
-      number: 55,
-      htmlUrl: "https://github.com/org/repo/pull/55",
-    });
-
-    const artifacts: ProjectArtifact[] = [
+  test("displays artifact with title", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "PRD with PR",
-        subtype: "PRD",
-        pullRequest: mockPR,
+        title: "PRD with feature",
+        type: "PRD",
       }),
     ];
 
@@ -156,63 +141,20 @@ describe("ArtifactsTable - PR Icon Display", () => {
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
-    // Verify artifact name is rendered
-    expect(screen.getByText("PRD with PR")).toBeInTheDocument();
-
-    // Verify PR link is rendered with correct attributes
-    const prLink = screen.getByRole("link", { name: "Pull request #55" });
-    expect(prLink).toBeInTheDocument();
-    expect(prLink).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/pull/55"
-    );
-    expect(prLink).toHaveAttribute("target", "_blank");
-    expect(prLink).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText("PRD with feature")).toBeInTheDocument();
   });
 
-  test("does not display PR icon when artifact has no pullRequest", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        id: "artifact-2",
-        name: "Artifact without PR",
-        subtype: "IMPLEMENTATION_PLAN",
-        pullRequest: null,
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    expect(screen.getByText("Artifact without PR")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: PULL_REQUEST_REGEX })
-    ).not.toBeInTheDocument();
-  });
-
-  test("displays PR icon for different artifact subtypes", () => {
-    const mockPR1 = createMockPullRequest({ number: 10 });
-    const mockPR2 = createMockPullRequest({ number: 20 });
-    const mockPR3 = createMockPullRequest({ number: 30 });
-
-    const artifacts: ProjectArtifact[] = [
+  test("displays multiple artifacts", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "PRD",
-        subtype: "PRD",
-        pullRequest: mockPR1,
+        title: "PRD Document",
+        type: "PRD",
       }),
       createMockProjectArtifact({
         id: "artifact-2",
-        name: "Implementation Plan",
-        subtype: "IMPLEMENTATION_PLAN",
-        pullRequest: mockPR2,
-      }),
-      createMockProjectArtifact({
-        id: "artifact-3",
-        name: "Issue",
-        subtype: "ISSUE",
-        pullRequest: mockPR3,
+        title: "My Feature Plan",
+        type: "IMPLEMENTATION_PLAN",
       }),
     ];
 
@@ -220,84 +162,8 @@ describe("ArtifactsTable - PR Icon Display", () => {
       <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
     );
 
-    expect(
-      screen.getByRole("link", { name: "Pull request #10" })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Pull request #20" })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Pull request #30" })
-    ).toBeInTheDocument();
-  });
-
-  test("displays PR icon after subtype icon in correct order", () => {
-    const mockPR = createMockPullRequest({
-      number: 42,
-      htmlUrl: "https://github.com/org/repo/pull/42",
-    });
-
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        id: "artifact-1",
-        name: "Artifact with PR",
-        subtype: "PRD",
-        pullRequest: mockPR,
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    // Find the table cell containing the artifact name
-    const nameCell = screen.getByText("Artifact with PR").closest("td");
-    expect(nameCell).toBeInTheDocument();
-
-    // Verify the cell contains both the artifact name and PR link
-    expect(nameCell).toHaveTextContent("Artifact with PR");
-    expect(
-      nameCell?.querySelector('a[aria-label="Pull request #42"]')
-    ).toBeInTheDocument();
-  });
-
-  test("handles mix of artifacts with and without PRs", () => {
-    const mockPR = createMockPullRequest({ number: 100 });
-
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        id: "artifact-1",
-        name: "With PR",
-        pullRequest: mockPR,
-      }),
-      createMockProjectArtifact({
-        id: "artifact-2",
-        name: "Without PR",
-        pullRequest: null,
-      }),
-      createMockProjectArtifact({
-        id: "artifact-3",
-        name: "Undefined PR",
-        pullRequest: undefined,
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    // Only one PR link should be rendered
-    const prLink = screen.getByRole("link", { name: "Pull request #100" });
-    expect(prLink).toBeInTheDocument();
-    expect(prLink).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/pull/100"
-    );
-
-    // Verify no other PR links exist
-    expect(
-      screen.queryByRole("link", { name: "Pull request #42" })
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("PRD Document")).toBeInTheDocument();
+    expect(screen.getByText("My Feature Plan")).toBeInTheDocument();
   });
 
   test("renders empty state when no artifacts provided", () => {
@@ -312,75 +178,9 @@ describe("ArtifactsTable - PR Icon Display", () => {
       )
     ).toBeInTheDocument();
   });
-
-  test("groups artifacts by section and displays PR icons correctly", () => {
-    const mockPR1 = createMockPullRequest({ number: 10 });
-    const mockPR2 = createMockPullRequest({ number: 20 });
-
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        id: "doc-1",
-        name: "PRD Document",
-        subtype: "PRD",
-        pullRequest: mockPR1,
-      }),
-      createMockProjectArtifact({
-        id: "plan-1",
-        name: "Implementation Plan",
-        subtype: "IMPLEMENTATION_PLAN",
-        pullRequest: mockPR2,
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    // Both PR icons should be present regardless of section grouping
-    expect(
-      screen.getByRole("link", { name: "Pull request #10" })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Pull request #20" })
-    ).toBeInTheDocument();
-  });
-
-  test("PR link does not trigger row click event", () => {
-    const mockPR = createMockPullRequest({
-      number: 75,
-      htmlUrl: "https://github.com/org/repo/pull/75",
-    });
-
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        id: "artifact-1",
-        name: "Clickable Artifact",
-        subtype: "PRD",
-        documentSlug: "clickable-artifact",
-        pullRequest: mockPR,
-      }),
-    ];
-
-    const mockPush = vi.fn();
-    mockUseRouter.mockReturnValue({ push: mockPush });
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    const prLink = screen.getByRole("link", { name: "Pull request #75" });
-
-    // Click on PR link should not trigger navigation (stopPropagation prevents it)
-    // We can't directly test stopPropagation, but we verify the link exists and has correct attributes
-    expect(prLink).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/pull/75"
-    );
-    expect(prLink).toHaveAttribute("target", "_blank");
-  });
 });
 
-describe("ArtifactsTable - PR Status Badge Display", () => {
+describe("ArtifactsTable - Generation Status Display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseRouter.mockReturnValue({ push: vi.fn() });
@@ -391,11 +191,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
   });
 
   test("renders generation status indicator for artifact with active status", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Generating Artifact",
-        subtype: "PRD",
+        title: "Generating Artifact",
+        type: "PRD",
         generationStatus: {
           status: "RUNNING",
           command: "execute",
@@ -417,11 +217,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
   });
 
   test("does not render indicator when status is NONE", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Artifact",
-        subtype: "PRD",
+        title: "Artifact",
+        type: "PRD",
         generationStatus: {
           status: "NONE",
           command: null,
@@ -448,11 +248,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
   });
 
   test("does not render indicator when generationStatus is undefined", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Artifact",
-        subtype: "PRD",
+        title: "Artifact",
+        type: "PRD",
         generationStatus: undefined,
       }),
     ];
@@ -468,11 +268,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
   });
 
   test("renders clickable link when htmlUrl is provided", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Running Artifact",
-        subtype: "IMPLEMENTATION_PLAN",
+        title: "Running Artifact",
+        type: "IMPLEMENTATION_PLAN",
         generationStatus: {
           status: "RUNNING",
           command: "plan",
@@ -499,74 +299,12 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
     expect(link).toHaveAttribute("target", "_blank");
   });
 
-  test("renders PullRequestStatusBadge for OPEN PR", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact with Open PR",
-        pullRequest: createMockPullRequest({ state: "OPEN", number: 1 }),
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    expect(screen.getByText("OPEN")).toBeInTheDocument();
-  });
-
-  test("renders PullRequestStatusBadge for MERGED PR", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact with Merged PR",
-        pullRequest: createMockPullRequest({ state: "MERGED", number: 2 }),
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    expect(screen.getByText("MERGED")).toBeInTheDocument();
-  });
-
-  test("renders PullRequestStatusBadge for CLOSED PR", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact with Closed PR",
-        pullRequest: createMockPullRequest({ state: "CLOSED", number: 3 }),
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    expect(screen.getByText("CLOSED")).toBeInTheDocument();
-  });
-
-  test("does not render badge when pullRequest is null", () => {
-    const artifacts: ProjectArtifact[] = [
-      createMockProjectArtifact({
-        name: "Artifact without PR",
-        pullRequest: null,
-      }),
-    ];
-
-    renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
-    );
-
-    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
-    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
-    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
-  });
-
   test("status transitions from PENDING to SUCCESS", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Transitioning Artifact",
-        subtype: "PRD",
+        title: "Transitioning Artifact",
+        type: "PRD",
         generationStatus: {
           status: "PENDING",
           command: "execute",
@@ -589,11 +327,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
     expect(screen.getByText("Waiting to start...")).toBeInTheDocument();
 
     // Update to SUCCESS state
-    const updatedArtifacts: ProjectArtifact[] = [
+    const updatedArtifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Transitioning Artifact",
-        subtype: "PRD",
+        title: "Transitioning Artifact",
+        type: "PRD",
         generationStatus: {
           status: "SUCCESS",
           command: "execute",
@@ -621,11 +359,11 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
   });
 
   test("screen reader announcements via aria-label", () => {
-    const artifacts: ProjectArtifact[] = [
+    const artifacts: ArtifactWithWorkstream[] = [
       createMockProjectArtifact({
         id: "artifact-1",
-        name: "Accessible Artifact",
-        subtype: "PRD",
+        title: "Accessible Artifact",
+        type: "PRD",
         generationStatus: {
           status: "RUNNING",
           command: "execute",
@@ -646,8 +384,5 @@ describe("ArtifactsTable - PR Status Badge Display", () => {
     });
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("aria-label");
-    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
-    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
-    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
   });
 });

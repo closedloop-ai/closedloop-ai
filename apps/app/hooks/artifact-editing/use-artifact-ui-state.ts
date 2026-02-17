@@ -1,17 +1,14 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { useCallback, useState } from "react";
 
-type EditableArtifactSubtype =
-  | typeof ArtifactSubtype.Prd
-  | typeof ArtifactSubtype.ImplementationPlan
-  | typeof ArtifactSubtype.Issue
-  | typeof ArtifactSubtype.Bug
-  | typeof ArtifactSubtype.ImplementationStrategy;
+type EditableArtifactType =
+  | typeof ArtifactType.Prd
+  | typeof ArtifactType.ImplementationPlan;
 
 type UseArtifactUIStateConfig = {
-  artifactSubtype: EditableArtifactSubtype;
+  artifactType: EditableArtifactType;
 };
 
 /**
@@ -21,7 +18,7 @@ type UseArtifactUIStateConfig = {
  *
  * **What it provides:**
  * - Common UI state (metadata panel, delete dialog)
- * - PRD/Issue-specific UI state (rename dialog, generate plan modal)
+ * - PRD-specific UI state (rename dialog, generate plan modal)
  * - Plan-specific UI state (request changes modal, Linear export dialog, execute modal)
  * - Type-safe return values based on artifact type
  * - Helper functions to open/close/toggle each UI element
@@ -30,23 +27,23 @@ type UseArtifactUIStateConfig = {
  * ```tsx
  * // For PRD editor
  * const { showMetadataPanel, toggleMetadataPanel, showRenameDialog, openRenameDialog } =
- *   useArtifactUIState({ artifactSubtype: "PRD" });
+ *   useArtifactUIState({ artifactType: "PRD" });
  *
  * // For Plan editor
  * const { showExecuteModal, openExecuteModal, closeExecuteModal } =
- *   useArtifactUIState({ artifactSubtype: "IMPLEMENTATION_PLAN" });
+ *   useArtifactUIState({ artifactType: "IMPLEMENTATION_PLAN" });
  * ```
  *
- * **Important:** Return type is determined by `artifactSubtype` - PRD returns PRD-specific state, Plan returns Plan-specific state.
+ * **Important:** Return type is determined by `artifactType` - PRD returns PRD-specific state, Plan returns Plan-specific state.
  */
 export function useArtifactUIState(config: UseArtifactUIStateConfig) {
-  const { artifactSubtype } = config;
+  const { artifactType } = config;
 
   // Common UI state
   const [showMetadataPanel, setShowMetadataPanel] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
-  // PRD/Issue-specific UI state
+  // PRD-specific UI state
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showGeneratePlanModal, setShowGeneratePlanModal] = useState(false);
 
@@ -71,12 +68,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     closeDeleteDialog: () => setShowDeleteDialog(false),
   };
 
-  if (
-    artifactSubtype === ArtifactSubtype.Prd ||
-    artifactSubtype === ArtifactSubtype.Issue ||
-    artifactSubtype === ArtifactSubtype.Bug ||
-    artifactSubtype === ArtifactSubtype.ImplementationStrategy
-  ) {
+  if (artifactType === ArtifactType.Prd) {
     return {
       ...commonState,
       showRenameDialog,
@@ -90,7 +82,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
     };
   }
 
-  if (artifactSubtype === ArtifactSubtype.ImplementationPlan) {
+  if (artifactType === ArtifactType.ImplementationPlan) {
     return {
       ...commonState,
       showRequestChangesModal,

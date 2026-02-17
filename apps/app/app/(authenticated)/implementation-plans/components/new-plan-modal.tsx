@@ -25,7 +25,7 @@ import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  useArtifactsBySubtype,
+  useArtifacts,
   useCreateAndGenerateArtifact,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
@@ -204,7 +204,7 @@ function buildCreateInput(
   selectedSource: ArtifactWithWorkstream | undefined
 ) {
   const baseInput = {
-    subtype: "IMPLEMENTATION_PLAN" as const,
+    type: "IMPLEMENTATION_PLAN" as const,
     title: formState.title.trim(),
     fileName: finalFileName,
     approverId: selectedSource?.approver?.id,
@@ -222,7 +222,9 @@ function buildCreateInput(
     type: "createAndGenerate" as const,
     input: {
       ...baseInput,
-      parentId: selectedSource.id,
+      sourceId: selectedSource.id,
+      sourceType: "ARTIFACT" as const,
+      sourceVersion: selectedSource.latestVersion,
       workstreamId: selectedSource.workstreamId ?? undefined,
       targetRepo: selectedSource.targetRepo ?? undefined,
       targetBranch: selectedSource.targetBranch ?? undefined,
@@ -269,9 +271,9 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
-  const { data: prds = [], isLoading: loadingPrds } = useArtifactsBySubtype(
-    "PRD",
-    true,
+  // TODO: This is returning all PRDs in the organization, not just the project.
+  const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
+    { type: "PRD" },
     {
       enabled: open && !sourceArtifact,
     }
@@ -345,7 +347,7 @@ export function NewPlanModal({
     const onSuccess = (artifact: ArtifactWithWorkstream) => {
       setOpen(false);
       resetForm();
-      router.push(`/implementation-plans/${artifact.documentSlug}`);
+      router.push(`/implementation-plans/${artifact.slug}`);
     };
 
     if (createConfig.type === "createAndGenerate") {

@@ -35,7 +35,7 @@ describe("POST /api/artifacts/[id]/regenerate", () => {
     const mockArtifact = {
       id: artifactId,
       title: "Implementation Plan",
-      subtype: "IMPLEMENTATION_PLAN",
+      type: "IMPLEMENTATION_PLAN",
       status: "DRAFT",
     };
 

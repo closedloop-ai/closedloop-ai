@@ -2,12 +2,12 @@
 // These types are shared between the backend API and frontend query hooks.
 //
 // The judges analytics endpoint returns aggregate statistics for LLM judge evaluations
-// grouped by artifact subtype and judge name.
+// grouped by artifact type and judge name.
 
-import type { ArtifactSubtype } from "./artifact";
+import type { ArtifactType } from "./artifact";
 
 /**
- * Aggregate statistics for a single judge within an artifact subtype group.
+ * Aggregate statistics for a single judge within an artifact type group.
  *
  * Attributes:
  * - judgeName: Name of the judge
@@ -30,16 +30,16 @@ export type JudgeAggregateStats = {
 };
 
 /**
- * Group of judge statistics for a single artifact subtype.
+ * Group of judge statistics for a single artifact type.
  *
  * Attributes:
- * - artifactSubtype: The artifact subtype (e.g., PRD, IMPLEMENTATION_PLAN)
+ * - artifactType: The artifact type (e.g., PRD, IMPLEMENTATION_PLAN)
  * - judges: Array of aggregate statistics per judge, sorted descending by mean score
- * - humanRatingsCount: Number of human ratings (ArtifactRating) created in the same date range for artifacts of this subtype in the org
- * - humanCommentsCount: Number of artifact ratings with a non-empty comment (artifact_ratings.comment) in the same date range for artifacts of this subtype in the org
+ * - humanRatingsCount: Number of human ratings (ArtifactRating) created in the same date range for artifacts of this type in the org
+ * - humanCommentsCount: Number of artifact ratings with a non-empty comment (artifact_ratings.comment) in the same date range for artifacts of this type in the org
  */
-export type ArtifactSubtypeGroup = {
-  artifactSubtype: ArtifactSubtype;
+export type ArtifactTypeGroup = {
+  artifactType: ArtifactType;
   judges: JudgeAggregateStats[];
   humanRatingsCount: number;
   humanCommentsCount: number;
@@ -49,10 +49,10 @@ export type ArtifactSubtypeGroup = {
  * Top-level response structure for the judges analytics endpoint.
  *
  * Attributes:
- * - groups: Array of artifact subtype groups, each containing judge statistics
+ * - groups: Array of artifact type groups, each containing judge statistics
  */
 export type JudgeStatsResponse = {
-  groups: ArtifactSubtypeGroup[];
+  groups: ArtifactTypeGroup[];
 };
 
 // ---------------------------------------------------------------------------
@@ -65,12 +65,12 @@ export type JudgeStatsResponse = {
  * Attributes:
  * - bucket: ISO date string for the start of the period (e.g. "2025-02-01" for day,
  *   or start of week/month). Frontend can format with date-fns by groupBy.
- * - countsBySubtype: Map of artifact subtype (ArtifactSubtype value, e.g. "PRD", "IMPLEMENTATION_PLAN")
- *   to count of artifacts created in that period. Only subtypes with count > 0 are included.
+ * - countsByType: Map of artifact type (ArtifactType value, e.g. "PRD", "IMPLEMENTATION_PLAN")
+ *   to count of artifacts created in that period. Only types with count > 0 are included.
  */
 export type ArtifactCountBucket = {
   bucket: string;
-  countsBySubtype: Record<string, number>;
+  countsByType: Record<string, number>;
 };
 
 /**

@@ -1,12 +1,12 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback, useEffect, useState } from "react";
-import { useCreateNewVersion } from "@/hooks/queries/use-artifacts";
+import { useCreateArtifactVersion } from "@/hooks/queries/use-artifacts";
 
 type UseArtifactContentConfig = {
-  artifact: ArtifactWithWorkstream;
+  artifact: ArtifactDetail;
   onVersionCreated?: () => void;
 };
 
@@ -37,21 +37,21 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
   const { artifact, onVersionCreated } = config;
 
   // TanStack Query mutation for creating new versions
-  const createNewVersion = useCreateNewVersion();
+  const createVersion = useCreateArtifactVersion(artifact.id);
 
   // Content state - tracks local edits
-  const [content, setContent] = useState(artifact.content ?? "");
+  const [content, setContent] = useState(artifact.version.content ?? "");
   const [lastSaved, setLastSaved] = useState<Date>(artifact.updatedAt);
 
   // Derived state
-  const isSaving = createNewVersion.isPending;
-  const hasUnsavedChanges = content !== (artifact.content ?? "");
+  const isSaving = createVersion.isPending;
+  const hasUnsavedChanges = content !== (artifact.version.content ?? "");
 
-  // Sync content state when artifact prop changes (e.g., after version creation, navigation)
+  // Sync content state when the version object changes (after version creation, version navigation).
   useEffect(() => {
-    setContent(artifact.content ?? "");
+    setContent(artifact.version.content ?? "");
     setLastSaved(artifact.updatedAt);
-  }, [artifact.content, artifact.updatedAt]);
+  }, [artifact.version.content, artifact.updatedAt]);
 
   /**
    * Save current content by creating a new version.
@@ -63,30 +63,21 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
       return;
     }
 
-    createNewVersion.mutate(
-      { id: artifact.id, content },
-      {
-        onSuccess: () => {
-          toast.success("New version created");
-          onVersionCreated?.();
-        },
-      }
-    );
-  }, [
-    artifact.id,
-    content,
-    createNewVersion,
-    hasUnsavedChanges,
-    onVersionCreated,
-  ]);
+    createVersion.mutate(content, {
+      onSuccess: () => {
+        toast.success("New version created");
+        onVersionCreated?.();
+      },
+    });
+  }, [content, createVersion, hasUnsavedChanges, onVersionCreated]);
 
   /**
    * Discard local changes and revert to the last saved content.
    */
   const discardChanges = useCallback(() => {
-    setContent(artifact.content ?? "");
+    setContent(artifact.version.content ?? "");
     toast.info("Changes discarded");
-  }, [artifact.content]);
+  }, [artifact.version.content]);
 
   return {
     // Content state

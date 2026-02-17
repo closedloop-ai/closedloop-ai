@@ -1,13 +1,13 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { Editor, JSONContent } from "@tiptap/react";
 import { useCallback, useRef, useState } from "react";
 import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 
 type UseEditorSessionConfig = {
-  artifact: ArtifactWithWorkstream;
+  artifact: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   content: {
@@ -66,8 +66,8 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   // and ready when the user clicks to edit. Only skip for historical versions
   // where content comes from the version prop, not Liveblocks.
   const liveblocksRoomId =
-    !isViewingHistorical && artifact.documentSlug
-      ? generateArtifactRoomId(artifact.organizationId, artifact.documentSlug)
+    !isViewingHistorical && artifact.slug
+      ? generateArtifactRoomId(artifact.organizationId, artifact.slug)
       : null;
 
   const exitEditMode = useCallback(() => {
@@ -84,10 +84,10 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   }, [isViewingHistorical]);
 
   const handleRestoreVersion = useCallback(() => {
-    setContentResetValue(artifact.content ?? "");
+    setContentResetValue(artifact.version.content ?? "");
     setContentResetKey((key) => (key ?? 0) + 1);
     setIsEditing(true);
-  }, [artifact.content]);
+  }, [artifact.version.content]);
 
   const handlePublish = useCallback(() => {
     content.saveContent();
@@ -116,13 +116,13 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       });
     } else {
       // Fallback: reset via markdown (strips thread marks)
-      setContentResetValue(artifact.content ?? "");
+      setContentResetValue(artifact.version.content ?? "");
       setContentResetKey((key) => (key ?? 0) + 1);
     }
     content.discardChanges();
     editorSnapshotRef.current = null;
     setIsEditing(false);
-  }, [artifact.content, content]);
+  }, [artifact.version.content, content]);
 
   return {
     // Editing state

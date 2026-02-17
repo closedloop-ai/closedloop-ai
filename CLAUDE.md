@@ -206,6 +206,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
 - **[mistake]**: Adding `export { ... } from './module'` re-exports to an existing index.ts triggers Biome's `noBarrelFile` lint rule. Use direct subpath imports (e.g., `@repo/github/execution-log-parser`) instead of adding re-exports to barrels. (context: biome|noBarrelFile|subpath-imports)
 - **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm workspace resolution + TypeScript handles this directly. (context: monorepo|pnpm|subpath-imports)
+- **[convention]**: Never use inline `import()` types (e.g., `import("vitest").Mock`). Always use top-level import statements instead. Inline imports hurt readability and bypass Biome's import ordering. (context: typescript|imports|inline-imports|code-style)
 
 ### Debugging
 - **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
@@ -268,6 +269,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: Biome's import order rules in this monorepo require `@repo/*` package imports before `@/*` path alias imports. Run `pnpm lint:fix` to auto-fix after adding shared package imports. (context: biome|import-order|lint|monorepo)
 - **[convention]**: To lint a single file with Biome, use `npx biome check <file>` directly. The monorepo's `pnpm lint -- --filter=<file>` does not support single-file targeting. (context: biome|linting|cli|single-file)
 - **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
+- **[mistake]**: Do not mark service methods as `async` if they only `return withDb(...)` or `return withDb.tx(...)` without any `await` in the function body. Biome's `useAwait` rule flags `async` functions that lack `await` expressions. Only use `async` when the function body itself needs to `await` something before returning. (context: biome|useAwait|async|service-layer|withDb)
 - **[pattern]**: When importing multiple named exports in Next.js App Router routes, Biome requires alphabetical order: constants/types first (UPPERCASE), then functions (camelCase). Run pnpm lint:fix to auto-fix import ordering. (context: biome|import-order|next.js|api-routes)
 
 ### OAuth Integrations

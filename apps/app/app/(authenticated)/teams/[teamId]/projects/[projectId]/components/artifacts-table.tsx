@@ -4,6 +4,11 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import type {
+  ArtifactStatus,
+  ArtifactType,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -33,7 +38,6 @@ import {
 } from "@repo/design-system/components/ui/table";
 import {
   ChevronDown,
-  ExternalLinkIcon,
   FileTextIcon,
   FolderIcon,
   MoreHorizontalIcon,
@@ -46,106 +50,65 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
-import { PreviewLink } from "@/components/preview-link";
-import { PullRequestLink } from "@/components/pull-request-link";
-import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
-  isExternalLink,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
 import { formatRelativeTime } from "@/lib/date-utils";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
-  ARTIFACT_SUBTYPE_ICONS,
+  ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
 import { sortByDateDesc } from "@/lib/table-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
-import type {
-  ArtifactDisplayStatus,
-  ProjectArtifact,
-  ProjectArtifactSubtype,
-} from "@/types/teams";
-import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
+import { ArtifactTypeBadge } from "./artifact-type-badge";
 import { SortableArtifactRow } from "./sortable-artifact-row";
 
 type ArtifactsTableProps = {
-  artifacts: ProjectArtifact[];
+  artifacts: ArtifactWithWorkstream[];
   projectId: string;
-  onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
+  onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
 
 /**
- * Section configuration for grouping artifacts by subtype.
- * Each section defines a title and which artifact subtypes it contains.
+ * Section configuration for grouping artifacts by type.
+ * Each section defines a title and which artifact types it contains.
  */
 const ARTIFACT_SECTIONS: {
   title: string;
-  subtypes: Set<ProjectArtifactSubtype>;
+  types: Set<ArtifactType>;
 }[] = [
   {
     title: "Documents",
-    subtypes: new Set<ProjectArtifactSubtype>(["PROJECT_BRIEF", "PRD"]),
+    types: new Set<ArtifactType>(["PRD"]),
   },
   {
     title: "Implementation Plans",
-    subtypes: new Set<ProjectArtifactSubtype>([
-      "IMPLEMENTATION_PLAN",
-      "IMPLEMENTATION_STRATEGY",
-    ]),
-  },
-  {
-    title: "Issues",
-    subtypes: new Set<ProjectArtifactSubtype>(["ISSUE", "BUG"]),
-  },
-  {
-    title: "Branches",
-    subtypes: new Set<ProjectArtifactSubtype>(["BRANCH"]),
+    types: new Set<ArtifactType>(["IMPLEMENTATION_PLAN"]),
   },
 ];
 
-function ArtifactLinkCell({
-  artifact,
-  route,
-  isExternal,
-}: {
-  artifact: ProjectArtifact;
-  route: string | null;
-  isExternal: boolean;
-}) {
+function ArtifactLinkCell({ route }: { route: string | null }) {
   if (!route) {
     return <span className="text-muted-foreground text-sm">n/a</span>;
   }
-  if (isExternal) {
-    return (
-      <a
-        className="inline-flex items-center gap-1 text-primary text-sm hover:underline"
-        href={route}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        {artifact.link || "External Link"}
-        <ExternalLinkIcon className="h-3 w-3" />
-      </a>
-    );
-  }
   return (
     <Link className="text-primary text-sm hover:underline" href={route}>
-      {artifact.link || "View"}
+      View
     </Link>
   );
 }
 
 type ArtifactSectionProps = {
   title: string;
-  artifacts: ProjectArtifact[];
+  artifacts: ArtifactWithWorkstream[];
   projectId: string;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
+  onRowClick: (artifact: ArtifactWithWorkstream) => void;
+  onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
+  onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
 };
 
 function ArtifactSection({
@@ -158,7 +121,7 @@ function ArtifactSection({
 }: ArtifactSectionProps) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
-    useState<ProjectArtifact | null>(null);
+    useState<ArtifactWithWorkstream | null>(null);
 
   // Sort artifacts by sortOrder (ascending, nulls last)
   const sortedArtifacts = useMemo(() => {
@@ -186,7 +149,6 @@ function ArtifactSection({
               <TableHead>Creator</TableHead>
               <TableHead>Updated</TableHead>
               <TableHead>Link</TableHead>
-              <TableHead>Preview</TableHead>
               <TableHead className="w-[50px]" />
             </TableRow>
           </TableHeader>
@@ -197,10 +159,8 @@ function ArtifactSection({
           >
             <TableBody>
               {sortedArtifacts.map((artifact) => {
-                const Icon =
-                  ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
+                const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
                 const route = getArtifactRoute(artifact);
-                const isExternal = isExternalLink(artifact);
                 const isClickable = isNavigableArtifact(artifact);
 
                 return (
@@ -215,30 +175,19 @@ function ArtifactSection({
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Icon className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{artifact.name}</span>
+                        <span className="font-medium">{artifact.title}</span>
                         <GenerationStatusIndicator
                           generationStatus={artifact.generationStatus}
                         />
-                        {artifact.pullRequest && (
-                          <div className="hidden sm:flex">
-                            <PullRequestStatusBadge
-                              pullRequest={artifact.pullRequest}
-                            />
-                          </div>
-                        )}
-                        <PullRequestLink pullRequest={artifact.pullRequest} />
                       </div>
                     </TableCell>
                     <TableCell>
-                      <ArtifactSubtypeBadge subtype={artifact.subtype} />
+                      <ArtifactTypeBadge type={artifact.type} />
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <Select
                         onValueChange={(value) =>
-                          onStatusChange?.(
-                            artifact.id,
-                            value as ArtifactDisplayStatus
-                          )
+                          onStatusChange?.(artifact.id, value as ArtifactStatus)
                         }
                         value={artifact.status}
                       >
@@ -260,7 +209,7 @@ function ArtifactSection({
                                 <span
                                   className={
                                     ARTIFACT_STATUS_COLORS[
-                                      value as ArtifactDisplayStatus
+                                      value as ArtifactStatus
                                     ]
                                   }
                                 >
@@ -285,14 +234,7 @@ function ArtifactSection({
                       </span>
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
-                      <ArtifactLinkCell
-                        artifact={artifact}
-                        isExternal={isExternal}
-                        route={route}
-                      />
-                    </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <PreviewLink url={artifact.previewUrl} />
+                      <ArtifactLinkCell route={route} />
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
@@ -354,7 +296,7 @@ export function ArtifactsTable({
   const router = useRouter();
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
-    getId: (artifact: ProjectArtifact) => artifact.id,
+    getId: (artifact: ArtifactWithWorkstream) => artifact.id,
   });
 
   const sections = useMemo(
@@ -362,14 +304,14 @@ export function ArtifactsTable({
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
         artifacts: sortByDateDesc(
-          artifacts.filter((a) => section.subtypes.has(a.subtype)),
+          artifacts.filter((a) => section.types.has(a.type)),
           "updatedAt"
         ),
       })).filter((section) => section.artifacts.length > 0),
     [artifacts]
   );
 
-  function handleRowClick(artifact: ProjectArtifact): void {
+  function handleRowClick(artifact: ArtifactWithWorkstream): void {
     if (isNavigableArtifact(artifact)) {
       const route = getArtifactRoute(artifact);
       if (route) {
@@ -405,7 +347,7 @@ export function ArtifactsTable({
 
       <DeleteConfirmationDialog
         isPending={deleteConfirmation.isPending}
-        itemName={deleteConfirmation.itemToDelete?.name ?? ""}
+        itemName={deleteConfirmation.itemToDelete?.title ?? ""}
         onConfirm={deleteConfirmation.confirmDelete}
         onOpenChange={deleteConfirmation.setOpen}
         open={deleteConfirmation.isOpen}

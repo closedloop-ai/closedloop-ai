@@ -7,6 +7,7 @@ import type {
   UpdateTeamMemberInput,
 } from "@repo/api/src/types/teams";
 import { withDb } from "@repo/database";
+import { basicUserSelect } from "@/lib/db-utils";
 
 /**
  * Transform a database team to API TeamWithCounts format
@@ -296,11 +297,8 @@ export const teamsService = {
  * Standard select pattern for user fields in team member queries
  */
 const USER_SELECT = {
-  id: true,
-  firstName: true,
-  lastName: true,
+  ...basicUserSelect.select,
   email: true,
-  avatarUrl: true,
 } as const;
 
 /**

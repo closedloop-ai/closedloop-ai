@@ -53,14 +53,13 @@ export function createResolveRoomsInfo(organizationId: string) {
       }
 
       try {
-        const { organizationId: roomOrgId, documentSlug } =
-          parseArtifactRoomId(roomId);
+        const { organizationId: roomOrgId, slug } = parseArtifactRoomId(roomId);
         if (roomOrgId !== organizationId) {
           return undefined;
         }
         return {
-          name: documentSlug,
-          url: `/artifacts/${documentSlug}`,
+          name: slug,
+          url: `/artifacts/${slug}`,
         } satisfies RoomInfo;
       } catch {
         return undefined;
