@@ -1,4 +1,5 @@
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { log } from "@repo/observability/log";
+import { getOrgAdminStatus } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -25,8 +26,15 @@ type SetKeyResponse = {
 export const PUT = withAuth<SetKeyResponse, "/settings/api-keys/org">(
   async ({ user, clerkOrgId, clerkUserId }, request) => {
     try {
-      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!isAdmin) {
+      const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+      if (!adminStatus.isAdmin) {
+        log.warn("Denied org API key write for non-admin user", {
+          clerkOrgId,
+          clerkUserId,
+          reason: adminStatus.reason,
+          method: "PUT",
+          route: "/settings/api-keys/org",
+        });
         return forbiddenResponse();
       }
 
@@ -64,8 +72,15 @@ export const PUT = withAuth<SetKeyResponse, "/settings/api-keys/org">(
 export const DELETE = withAuth<{ deleted: true }, "/settings/api-keys/org">(
   async ({ user, clerkOrgId, clerkUserId }) => {
     try {
-      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!isAdmin) {
+      const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+      if (!adminStatus.isAdmin) {
+        log.warn("Denied org API key delete for non-admin user", {
+          clerkOrgId,
+          clerkUserId,
+          reason: adminStatus.reason,
+          method: "DELETE",
+          route: "/settings/api-keys/org",
+        });
         return forbiddenResponse();
       }
 

@@ -142,23 +142,15 @@ export async function downloadContextPack(
 export async function scrubContextPackSecrets(
   stateKeyPrefix: string
 ): Promise<void> {
-  try {
-    const contextPack = await downloadContextPack(stateKeyPrefix);
-    if (!contextPack?.secrets) {
-      return;
-    }
-
-    const scrubbed: ContextPack = { ...contextPack, secrets: undefined };
-    const key = `${stateKeyPrefix}/context-pack.json`;
-    await putObject(key, JSON.stringify(scrubbed, null, 2), "application/json");
-    log.info("Context pack secrets scrubbed", { stateKeyPrefix });
-  } catch (error) {
-    // Best-effort — don't fail the event pipeline if scrubbing fails
-    log.warn("Failed to scrub context pack secrets", {
-      stateKeyPrefix,
-      error,
-    });
+  const contextPack = await downloadContextPack(stateKeyPrefix);
+  if (!contextPack?.secrets) {
+    return;
   }
+
+  const scrubbed: ContextPack = { ...contextPack, secrets: undefined };
+  const key = `${stateKeyPrefix}/context-pack.json`;
+  await putObject(key, JSON.stringify(scrubbed, null, 2), "application/json");
+  log.info("Context pack secrets scrubbed", { stateKeyPrefix });
 }
 
 // --- Conversation History (uploaded by container after completion) ---

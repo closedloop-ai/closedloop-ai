@@ -3,12 +3,14 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
 import { stopLoopTask } from "@/lib/loop-orchestrator";
+import { scrubContextPackSecrets } from "@/lib/loop-state";
 
 type StuckLoop = {
   id: string;
   organizationId: string;
   status: string;
   containerId: string | null;
+  s3StateKey: string | null;
 };
 
 /**
@@ -56,6 +58,19 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
 
   if (result.count === 0) {
     return false;
+  }
+
+  // Best-effort secret cleanup for loops that never emitted "started".
+  if (loop.s3StateKey) {
+    try {
+      await scrubContextPackSecrets(loop.s3StateKey);
+    } catch (scrubErr) {
+      log.warn("[timeout-loops] Failed to scrub context-pack secrets", {
+        loopId: loop.id,
+        s3StateKey: loop.s3StateKey,
+        error: scrubErr instanceof Error ? scrubErr.message : String(scrubErr),
+      });
+    }
   }
 
   // Record an audit event so the timeout appears in the loop's event timeline
@@ -143,6 +158,7 @@ export const GET = async (request: Request) => {
         organizationId: true,
         status: true,
         containerId: true,
+        s3StateKey: true,
       },
     })
   );

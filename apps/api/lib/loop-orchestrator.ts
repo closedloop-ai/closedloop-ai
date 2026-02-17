@@ -462,6 +462,32 @@ async function cancelLoopAfterLaunchFailure(
   }
 }
 
+async function recordScrubFailureWarning(
+  loopId: string,
+  organizationId: string
+): Promise<void> {
+  try {
+    await loopsService.addEvent(loopId, organizationId, {
+      type: "security_warning",
+      data: {
+        code: "CONTEXT_PACK_SECRET_SCRUB_FAILED",
+        message:
+          "Failed to scrub context-pack secrets after loop start. Secrets may persist in S3 until cleanup succeeds.",
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (auditError) {
+    log.error(
+      "[loop-orchestrator] Failed to persist scrub-failure security warning",
+      {
+        loopId,
+        error:
+          auditError instanceof Error ? auditError.message : String(auditError),
+      }
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ECS task launch
 // ---------------------------------------------------------------------------
@@ -496,6 +522,7 @@ export async function launchLoop(
 
   // Track taskArn in outer scope so catch block can stop an orphaned task
   let taskArn: string | undefined;
+  let s3StateKey: string | undefined;
 
   try {
     // 2. Resolve Anthropic API key
@@ -514,7 +541,7 @@ export async function launchLoop(
     }
 
     // 4. Build context pack (including secrets) and upload to S3
-    const s3StateKey = getStateKeyPrefix(organizationId, loopId);
+    s3StateKey = getStateKeyPrefix(organizationId, loopId);
     const s3ContextKey = await buildContextPack(
       loop,
       organizationId,
@@ -524,9 +551,9 @@ export async function launchLoop(
 
     // 5. Generate pre-signed GET URL for context pack so the container can
     // download it without direct S3 credentials (multi-tenant isolation).
-    // Use a short TTL (10 min) since the container downloads immediately on start.
+    // Use a moderate TTL to tolerate ECS startup delays.
     // This limits the exposure window for secrets in the context pack.
-    const CONTEXT_PACK_URL_TTL_SECONDS = 600; // 10 minutes
+    const CONTEXT_PACK_URL_TTL_SECONDS = 1800; // 30 minutes
     const s3ContextUrl = await generateDownloadUrl(
       s3ContextKey,
       CONTEXT_PACK_URL_TTL_SECONDS
@@ -578,6 +605,24 @@ export async function launchLoop(
       loopId,
       error: errorMessage,
     });
+
+    if (s3StateKey) {
+      try {
+        await scrubContextPackSecrets(s3StateKey);
+      } catch (scrubError) {
+        log.error(
+          "[loop-orchestrator] Failed to scrub context-pack secrets after launch failure",
+          {
+            loopId,
+            s3StateKey,
+            error:
+              scrubError instanceof Error
+                ? scrubError.message
+                : String(scrubError),
+          }
+        );
+      }
+    }
 
     await stopOrphanedTaskIfNeeded(taskArn, loopId);
     await cancelLoopAfterLaunchFailure(loopId, organizationId);
@@ -794,6 +839,7 @@ export async function handleLoopEvent(
                   : String(scrubError),
             }
           );
+          await recordScrubFailureWarning(loopId, organizationId);
         }
       }
       return [event];

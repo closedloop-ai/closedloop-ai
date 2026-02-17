@@ -1,5 +1,6 @@
 import type { LoopUsageSummary } from "@repo/api/src/types/loop";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { log } from "@repo/observability/log";
+import { getOrgAdminStatus } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -12,8 +13,15 @@ import { loopsService } from "../service";
 export const GET = withAuth<LoopUsageSummary, "/loops/usage">(
   async ({ user, clerkOrgId, clerkUserId }, request) => {
     try {
-      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!isAdmin) {
+      const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+      if (!adminStatus.isAdmin) {
+        log.warn("Denied loop usage read for non-admin user", {
+          clerkOrgId,
+          clerkUserId,
+          reason: adminStatus.reason,
+          method: "GET",
+          route: "/loops/usage",
+        });
         return forbiddenResponse();
       }
 

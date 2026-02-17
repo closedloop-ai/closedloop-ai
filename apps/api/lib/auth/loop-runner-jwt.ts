@@ -3,11 +3,23 @@ import { jwtVerify, SignJWT } from "jose";
 
 const AUDIENCE = "closedloop-runner";
 const ISSUER = "closedloop-api";
+const MIN_SECRET_LENGTH = 32;
+const MIN_UNIQUE_SECRET_CHARS = 8;
 
 function getSecret(): Uint8Array {
   const secret = process.env.CLOSEDLOOP_RUNNER_JWT_SECRET;
   if (!secret) {
     throw new Error("CLOSEDLOOP_RUNNER_JWT_SECRET is not configured");
+  }
+  if (secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `CLOSEDLOOP_RUNNER_JWT_SECRET must be at least ${MIN_SECRET_LENGTH} characters`
+    );
+  }
+  if (new Set(secret).size < MIN_UNIQUE_SECRET_CHARS) {
+    throw new Error(
+      "CLOSEDLOOP_RUNNER_JWT_SECRET is too weak (not enough character diversity)"
+    );
   }
   return new TextEncoder().encode(secret);
 }

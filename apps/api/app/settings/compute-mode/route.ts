@@ -1,5 +1,6 @@
+import { log } from "@repo/observability/log";
 import { z } from "zod";
-import { isOrgAdmin } from "@/lib/auth/org-admin";
+import { getOrgAdminStatus } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
@@ -39,8 +40,15 @@ export const GET = withAuth<ComputeModeResponse, "/settings/compute-mode">(
 export const PUT = withAuth<ComputeModeResponse, "/settings/compute-mode">(
   async ({ user, clerkOrgId, clerkUserId }, request) => {
     try {
-      const isAdmin = await isOrgAdmin(clerkOrgId, clerkUserId);
-      if (!isAdmin) {
+      const adminStatus = await getOrgAdminStatus(clerkOrgId, clerkUserId);
+      if (!adminStatus.isAdmin) {
+        log.warn("Denied compute mode update for non-admin user", {
+          clerkOrgId,
+          clerkUserId,
+          reason: adminStatus.reason,
+          method: "PUT",
+          route: "/settings/compute-mode",
+        });
         return forbiddenResponse();
       }
 

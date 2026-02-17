@@ -82,7 +82,7 @@ export const clerkService = {
   async getOrganizationMembershipRole(
     organizationId: string,
     userId: string
-  ): Promise<string> {
+  ): Promise<string | null> {
     const client = await clerkClient();
     const memberships =
       await client.organizations.getOrganizationMembershipList({
@@ -94,9 +94,7 @@ export const clerkService = {
     const membership = memberships.data[0];
 
     if (!membership) {
-      throw new Error(
-        `User ${userId} is not a member of organization ${organizationId}`
-      );
+      return null;
     }
 
     return membership.role;
