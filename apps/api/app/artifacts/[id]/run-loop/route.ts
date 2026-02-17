@@ -43,15 +43,10 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       }
 
       // Resolve repo info from the artifact's workstream/project
-      const { workstream, sourceArtifact } =
-        await artifactsService.findOrCreateWorkstream(
-          user.organizationId,
-          artifact,
-          user.id
-        );
-
+      const workstream = artifact.workstream;
       const project = workstream?.project;
       const existingRepository = project?.repositories[0];
+      const sourceArtifact = workstream?.artifacts[0];
 
       const targetRepo =
         sourceArtifact?.targetRepo ??

@@ -11,6 +11,7 @@ import type {
 import { MODEL_PRICING } from "@repo/api/src/types/loop";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
@@ -198,12 +199,15 @@ async function fetchPrimaryArtifact(
     });
     return [];
   }
+
+  const latestVersion = await artifactVersionService.getLatest(artifact.id);
+
   return [
     {
       id: artifact.id,
-      type: String(artifact.subtype ?? artifact.type),
+      type: String(artifact.type),
       title: artifact.title,
-      content: artifact.content ?? "",
+      content: latestVersion?.content ?? "",
     },
   ];
 }
@@ -230,14 +234,15 @@ async function fetchContextRefArtifacts(
         return null;
       }
 
+      const latestVersion = await artifactVersionService.getLatest(artifact.id);
+      const content = latestVersion?.content ?? "";
+
       return {
         id: artifact.id,
-        type: String(artifact.subtype ?? artifact.type),
+        type: String(artifact.type),
         title: artifact.title,
         content:
-          ref.include === "summary"
-            ? truncateForSummary(artifact.content ?? "")
-            : (artifact.content ?? ""),
+          ref.include === "summary" ? truncateForSummary(content) : content,
       };
     })
   );
