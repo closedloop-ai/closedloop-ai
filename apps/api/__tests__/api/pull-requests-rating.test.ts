@@ -1,6 +1,7 @@
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
 import { vi } from "vitest";
 import { GET, PUT } from "@/app/pull-requests/[id]/rating/route";
+import { submitPullRequestRatingSchema } from "@/app/pull-requests/[id]/rating/validators";
 import {
   PullRequestNotFoundError,
   pullRequestRatingsService,
@@ -19,6 +20,112 @@ vi.mock("@/lib/auth/with-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/pull-requests/service");
+
+// ---------------------------------------------------------------------------
+// Schema Validation Tests (SSOT for all validation rules)
+// ---------------------------------------------------------------------------
+
+type ValidScenario = {
+  input: Record<string, unknown>;
+  expected: { score: number; comment?: string };
+};
+
+type InvalidScenario = {
+  input: Record<string, unknown>;
+  expectedFields: string[];
+};
+
+const VALID_SCENARIOS: Record<string, ValidScenario> = {
+  score_only: {
+    input: { score: 3 },
+    expected: { score: 3 },
+  },
+  score_with_comment: {
+    input: { score: 4, comment: "Good work" },
+    expected: { score: 4, comment: "Good work" },
+  },
+  boundary_min_score: {
+    input: { score: 1 },
+    expected: { score: 1 },
+  },
+  boundary_max_score: {
+    input: { score: 5 },
+    expected: { score: 5 },
+  },
+  comment_at_max_length: {
+    input: { score: 3, comment: "a".repeat(500) },
+    expected: { score: 3, comment: "a".repeat(500) },
+  },
+  comment_explicitly_undefined: {
+    input: { score: 2, comment: undefined },
+    expected: { score: 2 },
+  },
+};
+
+const INVALID_SCENARIOS: Record<string, InvalidScenario> = {
+  score_below_min: {
+    input: { score: 0 },
+    expectedFields: ["score"],
+  },
+  score_above_max: {
+    input: { score: 6 },
+    expectedFields: ["score"],
+  },
+  score_non_integer: {
+    input: { score: 3.5 },
+    expectedFields: ["score"],
+  },
+  score_non_number: {
+    input: { score: "five" },
+    expectedFields: ["score"],
+  },
+  score_missing: {
+    input: { comment: "No score" },
+    expectedFields: ["score"],
+  },
+  score_negative: {
+    input: { score: -1 },
+    expectedFields: ["score"],
+  },
+  comment_exceeds_max_length: {
+    input: { score: 4, comment: "a".repeat(501) },
+    expectedFields: ["comment"],
+  },
+};
+
+describe("submitPullRequestRatingSchema", () => {
+  it.each(Object.entries(VALID_SCENARIOS))("accepts valid input: %s", (_name, {
+    input,
+    expected,
+  }) => {
+    const result = submitPullRequestRatingSchema.safeParse(input);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual(expected);
+    }
+  });
+
+  it.each(
+    Object.entries(INVALID_SCENARIOS)
+  )("rejects invalid input: %s", (_name, { input, expectedFields }) => {
+    const result = submitPullRequestRatingSchema.safeParse(input);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const errorPaths = result.error.issues.map((issue) =>
+        String(issue.path[0])
+      );
+      for (const field of expectedFields) {
+        expect(errorPaths).toContain(field);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Route Tests
+// ---------------------------------------------------------------------------
 
 describe("GET /api/pull-requests/[id]/rating", () => {
   beforeEach(() => {
@@ -262,7 +369,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     );
   });
 
-  it("transforms empty comment string to undefined", async () => {
+  it("passes whitespace-only comment through to service as-is", async () => {
     const mockSummary: PullRequestRatingSummary = {
       average: 3.0,
       count: 1,
@@ -270,7 +377,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
         id: "rating-3",
         userId: "user-1",
         score: 3,
-        comment: undefined,
+        comment: "   ",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -283,7 +390,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
-      body: { score: 3, comment: "   " }, // Whitespace-only comment
+      body: { score: 3, comment: "   " },
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 
@@ -293,7 +400,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       3,
-      undefined
+      "   "
     );
   });
 
@@ -328,7 +435,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     expect(json.data.userRating?.comment).toBe("Updated comment");
   });
 
-  it("returns 400 for invalid score (below 1)", async () => {
+  it("returns 400 when body fails schema validation", async () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
@@ -340,74 +447,6 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const json = await response.json();
     expect(json.success).toBe(false);
     expect(pullRequestRatingsService.upsertRating).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 for invalid score (above 5)", async () => {
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
-      method: "PUT",
-      body: { score: 6 },
-    });
-    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-    expect(pullRequestRatingsService.upsertRating).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 for non-integer score", async () => {
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
-      method: "PUT",
-      body: { score: 3.5 },
-    });
-    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-  });
-
-  it("returns 400 for non-number score", async () => {
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
-      method: "PUT",
-      body: { score: "five" },
-    });
-    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-  });
-
-  it("returns 400 for comment exceeding 500 characters", async () => {
-    const longComment = "a".repeat(501);
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
-      method: "PUT",
-      body: { score: 4, comment: longComment },
-    });
-    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-    expect(pullRequestRatingsService.upsertRating).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 for missing score", async () => {
-    const request = createMockRequest({
-      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
-      method: "PUT",
-      body: { comment: "Comment without score" },
-    });
-    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
   });
 
   it("returns 404 when pull request not found", async () => {
