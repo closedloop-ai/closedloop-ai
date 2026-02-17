@@ -1,4 +1,5 @@
--- Note: relationMode = "prisma" - Prisma manages relations; no DB-level FKs.
--- Direct SQL deletes of organizations may leave orphaned github_pull_requests rows.
--- DropForeignKey
-ALTER TABLE "github_pull_requests" DROP CONSTRAINT "github_pull_requests_organization_id_fkey";
+-- This is an empty migration.
+-- Originally dropped the FK added in 192411, but that FK was never needed
+-- (relationMode = "prisma" — no DB-level FKs). Migration 192411 was updated
+-- to not add the FK in the first place; this migration is retained as a
+-- no-op to avoid drift on environments that have already applied it.

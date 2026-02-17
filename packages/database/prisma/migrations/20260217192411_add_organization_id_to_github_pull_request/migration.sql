@@ -13,8 +13,8 @@ WHERE gpr."workstream_id" = w.id;
 -- Step 3: Enforce NOT NULL (fails if any row has null - workstreamId is required so backfill should cover all)
 ALTER TABLE "github_pull_requests" ALTER COLUMN "organization_id" SET NOT NULL;
 
--- Step 4: Add foreign key
-ALTER TABLE "github_pull_requests" ADD CONSTRAINT "github_pull_requests_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- Step 5: Create index for org-scoped queries
+-- Step 4: Create index for org-scoped queries
+-- Note: no FK constraint added — relationMode = "prisma" means Prisma manages
+-- relations without DB-level FKs. Cascade deletes only run through Prisma client.
+-- Direct SQL deletes of organizations may leave orphaned github_pull_requests rows.
 CREATE INDEX "github_pull_requests_organization_id_idx" ON "github_pull_requests"("organization_id");
