@@ -494,7 +494,7 @@ model PullRequestRating {
   id             String   @id @default(uuid(7)) @db.Uuid
   pullRequestId  String   @map("pull_request_id") @db.Uuid
   userId         String   @map("user_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid // Enforced by check_pull_request_rating_organization_id trigger - must match workstream.organization_id for the PR
+  organizationId String   @map("organization_id") @db.Uuid // Enforced by check_pull_request_rating_organization_id trigger - must match github_pull_requests.organization_id
   // Score validation (1-5) enforced at API layer via Zod schema
   score          Int
   comment        String   @db.VarChar(500)
