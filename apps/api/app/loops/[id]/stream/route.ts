@@ -2,6 +2,7 @@ import type { LoopEvent } from "@repo/api/src/types/loop";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { organizationsService } from "@/app/organizations/service";
+import { usersService } from "@/app/users/service";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { loopsService } from "../../service";
 
@@ -44,6 +45,15 @@ export async function GET(
       return new Response("Unauthorized", { status: 401 });
     }
     organizationId = organization.id;
+
+    // Verify the user record exists and is active, matching withAuth behavior.
+    const user = await usersService.findByClerkIdAndOrg(
+      clerkUserId,
+      organizationId
+    );
+    if (!user?.active) {
+      return new Response("Unauthorized", { status: 401 });
+    }
   } catch (error) {
     log.error("Failed to resolve organization for SSE stream", {
       clerkOrgId,

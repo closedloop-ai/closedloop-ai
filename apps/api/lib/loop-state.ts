@@ -352,3 +352,19 @@ export function validateKeyBelongsToOrg(
   }
   return key.startsWith(`${organizationId}/`);
 }
+
+/**
+ * Validate that an S3 key belongs to a specific loop's prefix.
+ * Scoped to `{orgId}/loops/{loopId}/` — prevents a runner from accessing
+ * other loops' state under the same organization.
+ */
+export function validateKeyBelongsToLoop(
+  key: string,
+  organizationId: string,
+  loopId: string
+): boolean {
+  if (key.includes("..") || key.includes("./")) {
+    return false;
+  }
+  return key.startsWith(`${organizationId}/loops/${loopId}/`);
+}

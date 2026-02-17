@@ -2,7 +2,7 @@ import { z } from "zod";
 import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import {
   listAndGenerateDownloadUrls,
-  validateKeyBelongsToOrg,
+  validateKeyBelongsToLoop,
 } from "@/lib/loop-state";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
@@ -63,19 +63,27 @@ export async function POST(
       return parseError;
     }
 
-    // Validate the prefix belongs to this organization
-    if (!validateKeyBelongsToOrg(body.prefix, claims.organizationId)) {
-      return errorResponse(
-        "Prefix is outside organization scope",
-        new Error("Forbidden"),
-        403
-      );
-    }
-
     // Verify the loop exists and belongs to this org
     const loop = await loopsService.findById(loopId, claims.organizationId);
     if (!loop) {
       return errorResponse("Loop not found", new Error("Not Found"), 404);
+    }
+
+    // Validate the prefix belongs to this loop or its parent (for resume).
+    // Scoped to {orgId}/loops/{loopId}/ to prevent cross-loop data exposure.
+    const allowedLoopIds = [loopId];
+    if (loop.parentLoopId) {
+      allowedLoopIds.push(loop.parentLoopId);
+    }
+    const prefixAllowed = allowedLoopIds.some((id) =>
+      validateKeyBelongsToLoop(body.prefix, claims.organizationId, id)
+    );
+    if (!prefixAllowed) {
+      return errorResponse(
+        "Prefix is outside loop scope",
+        new Error("Forbidden"),
+        403
+      );
     }
 
     // List objects under the prefix and generate pre-signed GET URLs

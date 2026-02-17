@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
-import { generateUploadUrl, validateKeyBelongsToOrg } from "@/lib/loop-state";
+import { generateUploadUrl, validateKeyBelongsToLoop } from "@/lib/loop-state";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 
@@ -60,11 +60,12 @@ export async function POST(
       return parseError;
     }
 
-    // Validate all keys belong to this organization's prefix
+    // Validate all keys belong to this loop's S3 prefix.
+    // Scoped to {orgId}/loops/{loopId}/ to prevent cross-loop state corruption.
     for (const key of body.keys) {
-      if (!validateKeyBelongsToOrg(key, claims.organizationId)) {
+      if (!validateKeyBelongsToLoop(key, claims.organizationId, loopId)) {
         return errorResponse(
-          `Key "${key}" is outside organization scope`,
+          `Key "${key}" is outside loop scope`,
           new Error("Forbidden"),
           403
         );
