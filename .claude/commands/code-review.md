@@ -46,29 +46,30 @@ Mark todo "Parse scope and get diff data" as `in_progress`.
 
 ### Parse Arguments
 
-Parse $ARGUMENTS:
-- If empty or "branch": Use `main...HEAD` diff (default — reviews all changes on current branch)
-- If "staged": Use `--cached` diff
-- If file paths: Use those files directly with `main...HEAD -- <files>`
+Parse $ARGUMENTS and store **DIFF_SCOPE** (the resolved git diff arguments used by all subsequent diff commands):
+- If empty or "branch": `DIFF_SCOPE="main...HEAD"` (default — reviews all changes on current branch)
+- If "staged": `DIFF_SCOPE="--cached"`
+- If file paths: `DIFF_SCOPE="main...HEAD -- <files>"`
 
 ### Get Diff Data (lightweight — no full patches yet)
 
 ```bash
 # Get file list (small output)
-git diff --name-only main...HEAD        # or --cached for staged
+git diff --name-only $DIFF_SCOPE
 
 # Get file statuses (small output)
-git diff --name-status main...HEAD      # or --cached for staged
+git diff --name-status $DIFF_SCOPE
 
 # Get diff stat summary (small output — line counts per file)
-git diff --stat main...HEAD             # or --cached for staged
+git diff --stat $DIFF_SCOPE
 ```
 
-**Do NOT run `git diff main...HEAD` (full patches) here.** For large diffs (10K+ LOC), the full patch output exceeds tool output limits and gets truncated. Patches are fetched per-partition in Steps 2.5 and 4.
+**Do NOT run `git diff $DIFF_SCOPE` (full patches) here.** For large diffs (10K+ LOC), the full patch output exceeds tool output limits and gets truncated. Patches are fetched per-partition in Steps 2.5 and 4.
 
 Parse and store:
 - **FILES_TO_REVIEW**: Array of changed file paths
 - **FILE_STATUSES**: Map of `{ "path/file.ts": "added" | "modified" | "removed", ... }` parsed from `--name-status` output (A=added, M=modified, D=removed, R=renamed)
+- **FILE_LOC**: Map of `{ "path/file.ts": <added + removed lines>, ... }` parsed from `--stat` output (used for LOC-aware partitioning in Step 4)
 
 Mark todo as `completed`.
 
@@ -80,29 +81,35 @@ Mark todo "Run deterministic hygiene checks" as `in_progress`.
 
 Run scripted checks that don't need LLM reasoning. These catch CI artifacts, path leakage, and sensitive files deterministically.
 
-### Fetch Patches in Batches
+**Delegate hygiene to a sub-agent** to avoid loading full patch content into the orchestrator's context. Spawn a single `general-purpose` agent (model: `haiku`) with `run_in_background: true`:
 
-Patches are NOT available from Step 2 — they must be fetched here in batches to stay within tool output limits.
+```
+prompt: |
+  Run deterministic hygiene checks on the following changed files.
 
-For FILES_TO_REVIEW with status "added" or "modified", fetch patches in groups of **30 files**:
+  DIFF_SCOPE: {DIFF_SCOPE}
+  FILES_TO_REVIEW (added/modified only): {list of files with status added or modified}
 
-```bash
-# Batch 1: files 1-30
-git diff main...HEAD -- file1.ts file2.ts ... file30.ts
+  Step 1: Fetch patches using Bash in batches of 30 files:
+    git diff {DIFF_SCOPE} -- file1.ts file2.ts ... file30.ts
 
-# Batch 2: files 31-60
-git diff main...HEAD -- file31.ts file32.ts ... file60.ts
+  Step 2: For each batch, parse patches and run the hygiene checks below.
 
-# ... continue until all files are covered
+  Step 3: Also parse and return CHANGED_LINES for ALL files:
+    Map of { "path/file.ts": [10, 11, 12, 45, 46], ... } parsed from patches
+    (only lines starting with `+`, using `@@ ... +start,count @@` hunk headers
+    to compute absolute line numbers)
+
+  Return JSON: { "findings": [...], "changed_lines": { "file": [lines], ... } }
 ```
 
-For each batch, parse the patch output and accumulate:
-- **FILE_PATCHES**: Map of `{ "path/file.ts": "<patch content>", ... }`
-- **CHANGED_LINES**: Map of `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` parsed from patches (only lines starting with `+`, using the `@@ ... +start,count @@` hunk headers to compute absolute line numbers)
+Include the full hygiene check specifications (Checks 1-4, severity routing, line fallback, finding format) in the agent prompt so it can run autonomously.
 
-Process each batch for the hygiene checks below before fetching the next batch. This keeps memory usage bounded.
+The agent collects findings AND builds CHANGED_LINES (needed later in Step 5.3 for line validation). This keeps all patch content out of the orchestrator's context window.
 
-### Hygiene Checks
+Collect the hygiene agent results in Step 5 alongside the reviewer agents.
+
+### Hygiene Checks (included in sub-agent prompt)
 
 For each check, iterate over FILES_TO_REVIEW (only files with status "added" or "modified"):
 
@@ -253,6 +260,8 @@ Mark todo as `completed`.
 
 Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
+**CONTEXT BUDGET WARNING:** The orchestrator must NOT read source files or fetch patches itself. All file reading and patch fetching is delegated to sub-agents. The orchestrator's context should contain ONLY: file lists, statuses, LOC counts, risk scores, and agent results (small JSON). If the orchestrator reads source files or fetches diffs, it will exhaust its context window on large PRs and fail.
+
 ### Review Architecture — 4 Layers
 
 **Layer 1 — General Bug Detection** (always runs):
@@ -278,32 +287,23 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
 ### File Partitioning (Critical for Large Diffs)
 
-Background agents do NOT have Bash tool access. All review data MUST be provided inline in the agent prompt.
+**Agents self-fetch patches.** The orchestrator does NOT fetch patch content — it only passes lightweight metadata (file list, statuses, DIFF_SCOPE). Each agent runs `git diff` itself to get its assigned files' patches. This keeps the orchestrator's context small regardless of PR size.
 
-**Partition files across agents to stay within token limits:**
+**Partition files using LOC budget, not file count.** File count is unreliable — a 20-file PR where each file changes 500 LOC will overflow the agent context just as easily as an 80-file PR.
 
-1. **Small diffs (≤30 files)**: Include ALL file patches in each agent's prompt
-2. **Medium diffs (31-80 files)**: Partition files so each agent gets at most 30 files
-3. **Large diffs (81+ files)**: Cap at 25 files per agent. Create multiple agent instances if needed
+Use FILE_LOC from Step 2 to partition:
 
-### Per-Partition Patch Fetching
-
-Before spawning each sub-agent, fetch patches for **that partition's files only**:
-
-```bash
-# For each partition of N files:
-git diff main...HEAD -- file1.ts file2.ts file3.ts ...
-```
-
-Parse the per-partition output to build:
-- **FILE_PATCHES** for the partition (used in the agent prompt's `<diff>` block)
-- **CHANGED_LINES** for the partition (used for line validation in Step 5.3)
-
-This keeps each `git diff` output small (~25 files × ~100 LOC avg = ~7.5K chars, well under the 30K tool output limit). For small diffs (≤30 files), a single fetch covers all files.
+1. **LOC budget per partition: 400 changed lines** (added + removed). `git diff` output is ~4x larger than the changed line count due to context lines, hunk headers, and diff markers. So 400 changed lines ≈ 1600 lines of patch ≈ 130K chars ≈ 32K tokens — leaving plenty of headroom under the 200K token standard context window for the prompt template, CLAUDE.md, and system prompt overhead.
+2. Sort FILES_TO_REVIEW by FILE_LOC descending (largest files first — greedy bin-packing).
+3. For each file, add to the current partition. If adding would exceed the 400 LOC budget, start a new partition.
+4. **Single-file overflow**: If a single file exceeds 400 LOC, it gets its own partition. The agent can still use Read to inspect the full file.
+5. **Max 20 files per partition** even if LOC budget allows more (keeps agent prompts manageable).
 
 ### Shared Prompt Prefix (ALL agents get this)
 
 **CRITICAL**: The `mode: standalone` line MUST be present in every agent prompt. If missing, the code-reviewer agent defaults to loop mode which suppresses Critical/High findings.
+
+**CRITICAL**: Do NOT embed patch content in the agent prompt. Agents self-fetch patches using Bash. The orchestrator only passes the file list, statuses, and DIFF_SCOPE. This prevents the orchestrator's context window from filling up with redundant patch data.
 
 ```
 mode: standalone
@@ -311,28 +311,27 @@ mode: standalone
 Review ONLY the changed code. Return findings as JSON.
 
 <data>
+<diff_scope>{DIFF_SCOPE}</diff_scope>
+
 <files_assigned count="{N}" total="{TOTAL}">
-- {filepath_1} ({status_1})
-- {filepath_2} ({status_2})
+- {filepath_1} ({status_1}, ~{loc_1} LOC)
+- {filepath_2} ({status_2}, ~{loc_2} LOC)
 ...
 </files_assigned>
-
-<diff>
---- {filepath_1} ({status_1}) ---
-{patch_content_1}
-
---- {filepath_2} ({status_2}) ---
-{patch_content_2}
-...
-</diff>
 </data>
 
+<fetch_patches>
+FIRST, fetch your assigned patches using Bash:
+  git diff {DIFF_SCOPE} -- {filepath_1} {filepath_2} ...
+
+If you have more than 15 files, fetch in batches of 15 to stay within tool output limits.
+Parse the patches to identify changed lines (lines starting with `+`, using `@@ ... +start,count @@` hunk headers for absolute line numbers).
+</fetch_patches>
+
 <constraints>
-TOOL RESTRICTIONS:
-- You MUST NOT use the Bash tool. You do not have Bash access.
-- You MUST NOT try to run shell commands, gh api calls, or any terminal commands.
-- You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
-- All patch/diff data is provided in <diff> above. Do NOT try to fetch it externally.
+TOOL USAGE:
+- Use Bash ONLY for `git diff` to fetch your assigned patches. No other shell commands.
+- Use Read, Grep, Glob tools to explore the local codebase for additional context.
 
 FLAG an issue ONLY when ALL are true:
 1. Introduced in this changeset (not pre-existing)
@@ -548,7 +547,7 @@ Use `model: "sonnet"` for all domain critics.
 
 ### Opus Sampling Pass (Large Diffs only)
 
-For large diffs (41+ files), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks.
+For large diffs (41+ files), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks. **Limit the Opus agent's partition to ≤300 LOC** — keep well within standard context. If the top 5 files exceed 300 LOC, reduce to fewer files until the budget fits.
 
 **In a SINGLE message, spawn ALL agents with `run_in_background: true`.**
 
@@ -561,6 +560,15 @@ Mark todo as `completed`.
 Mark todo "Collect, normalize, and validate findings" as `in_progress`.
 
 Use `TaskOutput` with `block: true` to collect results from each spawned agent.
+
+### Agent Failure Recovery
+
+If any agent fails (context overflow, subscription limits, timeout), do NOT abandon the review:
+
+1. **Log the failure**: Record which agent failed and why (e.g., `"Bug Hunter A partition 2: context overflow"`)
+2. **Halve the failed partition**: Split the failed partition's files into two sub-partitions (by LOC budget ÷ 2) and re-spawn with `model: "sonnet"` (never retry with opus for recovery — sonnet has a larger effective context window for long prompts)
+3. **Second failure → inline fallback**: If the re-spawned agent also fails, review that partition's files directly in the main conversation. Read each file with the Read tool and apply the same review criteria. This is slower but ensures coverage.
+4. **Continue collecting**: Do not block on failures — collect results from successful agents while recovering failed ones.
 
 ### Step 5.1: Severity Normalization
 
@@ -589,7 +597,7 @@ Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findi
 - `finding.priority ??= severity_to_priority(finding.severity)` where BLOCKING→0, HIGH→1, MEDIUM→2
 - `finding.confidence ??= 1.0` (agents that don't emit confidence are already validated)
 
-Then for each finding (using the combined CHANGED_LINES from all partitions built in Steps 2.5 and 4):
+Then for each finding (using CHANGED_LINES returned by the hygiene sub-agent from Step 2.5):
 
 1. **File in scope?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
@@ -618,19 +626,17 @@ bugs or false positives. You are the last line of defense against noise.
 <findings>
 {findings_json}
 </findings>
-
-<patches>
-{relevant_patches}
-</patches>
 </data>
 
 <instructions>
 For each finding:
-1. Read the file at the reported location (use Read tool, not Bash)
+1. Read the file at the reported location (use Read tool)
 2. Verify the code actually contains the claimed issue at the cited line
 3. Check for guards, error handling, try-catch, or validation that prevents the issue
 4. If a justification comment exists, assess whether it addresses the actual concern
 5. For DRY claims, verify the cited existing code actually exists and is structurally similar
+
+Do NOT rely on embedded patches — always Read the actual file for verification.
 </instructions>
 
 <examples>
