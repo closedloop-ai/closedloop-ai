@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  PullRequestRatingResponse,
   PullRequestRatingSummary,
   SubmitPullRequestRatingRequest,
 } from "@repo/api/src/types/pull-request-rating";
@@ -54,7 +55,8 @@ export function usePullRequestRating(
 /**
  * Mutation hook for submitting or updating a pull request rating.
  * Supports both rating-only submissions and rating + comment.
- * Automatically invalidates the rating cache on success.
+ * Uses optimistic updates to avoid UI flicker when isEditing transitions to false
+ * before cache invalidation completes.
  */
 export function useSubmitPullRequestRating() {
   const queryClient = useQueryClient();
@@ -73,6 +75,38 @@ export function useSubmitPullRequestRating() {
           comment,
         }
       ),
+    onMutate: async ({ pullRequestId, score, comment }) => {
+      const queryKey = pullRequestRatingKeys.detail(pullRequestId);
+      await queryClient.cancelQueries({ queryKey });
+
+      const previous =
+        queryClient.getQueryData<PullRequestRatingSummary>(queryKey);
+
+      const now = new Date();
+      const optimisticUserRating: PullRequestRatingResponse = {
+        id: previous?.userRating?.id ?? "temp",
+        userId: previous?.userRating?.userId ?? "temp",
+        score,
+        comment,
+        createdAt: previous?.userRating?.createdAt ?? now,
+        updatedAt: now,
+      };
+
+      queryClient.setQueryData<PullRequestRatingSummary>(queryKey, (old) => ({
+        ...(old ?? { average: 0, count: 0, userRating: null }),
+        userRating: optimisticUserRating,
+      }));
+
+      return { previous };
+    },
+    onError: (_err, { pullRequestId }, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(
+          pullRequestRatingKeys.detail(pullRequestId),
+          context.previous
+        );
+      }
+    },
     onSuccess: (_, { pullRequestId }) => {
       queryClient.invalidateQueries({
         queryKey: pullRequestRatingKeys.detail(pullRequestId),
