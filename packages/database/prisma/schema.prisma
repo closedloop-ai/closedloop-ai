@@ -809,7 +809,6 @@ model GitHubPRReview {
   pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 
   @@unique([pullRequestId, authorLogin])
-  @@index([pullRequestId])
   @@map("github_pr_reviews")
 }
 
