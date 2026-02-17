@@ -62,8 +62,8 @@ export const rateLimit = async (
 
   const base = arcjet({
     key: arcjetKey,
-    // Use custom key (e.g., user_id + resource_id) for fine-grained rate limiting
-    characteristics: [customKey],
+    // Define a stable custom characteristic name and pass its dynamic value in protect().
+    characteristics: ["rateLimitKey"],
     rules: [
       shield({
         mode: "LIVE",
@@ -77,7 +77,7 @@ export const rateLimit = async (
   });
 
   const req = sourceRequest ?? (await request());
-  const decision = await base.protect(req);
+  const decision = await base.protect(req, { rateLimitKey: customKey });
 
   if (decision.isDenied()) {
     if (decision.reason.isRateLimit()) {
