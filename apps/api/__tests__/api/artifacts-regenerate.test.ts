@@ -19,6 +19,13 @@ vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
+vi.mock("@repo/database", () => ({
+  ArtifactType: {
+    PRD: "PRD",
+    IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
+    ISSUE: "ISSUE",
+  },
+}));
 vi.mock("@/app/artifacts/service");
 
 describe("POST /api/artifacts/[id]/regenerate", () => {
@@ -30,7 +37,7 @@ describe("POST /api/artifacts/[id]/regenerate", () => {
     });
   });
 
-  it("regenerates implementation plan successfully", async () => {
+  it("dispatches to regenerateImplementationPlan for plans", async () => {
     const artifactId = uuidv7();
     const mockArtifact = {
       id: artifactId,
@@ -39,6 +46,9 @@ describe("POST /api/artifacts/[id]/regenerate", () => {
       status: "DRAFT",
     };
 
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue(
+      mockArtifact as any
+    );
     vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
       success: true,
       artifact: mockArtifact as any,
@@ -57,14 +67,79 @@ describe("POST /api/artifacts/[id]/regenerate", () => {
       "org-123",
       "user-123"
     );
+    expect(artifactsService.generatePRD).not.toHaveBeenCalled();
+  });
+
+  it("dispatches to generatePRD for PRD artifacts", async () => {
+    const artifactId = uuidv7();
+    const mockArtifact = {
+      id: artifactId,
+      title: "My PRD",
+      type: "PRD",
+      status: "DRAFT",
+    };
+
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue(
+      mockArtifact as any
+    );
+    vi.mocked(artifactsService.generatePRD).mockResolvedValue({
+      success: true,
+      artifact: mockArtifact as any,
+    });
+
+    const request = createMockRequest({ method: "POST" });
+    const routeContext = createMockRouteContext({ id: artifactId });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(artifactsService.generatePRD).toHaveBeenCalledWith(
+      artifactId,
+      "org-123",
+      "user-123",
+      null
+    );
+    expect(
+      artifactsService.regenerateImplementationPlan
+    ).not.toHaveBeenCalled();
+  });
+
+  it("passes reverseSynthesisLink to generatePRD when provided", async () => {
+    const artifactId = uuidv7();
+    const mockArtifact = {
+      id: artifactId,
+      title: "My PRD",
+      type: "PRD",
+      status: "DRAFT",
+    };
+
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue(
+      mockArtifact as any
+    );
+    vi.mocked(artifactsService.generatePRD).mockResolvedValue({
+      success: true,
+      artifact: mockArtifact as any,
+    });
+
+    const request = createMockRequest({
+      method: "POST",
+      body: { reverseSynthesisLink: "https://github.com/example/repo" },
+    });
+    const routeContext = createMockRouteContext({ id: artifactId });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(200);
+    expect(artifactsService.generatePRD).toHaveBeenCalledWith(
+      artifactId,
+      "org-123",
+      "user-123",
+      "https://github.com/example/repo"
+    );
   });
 
   it("returns 404 when artifact not found", async () => {
-    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
-      success: false,
-      error: "Artifact not found",
-      status: 404,
-    });
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue(null);
 
     const request = createMockRequest({ method: "POST" });
     const routeContext = createMockRouteContext({ id: uuidv7() });
@@ -76,81 +151,59 @@ describe("POST /api/artifacts/[id]/regenerate", () => {
     expect(json.error).toBe("Artifact not found");
   });
 
-  it("returns 400 when artifact is not an implementation plan", async () => {
+  it("returns error status from service failure", async () => {
+    const artifactId = uuidv7();
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue({
+      id: artifactId,
+      type: "IMPLEMENTATION_PLAN",
+    } as any);
     vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
       success: false,
-      error: "Only implementation plans can be regenerated",
-      status: 400,
-    });
-
-    const request = createMockRequest({ method: "POST" });
-    const routeContext = createMockRouteContext({ id: uuidv7() });
-    const response = await POST(request, routeContext);
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-    expect(json.error).toBe("Only implementation plans can be regenerated");
-  });
-
-  it("returns 400 when PRD is missing", async () => {
-    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
-      success: false,
-      error: "PRD not found or missing content",
-      status: 400,
-    });
-
-    const request = createMockRequest({ method: "POST" });
-    const routeContext = createMockRouteContext({ id: uuidv7() });
-    const response = await POST(request, routeContext);
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-    expect(json.error).toBe("PRD not found or missing content");
-  });
-
-  it("returns 400 when repository is not configured", async () => {
-    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
-      success: false,
-      error: "No repository configured for project",
-      status: 400,
-    });
-
-    const request = createMockRequest({ method: "POST" });
-    const routeContext = createMockRouteContext({ id: uuidv7() });
-    const response = await POST(request, routeContext);
-
-    expect(response.status).toBe(400);
-    const json = await response.json();
-    expect(json.success).toBe(false);
-    expect(json.error).toBe("No repository configured for project");
-  });
-
-  it("returns 409 when workflow is already running", async () => {
-    vi.mocked(artifactsService.regenerateImplementationPlan).mockResolvedValue({
-      success: false,
-      error: "Regeneration already in progress",
+      error: "Plan generation already in progress",
       status: 409,
     });
 
     const request = createMockRequest({ method: "POST" });
-    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const routeContext = createMockRouteContext({ id: artifactId });
     const response = await POST(request, routeContext);
 
     expect(response.status).toBe(409);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(json.error).toBe("Regeneration already in progress");
+    expect(json.error).toBe("Plan generation already in progress");
+  });
+
+  it("returns 400 for invalid reverseSynthesisLink", async () => {
+    const artifactId = uuidv7();
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue({
+      id: artifactId,
+      type: "PRD",
+    } as any);
+
+    const request = createMockRequest({
+      method: "POST",
+      body: { reverseSynthesisLink: "not-a-url" },
+    });
+    const routeContext = createMockRouteContext({ id: artifactId });
+    const response = await POST(request, routeContext);
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
   });
 
   it("returns 500 on service exception", async () => {
+    const artifactId = uuidv7();
+    vi.mocked(artifactsService.findByIdSimple).mockResolvedValue({
+      id: artifactId,
+      type: "IMPLEMENTATION_PLAN",
+    } as any);
     vi.mocked(artifactsService.regenerateImplementationPlan).mockRejectedValue(
       new Error("GitHub API timeout")
     );
 
     const request = createMockRequest({ method: "POST" });
-    const routeContext = createMockRouteContext({ id: uuidv7() });
+    const routeContext = createMockRouteContext({ id: artifactId });
     const response = await POST(request, routeContext);
 
     expect(response.status).toBe(500);

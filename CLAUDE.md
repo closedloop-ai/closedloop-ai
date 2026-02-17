@@ -264,7 +264,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 - **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)
-- **[pattern]**: Follow the established pattern: add generatingArtifactId state, use useArtifactGenerationStatus with 2s polling, conditionally render status UI vs form, prevent modal close during generation, navigate on SUCCESS status. (context: react|components|generation-feedback|modal|polling)
+- **[pattern]**: For generation status polling, use `useArtifactGenerationStatus` hook with `refetchInterval` for 2s polling during active generation. See `plan-editor.tsx` and `generation-status-banner.tsx` for reference. (context: react|components|generation-feedback|polling)
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)

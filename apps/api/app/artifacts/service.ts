@@ -818,164 +818,41 @@ Analyze the content at this link and identify capabilities or features that coul
   },
 
   /**
-   * Regenerate an implementation plan artifact.
-   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   * Shared workflow trigger flow for artifact generation.
+   * Handles: artifact lookup, workstream check, repo resolution, placeholder fallback,
+   * pending run check, workflow dispatch, and record creation.
    */
-  async regenerateImplementationPlan(
-    artifactId: string,
-    organizationId: string,
-    userId: string
-  ): Promise<RegenerateResult> {
-    // Find artifact with regeneration context
-    const artifact = await this.findWithRegenerationContext(
+  async triggerArtifactWorkflow(params: {
+    artifactId: string;
+    organizationId: string;
+    userId: string;
+    expectedType:
+      | typeof PrismaArtifactType.PRD
+      | typeof PrismaArtifactType.IMPLEMENTATION_PLAN;
+    typeLabel: string;
+    // biome-ignore lint/suspicious/noExplicitAny: internal helper uses Prisma's complex inferred type
+    resolveRepo: (artifact: any) => Promise<{
+      targetRepo: string | null;
+      targetBranch: string;
+      sessionId: string;
+    }>;
+    buildContext: (artifactId: string) => Promise<string>;
+    dispatchOverrides?: { commandArgs?: string };
+    /** For PRDs, prdId === artifactId (self-referencing). For plans, prdId is the source PRD. */
+    getPrdId: (artifactId: string, sessionId: string) => string;
+  }): Promise<RegenerateResult> {
+    const {
       artifactId,
-      organizationId
-    );
-
-    if (!artifact) {
-      return { success: false, error: "Artifact not found", status: 404 };
-    }
-
-    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
-      return {
-        success: false,
-        error: "Only implementation plans can be regenerated",
-        status: 400,
-      };
-    }
-
-    if (!artifact.workstream) {
-      return {
-        success: false,
-        error: "Artifact must have a project to regenerate",
-        status: 400,
-      };
-    }
-
-    // Find or create workstream with PRD
-    const sourceArtifact = await this.findSourceWithContent(artifact);
-    if (!sourceArtifact?.content) {
-      return {
-        success: false,
-        error: "No PRD found to generate plan from. Create one first.",
-        status: 400,
-      };
-    }
-
-    const project = artifact.workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
-
-    if (!targetRepo) {
-      return {
-        success: false,
-        error: "No repository configured for this project or source artifact",
-        status: 400,
-      };
-    }
-
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
-    );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
-    }
-    const repository = repoResult.repository;
-
-    // Fall back to placeholder content when GitHub is not configured
-    if (!isGitHubConfigured()) {
-      const updatedArtifact = await this.updateWithPlaceholder(
-        artifactId,
-        organizationId,
-        userId,
-        getPlaceholderContent(artifact.title, artifact.latestVersion + 1)
-      );
-      return { success: true, artifact: updatedArtifact };
-    }
-
-    // Check for existing running job
-    const existingRun = await this.findPendingWorkflowRun(
-      artifact.workstream.id,
-      "symphony-dispatch"
-    );
-
-    if (existingRun) {
-      return {
-        success: false,
-        error: "Plan generation already in progress",
-        status: 409,
-      };
-    }
-
-    const correlationId = createId();
-
-    // Build context: source artifact content + initial instructions + "assume defaults"
-    // Load the plan's latest version content as initial instructions
-    const latestVersion = await artifactVersionService.getLatest(artifactId);
-    const context = this.buildPlanContext(
-      sourceArtifact.content,
-      latestVersion?.content ?? null
-    );
-
-    // Look up triggering user for commit attribution
-    const committer = await getCommitterInfo(userId);
-
-    // Trigger the workflow
-    const result = await triggerWorkflowDispatch({
-      targetRepo,
-      ref: targetBranch,
-      command: "plan",
-      context,
-      correlationId,
-      sessionId: sourceArtifact.id,
-      ...committer,
-    });
-
-    if (!result.success) {
-      return {
-        success: false,
-        error: `Failed to trigger plan generation: ${result.error}`,
-        status: 500,
-      };
-    }
-
-    // Create all workflow trigger records
-    const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
-      workstreamId: artifact.workstream.id,
-      repositoryId: repository.id,
-      artifactId: artifact.id,
-      prdId: sourceArtifact.id,
-      correlationId,
-      targetRepo,
-      targetBranch,
-      command: "plan",
-    });
+      userId,
+      expectedType,
+      typeLabel,
+      resolveRepo,
+      buildContext,
+      dispatchOverrides,
+      getPrdId,
+    } = params;
 
-    return { success: true, artifact: updatedArtifact };
-  },
-
-  /**
-   * Generate a PRD artifact by triggering symphony-dispatch workflow.
-   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
-   */
-  async generatePRD(
-    artifactId: string,
-    organizationId: string,
-    userId: string,
-    reverseSynthesisLink: string | null
-  ): Promise<RegenerateResult> {
-    // Find artifact with regeneration context
     const artifact = await this.findWithRegenerationContext(
       artifactId,
       organizationId
@@ -985,10 +862,10 @@ Analyze the content at this link and identify capabilities or features that coul
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.type !== PrismaArtifactType.PRD) {
+    if (artifact.type !== expectedType) {
       return {
         success: false,
-        error: "Only PRDs can be generated with this method",
+        error: `Only ${typeLabel}s can be generated with this method`,
         status: 400,
       };
     }
@@ -996,20 +873,14 @@ Analyze the content at this link and identify capabilities or features that coul
     if (!artifact.workstream) {
       return {
         success: false,
-        error: "Artifact must have a workstream to generate",
+        error: "Artifact must have a project to generate",
         status: 400,
       };
     }
 
-    const project = artifact.workstream.project;
-    const existingRepository = project.repositories[0];
+    const repoInfo = await resolveRepo(artifact);
 
-    // Artifact's target repo/branch take priority, then project default
-    const targetRepo = artifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      artifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
-
-    if (!targetRepo) {
+    if (!repoInfo.targetRepo) {
       return {
         success: false,
         error: "No repository configured for this artifact or project",
@@ -1017,9 +888,11 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    // Ensure repository record exists
+    const project = artifact.workstream.project;
+    const existingRepository = project.repositories[0];
+
     const repoResult = await ensureRepository(
-      targetRepo,
+      repoInfo.targetRepo,
       project.id,
       existingRepository
     );
@@ -1028,7 +901,6 @@ Analyze the content at this link and identify capabilities or features that coul
     }
     const repository = repoResult.repository;
 
-    // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
       const updatedArtifact = await this.updateWithPlaceholder(
         artifactId,
@@ -1039,71 +911,165 @@ Analyze the content at this link and identify capabilities or features that coul
       return { success: true, artifact: updatedArtifact };
     }
 
-    // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
       artifact.workstream.id,
       "symphony-dispatch"
     );
-
     if (existingRun) {
       return {
         success: false,
-        error: "PRD generation already in progress",
+        error: `${typeLabel} generation already in progress`,
         status: 409,
       };
     }
 
     const correlationId = createId();
-
-    // Build context: artifact's current content + reverse synthesis link
-    // Load the PRD's latest version content as initial instructions
-    const latestVersion = await artifactVersionService.getLatest(artifactId);
-    const context = this.buildPRDContext(
-      latestVersion?.content ?? "",
-      null,
-      reverseSynthesisLink
-    );
-
-    // Determine which skill to invoke
-    const commandArgs = reverseSynthesisLink ? "self-improve" : "prd-creator";
-
-    // Look up triggering user for commit attribution
+    const context = await buildContext(artifactId);
     const committer = await getCommitterInfo(userId);
 
-    // Trigger the workflow
+    // All artifact generation uses command: 'plan' — the downstream symphony-dispatch
+    // workflow routes to the correct skill via commandArgs (e.g., 'prd-creator', 'self-improve').
     const result = await triggerWorkflowDispatch({
-      targetRepo,
-      ref: targetBranch,
+      targetRepo: repoInfo.targetRepo,
+      ref: repoInfo.targetBranch,
       command: "plan",
-      commandArgs,
       context,
       correlationId,
-      sessionId: artifactId,
+      sessionId: repoInfo.sessionId,
       ...committer,
+      ...dispatchOverrides,
     });
 
     if (!result.success) {
       return {
         success: false,
-        error: `Failed to trigger PRD generation: ${result.error}`,
+        error: `Failed to trigger ${typeLabel} generation: ${result.error}`,
         status: 500,
       };
     }
 
-    // Create all workflow trigger records
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
       workstreamId: artifact.workstream.id,
       repositoryId: repository.id,
       artifactId: artifact.id,
-      prdId: artifactId, // PRD generates itself, not from another PRD
+      // For PRD self-generation, prdId === artifactId. Downstream webhook handlers
+      // (workflow-completion-handler) use prdId for correlation and handle this case correctly.
+      prdId: getPrdId(artifactId, repoInfo.sessionId),
       correlationId,
-      targetRepo,
-      targetBranch,
+      targetRepo: repoInfo.targetRepo,
+      targetBranch: repoInfo.targetBranch,
       command: "plan",
     });
 
     return { success: true, artifact: updatedArtifact };
+  },
+
+  /**
+   * Regenerate an implementation plan artifact.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  regenerateImplementationPlan(
+    artifactId: string,
+    organizationId: string,
+    userId: string
+  ): Promise<RegenerateResult> {
+    return this.triggerArtifactWorkflow({
+      artifactId,
+      organizationId,
+      userId,
+      expectedType: PrismaArtifactType.IMPLEMENTATION_PLAN,
+      typeLabel: "Implementation plan",
+      resolveRepo: async (artifact) => {
+        const sourceArtifact = await this.findSourceWithContent(artifact);
+        if (!sourceArtifact?.content) {
+          // Return null targetRepo to trigger the "no repository" error
+          return { targetRepo: null, targetBranch: "main", sessionId: "" };
+        }
+        const project = artifact.workstream!.project;
+        const existingRepository = project.repositories[0];
+        return {
+          targetRepo:
+            sourceArtifact.targetRepo ?? existingRepository?.fullName ?? null,
+          targetBranch:
+            sourceArtifact.targetBranch ??
+            existingRepository?.defaultBranch ??
+            "main",
+          sessionId: sourceArtifact.id,
+        };
+      },
+      buildContext: async (id) => {
+        const artifact = await this.findWithRegenerationContext(
+          id,
+          organizationId
+        );
+        const sourceArtifact = await this.findSourceWithContent(artifact!);
+        const latestVersion = await artifactVersionService.getLatest(id);
+        return this.buildPlanContext(
+          sourceArtifact?.content ?? "",
+          latestVersion?.content ?? null
+        );
+      },
+      getPrdId: (_artifactId, sessionId) => sessionId,
+    });
+  },
+
+  /**
+   * Generate a PRD artifact by triggering symphony-dispatch workflow.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  generatePRD(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    reverseSynthesisLink: string | null
+  ): Promise<RegenerateResult> {
+    // Validate reverseSynthesisLink is a well-formed URL if provided
+    if (reverseSynthesisLink?.trim()) {
+      try {
+        new URL(reverseSynthesisLink);
+      } catch {
+        return Promise.resolve({
+          success: false as const,
+          error: "reverseSynthesisLink must be a valid URL",
+          status: 400 as const,
+        });
+      }
+    }
+
+    return this.triggerArtifactWorkflow({
+      artifactId,
+      organizationId,
+      userId,
+      expectedType: PrismaArtifactType.PRD,
+      typeLabel: "PRD",
+      resolveRepo: (artifact) => {
+        const project = artifact.workstream!.project;
+        const existingRepository = project.repositories[0];
+        return Promise.resolve({
+          targetRepo:
+            artifact.targetRepo ?? existingRepository?.fullName ?? null,
+          targetBranch:
+            artifact.targetBranch ??
+            existingRepository?.defaultBranch ??
+            "main",
+          sessionId: artifact.id,
+        });
+      },
+      buildContext: async (id) => {
+        const latestVersion = await artifactVersionService.getLatest(id);
+        return this.buildPRDContext(
+          latestVersion?.content ?? "",
+          null,
+          reverseSynthesisLink
+        );
+      },
+      dispatchOverrides: {
+        commandArgs: reverseSynthesisLink ? "self-improve" : "prd-creator",
+      },
+      // PRD generates itself — prdId references the same artifact
+      getPrdId: (id) => id,
+    });
   },
 
   /**
