@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { log } from "@repo/observability/log";
 
 /**
@@ -227,4 +229,101 @@ export function getStateKeyPrefix(
   runId: string = randomUUID()
 ): string {
   return LOOP_STATE_PREFIX(organizationId, loopId, runId);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-signed URLs (for multi-tenant S3 isolation)
+// ---------------------------------------------------------------------------
+// These functions generate pre-signed URLs so the ECS container can access
+// only the specific S3 objects it needs, without having direct S3 credentials.
+// This prevents a compromised container from reading other orgs' data.
+
+const DEFAULT_PRESIGN_EXPIRY_SECONDS = 7200; // 2 hours (covers 55-min run + overhead)
+
+/**
+ * Generate a pre-signed GET URL for downloading an object from the loop state bucket.
+ */
+export async function generateDownloadUrl(
+  key: string,
+  expiresIn = DEFAULT_PRESIGN_EXPIRY_SECONDS
+): Promise<string> {
+  const command = new GetObjectCommand({
+    Bucket: requireBucket(),
+    Key: key,
+  });
+  return await getSignedUrl(getS3Client(), command, { expiresIn });
+}
+
+/**
+ * Generate a pre-signed PUT URL for uploading an object to the loop state bucket.
+ */
+export async function generateUploadUrl(
+  key: string,
+  contentType = "application/octet-stream",
+  expiresIn = DEFAULT_PRESIGN_EXPIRY_SECONDS
+): Promise<string> {
+  const command = new PutObjectCommand({
+    Bucket: requireBucket(),
+    Key: key,
+    ContentType: contentType,
+  });
+  return await getSignedUrl(getS3Client(), command, { expiresIn });
+}
+
+/**
+ * List all objects under a prefix and generate pre-signed GET URLs for each.
+ * Used for parent state download during resume — the container needs to fetch
+ * an entire directory tree without direct S3 ListObjects access.
+ */
+export async function listAndGenerateDownloadUrls(
+  prefix: string,
+  expiresIn = DEFAULT_PRESIGN_EXPIRY_SECONDS
+): Promise<Array<{ key: string; url: string }>> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  const normalizedPrefix = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  const results: Array<{ key: string; url: string }> = [];
+
+  let continuationToken: string | undefined;
+  do {
+    const resp = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: normalizedPrefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    if (resp.Contents) {
+      for (const obj of resp.Contents) {
+        if (!obj.Key) {
+          continue;
+        }
+        // Skip objects > 50MB (mirrors harness upload limit)
+        if (obj.Size && obj.Size > 50 * 1024 * 1024) {
+          continue;
+        }
+
+        const url = await generateDownloadUrl(obj.Key, expiresIn);
+        results.push({ key: obj.Key, url });
+      }
+    }
+
+    continuationToken = resp.IsTruncated
+      ? resp.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  return results;
+}
+
+/**
+ * Validate that an S3 key belongs to the expected organization prefix.
+ * Prevents path traversal and cross-org access.
+ */
+export function validateKeyBelongsToOrg(
+  key: string,
+  organizationId: string
+): boolean {
+  return key.startsWith(`${organizationId}/`);
 }

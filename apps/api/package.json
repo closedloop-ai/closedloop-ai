@@ -16,6 +16,7 @@
     "@aws-sdk/client-ecs": "^3.985.0",
     "@aws-sdk/client-kms": "^3.985.0",
     "@aws-sdk/client-s3": "^3.985.0",
+    "@aws-sdk/s3-request-presigner": "^3.987.0",
     "@paralleldrive/cuid2": "^2.3.1",
     "@prisma/client": "7.3.0",
     "@repo/ai": "workspace:*",
@@ -38,13 +39,13 @@
     "jose": "^5.2.1",
     "nanoid": "^5.1.6",
     "next": "16.1.6",
+    "p-limit": "^7.3.0",
     "pg": "^8.18.0",
     "react": "19.2.1",
     "react-dom": "19.2.1",
     "require-in-the-middle": "8.0.1",
-    "svix": "^1.84.1",
-    "p-limit": "^7.3.0",
     "sanitize-html": "^2.17.0",
+    "svix": "^1.84.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

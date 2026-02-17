@@ -1,0 +1,88 @@
+import { z } from "zod";
+import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import {
+  listAndGenerateDownloadUrls,
+  validateKeyBelongsToOrg,
+} from "@/lib/loop-state";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { loopsService } from "../../service";
+
+function extractBearerToken(request: Request): string | Response {
+  const authHeader = request.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length)
+    : null;
+  if (!token) {
+    return errorResponse(
+      "Missing runner token",
+      new Error("Unauthorized"),
+      401
+    );
+  }
+  return token;
+}
+
+const downloadUrlsValidator = z.object({
+  prefix: z.string().min(1).max(1024),
+});
+
+/**
+ * POST /api/loops/:id/download-urls - Generate pre-signed GET URLs for S3 downloads.
+ *
+ * The container harness calls this to download parent loop state during resume.
+ * Lists all objects under the given prefix and returns pre-signed GET URLs.
+ * This eliminates the need for direct S3 read/list credentials in the container,
+ * preventing cross-tenant data access.
+ */
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+): Promise<Response> {
+  try {
+    const { id: loopId } = await params;
+
+    const token = extractBearerToken(request);
+    if (token instanceof Response) {
+      return token;
+    }
+
+    const claims = await verifyLoopRunnerToken(token);
+    if (claims.loopId !== loopId) {
+      return errorResponse(
+        "Token does not match loop",
+        new Error("Forbidden"),
+        403
+      );
+    }
+
+    const { body, errorResponse: parseError } = await parseBody(
+      request,
+      downloadUrlsValidator
+    );
+    if (parseError || !body) {
+      return parseError;
+    }
+
+    // Validate the prefix belongs to this organization
+    if (!validateKeyBelongsToOrg(body.prefix, claims.organizationId)) {
+      return errorResponse(
+        "Prefix is outside organization scope",
+        new Error("Forbidden"),
+        403
+      );
+    }
+
+    // Verify the loop exists and belongs to this org
+    const loop = await loopsService.findById(loopId, claims.organizationId);
+    if (!loop) {
+      return errorResponse("Loop not found", new Error("Not Found"), 404);
+    }
+
+    // List objects under the prefix and generate pre-signed GET URLs
+    const urls = await listAndGenerateDownloadUrls(body.prefix);
+
+    return successResponse({ urls });
+  } catch (error) {
+    return errorResponse("Failed to generate download URLs", error);
+  }
+}

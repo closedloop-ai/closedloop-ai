@@ -64,6 +64,7 @@ const config = {
   targetRepo: process.env.TARGET_REPO, // "owner/repo"
   targetBranch: process.env.TARGET_BRANCH || "main",
   s3ContextKey: process.env.S3_CONTEXT_KEY, // S3 key for context pack download
+  s3ContextUrl: process.env.S3_CONTEXT_URL || null, // Pre-signed GET URL (preferred over S3 SDK)
   s3StateKey: process.env.S3_STATE_KEY, // S3 key prefix for state upload
   s3Bucket: process.env.S3_BUCKET, // "closedloop-runtime-state-stage"
   s3Region: process.env.S3_REGION || "us-east-1",
@@ -183,7 +184,14 @@ function validateSecrets() {
 }
 
 // ---------------------------------------------------------------------------
-// S3 helpers
+// S3 helpers — pre-signed URLs (preferred) with direct SDK fallback
+// ---------------------------------------------------------------------------
+//
+// Multi-tenant isolation: the container should NOT have direct S3 credentials.
+// Instead, it uses pre-signed URLs from the API server. The S3 SDK path is
+// kept as a backward-compatibility fallback during the transition period.
+// Once the ECS task role's S3 permissions are removed (infra change), only
+// the pre-signed URL path will work.
 // ---------------------------------------------------------------------------
 let s3;
 
@@ -194,8 +202,88 @@ function getS3Client() {
   return s3;
 }
 
+/**
+ * Download a file using a pre-signed URL (no S3 credentials needed).
+ */
+async function downloadFromPresignedUrl(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Pre-signed download failed (${resp.status}): ${resp.statusText}`);
+  }
+  const arrayBuf = await resp.arrayBuffer();
+  return Buffer.from(arrayBuf);
+}
+
+/**
+ * Upload a file using a pre-signed PUT URL (no S3 credentials needed).
+ */
+async function uploadToPresignedUrl(url, body, contentType = "application/octet-stream") {
+  const resp = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": contentType },
+    body,
+  });
+  if (!resp.ok) {
+    throw new Error(`Pre-signed upload failed (${resp.status}): ${resp.statusText}`);
+  }
+}
+
+/**
+ * Request pre-signed upload URLs from the API server.
+ * Returns a map of key → pre-signed PUT URL.
+ */
+async function requestUploadUrls(keys) {
+  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+    return null;
+  }
+  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/upload-urls`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.authToken}`,
+    },
+    body: JSON.stringify({ keys }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Upload URLs request failed (${resp.status})`);
+  }
+  const body = await resp.json();
+  const urlMap = {};
+  for (const entry of body.data.urls) {
+    urlMap[entry.key] = entry.url;
+  }
+  return urlMap;
+}
+
+/**
+ * Request pre-signed download URLs from the API server for a given prefix.
+ * Returns an array of { key, url } entries.
+ */
+async function requestDownloadUrls(prefix) {
+  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+    return null;
+  }
+  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/download-urls`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.authToken}`,
+    },
+    body: JSON.stringify({ prefix }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Download URLs request failed (${resp.status})`);
+  }
+  const body = await resp.json();
+  return body.data.urls; // Array of { key, url }
+}
+
+// --- Fallback: direct S3 SDK (used when pre-signed URLs are unavailable) ---
+
 async function downloadFromS3(key) {
-  log("info", `Downloading s3://${config.s3Bucket}/${key}`);
+  log("info", `Downloading s3://${config.s3Bucket}/${key} (SDK fallback)`);
   const client = getS3Client();
   const resp = await client.send(
     new GetObjectCommand({ Bucket: config.s3Bucket, Key: key })
@@ -208,7 +296,7 @@ async function downloadFromS3(key) {
 }
 
 async function uploadToS3(key, body, contentType = "application/octet-stream") {
-  log("info", `Uploading s3://${config.s3Bucket}/${key}`);
+  log("info", `Uploading s3://${config.s3Bucket}/${key} (SDK fallback)`);
   const client = getS3Client();
   await client.send(
     new PutObjectCommand({
@@ -221,19 +309,117 @@ async function uploadToS3(key, body, contentType = "application/octet-stream") {
 }
 
 /**
- * List all objects under an S3 prefix (handles pagination).
- * Returns an array of { Key, Size } objects.
+ * Upload a single file: prefer pre-signed URL, fall back to S3 SDK.
  */
-async function listS3Objects(prefix) {
+async function uploadFile(key, body, contentType = "application/octet-stream") {
+  try {
+    const urlMap = await requestUploadUrls([key]);
+    if (urlMap?.[key]) {
+      await uploadToPresignedUrl(urlMap[key], body, contentType);
+      return;
+    }
+  } catch (err) {
+    log("info", `Pre-signed upload unavailable for ${key}, using SDK fallback: ${err.message}`);
+  }
+  await uploadToS3(key, body, contentType);
+}
+
+/**
+ * Collect all file paths in a directory tree (recursive).
+ * Returns array of { localPath, relativePath }.
+ */
+function collectFiles(dirPath, prefix = "") {
+  const results = [];
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      results.push(...collectFiles(fullPath, relPath));
+    } else if (entry.isFile()) {
+      const stat = fs.statSync(fullPath);
+      if (stat.size <= 50 * 1024 * 1024) {
+        results.push({ localPath: fullPath, relativePath: relPath });
+      } else {
+        log("info", `Skipping large file ${fullPath} (${stat.size} bytes)`);
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Upload an entire directory: batch-request pre-signed URLs, fall back to S3 SDK.
+ */
+async function uploadDirectory(dirPath, s3Prefix) {
+  const files = collectFiles(dirPath);
+  if (files.length === 0) return;
+
+  const s3Keys = files.map((f) => `${s3Prefix}/${f.relativePath}`);
+
+  // Try batch pre-signed URL request
+  let urlMap = null;
+  try {
+    urlMap = await requestUploadUrls(s3Keys);
+  } catch (err) {
+    log("info", `Batch upload URLs unavailable, using SDK fallback: ${err.message}`);
+  }
+
+  for (let i = 0; i < files.length; i++) {
+    const content = fs.readFileSync(files[i].localPath);
+    const key = s3Keys[i];
+    try {
+      if (urlMap?.[key]) {
+        await uploadToPresignedUrl(urlMap[key], content);
+      } else {
+        await uploadToS3(key, content);
+      }
+    } catch (err) {
+      log("error", `Failed to upload ${key}: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Download an entire S3 "directory" (prefix) to a local directory.
+ * Prefers pre-signed URL path (via API callback), falls back to S3 SDK.
+ */
+async function downloadDirectoryFromS3(s3Prefix, localDir) {
+  // Try pre-signed URL path first
+  try {
+    const entries = await requestDownloadUrls(s3Prefix);
+    if (entries && entries.length > 0) {
+      const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
+      let downloaded = 0;
+      for (const entry of entries) {
+        const relativePath = entry.key.slice(normalizedPrefix.length);
+        if (!relativePath) continue;
+
+        const localPath = path.join(localDir, relativePath);
+        fs.mkdirSync(path.dirname(localPath), { recursive: true });
+
+        const data = await downloadFromPresignedUrl(entry.url);
+        fs.writeFileSync(localPath, data);
+        downloaded++;
+      }
+      log("info", `Downloaded ${downloaded} files via pre-signed URLs to ${localDir}`);
+      return downloaded;
+    }
+  } catch (err) {
+    log("info", `Pre-signed download URLs unavailable, using SDK fallback: ${err.message}`);
+  }
+
+  // Fallback: direct S3 SDK
+  const MAX_FILE_SIZE = 50 * 1024 * 1024;
+  const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
   const client = getS3Client();
   const objects = [];
   let continuationToken;
-
   do {
     const resp = await client.send(
       new ListObjectsV2Command({
         Bucket: config.s3Bucket,
-        Prefix: prefix,
+        Prefix: normalizedPrefix,
         ContinuationToken: continuationToken,
       })
     );
@@ -242,22 +428,8 @@ async function listS3Objects(prefix) {
         objects.push({ Key: obj.Key, Size: obj.Size ?? 0 });
       }
     }
-    continuationToken = resp.IsTruncated
-      ? resp.NextContinuationToken
-      : undefined;
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
-
-  return objects;
-}
-
-/**
- * Download an entire S3 "directory" (prefix) to a local directory.
- * Preserves relative paths. Skips files >50MB (mirrors upload limit).
- */
-async function downloadDirectoryFromS3(s3Prefix, localDir) {
-  const MAX_FILE_SIZE = 50 * 1024 * 1024;
-  const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
-  const objects = await listS3Objects(normalizedPrefix);
 
   let downloaded = 0;
   for (const obj of objects) {
@@ -265,11 +437,8 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
       log("info", `Skipping large file (${obj.Size} bytes): ${obj.Key}`);
       continue;
     }
-
     const relativePath = obj.Key.slice(normalizedPrefix.length);
-    if (!relativePath) {
-      continue; // skip the prefix itself
-    }
+    if (!relativePath) continue;
 
     const localPath = path.join(localDir, relativePath);
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
@@ -278,8 +447,7 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
     fs.writeFileSync(localPath, data);
     downloaded++;
   }
-
-  log("info", `Downloaded ${downloaded} files from s3://${config.s3Bucket}/${normalizedPrefix}`);
+  log("info", `Downloaded ${downloaded} files via SDK fallback to ${localDir}`);
   return downloaded;
 }
 
@@ -396,18 +564,25 @@ async function refreshGitHubToken() {
 // Context pack handling
 // ---------------------------------------------------------------------------
 async function downloadContextPack() {
-  if (!config.s3ContextKey) {
-    log("info", "No S3_CONTEXT_KEY set, skipping context pack download");
+  if (!config.s3ContextKey && !config.s3ContextUrl) {
+    log("info", "No S3_CONTEXT_KEY or S3_CONTEXT_URL set, skipping context pack download");
     return null;
   }
 
   let buf;
   try {
-    buf = await downloadFromS3(config.s3ContextKey);
+    if (config.s3ContextUrl) {
+      // Preferred: download via pre-signed URL (no S3 credentials needed)
+      log("info", "Downloading context pack via pre-signed URL");
+      buf = await downloadFromPresignedUrl(config.s3ContextUrl);
+    } else {
+      // Fallback: direct S3 SDK (backward compat during transition)
+      buf = await downloadFromS3(config.s3ContextKey);
+    }
   } catch (err) {
     throw new HarnessError(
       ERROR_CODES.contextPackDownload,
-      "Failed to download context pack from S3",
+      "Failed to download context pack",
       err
     );
   }
@@ -1111,8 +1286,8 @@ function normalizeModelName(rawName) {
 // State upload
 // ---------------------------------------------------------------------------
 async function uploadState(workDir, output) {
-  if (!(config.s3StateKey && config.s3Bucket)) {
-    log("info", "No S3_STATE_KEY or S3_BUCKET set, skipping state upload");
+  if (!config.s3StateKey) {
+    log("info", "No S3_STATE_KEY set, skipping state upload");
     return;
   }
 
@@ -1123,7 +1298,7 @@ async function uploadState(workDir, output) {
     const logContent = output
       .map((o) => `[${new Date(o.ts).toISOString()}][${o.stream}] ${o.line}`)
       .join("\n");
-    await uploadToS3(`${statePrefix}/output.log`, logContent, "text/plain");
+    await uploadFile(`${statePrefix}/output.log`, logContent, "text/plain");
   } catch (err) {
     log("error", `Failed to upload output log: ${err.message}`);
   }
@@ -1132,7 +1307,7 @@ async function uploadState(workDir, output) {
   const claudeDir = path.join(workDir, ".claude");
   if (fs.existsSync(claudeDir)) {
     try {
-      await uploadDirectoryToS3(claudeDir, `${statePrefix}/claude-state`);
+      await uploadDirectory(claudeDir, `${statePrefix}/claude-state`);
     } catch (err) {
       log("error", `Failed to upload .claude state: ${err.message}`);
     }
@@ -1148,7 +1323,7 @@ async function uploadState(workDir, output) {
       continue;
     }
     try {
-      await uploadDirectoryToS3(
+      await uploadDirectory(
         absDir,
         `${statePrefix}/home-claude-state/${relDir}`
       );
@@ -1170,7 +1345,7 @@ async function uploadState(workDir, output) {
     if (fs.existsSync(absPath)) {
       try {
         const content = fs.readFileSync(absPath);
-        await uploadToS3(
+        await uploadFile(
           `${statePrefix}/artifacts/${relPath}`,
           content,
           "application/octet-stream"
@@ -1188,7 +1363,7 @@ async function uploadState(workDir, output) {
  * Upload metadata.json with token usage breakdown and execution info.
  */
 async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
-  if (!(config.s3StateKey && config.s3Bucket)) {
+  if (!config.s3StateKey) {
     return;
   }
 
@@ -1222,35 +1397,14 @@ async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
   };
 
   try {
-    await uploadToS3(
+    await uploadFile(
       `${statePrefix}/metadata.json`,
       JSON.stringify(metadata, null, 2),
       "application/json"
     );
-    log("info", "Metadata uploaded to S3");
+    log("info", "Metadata uploaded");
   } catch (err) {
     log("error", `Failed to upload metadata: ${err.message}`);
-  }
-}
-
-async function uploadDirectoryToS3(dirPath, s3Prefix) {
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-    const s3Key = `${s3Prefix}/${entry.name}`;
-
-    if (entry.isDirectory()) {
-      await uploadDirectoryToS3(fullPath, s3Key);
-    } else if (entry.isFile()) {
-      // Skip very large files (>50MB) to avoid timeouts
-      const stat = fs.statSync(fullPath);
-      if (stat.size > 50 * 1024 * 1024) {
-        log("info", `Skipping large file ${fullPath} (${stat.size} bytes)`);
-        continue;
-      }
-      const content = fs.readFileSync(fullPath);
-      await uploadToS3(s3Key, content);
-    }
   }
 }
 

@@ -22,6 +22,7 @@ import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import {
   type ContextPack,
   downloadMetadata,
+  generateDownloadUrl,
   getStateKeyPrefix,
   scrubContextPackSecrets,
   uploadContextPack,
@@ -493,12 +494,16 @@ export async function launchLoop(
       { anthropicApiKey, githubToken }
     );
 
-    // 5. Resolve parent state info for resume (if this is a child loop)
+    // 5. Generate pre-signed GET URL for context pack so the container can
+    // download it without direct S3 credentials (multi-tenant isolation).
+    const s3ContextUrl = await generateDownloadUrl(s3ContextKey);
+
+    // 6. Resolve parent state info for resume (if this is a child loop)
     const parentInfo = loop.parentLoopId
       ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
       : undefined;
 
-    // 6. Launch ECS task (secrets travel via S3 context pack, not env vars)
+    // 7. Launch ECS task (secrets travel via S3 context pack, not env vars)
     const closedLoopAuthToken = await issueLoopRunnerToken({
       loopId,
       organizationId,
@@ -509,6 +514,7 @@ export async function launchLoop(
       command: loop.command,
       s3StateKey,
       s3ContextKey,
+      s3ContextUrl,
       repo: loop.repo ?? undefined,
       closedLoopAuthToken,
       artifactId: loop.artifactId ?? undefined,
@@ -571,6 +577,7 @@ async function runEcsTask(opts: {
   command: string;
   s3StateKey: string;
   s3ContextKey: string;
+  s3ContextUrl: string;
   repo?: { fullName: string; branch: string };
   closedLoopAuthToken: string;
   artifactId?: string;
@@ -590,6 +597,7 @@ async function runEcsTask(opts: {
     { name: "COMMAND", value: opts.command },
     { name: "S3_STATE_KEY", value: opts.s3StateKey },
     { name: "S3_CONTEXT_KEY", value: opts.s3ContextKey },
+    { name: "S3_CONTEXT_URL", value: opts.s3ContextUrl },
     { name: "CLOSEDLOOP_AUTH_TOKEN", value: opts.closedLoopAuthToken },
     { name: "CORRELATION_ID", value: opts.loopId },
   ];
