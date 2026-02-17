@@ -574,6 +574,7 @@ describe("handleExecutionSuccess", () => {
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
         workstreamId,
+        organizationId: "org-123",
         repositoryId,
         artifactId: "plan-artifact-123",
         githubId: executionResult.github_id,
@@ -673,6 +674,7 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        organizationId: "org-456",
         number: 99, // Converted to number
         githubId: 99,
       }),

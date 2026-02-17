@@ -50,6 +50,9 @@ Temporary Items
 # production
 /build
 
+# IDE / editor (keep local only)
+.cursorignore
+
 # misc
 *.pem
 
