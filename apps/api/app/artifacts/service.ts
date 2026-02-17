@@ -556,28 +556,28 @@ export const artifactsService = {
       Awaited<ReturnType<typeof this.findWithRegenerationContext>>
     >,
     userId: string
-  ) {
-    type WorkstreamWithProject = NonNullable<typeof artifact.workstream>;
-    type SourceArtifactWithContent = {
+  ): Promise<{
+    workstream: NonNullable<typeof artifact.workstream> | null;
+    sourceArtifact: {
       id: string;
       targetRepo: string | null;
       targetBranch: string | null;
       content: string | null;
-    };
-
+    } | null;
+  }> {
     // If workstream exists, find source via entity links
     if (artifact.workstream) {
       const sourceArtifact = await this.findSourceWithContent(artifact);
       return {
         workstream: artifact.workstream,
-        sourceArtifact: sourceArtifact as SourceArtifactWithContent | null,
+        sourceArtifact,
       };
     }
 
     if (!artifact.projectId) {
       return {
-        workstream: null as WorkstreamWithProject | null,
-        sourceArtifact: null as SourceArtifactWithContent | null,
+        workstream: null,
+        sourceArtifact: null,
       };
     }
 
@@ -610,8 +610,8 @@ export const artifactsService = {
 
     if (!foundSource?.content) {
       return {
-        workstream: null as WorkstreamWithProject | null,
-        sourceArtifact: foundSource as SourceArtifactWithContent | null,
+        workstream: null,
+        sourceArtifact: foundSource,
       };
     }
 
@@ -644,12 +644,16 @@ export const artifactsService = {
               repositories: { take: 1 },
             },
           },
+          artifacts: {
+            where: { type: PrismaArtifactType.PRD },
+            take: 1,
+          },
         },
       });
 
       return {
-        workstream: workstream as WorkstreamWithProject | null,
-        sourceArtifact: foundSource as SourceArtifactWithContent | null,
+        workstream,
+        sourceArtifact: foundSource,
       };
     });
   },
