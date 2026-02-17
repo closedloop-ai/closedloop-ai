@@ -51,24 +51,24 @@ Parse $ARGUMENTS:
 - If "staged": Use `--cached` diff
 - If file paths: Use those files directly with `main...HEAD -- <files>`
 
-### Get Diff Data
+### Get Diff Data (lightweight — no full patches yet)
 
 ```bash
-# Get file list
+# Get file list (small output)
 git diff --name-only main...HEAD        # or --cached for staged
 
-# Get file statuses
+# Get file statuses (small output)
 git diff --name-status main...HEAD      # or --cached for staged
 
-# Get full patches
-git diff main...HEAD                    # or --cached for staged
+# Get diff stat summary (small output — line counts per file)
+git diff --stat main...HEAD             # or --cached for staged
 ```
+
+**Do NOT run `git diff main...HEAD` (full patches) here.** For large diffs (10K+ LOC), the full patch output exceeds tool output limits and gets truncated. Patches are fetched per-partition in Steps 2.5 and 4.
 
 Parse and store:
 - **FILES_TO_REVIEW**: Array of changed file paths
 - **FILE_STATUSES**: Map of `{ "path/file.ts": "added" | "modified" | "removed", ... }` parsed from `--name-status` output (A=added, M=modified, D=removed, R=renamed)
-- **FILE_PATCHES**: Map of `{ "path/file.ts": "<patch content>", ... }` parsed from the full diff
-- **CHANGED_LINES**: Map of `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` parsed from patches (only lines starting with `+`, using the `@@ ... +start,count @@` hunk headers to compute absolute line numbers)
 
 Mark todo as `completed`.
 
@@ -79,6 +79,28 @@ Mark todo as `completed`.
 Mark todo "Run deterministic hygiene checks" as `in_progress`.
 
 Run scripted checks that don't need LLM reasoning. These catch CI artifacts, path leakage, and sensitive files deterministically.
+
+### Fetch Patches in Batches
+
+Patches are NOT available from Step 2 — they must be fetched here in batches to stay within tool output limits.
+
+For FILES_TO_REVIEW with status "added" or "modified", fetch patches in groups of **30 files**:
+
+```bash
+# Batch 1: files 1-30
+git diff main...HEAD -- file1.ts file2.ts ... file30.ts
+
+# Batch 2: files 31-60
+git diff main...HEAD -- file31.ts file32.ts ... file60.ts
+
+# ... continue until all files are covered
+```
+
+For each batch, parse the patch output and accumulate:
+- **FILE_PATCHES**: Map of `{ "path/file.ts": "<patch content>", ... }`
+- **CHANGED_LINES**: Map of `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` parsed from patches (only lines starting with `+`, using the `@@ ... +start,count @@` hunk headers to compute absolute line numbers)
+
+Process each batch for the hygiene checks below before fetching the next batch. This keeps memory usage bounded.
 
 ### Hygiene Checks
 
@@ -263,6 +285,21 @@ Background agents do NOT have Bash tool access. All review data MUST be provided
 1. **Small diffs (≤30 files)**: Include ALL file patches in each agent's prompt
 2. **Medium diffs (31-80 files)**: Partition files so each agent gets at most 30 files
 3. **Large diffs (81+ files)**: Cap at 25 files per agent. Create multiple agent instances if needed
+
+### Per-Partition Patch Fetching
+
+Before spawning each sub-agent, fetch patches for **that partition's files only**:
+
+```bash
+# For each partition of N files:
+git diff main...HEAD -- file1.ts file2.ts file3.ts ...
+```
+
+Parse the per-partition output to build:
+- **FILE_PATCHES** for the partition (used in the agent prompt's `<diff>` block)
+- **CHANGED_LINES** for the partition (used for line validation in Step 5.3)
+
+This keeps each `git diff` output small (~25 files × ~100 LOC avg = ~7.5K chars, well under the 30K tool output limit). For small diffs (≤30 files), a single fetch covers all files.
 
 ### Shared Prompt Prefix (ALL agents get this)
 
@@ -552,7 +589,7 @@ Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findi
 - `finding.priority ??= severity_to_priority(finding.severity)` where BLOCKING→0, HIGH→1, MEDIUM→2
 - `finding.confidence ??= 1.0` (agents that don't emit confidence are already validated)
 
-Then for each finding:
+Then for each finding (using the combined CHANGED_LINES from all partitions built in Steps 2.5 and 4):
 
 1. **File in scope?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
