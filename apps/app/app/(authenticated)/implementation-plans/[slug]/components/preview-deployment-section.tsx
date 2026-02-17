@@ -1,6 +1,6 @@
 "use client";
 
-import type { PreviewDeploymentMetadata } from "@repo/api/src/types/external-link";
+import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Label } from "@repo/design-system/components/ui/label";
 import { cn } from "@repo/design-system/lib/utils";
@@ -10,10 +10,6 @@ import {
   previewDeploymentStateColors,
   StatusBadge,
 } from "@/components/status-badge";
-
-export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
-  url: string | null;
-};
 
 export type PreviewDeploymentSectionProps = {
   previewDeployment: PreviewDeploymentInfo;

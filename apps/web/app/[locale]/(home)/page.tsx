@@ -3,13 +3,10 @@ import { showBetaFeature } from "@repo/feature-flags";
 import { getDictionary } from "@repo/internationalization";
 import { createMetadata } from "@repo/seo/metadata";
 import type { Metadata } from "next";
-import { Cases } from "./components/cases";
 import { CTA } from "./components/cta";
 import { FAQ } from "./components/faq";
 import { Features } from "./components/features";
 import { Hero } from "./components/hero";
-import { Stats } from "./components/stats";
-import { Testimonials } from "./components/testimonials";
 
 type HomeProps = {
   params: Promise<{
@@ -42,10 +39,7 @@ const Home = async ({ params }: HomeProps) => {
         </div>
       ) : null}
       <Hero cmsData={cmsHome?.hero} dictionary={dictionary} />
-      <Cases cmsData={cmsHome?.cases} dictionary={dictionary} />
       <Features cmsData={cmsHome?.features} dictionary={dictionary} />
-      <Stats cmsData={cmsHome?.stats} dictionary={dictionary} />
-      <Testimonials cmsData={cmsHome?.testimonials} dictionary={dictionary} />
       <FAQ cmsData={cmsHome?.faq} dictionary={dictionary} />
       <CTA cmsData={cmsHome?.cta} dictionary={dictionary} />
     </>
