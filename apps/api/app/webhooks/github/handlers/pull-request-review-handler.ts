@@ -2,6 +2,7 @@ import type {
   PullRequestReviewDismissedEvent,
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
+import { ReviewDecision } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -19,18 +20,12 @@ export type HandledPullRequestReviewEvent =
  * Re-submitted reviews after dismissal use priority comparison against current state.
  */
 const REVIEW_DECISION_PRIORITY = {
-  DISMISSED: 4,
-  CHANGES_REQUESTED: 3,
-  APPROVED: 2,
-  COMMENTED: 1,
+  [ReviewDecision.Dismissed]: 4,
+  [ReviewDecision.ChangesRequested]: 3,
+  [ReviewDecision.Approved]: 2,
+  [ReviewDecision.Commented]: 1,
   null: 0,
 } as const;
-
-type ReviewDecision =
-  | "APPROVED"
-  | "CHANGES_REQUESTED"
-  | "COMMENTED"
-  | "DISMISSED";
 
 /**
  * Map GitHub review state to our ReviewDecision enum.
@@ -39,11 +34,11 @@ type ReviewDecision =
 function mapReviewStateToDecision(state: string): ReviewDecision | null {
   switch (state.toUpperCase()) {
     case "APPROVED":
-      return "APPROVED";
+      return ReviewDecision.Approved;
     case "CHANGES_REQUESTED":
-      return "CHANGES_REQUESTED";
+      return ReviewDecision.ChangesRequested;
     case "COMMENTED":
-      return "COMMENTED";
+      return ReviewDecision.Commented;
     default:
       return null;
   }
@@ -231,13 +226,13 @@ async function handleDismissedReview(
         githubReviewId: BigInt(review.id),
         authorLogin: reviewerLogin,
         authorAvatarUrl: review.user?.avatar_url ?? null,
-        state: "DISMISSED",
+        state: ReviewDecision.Dismissed,
         body: review.body ?? null,
         htmlUrl: review.html_url,
         submittedAt: new Date(),
       },
       update: {
-        state: "DISMISSED",
+        state: ReviewDecision.Dismissed,
       },
     });
   }
