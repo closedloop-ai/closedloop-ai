@@ -37,11 +37,11 @@ export function PullRequestFeedbackSection({
 
   // Sync local state from server when userRating updates (load or after submit)
   useEffect(() => {
-    if (userRating) {
+    if (userRating && !isEditing) {
       setLocalScore(userRating.score);
       setLocalComment(userRating.comment ?? "");
     }
-  }, [userRating]);
+  }, [userRating, isEditing]);
 
   // Loading state
   if (isLoading) {
