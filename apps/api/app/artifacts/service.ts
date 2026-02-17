@@ -560,6 +560,7 @@ export const artifactsService = {
     workstream: NonNullable<typeof artifact.workstream> | null;
     sourceArtifact: {
       id: string;
+      title: string;
       targetRepo: string | null;
       targetBranch: string | null;
       content: string | null;
