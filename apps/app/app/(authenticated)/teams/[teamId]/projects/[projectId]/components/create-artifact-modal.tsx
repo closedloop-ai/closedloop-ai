@@ -38,7 +38,7 @@ import {
 import {
   useArtifact,
   useArtifactsByProject,
-  useCreateAndGenerateArtifact,
+  useCreateAndInlineGeneratePRD,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import {
@@ -291,7 +291,7 @@ export function CreateArtifactModal({
 
   // Create artifact mutations
   const createArtifact = useCreateArtifact();
-  const createAndGenerateArtifact = useCreateAndGenerateArtifact();
+  const createAndInlineGenerate = useCreateAndInlineGeneratePRD();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -445,7 +445,7 @@ export function CreateArtifactModal({
       return;
     }
 
-    createAndGenerateArtifact.mutate(
+    createAndInlineGenerate.mutate(
       {
         input: {
           projectId,
@@ -458,9 +458,7 @@ export function CreateArtifactModal({
           targetRepo: targetRepo.trim() || undefined,
           targetBranch: targetBranch.trim() || undefined,
         },
-        generateBody: reverseSynthesisLink.trim()
-          ? { reverseSynthesisLink: reverseSynthesisLink.trim() }
-          : undefined,
+        reverseSynthesisLink: reverseSynthesisLink.trim() || undefined,
       },
       {
         onSuccess: (artifact) => {
@@ -472,7 +470,7 @@ export function CreateArtifactModal({
   };
 
   const isSubmitting =
-    createArtifact.isPending || createAndGenerateArtifact.isPending;
+    createArtifact.isPending || createAndInlineGenerate.isPending;
 
   return (
     <Dialog
@@ -695,7 +693,7 @@ export function CreateArtifactModal({
 
         <CreateArtifactFooter
           canSubmit={!!title.trim()}
-          isGenerating={createAndGenerateArtifact.isPending}
+          isGenerating={createAndInlineGenerate.isPending}
           isPrd={isPrd}
           isSaving={createArtifact.isPending}
           isSubmitting={isSubmitting}

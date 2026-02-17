@@ -370,6 +370,48 @@ export function useCreateAndGenerateArtifact() {
   });
 }
 
+/**
+ * Create an artifact and immediately generate PRD content inline using Sonnet.
+ * Used for the "Save & Generate" button in the PRD creation modal.
+ */
+export function useCreateAndInlineGeneratePRD() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async ({
+      input,
+      reverseSynthesisLink,
+    }: {
+      input: CreateArtifactInput;
+      reverseSynthesisLink?: string;
+    }) => {
+      const artifact = await apiClient.post<Artifact>("/artifacts", input);
+
+      try {
+        await apiClient.post("/ai/prd/generate", {
+          artifactId: artifact.id,
+          reverseSynthesisLink,
+        });
+      } catch {
+        // If inline generation fails, still return the created artifact
+      }
+
+      return artifact;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(data.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.versions(data.id),
+      });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+    },
+  });
+}
+
 type ExecuteResult = {
   success: true;
   correlationId: string;

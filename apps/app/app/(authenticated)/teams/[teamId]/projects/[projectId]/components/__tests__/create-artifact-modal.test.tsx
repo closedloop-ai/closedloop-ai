@@ -12,7 +12,7 @@ import { CreateArtifactModal } from "../create-artifact-modal";
 
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
-const mockUseCreateAndGenerateArtifact = vi.fn();
+const mockUseCreateAndInlineGeneratePRD = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseOrganizationUsers = vi.fn();
@@ -26,7 +26,7 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   return {
     ...actual,
     useCreateArtifact: () => mockUseCreateArtifact(),
-    useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
+    useCreateAndInlineGeneratePRD: () => mockUseCreateAndInlineGeneratePRD(),
     useArtifact: (...args: unknown[]) => mockUseArtifact(...args),
     useArtifactsByProject: (...args: unknown[]) =>
       mockUseArtifactsByProject(...args),
@@ -83,7 +83,7 @@ describe("CreateArtifactModal", () => {
       isPending: false,
     });
 
-    mockUseCreateAndGenerateArtifact.mockReturnValue({
+    mockUseCreateAndInlineGeneratePRD.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
     });

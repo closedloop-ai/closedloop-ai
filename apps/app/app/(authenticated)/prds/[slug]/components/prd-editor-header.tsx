@@ -225,7 +225,7 @@ export function PRDEditorHeader({
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={isPending} onClick={onGeneratePRD}>
             <SparklesIcon className="mr-2 h-4 w-4" />
-            Generate PRD
+            Deep PRD
           </DropdownMenuItem>
           {showRestore ? (
             <DropdownMenuItem onClick={onRestoreVersion}>
