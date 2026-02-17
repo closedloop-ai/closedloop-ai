@@ -15,31 +15,16 @@ import type {
   PullRequestReviewCommentDeletedEvent,
   PullRequestReviewCommentEditedEvent,
 } from "@octokit/webhooks-types";
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  type Mock,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockWithDbTx as setupMockWithDbTx } from "../utils/db-helpers";
 
 // Mock modules before importing
-vi.mock("@repo/database", () => {
-  const mockWithDb: any = vi.fn();
-  mockWithDb.tx = vi.fn();
-  return {
-    withDb: mockWithDb,
-  };
-});
+vi.mock("@repo/database", () => ({
+  withDb: vi.fn(),
+}));
 
 // Import after mocking
-import { withDb } from "@repo/database";
 import { handlePullRequestReviewComment } from "@/app/webhooks/github/handlers/pull-request-review-comment-handler";
-
-// Type alias for mocked transaction function
-const mockWithDbTx = withDb.tx as unknown as Mock;
 
 // Mock database transaction client
 let mockTx: any;
@@ -233,9 +218,7 @@ describe("handlePullRequestReviewComment", () => {
     };
 
     // Mock withDb.tx — all reads and writes happen in a single transaction
-    mockWithDbTx.mockImplementation((callback: any) => {
-      return callback(mockTx);
-    });
+    setupMockWithDbTx(mockTx);
   });
 
   afterEach(() => {
