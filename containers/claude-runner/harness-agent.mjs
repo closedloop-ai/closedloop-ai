@@ -454,11 +454,12 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
 /**
  * Download and restore prior run state from the parent loop.
  * Restores:
- *   - {parentPrefix}/claude-state/ → {workDir}/.claude/  (run state, conversation history)
- *   - {parentPrefix}/home-claude-state/ → ~/.claude/      (session state for --resume)
+ *   - {parentPrefix}/claude-state/      → {workDir}/.claude/  (run state, conversation history)
+ *   - {parentPrefix}/home-claude-state/  → ~/.claude/          (session state for --resume)
+ *   - {parentPrefix}/artifacts/          → {workDir}/          (plan.json, plan.md, etc.)
  *
  * This is the counterpart to uploadState() — ensures resumed loops start
- * with the same .claude directory as the parent run.
+ * with the same working directory as the parent run.
  */
 async function downloadState(workDir) {
   if (!config.s3ParentStateKey) {
@@ -491,6 +492,21 @@ async function downloadState(workDir) {
     log(
       "error",
       `Failed to download home-claude-state (best-effort): ${err.message}`
+    );
+  }
+
+  // 3. Restore key artifact files (plan.json, plan.md, etc.) from parent's artifacts.
+  // These files live at repo root and are normally restored via git branch checkout.
+  // Downloading from S3 ensures they're available even if the parent's safety
+  // commit failed to push.
+  try {
+    const artifactsPrefix = `${parentPrefix}/artifacts`;
+    const count = await downloadDirectoryFromS3(artifactsPrefix, workDir);
+    log("info", `Restored ${count} artifact files to ${workDir}`);
+  } catch (err) {
+    log(
+      "error",
+      `Failed to download artifacts (best-effort): ${err.message}`
     );
   }
 }
@@ -1639,6 +1655,11 @@ function createWorkingBranch(workDir) {
       log(
         "error",
         `Failed to checkout parent branch ${config.parentBranchName}: ${err.message}`
+      );
+      log(
+        "warn",
+        "Will create fresh branch — parent code changes may be lost. " +
+          "Artifact files from S3 will still be restored if available."
       );
       // Fall through to create a new branch
     }
