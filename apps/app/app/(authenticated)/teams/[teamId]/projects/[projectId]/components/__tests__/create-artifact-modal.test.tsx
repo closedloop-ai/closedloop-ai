@@ -13,6 +13,7 @@ import { CreateArtifactModal } from "../create-artifact-modal";
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
 const mockUseCreateAndInlineGeneratePRD = vi.fn();
+const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseOrganizationUsers = vi.fn();
@@ -27,6 +28,7 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
     ...actual,
     useCreateArtifact: () => mockUseCreateArtifact(),
     useCreateAndInlineGeneratePRD: () => mockUseCreateAndInlineGeneratePRD(),
+    useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
     useArtifact: (...args: unknown[]) => mockUseArtifact(...args),
     useArtifactsByProject: (...args: unknown[]) =>
       mockUseArtifactsByProject(...args),
@@ -63,7 +65,7 @@ const _STATUS_REGEX = /^status$/i;
 const CANCEL_REGEX = /cancel/i;
 const CREATE_IMPL_PLAN_REGEX = /create implementation plan/i;
 const SAVE_REGEX = /^save$/i;
-const GENERATE_PRD_REGEX = /generate prd/i;
+const GENERATE_REGEX = /^generate$/i;
 const PASTE_MARKDOWN_CONTENT_REGEX = /paste markdown content/i;
 const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
 const CREATING_REGEX = /creating\.\.\./i;
@@ -84,6 +86,11 @@ describe("CreateArtifactModal", () => {
     });
 
     mockUseCreateAndInlineGeneratePRD.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    });
+
+    mockUseCreateAndGenerateArtifact.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
     });
@@ -393,7 +400,7 @@ describe("CreateArtifactModal", () => {
       expect(dialog).toHaveTextContent("Create PRD");
     });
 
-    it("should render Save and Generate PRD buttons for PRD", () => {
+    it("should render Save and Generate dropdown buttons for PRD", () => {
       render(
         <CreateArtifactModal
           artifactType={ArtifactType.Prd}
@@ -409,7 +416,7 @@ describe("CreateArtifactModal", () => {
       expect(saveButton).toBeInTheDocument();
 
       const generateButton = screen.getByRole("button", {
-        name: GENERATE_PRD_REGEX,
+        name: GENERATE_REGEX,
       });
       expect(generateButton).toBeInTheDocument();
     });

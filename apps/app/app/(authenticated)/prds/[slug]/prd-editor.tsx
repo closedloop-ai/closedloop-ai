@@ -4,8 +4,7 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { toast } from "@repo/design-system/components/ui/sonner";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -18,7 +17,6 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
-import { useRegenerateArtifact } from "@/hooks/queries/use-artifacts";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -82,15 +80,6 @@ export function PRDEditor({
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
 
-  // Deep generate PRD (long-running GitHub Actions workflow)
-  const regenerateArtifact = useRegenerateArtifact();
-  const handleDeepGeneratePRD = useCallback(() => {
-    regenerateArtifact.mutate(
-      { id: prd.id },
-      { onSuccess: () => toast.success("Deep PRD generation started") }
-    );
-  }, [prd.id, regenerateArtifact]);
-
   // Determine if any operation is pending
   const isPending =
     content.isSaving ||
@@ -119,7 +108,6 @@ export function PRDEditor({
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
-        onDeepGeneratePRD={handleDeepGeneratePRD}
         onDelete={uiState.openDeleteDialog}
         onDiscard={session.handleDiscard}
         onEdit={session.handleEdit}
