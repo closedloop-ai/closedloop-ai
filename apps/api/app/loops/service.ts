@@ -458,9 +458,10 @@ export const loopsService = {
       throw new Error(`Parent loop not found: ${parentLoopId}`);
     }
 
-    if (parent.status !== "COMPLETED" && parent.status !== "FAILED") {
+    const resumableStatuses = new Set(["COMPLETED", "FAILED", "TIMED_OUT"]);
+    if (!resumableStatuses.has(parent.status)) {
       throw new Error(
-        `Cannot resume loop in ${parent.status} status. Only COMPLETED or FAILED loops can be resumed.`
+        `Cannot resume loop in ${parent.status} status. Only COMPLETED, FAILED, or TIMED_OUT loops can be resumed.`
       );
     }
 
