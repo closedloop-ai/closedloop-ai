@@ -1,18 +1,23 @@
 "use client";
 
-import type {
-  CreateExternalLinkInput,
-  ExternalLink,
+import {
+  type CreateExternalLinkInput,
+  type ExternalLink,
   ExternalLinkType,
-  FindExternalLinksOptions,
-  UpdateExternalLinkInput,
+  type FindExternalLinksOptions,
+  type UpdateExternalLinkInput,
 } from "@repo/api/src/types/external-link";
+import {
+  type PreviewDeploymentInfo,
+  parsePreviewDeploymentMetadata,
+} from "@repo/api/src/types/external-link-utils";
 import {
   type UseQueryOptions,
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 
@@ -72,6 +77,45 @@ export function useExternalLinksByWorkstream(
     enabled: !!workstreamId,
     ...options,
   });
+}
+
+/**
+ * Fetch and parse the preview deployment for a workstream.
+ * Returns the first PREVIEW_DEPLOYMENT external link with parsed metadata.
+ */
+export function useWorkstreamPreviewDeployment(
+  workstreamId: string,
+  options?: Omit<UseQueryOptions<ExternalLink[]>, "queryKey" | "queryFn">
+) {
+  const {
+    data: previewLinks,
+    refetch,
+    isRefetching,
+  } = useExternalLinksByWorkstream(
+    workstreamId,
+    ExternalLinkType.PreviewDeployment,
+    {
+      enabled: !!workstreamId,
+      ...options,
+    }
+  );
+
+  const previewDeployment = useMemo((): PreviewDeploymentInfo | null => {
+    const link = previewLinks?.[0];
+    if (!link) {
+      return null;
+    }
+    const meta = parsePreviewDeploymentMetadata(link.metadata);
+    return {
+      state: meta?.state ?? null,
+      environment: meta?.environment ?? null,
+      ref: meta?.ref ?? null,
+      sha: meta?.sha ?? null,
+      url: link.externalUrl || null,
+    };
+  }, [previewLinks]);
+
+  return { previewDeployment, refetch, isRefetching };
 }
 
 // Mutations

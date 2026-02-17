@@ -291,6 +291,7 @@ packages/database/generated
 .contentlayer
 .content-collections
 .source
+.workspace-repos.json
 # Claude Code
 .claude/.token-stats/
 .claude/work/
