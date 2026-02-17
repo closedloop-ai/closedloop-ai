@@ -116,8 +116,8 @@ function resolveFailedMigration(
  * Attempts to run prisma migrate deploy with automatic recovery:
  *
  * - Preview schemas: P3005/P3009 → drop and recreate schema, then retry.
- * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back,
- *   then retry. Safe because PostgreSQL DDL is transactional.
+ * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back
+ *   so the next deploy can re-apply. Safe because PostgreSQL DDL is transactional.
  */
 async function runMigrateWithRetry(
   databaseUrl: string,
@@ -160,11 +160,12 @@ async function runMigrateWithRetry(
 
     if (hasFailedMigration && migrationName && !isPreviewSchema(schema)) {
       console.log(
-        `↪ Failed migration detected: ${migrationName}, resolving...`
+        `↪ Failed migration detected: ${migrationName}, resolving as rolled-back...`
       );
       resolveFailedMigration(databaseUrl, migrationName);
-      runMigrateDeploy(databaseUrl);
-      return false;
+      console.log(
+        `✓ Migration ${migrationName} marked as rolled-back. Re-deploy to apply.`
+      );
     }
 
     throw error;
