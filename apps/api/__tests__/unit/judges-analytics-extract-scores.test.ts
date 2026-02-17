@@ -13,9 +13,11 @@ vi.mock("@repo/database", async () => {
   return createDatabaseMock();
 });
 
+import { EvalStatus } from "@repo/api/src/types/evaluation";
 import {
   type EvaluationInput,
   extractJudgeScores,
+  normalizeJudgeName,
 } from "@/app/judges-analytics/service";
 import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
 
@@ -278,6 +280,52 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       },
     ],
   },
+
+  // This scenario uses production-style naming conventions and would fail with the old exact-match code
+  {
+    name: "realistic_production_naming",
+    description:
+      "Production-style naming with case_id not ending in -judge and metric_name following snake_case convention",
+    evaluations: [
+      buildEvaluation("a1", ArtifactType.Prd, {
+        report_id: "r1",
+        timestamp: "2026-01-01T00:00:00Z",
+        stats: [
+          {
+            type: "case_score",
+            case_id: "dry-judge",
+            final_status: EvalStatus.Passed,
+            metrics: [buildMetric({ metric_name: "dry_score", score: 0.92 })],
+          },
+          {
+            type: "case_score",
+            case_id: "solid-isp-dip-judge",
+            final_status: EvalStatus.Passed,
+            metrics: [
+              buildMetric({
+                metric_name: "solid_isp_dip_score",
+                score: 0.87,
+              }),
+            ],
+          },
+        ],
+      }),
+    ],
+    expected: [
+      {
+        type: ArtifactType.Prd,
+        judgeName: "dry-judge",
+        scores: [0.92],
+        artifactIds: ["a1"],
+      },
+      {
+        type: ArtifactType.Prd,
+        judgeName: "solid-isp-dip-judge",
+        scores: [0.87],
+        artifactIds: ["a1"],
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -295,5 +343,24 @@ describe("extractJudgeScores", () => {
       const flat = flattenResults(result);
       expect(flat).toEqual(scenario.expected);
     });
+  });
+});
+
+describe("normalizeJudgeName", () => {
+  const NORMALIZATION_TEST_CASES = {
+    "hyphen-suffix": ["clarity-judge", "clarity"],
+    "underscore-judge-suffix": ["brevity_judge", "brevity"],
+    "uppercase-with-suffix": ["Clarity-Judge", "clarity"],
+    "score-suffix": ["clarity_score", "clarity"],
+    "hyphen-score-suffix": ["clarity-score", "clarity"],
+    "multi-word-hyphenated": ["dry-judge", "dry"],
+    "complex-hyphenated": ["solid-isp-dip-judge", "solid_isp_dip"],
+    "no-suffix": ["clarity", "clarity"],
+  } as const satisfies Record<string, readonly [string, string]>;
+
+  it.each(
+    Object.entries(NORMALIZATION_TEST_CASES)
+  )("%s: normalizeJudgeName(%p) → %p", (_, [input, expected]) => {
+    expect(normalizeJudgeName(input)).toBe(expected);
   });
 });
