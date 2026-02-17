@@ -8,8 +8,15 @@ argument-hint: [scope] - optional: "staged", "branch", or file paths
 Run a multi-agent code review with 4-layer architecture, deterministic hygiene checks, model routing, and validated findings.
 
 <!-- MAINTENANCE: Steps 2.5, 3, 4, and 5 share architecture with gh-code-review.md.
-     Sections that must stay in sync: hygiene checks, agent prompts, severity routing,
-     model routing table, domain critic selection, and validation pipeline.
+     Sections that MUST stay in sync: hygiene checks, agent prompts, severity routing,
+     domain critic selection, and validation pipeline.
+     Sections that INTENTIONALLY DIVERGE:
+     - Model routing: this command uses LOC-based thresholds (needs --numstat);
+       gh-code-review uses file-count thresholds (GitHub API doesn't provide LOC stats).
+     - File partitioning: this command uses LOC-budget partitioning with agent self-fetch;
+       gh-code-review uses file-count partitioning with inline patches (no Bash in agents).
+     - Risk scoring: this command uses path-only signals (orchestrator doesn't fetch patches);
+       gh-code-review uses path + patch-content signals (patches are already in memory).
      Key difference: this command uses git diff (local), gh-code-review uses GitHub API.
      This command outputs to terminal; gh-code-review posts inline comments. -->
 
@@ -539,7 +546,7 @@ Use `model: "sonnet"` for all domain critics.
 
 ### Opus Sampling Pass (Large Diffs only)
 
-For large diffs (41+ files), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks. **Limit the Opus agent's partition to ≤300 LOC** — keep well within standard context. If the top 5 files exceed 300 LOC, reduce to fewer files until the budget fits.
+For large diffs (2001+ LOC), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks. **Limit the Opus agent's partition to ≤300 LOC** — keep well within standard context. If the top 5 files exceed 300 LOC, reduce to fewer files until the budget fits.
 
 **Batched agent fan-out with concurrency cap:**
 - **≤6 agents total**: Spawn ALL in a single message with `run_in_background: true`
