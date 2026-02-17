@@ -276,9 +276,14 @@ export function useRegenerateArtifact() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/regenerate`, {}),
-    onSuccess: (_, id) => {
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body?: { reverseSynthesisLink?: string };
+    }) => apiClient.post<Artifact>(`/artifacts/${id}/regenerate`, body ?? {}),
+    onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(id),
@@ -330,20 +335,26 @@ export function useRequestPlanChanges() {
 
 /**
  * Create an artifact and immediately trigger generation workflow.
- * Used for implementation plans generated from a PRD.
+ * Used for implementation plans generated from a PRD and for PRD generation.
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: async (input: CreateArtifactInput) => {
+    mutationFn: async ({
+      input,
+      generateBody,
+    }: {
+      input: CreateArtifactInput;
+      generateBody?: { reverseSynthesisLink?: string };
+    }) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
       try {
         const regenerated = await apiClient.post<Artifact>(
           `/artifacts/${artifact.id}/regenerate`,
-          {}
+          generateBody ?? {}
         );
         return regenerated;
       } catch {

@@ -29,7 +29,7 @@ import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { LoaderIcon, UploadIcon } from "lucide-react";
+import { LoaderIcon, SparklesIcon, UploadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HiddenFileInput,
@@ -38,6 +38,7 @@ import {
 import {
   useArtifact,
   useArtifactsByProject,
+  useCreateAndGenerateArtifact,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import {
@@ -131,6 +132,78 @@ function populateFieldsFromPrd(
   };
 }
 
+function CreateArtifactFooter({
+  isPrd,
+  isSubmitting,
+  isSaving,
+  isGenerating,
+  canSubmit,
+  typeLabel,
+  onSubmit,
+  onGenerate,
+  onCancel,
+}: {
+  isPrd: boolean;
+  isSubmitting: boolean;
+  isSaving: boolean;
+  isGenerating: boolean;
+  canSubmit: boolean;
+  typeLabel: string;
+  onSubmit: () => void;
+  onGenerate: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <DialogFooter>
+      <Button onClick={onCancel} type="button" variant="outline">
+        Cancel
+      </Button>
+      {isPrd ? (
+        <>
+          <Button
+            disabled={isSubmitting || !canSubmit}
+            onClick={onSubmit}
+            variant="outline"
+          >
+            {isSaving ? (
+              <>
+                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+          <Button disabled={isSubmitting || !canSubmit} onClick={onGenerate}>
+            {isGenerating ? (
+              <>
+                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <SparklesIcon className="mr-2 h-4 w-4" />
+                Save & Generate
+              </>
+            )}
+          </Button>
+        </>
+      ) : (
+        <Button disabled={isSubmitting || !canSubmit} onClick={onSubmit}>
+          {isSaving ? (
+            <>
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Creating...
+            </>
+          ) : (
+            `Create ${typeLabel}`
+          )}
+        </Button>
+      )}
+    </DialogFooter>
+  );
+}
+
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -159,6 +232,7 @@ export function CreateArtifactModal({
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+  const [reverseSynthesisLink, setReverseSynthesisLink] = useState("");
 
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
@@ -215,8 +289,9 @@ export function CreateArtifactModal({
     [orgUsers]
   );
 
-  // Create artifact mutation
+  // Create artifact mutations
   const createArtifact = useCreateArtifact();
+  const createAndGenerateArtifact = useCreateAndGenerateArtifact();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -308,6 +383,7 @@ export function CreateArtifactModal({
     setTargetBranch("main");
     setSelectedRepoId("");
     setSelectedPrdId("");
+    setReverseSynthesisLink("");
     setError(null);
     fileInputRef.current?.reset();
   };
@@ -360,6 +436,43 @@ export function CreateArtifactModal({
       }
     );
   };
+
+  const handleGenerate = () => {
+    setError(null);
+
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+
+    createAndGenerateArtifact.mutate(
+      {
+        input: {
+          projectId,
+          type: artifactType,
+          title: title.trim(),
+          fileName: fileName.trim() || undefined,
+          content: content.trim(),
+          approverId: selectedApprover?.id ?? undefined,
+          status,
+          targetRepo: targetRepo.trim() || undefined,
+          targetBranch: targetBranch.trim() || undefined,
+        },
+        generateBody: reverseSynthesisLink.trim()
+          ? { reverseSynthesisLink: reverseSynthesisLink.trim() }
+          : undefined,
+      },
+      {
+        onSuccess: (artifact) => {
+          handleClose();
+          onSuccess?.(artifact);
+        },
+      }
+    );
+  };
+
+  const isSubmitting =
+    createArtifact.isPending || createAndGenerateArtifact.isPending;
 
   return (
     <Dialog
@@ -524,60 +637,73 @@ export function CreateArtifactModal({
           </div>
 
           {isPrd && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="artifact-content">
-                  Content{" "}
+            <>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="artifact-content">
+                    Content{" "}
+                    <span className="text-muted-foreground text-xs">
+                      (optional)
+                    </span>
+                  </Label>
+                  <Button
+                    onClick={() => fileInputRef.current?.open()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <UploadIcon className="mr-2 h-4 w-4" />
+                    Upload .md
+                  </Button>
+                </div>
+                <HiddenFileInput
+                  accept=".md"
+                  aria-label="Upload markdown file for artifact content"
+                  onError={setError}
+                  onFileRead={handleFileRead}
+                  ref={fileInputRef}
+                />
+                <Textarea
+                  className="min-h-[120px] font-mono text-sm"
+                  id="artifact-content"
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Paste markdown content or a prompt for AI generation..."
+                  value={content}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="reverse-synthesis-url">
+                  Source URL{" "}
                   <span className="text-muted-foreground text-xs">
                     (optional)
                   </span>
                 </Label>
-                <Button
-                  onClick={() => fileInputRef.current?.open()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <UploadIcon className="mr-2 h-4 w-4" />
-                  Upload .md
-                </Button>
+                <Input
+                  id="reverse-synthesis-url"
+                  onChange={(e) => setReverseSynthesisLink(e.target.value)}
+                  placeholder="https://github.com/org/repo or documentation URL"
+                  value={reverseSynthesisLink}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Provide a URL for the AI to reference when generating the PRD.
+                </p>
               </div>
-              <HiddenFileInput
-                accept=".md"
-                aria-label="Upload markdown file for artifact content"
-                onError={setError}
-                onFileRead={handleFileRead}
-                ref={fileInputRef}
-              />
-              <Textarea
-                className="min-h-[120px] font-mono text-sm"
-                id="artifact-content"
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Paste markdown content here..."
-                value={content}
-              />
-            </div>
+            </>
           )}
         </div>
 
-        <DialogFooter>
-          <Button onClick={handleClose} type="button" variant="outline">
-            Cancel
-          </Button>
-          <Button
-            disabled={createArtifact.isPending || !title.trim()}
-            onClick={handleSubmit}
-          >
-            {createArtifact.isPending ? (
-              <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              `Create ${typeLabel}`
-            )}
-          </Button>
-        </DialogFooter>
+        <CreateArtifactFooter
+          canSubmit={!!title.trim()}
+          isGenerating={createAndGenerateArtifact.isPending}
+          isPrd={isPrd}
+          isSaving={createArtifact.isPending}
+          isSubmitting={isSubmitting}
+          onCancel={handleClose}
+          onGenerate={handleGenerate}
+          onSubmit={handleSubmit}
+          typeLabel={typeLabel}
+        />
       </DialogContent>
     </Dialog>
   );

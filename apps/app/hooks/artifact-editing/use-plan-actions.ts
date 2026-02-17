@@ -71,9 +71,10 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    * Triggers the symphony-dispatch workflow to regenerate the plan via GitHub Actions.
    */
   const handleRegenerate = useCallback(() => {
-    regenerateArtifact.mutate(artifact.id, {
-      onSuccess: () => toast.success("Plan regeneration started"),
-    });
+    regenerateArtifact.mutate(
+      { id: artifact.id },
+      { onSuccess: () => toast.success("Plan regeneration started") }
+    );
   }, [artifact.id, regenerateArtifact]);
 
   /**

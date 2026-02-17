@@ -280,7 +280,7 @@ describe("NewPlanModal", () => {
         targetBranch: "main",
       });
 
-      mockCreateAndGenerateMutate.mockImplementation((input, options) => {
+      mockCreateAndGenerateMutate.mockImplementation(({ input }, options) => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
@@ -301,8 +301,8 @@ describe("NewPlanModal", () => {
       });
 
       // Verify mutation input includes source-derived fields
-      const mutationInput = mockCreateAndGenerateMutate.mock.calls[0][0];
-      expect(mutationInput).toMatchObject({
+      const mutationArg = mockCreateAndGenerateMutate.mock.calls[0][0];
+      expect(mutationArg.input).toMatchObject({
         type: "IMPLEMENTATION_PLAN",
         sourceId: "prd-1",
         projectId: "project-1",

@@ -11,11 +11,9 @@ export function getStatusMessage(
     case "QUEUED":
       return isExecute ? "Queued for execution..." : "Queued for generation...";
     case "RUNNING":
-      return isExecute
-        ? "Executing plan and creating PR..."
-        : "Generating implementation plan...";
+      return isExecute ? "Executing plan and creating PR..." : "Generating...";
     case "FAILURE":
-      return isExecute ? "Plan execution failed" : "Plan generation failed";
+      return isExecute ? "Plan execution failed" : "Generation failed";
     default:
       return "";
   }

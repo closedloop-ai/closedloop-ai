@@ -4,11 +4,13 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { useState } from "react";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useCallback, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -16,6 +18,7 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import { useRegenerateArtifact } from "@/hooks/queries/use-artifacts";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -79,6 +82,15 @@ export function PRDEditor({
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
 
+  // Regenerate PRD
+  const regenerateArtifact = useRegenerateArtifact();
+  const handleGeneratePRD = useCallback(() => {
+    regenerateArtifact.mutate(
+      { id: prd.id },
+      { onSuccess: () => toast.success("PRD generation started") }
+    );
+  }, [prd.id, regenerateArtifact]);
+
   // Determine if any operation is pending
   const isPending =
     content.isSaving ||
@@ -112,6 +124,7 @@ export function PRDEditor({
         onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
+        onGeneratePRD={handleGeneratePRD}
         onMove={() => setShowMoveDialog(true)}
         onRename={openRenameDialog}
         onRestoreVersion={session.handleRestoreVersion}
@@ -124,6 +137,9 @@ export function PRDEditor({
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
+
+      {/* Generation Status Banner */}
+      <GenerationStatusBanner artifactId={prd.id} />
 
       {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}

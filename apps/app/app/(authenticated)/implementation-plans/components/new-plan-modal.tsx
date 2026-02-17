@@ -348,7 +348,10 @@ export function NewPlanModal({
     };
 
     if (createConfig.type === "createAndGenerate") {
-      createAndGeneratePlan.mutate(createConfig.input, { onSuccess });
+      createAndGeneratePlan.mutate(
+        { input: createConfig.input },
+        { onSuccess }
+      );
     } else {
       createPlan.mutate(createConfig.input, { onSuccess });
     }
