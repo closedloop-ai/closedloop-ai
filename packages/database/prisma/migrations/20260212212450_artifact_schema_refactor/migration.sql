@@ -458,6 +458,16 @@ DROP TYPE "FileUploadType";
 -- PHASE 4: Create new indexes
 -- ============================================================================
 
+-- Deduplicate artifact_versions before creating unique index.
+-- Edge case: an is_latest=true artifact at version N and a non-latest artifact
+-- in the same document_slug group also at version N both insert into artifact_versions,
+-- creating a duplicate (artifact_id, version) pair.
+DELETE FROM "artifact_versions" av1
+USING "artifact_versions" av2
+WHERE av1."artifact_id" = av2."artifact_id"
+  AND av1."version" = av2."version"
+  AND av1."id" > av2."id";
+
 -- CreateIndex
 CREATE UNIQUE INDEX "artifact_versions_artifact_id_version_key" ON "artifact_versions"("artifact_id", "version");
 
