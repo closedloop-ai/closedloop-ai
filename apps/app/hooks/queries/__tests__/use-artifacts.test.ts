@@ -7,7 +7,6 @@ import {
   useArtifacts,
   useArtifactsByProject,
   useCreateArtifact,
-  useCreateNewVersion,
   useDeleteArtifact,
   useUpdateArtifact,
 } from "../use-artifacts";
@@ -240,35 +239,6 @@ describe("Artifact Mutation Hooks", () => {
         "/artifacts/artifact-123"
       );
       expect(result.current.data).toEqual({ deleted: true });
-    });
-  });
-
-  describe("useCreateNewVersion", () => {
-    test("creates new version and invalidates detail and versions cache", async () => {
-      const mockVersion = {
-        id: "artifact-123",
-        version: 2,
-        content: "New version content",
-      };
-
-      mockApiClient.post.mockResolvedValueOnce(mockVersion);
-
-      const { result } = renderHook(() => useCreateNewVersion(), {
-        wrapper: createWrapper(),
-      });
-
-      result.current.mutate({
-        id: "artifact-123",
-        content: "New version content",
-      });
-
-      await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-      expect(mockApiClient.post).toHaveBeenCalledWith(
-        "/artifacts/artifact-123/versions",
-        { content: "New version content" }
-      );
-      expect(result.current.data).toEqual(mockVersion);
     });
   });
 });
