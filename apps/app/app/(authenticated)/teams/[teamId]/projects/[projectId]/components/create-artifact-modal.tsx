@@ -183,7 +183,7 @@ function CreateArtifactFooter({
             ) : (
               <>
                 <SparklesIcon className="mr-2 h-4 w-4" />
-                Save & Generate
+                Generate PRD
               </>
             )}
           </Button>

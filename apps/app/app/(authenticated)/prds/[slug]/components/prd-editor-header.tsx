@@ -56,10 +56,6 @@ type PRDEditorHeaderProps = {
    */
   onToggleMetadataPanel: () => void;
   /**
-   * Callback when generate PRD button is clicked
-   */
-  onGeneratePRD: () => void;
-  /**
    * Callback when generate plan button is clicked
    */
   onGeneratePlan: () => void;
@@ -122,7 +118,6 @@ export function PRDEditorHeader({
   lastSaved,
   showMetadataPanel,
   onToggleMetadataPanel,
-  onGeneratePRD,
   onGeneratePlan,
   onDiscard,
   onEdit,
@@ -221,11 +216,6 @@ export function PRDEditorHeader({
           <DropdownMenuItem onClick={onMove}>
             <FolderIcon className="mr-2 h-4 w-4" />
             Move...
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={isPending} onClick={onGeneratePRD}>
-            <SparklesIcon className="mr-2 h-4 w-4" />
-            Deep PRD
           </DropdownMenuItem>
           {showRestore ? (
             <DropdownMenuItem onClick={onRestoreVersion}>

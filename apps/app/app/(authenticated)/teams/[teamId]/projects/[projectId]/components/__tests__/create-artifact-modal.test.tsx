@@ -63,7 +63,7 @@ const _STATUS_REGEX = /^status$/i;
 const CANCEL_REGEX = /cancel/i;
 const CREATE_IMPL_PLAN_REGEX = /create implementation plan/i;
 const SAVE_REGEX = /^save$/i;
-const SAVE_AND_GENERATE_REGEX = /save & generate/i;
+const GENERATE_PRD_REGEX = /generate prd/i;
 const PASTE_MARKDOWN_CONTENT_REGEX = /paste markdown content/i;
 const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
 const CREATING_REGEX = /creating\.\.\./i;
@@ -393,7 +393,7 @@ describe("CreateArtifactModal", () => {
       expect(dialog).toHaveTextContent("Create PRD");
     });
 
-    it("should render Save and Save & Generate buttons for PRD", () => {
+    it("should render Save and Generate PRD buttons for PRD", () => {
       render(
         <CreateArtifactModal
           artifactType={ArtifactType.Prd}
@@ -409,7 +409,7 @@ describe("CreateArtifactModal", () => {
       expect(saveButton).toBeInTheDocument();
 
       const generateButton = screen.getByRole("button", {
-        name: SAVE_AND_GENERATE_REGEX,
+        name: GENERATE_PRD_REGEX,
       });
       expect(generateButton).toBeInTheDocument();
     });
