@@ -209,6 +209,14 @@ describe("pullRequestRatingsService", () => {
       await expect(
         pullRequestRatingsService.getRating("pr-1", "user-1", "org-1")
       ).rejects.toThrow(PullRequestNotFoundError);
+
+      // Verify the query includes workstream.organizationId check (authorization)
+      expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "pr-1",
+          workstream: { organizationId: "org-1" },
+        },
+      });
     });
 
     it("verifies organization via workstream relationship join", async () => {
