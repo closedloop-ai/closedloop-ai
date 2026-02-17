@@ -58,9 +58,6 @@ CREATE TABLE "github_pr_reviews" (
 CREATE UNIQUE INDEX "github_pr_review_comments_github_comment_id_key" ON "github_pr_review_comments"("github_comment_id");
 
 -- CreateIndex
-CREATE INDEX "github_pr_review_comments_pull_request_id_idx" ON "github_pr_review_comments"("pull_request_id");
-
--- CreateIndex
 CREATE INDEX "github_pr_review_comments_pull_request_id_state_idx" ON "github_pr_review_comments"("pull_request_id", "state");
 
 -- CreateIndex

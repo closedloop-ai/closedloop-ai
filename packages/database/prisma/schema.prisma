@@ -787,7 +787,6 @@ model GitHubPRReviewComment {
   // Relations
   pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
 
-  @@index([pullRequestId])
   @@index([pullRequestId, state])
   @@map("github_pr_review_comments")
 }
