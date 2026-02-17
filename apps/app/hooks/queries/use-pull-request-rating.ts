@@ -46,7 +46,7 @@ export function usePullRequestRating(
         `/pull-requests/${pullRequestId}/rating`
       ),
     enabled: !!pullRequestId,
-    staleTime: 30_000, // 30 seconds
+    staleTime: 1000 * 60 * 5, // 5 minutes
     ...options,
   });
 }
