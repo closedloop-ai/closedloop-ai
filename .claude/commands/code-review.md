@@ -60,16 +60,23 @@ git diff --name-only $DIFF_SCOPE
 # Get file statuses (small output)
 git diff --name-status $DIFF_SCOPE
 
-# Get diff stat summary (small output — line counts per file)
-git diff --stat $DIFF_SCOPE
+# Get machine-parseable LOC counts (tab-separated: added \t removed \t file)
+git diff --numstat $DIFF_SCOPE
+
+# Get changed line ranges (no context, just hunk headers — for CHANGED_RANGES)
+git diff -U0 $DIFF_SCOPE
 ```
 
-**Do NOT run `git diff $DIFF_SCOPE` (full patches) here.** For large diffs (10K+ LOC), the full patch output exceeds tool output limits and gets truncated. Patches are fetched per-partition in Steps 2.5 and 4.
+**Do NOT run `git diff $DIFF_SCOPE` (full patches with context) here.** For large diffs (10K+ LOC), the full patch output exceeds tool output limits and gets truncated. Patches are fetched by each reviewer agent in Step 4.
+
+**`-U0` is safe here** — it outputs only hunk headers and changed lines (no context), so output is roughly 1x the changed line count, not 4x. For a 10K LOC PR this is ~800K chars ≈ 200K tokens. If FILES_TO_REVIEW exceeds 200 files, fetch `-U0` in batches of 100 files.
 
 Parse and store:
 - **FILES_TO_REVIEW**: Array of changed file paths
 - **FILE_STATUSES**: Map of `{ "path/file.ts": "added" | "modified" | "removed", ... }` parsed from `--name-status` output (A=added, M=modified, D=removed, R=renamed)
-- **FILE_LOC**: Map of `{ "path/file.ts": <added + removed lines>, ... }` parsed from `--stat` output (used for LOC-aware partitioning in Step 4)
+- **FILE_LOC**: Map of `{ "path/file.ts": { added: N, removed: M }, ... }` parsed from `--numstat` output (machine-readable, no truncation unlike `--stat`)
+- **TOTAL_LOC**: Sum of all added + removed across all files (used for model routing in Step 3)
+- **CHANGED_RANGES**: Map of `{ "path/file.ts": { added: [[10,15], [45,47]], removed: [[20,22]] }, ... }` parsed from `-U0` hunk headers (`@@ -start,count +start,count @@`). Tracks BOTH added and removed ranges — removed ranges catch bugs introduced by deleting guards/checks.
 
 Mark todo as `completed`.
 
@@ -81,35 +88,11 @@ Mark todo "Run deterministic hygiene checks" as `in_progress`.
 
 Run scripted checks that don't need LLM reasoning. These catch CI artifacts, path leakage, and sensitive files deterministically.
 
-**Delegate hygiene to a sub-agent** to avoid loading full patch content into the orchestrator's context. Spawn a single `general-purpose` agent (model: `haiku`) with `run_in_background: true`:
+**Hygiene runs in the orchestrator using lightweight grep commands** — no sub-agent needed. The `-U0` output from Step 2 already contains the changed lines without context bloat, and CHANGED_RANGES is already parsed. Hygiene checks operate on file paths and the `-U0` patch lines.
 
-```
-prompt: |
-  Run deterministic hygiene checks on the following changed files.
+For checks that need patch content (Checks 1-2), use targeted grep on the `-U0` output already in context, or run scoped `git diff -U0` per-file for matches. These are small outputs.
 
-  DIFF_SCOPE: {DIFF_SCOPE}
-  FILES_TO_REVIEW (added/modified only): {list of files with status added or modified}
-
-  Step 1: Fetch patches using Bash in batches of 30 files:
-    git diff {DIFF_SCOPE} -- file1.ts file2.ts ... file30.ts
-
-  Step 2: For each batch, parse patches and run the hygiene checks below.
-
-  Step 3: Also parse and return CHANGED_LINES for ALL files:
-    Map of { "path/file.ts": [10, 11, 12, 45, 46], ... } parsed from patches
-    (only lines starting with `+`, using `@@ ... +start,count @@` hunk headers
-    to compute absolute line numbers)
-
-  Return JSON: { "findings": [...], "changed_lines": { "file": [lines], ... } }
-```
-
-Include the full hygiene check specifications (Checks 1-4, severity routing, line fallback, finding format) in the agent prompt so it can run autonomously.
-
-The agent collects findings AND builds CHANGED_LINES (needed later in Step 5.3 for line validation). This keeps all patch content out of the orchestrator's context window.
-
-Collect the hygiene agent results in Step 5 alongside the reviewer agents.
-
-### Hygiene Checks (included in sub-agent prompt)
+### Hygiene Checks
 
 For each check, iterate over FILES_TO_REVIEW (only files with status "added" or "modified"):
 
@@ -187,10 +170,11 @@ Mark todo "Assess scope and route models" as `in_progress`.
 
 ### Scope Assessment
 
-Compute these values from FILES_TO_REVIEW:
+Compute these values from FILES_TO_REVIEW and FILE_LOC:
 
 ```
 files_changed = len(FILES_TO_REVIEW)
+total_changed_loc = TOTAL_LOC  # from Step 2
 
 has_security_files = any file path contains: auth, session, payment, rbac, permission, clerk, jwt, middleware
 has_data_files = any file path contains: prisma, migration, database
@@ -199,24 +183,26 @@ high_risk = has_security_files or has_data_files
 
 ### Model Routing
 
-Based on scope size and risk, determine model assignments:
+Route models based on **total changed LOC + risk**, not file count. A 10K LOC PR in 8 files is not "Small."
 
 | Condition | Bug Hunter A | Bug Hunter B | CLAUDE.md Auditor | Codebase Conventions | Validation |
 |-----------|-------------|-------------|-------------------|---------------------|------------|
-| **Small (≤10 files) OR high_risk** | opus | opus | sonnet | sonnet | opus |
-| **Medium (11-40 files)** | opus | sonnet | sonnet | sonnet | opus |
-| **Large (41+ files)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
+| **Small (≤500 LOC) OR high_risk** | opus | opus | sonnet | sonnet | opus |
+| **Medium (501-2000 LOC)** | opus | sonnet | sonnet | sonnet | opus |
+| **Large (2001+ LOC)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
 
-**For large diffs, add Opus sampling pass**: Select up to 5 high-risk hunks via deterministic scoring:
+**For large diffs, add Opus sampling pass**: Select up to 5 high-risk files via deterministic scoring:
 
 ```
-For each file in FILES_TO_REVIEW, compute risk score:
+For each file in FILES_TO_REVIEW, compute risk score using PATH-ONLY signals
+(no patch content — orchestrator does not fetch patches):
+
   +3  auth/session/payment/permission files (path contains auth|session|payment|rbac)
   +3  database/migration files (path contains prisma|migration|database)
-  +2  state management (patch contains useState|useReducer|useMutation)
   +2  API route handlers (path matches app/api/ or route.ts)
-  +1  error handling (patch contains catch|throw|try)
-  +1  files with >50 changed lines
+  +2  middleware files (path contains middleware)
+  +1  files with >50 changed lines (from FILE_LOC)
+  +1  test files with >100 changed lines (unusually large test changes)
 
 Sort by score DESC, then by file path ASC (stable tiebreaker).
 Take top 5. Feed these to an Opus agent for direct review.
@@ -262,6 +248,12 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
 **CONTEXT BUDGET WARNING:** The orchestrator must NOT read source files or fetch patches itself. All file reading and patch fetching is delegated to sub-agents. The orchestrator's context should contain ONLY: file lists, statuses, LOC counts, risk scores, and agent results (small JSON). If the orchestrator reads source files or fetches diffs, it will exhaust its context window on large PRs and fail.
 
+### Agent Type (CRITICAL — prevents context overflow)
+
+**ALL agents spawned by this command MUST use `subagent_type: "general-purpose"` in the Task tool call.** Do NOT omit the subagent_type parameter — Claude Code will auto-select `symphony-core:code-reviewer` or `experimental:code-reviewer`, which have 130-330 line system prompts and load additional files at startup. This bloats every sub-agent's context by ~50K+ tokens before your prompt even starts, causing "long context beta" failures on large PRs. The review instructions are already fully specified in the prompt below — a specialized code-reviewer agent is redundant and harmful.
+
+The only exceptions are domain critics (Layer 4), which use their own `symphony-fe:*` subagent types as specified in the critic-agent mapping table.
+
 ### Review Architecture — 4 Layers
 
 **Layer 1 — General Bug Detection** (always runs):
@@ -296,7 +288,7 @@ Use FILE_LOC from Step 2 to partition:
 1. **LOC budget per partition: 400 changed lines** (added + removed). `git diff` output is ~4x larger than the changed line count due to context lines, hunk headers, and diff markers. So 400 changed lines ≈ 1600 lines of patch ≈ 130K chars ≈ 32K tokens — leaving plenty of headroom under the 200K token standard context window for the prompt template, CLAUDE.md, and system prompt overhead.
 2. Sort FILES_TO_REVIEW by FILE_LOC descending (largest files first — greedy bin-packing).
 3. For each file, add to the current partition. If adding would exceed the 400 LOC budget, start a new partition.
-4. **Single-file overflow**: If a single file exceeds 400 LOC, it gets its own partition. The agent can still use Read to inspect the full file.
+4. **Single-file overflow (hunk-level chunking)**: If a single file exceeds 400 LOC, split it by hunks using CHANGED_RANGES from Step 2. Group consecutive hunk ranges into chunks of ≤400 LOC each, and assign each chunk to a separate partition. Tell the agent the line range to review: `file.ts (modified, lines 1-200 of 800)`. The agent fetches only that range: `git diff $DIFF_SCOPE -- file.ts | head -n <approx_lines>` or uses Read to inspect the relevant section.
 5. **Max 20 files per partition** even if LOC budget allows more (keeps agent prompts manageable).
 
 ### Shared Prompt Prefix (ALL agents get this)
@@ -549,7 +541,12 @@ Use `model: "sonnet"` for all domain critics.
 
 For large diffs (41+ files), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks. **Limit the Opus agent's partition to ≤300 LOC** — keep well within standard context. If the top 5 files exceed 300 LOC, reduce to fewer files until the budget fits.
 
-**In a SINGLE message, spawn ALL agents with `run_in_background: true`.**
+**Batched agent fan-out with concurrency cap:**
+- **≤6 agents total**: Spawn ALL in a single message with `run_in_background: true`
+- **7-12 agents**: Spawn in 2 batches (first batch starts, collect results with `TaskOutput`, then spawn second batch)
+- **13+ agents**: Spawn in batches of 6, collecting each batch before spawning the next
+
+This prevents hitting Claude Code's concurrency/timeout limits on massive PRs with many partitions.
 
 Mark todo as `completed`.
 
@@ -566,8 +563,8 @@ Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 If any agent fails (context overflow, subscription limits, timeout), do NOT abandon the review:
 
 1. **Log the failure**: Record which agent failed and why (e.g., `"Bug Hunter A partition 2: context overflow"`)
-2. **Halve the failed partition**: Split the failed partition's files into two sub-partitions (by LOC budget ÷ 2) and re-spawn with `model: "sonnet"` (never retry with opus for recovery — sonnet has a larger effective context window for long prompts)
-3. **Second failure → inline fallback**: If the re-spawned agent also fails, review that partition's files directly in the main conversation. Read each file with the Read tool and apply the same review criteria. This is slower but ensures coverage.
+2. **Halve the failed partition**: Split the failed partition's files into two sub-partitions (by LOC budget ÷ 2) and re-spawn with `model: "haiku"` and `subagent_type: "general-purpose"` (smallest context footprint for recovery)
+3. **Second failure → skip with warning**: If the halved partition also fails, log a warning (`"⚠️ Partition X skipped — {N} files not reviewed due to agent failures"`) and continue. Do NOT fall back to reviewing in the main conversation — this would load patches into the orchestrator's context and recreate the overflow problem on large PRs. The skipped files will be listed in the output so the user can review them manually.
 4. **Continue collecting**: Do not block on failures — collect results from successful agents while recovering failed ones.
 
 ### Step 5.1: Severity Normalization
@@ -597,10 +594,10 @@ Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findi
 - `finding.priority ??= severity_to_priority(finding.severity)` where BLOCKING→0, HIGH→1, MEDIUM→2
 - `finding.confidence ??= 1.0` (agents that don't emit confidence are already validated)
 
-Then for each finding (using CHANGED_LINES returned by the hygiene sub-agent from Step 2.5):
+Then for each finding (using CHANGED_RANGES from Step 2, which tracks both added AND removed ranges):
 
 1. **File in scope?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
-2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
+2. **Line in changed range ±3?** Check if finding's line falls within 3 lines of ANY range in CHANGED_RANGES[file] — both `added` and `removed` ranges. Bugs introduced by deleting guards/checks (e.g., removing an auth check) produce findings near removed lines, not added lines. Checking only added lines would discard these real regressions. → **DISCARD** if not within ±3 of any changed range.
 3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
 4. **Confidence threshold** (severity-gated to prevent suppression):
    - P0/P1 (BLOCKING/HIGH): **never discard on confidence** — always send to validation
@@ -608,7 +605,7 @@ Then for each finding (using CHANGED_LINES returned by the hygiene sub-agent fro
 
 ### Step 5.4: Agent Validation (Layer B — targeted)
 
-Validate findings where LLM verification adds value. Spawn a single Opus validation agent (or process sequentially) for:
+Validate findings where LLM verification adds value. Spawn a single Opus validation agent (use `subagent_type: "general-purpose"`) for:
 
 - **All BLOCKING/HIGH findings** (regardless of confidence)
 - **MEDIUM findings involving API contracts, DRY, or cross-file semantics**
@@ -672,7 +669,22 @@ Apply validation results:
 - REJECTED → **DISCARD** (reason: "Rejected by validation")
 - DOWNGRADE → lower severity to MEDIUM
 
-### Step 5.5: Deduplication and Consolidation
+### Step 5.5: Cross-Partition Synthesis (Large Diffs only)
+
+For PRs with **2+ partitions**, agents review isolated file subsets and cannot detect cross-partition issues (e.g., API shape changed in one partition, callers broken in another). Run a lightweight synthesis pass:
+
+Spawn a single sonnet agent (use `subagent_type: "general-purpose"`) with:
+- The **file list with statuses** (not patches — keep orchestrator lean)
+- A **1-line summary per finding** collected so far (file, line, issue title, severity)
+- Instructions to check for **cross-file contract drift**:
+  1. Fetch signatures of changed API routes/services/types using `git diff -U0 $DIFF_SCOPE -- <api files>` (only the changed function signatures, not full patches)
+  2. Grep callers of changed interfaces across the full codebase
+  3. Flag mismatches between changed signatures and their call sites
+  4. Report as new findings with category "Cross-Partition"
+
+Skip this step for single-partition reviews (no cross-partition blind spots possible).
+
+### Step 5.6: Deduplication and Consolidation
 
 Group findings by root cause. Two findings share a root cause when ANY of these match:
 - Same category + similar issue text
