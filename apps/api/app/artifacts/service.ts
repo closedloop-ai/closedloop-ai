@@ -616,7 +616,39 @@ export const artifactsService = {
       };
     }
 
-    // Auto-create workstream and link artifacts
+    // If the source PRD already belongs to a workstream, attach the orphan
+    // artifact to it instead of creating a new workstream (avoids reassigning
+    // the PRD away from its existing workstream and breaking related artifacts).
+    if (foundSource.workstreamId) {
+      return withDb.tx(async (tx) => {
+        await tx.artifact.update({
+          where: { id: artifact.id, organizationId },
+          data: { workstreamId: foundSource.workstreamId },
+        });
+
+        const workstream = await tx.workstream.findUnique({
+          where: { id: foundSource.workstreamId! },
+          include: {
+            project: {
+              include: {
+                repositories: { take: 1 },
+              },
+            },
+            artifacts: {
+              where: { type: PrismaArtifactType.PRD },
+              take: 1,
+            },
+          },
+        });
+
+        return {
+          workstream,
+          sourceArtifact: foundSource,
+        };
+      });
+    }
+
+    // Auto-create workstream and link both artifacts
     return withDb.tx(async (tx) => {
       const newWorkstream = await tx.workstream.create({
         data: {
