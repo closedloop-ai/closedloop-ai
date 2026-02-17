@@ -75,4 +75,9 @@ describe("PullRequestStatusBadge", () => {
     );
     expect(container.firstChild).toBeNull();
   });
+
+  it("renders null when pullRequest is null", () => {
+    const { container } = render(<PullRequestStatusBadge pullRequest={null} />);
+    expect(container.firstChild).toBeNull();
+  });
 });
