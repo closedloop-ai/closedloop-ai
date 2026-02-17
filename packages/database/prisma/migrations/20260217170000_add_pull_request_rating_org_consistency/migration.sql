@@ -1,7 +1,11 @@
 -- Enforce organizationId consistency: rating.organization_id must match the PR's
--- workstream.organization_id. PostgreSQL CHECK constraints cannot reference other
--- tables, so we use a trigger. This prevents inconsistent data from manual SQL,
--- migrations, or future code paths that bypass the service layer.
+-- organization_id (denormalized on github_pull_requests in migration 20260217192411).
+-- PostgreSQL CHECK constraints cannot reference other tables, so we use a trigger.
+-- This prevents inconsistent data from manual SQL, migrations, or future code paths
+-- that bypass the service layer.
+-- Note: uses github_pull_requests.organization_id directly (not workstream join) so
+-- the check remains valid even if a workstream is deleted via direct SQL
+-- (relationMode = "prisma" provides no DB-level FK enforcement on workstream_id).
 
 -- Fail migration if existing data is inconsistent (would violate trigger)
 DO $$
@@ -10,10 +14,9 @@ BEGIN
     SELECT 1
     FROM pull_request_ratings prr
     JOIN github_pull_requests gpr ON gpr.id = prr.pull_request_id
-    JOIN workstreams w ON w.id = gpr.workstream_id
-    WHERE prr.organization_id != w.organization_id
+    WHERE prr.organization_id != gpr.organization_id
   ) THEN
-    RAISE EXCEPTION 'Found pull_request_ratings with organization_id not matching PR workstream - fix data before applying this migration';
+    RAISE EXCEPTION 'Found pull_request_ratings with organization_id not matching github_pull_requests.organization_id - fix data before applying this migration';
   END IF;
 END
 $$;
@@ -26,11 +29,10 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1
     FROM github_pull_requests gpr
-    JOIN workstreams w ON w.id = gpr.workstream_id
     WHERE gpr.id = NEW.pull_request_id
-      AND w.organization_id = NEW.organization_id
+      AND gpr.organization_id = NEW.organization_id
   ) THEN
-    RAISE EXCEPTION 'pull_request_ratings.organization_id must match workstream.organization_id for the referenced pull request'
+    RAISE EXCEPTION 'pull_request_ratings.organization_id must match github_pull_requests.organization_id for the referenced pull request'
       USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;

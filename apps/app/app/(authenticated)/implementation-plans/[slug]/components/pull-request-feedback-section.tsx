@@ -126,7 +126,10 @@ export function PullRequestFeedbackSection({
           )}
           <Textarea
             maxLength={500}
-            onChange={(e) => setLocalComment(e.target.value)}
+            onChange={(e) => {
+              setLocalComment(e.target.value);
+              setIsEditing(true);
+            }}
             placeholder="Add context for your rating (required)..."
             rows={3}
             value={localComment}
