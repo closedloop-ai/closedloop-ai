@@ -109,8 +109,12 @@ export function useSubmitPullRequestRating() {
       }
     },
     onSuccess: (_, { pullRequestId }) => {
+      // Invalidate all rating queries for this PR so aggregate stats (average, count)
+      // stay fresh for all viewers in collaborative code review sessions.
       queryClient.invalidateQueries({
-        queryKey: pullRequestRatingKeys.detail(pullRequestId),
+        predicate: (query) =>
+          query.queryKey[0] === "pullRequestRatings" &&
+          query.queryKey.includes(pullRequestId),
       });
     },
   });
