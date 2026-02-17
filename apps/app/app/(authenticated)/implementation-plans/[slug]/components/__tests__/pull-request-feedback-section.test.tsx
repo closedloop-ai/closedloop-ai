@@ -53,6 +53,7 @@ describe("PullRequestFeedbackSection", () => {
     mockUseSubmitPullRequestRating.mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
+      reset: vi.fn(),
     });
   });
 
@@ -335,11 +336,14 @@ describe("PullRequestFeedbackSection", () => {
     });
     fireEvent.click(saveButton);
 
-    expect(mutateFn).toHaveBeenCalledWith({
-      pullRequestId: "pr-123",
-      score: 4,
-      comment: "New comment",
-    });
+    expect(mutateFn).toHaveBeenCalledWith(
+      {
+        pullRequestId: "pr-123",
+        score: 4,
+        comment: "New comment",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) })
+    );
   });
 
   test("Save button is disabled when comment is empty after star selection", () => {
@@ -395,11 +399,14 @@ describe("PullRequestFeedbackSection", () => {
     fireEvent.change(textarea, { target: { value: "My comment" } });
     fireEvent.click(screen.getByRole("button", { name: SAVE_BUTTON_PATTERN }));
 
-    expect(mutateFn).toHaveBeenCalledWith({
-      pullRequestId: "pr-123",
-      score: 4,
-      comment: "My comment",
-    });
+    expect(mutateFn).toHaveBeenCalledWith(
+      {
+        pullRequestId: "pr-123",
+        score: 4,
+        comment: "My comment",
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) })
+    );
   });
 
   test("does not call mutate when score is 0 (guard)", () => {

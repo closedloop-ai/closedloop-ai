@@ -66,18 +66,23 @@ export function PullRequestFeedbackSection({
   };
 
   const handleSave = () => {
-    submitRating.mutate({
-      pullRequestId,
-      score: localScore,
-      comment: localComment,
-    });
-    setIsEditing(false);
+    submitRating.mutate(
+      {
+        pullRequestId,
+        score: localScore,
+        comment: localComment,
+      },
+      {
+        onSuccess: () => setIsEditing(false),
+      }
+    );
   };
 
   const handleCancel = () => {
     setLocalScore(userRating?.score ?? 0);
     setLocalComment(userRating?.comment ?? "");
     setIsEditing(false);
+    submitRating.reset();
   };
 
   const showCommentSection = localScore > 0 || isEditing;
@@ -114,6 +119,11 @@ export function PullRequestFeedbackSection({
       {/* Comment section — shown when user has or just selected a rating */}
       {showCommentSection && (
         <div className="mt-4 space-y-2">
+          {submitRating.isError && (
+            <p className="text-destructive text-sm">
+              Failed to save rating. Please try again.
+            </p>
+          )}
           <Textarea
             maxLength={500}
             onChange={(e) => setLocalComment(e.target.value)}
