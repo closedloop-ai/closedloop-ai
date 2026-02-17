@@ -28,7 +28,9 @@ import {
 const P3005_PATTERN = /\bP3005\b/;
 const P3009_PATTERN = /\bP3009\b/;
 const P3018_PATTERN = /\bP3018\b/;
-const MIGRATION_NAME_PATTERN = /Migration name: (\S+)/;
+// P3018 format: "Migration name: 20260212_foo"
+// P3009 format: "The `20260212_foo` migration started at ..."
+const MIGRATION_NAME_PATTERN = /Migration name: (\S+)|The `(\S+?)` migration/;
 
 function runMigrateDeploy(databaseUrl: string) {
   const result = spawnSync("prisma", ["migrate", "deploy"], {
@@ -75,7 +77,7 @@ function isP3018Output(message: string): boolean {
 
 function parseFailedMigrationName(message: string): string | null {
   const match = MIGRATION_NAME_PATTERN.exec(message);
-  return match?.[1] ?? null;
+  return match?.[1] ?? match?.[2] ?? null;
 }
 
 /**
@@ -163,9 +165,9 @@ async function runMigrateWithRetry(
         `↪ Failed migration detected: ${migrationName}, resolving as rolled-back...`
       );
       resolveFailedMigration(databaseUrl, migrationName);
-      console.log(
-        `✓ Migration ${migrationName} marked as rolled-back. Re-deploy to apply.`
-      );
+      console.log("↪ Retrying migrate deploy...");
+      runMigrateDeploy(databaseUrl);
+      return false;
     }
 
     throw error;

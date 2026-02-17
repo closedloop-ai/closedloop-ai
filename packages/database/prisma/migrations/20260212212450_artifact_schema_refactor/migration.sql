@@ -466,7 +466,8 @@ DELETE FROM "artifact_versions" av1
 USING "artifact_versions" av2
 WHERE av1."artifact_id" = av2."artifact_id"
   AND av1."version" = av2."version"
-  AND av1."id" > av2."id";
+  AND (av1."created_at" > av2."created_at"
+    OR (av1."created_at" = av2."created_at" AND av1."id" > av2."id"));
 
 -- CreateIndex
 CREATE UNIQUE INDEX "artifact_versions_artifact_id_version_key" ON "artifact_versions"("artifact_id", "version");
