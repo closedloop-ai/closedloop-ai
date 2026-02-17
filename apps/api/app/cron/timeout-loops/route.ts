@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
@@ -103,8 +104,12 @@ export const GET = async (request: Request) => {
     return new Response("Internal Server Error", { status: 500 });
   }
 
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  const authHeader = request.headers.get("authorization") ?? "";
+  const expected = `Bearer ${cronSecret}`;
+  const isValid =
+    authHeader.length === expected.length &&
+    timingSafeEqual(Buffer.from(authHeader), Buffer.from(expected));
+  if (!isValid) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -122,7 +127,13 @@ export const GET = async (request: Request) => {
     db.loop.findMany({
       where: {
         OR: [
-          { status: "RUNNING", startedAt: { lt: runningCutoff } },
+          {
+            status: "RUNNING",
+            OR: [
+              { startedAt: { lt: runningCutoff } },
+              { startedAt: null, createdAt: { lt: runningCutoff } },
+            ],
+          },
           { status: "CLAIMED", createdAt: { lt: claimedCutoff } },
           { status: "PENDING", createdAt: { lt: pendingCutoff } },
         ],

@@ -315,16 +315,18 @@ export const apiKeyService = {
       try {
         await this.setUserKey(userId, user.anthropicApiKey);
         log.info("Successfully migrated legacy user API key", { userId });
-        return decryptApiKey(
-          (
-            await withDb((db) =>
-              db.user.findUnique({
-                where: { id: userId },
-                select: { claudeApiKeyEncrypted: true },
-              })
-            )
-          )?.claudeApiKeyEncrypted ?? ""
-        );
+        const encrypted = (
+          await withDb((db) =>
+            db.user.findUnique({
+              where: { id: userId },
+              select: { claudeApiKeyEncrypted: true },
+            })
+          )
+        )?.claudeApiKeyEncrypted;
+        if (!encrypted) {
+          throw new Error("Key not found after migration");
+        }
+        return decryptApiKey(encrypted);
       } catch (migrationError) {
         log.error(
           "Failed to auto-migrate legacy user API key — key unavailable until KMS is restored",
@@ -366,16 +368,18 @@ export const apiKeyService = {
         log.info("Successfully migrated legacy org API key", {
           organizationId,
         });
-        return decryptApiKey(
-          (
-            await withDb((db) =>
-              db.organization.findUnique({
-                where: { id: organizationId },
-                select: { claudeApiKeyEncrypted: true },
-              })
-            )
-          )?.claudeApiKeyEncrypted ?? ""
-        );
+        const encrypted = (
+          await withDb((db) =>
+            db.organization.findUnique({
+              where: { id: organizationId },
+              select: { claudeApiKeyEncrypted: true },
+            })
+          )
+        )?.claudeApiKeyEncrypted;
+        if (!encrypted) {
+          throw new Error("Key not found after migration");
+        }
+        return decryptApiKey(encrypted);
       } catch (migrationError) {
         log.error(
           "Failed to auto-migrate legacy org API key — key unavailable until KMS is restored",
