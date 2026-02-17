@@ -61,7 +61,7 @@ export const pullRequestRatingsService = {
             id: userRating.id,
             userId: userRating.userId,
             score: userRating.score,
-            comment: userRating.comment ?? "",
+            comment: userRating.comment,
             createdAt: userRating.createdAt,
             updatedAt: userRating.updatedAt,
           }
@@ -163,7 +163,7 @@ export const pullRequestRatingsService = {
           id: rating.id,
           userId: rating.userId,
           score: rating.score,
-          comment: rating.comment ?? "",
+          comment: rating.comment,
           createdAt: rating.createdAt,
           updatedAt: rating.updatedAt,
         },

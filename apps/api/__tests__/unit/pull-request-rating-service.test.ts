@@ -149,12 +149,12 @@ describe("pullRequestRatingsService", () => {
       });
     });
 
-    it("converts null comment to empty string in API response", async () => {
+    it("returns comment from rating in API response", async () => {
       const mockUserRating = {
         id: "rating-1",
         userId: "user-1",
         score: 4,
-        comment: null,
+        comment: "Required feedback text",
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
       };
@@ -180,7 +180,7 @@ describe("pullRequestRatingsService", () => {
         "org-1"
       );
 
-      expect(result.userRating?.comment).toBe("");
+      expect(result.userRating?.comment).toBe("Required feedback text");
     });
 
     it("throws PullRequestNotFoundError when PR does not exist", async () => {
