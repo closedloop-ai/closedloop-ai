@@ -328,7 +328,6 @@ describe("pullRequestRatingsService", () => {
         update: {
           score: 5,
           comment: "New rating comment",
-          updatedAt: expect.any(Date),
         },
         create: {
           pullRequestId: "pr-1",

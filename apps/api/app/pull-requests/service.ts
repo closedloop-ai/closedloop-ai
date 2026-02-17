@@ -137,7 +137,6 @@ export const pullRequestRatingsService = {
         update: {
           score,
           comment,
-          updatedAt: new Date(),
         },
         create: {
           pullRequestId,
