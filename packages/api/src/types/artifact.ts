@@ -157,22 +157,36 @@ export type UpdateArtifactInput = {
   sortOrder?: number | null;
 };
 
+// Pull Request State
+export const PullRequestState = {
+  Open: "OPEN",
+  Merged: "MERGED",
+  Closed: "CLOSED",
+} as const;
+export type PullRequestState =
+  (typeof PullRequestState)[keyof typeof PullRequestState];
+
+// Review Decision
+export const ReviewDecision = {
+  Approved: "APPROVED",
+  ChangesRequested: "CHANGES_REQUESTED",
+  Commented: "COMMENTED",
+  Dismissed: "DISMISSED",
+} as const;
+export type ReviewDecision =
+  (typeof ReviewDecision)[keyof typeof ReviewDecision];
+
 // Pull Request info returned when an implementation plan is executed
 export type PullRequestInfo = {
   id: string;
   number: number;
   title: string;
   htmlUrl: string;
-  state: "OPEN" | "MERGED" | "CLOSED";
+  state: PullRequestState;
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
-  reviewDecision:
-    | "APPROVED"
-    | "CHANGES_REQUESTED"
-    | "COMMENTED"
-    | "DISMISSED"
-    | null;
+  reviewDecision: ReviewDecision | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions
