@@ -1,8 +1,10 @@
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
+  type ArtifactTitleMap,
   ArtifactType,
   type ArtifactWithWorkstream,
+  BATCH_META_MAX_SLUGS,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
@@ -1665,6 +1667,40 @@ Please try again or contact support if the issue persists.`
       });
 
       return uniqueIds;
+    });
+  },
+
+  /**
+   * Batch fetch artifact titles by slug (org-scoped).
+   * Returns a map of slug -> title for all slugs found in the organization.
+   * Slugs not found are omitted from the result.
+   *
+   * @param organizationId - Organization ID for authorization
+   * @param slugs - Array of artifact slugs to look up (max 50)
+   * @returns Map of slug to artifact title for found artifacts
+   */
+  batchFetchArtifactTitles(
+    organizationId: string,
+    slugs: string[]
+  ): Promise<ArtifactTitleMap> {
+    if (slugs.length === 0) {
+      return Promise.resolve({});
+    }
+    return withDb(async (db) => {
+      if (slugs.length > BATCH_META_MAX_SLUGS) {
+        throw new Error(
+          `batchFetchArtifactTitles: too many slugs (max ${BATCH_META_MAX_SLUGS})`
+        );
+      }
+      const artifacts = await db.artifact.findMany({
+        where: {
+          organizationId,
+          slug: { in: slugs },
+        },
+        select: { slug: true, title: true },
+      });
+
+      return Object.fromEntries(artifacts.map((a) => [a.slug, a.title]));
     });
   },
 

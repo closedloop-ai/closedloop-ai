@@ -1,9 +1,11 @@
+import { BATCH_META_MAX_SLUGS } from "@repo/api/src/types/artifact";
 import { auth } from "@repo/auth/server";
 import { resolveRoomMetadata } from "@repo/collaboration/room-metadata";
 import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { fetchBatchMeta } from "../../fetch-batch-meta";
 import { fetchUser } from "../../fetch-user";
 
 /**
@@ -49,11 +51,38 @@ export async function GET(request: Request): Promise<Response> {
       }
     });
 
-    // Cap at 50 rooms per request to prevent abuse
-    const cappedRoomIds = orgScopedRoomIds.slice(0, 50);
+    // Cap at BATCH_META_MAX_SLUGS rooms per request to match batch-meta endpoint limit
+    const cappedRoomIds = orgScopedRoomIds.slice(0, BATCH_META_MAX_SLUGS);
     const results = await resolveRoomMetadata(cappedRoomIds);
 
-    return NextResponse.json(results);
+    // Enrich room names with human-readable artifact titles from the BFF API
+    try {
+      const slugs = cappedRoomIds.flatMap((roomId) => {
+        try {
+          return [parseArtifactRoomId(roomId).slug];
+        } catch {
+          return [];
+        }
+      });
+
+      const titleMap = await fetchBatchMeta(slugs, getToken);
+
+      const enrichedResults = results.map((room) => {
+        try {
+          const { slug } = parseArtifactRoomId(room.roomId);
+          return { ...room, name: titleMap[slug] ?? room.name };
+        } catch {
+          return room;
+        }
+      });
+
+      return NextResponse.json(enrichedResults);
+    } catch (enrichError) {
+      log.error("Failed to enrich room names, returning unmodified results", {
+        error: parseError(enrichError),
+      });
+      return NextResponse.json(results);
+    }
   } catch (error) {
     log.error("Room resolve error", { error: parseError(error) });
     return new Response("Internal server error", { status: 500 });
