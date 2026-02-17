@@ -21,41 +21,15 @@ import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { useLoops } from "@/hooks/queries/use-loops";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
-
-function formatDuration(
-  startedAt: Date | null,
-  completedAt: Date | null
-): string {
-  if (!startedAt) {
-    return "-";
-  }
-  const start = new Date(startedAt).getTime();
-  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
-  const ms = end - start;
-
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
-}
 
 function formatTokens(input: number, output: number): string {
   const total = input + output;
   if (total === 0) {
     return "-";
   }
-  if (total >= 1_000_000) {
-    return `${(total / 1_000_000).toFixed(1)}M`;
-  }
-  if (total >= 1000) {
-    return `${(total / 1000).toFixed(1)}k`;
-  }
-  return total.toString();
+  return formatTokenCount(total);
 }
 
 const columns: Column<LoopWithUser>[] = [

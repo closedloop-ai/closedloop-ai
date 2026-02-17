@@ -144,7 +144,8 @@ function sanitizeValue(value) {
 // Safe patterns for git/CLI arguments to prevent argument injection
 const RE_SAFE_REPO = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const RE_SAFE_BRANCH = /^[a-zA-Z0-9/_.-]{1,200}$/;
-const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function validateConfig() {
   // Validate required environment variables (available before context pack download).
@@ -177,19 +178,22 @@ function validateConfig() {
   if (config.targetBranch && !RE_SAFE_BRANCH.test(config.targetBranch)) {
     throw new HarnessError(
       ERROR_CODES.config,
-      `Invalid TARGET_BRANCH format: must be alphanumeric with /, _, ., - (max 200 chars)`
+      "Invalid TARGET_BRANCH format: must be alphanumeric with /, _, ., - (max 200 chars)"
     );
   }
-  if (config.parentBranchName && !RE_SAFE_BRANCH.test(config.parentBranchName)) {
+  if (
+    config.parentBranchName &&
+    !RE_SAFE_BRANCH.test(config.parentBranchName)
+  ) {
     throw new HarnessError(
       ERROR_CODES.config,
-      `Invalid PARENT_BRANCH_NAME format: must be alphanumeric with /, _, ., - (max 200 chars)`
+      "Invalid PARENT_BRANCH_NAME format: must be alphanumeric with /, _, ., - (max 200 chars)"
     );
   }
   if (config.parentSessionId && !RE_UUID.test(config.parentSessionId)) {
     throw new HarnessError(
       ERROR_CODES.config,
-      `Invalid PARENT_SESSION_ID format: must be a valid UUID`
+      "Invalid PARENT_SESSION_ID format: must be a valid UUID"
     );
   }
 }
@@ -239,7 +243,9 @@ function getS3Client() {
 async function downloadFromPresignedUrl(url) {
   const resp = await fetch(url);
   if (!resp.ok) {
-    throw new Error(`Pre-signed download failed (${resp.status}): ${resp.statusText}`);
+    throw new Error(
+      `Pre-signed download failed (${resp.status}): ${resp.statusText}`
+    );
   }
   const arrayBuf = await resp.arrayBuffer();
   return Buffer.from(arrayBuf);
@@ -248,14 +254,20 @@ async function downloadFromPresignedUrl(url) {
 /**
  * Upload a file using a pre-signed PUT URL (no S3 credentials needed).
  */
-async function uploadToPresignedUrl(url, body, contentType = "application/octet-stream") {
+async function uploadToPresignedUrl(
+  url,
+  body,
+  contentType = "application/octet-stream"
+) {
   const resp = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": contentType },
     body,
   });
   if (!resp.ok) {
-    throw new Error(`Pre-signed upload failed (${resp.status}): ${resp.statusText}`);
+    throw new Error(
+      `Pre-signed upload failed (${resp.status}): ${resp.statusText}`
+    );
   }
 }
 
@@ -264,7 +276,7 @@ async function uploadToPresignedUrl(url, body, contentType = "application/octet-
  * Returns a map of key → pre-signed PUT URL.
  */
 async function requestUploadUrls(keys) {
-  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+  if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return null;
   }
   const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/upload-urls`;
@@ -292,7 +304,7 @@ async function requestUploadUrls(keys) {
  * Returns an array of { key, url } entries.
  */
 async function requestDownloadUrls(prefix) {
-  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+  if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return null;
   }
   const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/download-urls`;
@@ -350,7 +362,10 @@ async function uploadFile(key, body, contentType = "application/octet-stream") {
       return;
     }
   } catch (err) {
-    log("info", `Pre-signed upload unavailable for ${key}, using SDK fallback: ${err.message}`);
+    log(
+      "info",
+      `Pre-signed upload unavailable for ${key}, using SDK fallback: ${err.message}`
+    );
   }
   await uploadToS3(key, body, contentType);
 }
@@ -393,7 +408,10 @@ async function uploadDirectory(dirPath, s3Prefix) {
   try {
     urlMap = await requestUploadUrls(s3Keys);
   } catch (err) {
-    log("info", `Batch upload URLs unavailable, using SDK fallback: ${err.message}`);
+    log(
+      "info",
+      `Batch upload URLs unavailable, using SDK fallback: ${err.message}`
+    );
   }
 
   for (let i = 0; i < files.length; i++) {
@@ -420,7 +438,9 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
   try {
     const entries = await requestDownloadUrls(s3Prefix);
     if (entries && entries.length > 0) {
-      const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
+      const normalizedPrefix = s3Prefix.endsWith("/")
+        ? s3Prefix
+        : `${s3Prefix}/`;
       let downloaded = 0;
       const resolvedLocalDir = path.resolve(localDir);
       for (const entry of entries) {
@@ -429,7 +449,10 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
 
         const localPath = path.join(localDir, relativePath);
         const resolvedLocalPath = path.resolve(localPath);
-        if (!resolvedLocalPath.startsWith(resolvedLocalDir + path.sep) && resolvedLocalPath !== resolvedLocalDir) {
+        if (
+          !resolvedLocalPath.startsWith(resolvedLocalDir + path.sep) &&
+          resolvedLocalPath !== resolvedLocalDir
+        ) {
           log("error", `Path traversal attempt blocked: ${entry.key}`);
           continue;
         }
@@ -440,11 +463,17 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
         fs.writeFileSync(localPath, data);
         downloaded++;
       }
-      log("info", `Downloaded ${downloaded} files via pre-signed URLs to ${localDir}`);
+      log(
+        "info",
+        `Downloaded ${downloaded} files via pre-signed URLs to ${localDir}`
+      );
       return downloaded;
     }
   } catch (err) {
-    log("info", `Pre-signed download URLs unavailable, using SDK fallback: ${err.message}`);
+    log(
+      "info",
+      `Pre-signed download URLs unavailable, using SDK fallback: ${err.message}`
+    );
   }
 
   // Fallback: direct S3 SDK
@@ -466,7 +495,9 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
         objects.push({ Key: obj.Key, Size: obj.Size ?? 0 });
       }
     }
-    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+    continuationToken = resp.IsTruncated
+      ? resp.NextContinuationToken
+      : undefined;
   } while (continuationToken);
 
   let downloaded = 0;
@@ -481,7 +512,10 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
 
     const localPath = path.join(localDir, relativePath);
     const resolvedPath = path.resolve(localPath);
-    if (!resolvedPath.startsWith(resolvedDir + path.sep) && resolvedPath !== resolvedDir) {
+    if (
+      !resolvedPath.startsWith(resolvedDir + path.sep) &&
+      resolvedPath !== resolvedDir
+    ) {
       log("error", `Path traversal attempt blocked: ${obj.Key}`);
       continue;
     }
@@ -531,7 +565,10 @@ async function downloadState(workDir) {
   try {
     const homeClaudePrefix = `${parentPrefix}/home-claude-state`;
     const homeClaudeDir = path.join(os.homedir(), ".claude");
-    const count = await downloadDirectoryFromS3(homeClaudePrefix, homeClaudeDir);
+    const count = await downloadDirectoryFromS3(
+      homeClaudePrefix,
+      homeClaudeDir
+    );
     log("info", `Restored ${count} files to ${homeClaudeDir}`);
   } catch (err) {
     log(
@@ -549,10 +586,7 @@ async function downloadState(workDir) {
     const count = await downloadDirectoryFromS3(artifactsPrefix, workDir);
     log("info", `Restored ${count} artifact files to ${workDir}`);
   } catch (err) {
-    log(
-      "error",
-      `Failed to download artifacts (best-effort): ${err.message}`
-    );
+    log("error", `Failed to download artifacts (best-effort): ${err.message}`);
   }
 }
 
@@ -593,7 +627,7 @@ async function reportEvent(event) {
 // GitHub token refresh (best-effort, never throws)
 // ---------------------------------------------------------------------------
 async function refreshGitHubToken() {
-  if (!config.authToken || !config.apiBaseUrl || !config.loopId) {
+  if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return;
   }
   try {
@@ -625,8 +659,11 @@ async function refreshGitHubToken() {
 // Context pack handling
 // ---------------------------------------------------------------------------
 async function downloadContextPack() {
-  if (!config.s3ContextKey && !config.s3ContextUrl) {
-    log("info", "No S3_CONTEXT_KEY or S3_CONTEXT_URL set, skipping context pack download");
+  if (!(config.s3ContextKey || config.s3ContextUrl)) {
+    log(
+      "info",
+      "No S3_CONTEXT_KEY or S3_CONTEXT_URL set, skipping context pack download"
+    );
     return null;
   }
 
@@ -703,7 +740,10 @@ function writeContextPackFiles(workDir, pack) {
         const safeName = (artifact.type || "artifact")
           .toLowerCase()
           .replace(/[^a-z0-9_-]/g, "_");
-        const safeId = String(artifact.id || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+        const safeId = String(artifact.id || "unknown").replace(
+          /[^a-zA-Z0-9_-]/g,
+          "_"
+        );
         const fileName = `${safeName}-${safeId}.md`;
         const header = `# ${artifact.title || "Untitled"}\n\n`;
         fs.writeFileSync(
@@ -1044,10 +1084,7 @@ function createPullRequest(workDir, existingPrInfo) {
       commitSha: null,
     };
   } catch (err) {
-    log(
-      "error",
-      `PR creation failed (best-effort): ${err.message}`
-    );
+    log("error", `PR creation failed (best-effort): ${err.message}`);
     return existingPrInfo;
   }
 }
@@ -1056,7 +1093,7 @@ function createPullRequest(workDir, existingPrInfo) {
 // Incomplete-implementation labeling (best-effort)
 // ---------------------------------------------------------------------------
 function labelPrIncomplete(workDir, prNumber) {
-  if (!prNumber || !config.githubToken) {
+  if (!(prNumber && config.githubToken)) {
     return;
   }
   try {
@@ -1076,10 +1113,7 @@ function labelPrIncomplete(workDir, prNumber) {
         env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
       }
     );
-    log(
-      "info",
-      `Added 'incomplete-implementation' label to PR #${prNumber}`
-    );
+    log("info", `Added 'incomplete-implementation' label to PR #${prNumber}`);
   } catch (err) {
     log(
       "error",
@@ -1680,25 +1714,17 @@ function createWorkingBranch(workDir) {
   // If resuming from a parent loop, checkout the parent's branch (with its commits)
   if (config.parentBranchName) {
     try {
-      execFileSync(
-        "git",
-        ["fetch", "origin", config.parentBranchName],
-        {
-          cwd: workDir,
-          stdio: "pipe",
-          timeout: 30_000,
-          env: buildGitAuthEnv(),
-        }
-      );
-      execFileSync(
-        "git",
-        ["checkout", config.parentBranchName],
-        {
-          cwd: workDir,
-          stdio: "pipe",
-          timeout: 5000,
-        }
-      );
+      execFileSync("git", ["fetch", "origin", config.parentBranchName], {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 30_000,
+        env: buildGitAuthEnv(),
+      });
+      execFileSync("git", ["checkout", config.parentBranchName], {
+        cwd: workDir,
+        stdio: "pipe",
+        timeout: 5000,
+      });
       log("info", `Checked out parent branch: ${config.parentBranchName}`);
       return config.parentBranchName;
     } catch (err) {

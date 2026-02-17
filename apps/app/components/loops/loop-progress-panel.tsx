@@ -44,6 +44,7 @@ import {
   type StreamStatus,
   useLoopStream,
 } from "@/hooks/queries/use-loop-stream";
+import { formatTokenCount } from "@/lib/format-utils";
 
 type LoopProgressPanelProps = {
   loopId: string;
@@ -154,16 +155,6 @@ function formatElapsedTime(ms: number): string {
     return `${minutes}m ${seconds}s`;
   }
   return `${seconds}s`;
-}
-
-function formatTokenCount(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}k`;
-  }
-  return count.toString();
 }
 
 // -- Elapsed time hook --------------------------------------------------------

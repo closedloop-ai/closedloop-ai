@@ -19,6 +19,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { buildSearchParams } from "@/lib/format-utils";
 
 // Query keys
 export const loopKeys = {
@@ -45,12 +46,7 @@ export function useLoops(
   return useQuery({
     queryKey: loopKeys.list(filters),
     queryFn: () => {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
-        if (value !== undefined && value !== null) {
-          params.set(key, value.toString());
-        }
-      }
+      const params = buildSearchParams(filters);
       return apiClient.get<LoopWithUser[]>(`/loops?${params.toString()}`);
     },
     ...options,
@@ -98,12 +94,7 @@ export function useLoopEventsPaginated(
   return useQuery({
     queryKey: loopKeys.eventsPaginated(loopId, filters),
     queryFn: () => {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
-        if (value !== undefined && value !== null) {
-          params.set(key, value.toString());
-        }
-      }
+      const params = buildSearchParams(filters);
       return apiClient.get<LoopEventsPaginatedResponse>(
         `/loops/${loopId}/events?${params.toString()}`
       );
@@ -146,13 +137,7 @@ export function useLoopUsage(
   return useQuery({
     queryKey: loopKeys.usage(filters),
     queryFn: () => {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
-        if (value !== undefined && value !== null) {
-          params.set(key, value);
-        }
-      }
-      const qs = params.toString();
+      const qs = buildSearchParams(filters).toString();
       return apiClient.get<LoopUsageSummary>(
         `/loops/usage${qs ? `?${qs}` : ""}`
       );

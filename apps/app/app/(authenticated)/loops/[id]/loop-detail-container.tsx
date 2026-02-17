@@ -33,37 +33,7 @@ import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { useLoop } from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
-
-function formatDuration(
-  startedAt: Date | null,
-  completedAt: Date | null
-): string {
-  if (!startedAt) {
-    return "-";
-  }
-  const start = new Date(startedAt).getTime();
-  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
-  const ms = end - start;
-
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-  return `${seconds}s`;
-}
-
-function formatTokenCount(count: number): string {
-  if (count >= 1_000_000) {
-    return `${(count / 1_000_000).toFixed(1)}M`;
-  }
-  if (count >= 1000) {
-    return `${(count / 1000).toFixed(1)}k`;
-  }
-  return count.toString();
-}
+import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 
 function formatModelName(model: string): string {
   return model

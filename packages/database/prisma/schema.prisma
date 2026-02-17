@@ -673,8 +673,8 @@ model Loop {
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id])
   user         User         @relation(fields: [userId], references: [id])
-  artifact     Artifact?    @relation(fields: [artifactId], references: [id])
-  workstream   Workstream?  @relation(fields: [workstreamId], references: [id])
+  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   childLoops   Loop[]       @relation("LoopParent")
   events       LoopEvent[]
