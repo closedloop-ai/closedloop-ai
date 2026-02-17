@@ -18,6 +18,23 @@ export const pullRequestRatingsService = {
     userId: string,
     organizationId: string
   ): Promise<PullRequestRatingSummary> {
+    // Verify PR belongs to user's organization via workstream (workstreamId is required;
+    // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
+    const pullRequest = await withDb((db) =>
+      db.gitHubPullRequest.findFirst({
+        where: {
+          id: pullRequestId,
+          workstream: {
+            organizationId,
+          },
+        },
+      })
+    );
+
+    if (!pullRequest) {
+      throw new PullRequestNotFoundError(pullRequestId);
+    }
+
     // Fetch user's rating (if exists)
     const userRating = await withDb((db) =>
       db.pullRequestRating.findUnique({
@@ -72,7 +89,7 @@ export const pullRequestRatingsService = {
   /**
    * Upsert a rating for a pull request (org-scoped).
    * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
-   * Validates PR ownership via artifact join (PRs are linked via artifacts to organizations).
+   * Validates PR ownership via workstream.organizationId (workstreamId is required; artifactId is nullable).
    */
   upsertRating(
     pullRequestId: string,
@@ -84,12 +101,12 @@ export const pullRequestRatingsService = {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate recalculation
     // must happen atomically to ensure data consistency.
     return withDb.tx(async (tx) => {
-      // Verify PR belongs to user's organization via artifact relation
-      // GitHubPullRequest lacks direct organizationId field, so we join through artifact
+      // Verify PR belongs to user's organization via workstream (workstreamId is required;
+      // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
       const pullRequest = await tx.gitHubPullRequest.findFirst({
         where: {
           id: pullRequestId,
-          artifact: {
+          workstream: {
             organizationId,
           },
         },

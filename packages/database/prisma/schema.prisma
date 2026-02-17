@@ -349,6 +349,7 @@ model Workstream {
   artifacts     Artifact[]
   issues        Issue[]
   externalLinks ExternalLink[]
+  pullRequests  GitHubPullRequest[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
@@ -766,8 +767,9 @@ model GitHubPullRequest {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  artifact Artifact?          @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  ratings  PullRequestRating[]
+  workstream Workstream       @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  artifact   Artifact?        @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  ratings    PullRequestRating[]
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])

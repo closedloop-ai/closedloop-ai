@@ -14,6 +14,11 @@ describe("pullRequestRatingsService", () => {
   });
 
   describe("getRating", () => {
+    const mockPr = {
+      id: "pr-1",
+      workstream: { id: "ws-1", organizationId: "org-1" },
+    };
+
     it("returns rating summary with user rating", async () => {
       const mockUserRating = {
         id: "rating-1",
@@ -25,6 +30,9 @@ describe("pullRequestRatingsService", () => {
       };
 
       const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
         pullRequestRating: {
           findUnique: vi.fn().mockResolvedValue(mockUserRating),
           aggregate: vi.fn().mockResolvedValue({
@@ -42,6 +50,12 @@ describe("pullRequestRatingsService", () => {
         "org-1"
       );
 
+      expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "pr-1",
+          workstream: { organizationId: "org-1" },
+        },
+      });
       expect(mockDb.pullRequestRating.findUnique).toHaveBeenCalledWith({
         where: {
           pullRequestId_userId_organizationId: {
@@ -74,6 +88,9 @@ describe("pullRequestRatingsService", () => {
 
     it("returns rating summary with null user rating", async () => {
       const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
         pullRequestRating: {
           findUnique: vi.fn().mockResolvedValue(null),
           aggregate: vi.fn().mockResolvedValue({
@@ -100,6 +117,9 @@ describe("pullRequestRatingsService", () => {
 
     it("returns zero average when no ratings exist", async () => {
       const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
         pullRequestRating: {
           findUnique: vi.fn().mockResolvedValue(null),
           aggregate: vi.fn().mockResolvedValue({
@@ -135,6 +155,9 @@ describe("pullRequestRatingsService", () => {
       };
 
       const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
         pullRequestRating: {
           findUnique: vi.fn().mockResolvedValue(mockUserRating),
           aggregate: vi.fn().mockResolvedValue({
@@ -155,8 +178,65 @@ describe("pullRequestRatingsService", () => {
       expect(result.userRating?.comment).toBe("");
     });
 
+    it("throws PullRequestNotFoundError when PR does not exist", async () => {
+      const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      };
+
+      mockWithDbCall(mockDb);
+
+      await expect(
+        pullRequestRatingsService.getRating("pr-not-found", "user-1", "org-1")
+      ).rejects.toThrow(PullRequestNotFoundError);
+    });
+
+    it("throws PullRequestNotFoundError when PR belongs to different organization", async () => {
+      const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+      };
+
+      mockWithDbCall(mockDb);
+
+      await expect(
+        pullRequestRatingsService.getRating("pr-1", "user-1", "org-1")
+      ).rejects.toThrow(PullRequestNotFoundError);
+    });
+
+    it("verifies organization via workstream relationship join", async () => {
+      const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
+        pullRequestRating: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          aggregate: vi.fn().mockResolvedValue({
+            _avg: { score: 4.0 },
+            _count: 1,
+          }),
+        },
+      };
+
+      mockWithDbCall(mockDb);
+
+      await pullRequestRatingsService.getRating("pr-1", "user-1", "org-1");
+
+      expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: "pr-1",
+          workstream: { organizationId: "org-1" },
+        },
+      });
+    });
+
     it("scopes aggregate query by organization ID", async () => {
       const mockDb = {
+        gitHubPullRequest: {
+          findFirst: vi.fn().mockResolvedValue(mockPr),
+        },
         pullRequestRating: {
           findUnique: vi.fn().mockResolvedValue(null),
           aggregate: vi.fn().mockResolvedValue({
@@ -184,8 +264,8 @@ describe("pullRequestRatingsService", () => {
     it("creates new rating and returns summary", async () => {
       const mockPr = {
         id: "pr-1",
-        artifact: {
-          id: "artifact-1",
+        workstream: {
+          id: "ws-1",
           organizationId: "org-1",
         },
       };
@@ -226,7 +306,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockTx.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          artifact: {
+          workstream: {
             organizationId: "org-1",
           },
         },
@@ -271,8 +351,8 @@ describe("pullRequestRatingsService", () => {
     it("updates existing rating and returns summary", async () => {
       const mockPr = {
         id: "pr-1",
-        artifact: {
-          id: "artifact-1",
+        workstream: {
+          id: "ws-1",
           organizationId: "org-1",
         },
       };
@@ -352,24 +432,15 @@ describe("pullRequestRatingsService", () => {
     });
 
     it("throws PullRequestNotFoundError when PR belongs to different organization", async () => {
-      const mockPr = {
-        id: "pr-1",
-        artifact: {
-          id: "artifact-1",
-          organizationId: "org-2", // Different organization
-        },
-      };
-
       const mockTx = {
         gitHubPullRequest: {
-          findFirst: vi.fn().mockResolvedValue(mockPr),
+          findFirst: vi.fn().mockResolvedValue(null),
         },
       };
 
       mockWithDbTx(mockTx);
 
-      // Query filters by artifact.organizationId, so should return null
-      mockTx.gitHubPullRequest.findFirst = vi.fn().mockResolvedValue(null);
+      // Query filters by workstream.organizationId, so returns null when org doesn't match
 
       await expect(
         pullRequestRatingsService.upsertRating(
@@ -382,11 +453,11 @@ describe("pullRequestRatingsService", () => {
       ).rejects.toThrow(PullRequestNotFoundError);
     });
 
-    it("verifies organization via artifact relationship join", async () => {
+    it("verifies organization via workstream relationship join", async () => {
       const mockPr = {
         id: "pr-1",
-        artifact: {
-          id: "artifact-1",
+        workstream: {
+          id: "ws-1",
           organizationId: "org-1",
         },
       };
@@ -422,11 +493,11 @@ describe("pullRequestRatingsService", () => {
         "Comment"
       );
 
-      // Verify the query uses artifact relationship for organization scoping
+      // Verify the query uses workstream relationship for organization scoping
       expect(mockTx.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          artifact: {
+          workstream: {
             organizationId: "org-1",
           },
         },
@@ -436,8 +507,8 @@ describe("pullRequestRatingsService", () => {
     it("scopes aggregate calculation by organization", async () => {
       const mockPr = {
         id: "pr-1",
-        artifact: {
-          id: "artifact-1",
+        workstream: {
+          id: "ws-1",
           organizationId: "org-1",
         },
       };
@@ -485,8 +556,8 @@ describe("pullRequestRatingsService", () => {
     it("persists comment in rating", async () => {
       const mockPr = {
         id: "pr-1",
-        artifact: {
-          id: "artifact-1",
+        workstream: {
+          id: "ws-1",
           organizationId: "org-1",
         },
       };
