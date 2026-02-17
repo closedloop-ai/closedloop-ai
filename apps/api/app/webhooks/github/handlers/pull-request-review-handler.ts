@@ -27,6 +27,11 @@ const REVIEW_DECISION_PRIORITY = {
 } as const;
 
 /**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ */
+const HANDLED_ACTIONS = new Set(["submitted", "dismissed"]);
+
+/**
  * Map GitHub review state to our ReviewDecision enum.
  * Returns null for unrecognized states.
  */
@@ -275,7 +280,6 @@ export async function handlePullRequestReview(
   const { action, review, pull_request, repository } = event;
 
   // Early exit for unhandled actions
-  const HANDLED_ACTIONS = new Set(["submitted", "dismissed"]);
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequestReview] Skipping unhandled action", {
       action,
