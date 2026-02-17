@@ -38,11 +38,16 @@ export const PUT = withAuth<
     // Rate limiting: 10 requests per minute per user per PR
     await rateLimit(`pr_rating_${user.id}_${id}`, 10, "60s", request);
   } catch (error) {
-    return errorResponse(
-      "Rate limit exceeded. Please try again later.",
-      error,
-      429
-    );
+    const isRateLimit =
+      error instanceof Error && error.message === "Rate limit exceeded";
+    if (isRateLimit) {
+      return errorResponse(
+        "Rate limit exceeded. Please try again later.",
+        error,
+        429
+      );
+    }
+    return errorResponse("Access denied", error, 403);
   }
 
   const { body, errorResponse: parseError } = await parseBody(

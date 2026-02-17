@@ -313,6 +313,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
       pullRequest = await prisma.gitHubPullRequest.create({
         data: {
           workstreamId: workstream.id,
+          organizationId: workstream.organizationId,
           repositoryId: repository.id,
           artifactId: planArtifact.id,
           githubId: PR_RATING_QA.prGitHubId,

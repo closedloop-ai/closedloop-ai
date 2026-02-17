@@ -58,7 +58,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          workstream: { organizationId: "org-1" },
+          organizationId: "org-1",
         },
       });
       expect(mockDb.pullRequestRating.findUnique).toHaveBeenCalledWith({
@@ -214,7 +214,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          workstream: { organizationId: "org-1" },
+          organizationId: "org-1",
         },
       });
     });
@@ -240,7 +240,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          workstream: { organizationId: "org-1" },
+          organizationId: "org-1",
         },
       });
     });
@@ -319,9 +319,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockTx.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          workstream: {
-            organizationId: "org-1",
-          },
+          organizationId: "org-1",
         },
       });
 
@@ -509,9 +507,7 @@ describe("pullRequestRatingsService", () => {
       expect(mockTx.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
-          workstream: {
-            organizationId: "org-1",
-          },
+          organizationId: "org-1",
         },
       });
     });

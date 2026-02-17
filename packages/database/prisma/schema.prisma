@@ -189,6 +189,7 @@ model Organization {
   users              User[]
   teams              Team[]
   pullRequestRatings PullRequestRating[]
+  pullRequests       GitHubPullRequest[]
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
@@ -748,6 +749,7 @@ model GitHubInstallationRepository {
 model GitHubPullRequest {
   id             String        @id @default(uuid(7)) @db.Uuid
   workstreamId   String        @map("workstream_id") @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
   repositoryId   String        @map("repository_id") @db.Uuid
   artifactId     String?       @map("artifact_id") @db.Uuid
   githubId       Int           @map("github_id")
@@ -767,12 +769,14 @@ model GitHubPullRequest {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  workstream Workstream       @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  artifact   Artifact?        @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  ratings    PullRequestRating[]
+  workstream   Workstream           @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  artifact     Artifact?           @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  ratings      PullRequestRating[]
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
+  @@index([organizationId])
   @@index([artifactId])
   @@map("github_pull_requests")
 }

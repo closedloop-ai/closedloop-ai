@@ -11,7 +11,7 @@ export const pullRequestRatingsService = {
   /**
    * Get rating summary for a pull request (org-scoped).
    * Returns the user's rating (if exists) plus aggregate statistics.
-   * Authorization is implicit: if the PR doesn't belong to the user's org, aggregate returns empty.
+   * Authorization: PR lookup filters by organizationId (denormalized for defense-in-depth).
    */
   async getRating(
     pullRequestId: string,
@@ -19,12 +19,11 @@ export const pullRequestRatingsService = {
     organizationId: string
   ): Promise<PullRequestRatingSummary> {
     const { userRating, aggregate } = await withDb(async (db) => {
-      // Verify PR belongs to user's organization via workstream (workstreamId is required;
-      // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
+      // Verify PR belongs to user's organization (organizationId denormalized for defense-in-depth)
       const pullRequest = await db.gitHubPullRequest.findFirst({
         where: {
           id: pullRequestId,
-          workstream: { organizationId },
+          organizationId,
         },
       });
 
@@ -72,7 +71,7 @@ export const pullRequestRatingsService = {
   /**
    * Upsert a rating for a pull request (org-scoped).
    * Creates a new rating or updates an existing one, then returns updated aggregate statistics.
-   * Validates PR ownership via workstream.organizationId (workstreamId is required; artifactId is nullable).
+   * Validates PR ownership via organizationId (denormalized for defense-in-depth).
    */
   upsertRating(
     pullRequestId: string,
@@ -84,14 +83,11 @@ export const pullRequestRatingsService = {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate recalculation
     // must happen atomically to ensure data consistency.
     return withDb.tx(async (tx) => {
-      // Verify PR belongs to user's organization via workstream (workstreamId is required;
-      // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
+      // Verify PR belongs to user's organization (organizationId denormalized for defense-in-depth)
       const pullRequest = await tx.gitHubPullRequest.findFirst({
         where: {
           id: pullRequestId,
-          workstream: {
-            organizationId,
-          },
+          organizationId,
         },
       });
 
