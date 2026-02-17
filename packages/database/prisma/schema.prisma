@@ -188,6 +188,7 @@ model Organization {
   // Relations
   users              User[]
   teams              Team[]
+  pullRequestRatings PullRequestRating[]
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
@@ -216,8 +217,9 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization @relation(fields: [organizationId], references: [id])
+  organization       Organization     @relation(fields: [organizationId], references: [id])
   teamMemberships    TeamMember[]
+  pullRequestRatings PullRequestRating[]
   ownedProjects      Project[]    @relation("ProjectOwner")
   ownedArtifacts     Artifact[]   @relation("ArtifactOwner")
   approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
@@ -483,7 +485,9 @@ model PullRequestRating {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   // Relations
-  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequest  GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([pullRequestId, userId, organizationId])
   @@index([pullRequestId, organizationId])
