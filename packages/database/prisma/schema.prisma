@@ -408,6 +408,7 @@ model Artifact {
   versions     ArtifactVersion[]
   ratings      ArtifactRating[]
   evaluations  ArtifactEvaluation[]
+  performances GitHubActionRunPerformance[]
   pullRequests GitHubPullRequest[]
 
   @@unique([organizationId, slug])
@@ -449,6 +450,23 @@ model ArtifactEvaluation {
 
   @@unique([artifactId, reportId])
   @@map("artifact_evaluations")
+}
+
+// SECURITY: No organizationId column — org isolation is enforced exclusively
+// via the artifact FK. All read-path queries MUST join through Artifact
+// and filter by organizationId. This is an intentional design decision.
+model GitHubActionRunPerformance {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  // Soft reference - no Prisma relation defined intentionally. Query GitHubActionRun separately if needed.
+  actionRunId String?  @map("action_run_id") @db.Uuid
+  summaryData Json     @map("summary_data")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId])
+  @@map("github_action_run_performances")
 }
 
 model ArtifactRating {

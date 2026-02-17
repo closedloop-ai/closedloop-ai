@@ -14,6 +14,7 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
@@ -1244,6 +1245,40 @@ Please try again or contact support if the issue persists.`
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  },
+
+  /**
+   * Get performance data for an artifact from the GitHubActionRunPerformance table.
+   * Two-step org-scoping: first verify artifact belongs to org, then query perf table.
+   * Returns null when no performance data is available for the artifact.
+   */
+  async getPerformanceData(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PerfSummary | null> {
+    // Step 1: Verify artifact exists and belongs to organization (org-scoping gate)
+    const artifact = await this.findByIdSimple(artifactId, organizationId);
+    if (!artifact) {
+      return null;
+    }
+
+    // Step 2: Query performance table by artifactId
+    // SECURITY: gitHubActionRunPerformance has no organizationId column;
+    // org isolation is enforced via the artifact FK check above.
+    const perfRecord = await withDb((db) =>
+      db.gitHubActionRunPerformance.findFirst({
+        where: { artifactId },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!perfRecord) {
+      return null;
+    }
+
+    // Safe cast: summaryData was stored by parsePerfSummary() which always
+    // produces a valid PerfSummary shape. Schema drift would require a deploy.
+    return perfRecord.summaryData as PerfSummary;
   },
 
   /**
