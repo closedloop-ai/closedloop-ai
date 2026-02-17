@@ -217,7 +217,10 @@ async function handleDismissedReview(
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
     id: string;
+    workstreamId: string;
+    artifactId: string | null;
     reviewDecision: string | null;
+    artifact: { slug: string } | null;
   }
 ): Promise<void> {
   const reviewerLogin = review.user?.login;
@@ -256,6 +259,28 @@ async function handleDismissedReview(
     reviewerLogin,
     previousAggregate: existingPr.reviewDecision,
     newAggregate: aggregateDecision,
+  });
+
+  // Create workstream event for dismissed review
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId: existingPr.workstreamId,
+      type: "GITHUB_PR_REVIEW_SUBMITTED",
+      actorType: "system",
+      data: {
+        reviewId: review.id,
+        reviewState: "dismissed",
+        reviewDecision: ReviewDecision.Dismissed,
+        reviewerLogin,
+        reviewBody: review.body,
+        prNumber: pull_request.number,
+        prTitle: pull_request.title,
+        prUrl: pull_request.html_url,
+        reviewUrl: review.html_url,
+        artifactId: existingPr.artifactId,
+        artifactSlug: existingPr.artifact?.slug,
+      },
+    },
   });
 }
 

@@ -462,6 +462,19 @@ describe("handlePullRequestReview", () => {
         where: { id: "pr-uuid-dismiss" },
         data: { reviewDecision: null },
       });
+
+      // Should create workstream event for dismissed review
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workstreamId: "ws-uuid-dismiss",
+          type: "GITHUB_PR_REVIEW_SUBMITTED",
+          data: expect.objectContaining({
+            reviewState: "dismissed",
+            reviewDecision: "DISMISSED",
+            reviewerLogin: "reviewer",
+          }),
+        }),
+      });
     });
   });
 
