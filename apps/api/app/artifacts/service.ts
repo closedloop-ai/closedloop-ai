@@ -606,6 +606,15 @@ export const artifactsService = {
           ...matchedArtifact,
           content: latestVersion?.content ?? null,
         };
+
+        // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
+        await entityLinksService.createLink({
+          sourceId: matchedArtifact.id,
+          sourceType: "ARTIFACT",
+          targetId: artifact.id,
+          targetType: "ARTIFACT",
+          linkType: LinkType.PRODUCES,
+        });
       }
     }
 
