@@ -4,6 +4,7 @@ import type {
   ActivityType,
 } from "@repo/api/src/types/activity";
 import { withDb } from "@repo/database";
+import { basicUserSelect } from "@/lib/db-utils";
 
 export type FindActivityOptions = {
   organizationId: string;
@@ -62,12 +63,7 @@ export const activityService = {
     const actors = await withDb((db) =>
       db.user.findMany({
         where: { id: { in: actorIds } },
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          avatarUrl: true,
-        },
+        select: basicUserSelect.select,
       })
     );
 

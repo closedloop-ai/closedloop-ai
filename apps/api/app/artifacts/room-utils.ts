@@ -5,32 +5,23 @@ import { createLiveblocksRoom, deleteLiveblocksRoom } from "@/lib/liveblocks";
 export async function createArtifactRoom(
   artifact: Pick<
     Artifact,
-    "id" | "organizationId" | "documentSlug" | "subtype" | "version"
+    "id" | "organizationId" | "slug" | "type" | "latestVersion"
   >
 ) {
-  if (!artifact.documentSlug) {
-    throw new Error("Artifact has no document slug");
-  }
-  const roomId = generateArtifactRoomId(
-    artifact.organizationId,
-    artifact.documentSlug
-  );
+  const roomId = generateArtifactRoomId(artifact.organizationId, artifact.slug);
   await createLiveblocksRoom({
     roomId,
     tenantId: artifact.organizationId,
     metadata: {
       artifactId: artifact.id,
-      artifactSubtype: artifact.subtype,
-      documentSlug: artifact.documentSlug,
-      version: String(artifact.version),
+      artifactType: artifact.type,
+      slug: artifact.slug,
+      version: String(artifact.latestVersion),
     },
   });
 }
 
-export async function deleteArtifactRoom(
-  organizationId: string,
-  documentSlug: string
-) {
-  const roomId = generateArtifactRoomId(organizationId, documentSlug);
+export async function deleteArtifactRoom(organizationId: string, slug: string) {
+  const roomId = generateArtifactRoomId(organizationId, slug);
   await deleteLiveblocksRoom(roomId);
 }

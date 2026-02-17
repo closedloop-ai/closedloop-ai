@@ -31,17 +31,41 @@ vi.mock("lucide-react", () => ({
 
 // Import after mocks
 import { useSortable } from "@dnd-kit/sortable";
+import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { SortableArtifactRow } from "@/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/sortable-artifact-row";
-import type { ProjectArtifact } from "@/types/teams";
 
 describe("SortableArtifactRow", () => {
-  const mockArtifact: ProjectArtifact = {
+  const mockArtifact: ArtifactWithWorkstream = {
     id: "01TEST000000000000000000",
+<<<<<<< symphony/019c5328-14a0-72af-920b-44dfb245a9b4
     name: "Test Project",
     subtype: "PRD",
     status: "NOT_STARTED",
     documentSlug: "test-artifact",
     updatedAt: new Date().toISOString(),
+=======
+    organizationId: "org-1",
+    workstreamId: null,
+    projectId: "proj-1",
+    type: "PRD",
+    title: "Test Artifact",
+    slug: "test-artifact",
+    fileName: null,
+    owner: null,
+    approver: null,
+    status: "DRAFT",
+    latestVersion: 1,
+    generatedBy: null,
+    ownerId: null,
+    approverId: null,
+    tokenUsage: null,
+    targetRepo: null,
+    targetBranch: null,
+    templateForType: null,
+    sortOrder: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+>>>>>>> main
   };
 
   it("renders drag handle", () => {

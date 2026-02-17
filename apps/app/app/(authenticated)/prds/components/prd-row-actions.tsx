@@ -10,7 +10,6 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  DownloadIcon,
   FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -24,7 +23,6 @@ import {
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type PRDRowActionsProps = {
   prd: ArtifactWithWorkstream;
@@ -54,10 +52,6 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
     return !!result;
   };
 
-  const handleExport = () => {
-    downloadAsMarkdown(prd.content ?? "", prd.fileName ?? `${prd.title}.md`);
-  };
-
   const handleDelete = async (): Promise<boolean> => {
     const result = await deleteArtifact.mutateAsync(prd.id, {
       onSuccess: () => {
@@ -80,10 +74,6 @@ export function PRDRowActions({ prd }: PRDRowActionsProps) {
           <DropdownMenuItem onClick={() => setShowRenameDialog(true)}>
             <PencilIcon className="mr-2 h-4 w-4" />
             Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleExport}>
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Export .md
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setShowMoveDialog(true)}>
             <FolderIcon className="mr-2 h-4 w-4" />

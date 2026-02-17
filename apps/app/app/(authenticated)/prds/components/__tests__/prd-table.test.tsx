@@ -1,14 +1,11 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  createMockArtifact,
-  createMockPullRequest,
-} from "@/__tests__/fixtures/artifacts";
+import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { PRDTable } from "../prd-table";
 
 // Mock the hooks
 const mockUseRouter = vi.fn();
-const mockUseArtifactsBySubtype = vi.fn();
+const mockUseArtifacts = vi.fn();
 const mockUseUpdateArtifact = vi.fn();
 const mockUseDeleteArtifact = vi.fn();
 const mockUseProjects = vi.fn();
@@ -33,7 +30,7 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-artifacts");
   return {
     ...actual,
-    useArtifactsBySubtype: () => mockUseArtifactsBySubtype(),
+    useArtifacts: () => mockUseArtifacts(),
     useUpdateArtifact: () => mockUseUpdateArtifact(),
     useDeleteArtifact: () => mockUseDeleteArtifact(),
   };
@@ -47,9 +44,7 @@ vi.mock("@/hooks/queries/use-projects", async () => {
   };
 });
 
-const PULL_REQUEST_REGEX = /Pull request/;
-
-describe("PRDTable - PR Icon Display", () => {
+describe("PRDTable", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseRouter.mockReturnValue({ push: vi.fn() });
@@ -75,20 +70,14 @@ describe("PRDTable - PR Icon Display", () => {
     cleanup();
   });
 
-  test("displays PR icon with link when artifact has pullRequest", () => {
-    const mockPR = createMockPullRequest({
-      number: 42,
-      htmlUrl: "https://github.com/org/repo/pull/42",
-    });
-
+  test("renders PRD artifacts", () => {
     const mockPRD = createMockArtifact({
       id: "prd-1",
-      title: "PRD with PR",
-      subtype: "PRD",
-      pullRequest: mockPR,
+      title: "PRD Alpha",
+      type: "PRD",
     });
 
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [mockPRD],
       isLoading: false,
       error: null,
@@ -96,111 +85,11 @@ describe("PRDTable - PR Icon Display", () => {
 
     render(<PRDTable />);
 
-    // Verify artifact title is rendered
-    expect(screen.getByText("PRD with PR")).toBeInTheDocument();
-
-    // Verify PR link is rendered with correct attributes
-    const prLink = screen.getByRole("link", { name: "Pull request #42" });
-    expect(prLink).toBeInTheDocument();
-    expect(prLink).toHaveAttribute(
-      "href",
-      "https://github.com/org/repo/pull/42"
-    );
-    expect(prLink).toHaveAttribute("target", "_blank");
-    expect(prLink).toHaveAttribute("rel", "noopener noreferrer");
-  });
-
-  test("does not display PR icon when artifact has no pullRequest", () => {
-    const mockPRD = createMockArtifact({
-      id: "prd-2",
-      title: "PRD without PR",
-      subtype: "PRD",
-      pullRequest: null,
-    });
-
-    mockUseArtifactsBySubtype.mockReturnValue({
-      data: [mockPRD],
-      isLoading: false,
-      error: null,
-    });
-
-    render(<PRDTable />);
-
-    expect(screen.getByText("PRD without PR")).toBeInTheDocument();
-
-    // Verify no PR link is rendered
-    expect(
-      screen.queryByRole("link", { name: PULL_REQUEST_REGEX })
-    ).not.toBeInTheDocument();
-  });
-
-  test("does not display PR icon when pullRequest is undefined", () => {
-    const mockPRD = createMockArtifact({
-      id: "prd-3",
-      title: "PRD with undefined PR",
-      subtype: "PRD",
-      pullRequest: undefined,
-    });
-
-    mockUseArtifactsBySubtype.mockReturnValue({
-      data: [mockPRD],
-      isLoading: false,
-      error: null,
-    });
-
-    render(<PRDTable />);
-
-    expect(screen.getByText("PRD with undefined PR")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: PULL_REQUEST_REGEX })
-    ).not.toBeInTheDocument();
-  });
-
-  test("displays PR icons for multiple artifacts with PRs", () => {
-    const mockPR1 = createMockPullRequest({ number: 10 });
-    const mockPR2 = createMockPullRequest({ number: 20 });
-
-    const mockPRDs = [
-      createMockArtifact({
-        id: "prd-1",
-        title: "PRD 1",
-        pullRequest: mockPR1,
-      }),
-      createMockArtifact({
-        id: "prd-2",
-        title: "PRD 2",
-        pullRequest: mockPR2,
-      }),
-      createMockArtifact({
-        id: "prd-3",
-        title: "PRD 3",
-        pullRequest: null,
-      }),
-    ];
-
-    mockUseArtifactsBySubtype.mockReturnValue({
-      data: mockPRDs,
-      isLoading: false,
-      error: null,
-    });
-
-    render(<PRDTable />);
-
-    // Verify two PR links are rendered
-    expect(
-      screen.getByRole("link", { name: "Pull request #10" })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: "Pull request #20" })
-    ).toBeInTheDocument();
-
-    // Verify only two PR links (not three)
-    const prLinks = screen.getAllByRole("link", { name: PULL_REQUEST_REGEX });
-    expect(prLinks).toHaveLength(2);
+    expect(screen.getByText("PRD Alpha")).toBeInTheDocument();
   });
 
   test("renders loading state without errors", () => {
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: true,
       error: null,
@@ -214,7 +103,7 @@ describe("PRDTable - PR Icon Display", () => {
   });
 
   test("renders error state without crashing", () => {
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: false,
       error: new Error("Failed to fetch PRDs"),
@@ -226,7 +115,7 @@ describe("PRDTable - PR Icon Display", () => {
   });
 
   test("renders empty state when no PRDs exist", () => {
-    mockUseArtifactsBySubtype.mockReturnValue({
+    mockUseArtifacts.mockReturnValue({
       data: [],
       isLoading: false,
       error: null,
@@ -237,5 +126,31 @@ describe("PRDTable - PR Icon Display", () => {
     expect(
       screen.getByText("No PRDs found. Create your first PRD to get started.")
     ).toBeInTheDocument();
+  });
+
+  test("renders multiple PRD artifacts", () => {
+    const mockPRDs = [
+      createMockArtifact({
+        id: "prd-1",
+        title: "PRD 1",
+        type: "PRD",
+      }),
+      createMockArtifact({
+        id: "prd-2",
+        title: "PRD 2",
+        type: "PRD",
+      }),
+    ];
+
+    mockUseArtifacts.mockReturnValue({
+      data: mockPRDs,
+      isLoading: false,
+      error: null,
+    });
+
+    render(<PRDTable />);
+
+    expect(screen.getByText("PRD 1")).toBeInTheDocument();
+    expect(screen.getByText("PRD 2")).toBeInTheDocument();
   });
 });

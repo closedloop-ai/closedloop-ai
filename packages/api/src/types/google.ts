@@ -33,7 +33,7 @@ export type ImportGoogleDocsResponse = {
   totalDocsInFolder: number;
   artifacts: Array<{
     id: string;
-    documentSlug: string;
+    slug: string;
     title: string;
   }>;
   failures: Array<{

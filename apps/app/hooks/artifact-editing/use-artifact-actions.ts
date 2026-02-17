@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
@@ -12,7 +12,7 @@ import { copyToClipboard } from "@/lib/clipboard-utils";
 import { downloadAsMarkdown } from "@/lib/download-utils";
 
 type UseArtifactActionsConfig = {
-  artifact: ArtifactWithWorkstream;
+  artifact: ArtifactDetail;
   redirectPath: string;
 };
 
@@ -90,21 +90,21 @@ export function useArtifactActions(config: UseArtifactActionsConfig) {
    * Uses the artifact's fileName if available, otherwise generates one from the title.
    */
   const handleDownload = useCallback(() => {
-    const content = artifact.content ?? "";
+    const content = artifact.version.content ?? "";
     const fileName =
       artifact.fileName ??
       `${artifact.title.toLowerCase().replaceAll(/\s+/g, "-")}.md`;
 
     downloadAsMarkdown(content, fileName);
     toast.success("Downloaded as markdown");
-  }, [artifact.content, artifact.fileName, artifact.title]);
+  }, [artifact.version.content, artifact.fileName, artifact.title]);
 
   /**
    * Copy the artifact content to the clipboard.
    * Shows success or error toast based on the result.
    */
   const handleCopy = useCallback(async () => {
-    const content = artifact.content ?? "";
+    const content = artifact.version.content ?? "";
     const success = await copyToClipboard(content);
 
     if (success) {
@@ -112,7 +112,7 @@ export function useArtifactActions(config: UseArtifactActionsConfig) {
     } else {
       toast.error("Failed to copy to clipboard");
     }
-  }, [artifact.content]);
+  }, [artifact.version.content]);
 
   return {
     // Action handlers

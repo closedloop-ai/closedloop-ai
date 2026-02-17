@@ -5,6 +5,7 @@
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
+import { generateSlug } from "@/app/artifacts/artifact-utils";
 import { artifactsService } from "@/app/artifacts/service";
 import {
   autoRollbackTransaction,
@@ -29,8 +30,8 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
         db.artifact.create({
           data: {
             title: "Artifact 1",
-            type: "DOCUMENT",
-            subtype: "PRD",
+            slug: generateSlug(),
+            type: "PRD",
             organizationId: orgId,
             generatedBy: user.id,
             projectId,
@@ -42,8 +43,8 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
         db.artifact.create({
           data: {
             title: "Artifact 2",
-            type: "DOCUMENT",
-            subtype: "PRD",
+            slug: generateSlug(),
+            type: "PRD",
             organizationId: orgId,
             generatedBy: user.id,
             projectId,
@@ -55,8 +56,8 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
         db.artifact.create({
           data: {
             title: "Artifact 3",
-            type: "DOCUMENT",
-            subtype: "PRD",
+            slug: generateSlug(),
+            type: "PRD",
             organizationId: orgId,
             generatedBy: user.id,
             projectId,
