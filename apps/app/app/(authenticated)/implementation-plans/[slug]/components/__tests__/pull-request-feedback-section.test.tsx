@@ -40,8 +40,8 @@ vi.mock("@/components/star-rating", () => ({
   ),
 }));
 
-// Regex patterns for testing
-const SAVE_COMMENT_BUTTON_PATTERN = /save comment/i;
+// Regex patterns for testing (component uses "Save" not "Save Comment")
+const SAVE_BUTTON_PATTERN = /^save$/i;
 const CANCEL_BUTTON_PATTERN = /cancel/i;
 const AVERAGE_PATTERN = /average/;
 const RATINGS_PLURAL_PATTERN = /ratings/;
@@ -131,7 +131,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const button = screen.queryByRole("button", {
-      name: SAVE_COMMENT_BUTTON_PATTERN,
+      name: SAVE_BUTTON_PATTERN,
     });
 
     if (commentSectionVisible) {
@@ -197,7 +197,7 @@ describe("PullRequestFeedbackSection", () => {
       screen.getByPlaceholderText("Add context for your rating...")
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: SAVE_COMMENT_BUTTON_PATTERN })
+      screen.getByRole("button", { name: SAVE_BUTTON_PATTERN })
     ).toBeTruthy();
   });
 
@@ -327,7 +327,7 @@ describe("PullRequestFeedbackSection", () => {
     fireEvent.change(textarea, { target: { value: "New comment" } });
 
     const saveButton = screen.getByRole("button", {
-      name: SAVE_COMMENT_BUTTON_PATTERN,
+      name: SAVE_BUTTON_PATTERN,
     });
     fireEvent.click(saveButton);
 
@@ -338,7 +338,7 @@ describe("PullRequestFeedbackSection", () => {
     });
   });
 
-  test("calls mutate with score only when star is clicked", () => {
+  test("calls mutate with score only when Save is clicked after star selection", () => {
     const mutateFn = vi.fn();
     mockUseSubmitPullRequestRating.mockReturnValue({
       mutate: mutateFn,
@@ -357,7 +357,9 @@ describe("PullRequestFeedbackSection", () => {
       </Wrapper>
     );
 
+    // Component does not auto-submit on star click; user must click Save
     fireEvent.click(screen.getByRole("button", { name: "Set 4 stars" }));
+    fireEvent.click(screen.getByRole("button", { name: SAVE_BUTTON_PATTERN }));
 
     expect(mutateFn).toHaveBeenCalledWith({
       pullRequestId: "pr-123",
@@ -465,7 +467,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const saveButton = screen.getByRole("button", {
-      name: SAVE_COMMENT_BUTTON_PATTERN,
+      name: SAVE_BUTTON_PATTERN,
     });
     expect(saveButton.hasAttribute("disabled")).toBe(true);
   });
@@ -500,7 +502,7 @@ describe("PullRequestFeedbackSection", () => {
     fireEvent.change(textarea, { target: { value: "Modified comment" } });
 
     const saveButton = screen.getByRole("button", {
-      name: SAVE_COMMENT_BUTTON_PATTERN,
+      name: SAVE_BUTTON_PATTERN,
     });
     expect(saveButton.hasAttribute("disabled")).toBe(false);
   });
