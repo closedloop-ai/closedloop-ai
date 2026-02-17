@@ -345,7 +345,8 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast state and reviewDecision enums to literal union types
+    // Cast Prisma enums (GitHubPRState, ReviewDecision) to API enums (PullRequestState, ReviewDecision)
+    // Needed because API types are intentionally independent of database types
     return pr as PullRequestInfo;
   },
 
