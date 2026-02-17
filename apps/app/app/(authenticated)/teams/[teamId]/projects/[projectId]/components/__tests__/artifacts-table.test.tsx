@@ -83,8 +83,7 @@ vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 
-const GENERATING_PLAN_REGEX =
-  /Generating implementation plan\.\.\. - View workflow/i;
+const GENERATING_PLAN_REGEX = /Generating\.\.\. - View workflow/i;
 const EXECUTING_PLAN_REGEX =
   /Executing plan and creating PR\.\.\. - View workflow/i;
 
