@@ -7,7 +7,10 @@
  * with P3005 (non-empty schema without migration history) or P3009 (failed
  * migration blocking deploys), the schema is dropped and recreated, then
  * migrations are retried. This is safe because preview schemas are ephemeral.
- * Production/staging schemas are never affected by this behavior.
+ *
+ * For non-preview schemas (production/staging), P3009 is recovered by marking
+ * the failed migration as rolled-back, then retrying. This is safe because
+ * PostgreSQL DDL is transactional — a failed migration is fully rolled back.
  */
 
 import { spawnSync } from "node:child_process";
@@ -24,6 +27,8 @@ import {
 
 const P3005_PATTERN = /\bP3005\b/;
 const P3009_PATTERN = /\bP3009\b/;
+const P3018_PATTERN = /\bP3018\b/;
+const MIGRATION_NAME_PATTERN = /Migration name: (\S+)/;
 
 function runMigrateDeploy(databaseUrl: string) {
   const result = spawnSync("prisma", ["migrate", "deploy"], {
@@ -64,10 +69,55 @@ function isP3009Output(message: string): boolean {
   return P3009_PATTERN.test(message);
 }
 
+function isP3018Output(message: string): boolean {
+  return P3018_PATTERN.test(message);
+}
+
+function parseFailedMigrationName(message: string): string | null {
+  const match = MIGRATION_NAME_PATTERN.exec(message);
+  return match?.[1] ?? null;
+}
+
 /**
- * Attempts to run prisma migrate deploy. If it fails with P3005 (non-empty
- * schema) or P3009 (failed migration) on a preview schema, drops and recreates
- * the schema, then retries. Safe because preview schemas are ephemeral.
+ * Marks a failed migration as rolled-back using `prisma migrate resolve`.
+ * Safe for PostgreSQL because DDL is transactional — a failed migration
+ * leaves the database in its pre-migration state.
+ */
+function resolveFailedMigration(
+  databaseUrl: string,
+  migrationName: string
+): void {
+  console.log(`↪ Marking migration ${migrationName} as rolled-back...`);
+  const result = spawnSync(
+    "prisma",
+    ["migrate", "resolve", "--rolled-back", migrationName],
+    {
+      stdio: "pipe",
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+    }
+  );
+
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `prisma migrate resolve --rolled-back ${migrationName} failed: ${result.stderr || result.error?.message}`
+    );
+  }
+}
+
+/**
+ * Attempts to run prisma migrate deploy with automatic recovery:
+ *
+ * - Preview schemas: P3005/P3009 → drop and recreate schema, then retry.
+ * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back,
+ *   then retry. Safe because PostgreSQL DDL is transactional.
  */
 async function runMigrateWithRetry(
   databaseUrl: string,
@@ -89,9 +139,10 @@ async function runMigrateWithRetry(
         : "";
     const combined = `${stderr}\n${stdout}`;
 
-    const isRecoverable = isP3005Output(combined) || isP3009Output(combined);
+    const isPreviewRecoverable =
+      isP3005Output(combined) || isP3009Output(combined);
 
-    if (isRecoverable && isPreviewSchema(schema)) {
+    if (isPreviewRecoverable && isPreviewSchema(schema)) {
       const code = isP3009Output(combined) ? "P3009" : "P3005";
       console.log(`↪ Preview schema ${schema} hit ${code}, resetting...`);
       await resetSchema(databaseUrl, schema);
@@ -99,6 +150,21 @@ async function runMigrateWithRetry(
       // Re-register so cleanup tracking still works after schema drop
       await upsertSchemaRegistry(databaseUrl, schema, branch);
       return true;
+    }
+
+    // For non-preview schemas, recover from a previously failed migration
+    // by marking it as rolled-back (PostgreSQL DDL is transactional).
+    const hasFailedMigration =
+      isP3009Output(combined) || isP3018Output(combined);
+    const migrationName = parseFailedMigrationName(combined);
+
+    if (hasFailedMigration && migrationName && !isPreviewSchema(schema)) {
+      console.log(
+        `↪ Failed migration detected: ${migrationName}, resolving...`
+      );
+      resolveFailedMigration(databaseUrl, migrationName);
+      runMigrateDeploy(databaseUrl);
+      return false;
     }
 
     throw error;
