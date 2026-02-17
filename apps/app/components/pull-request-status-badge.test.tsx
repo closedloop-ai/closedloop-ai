@@ -15,6 +15,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-01T00:00:00Z"),
+          reviewDecision: null,
         }}
       />
     );
@@ -36,6 +37,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-02T00:00:00Z"),
+          reviewDecision: null,
         }}
       />
     );
@@ -57,6 +59,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-03T00:00:00Z"),
+          reviewDecision: null,
         }}
       />
     );
@@ -66,7 +69,7 @@ describe("PullRequestStatusBadge", () => {
     expect(badge.className).toContain("bg-red-100");
   });
 
-  it("renders null when pullRequest is undefined", () => {
+  it("renders null when pullRequest is not provided", () => {
     const { container } = render(
       <PullRequestStatusBadge pullRequest={undefined} />
     );

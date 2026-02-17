@@ -11,6 +11,7 @@ import { resolveSchemaName } from "./schema-utils";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
+export type { TransactionClient } from "./generated/internal/prismaNamespace";
 
 /**
  * Execute a database operation with an initialized Prisma client.

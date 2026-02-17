@@ -10,6 +10,19 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
 /**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ * GitHub sends many PR action types (edited, labeled, assigned, etc.)
+ * that we don't process.
+ */
+const HANDLED_ACTIONS = new Set([
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "ready_for_review",
+]);
+
+/**
  * Union type for pull request events we handle.
  * Other PR action types (edited, labeled, assigned, review_requested, etc.)
  * are documented in the handlePullRequest function for future reference.
@@ -52,16 +65,7 @@ export async function handlePullRequest(
 ): Promise<Response> {
   const { action, pull_request, repository } = event;
 
-  // Early exit for unhandled actions to avoid unnecessary DB lookups.
-  // GitHub sends many PR action types (edited, labeled, assigned, etc.)
-  // that we don't process.
-  const HANDLED_ACTIONS = new Set([
-    "closed",
-    "reopened",
-    "synchronize",
-    "converted_to_draft",
-    "ready_for_review",
-  ]);
+  // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequest] Skipping unhandled action", {
       action,
