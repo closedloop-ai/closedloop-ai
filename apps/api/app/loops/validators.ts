@@ -8,7 +8,7 @@ export const createLoopValidator = z.object({
   command: z.enum(["PLAN", "EXECUTE", "CHAT", "EXPLORE", "REQUEST_CHANGES"]),
   artifactId: z.string().uuid().optional(),
   workstreamId: z.string().uuid().optional(),
-  prompt: z.string().optional(),
+  prompt: z.string().max(100_000).optional(),
   repo: z
     .object({
       // "owner/repo" format — alphanumeric, dots, hyphens, underscores
@@ -37,7 +37,7 @@ export const createLoopValidator = z.object({
 });
 
 export const resumeLoopValidator = z.object({
-  prompt: z.string().optional(),
+  prompt: z.string().max(100_000).optional(),
 });
 
 /**

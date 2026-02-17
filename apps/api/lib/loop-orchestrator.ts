@@ -44,6 +44,7 @@ function getEcsConfig() {
   const subnets = process.env.ECS_SUBNETS; // comma-separated
   const securityGroupId = process.env.ECS_SECURITY_GROUP_ID;
   const capacityProvider = process.env.ECS_CAPACITY_PROVIDER;
+  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
 
   if (
     !(
@@ -59,12 +60,20 @@ function getEcsConfig() {
     );
   }
 
+  if (!apiBaseUrl) {
+    throw new Error(
+      "API_BASE_URL (or LOOP_CALLBACK_URL) is not configured. " +
+        "The container will not be able to report events back."
+    );
+  }
+
   return {
     cluster,
     taskDefinition,
     subnets: subnets.split(",").map((s) => s.trim()),
     securityGroupId,
     capacityProvider,
+    apiBaseUrl,
   };
 }
 
@@ -331,15 +340,29 @@ function calculateCost(
 
   let totalCost = 0;
   for (const [model, usage] of Object.entries(tokensByModel)) {
-    // Match model name to pricing — try exact match, then prefix match, then default
+    // Match model name to pricing — try exact match, then prefix match, then default.
+    // Use startsWith (not includes) to avoid false matches like "opus-4" matching "opus-4-5".
+    // Exclude "default" from prefix matching to prevent it from matching model names.
     const pricing =
       MODEL_PRICING[model] ??
-      Object.entries(MODEL_PRICING).find(([key]) => model.includes(key))?.[1] ??
+      Object.entries(MODEL_PRICING)
+        .filter(([key]) => key !== "default")
+        .find(([key]) => model.startsWith(key))?.[1] ??
       MODEL_PRICING.default;
+
+    // Include cache tokens in cost calculation:
+    // - cacheCreation tokens are billed at the input rate
+    // - cacheRead tokens are billed at ~10% of input rate
+    const cacheCreationCost =
+      ((usage.cacheCreation ?? 0) / 1_000_000) * pricing.input;
+    const cacheReadCost =
+      ((usage.cacheRead ?? 0) / 1_000_000) * pricing.input * 0.1;
 
     totalCost +=
       (usage.input / 1_000_000) * pricing.input +
-      (usage.output / 1_000_000) * pricing.output;
+      (usage.output / 1_000_000) * pricing.output +
+      cacheCreationCost +
+      cacheReadCost;
   }
   return totalCost;
 }
@@ -649,15 +672,9 @@ async function runEcsTask(opts: {
     });
   }
 
-  // Add callback URL so the harness can report events back
-  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
-  if (!apiBaseUrl) {
-    throw new Error(
-      "API_BASE_URL (or LOOP_CALLBACK_URL) is not configured. " +
-        "The container will not be able to report events back."
-    );
-  }
-  environment.push({ name: "API_BASE_URL", value: apiBaseUrl });
+  // Add callback URL so the harness can report events back.
+  // Validated early in getEcsConfig() to fail fast before side effects.
+  environment.push({ name: "API_BASE_URL", value: config.apiBaseUrl });
 
   const command = new RunTaskCommand({
     cluster: config.cluster,
@@ -942,8 +959,12 @@ async function handleLoopCompleted(
 }
 
 /**
- * Extract PR and session info from an event's result field.
+ * Extract PR and session info from an event's result field or top-level fields.
  * The harness agent attaches these to completed, error, and timed-out events.
+ *
+ * For completed events, PR info is nested under `result`.
+ * For error/timed-out events, PR info may be at the top level (no `result` field).
+ * We check both locations to avoid silently dropping PR/branch info on failures.
  */
 function extractPrSessionInfo(event: Record<string, unknown>): {
   prUrl?: string;
@@ -952,17 +973,38 @@ function extractPrSessionInfo(event: Record<string, unknown>): {
   sessionId?: string;
 } {
   const result = (event.result as Record<string, unknown>) ?? {};
+
+  // Check result first (completed events), then fall back to top-level (error events).
+  // Helper avoids nested ternaries that Biome flags.
+  function pickString(field: string): string | undefined {
+    if (typeof result[field] === "string") {
+      return result[field] as string;
+    }
+    if (typeof event[field] === "string") {
+      return event[field] as string;
+    }
+    return undefined;
+  }
+  function pickNumber(field: string): number | undefined {
+    if (typeof result[field] === "number") {
+      return result[field] as number;
+    }
+    if (typeof event[field] === "number") {
+      return event[field] as number;
+    }
+    return undefined;
+  }
+
+  const prUrl = pickString("prUrl");
+  const prNumber = pickNumber("prNumber");
+  const branchName = pickString("branchName");
+  const sessionId = pickString("sessionId");
+
   return {
-    ...(typeof result.prUrl === "string" ? { prUrl: result.prUrl } : {}),
-    ...(typeof result.prNumber === "number"
-      ? { prNumber: result.prNumber }
-      : {}),
-    ...(typeof result.branchName === "string"
-      ? { branchName: result.branchName }
-      : {}),
-    ...(typeof result.sessionId === "string"
-      ? { sessionId: result.sessionId }
-      : {}),
+    ...(prUrl ? { prUrl } : {}),
+    ...(prNumber ? { prNumber } : {}),
+    ...(branchName ? { branchName } : {}),
+    ...(sessionId ? { sessionId } : {}),
   };
 }
 

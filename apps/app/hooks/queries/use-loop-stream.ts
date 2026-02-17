@@ -14,6 +14,8 @@ export type StreamStatus =
   | "error";
 
 const TERMINAL_EVENT_TYPES = new Set(["completed", "error", "cancelled"]);
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_BASE_DELAY_MS = 2000;
 
 /** Extract the data payload from a single SSE frame (between double newlines). */
 function parseSSEFrame(frame: string): string {
@@ -144,6 +146,8 @@ export function useLoopStream(
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const enabled = options?.enabled !== false && !!loopId;
 
@@ -165,6 +169,7 @@ export function useLoopStream(
 
   useEffect(() => {
     mountedRef.current = true;
+    reconnectAttemptRef.current = 0;
 
     if (!(enabled && loopId)) {
       setStatus("disconnected");
@@ -177,15 +182,53 @@ export function useLoopStream(
     setIsComplete(false);
     setStatus("connecting");
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
     const capturedLoopId = loopId;
+
+    const connect = () => {
+      if (!mountedRef.current) {
+        return;
+      }
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setStatus("connecting");
+
+      getToken()
+        .then((token) => {
+          const url = `${resolveApiUrl()}/loops/${capturedLoopId}/stream`;
+          return openSSEStream(url, token, controller.signal, callbacks);
+        })
+        .catch((err) => {
+          // AbortError is expected on cleanup
+          if (err instanceof DOMException && err.name === "AbortError") {
+            if (mountedRef.current) {
+              setStatus("disconnected");
+            }
+            return;
+          }
+          scheduleReconnect();
+        });
+    };
+
+    const scheduleReconnect = () => {
+      if (!mountedRef.current) {
+        return;
+      }
+      const attempt = reconnectAttemptRef.current;
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus("error");
+        return;
+      }
+      reconnectAttemptRef.current = attempt + 1;
+      const delay = RECONNECT_BASE_DELAY_MS * 2 ** attempt;
+      reconnectTimerRef.current = setTimeout(connect, delay);
+    };
 
     const callbacks: StreamCallbacks = {
       isMounted: () => mountedRef.current,
       onConnected: () => {
         if (mountedRef.current) {
+          reconnectAttemptRef.current = 0;
           setStatus("connected");
         }
       },
@@ -205,37 +248,23 @@ export function useLoopStream(
         invalidateLoopCache(capturedLoopId);
       },
       onStreamEnd: () => {
-        if (mountedRef.current) {
-          setStatus("disconnected");
-        }
+        // Stream ended without a terminal event — server may have closed
+        // the connection early. Try to reconnect.
+        scheduleReconnect();
       },
       onError: () => {
-        if (mountedRef.current) {
-          setStatus("error");
-        }
+        scheduleReconnect();
       },
     };
 
-    getToken()
-      .then((token) => {
-        const url = `${resolveApiUrl()}/loops/${capturedLoopId}/stream`;
-        return openSSEStream(url, token, controller.signal, callbacks);
-      })
-      .catch((err) => {
-        // AbortError is expected on cleanup
-        if (err instanceof DOMException && err.name === "AbortError") {
-          if (mountedRef.current) {
-            setStatus("disconnected");
-          }
-          return;
-        }
-        if (mountedRef.current) {
-          setStatus("error");
-        }
-      });
+    connect();
 
     return () => {
       mountedRef.current = false;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       disconnect();
     };
   }, [loopId, enabled, getToken, disconnect, invalidateLoopCache]);

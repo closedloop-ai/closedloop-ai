@@ -68,6 +68,35 @@ export async function GET(
     return new Response("Loop not found", { status: 404 });
   }
 
+  // If the loop is already in a terminal state, send stored events and close
+  // immediately rather than holding the connection open for 30 minutes.
+  const TERMINAL_STATUSES = new Set([
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "TIMED_OUT",
+  ]);
+  if (TERMINAL_STATUSES.has(loop.status)) {
+    try {
+      const events = await loopsService.getEvents(loopId, organizationId);
+      const encoder = new TextEncoder();
+      const lines = events
+        .map((e: LoopEvent) => `data: ${JSON.stringify(e)}\n\n`)
+        .join("");
+      return new Response(encoder.encode(lines), {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+      });
+    } catch {
+      return new Response("data: {}\n\n", {
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+  }
+
   log.info("SSE stream opened", { loopId, clerkUserId, organizationId });
 
   // Shared cleanup state - accessible from both start() and cancel()

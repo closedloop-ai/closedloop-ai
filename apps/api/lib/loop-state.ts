@@ -271,9 +271,17 @@ export async function generateUploadUrl(
 }
 
 /**
+ * Maximum number of objects to return from a single download-urls request.
+ * Prevents runaway responses for loops with large state directories.
+ */
+const MAX_DOWNLOAD_URLS = 1000;
+
+/**
  * List all objects under a prefix and generate pre-signed GET URLs for each.
  * Used for parent state download during resume — the container needs to fetch
  * an entire directory tree without direct S3 ListObjects access.
+ *
+ * Capped at MAX_DOWNLOAD_URLS objects to prevent runaway responses.
  */
 export async function listAndGenerateDownloadUrls(
   prefix: string,
@@ -290,6 +298,7 @@ export async function listAndGenerateDownloadUrls(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: normalizedPrefix,
+        MaxKeys: Math.min(1000, MAX_DOWNLOAD_URLS - results.length),
         ContinuationToken: continuationToken,
       })
     );
@@ -307,6 +316,14 @@ export async function listAndGenerateDownloadUrls(
         const url = await generateDownloadUrl(obj.Key, expiresIn);
         results.push({ key: obj.Key, url });
       }
+    }
+
+    if (results.length >= MAX_DOWNLOAD_URLS) {
+      log.warn("Download URL cap reached", {
+        prefix: normalizedPrefix,
+        cap: MAX_DOWNLOAD_URLS,
+      });
+      return results;
     }
 
     continuationToken = resp.IsTruncated

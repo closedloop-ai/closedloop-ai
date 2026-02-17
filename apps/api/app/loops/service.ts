@@ -207,6 +207,7 @@ export const loopsService = {
       command,
       artifactId,
       workstreamId,
+      userId,
       limit = 50,
       offset = 0,
     } = filters;
@@ -219,6 +220,7 @@ export const loopsService = {
           ...(command ? { command } : {}),
           ...(artifactId ? { artifactId } : {}),
           ...(workstreamId ? { workstreamId } : {}),
+          ...(userId ? { userId } : {}),
         },
         include: {
           user: {
@@ -303,6 +305,12 @@ export const loopsService = {
       }
     }
 
+    // Safety net: auto-set completedAt when transitioning to a terminal state
+    // if the caller didn't explicitly provide it.
+    if (TERMINAL_STATUSES.has(status) && !updateData.completedAt) {
+      updateData.completedAt = new Date();
+    }
+
     // Atomic conditional update: only transitions from a valid source status.
     // This prevents TOCTOU races where two concurrent requests both pass
     // validation but one clobbers the other's status change.
@@ -374,7 +382,14 @@ export const loopsService = {
   ): Promise<void> {
     await withDb((db) =>
       db.loop.updateMany({
-        where: { id, organizationId },
+        where: {
+          id,
+          organizationId,
+          // Only update loops that are still in a pre-terminal state.
+          // Prevents overwriting metadata on already-completed/cancelled loops
+          // if the launch path is delayed.
+          status: { in: ["PENDING", "CLAIMED", "RUNNING"] },
+        },
         data: {
           containerId: data.containerId,
           s3StateKey: data.s3StateKey,
@@ -456,6 +471,11 @@ export const loopsService = {
 
     if (!parent) {
       throw new Error(`Parent loop not found: ${parentLoopId}`);
+    }
+
+    // Only the original loop creator can resume it
+    if (parent.userId !== userId) {
+      throw new Error("You can only resume your own loops");
     }
 
     const resumableStatuses = new Set(["COMPLETED", "FAILED", "TIMED_OUT"]);

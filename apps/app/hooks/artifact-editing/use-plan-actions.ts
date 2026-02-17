@@ -112,21 +112,25 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const handleRequestChanges = useCallback(
     async (changes: string): Promise<boolean> => {
       if (useLoops) {
-        await runLoop.mutateAsync(
-          {
-            artifactId: artifact.id,
-            command: "request_changes",
-            prompt: changes,
-          },
-          {
-            onSuccess: () => {
-              toast.success(
-                "Change request submitted via Loop - generating updated plan..."
-              );
+        try {
+          await runLoop.mutateAsync(
+            {
+              artifactId: artifact.id,
+              command: "request_changes",
+              prompt: changes,
             },
-          }
-        );
-        return true;
+            {
+              onSuccess: () => {
+                toast.success(
+                  "Change request submitted via Loop - generating updated plan..."
+                );
+              },
+            }
+          );
+          return true;
+        } catch {
+          return false;
+        }
       }
 
       const result = await requestPlanChanges.mutateAsync(
@@ -151,17 +155,21 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    */
   const handleExecute = useCallback(async (): Promise<boolean> => {
     if (useLoops) {
-      await runLoop.mutateAsync(
-        { artifactId: artifact.id, command: "execute" },
-        {
-          onSuccess: () => {
-            toast.success(
-              "Plan execution started via Loop - a PR will be created shortly"
-            );
-          },
-        }
-      );
-      return true;
+      try {
+        await runLoop.mutateAsync(
+          { artifactId: artifact.id, command: "execute" },
+          {
+            onSuccess: () => {
+              toast.success(
+                "Plan execution started via Loop - a PR will be created shortly"
+              );
+            },
+          }
+        );
+        return true;
+      } catch {
+        return false;
+      }
     }
 
     const result = await executeImplementationPlan.mutateAsync(artifact.id, {

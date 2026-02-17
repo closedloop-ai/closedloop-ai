@@ -6,12 +6,7 @@ import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loop-orchestrator";
-import {
-  errorResponse,
-  forbiddenResponse,
-  parseBody,
-  successResponse,
-} from "@/lib/route-utils";
+import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import {
   type InvalidStatusTransitionError,
   isInvalidStatusTransitionError,
@@ -117,17 +112,9 @@ export const GET = withAuth<
   "/loops/[id]/events"
 >(async ({ user }, request, params) => {
   try {
-    const allowedRoles = new Set([
-      "ENGINEER",
-      "TECH_LEAD",
-      "PM",
-      "DESIGNER",
-      "STAKEHOLDER",
-    ]);
-    if (!allowedRoles.has(user.role)) {
-      return forbiddenResponse();
-    }
-
+    // Loop events are org-scoped (same as loops themselves).
+    // No additional role check — all authenticated org members can view events,
+    // consistent with GET /loops and GET /loops/:id.
     const { id } = await params;
 
     const url = new URL(request.url);

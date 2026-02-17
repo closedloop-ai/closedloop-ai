@@ -1145,6 +1145,8 @@ function findRunLoop() {
 function spawnProcess(cmd, args, cwd, env) {
   return new Promise((resolve, reject) => {
     const outputChunks = [];
+    // Also write to module-level buffer so timeout/shutdown paths can access output
+    liveOutputChunks = outputChunks;
     let lastReportedAt = 0;
     const REPORT_INTERVAL_MS = 5000; // Report output events at most every 5s
 
@@ -1541,6 +1543,8 @@ function buildClaudeDirectArgs(workDir) {
 // ---------------------------------------------------------------------------
 let currentChild = null;
 let shuttingDown = false;
+// Module-level output buffer so timeout/shutdown paths can access accumulated output
+let liveOutputChunks = [];
 
 function setupShutdownHandlers(workDir) {
   async function handleShutdown(signal) {
@@ -1840,9 +1844,12 @@ async function executeWithTimeout(cmd, args, workDir, childEnv) {
   } catch (err) {
     if (err.message === "HARNESS_TIMEOUT") {
       log("error", `Harness timeout reached (${MAX_RUNTIME_MS / 1000}s)`);
+      // Capture accumulated output before killing the child — liveOutputChunks
+      // is the same array reference as spawnProcess's outputChunks.
+      const capturedOutput = [...liveOutputChunks];
       await killChild();
       return {
-        result: { code: null, signal: "SIGKILL", output: [] },
+        result: { code: null, signal: "SIGKILL", output: capturedOutput },
         timedOut: true,
       };
     }

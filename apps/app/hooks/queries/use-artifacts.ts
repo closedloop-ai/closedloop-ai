@@ -18,6 +18,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useRef } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
@@ -369,13 +370,18 @@ export function useCreateAndGenerateArtifact() {
   const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
     useIsLoopsEnabled();
 
+  // Use a ref so the mutationFn always reads the latest value,
+  // not the value captured at the render when the mutation was created.
+  const useLoopsRef = useRef(useLoops);
+  useLoopsRef.current = useLoops;
+
   const mutation = useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
       // Then trigger generation via Loops or GitHub Actions
       try {
-        if (useLoops) {
+        if (useLoopsRef.current) {
           await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
             command: "plan",
           });

@@ -306,8 +306,8 @@ export const apiKeyService = {
     }
     if (user?.anthropicApiKey) {
       // Auto-migrate legacy plaintext key to KMS-encrypted storage.
-      // If migration fails (e.g., KMS unavailable), fall back to the plaintext key
-      // so existing loops aren't broken.
+      // If migration fails (e.g., KMS unavailable), throw rather than returning
+      // the plaintext key — prevents transmitting unencrypted secrets during KMS outages.
       log.warn(
         "Legacy plaintext user API key detected — attempting auto-migration",
         { userId }
@@ -315,13 +315,29 @@ export const apiKeyService = {
       try {
         await this.setUserKey(userId, user.anthropicApiKey);
         log.info("Successfully migrated legacy user API key", { userId });
+        return decryptApiKey(
+          (
+            await withDb((db) =>
+              db.user.findUnique({
+                where: { id: userId },
+                select: { claudeApiKeyEncrypted: true },
+              })
+            )
+          )?.claudeApiKeyEncrypted ?? ""
+        );
       } catch (migrationError) {
-        log.error("Failed to auto-migrate legacy user API key", {
-          userId,
-          error: migrationError,
-        });
+        log.error(
+          "Failed to auto-migrate legacy user API key — key unavailable until KMS is restored",
+          {
+            userId,
+            error: migrationError,
+          }
+        );
+        throw new Error(
+          "API key migration failed. The legacy plaintext key cannot be used. " +
+            "Please re-save your API key in Settings, or contact support if the issue persists."
+        );
       }
-      return user.anthropicApiKey;
     }
 
     // Fall back to org key
@@ -340,7 +356,7 @@ export const apiKeyService = {
     }
     if (org?.anthropicApiKey) {
       // Auto-migrate legacy plaintext key to KMS-encrypted storage.
-      // If migration fails, fall back to the plaintext key.
+      // If migration fails, throw rather than returning the plaintext key.
       log.warn(
         "Legacy plaintext org API key detected — attempting auto-migration",
         { organizationId }
@@ -350,13 +366,29 @@ export const apiKeyService = {
         log.info("Successfully migrated legacy org API key", {
           organizationId,
         });
+        return decryptApiKey(
+          (
+            await withDb((db) =>
+              db.organization.findUnique({
+                where: { id: organizationId },
+                select: { claudeApiKeyEncrypted: true },
+              })
+            )
+          )?.claudeApiKeyEncrypted ?? ""
+        );
       } catch (migrationError) {
-        log.error("Failed to auto-migrate legacy org API key", {
-          organizationId,
-          error: migrationError,
-        });
+        log.error(
+          "Failed to auto-migrate legacy org API key — key unavailable until KMS is restored",
+          {
+            organizationId,
+            error: migrationError,
+          }
+        );
+        throw new Error(
+          "API key migration failed. The legacy plaintext key cannot be used. " +
+            "Please re-save the organization API key in Settings, or contact support."
+        );
       }
-      return org.anthropicApiKey;
     }
 
     return null;
