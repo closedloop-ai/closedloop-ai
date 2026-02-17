@@ -324,20 +324,20 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem className="flex items-center gap-2">
-              {mounted ? (
-                <UserButton
-                  appearance={{
-                    elements: {
-                      rootBox: "flex overflow-hidden w-full",
-                      userButtonBox: "flex-row-reverse",
-                      userButtonOuterIdentifier: "truncate pl-0",
-                    },
-                  }}
-                  showName
-                />
-              ) : (
-                <div className="h-8 w-full" />
-              )}
+              <div className="h-8 w-full">
+                {mounted && (
+                  <UserButton
+                    appearance={{
+                      elements: {
+                        rootBox: "flex overflow-hidden w-full",
+                        userButtonBox: "flex-row-reverse",
+                        userButtonOuterIdentifier: "truncate pl-0",
+                      },
+                    }}
+                    showName
+                  />
+                )}
+              </div>
               <div className="flex shrink-0 items-center gap-px">
                 <ModeToggle />
                 <Button

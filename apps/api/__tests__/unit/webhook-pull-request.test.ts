@@ -239,7 +239,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
         artifactId: "artifact-uuid-123",
-        artifact: { documentSlug: "plan-feature-x" },
+        artifact: { slug: "plan-feature-x" },
       });
 
       // Mock update
@@ -268,7 +268,7 @@ describe("handlePullRequest", () => {
           id: true,
           workstreamId: true,
           artifactId: true,
-          artifact: { select: { documentSlug: true } },
+          artifact: { select: { slug: true } },
         },
       });
 
@@ -283,7 +283,7 @@ describe("handlePullRequest", () => {
         },
       });
 
-      // Verify workstream event creation with artifactId and documentSlug
+      // Verify workstream event creation with artifactId and slug
       expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
         data: {
           workstreamId: "ws-uuid-789",
@@ -294,7 +294,7 @@ describe("handlePullRequest", () => {
             prTitle: "Add feature X",
             prUrl: "https://github.com/owner/test-repo/pull/1",
             artifactId: "artifact-uuid-123",
-            documentSlug: "plan-feature-x",
+            slug: "plan-feature-x",
             mergedAt: "2026-02-10T12:00:00Z",
             mergeCommitSha: "def456",
           },
@@ -360,7 +360,7 @@ describe("handlePullRequest", () => {
             prTitle: "Feature rejected",
             prUrl: "https://github.com/owner/test-repo/pull/1",
             artifactId: null,
-            documentSlug: undefined,
+            slug: undefined,
           },
         },
       });
@@ -640,7 +640,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-tx",
         workstreamId: "ws-uuid-tx",
         artifactId: "artifact-uuid-tx",
-        artifact: { documentSlug: "plan-tx" },
+        artifact: { slug: "plan-tx" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});

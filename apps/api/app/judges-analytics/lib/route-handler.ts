@@ -1,4 +1,5 @@
 import type { User } from "@repo/api/src/types/organization";
+import { log } from "@repo/observability/log";
 import type { NextRequest } from "next/server";
 import type { z } from "zod";
 import {
@@ -34,17 +35,26 @@ export function createJudgesAnalyticsHandler<
         return parseError;
       }
 
+      const extra = config.parseExtra?.(params);
+
+      log.info("judges-analytics query", {
+        organizationId: user.organizationId,
+        startDate: params.startDate,
+        endDate: params.endDate,
+        extra,
+      });
+
       const { startDate, endDate } = parseDateRange(
         params.startDate,
         params.endDate
       );
-      const extra = config.parseExtra?.(params);
       const result = await config.fetch(
         user.organizationId,
         startDate,
         endDate,
         extra
       );
+
       return successResponse(result);
     } catch (error) {
       return errorResponse(config.errorMessage, error);

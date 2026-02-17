@@ -1,7 +1,9 @@
 "use client";
 
-import type { ArtifactSubtype } from "@repo/api/src/types/artifact";
-import { ARTIFACT_SUBTYPE_OPTIONS } from "@repo/api/src/types/artifact";
+import {
+  ARTIFACT_TYPE_OPTIONS,
+  type ArtifactType,
+} from "@repo/api/src/types/artifact";
 import {
   ARTIFACT_COUNTS_GROUP_BY_OPTIONS,
   type ArtifactCountsGroupBy,
@@ -20,7 +22,7 @@ import { format, parse } from "date-fns";
 import { type ComponentType, useMemo, useState } from "react";
 import { Bar, BarChart, type LegendProps, XAxis, YAxis } from "recharts";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
-import { ARTIFACT_SUBTYPE_LABELS } from "@/lib/project-constants";
+import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
 type ArtifactsCreatedChartProps = {
   startDate: string;
@@ -68,31 +70,31 @@ export function ArtifactsCreatedChart({
     groupBy
   );
 
-  const { chartData, chartConfig, subtypeKeys } = useMemo(() => {
+  const { chartData, chartConfig, typeKeys } = useMemo(() => {
     if (!data?.buckets?.length) {
       return {
         chartData: [] as Record<string, string | number>[],
         chartConfig: {} as ChartConfig,
-        subtypeKeys: [] as string[],
+        typeKeys: [] as string[],
       };
     }
     const keySet = new Set<string>();
     for (const b of data.buckets) {
-      for (const subtype of Object.keys(b.countsBySubtype ?? {})) {
-        keySet.add(subtype);
+      for (const type of Object.keys(b.countsByType ?? {})) {
+        keySet.add(type);
       }
     }
-    const subtypeKeys = [...keySet].sort(
+    const typeKeys = [...keySet].sort(
       (a, b) =>
-        ARTIFACT_SUBTYPE_OPTIONS.indexOf(a as ArtifactSubtype) -
-        ARTIFACT_SUBTYPE_OPTIONS.indexOf(b as ArtifactSubtype)
+        ARTIFACT_TYPE_OPTIONS.indexOf(a as ArtifactType) -
+        ARTIFACT_TYPE_OPTIONS.indexOf(b as ArtifactType)
     );
     const chartConfig: ChartConfig = {};
-    for (let i = 0; i < subtypeKeys.length; i++) {
-      const subtype = subtypeKeys[i];
+    for (let i = 0; i < typeKeys.length; i++) {
+      const type = typeKeys[i];
       const colorIndex = (i % CHART_COLORS) + 1;
-      chartConfig[subtype] = {
-        label: ARTIFACT_SUBTYPE_LABELS[subtype] ?? subtype,
+      chartConfig[type] = {
+        label: ARTIFACT_TYPE_LABELS[type as ArtifactType] ?? type,
         color: `var(--chart-${colorIndex})`,
       };
     }
@@ -100,12 +102,12 @@ export function ArtifactsCreatedChart({
       const row: Record<string, string | number> = {
         label: formatBucketLabel(b.bucket, groupBy),
       };
-      for (const subtype of subtypeKeys) {
-        row[subtype] = b.countsBySubtype[subtype] ?? 0;
+      for (const type of typeKeys) {
+        row[type] = b.countsByType[type] ?? 0;
       }
       return row;
     });
-    return { chartData, chartConfig, subtypeKeys };
+    return { chartData, chartConfig, typeKeys };
   }, [data?.buckets, groupBy]);
 
   return (
@@ -144,7 +146,7 @@ export function ArtifactsCreatedChart({
       )}
 
       {!(isLoading || isError) &&
-        (chartData.length === 0 || subtypeKeys.length === 0) && (
+        (chartData.length === 0 || typeKeys.length === 0) && (
           <div className="rounded-lg border border-border bg-muted/50 p-8 text-center">
             <p className="text-muted-foreground">
               No artifacts created in this range.
@@ -154,7 +156,7 @@ export function ArtifactsCreatedChart({
 
       {!(isLoading || isError) &&
         chartData.length > 0 &&
-        subtypeKeys.length > 0 && (
+        typeKeys.length > 0 && (
           <div className="space-y-0">
             <ChartContainer className="h-64 w-full" config={chartConfig}>
               <RechartsBarChart
@@ -191,11 +193,11 @@ export function ArtifactsCreatedChart({
                   }}
                 />
                 <ChartTooltip content={<ChartTooltipContent />} />
-                {subtypeKeys.map((subtype) => (
+                {typeKeys.map((type) => (
                   <RechartsBar
-                    dataKey={subtype}
-                    fill={`var(--color-${subtype})`}
-                    key={subtype}
+                    dataKey={type}
+                    fill={`var(--color-${type})`}
+                    key={type}
                     radius={[4, 4, 0, 0]}
                   />
                 ))}

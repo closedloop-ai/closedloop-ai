@@ -38,7 +38,7 @@ export type ImportDocsResult =
       totalDocsInFolder: number;
       artifacts: Array<{
         id: string;
-        documentSlug: string;
+        slug: string;
         title: string;
       }>;
       failures: Array<{
@@ -400,7 +400,7 @@ export const googleService = {
     const limit = pLimit(5); // 5 parallel imports
     const artifacts: Array<{
       id: string;
-      documentSlug: string;
+      slug: string;
       title: string;
     }> = [];
     const failures: Array<{ docId: string; docTitle: string; error: string }> =
@@ -484,7 +484,7 @@ export const googleService = {
             userId,
             {
               projectId,
-              subtype: "PRD",
+              type: "PRD",
               status: "DRAFT",
               title: doc.name,
               content,
@@ -505,7 +505,7 @@ export const googleService = {
 
           artifacts.push({
             id: artifact.id,
-            documentSlug: artifact.documentSlug ?? "",
+            slug: artifact.slug ?? "",
             title: artifact.title,
           });
         } catch (error) {

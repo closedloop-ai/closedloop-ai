@@ -96,7 +96,7 @@ export default function SettingsPage() {
   }, [searchParams]);
 
   return (
-    <div className="flex flex-1 flex-col gap-6 p-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
       <div>
         <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
         <p className="text-muted-foreground">

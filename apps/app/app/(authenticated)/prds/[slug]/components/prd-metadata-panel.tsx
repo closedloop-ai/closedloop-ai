@@ -1,8 +1,8 @@
 "use client";
 
 import type {
+  ArtifactDetail,
   ArtifactStatus,
-  ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
@@ -22,7 +22,7 @@ type PRDMetadataPanelProps = {
   /**
    * PRD artifact with workstream data
    */
-  prd: ArtifactWithWorkstream;
+  prd: ArtifactDetail;
   /**
    * Current artifact status
    */
@@ -146,9 +146,9 @@ export function PRDMetadataPanel({
             />
 
             <ArtifactVersionInfo
-              createdAt={prd.createdAt}
+              createdAt={prd.version.createdAt}
               updatedAt={prd.updatedAt}
-              version={prd.version}
+              version={prd.version.version}
             />
           </CollapsibleSection>
 

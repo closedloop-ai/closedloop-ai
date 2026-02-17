@@ -1,9 +1,58 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
+import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useQueries } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef } from "react";
+import { artifactKeys } from "@/hooks/queries/use-artifacts";
+import { useApiClient } from "@/hooks/use-api-client";
+
+type MergeMetadata = {
+  prTitle?: string;
+  slug?: string;
+  artifactId?: string;
+};
+
+function showMergeToast(
+  activity: ActivityResponse["activities"][number],
+  previewDeploymentMap: Map<string, ExternalLink>,
+  projectId: string,
+  teamId: string
+): void {
+  const {
+    prTitle,
+    slug,
+    artifactId: eventArtifactId,
+  } = activity.metadata as MergeMetadata;
+
+  const fallbackRoute = `/teams/${teamId}/projects/${projectId}`;
+  const artifactRoute = slug ? `/implementation-plans/${slug}` : fallbackRoute;
+
+  const previewDeployment = eventArtifactId
+    ? previewDeploymentMap.get(eventArtifactId)
+    : undefined;
+  const hasPreview = !!previewDeployment?.externalUrl;
+
+  const description = hasPreview
+    ? `Preview deployment: ${previewDeployment.externalUrl}`
+    : "Pull request has been merged";
+
+  toast.success(prTitle || "Pull request merged", {
+    description,
+    action: {
+      label: hasPreview ? "View Preview" : "View Artifact",
+      onClick: (event: React.MouseEvent) => {
+        event.preventDefault();
+        if (hasPreview) {
+          window.open(previewDeployment.externalUrl, "_blank");
+        } else {
+          window.open(artifactRoute, "_blank");
+        }
+      },
+    },
+  });
+}
 
 /**
  * Hook to detect new GITHUB_PR_MERGED events in activity feed and show toast notifications.
@@ -14,9 +63,57 @@ export function useMergeNotification(
   projectId: string,
   teamId: string
 ): void {
-  const router = useRouter();
   const seenEventIds = useRef<Set<string>>(new Set());
   const initialized = useRef(false);
+  const apiClient = useApiClient();
+
+  // Extract artifactIds from ALL unseen GITHUB_PR_MERGED events
+  const unseenArtifactIds = useMemo(() => {
+    if (!activityData?.activities) {
+      return [];
+    }
+
+    const ids: string[] = [];
+    for (const activity of activityData.activities) {
+      if (
+        activity.type === "GITHUB_PR_MERGED" &&
+        !seenEventIds.current.has(activity.id)
+      ) {
+        const artifactId = (activity.metadata as MergeMetadata)?.artifactId;
+        if (artifactId) {
+          ids.push(artifactId);
+        }
+      }
+    }
+    return ids;
+  }, [activityData]);
+
+  // Fetch preview deployments for all unseen merge events
+  const previewDeploymentQueries = useQueries({
+    queries: unseenArtifactIds.map((artifactId) => ({
+      queryKey: artifactKeys.previewDeployment(artifactId),
+      queryFn: () =>
+        apiClient.get<ExternalLink | null>(
+          `/artifacts/${artifactId}/preview-deployment`
+        ),
+      enabled: !!artifactId,
+      staleTime: 0, // Always fetch fresh
+    })),
+  });
+
+  // Build artifactId → previewDeployment map
+  const queryData = previewDeploymentQueries.map((q) => q.data);
+  const previewDeploymentMap = useMemo(() => {
+    const map = new Map<string, ExternalLink>();
+    for (let i = 0; i < unseenArtifactIds.length; i++) {
+      const artifactId = unseenArtifactIds[i];
+      const data = queryData[i];
+      if (data?.externalUrl) {
+        map.set(artifactId, data);
+      }
+    }
+    return map;
+  }, [unseenArtifactIds, queryData]);
 
   useEffect(() => {
     if (!activityData?.activities) {
@@ -32,36 +129,29 @@ export function useMergeNotification(
       return;
     }
 
+    // Wait for all preview deployment queries to finish before showing toasts
+    if (
+      unseenArtifactIds.length > 0 &&
+      previewDeploymentQueries.some((q) => q.isLoading)
+    ) {
+      return;
+    }
+
     for (const activity of activityData.activities) {
-      // Only process GITHUB_PR_MERGED events we haven't seen before
       if (
         activity.type === "GITHUB_PR_MERGED" &&
         !seenEventIds.current.has(activity.id)
       ) {
         seenEventIds.current.add(activity.id);
-
-        const { prTitle, documentSlug } = activity.metadata as {
-          prTitle?: string;
-          documentSlug?: string;
-        };
-
-        // Build route to implementation plan if we have documentSlug
-        const fallbackRoute = `/teams/${teamId}/projects/${projectId}`;
-        const artifactRoute = documentSlug
-          ? `/implementation-plans/${documentSlug}`
-          : fallbackRoute;
-
-        toast.success(prTitle || "Pull request merged", {
-          description: "Pull request has been merged",
-          action: {
-            label: "View Artifact",
-            onClick: (event: React.MouseEvent) => {
-              event.preventDefault();
-              router.push(artifactRoute);
-            },
-          },
-        });
+        showMergeToast(activity, previewDeploymentMap, projectId, teamId);
       }
     }
-  }, [activityData, projectId, teamId, router]);
+  }, [
+    activityData,
+    projectId,
+    teamId,
+    previewDeploymentMap,
+    unseenArtifactIds,
+    previewDeploymentQueries,
+  ]);
 }

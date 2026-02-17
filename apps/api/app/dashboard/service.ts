@@ -1,6 +1,6 @@
 import type { DailyTrend, DashboardStats } from "@repo/api/src/types/dashboard";
 import {
-  ArtifactSubtype,
+  ArtifactType,
   GitHubActionStatus,
   GitHubPRState,
   withDb,
@@ -46,19 +46,20 @@ export const dashboardService = {
         // Aggregate counts
         withDb((db) =>
           db.artifact.count({
-            where: { organizationId, subtype: ArtifactSubtype.PRD },
+            where: { organizationId, type: ArtifactType.PRD },
           })
         ),
+        // Issues are a separate entity (Issue table)
         withDb((db) =>
-          db.artifact.count({
-            where: { organizationId, subtype: ArtifactSubtype.ISSUE },
+          db.issue.count({
+            where: { organizationId },
           })
         ),
         withDb((db) =>
           db.artifact.count({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+              type: ArtifactType.IMPLEMENTATION_PLAN,
             },
           })
         ),
@@ -87,7 +88,17 @@ export const dashboardService = {
           db.artifact.findMany({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.PRD,
+              type: ArtifactType.PRD,
+              createdAt: { gte: fourteenDaysAgo },
+            },
+            select: { createdAt: true },
+          })
+        ),
+        // Issues trend from separate Issue table
+        withDb((db) =>
+          db.issue.findMany({
+            where: {
+              organizationId,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
@@ -97,17 +108,7 @@ export const dashboardService = {
           db.artifact.findMany({
             where: {
               organizationId,
-              subtype: ArtifactSubtype.ISSUE,
-              createdAt: { gte: fourteenDaysAgo },
-            },
-            select: { createdAt: true },
-          })
-        ),
-        withDb((db) =>
-          db.artifact.findMany({
-            where: {
-              organizationId,
-              subtype: ArtifactSubtype.IMPLEMENTATION_PLAN,
+              type: ArtifactType.IMPLEMENTATION_PLAN,
               createdAt: { gte: fourteenDaysAgo },
             },
             select: { createdAt: true },
@@ -173,9 +174,14 @@ export const dashboardService = {
   },
 };
 
+/** Format a Date as YYYY-MM-DD using UTC date parts (matches Prisma's UTC timestamps). */
+function toDateKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Aggregate trend data by date, counting occurrences per day.
- * Maps raw database records to DailyTrend[] format with YYYY-MM-DD date strings.
+ * Returns a dense 14-day array with zeros for days without activity.
  */
 function aggregateTrendData<K extends DateField>(
   data: Record<K, Date | null>[],
@@ -189,16 +195,22 @@ function aggregateTrendData<K extends DateField>(
       continue;
     }
 
-    // Truncate timestamp to YYYY-MM-DD string
-    const dateString = dateValue.toISOString().split("T")[0];
+    const dateString = toDateKey(dateValue);
     const currentCount = countsByDate.get(dateString) ?? 0;
     countsByDate.set(dateString, currentCount + 1);
   }
 
-  // Convert map to sorted array
-  return Array.from(countsByDate.entries())
-    .map(([date, count]) => ({ date, count }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  // Build dense 14-day array with zeros for days without activity
+  const result: DailyTrend[] = [];
+  const today = new Date();
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = toDateKey(d);
+    result.push({ date: key, count: countsByDate.get(key) ?? 0 });
+  }
+
+  return result;
 }
 
 type DateField = "createdAt" | "mergedAt";

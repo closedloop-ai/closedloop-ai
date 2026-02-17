@@ -114,6 +114,73 @@ export const PrdStatusBadge = ArtifactStatusBadge;
 // Alias for Implementation Plans
 export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 
+// Issue status colors
+export const issueStatusColors: Record<string, string> = {
+  TODO: "bg-muted text-muted-foreground border-muted",
+  IN_PROGRESS:
+    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
+  IN_REVIEW:
+    "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
+  CLOSED:
+    "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+};
+
+export const issueStatusLabels: Record<string, string> = {
+  TODO: "Todo",
+  IN_PROGRESS: "In Progress",
+  IN_REVIEW: "In Review",
+  CLOSED: "Closed",
+};
+
+export function IssueStatusBadge({ status }: Readonly<{ status: string }>) {
+  const displayStatus = issueStatusLabels[status] ?? status;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        issueStatusColors[status] ?? issueStatusColors.TODO
+      )}
+      variant="outline"
+    >
+      {displayStatus}
+    </Badge>
+  );
+}
+
+// Issue priority colors
+export const issuePriorityColors: Record<string, string> = {
+  LOW: "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  MEDIUM:
+    "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
+  HIGH: "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
+  URGENT:
+    "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
+};
+
+export const issuePriorityLabels: Record<string, string> = {
+  LOW: "Low",
+  MEDIUM: "Medium",
+  HIGH: "High",
+  URGENT: "Urgent",
+};
+
+export function IssuePriorityBadge({
+  priority,
+}: Readonly<{ priority: string }>) {
+  const displayPriority = issuePriorityLabels[priority] ?? priority;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        issuePriorityColors[priority] ?? issuePriorityColors.LOW
+      )}
+      variant="outline"
+    >
+      {displayPriority}
+    </Badge>
+  );
+}
+
 // Workstream state colors
 export const workstreamStateColors: Record<string, string> = {
   INITIATED:
