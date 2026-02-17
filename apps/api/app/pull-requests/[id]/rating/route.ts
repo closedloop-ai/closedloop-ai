@@ -63,7 +63,7 @@ export const PUT = withAuth<
   const { score, comment } = body;
 
   try {
-    // Service layer verifies PR belongs to user.organizationId via workstream join
+    // Service layer verifies PR belongs to user.organizationId via denormalized organizationId field (defense-in-depth)
     const summary = await pullRequestRatingsService.upsertRating(
       id,
       user.id,
