@@ -105,15 +105,15 @@ For each check, iterate over FILES_TO_REVIEW (only files with status "added" or 
 
 **Check 1: CI artifact detection** — files with absolute CI runner paths in their patch content:
 ```bash
-# Search patch content for CI runner paths WITH line numbers
-# Iterate added lines in FILE_PATCHES, record file + line number for each match
+# Search -U0 output for CI runner paths WITH line numbers
+# Iterate added lines (from -U0 patch or CHANGED_RANGES), record file + line number for each match
 # Patterns: /home/runner/, /github/workspace/
 ```
 
 **Check 2: Path leakage** — absolute machine-specific paths in new files:
 ```bash
-# Search patch content for /Users/, /home/, C:\ patterns WITH line numbers
-# Iterate added lines in FILE_PATCHES, record file + line number for each match
+# Search -U0 output for /Users/, /home/, C:\ patterns WITH line numbers
+# Iterate added lines (from -U0 patch or CHANGED_RANGES), record file + line number for each match
 # Exclude node_modules references
 ```
 
@@ -132,7 +132,7 @@ git check-ignore --no-index <added_file> 2>/dev/null
 **Line fallback for file-level findings** (applies to all checks):
 - If a grep matched a specific content line → use that line number
 - If the finding is file-level (e.g., Check 3/4 matched by filename pattern, not content) and file status is "added" → use `line: 1` (all lines are changed)
-- If the finding is file-level and file status is "modified" → use the first entry in CHANGED_LINES[file]
+- If the finding is file-level and file status is "modified" → use the start of the first range in CHANGED_RANGES[file].added (e.g., `CHANGED_RANGES[file].added[0][0]`)
 
 ### Severity Routing for Hygiene Findings
 
