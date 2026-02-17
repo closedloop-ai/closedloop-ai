@@ -471,6 +471,25 @@ model ArtifactRating {
   @@map("artifact_ratings")
 }
 
+model PullRequestRating {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  pullRequestId  String   @map("pull_request_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid // Must be validated via artifact.organizationId join in service layer - GitHubPullRequest lacks direct organizationId field
+  // Score validation (1-5) enforced at API layer via Zod schema
+  score          Int
+  comment        String?  @db.VarChar(500)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([pullRequestId, userId, organizationId])
+  @@index([pullRequestId, organizationId])
+  @@map("pull_request_ratings")
+}
+
 // =============================================================================
 // OTHER ENTITIES
 // =============================================================================
@@ -743,7 +762,8 @@ model GitHubPullRequest {
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   // Relations
-  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  artifact Artifact?          @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  ratings  PullRequestRating[]
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])

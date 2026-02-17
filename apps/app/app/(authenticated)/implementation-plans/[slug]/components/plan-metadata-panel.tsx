@@ -30,6 +30,7 @@ import {
   type PreviewDeploymentInfo,
   PreviewDeploymentSection,
 } from "./preview-deployment-section";
+import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
 import { PullRequestSection } from "./pull-request-section";
 import { SourceArtifactSection } from "./source-artifact-section";
 
@@ -145,6 +146,10 @@ export function PlanMetadataPanel({
 
             {pullRequest ? (
               <PullRequestSection pullRequest={pullRequest} />
+            ) : null}
+
+            {pullRequest ? (
+              <PullRequestFeedbackSection pullRequestId={pullRequest.id} />
             ) : null}
 
             {previewDeployment ? (
