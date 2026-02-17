@@ -53,19 +53,6 @@ export const pullRequestRatingsService = {
       return { userRating, aggregate };
     });
 
-    // AC-016: Track PR Rating Viewed event
-    analytics.capture({
-      event: "PR Rating Viewed",
-      distinctId: userId,
-      properties: {
-        pullRequestId,
-        organizationId,
-        hasUserRating: !!userRating,
-        averageRating: aggregate._avg.score ?? 0,
-        totalRatings: aggregate._count,
-      },
-    });
-
     return {
       average: aggregate._avg.score ?? 0,
       count: aggregate._count,
