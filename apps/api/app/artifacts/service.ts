@@ -917,7 +917,7 @@ ${initialInstructions.trim()}`;
       userId
     );
 
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to regenerate",
@@ -925,7 +925,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found to generate plan from. Create one first.",
@@ -1070,7 +1070,7 @@ ${initialInstructions.trim()}`;
       userId
     );
 
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to request changes",
@@ -1078,7 +1078,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found for this plan. Cannot request changes.",
@@ -1425,7 +1425,7 @@ Please try again or contact support if the issue persists.`
       userId
     );
 
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to execute",
@@ -1433,7 +1433,7 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found for this plan. Cannot execute.",
