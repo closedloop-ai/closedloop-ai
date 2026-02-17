@@ -1,54 +1,36 @@
-import type { ProjectArtifact, ProjectArtifactSubtype } from "@/types/teams";
+import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
+import type { Issue } from "@repo/api/src/types/issue";
 
 /**
- * Subtypes that support internal navigation to an editor/detail page.
+ * Artifact types that support internal navigation to an editor/detail page.
  */
-export const NAVIGABLE_SUBTYPES = new Set<ProjectArtifactSubtype>([
-  "PRD",
-  "IMPLEMENTATION_PLAN",
-  "IMPLEMENTATION_STRATEGY",
-  "ISSUE",
-  "BUG",
+export const NAVIGABLE_TYPES = new Set<ArtifactType>([
+  ArtifactType.Prd,
+  ArtifactType.ImplementationPlan,
 ]);
 
-export function isNavigableArtifact(artifact: ProjectArtifact): boolean {
-  return NAVIGABLE_SUBTYPES.has(artifact.subtype);
-}
-
-export function isExternalLink(artifact: ProjectArtifact): boolean {
-  switch (artifact.subtype) {
-    case "DESIGNS":
-      return artifact.link?.startsWith("http") ?? false;
-    case "BRANCH":
-      return true;
-    default:
-      return false;
-  }
+export function isNavigableArtifact(artifact: Artifact): boolean {
+  return NAVIGABLE_TYPES.has(artifact.type);
 }
 
 /**
  * Get the route to navigate to for viewing/editing an artifact.
- * PRDs and Implementation Plans link to their existing editor pages using documentSlug.
+ * PRDs and Implementation Plans link to their editor pages using slug.
  */
-export function getArtifactRoute(artifact: ProjectArtifact): string | null {
-  switch (artifact.subtype) {
-    case "PRD":
-      return artifact.documentSlug ? `/prds/${artifact.documentSlug}` : null;
-    case "IMPLEMENTATION_PLAN":
-    case "IMPLEMENTATION_STRATEGY":
-      return artifact.documentSlug
-        ? `/implementation-plans/${artifact.documentSlug}`
-        : null;
-    case "ISSUE":
-    case "BUG":
-      return artifact.documentSlug ? `/issues/${artifact.documentSlug}` : null;
-    case "DESIGNS":
-    case "BRANCH":
-      return artifact.link || null;
-    case "PROJECT_BRIEF":
-    case "TEMPLATE":
-      return null;
+export function getArtifactRoute(artifact: Artifact): string | null {
+  switch (artifact.type) {
+    case ArtifactType.Prd:
+      return `/prds/${artifact.slug}`;
+    case ArtifactType.ImplementationPlan:
+      return `/implementation-plans/${artifact.slug}`;
     default:
       return null;
   }
+}
+
+/**
+ * Get the route to navigate to for viewing/editing an issue.
+ */
+export function getIssueRoute(issue: Issue): string {
+  return `/issues/${issue.slug}`;
 }

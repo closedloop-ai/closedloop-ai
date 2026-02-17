@@ -25,7 +25,7 @@ import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  useArtifactsBySubtype,
+  useArtifacts,
   useCreateAndGenerateArtifact,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
@@ -204,7 +204,7 @@ function buildCreateInput(
   selectedSource: ArtifactWithWorkstream | undefined
 ) {
   const baseInput = {
-    subtype: "IMPLEMENTATION_PLAN" as const,
+    type: "IMPLEMENTATION_PLAN" as const,
     title: formState.title.trim(),
     fileName: finalFileName,
     approverId: selectedSource?.approver?.id,
@@ -222,7 +222,9 @@ function buildCreateInput(
     type: "createAndGenerate" as const,
     input: {
       ...baseInput,
-      parentId: selectedSource.id,
+      sourceId: selectedSource.id,
+      sourceType: "ARTIFACT" as const,
+      sourceVersion: selectedSource.latestVersion,
       workstreamId: selectedSource.workstreamId ?? undefined,
       targetRepo: selectedSource.targetRepo ?? undefined,
       targetBranch: selectedSource.targetBranch ?? undefined,
@@ -269,20 +271,17 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
-  const { data: prds = [], isLoading: loadingPrds } = useArtifactsBySubtype(
-    "PRD",
-    true,
+  const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
+    { type: "PRD", projectId: selectedProjectId },
     {
-      enabled: open && !sourceArtifact,
+      enabled: open && !!selectedProjectId && !sourceArtifact,
     }
   );
 
   // Fetch projects when modal opens and no source is selected
   const { data: projects = [], isLoading: loadingProjects } = useProjects(
     undefined,
-    {
-      enabled: open && !sourceArtifact && !selectedSourceId,
-    }
+    { enabled: open }
   );
 
   // Get the selected source (either from prop or from dropdown)
@@ -345,7 +344,7 @@ export function NewPlanModal({
     const onSuccess = (artifact: ArtifactWithWorkstream) => {
       setOpen(false);
       resetForm();
-      router.push(`/implementation-plans/${artifact.documentSlug}`);
+      router.push(`/implementation-plans/${artifact.slug}`);
     };
 
     if (createConfig.type === "createAndGenerate") {

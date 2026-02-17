@@ -52,6 +52,22 @@
           "code_snippet": {
             "type": "string",
             "description": "Actual code from the file showing the issue"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3,
+            "description": "Priority level: 0=blocking, 1=urgent, 2=normal, 3=low (optional, used by new agents)"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Confidence score for the finding (optional, defaults to 1.0 when not specified)"
+          },
+          "inline": {
+            "type": "boolean",
+            "description": "Whether to post as inline PR comment (default true). Set false for summary-only findings without a valid diff anchor"
           }
         }
       }

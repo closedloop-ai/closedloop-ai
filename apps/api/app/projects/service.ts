@@ -6,6 +6,7 @@ import type {
 } from "@repo/api/src/types/organization";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
+import { basicUserSelect } from "@/lib/db-utils";
 
 /**
  * Projects service - handles database operations for project management
@@ -42,7 +43,7 @@ export const projectsService = {
       db.project.findMany({
         where: { organizationId },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
     );
   },
@@ -64,7 +65,7 @@ export const projectsService = {
           organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { updatedAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -156,6 +157,47 @@ export const projectsService = {
   },
 
   /**
+   * Reorder projects by setting sortOrder values.
+   * Accepts an array of project IDs in the desired order.
+   */
+  reorder(projectIds: string[], organizationId: string): Promise<string[]> {
+    if (projectIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    const uniqueIds = [...new Set(projectIds)];
+
+    return withDb.tx(async (tx) => {
+      const projects = await tx.project.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      if (projects.length !== uniqueIds.length) {
+        const foundIds = new Set(projects.map((p) => p.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid project IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      await Promise.all(
+        uniqueIds.map((id, index) =>
+          tx.project.update({
+            where: { id, organizationId },
+            data: { sortOrder: index },
+          })
+        )
+      );
+
+      return uniqueIds;
+    });
+  },
+
+  /**
    * Calculate project status based on artifact completion
    */
   calculateStatus(artifacts: Array<{ status: string }>): number {
@@ -175,14 +217,7 @@ export const projectsService = {
  * Standard include pattern for project queries with owner, teams, and artifacts
  */
 const PROJECT_DETAIL_INCLUDE = {
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
+  owner: basicUserSelect,
   teams: {
     include: {
       team: {
@@ -194,7 +229,6 @@ const PROJECT_DETAIL_INCLUDE = {
     },
   },
   artifacts: {
-    where: { isLatest: true },
     select: { status: true },
   },
 } as const;

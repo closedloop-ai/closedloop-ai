@@ -10,6 +10,19 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
 /**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ * GitHub sends many PR action types (edited, labeled, assigned, etc.)
+ * that we don't process.
+ */
+const HANDLED_ACTIONS = new Set([
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "ready_for_review",
+]);
+
+/**
  * Union type for pull request events we handle.
  * Other PR action types (edited, labeled, assigned, review_requested, etc.)
  * are documented in the handlePullRequest function for future reference.
@@ -52,16 +65,7 @@ export async function handlePullRequest(
 ): Promise<Response> {
   const { action, pull_request, repository } = event;
 
-  // Early exit for unhandled actions to avoid unnecessary DB lookups.
-  // GitHub sends many PR action types (edited, labeled, assigned, etc.)
-  // that we don't process.
-  const HANDLED_ACTIONS = new Set([
-    "closed",
-    "reopened",
-    "synchronize",
-    "converted_to_draft",
-    "ready_for_review",
-  ]);
+  // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequest] Skipping unhandled action", {
       action,
@@ -114,7 +118,7 @@ export async function handlePullRequest(
         id: true,
         workstreamId: true,
         artifactId: true,
-        artifact: { select: { documentSlug: true } },
+        artifact: { select: { slug: true } },
       },
     });
 
@@ -131,7 +135,7 @@ export async function handlePullRequest(
     // Step 3: Update PR record and create workstream event
     switch (action) {
       case "closed": {
-        const closedEvent = event as PullRequestClosedEvent;
+        const closedEvent = event;
         const isMerged = closedEvent.pull_request.merged;
         const newState = isMerged ? "MERGED" : "CLOSED";
 
@@ -158,7 +162,7 @@ export async function handlePullRequest(
               prTitle: pull_request.title,
               prUrl: pull_request.html_url,
               artifactId: existingPr.artifactId,
-              documentSlug: existingPr.artifact?.documentSlug,
+              slug: existingPr.artifact?.slug,
               ...(isMerged
                 ? {
                     mergedAt: pull_request.merged_at,
@@ -193,7 +197,7 @@ export async function handlePullRequest(
       }
 
       case "synchronize": {
-        const syncEvent = event as PullRequestSynchronizeEvent;
+        const syncEvent = event;
         await tx.gitHubPullRequest.update({
           where: { id: existingPr.id },
           data: {

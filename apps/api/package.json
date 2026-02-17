@@ -24,6 +24,7 @@
     "@repo/database": "workspace:*",
     "@repo/design-system": "workspace:*",
     "@repo/github": "workspace:*",
+    "@repo/google": "workspace:*",
     "@repo/linear": "workspace:*",
     "@repo/next-config": "workspace:*",
     "@repo/observability": "workspace:*",

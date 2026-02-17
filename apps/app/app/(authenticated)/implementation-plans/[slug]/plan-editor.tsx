@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
+  type ArtifactDetail,
+  ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
@@ -17,12 +17,11 @@ import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
-  useArtifactPreviewDeployment,
   useArtifactPullRequest,
-  useRefreshPreviewDeployment,
 } from "@/hooks/queries/use-artifacts";
+import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
 import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { ApiError } from "@/lib/api-error";
+import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -31,45 +30,11 @@ import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
 
 type PlanEditorProps = {
-  plan: ArtifactWithWorkstream;
+  plan: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
 };
-
-const PREVIEW_POLL_MAX_MS = 45 * 60_000;
-const PREVIEW_POLL_FAST_MS = 15_000;
-const PREVIEW_POLL_MEDIUM_MS = 30_000;
-const PREVIEW_POLL_SLOW_MS = 60_000;
-
-const POLL_STOP_STATUSES = new Set([401, 403, 429, 404, 422]);
-
-async function executePollRefresh(
-  refreshRef: React.MutableRefObject<() => Promise<unknown>>,
-  emptyRefreshCountRef: React.MutableRefObject<number>,
-  pollStoppedRef: React.MutableRefObject<boolean>
-) {
-  try {
-    const result = await refreshRef.current();
-    if (result) {
-      emptyRefreshCountRef.current = 0;
-    } else {
-      emptyRefreshCountRef.current += 1;
-      if (emptyRefreshCountRef.current >= 3) {
-        pollStoppedRef.current = true;
-      }
-    }
-  } catch (err) {
-    const status = err instanceof ApiError ? err.status : undefined;
-    if (status && POLL_STOP_STATUSES.has(status)) {
-      pollStoppedRef.current = true;
-    }
-    console.warn("[preview-poll] refresh failed:", {
-      status,
-      message: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 export function PlanEditor({
   plan,
@@ -109,7 +74,7 @@ export function PlanEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.ImplementationPlan,
+    artifactType: ArtifactType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -136,101 +101,28 @@ export function PlanEditor({
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = useJudgesFeedback(plan.id);
 
-  // Preview deployment polling
-  const { data: previewDeployment } = useArtifactPreviewDeployment(plan.id);
+  // Preview deployment via ExternalLink
+  const workstreamId = plan.workstreamId ?? "";
   const {
-    mutateAsync: refreshPreviewDeployment,
-    isPending: isRefreshingPreviewDeployment,
-  } = useRefreshPreviewDeployment(plan.id);
+    previewDeployment,
+    refetch: refetchPreviewLinks,
+    isRefetching: isRefreshingPreviewDeployment,
+  } = useWorkstreamPreviewDeployment(workstreamId);
 
-  const pollStartRef = useRef<number | null>(null);
-  const pollStoppedRef = useRef(false);
-  const emptyRefreshCountRef = useRef(0);
-  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const refreshRef = useRef(refreshPreviewDeployment);
-  refreshRef.current = refreshPreviewDeployment;
-
-  // Reset poll start when the PR changes (new execution = new deployment)
-  const pullRequestNumber = pullRequest?.number;
-  const prevPrRef = useRef(pullRequestNumber);
-  if (prevPrRef.current !== pullRequestNumber) {
-    prevPrRef.current = pullRequestNumber;
-    pollStartRef.current = null;
-    pollStoppedRef.current = false;
-    emptyRefreshCountRef.current = 0;
-  }
-
-  // Poll for preview deployment status when a PR exists; stops on terminal states
-  const previewState = previewDeployment?.state;
-  const isGenerationRunning =
+  // Adaptive polling for preview deployment status
+  const isGenerationRunning = !!(
     generationStatus?.status &&
     ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
       generationStatus.status.toUpperCase()
-    );
-  useEffect(() => {
-    const hasPreviewRef = !!previewDeployment?.ref;
-    if (
-      !(pullRequestNumber || hasPreviewRef || isGenerationRunning) ||
-      pollStoppedRef.current
-    ) {
-      return;
-    }
-
-    const normalized = previewState?.toUpperCase();
-    const isTerminal =
-      normalized === "READY" ||
-      normalized === "SUCCESS" ||
-      normalized === "FAILURE" ||
-      normalized === "ERROR" ||
-      normalized === "INACTIVE";
-
-    if (isTerminal) {
-      return;
-    }
-
-    if (pollStartRef.current === null) {
-      pollStartRef.current = Date.now();
-    }
-
-    // Self-scheduling poll loop: each tick schedules the next via setTimeout
-    function schedulePoll() {
-      if (pollStoppedRef.current || pollStartRef.current === null) {
-        return;
-      }
-
-      const elapsed = Date.now() - pollStartRef.current;
-      if (elapsed > PREVIEW_POLL_MAX_MS) {
-        return;
-      }
-
-      let interval = PREVIEW_POLL_SLOW_MS;
-      if (elapsed < 5 * 60_000) {
-        interval = PREVIEW_POLL_FAST_MS;
-      } else if (elapsed < 15 * 60_000) {
-        interval = PREVIEW_POLL_MEDIUM_MS;
-      }
-
-      pollTimeoutRef.current = setTimeout(async () => {
-        await executePollRefresh(
-          refreshRef,
-          emptyRefreshCountRef,
-          pollStoppedRef
-        );
-        schedulePoll();
-      }, interval);
-    }
-
-    schedulePoll();
-
-    return () => {
-      clearTimeout(pollTimeoutRef.current);
-    };
-  }, [
-    pullRequestNumber,
-    previewState,
+    )
+  );
+  usePreviewDeploymentPolling({
+    previewState: previewDeployment?.state ?? null,
+    hasPreviewRef: !!previewDeployment?.ref,
+    pullRequestNumber: pullRequest?.number,
     isGenerationRunning,
-    previewDeployment?.ref,
-  ]);
+    refetch: refetchPreviewLinks,
+  });
 
   // Derived state
   const isDraft = metadata.status === "DRAFT";
@@ -320,15 +212,11 @@ export function PlanEditor({
               judgesReport={judgesReport ?? null}
               onApproverSelect={metadata.handleApproverSelect}
               onOwnerChange={metadata.handleOwnerChange}
-              onParentChange={metadata.handleParentChange}
-              onPreviewRefresh={async () => {
-                const result = await refreshPreviewDeployment();
-                return result ?? null;
-              }}
+              onPreviewRefresh={refetchPreviewLinks}
               onStatusChange={metadata.handleStatusChange}
               owner={metadata.owner}
               plan={plan}
-              previewDeployment={previewDeployment ?? null}
+              previewDeployment={previewDeployment}
               pullRequest={pullRequest ?? null}
               status={metadata.status}
               targetBranch={metadata.targetBranch}

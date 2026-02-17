@@ -1,13 +1,13 @@
 export function generateArtifactRoomId(
   organizationId: string,
-  documentSlug: string
+  slug: string
 ): string {
-  return `${organizationId}:artifact:${documentSlug}`;
+  return `${organizationId}:artifact:${slug}`;
 }
 
 export function parseArtifactRoomId(roomId: string): {
   organizationId: string;
-  documentSlug: string;
+  slug: string;
 } {
   const parts = roomId.split(":");
 
@@ -17,6 +17,6 @@ export function parseArtifactRoomId(roomId: string): {
 
   return {
     organizationId: parts[0],
-    documentSlug: parts[2],
+    slug: parts[2],
   };
 }

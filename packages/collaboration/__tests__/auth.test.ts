@@ -21,20 +21,6 @@ vi.mock("../keys", () => ({
   keys: () => ({ LIVEBLOCKS_SECRET: "test-secret-key" }),
 }));
 
-// Mock parseArtifactRoomId
-vi.mock("../room-utils", () => ({
-  parseArtifactRoomId: (roomId: string) => {
-    const parts = roomId.split(":");
-    if (parts.length !== 3 || parts[1] !== "artifact") {
-      throw new Error("Invalid room ID format");
-    }
-    return {
-      organizationId: parts[0],
-      documentSlug: parts[2],
-    };
-  },
-}));
-
 describe("authenticate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,7 +39,7 @@ describe("authenticate", () => {
   });
 
   describe("basic authentication", () => {
-    it("authenticates user without roomId", async () => {
+    it("authenticates user and returns token", async () => {
       const result = await authenticate({
         userId: "user-123",
         organizationId: "org-123",
@@ -66,21 +52,12 @@ describe("authenticate", () => {
 
       expect(result.token).toBe("mock-liveblocks-token");
       expect(result.status).toBe(200);
-      expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
-        userInfo: {
-          name: "John Doe",
-          avatar: "https://example.com/avatar.jpg",
-          color: "var(--color-blue)",
-        },
-        tenantId: "org-123",
-      });
-      expect(mockAllow).not.toHaveBeenCalled();
     });
 
-    it("authenticates user with roomId", async () => {
-      const result = await authenticate({
+    it("prepares session with userId, userInfo, and tenantId", async () => {
+      await authenticate({
         userId: "user-123",
-        roomId: "org-456:artifact:doc-789",
+        organizationId: "org-456",
         userInfo: {
           name: "Jane Smith",
           avatar: undefined,
@@ -88,8 +65,6 @@ describe("authenticate", () => {
         },
       });
 
-      expect(result.token).toBe("mock-liveblocks-token");
-      expect(result.status).toBe(200);
       expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
         userInfo: {
           name: "Jane Smith",
@@ -98,126 +73,20 @@ describe("authenticate", () => {
         },
         tenantId: "org-456",
       });
-      expect(mockAllow).toHaveBeenCalledWith(
-        "org-456:artifact:doc-789",
-        "full-access-constant"
-      );
-    });
-  });
-
-  describe("tenant ID extraction", () => {
-    it("extracts tenant ID from valid room ID", async () => {
-      await authenticate({
-        userId: "user-123",
-        roomId: "org-abc:artifact:my-doc",
-        userInfo: {
-          name: "User Name",
-          color: "var(--color-green)",
-        },
-      });
-
-      expect(mockPrepareSession).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          tenantId: "org-abc",
-        })
-      );
     });
 
-    it("falls back to organizationId when roomId is invalid", async () => {
+    it("grants wildcard access to organization artifact rooms", async () => {
       await authenticate({
         userId: "user-123",
-        roomId: "invalid-room-format",
-        organizationId: "org-fallback",
-        userInfo: {
-          name: "User Name",
-          color: "var(--color-green)",
-        },
-      });
-
-      expect(mockPrepareSession).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          tenantId: "org-fallback",
-        })
-      );
-      // Note: allow() is still called even though parsing failed, with the invalid roomId
-      expect(mockAllow).toHaveBeenCalledWith(
-        "invalid-room-format",
-        "full-access-constant"
-      );
-    });
-
-    it("falls back to organizationId when roomId has wrong type", async () => {
-      await authenticate({
-        userId: "user-123",
-        roomId: "org-123:invalid-type:doc",
-        organizationId: "org-fallback",
-        userInfo: {
-          name: "User Name",
-          color: "var(--color-green)",
-        },
-      });
-
-      expect(mockPrepareSession).toHaveBeenCalledWith(
-        "user-123",
-        expect.objectContaining({
-          tenantId: "org-fallback",
-        })
-      );
-      // Note: allow() is still called even though parsing failed, with the invalid roomId
-      expect(mockAllow).toHaveBeenCalledWith(
-        "org-123:invalid-type:doc",
-        "full-access-constant"
-      );
-    });
-  });
-
-  describe("room-scoped vs user-scoped tokens", () => {
-    it("creates room-scoped token when roomId is provided", async () => {
-      await authenticate({
-        userId: "user-123",
-        roomId: "org-456:artifact:test-doc",
+        organizationId: "org-456",
         userInfo: {
           name: "Test User",
           color: "var(--color-blue)",
         },
       });
 
-      expect(mockAllow).toHaveBeenCalledTimes(1);
       expect(mockAllow).toHaveBeenCalledWith(
-        "org-456:artifact:test-doc",
-        "full-access-constant"
-      );
-    });
-
-    it("creates user-scoped token when roomId is not provided", async () => {
-      await authenticate({
-        userId: "user-123",
-        organizationId: "org-123",
-        userInfo: {
-          name: "Test User",
-          color: "var(--color-blue)",
-        },
-      });
-
-      expect(mockAllow).not.toHaveBeenCalled();
-    });
-
-    it("creates room-scoped token when roomId parsing fails", async () => {
-      await authenticate({
-        userId: "user-123",
-        roomId: "malformed:room",
-        userInfo: {
-          name: "Test User",
-          color: "var(--color-blue)",
-        },
-      });
-
-      // Note: allow() is still called even though parsing failed
-      // The authenticate function checks if roomId is truthy, not if parsing succeeds
-      expect(mockAllow).toHaveBeenCalledWith(
-        "malformed:room",
+        "org-456:artifact:*",
         "full-access-constant"
       );
     });
@@ -239,9 +108,7 @@ describe("authenticate", () => {
 
       expect(mockPrepareSession).toHaveBeenCalledWith(
         "user-123",
-        expect.objectContaining({
-          userInfo,
-        })
+        expect.objectContaining({ userInfo })
       );
     });
 
@@ -259,9 +126,7 @@ describe("authenticate", () => {
 
       expect(mockPrepareSession).toHaveBeenCalledWith(
         "user-123",
-        expect.objectContaining({
-          userInfo,
-        })
+        expect.objectContaining({ userInfo })
       );
     });
 
@@ -280,25 +145,12 @@ describe("authenticate", () => {
 
       expect(mockPrepareSession).toHaveBeenCalledWith(
         "user-123",
-        expect.objectContaining({
-          userInfo,
-        })
+        expect.objectContaining({ userInfo })
       );
     });
   });
 
   describe("error handling", () => {
-    it("throws error when global token requested without organizationId", async () => {
-      await expect(
-        authenticate({
-          userId: "user-123",
-          userInfo: { name: "Test", color: "red" },
-        })
-      ).rejects.toThrow(
-        "organizationId is required for global tokens (when roomId is not provided)"
-      );
-    });
-
     it("throws error when LIVEBLOCKS_SECRET is not set", async () => {
       vi.resetModules();
       vi.doMock("../keys", () => ({
@@ -359,57 +211,17 @@ describe("authenticate", () => {
       );
     });
 
-    it("grants FULL_ACCESS to room when roomId is provided", async () => {
-      const session = {
-        allow: mockAllow,
-        FULL_ACCESS: "full-access-constant",
-        authorize: mockAuthorize,
-      };
-      mockPrepareSession.mockReturnValueOnce(session);
-
+    it("uses organizationId as tenantId", async () => {
       await authenticate({
         userId: "user-123",
-        roomId: "org-123:artifact:doc",
-        userInfo: { name: "Test", color: "red" },
-      });
-
-      expect(mockAllow).toHaveBeenCalledWith(
-        "org-123:artifact:doc",
-        "full-access-constant"
-      );
-    });
-  });
-
-  describe("dual-mode behavior", () => {
-    it("handles inbox mode (no roomId, tenantId from organizationId)", async () => {
-      await authenticate({
-        userId: "user-123",
-        organizationId: "org-inbox",
-        userInfo: { name: "Inbox User", color: "var(--color-gray)" },
+        organizationId: "org-tenant-test",
+        userInfo: { name: "Tenant User", color: "var(--color-gray)" },
       });
 
       expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
-        userInfo: { name: "Inbox User", color: "var(--color-gray)" },
-        tenantId: "org-inbox",
+        userInfo: { name: "Tenant User", color: "var(--color-gray)" },
+        tenantId: "org-tenant-test",
       });
-      expect(mockAllow).not.toHaveBeenCalled();
-    });
-
-    it("handles room mode (with roomId, tenantId extracted)", async () => {
-      await authenticate({
-        userId: "user-123",
-        roomId: "org-999:artifact:my-room",
-        userInfo: { name: "Room User", color: "var(--color-teal)" },
-      });
-
-      expect(mockPrepareSession).toHaveBeenCalledWith("user-123", {
-        userInfo: { name: "Room User", color: "var(--color-teal)" },
-        tenantId: "org-999",
-      });
-      expect(mockAllow).toHaveBeenCalledWith(
-        "org-999:artifact:my-room",
-        "full-access-constant"
-      );
     });
   });
 });
