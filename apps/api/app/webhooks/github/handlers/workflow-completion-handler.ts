@@ -4,6 +4,7 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import { withDb } from "@repo/database";
+import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
@@ -220,6 +221,7 @@ export async function handleExecutionSuccess(
  * Handle successful workflow completion.
  */
 export async function handleWorkflowSuccess(
+  tx: TransactionClient,
   ctx: WorkflowContext,
   s3Configured: boolean
 ): Promise<void> {
@@ -268,99 +270,93 @@ export async function handleWorkflowSuccess(
     return;
   }
 
-  await withDb(async (db) => {
-    const workstream = await db.workstream.findUnique({
-      where: { id: workstreamId },
-      select: { organizationId: true },
-    });
-
-    if (!workstream) {
-      throw new Error(
-        `Workstream ${workstreamId} not found - cannot update artifact`
-      );
-    }
-
-    const existingArtifact = await db.artifact.findUnique({
-      where: { id: artifactId, organizationId: workstream.organizationId },
-      select: { id: true, organizationId: true, latestVersion: true },
-    });
-
-    if (!existingArtifact) {
-      throw new Error(
-        `Artifact ${artifactId} not found in organization - cannot update with workflow results`
-      );
-    }
-
-    log.info("[handleWorkflowSuccess] Found existing artifact", {
-      artifactId,
-      latestVersion: existingArtifact.latestVersion,
-    });
-
-    // Store content via ArtifactVersion instead of directly on Artifact
-    if (finalContent) {
-      await artifactVersionService.createVersion(
-        artifactId,
-        null,
-        finalContent
-      );
-    }
-
-    await db.artifact.update({
-      where: {
-        id: artifactId,
-        organizationId: existingArtifact.organizationId,
-      },
-      data: {
-        status: "DRAFT",
-      },
-    });
-
-    log.info("[handleWorkflowSuccess] Artifact updated successfully", {
-      artifactId,
-      newContentLength: finalContent?.length ?? 0,
-    });
-
-    await db.workstreamEvent.create({
-      data: {
-        workstreamId,
-        type: "GITHUB_ACTION_COMPLETED",
-        actorType: "system",
-        data: {
-          correlationId,
-          artifactId,
-          runId,
-          conclusion: "success",
-          artifactKeys,
-        },
-      },
-    });
-
-    if (judgesReport && ctx.actionRunId) {
-      await db.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId,
-            reportId: judgesReport.report_id,
-          },
-        },
-        create: {
-          artifactId,
-          actionRunId: ctx.actionRunId,
-          reportId: judgesReport.report_id,
-          reportData: judgesReport,
-        },
-        update: {
-          reportData: judgesReport,
-        },
-      });
-
-      log.info("[handleWorkflowSuccess] Persisted judges report", {
-        artifactId,
-        reportId: judgesReport.report_id,
-        judgesCount: judgesReport.stats.length,
-      });
-    }
+  const workstream = await tx.workstream.findUnique({
+    where: { id: workstreamId },
+    select: { organizationId: true },
   });
+
+  if (!workstream) {
+    throw new Error(
+      `Workstream ${workstreamId} not found - cannot update artifact`
+    );
+  }
+
+  const existingArtifact = await tx.artifact.findUnique({
+    where: { id: artifactId, organizationId: workstream.organizationId },
+    select: { id: true, organizationId: true, latestVersion: true },
+  });
+
+  if (!existingArtifact) {
+    throw new Error(
+      `Artifact ${artifactId} not found in organization - cannot update with workflow results`
+    );
+  }
+
+  log.info("[handleWorkflowSuccess] Found existing artifact", {
+    artifactId,
+    latestVersion: existingArtifact.latestVersion,
+  });
+
+  // Store content via ArtifactVersion instead of directly on Artifact
+  if (finalContent) {
+    await artifactVersionService.createVersion(artifactId, null, finalContent);
+  }
+
+  await tx.artifact.update({
+    where: {
+      id: artifactId,
+      organizationId: existingArtifact.organizationId,
+    },
+    data: {
+      status: "DRAFT",
+    },
+  });
+
+  log.info("[handleWorkflowSuccess] Artifact updated successfully", {
+    artifactId,
+    newContentLength: finalContent?.length ?? 0,
+  });
+
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId,
+      type: "GITHUB_ACTION_COMPLETED",
+      actorType: "system",
+      data: {
+        correlationId,
+        artifactId,
+        runId,
+        conclusion: "success",
+        artifactKeys,
+      },
+    },
+  });
+
+  if (judgesReport && ctx.actionRunId) {
+    await tx.artifactEvaluation.upsert({
+      where: {
+        artifactId_reportId: {
+          artifactId,
+          reportId: judgesReport.report_id,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId: ctx.actionRunId,
+        reportId: judgesReport.report_id,
+        reportData: judgesReport,
+      },
+      update: {
+        reportData: judgesReport,
+      },
+    });
+
+    log.info("[handleWorkflowSuccess] Persisted judges report", {
+      artifactId,
+      reportId: judgesReport.report_id,
+      judgesCount: judgesReport.stats.length,
+    });
+  }
 
   log.info(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
@@ -374,28 +370,27 @@ export async function handleWorkflowSuccess(
  * The UI shows failures via the status banner.
  */
 export async function handleWorkflowFailure(
+  tx: TransactionClient,
   ctx: WorkflowContext,
   htmlUrl: string
 ): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
-  await withDb(async (db) => {
-    // Only create the event - NEVER overwrite artifact content with error messages
-    await db.workstreamEvent.create({
+  // Only create the event - NEVER overwrite artifact content with error messages
+  await tx.workstreamEvent.create({
+    data: {
+      workstreamId,
+      type: "GITHUB_ACTION_COMPLETED",
+      actorType: "system",
       data: {
-        workstreamId,
-        type: "GITHUB_ACTION_COMPLETED",
-        actorType: "system",
-        data: {
-          correlationId,
-          artifactId,
-          runId,
-          command,
-          conclusion: "failure",
-          htmlUrl,
-        },
+        correlationId,
+        artifactId,
+        runId,
+        command,
+        conclusion: "failure",
+        htmlUrl,
       },
-    });
+    },
   });
 
   log.error(`Workflow run ${runId} failed for correlation ${correlationId}`, {
@@ -461,9 +456,9 @@ export async function processWorkflowCompletion(
   await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
     if (conclusion === "success") {
-      await handleWorkflowSuccess(ctx, s3Configured);
+      await handleWorkflowSuccess(tx, ctx, s3Configured);
     } else {
-      await handleWorkflowFailure(ctx, event.workflow_run.html_url);
+      await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }
 
     // 2. Update GitHubActionRun status (done last so frontend sees content first)

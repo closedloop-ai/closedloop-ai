@@ -48,11 +48,10 @@ export function useArtifactContent(config: UseArtifactContentConfig) {
   const hasUnsavedChanges = content !== (artifact.version.content ?? "");
 
   // Sync content state when the version object changes (after version creation, version navigation).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: version.id detects version switches even when two versions share identical content
   useEffect(() => {
     setContent(artifact.version.content ?? "");
     setLastSaved(artifact.updatedAt);
-  }, [artifact.version.content, artifact.version.id, artifact.updatedAt]);
+  }, [artifact.version.content, artifact.updatedAt]);
 
   /**
    * Save current content by creating a new version.

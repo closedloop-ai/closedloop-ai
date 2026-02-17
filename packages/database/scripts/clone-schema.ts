@@ -87,15 +87,33 @@ export async function cloneDataFromPublic(databaseUrl: string, schema: string) {
 
     for (const table of tableNames) {
       const quotedTable = quoteIdentifier(table);
-      // Query column names and types to handle enum casts between schemas
-      const { rows: cols } = await client.query(
+      // Query column names from both schemas and only clone columns that exist in both.
+      // This handles cases where migrations add new columns to the target schema
+      // that don't exist yet in the public (source) schema.
+      const { rows: targetCols } = await client.query(
         `SELECT column_name, data_type, udt_name FROM information_schema.columns
          WHERE table_schema = $1 AND table_name = $2
          ORDER BY ordinal_position`,
         [schema, table]
       );
-      if (cols.length === 0) {
+      if (targetCols.length === 0) {
         console.warn(`  ${table}: skipped (missing in target schema)`);
+        continue;
+      }
+      const { rows: sourceCols } = await client.query(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1`,
+        [table]
+      );
+      const sourceColSet = new Set(
+        sourceCols.map((c: { column_name: string }) => c.column_name)
+      );
+      // Only clone columns that exist in both source and target
+      const cols = (targetCols as ColInfo[]).filter((c) =>
+        sourceColSet.has(c.column_name)
+      );
+      if (cols.length === 0) {
+        console.warn(`  ${table}: skipped (no overlapping columns)`);
         continue;
       }
       const insertCols = cols

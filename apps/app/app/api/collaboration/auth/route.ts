@@ -49,7 +49,6 @@ export async function POST(request: Request): Promise<Response> {
 
     const { token, status } = await authenticate({
       userId: user.id,
-      roomId,
       organizationId: user.organizationId,
       userInfo: {
         name: getUserName(user),

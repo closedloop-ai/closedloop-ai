@@ -1,15 +1,9 @@
-import type { PreviewDeploymentMetadata } from "@repo/api/src/types/external-link";
+import type { PreviewDeploymentMetadata } from "./external-link";
 
-/**
- * Typed error for external link not found - maps to 404 HTTP status.
- */
-export class ExternalLinkNotFoundError extends Error {
-  readonly status = 404;
-  constructor(message = "External link not found") {
-    super(message);
-    this.name = "ExternalLinkNotFoundError";
-  }
-}
+/** Parsed preview deployment with its URL. */
+export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
+  url: string | null;
+};
 
 /**
  * Type-safe parser for PREVIEW_DEPLOYMENT metadata JSON.

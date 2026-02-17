@@ -245,6 +245,7 @@ model Project {
   codebaseSummary String?         @map("codebase_summary")
   lastIndexedAt   DateTime?       @map("last_indexed_at")
   settings        Json            @default("{}")
+  sortOrder       Int?            @map("sort_order")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 

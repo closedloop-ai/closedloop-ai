@@ -21,10 +21,9 @@ Run a multi-agent code review that posts inline comments and a summary to GitHub
 - ✅ RESOLVE outdated inline comment threads (authored by `symphony-cl`) when issues are fixed
 - ✅ Write review summary to `.claude/code-review-summary.md` (workflow handles posting)
 - ❌ Do NOT checkout, switch branches, or modify any code
-- ❌ Do NOT create, edit, or modify any files in the repository (except `.claude/code-review-summary.md`)
+- ❌ Do NOT create, edit, or modify any files in the repository (except `.claude/code-review-summary.md` and `.claude/pr-review-patches.json`)
 - ❌ Do NOT delete inline comments (only resolve threads)
 - ❌ Do NOT merge, close, approve, or request changes on the PR
-- ❌ Do NOT suggest architectural refactoring without evidence of bugs
 
 ---
 
@@ -35,9 +34,10 @@ Run a multi-agent code review that posts inline comments and a summary to GitHub
 ```
 TodoWrite([
   { content: "Get PR info and changed files", status: "pending", activeForm: "Getting PR info" },
-  { content: "Read critic-gates.json and select reviewers", status: "pending", activeForm: "Selecting reviewers" },
+  { content: "Run deterministic hygiene checks", status: "pending", activeForm: "Running hygiene checks" },
+  { content: "Assess PR and route models", status: "pending", activeForm: "Assessing PR risk" },
   { content: "Spawn reviewer agents in parallel", status: "pending", activeForm: "Spawning agents" },
-  { content: "Collect and validate agent findings", status: "pending", activeForm: "Validating findings" },
+  { content: "Collect, normalize, and validate findings", status: "pending", activeForm: "Validating findings" },
   { content: "Clean up outdated inline comments", status: "pending", activeForm: "Cleaning up comments" },
   { content: "Post inline comments for validated findings", status: "pending", activeForm: "Posting comments" },
   { content: "Write summary to .claude/code-review-summary.md", status: "pending", activeForm: "Writing summary" }
@@ -127,42 +127,158 @@ Mark todo as `completed`.
 
 ---
 
-## Step 3: Read Critic Configuration and Select Reviewers
+## Step 2.5: Deterministic Hygiene Checks
 
-Mark todo "Read critic-gates.json and select reviewers" as `in_progress`.
+Mark todo "Run deterministic hygiene checks" as `in_progress`.
 
-Read `.claude/settings/critic-gates.json` and extract:
-- **baseCritics**: Always-run critics (typescript-expert, dry-kiss-reviewer)
-- **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional critics (default: 5)
+Run scripted checks that don't need LLM reasoning. These catch CI artifacts, path leakage, and sensitive files deterministically.
 
-### Pattern Matching Algorithm
+### Hygiene Checks
 
-```python
-# Start with base critics
-selected_critics = set(critic_config["defaults"]["baseCritics"])
+For each check, iterate over FILES_TO_REVIEW (only files with status "added" or "modified"):
 
-# Combine file paths into context string
-pr_context = " ".join(changed_files).lower()
-
-# Match patterns against file paths
-for module in critic_config["moduleCritics"]:
-    for pattern in module["patterns"]:
-        if pattern.lower() in pr_context:
-            selected_critics.update(module["critics"])
-            break  # Move to next module after first match
-
-# Enforce review budget
-base_critics = set(critic_config["defaults"]["baseCritics"])
-additional_critics = selected_critics - base_critics
-if len(additional_critics) > reviewBudget:
-    # Prioritize security critics, then take first N
-    additional_critics = list(additional_critics)[:reviewBudget]
-
-final_critics = list(base_critics) + list(additional_critics)
+**Check 1: CI artifact detection** — files with absolute CI runner paths in their patch content:
+```bash
+# Search patch content for CI runner paths WITH line numbers
+# Iterate added lines in FILE_PATCHES, record file + line number for each match
+# Patterns: /home/runner/, /github/workspace/
 ```
 
-Report to user which critics will run and why.
+**Check 2: Path leakage** — absolute machine-specific paths in new files:
+```bash
+# Search patch content for /Users/, /home/, C:\ patterns WITH line numbers
+# Iterate added lines in FILE_PATCHES, record file + line number for each match
+# Exclude node_modules references
+```
+
+**Check 3: Gitignore drift** — added files that should be ignored:
+```bash
+# For each file with status "added", check if it matches risky patterns:
+# *.local, *.generated, .dev-*, *.env*, *.pem, *.key
+git check-ignore --no-index <added_file> 2>/dev/null
+```
+
+**Check 4: Sensitive file patterns** — .env files, credentials, private keys in the diff:
+```bash
+# Check if any added/modified files match: *.env*, credentials*, *.pem, *.key, *secret*
+```
+
+### Severity Routing for Hygiene Findings
+
+**Skip entirely** (allowlist — no finding generated):
+- Files in `**/test/**`, `**/tests/**`, `**/__tests__/**`
+- Files in `**/fixtures/**`, `**/examples/**`, `**/docs/**`
+- Markdown and text files: `**/*.md`, `**/*.txt`
+
+**Auto-upgrade to HIGH** (confidence 1.0):
+- `.json` config files, package manifests
+- `.env*`, `.pem`, `.key` files (secrets/credentials)
+- `.ts`, `.tsx`, `.js`, `.jsx` files (runtime code with hardcoded paths)
+- Files in project root (e.g., `.dev-environment.json`)
+
+**Everything else**: MEDIUM, confidence 0.9
+
+### Comment Target Strategy for Hygiene Findings
+
+- **Line-specific findings** (grep matched a specific line): Use the **matched line number** as the comment anchor. All hygiene greps should capture line numbers (use `grep -n` or iterate patch lines) so findings anchor to the actual problematic content, not a fixed line.
+- **New-file findings** (file status is "added" and the issue is file-level, e.g., shouldn't be committed at all): Use `line: 1` — all lines in a new file are in CHANGED_LINES, so line 1 is always a valid anchor.
+- **Modified-file findings with no specific line** (e.g., gitignore drift for a file that exists but should be ignored): If the file is in the PR diff and has changed lines, anchor to the **first changed line** in CHANGED_LINES[file]. If the file is NOT in the diff, mark as `"inline": false` (summary-only).
+- **Cross-file findings** (e.g., missing `.gitignore` pattern): If `.gitignore` is in the PR diff, comment on its last changed line. If NOT in the diff, mark as `"inline": false` (summary-only).
+- **Summary-only findings** (`"inline": false`): Included in the review summary table but NOT posted as inline PR comments.
+
+### Hygiene Finding Format
+
+Store hygiene findings in the same format as agent findings. Use the actual matched line when available:
+
+```json
+{
+  "file": "path/to/file",
+  "line": 23,
+  "severity": "HIGH",
+  "category": "Repo Hygiene",
+  "issue": "[P1] CI artifact committed — file contains /home/runner/ paths",
+  "explanation": "Line 23 contains '/home/runner/work/project/dist/bundle.js'. This is a CI-generated path that should not be committed.",
+  "recommendation": "Add this file to .gitignore and remove it from the PR.",
+  "priority": 1,
+  "confidence": 1.0,
+  "inline": true
+}
+```
+
+Mark todo as `completed`.
+
+---
+
+## Step 3: Assess PR and Route Models
+
+Mark todo "Assess PR and route models" as `in_progress`.
+
+### PR Assessment
+
+Compute these values from FILES_TO_REVIEW:
+
+```
+files_changed = len(FILES_TO_REVIEW)
+
+has_security_files = any file path contains: auth, session, payment, rbac, permission, clerk, jwt, middleware
+has_data_files = any file path contains: prisma, migration, database
+high_risk = has_security_files or has_data_files
+```
+
+### Model Routing
+
+Based on PR size and risk, determine model assignments:
+
+| Condition | Bug Hunter A | Bug Hunter B | CLAUDE.md Auditor | Codebase Conventions | Validation |
+|-----------|-------------|-------------|-------------------|---------------------|------------|
+| **Small PR (≤10 files) OR high_risk** | opus | opus | sonnet | sonnet | opus |
+| **Medium PR (11-40 files)** | opus | sonnet | sonnet | sonnet | opus |
+| **Large PR (41+ files)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
+
+**For large PRs, add Opus sampling pass**: Select up to 5 high-risk hunks via deterministic scoring:
+
+```
+For each file in FILES_TO_REVIEW, compute risk score:
+  +3  auth/session/payment/permission files (path contains auth|session|payment|rbac)
+  +3  database/migration files (path contains prisma|migration|database)
+  +2  state management (patch contains useState|useReducer|useMutation)
+  +2  API route handlers (path matches app/api/ or route.ts)
+  +1  error handling (patch contains catch|throw|try)
+  +1  files with >50 changed lines
+
+Sort by score DESC, then by file path ASC (stable tiebreaker).
+Take top 5. Feed these to an Opus agent for direct review.
+```
+
+### Select Domain Critics (Layer 4)
+
+Read `.claude/settings/critic-gates.json` and extract:
+- **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
+- **moduleCritics**: Pattern-to-critic mappings
+- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
+
+```python
+# Only select domain critics for high-stakes areas
+selected_domain_critics = []
+pr_context = " ".join(FILES_TO_REVIEW).lower()
+max_domain_critics = min(critic_config["defaults"]["reviewBudget"], 2)
+
+# Only trigger for security, database, payment modules
+high_stakes_modules = [m for m in critic_config["moduleCritics"]
+                       if any(p in ["auth", "session", "payment", "prisma", "database", "stripe"]
+                              for p in m["patterns"])]
+
+for module in high_stakes_modules:
+    for pattern in module["patterns"]:
+        if pattern.lower() in pr_context:
+            selected_domain_critics.extend(module["critics"])
+            break
+
+# Cap at min(reviewBudget, 2) domain critics (sort for deterministic selection across runs)
+selected_domain_critics = sorted(set(selected_domain_critics))[:max_domain_critics]
+```
+
+Report to user: model routing decision, which agents will run, and domain critics (if any).
 
 Mark todo as `completed`.
 
@@ -172,6 +288,29 @@ Mark todo as `completed`.
 
 Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
+### Review Architecture — 4 Layers
+
+**Layer 1 — General Bug Detection** (always runs):
+
+| Agent | Role | Focus |
+|-------|------|-------|
+| Bug Hunter A | Diff-only scan | Syntax/type errors, null/undefined, logic bugs, security, state management |
+| Bug Hunter B | Codebase-aware | DRY violations, API contract verification, pattern consistency, import validation |
+
+**Layer 2 — Project Intelligence** (always runs):
+
+| Agent | Role | Focus |
+|-------|------|-------|
+| CLAUDE.md Auditor | Project rule compliance | Check against ALL CLAUDE.md rules + learned patterns |
+| Codebase Conventions | Architectural rules | Data access patterns, type locations, service layer |
+
+**Layer 3 — Codebase-Aware Deep Review** (built into Bug Hunter B's prompt)
+
+**Layer 4 — Domain Amplification** (conditional, from critic-gates.json):
+- Only for high-stakes domains (auth, database, payments)
+- Max 2 supplementary Sonnet critics
+- Run alongside Layers 1-2
+
 ### File Partitioning (Critical for Large PRs)
 
 Background agents do NOT have Bash tool access. All review data MUST be provided inline in the agent prompt.
@@ -179,250 +318,406 @@ Background agents do NOT have Bash tool access. All review data MUST be provided
 **Partition files across agents to stay within token limits:**
 
 1. **Small PRs (≤30 files)**: Include ALL file patches in each agent's prompt
-2. **Medium PRs (31-80 files)**: Partition files so each agent gets at most 30 files. Assign files based on relevance to the critic's domain (e.g., database-architect gets `prisma/`, `database/` files). Base critics (typescript-expert, dry-kiss-reviewer) get all files split across multiple agent instances if needed.
-3. **Large PRs (81+ files)**: Same as medium, but cap at 25 files per agent. Create multiple instances of base critics to cover all files (e.g., `typescript-expert-1`, `typescript-expert-2`).
+2. **Medium PRs (31-80 files)**: Partition files so each agent gets at most 30 files
+3. **Large PRs (81+ files)**: Cap at 25 files per agent. Create multiple agent instances if needed
 
-**Partitioning algorithm:**
-```python
-MAX_FILES_PER_AGENT = 30 if len(files) <= 80 else 25
+### Shared Prompt Prefix (ALL agents get this)
 
-for critic in selected_critics:
-    # Domain critics: only get files matching their patterns from critic-gates.json
-    # Base critics: get ALL files, split into chunks if needed
-    if critic in base_critics:
-        chunks = split_files_into_chunks(all_files, MAX_FILES_PER_AGENT)
-        for i, chunk in enumerate(chunks):
-            spawn_agent(critic, chunk, suffix=f"-{i+1}" if len(chunks) > 1 else "")
-    else:
-        relevant_files = filter_files_by_critic_patterns(all_files, critic)
-        if relevant_files:
-            spawn_agent(critic, relevant_files[:MAX_FILES_PER_AGENT])
-```
-
-**In a SINGLE message, spawn ALL agents with `run_in_background: true`.**
-
-**Agent Prompt Template:**
+**CRITICAL**: The `mode: standalone` line MUST be present in every agent prompt. If missing, the code-reviewer agent defaults to loop mode which suppresses Critical/High findings.
 
 ```
+mode: standalone
+
 Review ONLY the changed code in this PR. Return findings as JSON.
 
-**TOOL RESTRICTIONS - READ CAREFULLY**:
-- You MUST NOT use the Bash tool. You do not have Bash access.
-- You MUST NOT try to run shell commands, gh api calls, or any terminal commands.
-- You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
-- All patch/diff data you need is provided below in this prompt. Do NOT try to fetch it from GitHub.
-
-**FILES ASSIGNED TO YOU FOR REVIEW** ({N} of {TOTAL} changed files):
+<data>
+<files_assigned count="{N}" total="{TOTAL}">
 - {filepath_1} ({status_1})
 - {filepath_2} ({status_2})
 ...
+</files_assigned>
 
-**DIFF/PATCH CONTENT** (this is the authoritative source of what changed):
+<diff>
 --- {filepath_1} ({status_1}) ---
 {patch_content_1}
 
 --- {filepath_2} ({status_2}) ---
 {patch_content_2}
 ...
+</diff>
+</data>
 
-**CRITICAL RULES - READ CAREFULLY**:
-1. You MUST NOT use the Bash tool. You do not have Bash access. Do NOT attempt shell commands, gh api calls, or any terminal operations.
-2. Use the DIFF/PATCH CONTENT above as your primary source for reviewing code. Do NOT rely solely on reading local files (they may not exist for newly added files).
-3. ONLY flag issues on lines that were ADDED or MODIFIED in this PR (lines starting with + in the diff)
-4. Do NOT flag pre-existing issues in unchanged code - even if you see problems
-5. If a file is listed but a specific line wasn't changed, do NOT report issues on that line
-6. Focus on: new code introduced, modifications to existing code, new patterns being added
-7. For newly added files (status: "added"), the entire file content is in the patch - review it from the patch, do not try to Read it from disk
-8. Respect inline code comments that justify decisions (e.g., "// Intentionally...", "// Required for...", "// This is fine because...")
-9. Do NOT suggest architectural refactoring (e.g., "move this to a new file", "split this function") without evidence of bugs — respect existing code organization
-10. Only provide evidence-based feedback citing actual changed code — no "what if" or "might be" criticisms
-11. Before suggesting custom helper functions, use Grep/Glob (NOT Bash) to check if utilities already exist in the codebase
-12. You may use Read, Grep, and Glob tools to explore the local codebase for additional context (e.g., checking imports, type definitions, existing patterns)
+<constraints>
+TOOL RESTRICTIONS:
+- You MUST NOT use the Bash tool. You do not have Bash access.
+- You MUST NOT try to run shell commands, gh api calls, or any terminal commands.
+- You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
+- All patch/diff data is provided in <diff> above. Do NOT try to fetch it from GitHub.
 
-**SEVERITY GUIDELINES - BE STRICT**:
-- BLOCKING: Security vulnerabilities that expose data, authentication bypass, SQL injection, XSS, runtime crashes that break the app, data loss/corruption
-- HIGH: Bugs that WILL cause errors in production, missing error handling that WILL crash, broken API contracts, race conditions
-- MEDIUM: Code quality issues, minor improvements, style suggestions, hypothetical issues
+FLAG an issue ONLY when ALL are true:
+1. Introduced in this PR (not pre-existing)
+2. The original author would likely fix it if aware
+3. Does not rely on unstated assumptions
+4. Discrete and actionable
+5. Concrete evidence cited
 
-**IMPORTANT**: Most findings should be MEDIUM. Only use HIGH/BLOCKING for issues that WILL cause real problems in production. If you're unsure, use MEDIUM.
+Do NOT flag:
+- Pre-existing issues, style preferences, linter-catchable issues
+- General quality concerns (coverage, docs), pedantic nitpicks
+- Hypothetical edge cases dependent on specific inputs/state
+</constraints>
 
-**DO NOT use HIGH/BLOCKING for**:
-- Style preferences or patterns that "could be better"
-- Missing optional features or nice-to-haves
-- Hypothetical edge cases that are unlikely
-- Configuration suggestions
-- Documentation improvements
+<instructions>
+JUSTIFICATION COMMENTS:
+Inline justification comments (// Intentionally..., // Required for...) REDUCE your
+confidence in a finding but do NOT auto-discard.
+- Strong justification that addresses your exact concern → discard
+- Weak or generic justification → report at confidence 0.5-0.7, note the justification
+- No justification → normal confidence assessment
 
-**Return JSON format**:
+SEVERITY + PRIORITY (use existing severity as primary, add priority as signal):
+- BLOCKING (P0): Security vulnerabilities, runtime crashes, data loss/corruption
+- HIGH (P1): Bugs that WILL cause errors in production, broken API contracts, race conditions
+- MEDIUM (P2): Real code quality issues, DRY violations, minor bugs
+- MEDIUM (P3): Suggestions, nice-to-haves
+
+EVIDENCE STANDARDS:
+Your EVIDENCE must be concrete. Your DESCRIPTION can express conditional behavior —
+what matters is proving the condition exists.
+- Can you describe the exact input/state that triggers the bug AND the exact wrong behavior? → HIGH/BLOCKING
+- Circumstantial but real evidence → MEDIUM
+- Speculation → discard
+</instructions>
+
+<examples>
+<example name="good-high-finding">
+CORRECT — Proven bug with concrete evidence:
+{
+  "file": "apps/app/components/editable-field.tsx",
+  "line": 47,
+  "severity": "HIGH",
+  "category": "Correctness",
+  "issue": "[P1] handleSave double-fires on Enter key then blur",
+  "explanation": "onKeyDown handler calls handleSave() on Enter at line 47, then focus moves away triggering onBlur which also calls handleSave() at line 52. Two concurrent API calls mutate the same field — the second overwrites the first with stale data.",
+  "recommendation": "Add a `saving` ref guard: if (savingRef.current) return; savingRef.current = true;",
+  "code_snippet": "onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}",
+  "priority": 1,
+  "confidence": 0.95
+}
+</example>
+
+<example name="good-medium-dry">
+CORRECT — DRY violation with concrete prior art:
+{
+  "file": "apps/app/components/editable-description.tsx",
+  "line": 12,
+  "severity": "MEDIUM",
+  "category": "Code Quality",
+  "issue": "[P2] EditableDescription duplicates EditableTitle (apps/app/components/editable-title.tsx)",
+  "explanation": "This component shares ~70% structure with EditableTitle: same useState/useRef pattern, same handleSave with trimming, same onKeyDown/onBlur handlers. Only the HTML element (textarea vs input) and placeholder differ.",
+  "recommendation": "Extract shared logic into a useEditableField hook or a generic EditableField component parameterized by element type.",
+  "code_snippet": "const [value, setValue] = useState(initialValue);",
+  "priority": 2,
+  "confidence": 0.85
+}
+</example>
+
+<example name="bad-speculation">
+WRONG — Speculation, not a proven bug (DO NOT output findings like this):
+{
+  "severity": "HIGH",
+  "issue": "Removing the config option could break users who depend on it",
+  "explanation": "This config was used by some features and removing it might cause issues."
+}
+Why it's wrong: Uses "could break" and "might cause". No evidence of WHAT breaks or HOW.
+</example>
+
+<example name="bad-observation">
+WRONG — Observation about a change, not a bug (DO NOT output findings like this):
+{
+  "severity": "HIGH",
+  "issue": "Cache strategy changed from Redis to in-memory",
+  "explanation": "The caching approach was changed which may impact performance at scale."
+}
+Why it's wrong: Documents a change. Uses "may impact". No proven bug — the change is intentional.
+</example>
+</examples>
+
+Before outputting your findings, reason through each one in <thinking> tags:
+- Is this a proven bug or just an observation about a change?
+- Does my evidence support the assigned severity?
+- Did I check for error handling that prevents this issue?
+- Would the original author fix this if they knew? Or would they say "that's intentional"?
+
+Then output your JSON report.
+
+<output_format>
 {
   "findings": [
     {
       "file": "path/to/file.ts",
       "line": 42,
-      "severity": "MEDIUM",
-      "category": "Code Quality",
-      "issue": "Brief description",
-      "explanation": "Why this matters",
-      "recommendation": "How to fix",
-      "code_snippet": "actual code from file",
-      "is_new_code": true
+      "severity": "HIGH",
+      "category": "Correctness",
+      "issue": "[P1] Brief imperative title under 80 chars",
+      "explanation": "One paragraph. Why this is wrong. Cite code and evidence.",
+      "recommendation": "How to fix (brief)",
+      "code_snippet": "problematic code",
+      "priority": 1,
+      "confidence": 0.9
     }
   ]
 }
 
 If you find NO issues, return: {"findings": []}
 Empty findings is a valid response for clean code.
+</output_format>
 ```
 
-**Critic Agent Mapping:**
+### Agent-Specific Prompts
+
+Append these to the shared prefix for each agent:
+
+**Bug Hunter A** (diff-only, model per routing table):
+```
+You are Bug Hunter A — a diff-only reviewer focused on correctness.
+
+Focus areas:
+- Syntax/type errors, null/undefined handling, logic bugs
+- Security: injection, auth bypass, data exposure
+- State management: double-trigger patterns (onKeyDown + onBlur), stale closures
+- API calls: parameter semantics (undefined vs null vs empty string)
+- Error handling: missing try-catch on async, unhandled promise rejections
+
+You must use Read, Grep, and Glob tools (NOT Bash) for codebase context.
+```
+
+**Bug Hunter B** (codebase-aware, model per routing table):
+```
+You are Bug Hunter B — a codebase-aware reviewer focused on cross-file issues.
+
+Focus areas:
+- DRY: Use Grep to search for similar function/component names. Flag >60% structural
+  similarity with existing code. Cite the existing file path.
+- API contracts: Read service implementations to verify call correctness.
+  Check that parameters match (undefined vs null vs empty string matters).
+- Pattern consistency: Find existing examples of similar code, verify new code matches.
+- Import validation: Verify imports resolve to real modules.
+
+For DRY claims, one concrete example of prior art is sufficient (cite file path + function name).
+
+{CLAUDE_MD_CONTENT}
+```
+
+Include the full CLAUDE.md content (from repository root) in Bug Hunter B's prompt so it has project context for DRY and convention checks.
+
+**CLAUDE.md Auditor** (sonnet):
+```
+You are the CLAUDE.md Auditor — you check PR changes against project-specific rules.
+
+Read all applicable CLAUDE.md files:
+- Repository root CLAUDE.md
+- Any directory-level CLAUDE.md files relevant to changed file paths
+
+For each changed file, check against:
+1. Rules tagged [mistake] in CLAUDE.md Learned Patterns — these are HIGH severity
+2. Rules tagged [convention] — these are MEDIUM severity
+3. Rules tagged [pattern] — these are MEDIUM severity (verify pattern is followed)
+4. Explicit rules in the main CLAUDE.md sections (Architecture, Type Definitions, etc.)
+
+For every finding, cite the exact rule text from CLAUDE.md.
+
+Dynamically build your checklist based on changed file types:
+- .ts/.tsx in apps/app/ → check data access pattern, type locations
+- .ts in apps/api/ → check service layer, route structure, error handling
+- .prisma → check migration conventions
+- packages/** → check code organization rules
+```
+
+**Codebase Conventions** (sonnet):
+```
+You are the Codebase Conventions reviewer — you verify architectural rules.
+
+Focus areas:
+- Data access patterns: Frontend must NOT import @repo/database directly
+- Type locations: Shared types in packages/api/src/types/, not duplicated
+- Service layer: Routes delegate to services, services handle DB access
+- Incomplete changes: Component without export, route without registration
+- Import ordering: @repo/* before @/* path aliases
+
+Use Grep and Glob to verify claims. Do NOT flag issues without searching first.
+```
+
+**Domain Critics** (from critic-gates.json, if selected in Step 3):
+
+Use the same critic-agent mapping as before, but only for selected domain critics:
 
 | Critic | Subagent Type |
 |--------|---------------|
-| typescript-expert | symphony-fe:typescript-expert |
-| dry-kiss-reviewer | dry-kiss-reviewer |
 | security-privacy | symphony-fe:security-privacy |
 | auth-security-expert | symphony-fe:auth-security-expert |
-| navigation-expert | symphony-fe:navigation-expert |
-| web-platform-expert | symphony-fe:web-platform-expert |
-| web-build-expert | symphony-fe:web-build-expert |
+| database-architect | symphony-fe:database-architect |
 | api-architect | symphony-fe:api-architect |
 | caching-strategist | symphony-fe:caching-strategist |
-| state-management-architect | symphony-fe:state-management-architect |
-| react-component-architect | symphony-fe:react-component-architect |
-| design-system-expert | symphony-fe:design-system-expert |
-| database-architect | symphony-fe:database-architect |
-| realtime-architect | symphony-fe:realtime-architect |
-| test-strategist | symphony-fe:test-strategist |
-| ci-cd-architect | symphony-fe:ci-cd-architect |
-| observability-architect | symphony-fe:observability-architect |
-| analytics-integration-expert | symphony-fe:analytics-integration-expert |
-| code-reviewer | symphony-core:code-reviewer |
 
-**Agent Configuration:**
-- Use `model: "sonnet"` for all critic agents
-- Background agents do NOT have Bash access — all review data must be in the prompt or accessible via Read/Grep/Glob tools
+**Guard:** If a selected domain critic has no entry in this table, skip it and log a warning
+(e.g., `"⚠️ Skipping unmapped critic: {name}"`). This prevents failures when critic-gates.json
+adds new critics before this mapping is updated.
+
+Use `model: "sonnet"` for all domain critics.
+
+### Opus Sampling Pass (Large PRs only)
+
+For large PRs (41+ files), spawn an additional Opus agent with the top 5 high-risk files (from Step 3 scoring). This agent uses the Bug Hunter A prompt but reviews only the selected files. It catches bugs Sonnet might miss in the riskiest hunks.
+
+**In a SINGLE message, spawn ALL agents with `run_in_background: true`.**
 
 Mark todo as `completed`.
 
 ---
 
-## Step 5: Collect and Validate Findings
+## Step 5: Collect, Normalize, and Validate Findings
 
-Mark todo "Collect and validate agent findings" as `in_progress`.
+Mark todo "Collect, normalize, and validate findings" as `in_progress`.
 
 Use `TaskOutput` with `block: true` to collect results from each spawned agent.
 
-### Use the Changed Lines Map from Step 2
+### Step 5.1: Severity Normalization
 
-Use the **CHANGED_LINES** and **FILE_PATCHES** maps already built in Step 2. Do NOT re-fetch from the API.
+Normalize ALL agent findings to the schema-valid severity values before any validation:
 
-- **CHANGED_FILES**: Set of all file paths in FILES_TO_REVIEW
-- **CHANGED_LINES**: `{ "path/file.ts": [10, 11, 12, 45, 46], ... }` (already parsed in Step 2)
+```
+Critical  → BLOCKING
+High      → HIGH
+Medium    → MEDIUM
+Low       → discard (below review threshold)
+BLOCKING  → BLOCKING  (already normalized)
+HIGH      → HIGH      (already normalized)
+MEDIUM    → MEDIUM    (already normalized)
+*         → MEDIUM    (unknown severity → safe default, log warning)
+```
 
-Only lines starting with `+` (additions) or lines adjacent to changes are valid targets.
+Case-insensitive matching. Track `normalization_warnings` count for unknown values.
 
-### Parse Findings
+### Step 5.2: Merge Hygiene Findings
 
-1. Parse JSON findings from each agent
-2. **All validated findings** (BLOCKING, HIGH, and MEDIUM) will receive inline comments AND appear in the summary
+Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findings. These are already in the correct format and severity.
 
-### Validate EVERY Finding
+### Step 5.3: Mechanical Validation (Layer A — no agents, fast)
 
-For each finding (all severities):
+**First, apply defaults for optional fields** (prevents undefined branches downstream):
+- `finding.priority ??= severity_to_priority(finding.severity)` where BLOCKING→0, HIGH→1, MEDIUM→2
+- `finding.confidence ??= 1.0` (agents that don't emit confidence are already validated)
+- `finding.inline ??= true`
 
-1. **Check if file was changed in PR**:
-   - If finding's file NOT in CHANGED_FILES: **DISCARD** (reason: "File not modified in this PR")
+Then for each finding:
 
-2. **Check if line is in the changed lines**:
-   - If finding's line NOT in CHANGED_LINES[file]: **DISCARD** (reason: "Line not changed in this PR")
-   - Allow ±3 lines tolerance for immediate context
+1. **File in PR?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
+   - Exception: findings with `inline === false` skip this check (summary-only findings from Step 2.5 may reference files outside the PR, e.g., missing .gitignore patterns)
+2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
+   - Exception: findings with `inline === false` skip this check (summary-only)
+3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
+4. **Confidence threshold** (severity-gated to prevent suppression):
+   - P0/P1 (BLOCKING/HIGH): **never discard on confidence** — always send to validation
+   - P2/P3 (MEDIUM): discard if `confidence < 0.5`
 
-3. **Is this an observation or a bug?** Before checking severity, determine if the finding is even actionable:
+### Step 5.4: Agent Validation (Layer B — targeted)
 
-   **DISCARD if it's just describing a change:**
-   - "Config changed from X to Y" — just change documentation, not a bug
-   - "Dependency updated" — unless proven incorrect, this is intentional
-   - "Feature flag removed" — unless proven to break code, this is intentional
-   - Uses weasel words: "could", "might", "may", "potentially", "risks", "verify that", "ensure that"
+Validate findings where LLM verification adds value. Spawn a single Opus validation agent (or process sequentially) for:
 
-   **KEEP if it proves incorrectness:**
-   - Cites concrete evidence: specific errors, documentation violations, proven breakage
-   - Shows a specific crash path, attack vector, or data corruption scenario
+- **All BLOCKING/HIGH findings** (regardless of confidence)
+- **MEDIUM findings involving API contracts, DRY, or cross-file semantics**
 
-   **If a finding just describes what changed without proving it's wrong, DISCARD it.**
+Skip validation for:
+- MEDIUM findings that are local/simple (confidence is sufficient)
+- Findings with priority 3 (suggestions)
 
-4. **Verify severity with evidence requirements**:
+**Validation agent prompt:**
+```
+You are a code review validator. Your job is to verify whether reported findings are real
+bugs or false positives. You are the last line of defense against noise.
 
-   **For BLOCKING findings, verify:**
-   - Is there concrete proof of a security vulnerability, runtime crash, data loss, or broken functionality?
-   - Does the agent cite specific evidence (error that WILL throw, attack vector, data corruption path)?
-   - **If no concrete proof**: Downgrade to HIGH or MEDIUM
+<data>
+<findings>
+{findings_json}
+</findings>
 
-   **For HIGH findings, verify:**
-   - Does the agent provide measurable evidence (algorithm complexity, specific type mismatch)?
-   - For "broken pattern" claims: Did the agent find 2+ examples of the pattern in the codebase?
-   - For performance claims: Is there specific analysis (O(n²) vs O(n), unnecessary loops)?
-   - **If claims are subjective or unproven**: Downgrade to MEDIUM
+<patches>
+{relevant_patches}
+</patches>
+</data>
 
-5. **Read the FULL file and verify the issue is real** (CRITICAL — this prevents false positives):
+<instructions>
+For each finding:
+1. Read the file at the reported location (use Read tool, not Bash)
+2. Verify the code actually contains the claimed issue at the cited line
+3. Check for guards, error handling, try-catch, or validation that prevents the issue
+4. If a justification comment exists, assess whether it addresses the actual concern
+5. For DRY claims, verify the cited existing code actually exists and is structurally similar
+</instructions>
 
-   a. **Get file content**:
-      - For **modified** files: Read the ENTIRE local file (not just the changed lines)
-      - For **added** files (status: "added" in FILE_STATUSES): Use the patch content from FILE_PATCHES as the source of truth. Do NOT try to Read added files from disk.
+<examples>
+<example name="confirmed">
+Finding: "handleSave double-fires on Enter then blur" at editable-field.tsx:47
+Verification: Read file. Line 47 has onKeyDown calling handleSave on Enter. Line 52 has
+onBlur also calling handleSave. No debounce or guard ref exists. → CONFIRMED
+</example>
+<example name="rejected">
+Finding: "Missing null check on user.data" at profile.tsx:23
+Verification: Read file. Line 18 has `if (!user?.data) return null;` guard before line 23.
+The finding missed existing error handling. → REJECTED (guard exists at line 18)
+</example>
+<example name="downgrade">
+Finding: "HIGH: Unbounded Promise.all on user array" at batch.tsx:15
+Verification: Read file. The array comes from a database query with LIMIT 50 at line 8.
+Not truly unbounded, but 50 concurrent calls is still suboptimal. → DOWNGRADE to MEDIUM
+</example>
+</examples>
 
-   b. **Verify the code snippet matches**: Check that the line exists and contains the code the agent referenced
+<output_format>
+Return a JSON array with one entry per finding:
+[
+  { "index": 0, "verdict": "CONFIRMED", "reason": "..." },
+  { "index": 1, "verdict": "REJECTED", "reason": "Guard exists at line 18" },
+  { "index": 2, "verdict": "DOWNGRADE", "reason": "Array is bounded by LIMIT 50" }
+]
+</output_format>
+```
 
-   c. **Check full-file context to avoid false positives**:
-      - Verify imports/dependencies/types exist (avoid "missing import" when it's at the top of the file)
-      - Check for error handling around the flagged code (try-catch, guards, validation)
-      - Look for type definitions, generics, or overloads that resolve claimed type issues
+Apply validation results:
+- CONFIRMED → keep as-is
+- REJECTED → **DISCARD** (reason: "Rejected by validation")
+- DOWNGRADE → lower severity to MEDIUM
 
-   d. **Evidence checks by severity**:
-      - **For BLOCKING**: Confirm no error handling, guards, or validation exists that would prevent the claimed crash/vulnerability
-      - **For HIGH "broken pattern"**: Search the codebase (not just PR files) to find 2+ examples of the claimed established pattern — if you can't find them, **downgrade or discard** (the claim is unsubstantiated)
-      - **For HIGH "performance"**: Verify the agent provided concrete analysis (algorithm complexity, specific bottleneck), not just "might be slow"
+### Step 5.5: Deduplication and Consolidation
 
-   e. **Ensure the criticism is not based on assumptions**: Discard findings that are theoretical ("what if...") without concrete proof of breakage
+Group findings by root cause. Two findings share a root cause when ANY of these match:
+- Same category + similar issue text
+- Same file + overlapping line (±3) + same or equivalent recommendation
+- Different categories but describing the same underlying code problem
 
-   f. **If all checks pass**: Keep the finding
-   g. **If ANY check fails**: **DISCARD** (reason: "False positive") and log which check failed
+When multiple findings share the same underlying issue:
+- Keep the finding with the HIGHEST severity as the primary
+- Include all other occurrences as "Other Locations"
+- Post a SINGLE inline comment on the primary location that lists all affected locations
 
-6. **Check for inline justification comments**: If there are comments near the flagged line like `// Intentionally...`, `// Required for...`, `// This is fine because...` — **DISCARD** the finding (the developer has documented a deliberate choice)
+### Normalization Telemetry
 
-7. **Deduplicate and consolidate by root cause**:
+If `normalization_warnings > 0`, record for the summary:
+```
+⚠️ Severity normalization: N findings had non-standard severity values
+   (mapped to MEDIUM). Agent output may have drifted from schema.
+   Values seen: [list of non-standard values]
+```
 
-   Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
-   - Keep the finding with the HIGHEST severity as the primary
-   - Include all other occurrences as "Other Locations"
-   - Post a SINGLE inline comment on the primary location that lists all affected locations
+### Discard Reasons
 
-   **Inline comment format for consolidated findings:**
-
-   ````markdown
-   **[SEVERITY]** Category
-
-   Issue description
-
-   **Other Locations** (N more):
-   - `path/file.ts:87` - same pattern in `functionName()`
-   - `path/file.ts:124` - same pattern in `otherFunction()`
-
-   **Recommendation:** How to fix
-   ````
-
-   For single-location findings, use the standard format (no "Other Locations" section).
-
-### Discard or Downgrade Reasons
-
-- **DOWNGRADE_TO_MEDIUM**: Claimed HIGH/BLOCKING but it's a style preference or hypothetical
 - **DISCARD_FILE_NOT_CHANGED**: Finding is in a file not modified by this PR
 - **DISCARD_LINE_NOT_CHANGED**: Finding is on a line that wasn't touched in this PR
-- **DISCARD_OBSERVATION_NOT_BUG**: Finding just describes a change without proving it's wrong
-- **DISCARD_FALSE_POSITIVE**: Issue doesn't actually exist in code (verified against full file)
-- **DISCARD_JUSTIFIED**: Developer has inline comment justifying the decision
-- **DISCARD_DUPLICATE**: Already reported by another agent / consolidated into root cause group
-
-**IMPORTANT**: Be strict about HIGH/BLOCKING severity. Downgrade to MEDIUM if it's not a real bug or security issue. All validated findings (all severities) get inline comments posted.
+- **DISCARD_LOW_CONFIDENCE**: MEDIUM finding with confidence < 0.5
+- **DISCARD_REJECTED**: Rejected by validation agent (with reason)
+- **DISCARD_DUPLICATE**: Consolidated into root cause group
+- **DOWNGRADE_TO_MEDIUM**: Validation agent downgraded severity
 
 Track validated findings and discarded findings with specific reasons.
 
@@ -463,7 +758,7 @@ query($owner:String!, $name:String!, $number:Int!) {
 }' -f owner="<OWNER>" -f name="<REPO_NAME>" -F number=<PR_NUMBER>
 ```
 
-2. **For each unresolved thread authored by `symphony-cl`**:
+2. **For each unresolved thread authored by a review bot** (`symphony-cl`, `closedloop-ai[bot]`, or `closedloop-ai-stage[bot]`):
    - Check if `isResolved` is true: SKIP
    - Read current state of file/line (use FILE_PATCHES for added files)
    - If issue is FIXED or line no longer exists: **RESOLVE** it
@@ -494,15 +789,17 @@ fi
 
 4. **Build dedup map** of remaining unresolved threads: `{file:line:category}`
 
-Mark todo as `completed`.
+Mark todo as `completed`. **Then proceed to Step 7** — posting NEW inline comments is a separate step.
 
 ---
 
 ## Step 7: Post Inline Comments
 
+**CRITICAL**: This step posts NEW findings from the review agents. It is INDEPENDENT from Step 6 (cleanup). Even if Step 6 found zero existing comments, you MUST still execute this step to post inline comments for each validated finding. Do NOT skip this step.
+
 Mark todo "Post inline comments for validated findings" as `in_progress`.
 
-For each validated finding (all severities):
+For each validated finding where `inline !== false` (all severities):
 
 1. **Check dedup map**: If `file:line:category` already has comment, SKIP
 2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
@@ -538,21 +835,44 @@ fi
 - Add to summary as "comment skipped - line not in diff"
 - Do NOT fail the entire review
 
-**Comment Format:**
+**Comment Format (with priority annotation):**
 
 ```markdown
-**[BLOCKING]** Security
+**[HIGH]** Correctness
 
-Missing authentication check in server action.
+[P1] Double-fire: handleSave triggers on both Enter keydown and blur event.
 
-**Recommendation:** Add `const { userId } = await auth()` at the start of the function.
+**Recommendation:** Guard against double-fire by checking if save is already in progress.
 
 ```typescript
-// Current code at line 35
-export async function getPRDs() {
-  // No auth check
+const handleSave = () => { ... }
 ```
 ```
+
+**Consolidated Finding Format** (when multiple findings share root cause):
+
+````markdown
+**[SEVERITY]** Category
+
+Issue description
+
+**Other Locations** (N more):
+- `path/file.ts:87` - same pattern in `functionName()`
+- `path/file.ts:124` - same pattern in `otherFunction()`
+
+**Recommendation:** How to fix
+````
+
+**Counter tracking**: Before iterating findings, initialize counters:
+- `inline_eligible_count` = number of validated findings where `inline !== false`
+- `posted_count = 0`
+- `skipped_dedup = 0`
+- `skipped_line = 0`
+- `failed_api = 0`
+
+Increment within the loop: `posted_count++` after a successful post, `skipped_dedup++` when the dedup map matches, `skipped_line++` when the line is not in the diff, `failed_api++` when the API call fails for any reason (line resolution error, rate limit, permission denied, etc.).
+
+**After posting**: Report counts (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff), 1 failed"). If `posted_count + skipped_dedup + skipped_line + failed_api < inline_eligible_count`, some findings were silently lost — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped or failed.
 
 Mark todo as `completed`.
 
@@ -593,7 +913,8 @@ SUMMARY_EOF
 
 **Status:** [Approved | Changes Requested | Needs Attention]
 
-**Critics Used:** typescript-expert, security-privacy, dry-kiss-reviewer, ...
+**Reviewers:** Bug Hunter A, Bug Hunter B, CLAUDE.md Auditor,
+Codebase Conventions [+ domain specialists if triggered]
 
 ### Findings
 
@@ -603,21 +924,24 @@ SUMMARY_EOF
 | High | Y |
 | Medium | Z |
 
-### BLOCKING Issues (must fix before merge)
-
-1. **[File:Line]** Brief description
+### BLOCKING Issues (must fix)
+1. **[P0] [file:line]** Title
 
 ### HIGH Issues (should fix)
+1. **[P1] [file:line]** Title
 
-1. **[File:Line]** Brief description
+### MEDIUM Issues (consider)
+1. **[P2] [file:line]** Title
+2. **[P3] [file:line]** Title
 
-### MEDIUM Issues (suggestions)
+**Recommendation:** [Approve | Address blocking/high issues | Consider medium items]
+```
 
-1. **[File:Line]** Brief description
+Include **summary-only findings** (those with `"inline": false`) in the appropriate severity section — these don't have inline comments but should still be visible in the summary.
 
----
-
-**Recommendation:** [Approve this PR | Address blocking issues before merge | Consider high-priority items]
+If `normalization_warnings > 0`, append after the findings table:
+```
+⚠️ Severity normalization: N findings had non-standard severity values (mapped to MEDIUM).
 ```
 
 **Summary constraints:**
