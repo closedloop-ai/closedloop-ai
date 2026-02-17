@@ -6,7 +6,8 @@ import {
 
 describe("loop-runner-jwt", () => {
   it("issues and verifies a token with jti", async () => {
-    process.env.CLOSEDLOOP_RUNNER_JWT_SECRET = "test-secret-123";
+    process.env.CLOSEDLOOP_RUNNER_JWT_SECRET =
+      "test-secret-with-minimum-32-chars-1234";
 
     const token = await issueLoopRunnerToken({
       loopId: "loop-1",

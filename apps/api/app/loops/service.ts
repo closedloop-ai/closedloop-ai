@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   CreateLoopRequest,
@@ -564,6 +565,21 @@ export const loopsService = {
       return false;
     }
 
+    const eventSource = runner ? "runner" : "system";
+    let eventId: string;
+    if (runner) {
+      eventId = `${runner.tokenJti}:${runner.nonce}`;
+    } else if (
+      typeof event.data.eventId === "string" &&
+      event.data.eventId.length > 0
+    ) {
+      eventId = event.data.eventId;
+    } else {
+      eventId = createHash("sha256")
+        .update(JSON.stringify({ type: event.type, data: event.data }))
+        .digest("hex");
+    }
+
     try {
       await withDb((db) =>
         db.loopEvent.create({
@@ -571,6 +587,8 @@ export const loopsService = {
             loopId,
             type: event.type,
             data: event.data as JsonObject,
+            eventSource,
+            eventId,
             ...(runner?.tokenJti ? { runnerTokenJti: runner.tokenJti } : {}),
             ...(runner?.nonce ? { runnerNonce: runner.nonce } : {}),
           },
@@ -578,12 +596,14 @@ export const loopsService = {
       );
     } catch (error) {
       if (
-        runner &&
         error instanceof Error &&
         "code" in error &&
         (error as { code: string }).code === "P2002"
       ) {
-        throw new ReplayDetectedError();
+        if (runner) {
+          throw new ReplayDetectedError();
+        }
+        return false;
       }
       throw error;
     }
