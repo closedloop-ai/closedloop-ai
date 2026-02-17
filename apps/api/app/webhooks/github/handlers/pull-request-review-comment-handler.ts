@@ -8,6 +8,11 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
 /**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ */
+const HANDLED_ACTIONS = new Set(["created", "edited", "deleted"]);
+
+/**
  * Union type for pull request review comment events we handle.
  */
 export type HandledPullRequestReviewCommentEvent =
@@ -29,7 +34,6 @@ export async function handlePullRequestReviewComment(
   const { action, comment, pull_request, repository } = event;
 
   // Early exit for unhandled actions
-  const HANDLED_ACTIONS = new Set(["created", "edited", "deleted"]);
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequestReviewComment] Skipping unhandled action", {
       action,
