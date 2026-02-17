@@ -1,4 +1,9 @@
-import type { PreviewDeploymentMetadata } from "@repo/api/src/types/external-link";
+import type { PreviewDeploymentMetadata } from "./external-link";
+
+/** Parsed preview deployment with its URL. */
+export type PreviewDeploymentInfo = PreviewDeploymentMetadata & {
+  url: string | null;
+};
 
 /**
  * Type-safe parser for PREVIEW_DEPLOYMENT metadata JSON.

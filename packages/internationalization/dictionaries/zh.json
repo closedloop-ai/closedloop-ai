@@ -6,11 +6,6 @@
     },
     "header": {
       "home": "首页",
-      "product": {
-        "title": "产品",
-        "description": "今天管理一家小企业已经很困难。",
-        "pricing": "定价"
-      },
       "blog": "博客",
       "docs": "文档",
       "contact": "联系",
@@ -25,9 +20,6 @@
       },
       "hero": {
         "announcement": "阅读我们的最新文章"
-      },
-      "cases": {
-        "title": "赋能全球成功故事"
       },
       "features": {
         "title": "现代商业的强大工具",
@@ -48,73 +40,6 @@
           {
             "title": "安全交易",
             "description": "放心，您的业务运营受到企业级安全和加密的保护。"
-          }
-        ]
-      },
-      "stats": {
-        "title": "真实结果，真实影响",
-        "description": "加入成千上万已经通过我们的平台转变运营的企业。我们的解决方案帮助公司平均减少了60%的行政开支，并提高了45%的交易效率。",
-        "items": [
-          {
-            "title": "每月活跃用户",
-            "metric": "100000",
-            "delta": "10",
-            "type": "单位"
-          },
-          {
-            "title": "每日活跃用户",
-            "metric": "10000",
-            "delta": "-5",
-            "type": "单位"
-          },
-          {
-            "title": "每月经常性收入",
-            "metric": "100000",
-            "delta": "20",
-            "type": "货币"
-          },
-          {
-            "title": "每次获取成本",
-            "metric": "100",
-            "delta": "-10",
-            "type": "货币"
-          }
-        ]
-      },
-      "testimonials": {
-        "title": "听听我们蓬勃发展的社区的声音",
-        "items": [
-          {
-            "title": "最佳决定",
-            "description": "我们的目标是简化中小企业的交易，使其比以往任何时候都更容易、更快速，我们一起做到了。",
-            "author": {
-              "name": "海登·布里斯尔",
-              "image": "https://github.com/haydenbleasel.png"
-            }
-          },
-          {
-            "title": "游戏改变者",
-            "description": "这个平台彻底改变了我们处理日常运营的方式。效率提升显著。",
-            "author": {
-              "name": "李·罗宾逊",
-              "image": "https://github.com/leerob.png"
-            }
-          },
-          {
-            "title": "超出预期",
-            "description": "实施过程顺利，结果立竿见影。我们的团队迅速适应，生产力飙升。",
-            "author": {
-              "name": "shadcn",
-              "image": "https://github.com/shadcn.png"
-            }
-          },
-          {
-            "title": "卓越支持",
-            "description": "这个平台不仅强大，客户支持团队在帮助我们最大化其潜力方面也表现出色。",
-            "author": {
-              "name": "庞图斯·亚伯拉罕森",
-              "image": "https://github.com/pontusab.png"
-            }
           }
         ]
       },

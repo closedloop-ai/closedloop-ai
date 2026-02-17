@@ -34,7 +34,8 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   useArtifactsByProject,
@@ -238,11 +239,10 @@ export default function ProjectDetailPage() {
                 initialTitle={project.name}
                 projectId={project.id}
               />
-              {project.description ? (
-                <p className="mt-1 text-muted-foreground">
-                  {project.description}
-                </p>
-              ) : null}
+              <EditableProjectDescription
+                initialDescription={project.description ?? ""}
+                projectId={project.id}
+              />
             </div>
             <div className="mb-4 flex items-center justify-end">
               <ToggleGroup

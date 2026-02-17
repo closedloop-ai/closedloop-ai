@@ -271,20 +271,17 @@ export function NewPlanModal({
   const [content, setContent] = useState("");
 
   // Fetch PRDs when modal opens (skip if we have a source artifact)
-  // TODO: This is returning all PRDs in the organization, not just the project.
   const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
-    { type: "PRD" },
+    { type: "PRD", projectId: selectedProjectId },
     {
-      enabled: open && !sourceArtifact,
+      enabled: open && !!selectedProjectId && !sourceArtifact,
     }
   );
 
   // Fetch projects when modal opens and no source is selected
   const { data: projects = [], isLoading: loadingProjects } = useProjects(
     undefined,
-    {
-      enabled: open && !sourceArtifact && !selectedSourceId,
-    }
+    { enabled: open }
   );
 
   // Get the selected source (either from prop or from dropdown)

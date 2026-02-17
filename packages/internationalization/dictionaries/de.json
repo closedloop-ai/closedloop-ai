@@ -6,11 +6,6 @@
     },
     "header": {
       "home": "Startseite",
-      "product": {
-        "title": "Produkt",
-        "description": "Die Verwaltung eines kleinen Unternehmens ist heute bereits schwierig.",
-        "pricing": "Preise"
-      },
       "blog": "Blog",
       "docs": "Dokumente",
       "contact": "Kontakt",
@@ -25,9 +20,6 @@
       },
       "hero": {
         "announcement": "Lesen Sie unseren neuesten Artikel"
-      },
-      "cases": {
-        "title": "Erfolgsgeschichten aus aller Welt"
       },
       "features": {
         "title": "Leistungsstarke Werkzeuge für moderne Unternehmen",
@@ -48,73 +40,6 @@
           {
             "title": "Sichere Transaktionen",
             "description": "Seien Sie unbesorgt, denn Ihre Geschäftsabläufe sind durch Sicherheits- und Verschlüsselungsmaßnahmen auf Unternehmensniveau geschützt."
-          }
-        ]
-      },
-      "stats": {
-        "title": "Echte Ergebnisse, echte Auswirkungen",
-        "description": "Schließen Sie sich Tausenden von Unternehmen an, die ihre Abläufe mit unserer Plattform transformiert haben. Unsere Lösungen haben Unternehmen geholfen, die Verwaltungskosten um 60 % zu senken und die Handelseffizienz im Durchschnitt um 45 % zu steigern.",
-        "items": [
-          {
-            "title": "Monatlich aktive Nutzer",
-            "metric": "100000",
-            "delta": "10",
-            "type": "Einheit"
-          },
-          {
-            "title": "Täglich aktive Nutzer",
-            "metric": "10000",
-            "delta": "-5",
-            "type": "Einheit"
-          },
-          {
-            "title": "Monatlich wiederkehrende Einnahmen",
-            "metric": "100000",
-            "delta": "20",
-            "type": "Währung"
-          },
-          {
-            "title": "Kosten pro Akquisition",
-            "metric": "100",
-            "delta": "-10",
-            "type": "Währung"
-          }
-        ]
-      },
-      "testimonials": {
-        "title": "Hören Sie von unserer florierenden Gemeinschaft",
-        "items": [
-          {
-            "title": "Beste Entscheidung",
-            "description": "Unser Ziel war es, den Handel für kleine und mittlere Unternehmen zu optimieren, um es einfacher und schneller als je zuvor zu machen, und das haben wir gemeinsam erreicht.",
-            "author": {
-              "name": "Hayden Bleasel",
-              "image": "https://github.com/haydenbleasel.png"
-            }
-          },
-          {
-            "title": "Wendepunkt",
-            "description": "Diese Plattform hat revolutioniert, wie wir unsere täglichen Abläufe handhaben. Die Effizienzgewinne waren bemerkenswert.",
-            "author": {
-              "name": "Lee Robinson",
-              "image": "https://github.com/leerob.png"
-            }
-          },
-          {
-            "title": "Übertraf die Erwartungen",
-            "description": "Die Implementierung verlief reibungslos und die Ergebnisse waren sofort sichtbar. Unser Team hat sich schnell angepasst und die Produktivität ist in die Höhe geschossen.",
-            "author": {
-              "name": "shadcn",
-              "image": "https://github.com/shadcn.png"
-            }
-          },
-          {
-            "title": "Hervorragender Support",
-            "description": "Die Plattform ist nicht nur leistungsstark, sondern das Kundenserviceteam war auch außergewöhnlich darin, uns zu helfen, ihr Potenzial zu maximieren.",
-            "author": {
-              "name": "Pontus Abrahamsson",
-              "image": "https://github.com/pontusab.png"
-            }
           }
         ]
       },

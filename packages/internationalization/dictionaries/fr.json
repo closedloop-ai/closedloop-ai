@@ -6,11 +6,6 @@
     },
     "header": {
       "home": "Accueil",
-      "product": {
-        "title": "Produit",
-        "description": "Gérer une petite entreprise aujourd'hui est déjà difficile.",
-        "pricing": "Tarification"
-      },
       "blog": "Blog",
       "docs": "Docs",
       "contact": "Contact",
@@ -25,9 +20,6 @@
       },
       "hero": {
         "announcement": "Lisez notre dernier article"
-      },
-      "cases": {
-        "title": "Histoires de succès inspirantes à travers le monde"
       },
       "features": {
         "title": "Outils puissants pour les entreprises modernes",
@@ -48,73 +40,6 @@
           {
             "title": "Transactions sécurisées",
             "description": "Soyez tranquille en sachant que vos opérations commerciales sont protégées par une sécurité et un cryptage de niveau entreprise."
-          }
-        ]
-      },
-      "stats": {
-        "title": "Résultats réels, impact réel",
-        "description": "Rejoignez des milliers d'entreprises qui ont transformé leurs opérations avec notre plateforme. Nos solutions ont aidé les entreprises à réduire les frais administratifs de 60 % et à augmenter l'efficacité commerciale de 45 % en moyenne.",
-        "items": [
-          {
-            "title": "Utilisateurs actifs mensuels",
-            "metric": "100000",
-            "delta": "10",
-            "type": "unité"
-          },
-          {
-            "title": "Utilisateurs actifs quotidiens",
-            "metric": "10000",
-            "delta": "-5",
-            "type": "unité"
-          },
-          {
-            "title": "Revenus récurrents mensuels",
-            "metric": "100000",
-            "delta": "20",
-            "type": "devise"
-          },
-          {
-            "title": "Coût par acquisition",
-            "metric": "100",
-            "delta": "-10",
-            "type": "devise"
-          }
-        ]
-      },
-      "testimonials": {
-        "title": "Écoutez notre communauté prospère",
-        "items": [
-          {
-            "title": "Meilleure décision",
-            "description": "Notre objectif était de rationaliser le commerce des PME, le rendant plus facile et plus rapide que jamais et nous l'avons fait ensemble.",
-            "author": {
-              "name": "Hayden Bleasel",
-              "image": "https://github.com/haydenbleasel.png"
-            }
-          },
-          {
-            "title": "Révolutionnaire",
-            "description": "Cette plateforme a révolutionné la façon dont nous gérons nos opérations quotidiennes. Les gains d'efficacité ont été remarquables.",
-            "author": {
-              "name": "Lee Robinson",
-              "image": "https://github.com/leerob.png"
-            }
-          },
-          {
-            "title": "Au-delà des attentes",
-            "description": "L'implémentation a été fluide et les résultats ont été immédiats. Notre équipe s'est adaptée rapidement et la productivité a grimpé en flèche.",
-            "author": {
-              "name": "shadcn",
-              "image": "https://github.com/shadcn.png"
-            }
-          },
-          {
-            "title": "Soutien exceptionnel",
-            "description": "Non seulement la plateforme est puissante, mais l'équipe de support client a été exceptionnelle pour nous aider à maximiser son potentiel.",
-            "author": {
-              "name": "Pontus Abrahamsson",
-              "image": "https://github.com/pontusab.png"
-            }
           }
         ]
       },
