@@ -18,44 +18,40 @@ export const pullRequestRatingsService = {
     userId: string,
     organizationId: string
   ): Promise<PullRequestRatingSummary> {
-    // Verify PR belongs to user's organization via workstream (workstreamId is required;
-    // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
-    const pullRequest = await withDb((db) =>
-      db.gitHubPullRequest.findFirst({
+    const { userRating, aggregate } = await withDb(async (db) => {
+      // Verify PR belongs to user's organization via workstream (workstreamId is required;
+      // artifactId is nullable, so artifact join would exclude PRs not yet linked to an artifact)
+      const pullRequest = await db.gitHubPullRequest.findFirst({
         where: {
           id: pullRequestId,
-          workstream: {
-            organizationId,
-          },
+          workstream: { organizationId },
         },
-      })
-    );
+      });
 
-    if (!pullRequest) {
-      throw new PullRequestNotFoundError(pullRequestId);
-    }
+      if (!pullRequest) {
+        throw new PullRequestNotFoundError(pullRequestId);
+      }
 
-    // Fetch user's rating (if exists)
-    const userRating = await withDb((db) =>
-      db.pullRequestRating.findUnique({
-        where: {
-          pullRequestId_userId_organizationId: {
-            pullRequestId,
-            userId,
-            organizationId,
+      // Fetch user's rating and aggregate in parallel within same connection for atomic read
+      const [userRating, aggregate] = await Promise.all([
+        db.pullRequestRating.findUnique({
+          where: {
+            pullRequestId_userId_organizationId: {
+              pullRequestId,
+              userId,
+              organizationId,
+            },
           },
-        },
-      })
-    );
+        }),
+        db.pullRequestRating.aggregate({
+          where: { pullRequestId, organizationId },
+          _avg: { score: true },
+          _count: true,
+        }),
+      ]);
 
-    // Fetch aggregate statistics (MUST filter by both pullRequestId AND organizationId for multi-tenant isolation)
-    const aggregate = await withDb((db) =>
-      db.pullRequestRating.aggregate({
-        where: { pullRequestId, organizationId },
-        _avg: { score: true },
-        _count: true,
-      })
-    );
+      return { userRating, aggregate };
+    });
 
     // AC-016: Track PR Rating Viewed event
     analytics.capture({

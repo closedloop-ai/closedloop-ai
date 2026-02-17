@@ -1,5 +1,9 @@
 import { vi } from "vitest";
-import { mockWithDbCall, mockWithDbTx } from "../utils/db-helpers";
+import {
+  getMockWithDb,
+  mockWithDbCall,
+  mockWithDbTx,
+} from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -50,6 +54,7 @@ describe("pullRequestRatingsService", () => {
         "org-1"
       );
 
+      expect(getMockWithDb()).toHaveBeenCalledTimes(1);
       expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
           id: "pr-1",
