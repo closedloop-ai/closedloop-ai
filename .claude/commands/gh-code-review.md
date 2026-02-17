@@ -255,12 +255,13 @@ Take top 5. Feed these to an Opus agent for direct review.
 Read `.claude/settings/critic-gates.json` and extract:
 - **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
 - **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional domain critics (default: 2 for Layer 4)
+- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
 
 ```python
 # Only select domain critics for high-stakes areas
 selected_domain_critics = []
-pr_context = " ".join(changed_files).lower()
+pr_context = " ".join(FILES_TO_REVIEW).lower()
+max_domain_critics = min(critic_config["defaults"]["reviewBudget"], 2)
 
 # Only trigger for security, database, payment modules
 high_stakes_modules = [m for m in critic_config["moduleCritics"]
@@ -273,8 +274,8 @@ for module in high_stakes_modules:
             selected_domain_critics.extend(module["critics"])
             break
 
-# Cap at 2 domain critics (sort for deterministic selection across runs)
-selected_domain_critics = sorted(set(selected_domain_critics))[:2]
+# Cap at min(reviewBudget, 2) domain critics (sort for deterministic selection across runs)
+selected_domain_critics = sorted(set(selected_domain_critics))[:max_domain_critics]
 ```
 
 Report to user: model routing decision, which agents will run, and domain critics (if any).
@@ -615,7 +616,7 @@ Then for each finding:
    - Exception: findings with `inline === false` skip this check (summary-only findings from Step 2.5 may reference files outside the PR, e.g., missing .gitignore patterns)
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
    - Exception: findings with `inline === false` skip this check (summary-only)
-3. **Duplicate?** Same file + line + category → **MERGE** (keep highest severity)
+3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
 4. **Confidence threshold** (severity-gated to prevent suppression):
    - P0/P1 (BLOCKING/HIGH): **never discard on confidence** — always send to validation
    - P2/P3 (MEDIUM): discard if `confidence < 0.5`
@@ -690,7 +691,12 @@ Apply validation results:
 
 ### Step 5.5: Deduplication and Consolidation
 
-Group findings by root cause (same category + similar issue text). When multiple findings share the same underlying issue:
+Group findings by root cause. Two findings share a root cause when ANY of these match:
+- Same category + similar issue text
+- Same file + overlapping line (±3) + same or equivalent recommendation
+- Different categories but describing the same underlying code problem
+
+When multiple findings share the same underlying issue:
 - Keep the finding with the HIGHEST severity as the primary
 - Include all other occurrences as "Other Locations"
 - Post a SINGLE inline comment on the primary location that lists all affected locations
@@ -783,11 +789,13 @@ fi
 
 4. **Build dedup map** of remaining unresolved threads: `{file:line:category}`
 
-Mark todo as `completed`.
+Mark todo as `completed`. **Then proceed to Step 7** — posting NEW inline comments is a separate step.
 
 ---
 
 ## Step 7: Post Inline Comments
+
+**CRITICAL**: This step posts NEW findings from the review agents. It is INDEPENDENT from Step 6 (cleanup). Even if Step 6 found zero existing comments, you MUST still execute this step to post inline comments for each validated finding. Do NOT skip this step.
 
 Mark todo "Post inline comments for validated findings" as `in_progress`.
 
@@ -854,6 +862,17 @@ Issue description
 
 **Recommendation:** How to fix
 ````
+
+**Counter tracking**: Before iterating findings, initialize counters:
+- `inline_eligible_count` = number of validated findings where `inline !== false`
+- `posted_count = 0`
+- `skipped_dedup = 0`
+- `skipped_line = 0`
+- `failed_api = 0`
+
+Increment within the loop: `posted_count++` after a successful post, `skipped_dedup++` when the dedup map matches, `skipped_line++` when the line is not in the diff, `failed_api++` when the API call fails for any reason (line resolution error, rate limit, permission denied, etc.).
+
+**After posting**: Report counts (e.g., "Posted 5 inline comments, 2 skipped (1 duplicate, 1 line not in diff), 1 failed"). If `posted_count + skipped_dedup + skipped_line + failed_api < inline_eligible_count`, some findings were silently lost — re-check the findings list. Zero posted comments is expected when all findings are legitimately skipped or failed.
 
 Mark todo as `completed`.
 

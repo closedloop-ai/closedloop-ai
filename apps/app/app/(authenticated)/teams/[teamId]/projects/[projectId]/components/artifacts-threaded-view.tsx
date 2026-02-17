@@ -4,6 +4,7 @@ import type {
   ArtifactStatus,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -31,6 +32,8 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { PreviewLink } from "@/components/preview-link";
+import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
   getArtifactRoute,
@@ -271,11 +274,13 @@ function WorkstreamSection({
   onRowClick,
   onRequestDelete,
   onRequestMove,
+  previewUrl,
 }: {
   group: WorkstreamGroup;
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
   onRequestMove: (artifact: ArtifactWithWorkstream) => void;
+  previewUrl?: string | null;
 }) {
   return (
     <Collapsible className="rounded-lg border">
@@ -293,6 +298,7 @@ function WorkstreamSection({
             {WORKSTREAM_STATE_LABELS[group.state] ?? group.state}
           </Badge>
         )}
+        {previewUrl && <PreviewLink url={previewUrl} />}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="border-t px-1 py-1">
@@ -326,6 +332,23 @@ export function ArtifactsThreadedView({
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
     useState<ArtifactWithWorkstream | null>(null);
+
+  // Fetch preview deployment links for this project
+  const { data: externalLinks = [] } = useExternalLinks({
+    projectId,
+    type: ExternalLinkType.PreviewDeployment,
+  });
+
+  // Build workstreamId -> previewUrl map
+  const previewUrlsByWorkstream = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const link of externalLinks) {
+      if (link.workstreamId) {
+        map.set(link.workstreamId, link.externalUrl);
+      }
+    }
+    return map;
+  }, [externalLinks]);
 
   const workstreamGroups = useMemo(
     () => groupByWorkstream(artifacts),
@@ -366,6 +389,9 @@ export function ArtifactsThreadedView({
           onRequestDelete={deleteConfirmation.requestDelete}
           onRequestMove={handleRequestMove}
           onRowClick={handleRowClick}
+          previewUrl={
+            group.id ? previewUrlsByWorkstream.get(group.id) : undefined
+          }
         />
       ))}
 
