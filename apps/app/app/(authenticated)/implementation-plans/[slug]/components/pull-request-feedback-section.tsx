@@ -63,11 +63,6 @@ export function PullRequestFeedbackSection({
     }
     setLocalScore(score);
     setIsEditing(true);
-    submitRating.mutate({
-      pullRequestId,
-      score,
-      comment: localComment || undefined,
-    });
   };
 
   const handleSave = () => {
@@ -80,12 +75,16 @@ export function PullRequestFeedbackSection({
   };
 
   const handleCancel = () => {
+    setLocalScore(userRating?.score ?? 0);
     setLocalComment(userRating?.comment ?? "");
     setIsEditing(false);
   };
 
   const showCommentSection = localScore > 0 || isEditing;
-  const commentUnchanged = (userRating?.comment ?? "") === localComment;
+  const serverComment = userRating?.comment ?? "";
+  const scoreChanged = (userRating?.score ?? 0) !== localScore;
+  const commentChanged = serverComment !== localComment;
+  const hasUnsavedChanges = scoreChanged || commentChanged;
 
   return (
     <MetadataSection separator>
@@ -132,12 +131,14 @@ export function PullRequestFeedbackSection({
               </Button>
               <Button
                 disabled={
-                  submitRating.isPending || localScore <= 0 || commentUnchanged
+                  submitRating.isPending ||
+                  localScore <= 0 ||
+                  !hasUnsavedChanges
                 }
                 onClick={handleSave}
                 size="sm"
               >
-                Save Comment
+                Save
               </Button>
             </div>
           </div>
