@@ -35,7 +35,9 @@ export const PUT = withAuth<
   const { id } = await params;
 
   try {
-    // Rate limiting: 10 requests per minute per user per PR
+    // Global rate limit: 50 submissions per minute per user across all PRs
+    await rateLimit(`pr_rating_user_${user.id}`, 50, "60s", request);
+    // Per-PR rate limit: 10 requests per minute per user per PR
     await rateLimit(`pr_rating_${user.id}_${id}`, 10, "60s", request);
   } catch (error) {
     const isRateLimit =
