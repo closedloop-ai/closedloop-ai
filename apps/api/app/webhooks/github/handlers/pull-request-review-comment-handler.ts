@@ -107,9 +107,10 @@ export async function handlePullRequestReviewComment(
     // Step 3: Handle comment action
     switch (action) {
       case "created": {
-        // Create GitHubPRReviewComment record
-        await tx.gitHubPRReviewComment.create({
-          data: {
+        // Upsert GitHubPRReviewComment record (idempotent for webhook retries)
+        await tx.gitHubPRReviewComment.upsert({
+          where: { githubCommentId: BigInt(comment.id) },
+          create: {
             pullRequestId: existingPr.id,
             githubCommentId: BigInt(comment.id),
             reviewId: comment.pull_request_review_id
@@ -122,6 +123,14 @@ export async function handlePullRequestReviewComment(
             authorAvatarUrl: comment.user.avatar_url,
             state: "PENDING",
             htmlUrl: comment.html_url,
+          },
+          update: {
+            body: comment.body,
+            path: comment.path,
+            line: comment.line,
+            reviewId: comment.pull_request_review_id
+              ? BigInt(comment.pull_request_review_id)
+              : null,
           },
         });
 

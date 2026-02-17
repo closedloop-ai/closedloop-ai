@@ -2,7 +2,7 @@
  * Unit tests for GitHub pull_request_review_comment webhook handler.
  *
  * Tests the handlePullRequestReviewComment function which processes review comment events:
- * - created → Creates GitHubPRReviewComment record + GITHUB_PR_COMMENT_ADDED workstream event
+ * - created → Upserts GitHubPRReviewComment record + GITHUB_PR_COMMENT_ADDED workstream event (idempotent)
  * - created with null reviewId → Handles missing pull_request_review_id
  * - edited → Updates body field via updateMany with BigInt key
  * - deleted → Deletes record via deleteMany with BigInt key
@@ -208,7 +208,7 @@ describe("handlePullRequestReviewComment", () => {
         findUnique: vi.fn(),
       },
       gitHubPRReviewComment: {
-        create: vi.fn(),
+        upsert: vi.fn(),
         updateMany: vi.fn(),
         deleteMany: vi.fn(),
       },
@@ -262,8 +262,8 @@ describe("handlePullRequestReviewComment", () => {
         artifact: { slug: "plan-feature-x" },
       });
 
-      // Mock comment creation
-      mockTx.gitHubPRReviewComment.create.mockResolvedValue({});
+      // Mock comment upsert (idempotent for webhook retries)
+      mockTx.gitHubPRReviewComment.upsert.mockResolvedValue({});
 
       // Mock event creation
       mockTx.workstreamEvent.create.mockResolvedValue({});
@@ -292,9 +292,10 @@ describe("handlePullRequestReviewComment", () => {
         },
       });
 
-      // Verify comment creation with BigInt
-      expect(mockTx.gitHubPRReviewComment.create).toHaveBeenCalledWith({
-        data: {
+      // Verify comment upsert with BigInt (idempotent for webhook retries)
+      expect(mockTx.gitHubPRReviewComment.upsert).toHaveBeenCalledWith({
+        where: { githubCommentId: BigInt(123_456_789) },
+        create: {
           pullRequestId: "pr-uuid-456",
           githubCommentId: BigInt(123_456_789),
           reviewId: BigInt(555),
@@ -306,6 +307,12 @@ describe("handlePullRequestReviewComment", () => {
           state: "PENDING",
           htmlUrl:
             "https://github.com/owner/test-repo/pull/1#discussion_r123456789",
+        },
+        update: {
+          body: "This looks good!",
+          path: "src/feature.ts",
+          line: 15,
+          reviewId: BigInt(555),
         },
       });
 
@@ -362,16 +369,18 @@ describe("handlePullRequestReviewComment", () => {
         artifactId: null,
         artifact: null,
       });
-      mockTx.gitHubPRReviewComment.create.mockResolvedValue({});
+      mockTx.gitHubPRReviewComment.upsert.mockResolvedValue({});
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequestReviewComment(event);
 
-      expect(mockTx.gitHubPRReviewComment.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          reviewId: null,
-        }),
-      });
+      expect(mockTx.gitHubPRReviewComment.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({
+            reviewId: null,
+          }),
+        })
+      );
     });
   });
 
@@ -506,7 +515,7 @@ describe("handlePullRequestReviewComment", () => {
 
       // Should not attempt to find PR or create comment
       expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
-      expect(mockTx.gitHubPRReviewComment.create).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -542,7 +551,7 @@ describe("handlePullRequestReviewComment", () => {
       await handlePullRequestReviewComment(event);
 
       // Should not attempt to create comment or event
-      expect(mockTx.gitHubPRReviewComment.create).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -573,7 +582,7 @@ describe("handlePullRequestReviewComment", () => {
       // Should not query DB at all
       expect(mockTx.repository.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
-      expect(mockTx.gitHubPRReviewComment.create).not.toHaveBeenCalled();
+      expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.updateMany).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.deleteMany).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
