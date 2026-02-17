@@ -693,7 +693,7 @@ model LoopEvent {
   type           String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
   data           Json     @default("{}")
   eventSource    String   @default("system") @map("event_source")
-  eventId        String   @default(uuid()) @map("event_id")
+  eventId        String   @map("event_id")
   runnerTokenJti String?  @map("runner_token_jti")
   runnerNonce    String?  @map("runner_nonce") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at")
