@@ -37,13 +37,6 @@ import { SortableArtifactRow } from "@/app/(authenticated)/teams/[teamId]/projec
 describe("SortableArtifactRow", () => {
   const mockArtifact: ArtifactWithWorkstream = {
     id: "01TEST000000000000000000",
-<<<<<<< symphony/019c5328-14a0-72af-920b-44dfb245a9b4
-    name: "Test Project",
-    subtype: "PRD",
-    status: "NOT_STARTED",
-    documentSlug: "test-artifact",
-    updatedAt: new Date().toISOString(),
-=======
     organizationId: "org-1",
     workstreamId: null,
     projectId: "proj-1",
@@ -65,7 +58,6 @@ describe("SortableArtifactRow", () => {
     sortOrder: null,
     createdAt: new Date(),
     updatedAt: new Date(),
->>>>>>> main
   };
 
   it("renders drag handle", () => {
