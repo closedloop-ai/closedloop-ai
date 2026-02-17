@@ -3,7 +3,7 @@ import type {
   PullRequestReviewSubmittedEvent,
 } from "@octokit/webhooks-types";
 import { ReviewDecision } from "@repo/api/src/types/artifact";
-import { withDb } from "@repo/database";
+import { type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -65,14 +65,11 @@ function computeAggregateReviewDecision(
   return highest;
 }
 
-/** Transaction client type extracted from withDb.tx callback parameter. */
-type TxClient = Parameters<Parameters<typeof withDb.tx>[0]>[0];
-
 /**
  * Recompute aggregate reviewDecision from all per-reviewer reviews and update the PR.
  */
 async function recomputeAndUpdateAggregate(
-  tx: TxClient,
+  tx: TransactionClient,
   pullRequestId: string
 ): Promise<ReviewDecision | null> {
   const allReviews = await tx.gitHubPRReview.findMany({
@@ -97,7 +94,7 @@ async function recomputeAndUpdateAggregate(
  * Upserts per-reviewer record, recomputes aggregate, creates workstream event.
  */
 async function handleSubmittedReview(
-  tx: TxClient,
+  tx: TransactionClient,
   review: HandledPullRequestReviewEvent["review"],
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
@@ -203,7 +200,7 @@ async function handleSubmittedReview(
  * Sets reviewer record to DISMISSED, recomputes aggregate.
  */
 async function handleDismissedReview(
-  tx: TxClient,
+  tx: TransactionClient,
   review: HandledPullRequestReviewEvent["review"],
   pull_request: HandledPullRequestReviewEvent["pull_request"],
   existingPr: {
