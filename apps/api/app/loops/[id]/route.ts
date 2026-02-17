@@ -34,7 +34,11 @@ export const DELETE = withAuth<Loop, "/loops/[id]">(
       const { id } = await params;
 
       const loop = await loopsService.findById(id, user.organizationId);
-      if (loop?.containerId) {
+      if (!loop) {
+        return notFoundResponse("Loop");
+      }
+
+      if (loop.containerId) {
         try {
           await stopLoopTask(loop.containerId, "Loop cancelled by user");
         } catch (stopError) {

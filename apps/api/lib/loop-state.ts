@@ -320,10 +320,18 @@ export async function listAndGenerateDownloadUrls(
 /**
  * Validate that an S3 key belongs to the expected organization prefix.
  * Prevents path traversal and cross-org access.
+ *
+ * Rejects keys containing path traversal sequences (`..`, `./`) and verifies
+ * the key starts with the organization's prefix. organizationId is assumed
+ * to be a DB-generated UUID (no `/` or special characters).
  */
 export function validateKeyBelongsToOrg(
   key: string,
   organizationId: string
 ): boolean {
+  // Reject path traversal sequences before checking prefix
+  if (key.includes("..") || key.includes("./")) {
+    return false;
+  }
   return key.startsWith(`${organizationId}/`);
 }

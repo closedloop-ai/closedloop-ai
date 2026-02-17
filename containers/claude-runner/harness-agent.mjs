@@ -141,6 +141,11 @@ function sanitizeValue(value) {
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
+// Safe patterns for git/CLI arguments to prevent argument injection
+const RE_SAFE_REPO = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+const RE_SAFE_BRANCH = /^[a-zA-Z0-9/_.-]{1,200}$/;
+const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function validateConfig() {
   // Validate required environment variables (available before context pack download).
   // Secrets (anthropicApiKey, githubToken) are delivered via S3 context pack,
@@ -159,6 +164,32 @@ function validateConfig() {
     throw new HarnessError(
       ERROR_CODES.config,
       `Missing required environment variables: ${missing.join(", ")}`
+    );
+  }
+
+  // Validate format of values that will be passed to git/CLI to prevent argument injection
+  if (config.targetRepo && !RE_SAFE_REPO.test(config.targetRepo)) {
+    throw new HarnessError(
+      ERROR_CODES.config,
+      `Invalid TARGET_REPO format: must be "owner/repo" (alphanumeric, dots, hyphens, underscores)`
+    );
+  }
+  if (config.targetBranch && !RE_SAFE_BRANCH.test(config.targetBranch)) {
+    throw new HarnessError(
+      ERROR_CODES.config,
+      `Invalid TARGET_BRANCH format: must be alphanumeric with /, _, ., - (max 200 chars)`
+    );
+  }
+  if (config.parentBranchName && !RE_SAFE_BRANCH.test(config.parentBranchName)) {
+    throw new HarnessError(
+      ERROR_CODES.config,
+      `Invalid PARENT_BRANCH_NAME format: must be alphanumeric with /, _, ., - (max 200 chars)`
+    );
+  }
+  if (config.parentSessionId && !RE_UUID.test(config.parentSessionId)) {
+    throw new HarnessError(
+      ERROR_CODES.config,
+      `Invalid PARENT_SESSION_ID format: must be a valid UUID`
     );
   }
 }
@@ -391,11 +422,18 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
     if (entries && entries.length > 0) {
       const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
       let downloaded = 0;
+      const resolvedLocalDir = path.resolve(localDir);
       for (const entry of entries) {
         const relativePath = entry.key.slice(normalizedPrefix.length);
         if (!relativePath) continue;
 
         const localPath = path.join(localDir, relativePath);
+        const resolvedLocalPath = path.resolve(localPath);
+        if (!resolvedLocalPath.startsWith(resolvedLocalDir + path.sep) && resolvedLocalPath !== resolvedLocalDir) {
+          log("error", `Path traversal attempt blocked: ${entry.key}`);
+          continue;
+        }
+
         fs.mkdirSync(path.dirname(localPath), { recursive: true });
 
         const data = await downloadFromPresignedUrl(entry.url);
@@ -432,6 +470,7 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
   } while (continuationToken);
 
   let downloaded = 0;
+  const resolvedDir = path.resolve(localDir);
   for (const obj of objects) {
     if (obj.Size > MAX_FILE_SIZE) {
       log("info", `Skipping large file (${obj.Size} bytes): ${obj.Key}`);
@@ -441,6 +480,12 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
     if (!relativePath) continue;
 
     const localPath = path.join(localDir, relativePath);
+    const resolvedPath = path.resolve(localPath);
+    if (!resolvedPath.startsWith(resolvedDir + path.sep) && resolvedPath !== resolvedDir) {
+      log("error", `Path traversal attempt blocked: ${obj.Key}`);
+      continue;
+    }
+
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
 
     const data = await downloadFromS3(obj.Key);
@@ -658,7 +703,8 @@ function writeContextPackFiles(workDir, pack) {
         const safeName = (artifact.type || "artifact")
           .toLowerCase()
           .replace(/[^a-z0-9_-]/g, "_");
-        const fileName = `${safeName}-${artifact.id}.md`;
+        const safeId = String(artifact.id || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+        const fileName = `${safeName}-${safeId}.md`;
         const header = `# ${artifact.title || "Untitled"}\n\n`;
         fs.writeFileSync(
           path.join(artifactsDir, fileName),

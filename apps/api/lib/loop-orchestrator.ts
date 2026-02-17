@@ -501,7 +501,13 @@ export async function launchLoop(
 
     // 5. Generate pre-signed GET URL for context pack so the container can
     // download it without direct S3 credentials (multi-tenant isolation).
-    const s3ContextUrl = await generateDownloadUrl(s3ContextKey);
+    // Use a short TTL (10 min) since the container downloads immediately on start.
+    // This limits the exposure window for secrets in the context pack.
+    const CONTEXT_PACK_URL_TTL_SECONDS = 600; // 10 minutes
+    const s3ContextUrl = await generateDownloadUrl(
+      s3ContextKey,
+      CONTEXT_PACK_URL_TTL_SECONDS
+    );
 
     // 6. Resolve parent state info for resume (if this is a child loop)
     const parentInfo = loop.parentLoopId
@@ -754,9 +760,24 @@ export async function handleLoopEvent(
       );
       // Scrub secrets from the S3 context pack now that the container is running.
       // The container has already consumed the secrets at this point.
+      // This is a critical security step — do not silently swallow errors.
       const loop = await loopsService.findById(loopId, organizationId);
       if (loop?.s3StateKey) {
-        scrubContextPackSecrets(loop.s3StateKey).catch(() => {});
+        try {
+          await scrubContextPackSecrets(loop.s3StateKey);
+        } catch (scrubError) {
+          log.error(
+            "[loop-orchestrator] Failed to scrub secrets from context pack — secrets may still be in S3",
+            {
+              loopId,
+              s3StateKey: loop.s3StateKey,
+              error:
+                scrubError instanceof Error
+                  ? scrubError.message
+                  : String(scrubError),
+            }
+          );
+        }
       }
       return [event];
     }

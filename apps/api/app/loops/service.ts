@@ -596,14 +596,17 @@ export const loopsService = {
       })
     );
 
-    // Transform DB events to API LoopEvent type
-    return events.map((e) => ({
-      type: e.type,
-      ...(e.data as Record<string, unknown>),
-      timestamp:
-        (e.data as Record<string, unknown>).timestamp ??
-        e.createdAt.toISOString(),
-    })) as unknown as LoopEvent[];
+    // Transform DB events to API LoopEvent type.
+    // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
+    // (if present) does not overwrite the canonical DB-stored event type.
+    return events.map((e) => {
+      const data = (e.data as Record<string, unknown>) ?? {};
+      return {
+        ...data,
+        type: e.type,
+        timestamp: data.timestamp ?? e.createdAt.toISOString(),
+      };
+    }) as unknown as LoopEvent[];
   },
 
   /**
@@ -646,14 +649,17 @@ export const loopsService = {
       withDb((db) => db.loopEvent.count({ where })),
     ]);
 
-    // Transform DB events to API LoopEvent type
-    const data = events.map((e) => ({
-      type: e.type,
-      ...(e.data as Record<string, unknown>),
-      timestamp:
-        (e.data as Record<string, unknown>).timestamp ??
-        e.createdAt.toISOString(),
-    })) as unknown as LoopEvent[];
+    // Transform DB events to API LoopEvent type.
+    // IMPORTANT: `type` must come AFTER the spread so that e.data's `type` field
+    // (if present) does not overwrite the canonical DB-stored event type.
+    const data = events.map((e) => {
+      const eventData = (e.data as Record<string, unknown>) ?? {};
+      return {
+        ...eventData,
+        type: e.type,
+        timestamp: eventData.timestamp ?? e.createdAt.toISOString(),
+      };
+    }) as unknown as LoopEvent[];
 
     return { data, total };
   },
