@@ -17,6 +17,7 @@ import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
+  type Prisma,
   ArtifactType as PrismaArtifactType,
   withDb,
 } from "@repo/database";
@@ -90,6 +91,22 @@ async function getCommitterInfo(
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+/** Artifact with workstream, project/repos, and sibling PRD artifacts included. */
+type ArtifactWithRegenerationContext = Prisma.ArtifactGetPayload<{
+  include: {
+    workstream: {
+      include: {
+        project: {
+          include: {
+            repositories: true;
+          };
+        };
+        artifacts: true;
+      };
+    };
+  };
+}>;
 
 /**
  * Artifacts service - handles database operations for artifact management
@@ -559,11 +576,7 @@ export const artifactsService = {
   /**
    * Find the source PRD in the workstream for the artifact.
    */
-  async findSourceWithContent(
-    artifact: NonNullable<
-      Awaited<ReturnType<typeof this.findWithRegenerationContext>>
-    >
-  ) {
+  async findSourceWithContent(artifact: ArtifactWithRegenerationContext) {
     const sourceLinks = await entityLinksService.findSourceLinks(
       artifact.id,
       "ARTIFACT",
@@ -831,8 +844,7 @@ Analyze the content at this link and identify capabilities or features that coul
       | typeof PrismaArtifactType.PRD
       | typeof PrismaArtifactType.IMPLEMENTATION_PLAN;
     typeLabel: string;
-    // biome-ignore lint/suspicious/noExplicitAny: internal helper uses Prisma's complex inferred type
-    resolveRepo: (artifact: any) => Promise<{
+    resolveRepo: (artifact: ArtifactWithRegenerationContext) => Promise<{
       targetRepo: string | null;
       targetBranch: string;
       sessionId: string;
