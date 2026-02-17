@@ -16,11 +16,10 @@ export type HandledPullRequestReviewEvent =
 
 /**
  * Priority order for review decisions. Higher numbers take precedence.
- * DISMISSED always wins (highest priority).
- * Re-submitted reviews after dismissal use priority comparison against current state.
+ * DISMISSED reviews are excluded from aggregate computation (filtered before this is used).
+ * Per-reviewer records still store DISMISSED for audit purposes.
  */
 const REVIEW_DECISION_PRIORITY = {
-  [ReviewDecision.Dismissed]: 4,
   [ReviewDecision.ChangesRequested]: 3,
   [ReviewDecision.Approved]: 2,
   [ReviewDecision.Commented]: 1,
@@ -46,19 +45,27 @@ function mapReviewStateToDecision(state: string): ReviewDecision | null {
 
 /**
  * Compute the aggregate review decision from a list of per-reviewer states.
- * Takes the highest-priority value across all reviewers (worst-case).
- * Returns null if no reviews exist.
+ * Filters out DISMISSED reviews (neutralized by admin action), then takes
+ * the highest-priority value across remaining active reviewers.
+ * Returns null if no active reviews exist.
  */
 function computeAggregateReviewDecision(
   reviewStates: ReviewDecision[]
 ): ReviewDecision | null {
-  if (reviewStates.length === 0) {
+  const activeStates = reviewStates.filter(
+    (s) => s !== ReviewDecision.Dismissed
+  );
+
+  if (activeStates.length === 0) {
     return null;
   }
 
-  let highest: ReviewDecision = reviewStates[0];
-  for (const state of reviewStates) {
-    if (REVIEW_DECISION_PRIORITY[state] > REVIEW_DECISION_PRIORITY[highest]) {
+  let highest: ReviewDecision = activeStates[0];
+  for (const state of activeStates) {
+    if (
+      REVIEW_DECISION_PRIORITY[state as keyof typeof REVIEW_DECISION_PRIORITY] >
+      REVIEW_DECISION_PRIORITY[highest as keyof typeof REVIEW_DECISION_PRIORITY]
+    ) {
       highest = state;
     }
   }
@@ -256,10 +263,11 @@ async function handleDismissedReview(
  *
  * Per-reviewer tracking: Each reviewer's latest review is stored in GitHubPRReview
  * (keyed by pullRequestId + authorLogin). The aggregate reviewDecision on GitHubPullRequest
- * is computed as the highest-priority value across all reviewers.
+ * is computed as the highest-priority value across active (non-dismissed) reviewers.
+ * DISMISSED reviews are excluded from the aggregate but retained in per-reviewer records.
  *
  * Priority order (highest to lowest):
- * DISMISSED > CHANGES_REQUESTED > APPROVED > COMMENTED > null
+ * CHANGES_REQUESTED > APPROVED > COMMENTED > null
  */
 export async function handlePullRequestReview(
   event: HandledPullRequestReviewEvent

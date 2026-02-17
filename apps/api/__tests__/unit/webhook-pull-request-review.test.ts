@@ -4,7 +4,7 @@
  * Tests the handlePullRequestReview function which processes PR review events:
  * - submitted (approved/changes_requested) → Upserts per-reviewer record, recomputes aggregate
  * - dismissed → Sets reviewer to DISMISSED, recomputes aggregate
- * - Priority-based aggregate decision logic (DISMISSED > CHANGES_REQUESTED > APPROVED > COMMENTED)
+ * - Priority-based aggregate decision logic (CHANGES_REQUESTED > APPROVED > COMMENTED, DISMISSED filtered)
  * - Multi-reviewer scenarios (approval recovery, re-submit after dismissal)
  * - Missing repository/PR → Graceful early exit
  */
@@ -421,7 +421,7 @@ describe("handlePullRequestReview", () => {
   });
 
   describe("dismissed action", () => {
-    it("always updates reviewDecision to DISMISSED, overwriting any existing value", async () => {
+    it("sets reviewer to DISMISSED and recomputes aggregate from remaining active reviews", async () => {
       const repository = createRepository(123);
       const pullRequest = createPullRequest({
         number: 45,
@@ -474,10 +474,10 @@ describe("handlePullRequestReview", () => {
         })
       );
 
-      // Should update aggregate to DISMISSED
+      // Aggregate should be null (no active reviews after dismissal)
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
         where: { id: "pr-uuid-dismiss" },
-        data: { reviewDecision: "DISMISSED" },
+        data: { reviewDecision: null },
       });
     });
   });
@@ -538,11 +538,11 @@ describe("handlePullRequestReview", () => {
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
     });
 
-    it("should allow DISMISSED to overwrite any existing decision via aggregate", async () => {
+    it("dismissed review is excluded from aggregate, remaining reviewer's state wins", async () => {
       const repository = createRepository(789);
       const pullRequest = createPullRequest({
         number: 48,
-        title: "Test dismissed priority",
+        title: "Test dismissed filtering",
       });
       const review = createReview({
         id: 7,
@@ -571,7 +571,7 @@ describe("handlePullRequestReview", () => {
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
-      // After upsert, all reviews include the DISMISSED one
+      // After upsert: reviewer-A dismissed, reviewer-B still has CHANGES_REQUESTED
       mockTx.gitHubPRReview.findMany.mockResolvedValue([
         { state: "DISMISSED" },
         { state: "CHANGES_REQUESTED" },
@@ -579,10 +579,10 @@ describe("handlePullRequestReview", () => {
 
       await handlePullRequestReview(event);
 
-      // Should update aggregate to DISMISSED (highest priority)
+      // Aggregate should be CHANGES_REQUESTED (DISMISSED is filtered out)
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
         where: { id: "pr-uuid-dismiss-priority" },
-        data: { reviewDecision: "DISMISSED" },
+        data: { reviewDecision: "CHANGES_REQUESTED" },
       });
     });
 
