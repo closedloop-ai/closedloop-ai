@@ -18,7 +18,7 @@ type PullRequestFeedbackSectionProps = {
 
 /**
  * PR Feedback section for implementation plan metadata panel.
- * Displays star rating, aggregate statistics, and optional comment textarea.
+ * Displays star rating, aggregate statistics, and required comment textarea.
  *
  * Comment rendering uses React text nodes (Textarea value prop) which is XSS-safe.
  * Comments are stored as plain text.
@@ -39,7 +39,7 @@ export function PullRequestFeedbackSection({
   useEffect(() => {
     if (userRating && !isEditing) {
       setLocalScore(userRating.score);
-      setLocalComment(userRating.comment ?? "");
+      setLocalComment(userRating.comment);
     }
   }, [userRating, isEditing]);
 
@@ -69,7 +69,7 @@ export function PullRequestFeedbackSection({
     submitRating.mutate({
       pullRequestId,
       score: localScore,
-      comment: localComment || undefined,
+      comment: localComment,
     });
     setIsEditing(false);
   };
@@ -117,7 +117,7 @@ export function PullRequestFeedbackSection({
           <Textarea
             maxLength={500}
             onChange={(e) => setLocalComment(e.target.value)}
-            placeholder="Add context for your rating..."
+            placeholder="Add context for your rating (required)..."
             rows={3}
             value={localComment}
           />
@@ -133,7 +133,8 @@ export function PullRequestFeedbackSection({
                 disabled={
                   submitRating.isPending ||
                   localScore <= 0 ||
-                  !hasUnsavedChanges
+                  !hasUnsavedChanges ||
+                  localComment.trim().length === 0
                 }
                 onClick={handleSave}
                 size="sm"

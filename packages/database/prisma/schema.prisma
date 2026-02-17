@@ -480,7 +480,7 @@ model PullRequestRating {
   organizationId String   @map("organization_id") @db.Uuid // Must be validated via artifact.organizationId join in service layer - GitHubPullRequest lacks direct organizationId field
   // Score validation (1-5) enforced at API layer via Zod schema
   score          Int
-  comment        String?  @db.VarChar(500)
+  comment        String   @db.VarChar(500)
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

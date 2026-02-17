@@ -81,12 +81,13 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 4,
+          comment: "Some comment",
           createdAt: new Date("2024-01-01"),
           updatedAt: new Date("2024-01-01"),
         },
       },
       commentSectionVisible: true,
-      expectedDisabled: true, // Save disabled when comment unchanged (no comment set)
+      expectedDisabled: true, // Save disabled when comment unchanged
     },
     {
       name: "rating with score 0 (edge case)",
@@ -97,6 +98,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 0,
+          comment: "x",
           createdAt: new Date("2024-01-01"),
           updatedAt: new Date("2024-01-01"),
         },
@@ -168,7 +170,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const textarea = screen.getByPlaceholderText(
-      "Add context for your rating..."
+      "Add context for your rating (required)..."
     );
     expect(textarea).toBeTruthy();
     expect((textarea as HTMLTextAreaElement).value).toBe(priorComment);
@@ -188,13 +190,13 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     expect(
-      screen.queryByPlaceholderText("Add context for your rating...")
+      screen.queryByPlaceholderText("Add context for your rating (required)...")
     ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Set 4 stars" }));
 
     expect(
-      screen.getByPlaceholderText("Add context for your rating...")
+      screen.getByPlaceholderText("Add context for your rating (required)...")
     ).toBeTruthy();
     expect(
       screen.getByRole("button", { name: SAVE_BUTTON_PATTERN })
@@ -227,6 +229,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 5,
+          comment: "Great",
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -253,6 +256,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 5,
+          comment: "Nice",
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -322,7 +326,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const textarea = screen.getByPlaceholderText(
-      "Add context for your rating..."
+      "Add context for your rating (required)..."
     ) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "New comment" } });
 
@@ -338,7 +342,7 @@ describe("PullRequestFeedbackSection", () => {
     });
   });
 
-  test("calls mutate with score only when Save is clicked after star selection", () => {
+  test("Save button is disabled when comment is empty after star selection", () => {
     const mutateFn = vi.fn();
     mockUseSubmitPullRequestRating.mockReturnValue({
       mutate: mutateFn,
@@ -357,14 +361,44 @@ describe("PullRequestFeedbackSection", () => {
       </Wrapper>
     );
 
-    // Component does not auto-submit on star click; user must click Save
     fireEvent.click(screen.getByRole("button", { name: "Set 4 stars" }));
+    const saveButton = screen.getByRole("button", {
+      name: SAVE_BUTTON_PATTERN,
+    });
+    expect(saveButton.hasAttribute("disabled")).toBe(true);
+    expect(mutateFn).not.toHaveBeenCalled();
+  });
+
+  test("calls mutate with score and comment when Save is clicked after star selection and comment entered", () => {
+    const mutateFn = vi.fn();
+    mockUseSubmitPullRequestRating.mockReturnValue({
+      mutate: mutateFn,
+      isPending: false,
+    });
+
+    mockUsePullRequestRating.mockReturnValue({
+      data: { average: 0, count: 0, userRating: null },
+      isLoading: false,
+    });
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <PullRequestFeedbackSection pullRequestId="pr-123" />
+      </Wrapper>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Set 4 stars" }));
+    const textarea = screen.getByPlaceholderText(
+      "Add context for your rating (required)..."
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "My comment" } });
     fireEvent.click(screen.getByRole("button", { name: SAVE_BUTTON_PATTERN }));
 
     expect(mutateFn).toHaveBeenCalledWith({
       pullRequestId: "pr-123",
       score: 4,
-      comment: undefined,
+      comment: "My comment",
     });
   });
 
@@ -383,6 +417,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 4,
+          comment: "OK",
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -427,7 +462,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const textarea = screen.getByPlaceholderText(
-      "Add context for your rating..."
+      "Add context for your rating (required)..."
     ) as HTMLTextAreaElement;
     expect(textarea.value).toBe("Original comment");
 
@@ -472,6 +507,41 @@ describe("PullRequestFeedbackSection", () => {
     expect(saveButton.hasAttribute("disabled")).toBe(true);
   });
 
+  test("Save button is disabled when comment is cleared to empty", () => {
+    mockUsePullRequestRating.mockReturnValue({
+      data: {
+        average: 4.0,
+        count: 1,
+        userRating: {
+          id: "rating-1",
+          userId: "user-1",
+          score: 4,
+          comment: "Existing",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      isLoading: false,
+    });
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <PullRequestFeedbackSection pullRequestId="pr-123" />
+      </Wrapper>
+    );
+
+    const textarea = screen.getByPlaceholderText(
+      "Add context for your rating (required)..."
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "" } });
+
+    const saveButton = screen.getByRole("button", {
+      name: SAVE_BUTTON_PATTERN,
+    });
+    expect(saveButton.hasAttribute("disabled")).toBe(true);
+  });
+
   test("Save Comment button is enabled when comment is modified", () => {
     mockUsePullRequestRating.mockReturnValue({
       data: {
@@ -497,7 +567,7 @@ describe("PullRequestFeedbackSection", () => {
     );
 
     const textarea = screen.getByPlaceholderText(
-      "Add context for your rating..."
+      "Add context for your rating (required)..."
     ) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "Modified comment" } });
 
@@ -516,6 +586,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 4,
+          comment: "Hi",
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -530,10 +601,10 @@ describe("PullRequestFeedbackSection", () => {
       </Wrapper>
     );
 
-    expect(screen.getByText("0 / 500")).toBeTruthy();
+    expect(screen.getByText("2 / 500")).toBeTruthy();
 
     const textarea = screen.getByPlaceholderText(
-      "Add context for your rating..."
+      "Add context for your rating (required)..."
     ) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "Hello" } });
 
@@ -554,6 +625,7 @@ describe("PullRequestFeedbackSection", () => {
           id: "rating-1",
           userId: "user-1",
           score: 4,
+          comment: "Good",
           createdAt: new Date(),
           updatedAt: new Date(),
         },

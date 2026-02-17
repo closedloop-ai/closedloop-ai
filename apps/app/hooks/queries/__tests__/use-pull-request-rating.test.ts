@@ -37,7 +37,7 @@ function buildUserRating(
     id: "rating-1",
     userId: "user-1",
     score: 4,
-    comment: undefined,
+    comment: "Test comment",
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -175,8 +175,8 @@ describe("usePullRequestRating", () => {
 
 describe("useSubmitPullRequestRating", () => {
   test.each([
-    { id: "without comment", score: 4, comment: undefined },
     { id: "with comment", score: 4, comment: "Great work!" },
+    { id: "with short comment", score: 5, comment: "OK" },
   ])("submits rating $id", async ({ score, comment }) => {
     mockApiClient.put.mockResolvedValueOnce(
       buildRatingSummary({ userRating: { score, comment } })
@@ -239,7 +239,11 @@ describe("useSubmitPullRequestRating", () => {
       wrapper: createWrapper(),
     });
 
-    result.current.mutate({ pullRequestId: "pr-1", score: 4 });
+    result.current.mutate({
+      pullRequestId: "pr-1",
+      score: 4,
+      comment: "Feedback",
+    });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
 
@@ -317,27 +321,12 @@ describe("useSubmitPullRequestRating", () => {
       { wrapper }
     );
 
-    mutationResult.current.mutate({ pullRequestId: "pr-1", score: 4 });
-
-    await waitFor(() => expect(mutationResult.current.isSuccess).toBe(true));
-  });
-
-  test("submits rating with empty comment (rating-only)", async () => {
-    mockApiClient.put.mockResolvedValueOnce(
-      buildRatingSummary({ userRating: { score: 5, comment: undefined } })
-    );
-
-    const { result } = renderHook(() => useSubmitPullRequestRating(), {
-      wrapper: createWrapper(),
+    mutationResult.current.mutate({
+      pullRequestId: "pr-1",
+      score: 4,
+      comment: "First rating",
     });
 
-    result.current.mutate({ pullRequestId: "pr-1", score: 5 });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-
-    expect(mockApiClient.put).toHaveBeenCalledWith(
-      "/pull-requests/pr-1/rating",
-      { score: 5 }
-    );
+    await waitFor(() => expect(mutationResult.current.isSuccess).toBe(true));
   });
 });

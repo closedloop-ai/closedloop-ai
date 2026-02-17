@@ -3,11 +3,11 @@
 
 /**
  * Request body for submitting or updating a pull request rating (PUT).
- * Score is required; comment is optional to support rating-only submissions.
+ * Score and comment are required; comment must be non-empty after trimming.
  */
 export type SubmitPullRequestRatingRequest = {
   score: number;
-  comment?: string;
+  comment: string;
 };
 
 /**
@@ -20,7 +20,7 @@ export type PullRequestRatingResponse = {
   id: string;
   userId: string;
   score: number;
-  comment?: string;
+  comment: string;
   createdAt: Date;
   updatedAt: Date;
 };

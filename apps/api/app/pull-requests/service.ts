@@ -72,7 +72,7 @@ export const pullRequestRatingsService = {
             id: userRating.id,
             userId: userRating.userId,
             score: userRating.score,
-            comment: userRating.comment ?? undefined,
+            comment: userRating.comment ?? "",
             createdAt: userRating.createdAt,
             updatedAt: userRating.updatedAt,
           }
@@ -90,7 +90,7 @@ export const pullRequestRatingsService = {
     userId: string,
     organizationId: string,
     score: number,
-    comment?: string
+    comment: string
   ): Promise<PullRequestRatingSummary> {
     // Use transaction for atomicity: PR lookup + rating upsert + aggregate recalculation
     // must happen atomically to ensure data consistency.
@@ -175,7 +175,7 @@ export const pullRequestRatingsService = {
           id: rating.id,
           userId: rating.userId,
           score: rating.score,
-          comment: rating.comment ?? undefined,
+          comment: rating.comment ?? "",
           createdAt: rating.createdAt,
           updatedAt: rating.updatedAt,
         },

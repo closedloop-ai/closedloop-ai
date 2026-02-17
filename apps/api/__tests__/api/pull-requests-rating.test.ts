@@ -27,7 +27,7 @@ vi.mock("@/app/pull-requests/service");
 
 type ValidScenario = {
   input: Record<string, unknown>;
-  expected: { score: number; comment?: string };
+  expected: { score: number; comment: string };
 };
 
 type InvalidScenario = {
@@ -36,29 +36,21 @@ type InvalidScenario = {
 };
 
 const VALID_SCENARIOS: Record<string, ValidScenario> = {
-  score_only: {
-    input: { score: 3 },
-    expected: { score: 3 },
-  },
   score_with_comment: {
     input: { score: 4, comment: "Good work" },
     expected: { score: 4, comment: "Good work" },
   },
   boundary_min_score: {
-    input: { score: 1 },
-    expected: { score: 1 },
+    input: { score: 1, comment: "Min" },
+    expected: { score: 1, comment: "Min" },
   },
   boundary_max_score: {
-    input: { score: 5 },
-    expected: { score: 5 },
+    input: { score: 5, comment: "Max" },
+    expected: { score: 5, comment: "Max" },
   },
   comment_at_max_length: {
     input: { score: 3, comment: "a".repeat(500) },
     expected: { score: 3, comment: "a".repeat(500) },
-  },
-  comment_explicitly_undefined: {
-    input: { score: 2, comment: undefined },
-    expected: { score: 2 },
   },
 };
 
@@ -89,6 +81,18 @@ const INVALID_SCENARIOS: Record<string, InvalidScenario> = {
   },
   comment_exceeds_max_length: {
     input: { score: 4, comment: "a".repeat(501) },
+    expectedFields: ["comment"],
+  },
+  comment_missing: {
+    input: { score: 3 },
+    expectedFields: ["comment"],
+  },
+  comment_empty_string: {
+    input: { score: 3, comment: "" },
+    expectedFields: ["comment"],
+  },
+  comment_whitespace_only: {
+    input: { score: 3, comment: "   " },
     expectedFields: ["comment"],
   },
 };
@@ -292,7 +296,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
         id: "rating-1",
         userId: "user-1",
         score: 4,
-        comment: undefined,
+        comment: "My feedback",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -305,7 +309,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
-      body: { score: 4 },
+      body: { score: 4, comment: "My feedback" },
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 
@@ -328,7 +332,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       4,
-      undefined
+      "My feedback"
     );
   });
 
@@ -369,24 +373,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     );
   });
 
-  it("passes whitespace-only comment through to service as-is", async () => {
-    const mockSummary: PullRequestRatingSummary = {
-      average: 3.0,
-      count: 1,
-      userRating: {
-        id: "rating-3",
-        userId: "user-1",
-        score: 3,
-        comment: "   ",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    };
-
-    vi.mocked(pullRequestRatingsService.upsertRating).mockResolvedValue(
-      mockSummary
-    );
-
+  it("returns 400 when comment is whitespace-only", async () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
@@ -394,14 +381,10 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 
-    expect(response.status).toBe(200);
-    expect(pullRequestRatingsService.upsertRating).toHaveBeenCalledWith(
-      "pr-1",
-      mockAuthContext.user.id,
-      mockAuthContext.user.organizationId,
-      3,
-      "   "
-    );
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(pullRequestRatingsService.upsertRating).not.toHaveBeenCalled();
   });
 
   it("updates existing rating (upsert behavior)", async () => {
@@ -439,7 +422,21 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
-      body: { score: 0 },
+      body: { score: 0, comment: "x" },
+    });
+    const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(pullRequestRatingsService.upsertRating).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when comment is missing", async () => {
+    const request = createMockRequest({
+      url: "http://localhost:3002/api/pull-requests/pr-1/rating",
+      method: "PUT",
+      body: { score: 4 },
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 
@@ -457,7 +454,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-not-found/rating",
       method: "PUT",
-      body: { score: 4 },
+      body: { score: 4, comment: "Feedback" },
     });
     const response = await PUT(
       request,
@@ -477,7 +474,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/cross-org-pr/rating",
       method: "PUT",
-      body: { score: 4 },
+      body: { score: 4, comment: "Feedback" },
     });
     const response = await PUT(
       request,
@@ -490,7 +487,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
       mockAuthContext.user.id,
       mockAuthContext.user.organizationId,
       4,
-      undefined
+      "Feedback"
     );
   });
 
@@ -502,7 +499,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
-      body: { score: 4 },
+      body: { score: 4, comment: "Feedback" },
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 
@@ -520,7 +517,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
         id: "rating-1",
         userId: "user-1",
         score: 5,
-        comment: undefined,
+        comment: "Comment",
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -533,7 +530,7 @@ describe("PUT /api/pull-requests/[id]/rating", () => {
     const request = createMockRequest({
       url: "http://localhost:3002/api/pull-requests/pr-1/rating",
       method: "PUT",
-      body: { score: 5 },
+      body: { score: 5, comment: "Comment" },
     });
     const response = await PUT(request, createMockRouteContext({ id: "pr-1" }));
 

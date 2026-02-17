@@ -126,12 +126,12 @@ describe("pullRequestRatingsService", () => {
       });
     });
 
-    it("converts comment from null to undefined in API response", async () => {
+    it("converts null comment to empty string in API response", async () => {
       const mockUserRating = {
         id: "rating-1",
         userId: "user-1",
         score: 4,
-        comment: null, // Prisma returns null
+        comment: null,
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
       };
@@ -154,7 +154,7 @@ describe("pullRequestRatingsService", () => {
         "org-1"
       );
 
-      expect(result.userRating?.comment).toBeUndefined();
+      expect(result.userRating?.comment).toBe("");
     });
 
     it("scopes aggregate query by organization ID", async () => {
@@ -196,7 +196,7 @@ describe("pullRequestRatingsService", () => {
         id: "rating-1",
         userId: "user-1",
         score: 5,
-        comment: null,
+        comment: "New rating comment",
         createdAt: new Date("2024-01-01"),
         updatedAt: new Date("2024-01-01"),
       };
@@ -222,7 +222,7 @@ describe("pullRequestRatingsService", () => {
         "user-1",
         "org-1",
         5,
-        undefined
+        "New rating comment"
       );
 
       expect(mockTx.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
@@ -244,7 +244,7 @@ describe("pullRequestRatingsService", () => {
         },
         update: {
           score: 5,
-          comment: undefined,
+          comment: "New rating comment",
           updatedAt: expect.any(Date),
         },
         create: {
@@ -252,7 +252,7 @@ describe("pullRequestRatingsService", () => {
           userId: "user-1",
           organizationId: "org-1",
           score: 5,
-          comment: undefined,
+          comment: "New rating comment",
         },
       });
 
@@ -263,7 +263,7 @@ describe("pullRequestRatingsService", () => {
           id: "rating-1",
           userId: "user-1",
           score: 5,
-          comment: undefined,
+          comment: "New rating comment",
           createdAt: mockNewRating.createdAt,
           updatedAt: mockNewRating.updatedAt,
         },
@@ -347,7 +347,8 @@ describe("pullRequestRatingsService", () => {
           "pr-not-found",
           "user-1",
           "org-1",
-          5
+          5,
+          "Comment"
         )
       ).rejects.toThrow(PullRequestNotFoundError);
     });
@@ -373,7 +374,13 @@ describe("pullRequestRatingsService", () => {
       mockTx.gitHubPullRequest.findFirst = vi.fn().mockResolvedValue(null);
 
       await expect(
-        pullRequestRatingsService.upsertRating("pr-1", "user-1", "org-1", 5)
+        pullRequestRatingsService.upsertRating(
+          "pr-1",
+          "user-1",
+          "org-1",
+          5,
+          "Comment"
+        )
       ).rejects.toThrow(PullRequestNotFoundError);
     });
 
@@ -396,7 +403,7 @@ describe("pullRequestRatingsService", () => {
             id: "rating-1",
             userId: "user-1",
             score: 5,
-            comment: null,
+            comment: "Comment",
             createdAt: new Date(),
             updatedAt: new Date(),
           }),
@@ -413,7 +420,8 @@ describe("pullRequestRatingsService", () => {
         "pr-1",
         "user-1",
         "org-1",
-        5
+        5,
+        "Comment"
       );
 
       // Verify the query uses artifact relationship for organization scoping
@@ -446,7 +454,7 @@ describe("pullRequestRatingsService", () => {
             id: "rating-1",
             userId: "user-1",
             score: 5,
-            comment: null,
+            comment: "Comment",
             createdAt: new Date(),
             updatedAt: new Date(),
           }),
@@ -463,7 +471,8 @@ describe("pullRequestRatingsService", () => {
         "pr-1",
         "user-1",
         "org-1",
-        5
+        5,
+        "Comment"
       );
 
       expect(mockTx.pullRequestRating.aggregate).toHaveBeenCalledWith(
@@ -475,7 +484,7 @@ describe("pullRequestRatingsService", () => {
       );
     });
 
-    it("handles rating without comment", async () => {
+    it("persists comment in rating", async () => {
       const mockPr = {
         id: "pr-1",
         artifact: {
@@ -494,7 +503,7 @@ describe("pullRequestRatingsService", () => {
             id: "rating-1",
             userId: "user-1",
             score: 4,
-            comment: null,
+            comment: "My feedback",
             createdAt: new Date(),
             updatedAt: new Date(),
           }),
@@ -511,63 +520,22 @@ describe("pullRequestRatingsService", () => {
         "pr-1",
         "user-1",
         "org-1",
-        4
+        4,
+        "My feedback"
       );
 
       expect(mockTx.pullRequestRating.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           create: expect.objectContaining({
-            comment: undefined,
+            comment: "My feedback",
           }),
           update: expect.objectContaining({
-            comment: undefined,
+            comment: "My feedback",
           }),
         })
       );
 
-      expect(result.userRating?.comment).toBeUndefined();
-    });
-
-    it("converts null comment to undefined in response", async () => {
-      const mockPr = {
-        id: "pr-1",
-        artifact: {
-          id: "artifact-1",
-          organizationId: "org-1",
-        },
-      };
-
-      const mockTx = {
-        gitHubPullRequest: {
-          findFirst: vi.fn().mockResolvedValue(mockPr),
-        },
-        pullRequestRating: {
-          findUnique: vi.fn().mockResolvedValue(null),
-          upsert: vi.fn().mockResolvedValue({
-            id: "rating-1",
-            userId: "user-1",
-            score: 4,
-            comment: null, // Prisma returns null
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          }),
-          aggregate: vi.fn().mockResolvedValue({
-            _avg: { score: 4.0 },
-            _count: 1,
-          }),
-        },
-      };
-
-      mockWithDbTx(mockTx);
-
-      const result = await pullRequestRatingsService.upsertRating(
-        "pr-1",
-        "user-1",
-        "org-1",
-        4
-      );
-
-      expect(result.userRating?.comment).toBeUndefined();
+      expect(result.userRating?.comment).toBe("My feedback");
     });
   });
 
