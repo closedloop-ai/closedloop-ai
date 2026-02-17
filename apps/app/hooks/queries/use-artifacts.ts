@@ -271,33 +271,6 @@ export function useCreateArtifactVersion(artifactId: string) {
   });
 }
 
-/**
- * @deprecated Use useCreateArtifactVersion instead. Kept for backward compatibility
- * during the migration — will be removed when all consumers are updated.
- */
-export function useCreateNewVersion() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({ id, content }: { id: string; content: string }) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/versions`, { content }),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(variables.id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.versions(variables.id),
-      });
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
-      });
-    },
-  });
-}
-
 export function useRegenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();

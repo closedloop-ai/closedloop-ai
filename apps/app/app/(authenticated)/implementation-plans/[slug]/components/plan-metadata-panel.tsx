@@ -7,6 +7,7 @@ import type {
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon } from "lucide-react";
@@ -26,10 +27,7 @@ import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { EvaluationSection } from "./evaluation-section";
-import {
-  type PreviewDeploymentInfo,
-  PreviewDeploymentSection,
-} from "./preview-deployment-section";
+import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
 import { PullRequestSection } from "./pull-request-section";
 import { SourceArtifactSection } from "./source-artifact-section";

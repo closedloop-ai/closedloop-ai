@@ -9,6 +9,37 @@ import type {
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
+
+/**
+ * Regex pattern to match and remove judge/score suffixes from judge names.
+ * Matches: -judge, _judge, _score, -score
+ */
+const JUDGE_SUFFIX_PATTERN = /(-judge|_judge|_score|-score)$/;
+
+/**
+ * Normalizes judge names to a canonical stem format.
+ *
+ * Handles both case_id and metric_name conventions by:
+ * 1. Converting to lowercase
+ * 2. Removing trailing suffixes: -judge, _judge, _score, -score
+ * 3. Converting remaining hyphens to underscores
+ *
+ * Examples:
+ * - "clarity-judge" → "clarity"
+ * - "brevity_judge" → "brevity"
+ * - "Clarity-Judge" → "clarity"
+ * - "clarity_score" → "clarity"
+ *
+ * @param name - The judge name to normalize (from case_id or metric_name)
+ * @returns The canonical stem (lowercase, underscores, no suffix)
+ */
+export function normalizeJudgeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(JUDGE_SUFFIX_PATTERN, "")
+    .replaceAll("-", "_");
+}
 
 /** Validates and extracts a JudgesReport from unknown reportData. Returns null if invalid. */
 function parseJudgesReport(reportData: unknown): JudgesReport | null {
@@ -26,8 +57,9 @@ function extractJudgeMetric(
   caseScore: CaseScore
 ): { name: string; score: number } | null {
   const judgeName = caseScore.case_id;
+  const normalizedCaseId = normalizeJudgeName(caseScore.case_id);
   const judgeMetric = caseScore.metrics?.find(
-    (metric) => metric.metric_name === caseScore.case_id
+    (metric) => normalizeJudgeName(metric.metric_name) === normalizedCaseId
   );
   return judgeMetric ? { name: judgeName, score: judgeMetric.score } : null;
 }
@@ -244,6 +276,14 @@ export const judgesAnalyticsService = {
       })
     );
 
+    if (evaluations.length === 0) {
+      log.warn("No evaluations found for judges analytics query", {
+        organizationId,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+      });
+    }
+
     // Extract scores from reportData JSON using the "metric_name === case_id" rule
     const aggregator = extractJudgeScores(evaluations);
 
@@ -295,6 +335,18 @@ export const judgesAnalyticsService = {
         humanRatingsCount: humanRatingsByType.get(artifactType) ?? 0,
         humanCommentsCount: humanCommentsByType.get(artifactType) ?? 0,
       });
+    }
+
+    if (groups.length === 0 && evaluations.length > 0) {
+      log.warn(
+        "No judge score groups extracted despite having evaluations - possible reportData format issue",
+        {
+          organizationId,
+          evaluationCount: evaluations.length,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+        }
+      );
     }
 
     return { groups };
