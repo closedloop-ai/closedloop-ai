@@ -88,7 +88,11 @@ export async function GET(
   ]);
   if (TERMINAL_STATUSES.has(loop.status)) {
     try {
-      const events = await loopsService.getEvents(loopId, organizationId);
+      const { data: events } = await loopsService.getEventsPaginated(
+        loopId,
+        organizationId,
+        { limit: 500, offset: 0 }
+      );
       const encoder = new TextEncoder();
       const lines = events
         .map((e: LoopEvent) => `data: ${JSON.stringify(e)}\n\n`)

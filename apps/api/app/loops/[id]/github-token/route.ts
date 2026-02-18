@@ -1,22 +1,10 @@
-import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import {
+  extractBearerToken,
+  verifyLoopRunnerToken,
+} from "@/lib/auth/loop-runner-jwt";
 import { resolveGitHubToken } from "@/lib/loop-orchestrator";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
-
-function extractBearerToken(request: Request): string | Response {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length)
-    : null;
-  if (!token) {
-    return errorResponse(
-      "Missing runner token",
-      new Error("Unauthorized"),
-      401
-    );
-  }
-  return token;
-}
 
 /**
  * POST /api/loops/:id/github-token - Issue a fresh GitHub installation token.

@@ -2,7 +2,10 @@ import type {
   LoopEvent,
   LoopEventsPaginatedResponse,
 } from "@repo/api/src/types/loop";
-import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import {
+  extractBearerToken,
+  verifyLoopRunnerToken,
+} from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { handleLoopEvent } from "@/lib/loop-orchestrator";
@@ -28,21 +31,6 @@ const TERMINAL_STATUSES = new Set([
   "TIMED_OUT",
 ]);
 const TERMINAL_EVENTS = new Set(["completed", "error", "cancelled"]);
-
-function extractBearerToken(request: Request): string | Response {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length)
-    : null;
-  if (!token) {
-    return errorResponse(
-      "Missing runner token",
-      new Error("Unauthorized"),
-      401
-    );
-  }
-  return token;
-}
 
 function extractEventNonce(request: Request): string | Response {
   const nonce = request.headers.get("x-loop-event-nonce");

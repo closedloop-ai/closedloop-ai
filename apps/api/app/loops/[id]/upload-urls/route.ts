@@ -1,23 +1,11 @@
 import { z } from "zod";
-import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import {
+  extractBearerToken,
+  verifyLoopRunnerToken,
+} from "@/lib/auth/loop-runner-jwt";
 import { generateUploadUrl, validateKeyBelongsToLoop } from "@/lib/loop-state";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
-
-function extractBearerToken(request: Request): string | Response {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length)
-    : null;
-  if (!token) {
-    return errorResponse(
-      "Missing runner token",
-      new Error("Unauthorized"),
-      401
-    );
-  }
-  return token;
-}
 
 const uploadUrlsValidator = z.object({
   keys: z.array(z.string().min(1).max(1024)).min(1).max(500),

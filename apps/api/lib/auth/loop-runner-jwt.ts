@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
+import { errorResponse } from "@/lib/route-utils";
 
 const AUDIENCE = "closedloop-runner";
 const ISSUER = "closedloop-api";
@@ -71,4 +72,23 @@ export async function verifyLoopRunnerToken(
   }
 
   return { loopId: payload.sub, organizationId: orgId, tokenId: payload.jti };
+}
+
+/**
+ * Extract a Bearer token from the Authorization header.
+ * Returns the token string on success, or a 401 Response on failure.
+ */
+export function extractBearerToken(request: Request): string | Response {
+  const authHeader = request.headers.get("authorization");
+  const token = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length)
+    : null;
+  if (!token) {
+    return errorResponse(
+      "Missing runner token",
+      new Error("Unauthorized"),
+      401
+    );
+  }
+  return token;
 }
