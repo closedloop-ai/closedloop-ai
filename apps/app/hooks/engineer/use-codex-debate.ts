@@ -184,6 +184,7 @@ export function useCodexDebate({
       history: { sender: string; content: string }[]
     ) => {
       const url = `/api/engineer/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const startedAt = new Date().toISOString();
 
       const abortController = new AbortController();
       codexAbortRef.current = abortController;
@@ -261,7 +262,7 @@ export function useCodexDebate({
                 id: "codex-streaming",
                 role: "assistant",
                 content: accumulated,
-                timestamp: new Date().toISOString(),
+                timestamp: startedAt,
                 sender: "codex",
                 blocks: [...reasoningBlocks],
               });
@@ -272,7 +273,7 @@ export function useCodexDebate({
                 id: "codex-streaming",
                 role: "assistant",
                 content: accumulated,
-                timestamp: new Date().toISOString(),
+                timestamp: startedAt,
                 sender: "codex",
                 blocks:
                   reasoningBlocks.length > 0 ? [...reasoningBlocks] : undefined,

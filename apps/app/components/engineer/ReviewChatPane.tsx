@@ -112,6 +112,11 @@ export function ReviewChatPane({
   // Guard against StrictMode double-mount: only start the review once.
   // Refs survive across StrictMode re-mounts, so the second mount sees true and skips.
   const hasStartedRef = useRef(false);
+  // Stable timestamp for the review bubble — captured once when the review starts.
+  // For restored reviews (initialOutput), use the current time at mount.
+  const reviewStartedAtRef = useRef(
+    initialOutput ? new Date().toISOString() : ""
+  );
 
   // Phase 2: chat
   const [chatInput, setChatInput] = useState("");
@@ -232,6 +237,7 @@ export function ReviewChatPane({
   }, [initialOutput, startReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startReview(signal: AbortSignal) {
+    reviewStartedAtRef.current = new Date().toISOString();
     setIsReviewing(true);
     setReviewOutput("");
     setReviewDone(false);
@@ -820,7 +826,7 @@ export function ReviewChatPane({
             isStreaming
             messageRole="assistant"
             sender={config.provider === "claude" ? "claude" : "codex"}
-            timestamp={new Date().toISOString()}
+            timestamp={reviewStartedAtRef.current}
           >
             <MessageContent
               blocks={
@@ -840,7 +846,7 @@ export function ReviewChatPane({
             <ChatBubble
               messageRole="assistant"
               sender={config.provider === "claude" ? "claude" : "codex"}
-              timestamp={new Date().toISOString()}
+              timestamp={reviewStartedAtRef.current}
             >
               <MessageContent
                 blocks={
@@ -921,7 +927,7 @@ export function ReviewChatPane({
               messageRole="assistant"
               roleClassName="text-emerald-600 dark:text-emerald-400"
               roleLabel="cl.dev"
-              timestamp={new Date().toISOString()}
+              timestamp={stream.streamStartedAt}
             >
               <MessageContent
                 blocks={stream.streamingBlocks}

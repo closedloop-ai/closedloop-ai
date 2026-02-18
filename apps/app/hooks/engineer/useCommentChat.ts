@@ -35,6 +35,8 @@ export type UseCommentChatReturn = {
   setInput: (value: string) => void;
   isStreaming: boolean;
   isWaitingForResponse: boolean;
+  /** Stable timestamp captured once when streaming begins */
+  streamStartedAt: string;
   streamingContent: string;
   streamingBlocks: ContentBlock[];
   error: string | null;
@@ -102,6 +104,7 @@ export function useCommentChat({
 }: UseCommentChatOptions): UseCommentChatReturn {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamStartedAt, setStreamStartedAt] = useState("");
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
   const [pendingUserMessage, setPendingUserMessage] =
@@ -405,6 +408,7 @@ export function useCommentChat({
       };
       setPendingUserMessage(userMessage);
 
+      setStreamStartedAt(new Date().toISOString());
       setIsStreaming(true);
       setStreamingContent("");
       setStreamingBlocks([]);
@@ -475,6 +479,7 @@ export function useCommentChat({
         setStreamingBlocks([]);
         setPendingUserMessage(null);
         abortControllerRef.current = null;
+        setStreamStartedAt("");
       }
     },
     [
@@ -838,6 +843,7 @@ export function useCommentChat({
     setInput,
     isStreaming,
     isWaitingForResponse,
+    streamStartedAt,
     streamingContent,
     streamingBlocks,
     error,

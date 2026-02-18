@@ -527,11 +527,14 @@ export function CommentChat({
         <ChatMessagesArea
           canForward={canForward}
           codexChatPending={codexChatStream.pendingUserMessage}
+          codexChatStreamStartedAt={codexChatStream.streamStartedAt}
           debate={debate}
           debateClaudeBlocks={debateClaudeStream.streamingBlocks}
           debateClaudeContent={debateClaudeStream.streamingContent}
           debateClaudeStreaming={debateClaudeStream.isStreaming}
+          debateClaudeStreamStartedAt={debateClaudeStream.streamStartedAt}
           debateCodexPending={debate.codexStream.pendingUserMessage}
+          debateCodexStreamStartedAt={debate.codexStream.streamStartedAt}
           debateMode={debate.debateMode}
           error={chat.error}
           hasAcceptedChanges={chat.hasAcceptedChanges}
@@ -550,6 +553,7 @@ export function CommentChat({
           respondedMessageIds={respondedMessageIds}
           streamingBlocks={chat.streamingBlocks}
           streamingContent={chat.streamingContent}
+          streamStartedAt={chat.streamStartedAt}
         />
         <ChatInputArea
           autoDebate={debate.autoDebate}
@@ -1024,6 +1028,7 @@ function ChatMessagesArea({
   isWaitingForResponse,
   streamingContent,
   streamingBlocks,
+  streamStartedAt,
   error,
   hasAcceptedChanges,
   onAcceptChanges,
@@ -1042,6 +1047,9 @@ function ChatMessagesArea({
   debateClaudeStreaming,
   debateClaudeContent,
   debateClaudeBlocks,
+  debateClaudeStreamStartedAt,
+  debateCodexStreamStartedAt,
+  codexChatStreamStartedAt,
 }: Readonly<{
   isLoadingHistory: boolean;
   messages: ChatMessage[];
@@ -1049,6 +1057,7 @@ function ChatMessagesArea({
   isWaitingForResponse: boolean;
   streamingContent: string;
   streamingBlocks: ContentBlock[];
+  streamStartedAt: string;
   error: string | null;
   hasAcceptedChanges: boolean;
   onAcceptChanges: () => void;
@@ -1068,6 +1077,9 @@ function ChatMessagesArea({
   debateClaudeStreaming: boolean;
   debateClaudeContent: string;
   debateClaudeBlocks: ContentBlock[];
+  debateClaudeStreamStartedAt: string;
+  debateCodexStreamStartedAt: string;
+  codexChatStreamStartedAt: string;
 }>) {
   // Smart scroll state — must be before early returns to satisfy hook rules
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1191,7 +1203,7 @@ function ChatMessagesArea({
             id: "streaming",
             role: "assistant",
             content: streamingContent,
-            timestamp: new Date().toISOString(),
+            timestamp: streamStartedAt,
             blocks: streamingBlocks,
           }}
         />
@@ -1218,7 +1230,7 @@ function ChatMessagesArea({
             isStreaming
             messageRole="assistant"
             sender="claude"
-            timestamp={new Date().toISOString()}
+            timestamp={debateClaudeStreamStartedAt}
           >
             <MessageContent
               blocks={debateClaudeBlocks}
@@ -1233,7 +1245,7 @@ function ChatMessagesArea({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={debateCodexStreamStartedAt}
         >
           <MessageContent
             blocks={debateCodexPending.blocks}
@@ -1248,7 +1260,7 @@ function ChatMessagesArea({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexChatStreamStartedAt}
         >
           <MessageContent
             blocks={codexChatPending.blocks}

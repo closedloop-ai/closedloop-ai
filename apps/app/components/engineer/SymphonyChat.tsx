@@ -3137,6 +3137,9 @@ type StreamingBubbleProps = Readonly<{
   codexChatMsg: ChatMessage | null;
   expandedStreamingBlocks: Set<string>;
   onToggleStreamingBlock: (id: string) => void;
+  streamStartedAt: string;
+  codexDebateStreamStartedAt: string;
+  codexChatStreamStartedAt: string;
 }>;
 
 function StreamingBubble({
@@ -3146,6 +3149,9 @@ function StreamingBubble({
   codexChatMsg,
   expandedStreamingBlocks,
   onToggleStreamingBlock,
+  streamStartedAt,
+  codexDebateStreamStartedAt,
+  codexChatStreamStartedAt,
 }: StreamingBubbleProps) {
   return (
     <>
@@ -3158,7 +3164,7 @@ function StreamingBubble({
                 {debateMode ? "Claude" : "closedloop.dev"}
               </span>
               <span className="font-mono text-[10px] text-muted-foreground/70">
-                {formatTime(new Date().toISOString())}
+                {formatTime(streamStartedAt)}
               </span>
             </div>
             {/* Streaming content bubble */}
@@ -3209,7 +3215,7 @@ function StreamingBubble({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexDebateStreamStartedAt}
         >
           <MessageContent
             blocks={codexDebateMsg.blocks}
@@ -3223,7 +3229,7 @@ function StreamingBubble({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexChatStreamStartedAt}
         >
           <MessageContent
             blocks={codexChatMsg.blocks}
@@ -3387,11 +3393,14 @@ function ChatMessagesArea({
           })}
           <StreamingBubble
             codexChatMsg={codexChatStream.pendingUserMessage}
+            codexChatStreamStartedAt={codexChatStream.streamStartedAt}
             codexDebateMsg={debate.codexStream.pendingUserMessage}
+            codexDebateStreamStartedAt={debate.codexStream.streamStartedAt}
             debateMode={debate.debateMode}
             expandedStreamingBlocks={expandedStreamingBlocks}
             onToggleStreamingBlock={onToggleStreamingBlock}
             stream={stream}
+            streamStartedAt={stream.streamStartedAt}
           />
           <div ref={messagesEndRef} />
         </>

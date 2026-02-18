@@ -172,6 +172,8 @@ export function ChatModeView({
               />
               <StreamingBubbles
                 activeStream={activeStream}
+                activeStreamStartedAt={activeStream.streamStartedAt}
+                codexStreamStartedAt={debate.codexStream.streamStartedAt}
                 debate={debate}
                 selectedFindingIndex={selectedFindingIndex}
               />
@@ -424,12 +426,16 @@ type StreamingBubblesProps = {
   activeStream: ReturnType<typeof useChatStream>;
   debate: ReturnType<typeof useCodexDebate>;
   selectedFindingIndex: number | null;
+  activeStreamStartedAt: string;
+  codexStreamStartedAt: string;
 };
 
 function StreamingBubbles({
   activeStream,
   debate,
   selectedFindingIndex,
+  activeStreamStartedAt,
+  codexStreamStartedAt,
 }: Readonly<StreamingBubblesProps>) {
   return (
     <>
@@ -444,7 +450,7 @@ function StreamingBubbles({
                 ? "claude"
                 : undefined
             }
-            timestamp={new Date().toISOString()}
+            timestamp={activeStreamStartedAt}
           >
             <MessageContent
               blocks={activeStream.streamingBlocks}
@@ -458,7 +464,7 @@ function StreamingBubbles({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexStreamStartedAt}
         >
           <MessageContent
             blocks={debate.codexStream.pendingUserMessage.blocks}
