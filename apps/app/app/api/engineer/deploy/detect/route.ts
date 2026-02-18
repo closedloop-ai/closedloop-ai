@@ -12,7 +12,7 @@ import {
 /**
  * API route for on-demand deployment detection (heuristic + LLM fallback)
  *
- * POST /api/deploy/detect
+ * POST /api/engineer/deploy/detect
  * Body: { repoPath: string }
  */
 export async function POST(request: NextRequest) {

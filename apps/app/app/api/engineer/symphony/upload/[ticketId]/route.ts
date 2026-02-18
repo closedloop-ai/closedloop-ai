@@ -20,7 +20,7 @@ const EXT_MAP: Record<string, string> = {
 };
 
 /**
- * POST /api/symphony/upload/[ticketId]?repo=<repoPath>
+ * POST /api/engineer/symphony/upload/[ticketId]?repo=<repoPath>
  *
  * Accepts multipart/form-data with image files.
  * Saves to .claude/work/attachments/ and returns metadata.

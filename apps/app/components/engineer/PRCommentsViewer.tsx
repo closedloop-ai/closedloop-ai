@@ -106,6 +106,18 @@ function buildThreads(comments: PRComment[]): CommentThread[] {
   );
 }
 
+function isThreadVisible(status: string, filter: FilterType): boolean {
+  if (filter === "pending") {
+    return status === "pending";
+  }
+  if (filter === "resolved") {
+    return (
+      status === "addressed" || status === "responded" || status === "dismissed"
+    );
+  }
+  return true;
+}
+
 /**
  * PRCommentsViewer displays all PR comments with filtering and status tracking.
  * Polls for new comments every 30 seconds when visible.
@@ -175,24 +187,9 @@ export function PRCommentsViewer({
   // Filter threads based on selected filter, grouped into inline and general
   const filteredThreads = useMemo(() => {
     const filtered = threads.filter((thread) => {
-      const status = commentStatuses[thread.root.id]?.status || "pending";
-
-      if (filter === "all") {
-        return true;
-      }
-      if (filter === "pending") {
-        return status === "pending";
-      }
-      if (filter === "resolved") {
-        return (
-          status === "addressed" ||
-          status === "responded" ||
-          status === "dismissed"
-        );
-      }
-      return true;
+      const status = commentStatuses[thread.root.id]?.status ?? "pending";
+      return isThreadVisible(status, filter);
     });
-
     return {
       inline: filtered.filter((t) => t.root.path),
       general: filtered.filter((t) => !t.root.path),

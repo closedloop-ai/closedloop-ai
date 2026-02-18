@@ -85,7 +85,7 @@ export async function GET(
 }
 
 /**
- * POST /api/symphony/chat-history/[ticketId]?repo=...
+ * POST /api/engineer/symphony/chat-history/[ticketId]?repo=...
  *
  * Appends a message to the chat history
  * Body: { message: ChatMessage }

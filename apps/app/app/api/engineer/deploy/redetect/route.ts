@@ -10,7 +10,7 @@ import {
  * API route to re-detect deployment configuration
  * Called after a cached deploy/teardown command fails.
  *
- * POST /api/deploy/redetect
+ * POST /api/engineer/deploy/redetect
  * Body: { repoPath }
  */
 export async function POST(request: NextRequest) {

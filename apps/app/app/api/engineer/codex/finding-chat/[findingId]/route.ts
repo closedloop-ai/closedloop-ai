@@ -251,7 +251,7 @@ export async function GET(
 }
 
 /**
- * POST /api/codex/finding-chat/[findingId]?ticketId=...&repo=...
+ * POST /api/engineer/codex/finding-chat/[findingId]?ticketId=...&repo=...
  *
  * Sends a message to Claude for discussing a specific finding and streams the response.
  * Body: { message: string, findingContext?: FindingContext }

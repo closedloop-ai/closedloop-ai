@@ -351,7 +351,7 @@ export async function GET(
 }
 
 /**
- * POST /api/symphony/comment-chat/[commentId]?ticketId=...&repo=...
+ * POST /api/engineer/symphony/comment-chat/[commentId]?ticketId=...&repo=...
  *
  * Sends a message to Claude for addressing a PR comment and streams the response.
  * Body: { message: string, commentContext?: CommentContext }

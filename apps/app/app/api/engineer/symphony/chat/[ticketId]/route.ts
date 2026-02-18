@@ -387,7 +387,7 @@ async function buildNewSessionPrompt(
 }
 
 /**
- * POST /api/symphony/chat/[ticketId]?repo=...
+ * POST /api/engineer/symphony/chat/[ticketId]?repo=...
  *
  * Sends a message to Claude and streams the response.
  * Body: { message: string }

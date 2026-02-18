@@ -99,7 +99,7 @@ function ghPrCommentViaStdin(
 }
 
 /**
- * POST /api/git/pr/inline-comment
+ * POST /api/engineer/git/pr/inline-comment
  *
  * Submit a new PR comment — inline (file-specific) or general.
  * - Inline: requires path, line, commitSha → uses GitHub REST API for pull request comments

@@ -5,7 +5,7 @@ import { triggerAsyncLearningExtraction } from "@/lib/engineer/learnings";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
- * POST /api/symphony/extract-learnings
+ * POST /api/engineer/symphony/extract-learnings
  *
  * Triggers async learning extraction from a chat session.
  * Called by the /reflect command or automatically after file-editing chats.

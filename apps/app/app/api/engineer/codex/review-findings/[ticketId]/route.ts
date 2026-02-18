@@ -87,7 +87,7 @@ export async function GET(
 }
 
 /**
- * POST /api/codex/review-findings/[ticketId]?repo=...&provider=claude
+ * POST /api/engineer/codex/review-findings/[ticketId]?repo=...&provider=claude
  *
  * Two modes:
  * - Save findings: body = { provider, model, findings }

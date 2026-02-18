@@ -43,7 +43,7 @@ function expandPath(path: string): string {
 /**
  * API route to get the diff for a specific file
  *
- * POST /api/git/diff
+ * POST /api/engineer/git/diff
  * Body: { filePath: string, repoPath: string, baseBranch?: string }
  *
  * When baseBranch is provided, compares HEAD against origin/{baseBranch}
