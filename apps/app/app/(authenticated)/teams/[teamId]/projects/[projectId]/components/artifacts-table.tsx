@@ -50,7 +50,9 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
+import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
+import { useSortParams } from "@/hooks/use-sort-params";
 import {
   getArtifactRoute,
   isNavigableArtifact,
@@ -61,7 +63,8 @@ import {
   ARTIFACT_STATUS_LABELS,
   ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
-import { sortByDateDesc } from "@/lib/table-utils";
+import type { SortConfig, SortDirection } from "@/lib/table-utils";
+import { sortTableData } from "@/lib/table-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { ArtifactTypeBadge } from "./artifact-type-badge";
 import { SortableArtifactRow } from "./sortable-artifact-row";
@@ -91,6 +94,34 @@ const ARTIFACT_SECTIONS: {
   },
 ];
 
+const ARTIFACT_SORT_COLUMNS = [
+  "title",
+  "type",
+  "status",
+  "creator",
+  "updatedAt",
+] as const;
+
+type ArtifactSortColumn = (typeof ARTIFACT_SORT_COLUMNS)[number];
+
+const ARTIFACT_SORT_CONFIGS: Record<
+  ArtifactSortColumn,
+  SortConfig<ArtifactWithWorkstream>
+> = {
+  title: { key: "title", columnType: "string" },
+  type: { key: "type", columnType: "string" },
+  status: { key: "status", columnType: "string" },
+  creator: {
+    key: "owner",
+    comparator: (a, b) => {
+      const aName = a.owner ? getUserDisplayName(a.owner) : "";
+      const bName = b.owner ? getUserDisplayName(b.owner) : "";
+      return aName.localeCompare(bName);
+    },
+  },
+  updatedAt: { key: "updatedAt", columnType: "date" },
+};
+
 function ArtifactLinkCell({ route }: { route: string | null }) {
   if (!route) {
     return <span className="text-muted-foreground text-sm">n/a</span>;
@@ -109,6 +140,9 @@ type ArtifactSectionProps = {
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  sortBy: ArtifactSortColumn | null;
+  sortDir: SortDirection;
+  onSort: (column: ArtifactSortColumn, direction: SortDirection) => void;
 };
 
 function ArtifactSection({
@@ -118,19 +152,25 @@ function ArtifactSection({
   onRowClick,
   onStatusChange,
   onRequestDelete,
+  sortBy,
+  sortDir,
+  onSort,
 }: ArtifactSectionProps) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
     useState<ArtifactWithWorkstream | null>(null);
 
-  // Sort artifacts by sortOrder (ascending, nulls last)
+  // When column sort is active, use it; otherwise fall back to DnD sortOrder
   const sortedArtifacts = useMemo(() => {
+    if (sortBy) {
+      return sortTableData(artifacts, sortBy, ARTIFACT_SORT_CONFIGS, sortDir);
+    }
     return [...artifacts].sort((a, b) => {
       const orderA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
       const orderB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
       return orderA - orderB;
     });
-  }, [artifacts]);
+  }, [artifacts, sortBy, sortDir]);
 
   // Memoize artifact IDs to provide a stable reference for SortableContext
   const sortedArtifactIds = useMemo(
@@ -149,11 +189,41 @@ function ArtifactSection({
           <TableHeader>
             <TableRow>
               <TableHead className="w-8" />
-              <TableHead>Artifact</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Creator</TableHead>
-              <TableHead>Updated</TableHead>
+              <SortableColumnHeader
+                column="title"
+                label="Artifact"
+                onSort={onSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="type"
+                label="Type"
+                onSort={onSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="status"
+                label="Status"
+                onSort={onSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="creator"
+                label="Creator"
+                onSort={onSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="updatedAt"
+                label="Updated"
+                onSort={onSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
               <TableHead>Link</TableHead>
               <TableHead className="w-[50px]" />
             </TableRow>
@@ -300,6 +370,12 @@ export function ArtifactsTable({
   onDelete,
 }: ArtifactsTableProps) {
   const router = useRouter();
+  const { sortBy, sortDir, setSort } = useSortParams<ArtifactSortColumn>({
+    defaultColumn: null,
+    defaultDirection: "desc",
+    validColumns: ARTIFACT_SORT_COLUMNS,
+  });
+
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
     getId: (artifact: ArtifactWithWorkstream) => artifact.id,
@@ -309,10 +385,7 @@ export function ArtifactsTable({
     () =>
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
-        artifacts: sortByDateDesc(
-          artifacts.filter((a) => section.types.has(a.type)),
-          "updatedAt"
-        ),
+        artifacts: artifacts.filter((a) => section.types.has(a.type)),
       })).filter((section) => section.artifacts.length > 0),
     [artifacts]
   );
@@ -345,8 +418,11 @@ export function ArtifactsTable({
           key={section.title}
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
+          onSort={setSort}
           onStatusChange={onStatusChange}
           projectId={projectId}
+          sortBy={sortBy}
+          sortDir={sortDir}
           title={section.title}
         />
       ))}
