@@ -57,12 +57,22 @@ export const artifactIncludeWithContext = {
       },
     },
   },
+  ...artifactIncludeWithUser,
+} as const;
+
+/**
+ * Extends artifactIncludeWithContext with the latest version content.
+ * Use only for list queries that need a snippet (e.g. engineer ticket cards).
+ * Single-artifact fetches (findById, findBySlug) don't need this — they load
+ * full version content via the dedicated /versions endpoint.
+ */
+export const artifactIncludeWithSnippet = {
+  ...artifactIncludeWithContext,
   versions: {
     orderBy: { version: "desc" as const },
     take: 1,
     select: { content: true },
   },
-  ...artifactIncludeWithUser,
 } as const;
 
 /** Valid command values for GenerationStatus. */

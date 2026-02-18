@@ -35,6 +35,7 @@ import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
+  artifactIncludeWithSnippet,
   artifactIncludeWithUser,
   generateSlug,
   parseTriggerData,
@@ -112,7 +113,7 @@ export const artifactsService = {
           ...(type ? { type } : {}),
           ...(ownerId ? { ownerId } : {}),
         },
-        include: artifactIncludeWithContext,
+        include: artifactIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
       })
     );
@@ -1975,7 +1976,10 @@ export type RequestChangesResult =
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 // Type for raw Prisma result before transformation.
-// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
+// Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
+// in artifact-utils.ts. versions is optional because findAll uses
+// artifactIncludeWithSnippet (includes versions) while findById/findBySlug use
+// artifactIncludeWithContext (omits versions — they load content via /versions).
 type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1996,7 +2000,7 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
-  versions: { content: string | null }[];
+  versions?: { content: string | null }[];
 };
 
 /**
@@ -2024,7 +2028,7 @@ function toArtifactWithWorkstream(
   generationStatusMap?: Map<string, GenerationStatus>
 ): ArtifactWithWorkstream {
   const generationStatus = generationStatusMap?.get(artifact.id);
-  const rawContent = artifact.versions[0]?.content ?? null;
+  const rawContent = artifact.versions?.[0]?.content ?? null;
   const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
   return {
