@@ -114,6 +114,9 @@ export function symphonyStatusOptions(
       const response = await fetch(
         `/api/engineer/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
       );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch symphony status: ${response.status}`);
+      }
       return response.json();
     },
     enabled: !!repoPath,
@@ -127,6 +130,9 @@ export function symphonyPlanOptions(ticketId: string, repoPath: string) {
       const response = await fetch(
         `/api/engineer/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch symphony plan: ${response.status}`);
+      }
       return response.json();
     },
   });
@@ -139,6 +145,9 @@ export function symphonyChatHistoryOptions(ticketId: string, repoPath: string) {
       const response = await fetch(
         `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch chat history: ${response.status}`);
+      }
       return response.json();
     },
   });
@@ -151,6 +160,9 @@ export function symphonyLogsOptions(ticketId: string, repoPath: string) {
       const response = await fetch(
         `/api/engineer/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
       );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch symphony logs: ${response.status}`);
+      }
       return response.json();
     },
   });
@@ -224,6 +236,9 @@ export function symphonyJudgesOptions(ticketId: string, repoPath: string) {
       const response = await fetch(
         `/api/engineer/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
+      if (!response.ok) {
+        throw new Error(`Failed to fetch judges: ${response.status}`);
+      }
       return response.json();
     },
   });
