@@ -742,15 +742,7 @@ export function TicketList({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    tickets,
-    workDirStatus,
-    pushedStatus,
-    prStatus,
-    deployStatus,
-    reposData,
-    getRepoPathForTicket,
-  ]);
+  }, [tickets, workDirStatus, pushedStatus, prStatus, deployStatus, reposData]);
 
   // Trigger LLM detection for repos that have a local deployment but no port
   useEffect(() => {
