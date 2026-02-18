@@ -224,6 +224,8 @@ model Organization {
   // Relations
   users              User[]
   teams              Team[]
+  pullRequestRatings PullRequestRating[]
+  pullRequests       GitHubPullRequest[]
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
@@ -257,8 +259,9 @@ model User {
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization @relation(fields: [organizationId], references: [id])
+  organization       Organization     @relation(fields: [organizationId], references: [id])
   teamMemberships    TeamMember[]
+  pullRequestRatings PullRequestRating[]
   ownedProjects      Project[]    @relation("ProjectOwner")
   ownedArtifacts     Artifact[]   @relation("ArtifactOwner")
   approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
@@ -390,6 +393,7 @@ model Workstream {
   issues        Issue[]
   externalLinks ExternalLink[]
   loops         Loop[]
+  pullRequests  GitHubPullRequest[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
@@ -513,6 +517,27 @@ model ArtifactRating {
   @@unique([artifactId, userId, organizationId])
   @@index([artifactId, organizationId])
   @@map("artifact_ratings")
+}
+
+model PullRequestRating {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  pullRequestId  String   @map("pull_request_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid // Enforced by check_pull_request_rating_organization_id trigger - must match github_pull_requests.organization_id
+  // Score validation (1-5) enforced at API layer via Zod schema
+  score          Int
+  comment        String   @db.VarChar(500)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  pullRequest  GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([pullRequestId, userId, organizationId])
+  @@index([pullRequestId, organizationId])
+  @@map("pull_request_ratings")
 }
 
 // =============================================================================
@@ -852,11 +877,12 @@ model GitHubInstallationRepository {
 }
 
 model GitHubPullRequest {
-  id             String          @id @default(uuid(7)) @db.Uuid
-  workstreamId   String          @map("workstream_id") @db.Uuid
-  repositoryId   String          @map("repository_id") @db.Uuid
-  artifactId     String?         @map("artifact_id") @db.Uuid
-  githubId       Int             @map("github_id")
+  id             String        @id @default(uuid(7)) @db.Uuid
+  workstreamId   String        @map("workstream_id") @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
+  repositoryId   String        @map("repository_id") @db.Uuid
+  artifactId     String?       @map("artifact_id") @db.Uuid
+  githubId       Int           @map("github_id")
   number         Int
   title          String
   body           String?         @db.Text
@@ -874,12 +900,16 @@ model GitHubPullRequest {
   updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  artifact       Artifact?              @relation(fields: [artifactId], references: [id], onDelete: SetNull)
-  reviews        GitHubPRReview[]
+  workstream     Workstream              @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  artifact       Artifact?               @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  ratings        PullRequestRating[]
   reviewComments GitHubPRReviewComment[]
+  reviews        GitHubPRReview[]
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
+  @@index([organizationId])
   @@index([artifactId])
   @@map("github_pull_requests")
 }
