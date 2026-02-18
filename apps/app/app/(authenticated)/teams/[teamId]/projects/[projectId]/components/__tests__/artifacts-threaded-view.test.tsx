@@ -1,7 +1,10 @@
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
+import {
+  createMockArtifact,
+  createMockPullRequest,
+} from "@/__tests__/fixtures/artifacts";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
 // Mock dependencies
@@ -104,6 +107,7 @@ vi.mock("@/hooks/queries/use-external-links", () => ({
 }));
 
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Template/;
+const PLAN_LABEL_PATTERN = /Plan:/;
 
 const createWorkstreamArtifact = (
   overrides: Partial<ArtifactWithWorkstream>
@@ -297,7 +301,8 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     expect(names[2].textContent).toBe("Template");
   });
 
-  test("shows workstream state badge", () => {
+  // T-2.1: WorkstreamStateBadge renders "In Progress" for IMPLEMENTATION_IN_PROGRESS state
+  test("shows workstream state badge with 'In Progress' label for IMPLEMENTATION_IN_PROGRESS", () => {
     const artifacts: ArtifactWithWorkstream[] = [
       createWorkstreamArtifact({
         id: "1",
@@ -315,7 +320,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
       <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
     );
 
-    expect(screen.getByText("Implementing")).toBeDefined();
+    expect(screen.getByText("In Progress")).toBeDefined();
   });
 });
 
@@ -682,6 +687,409 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
   });
 });
 
+// T-3.1, T-3.2: PR state badge tests for IMPLEMENTATION_PLAN artifacts
+describe("ArtifactsThreadedView - PR State Badge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
+  afterEach(cleanup);
+
+  test("renders OPEN PR state badge for IMPLEMENTATION_PLAN with open pull request", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "My Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Feature WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({ state: "OPEN" }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("Feature WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("OPEN")).toBeInTheDocument();
+  });
+
+  test("renders MERGED PR state badge for IMPLEMENTATION_PLAN with merged pull request", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "My Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Feature WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({ state: "MERGED" }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("Feature WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("MERGED")).toBeInTheDocument();
+  });
+
+  test("does not render PR state badge when pullRequest is null", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "My Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Feature WS", state: "INITIATED" },
+        pullRequest: null,
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("Feature WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText("OPEN")).not.toBeInTheDocument();
+    expect(screen.queryByText("MERGED")).not.toBeInTheDocument();
+    expect(screen.queryByText("CLOSED")).not.toBeInTheDocument();
+  });
+});
+
+// T-3.3: Review decision badge tests
+describe("ArtifactsThreadedView - Review Decision Badge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
+  afterEach(cleanup);
+
+  test("renders APPROVED review decision badge", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "Approved Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({
+          state: "OPEN",
+          reviewDecision: "APPROVED",
+        }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("APPROVED")).toBeInTheDocument();
+  });
+
+  test("renders CHANGES_REQUESTED review decision badge", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "Changes Needed Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({
+          state: "OPEN",
+          reviewDecision: "CHANGES_REQUESTED",
+        }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.getByText("CHANGES_REQUESTED")).toBeInTheDocument();
+  });
+
+  test("does not render review decision badge for COMMENTED review decision", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "Commented Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({
+          state: "OPEN",
+          reviewDecision: "COMMENTED",
+        }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText("COMMENTED")).not.toBeInTheDocument();
+  });
+
+  test("does not render review decision badge when reviewDecision is null", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "No Review Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+        pullRequest: createMockPullRequest({
+          state: "OPEN",
+          reviewDecision: null,
+        }),
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText("APPROVED")).not.toBeInTheDocument();
+    expect(screen.queryByText("CHANGES_REQUESTED")).not.toBeInTheDocument();
+  });
+});
+
+// T-4.1: Sibling plan indicator tests for PRD rows
+describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
+  afterEach(cleanup);
+
+  test("PRD row shows sibling plan status when an IMPLEMENTATION_PLAN exists in the same group", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "My PRD",
+        type: "PRD",
+        status: "APPROVED",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+      }),
+      createWorkstreamArtifact({
+        id: "2",
+        title: "My Plan",
+        type: "IMPLEMENTATION_PLAN",
+        status: "DRAFT",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // PRD row should show the sibling plan's status
+    expect(screen.getByText("Plan: Draft")).toBeInTheDocument();
+  });
+
+  test("PRD row does not show sibling plan indicator when no IMPLEMENTATION_PLAN exists", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "Solo PRD",
+        type: "PRD",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    expect(screen.queryByText(PLAN_LABEL_PATTERN)).not.toBeInTheDocument();
+  });
+
+  test("IMPLEMENTATION_PLAN row does not show sibling plan indicator", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "My PRD",
+        type: "PRD",
+        status: "APPROVED",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+      }),
+      createWorkstreamArtifact({
+        id: "2",
+        title: "My Plan",
+        type: "IMPLEMENTATION_PLAN",
+        status: "REVIEW",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    const trigger = screen.getByText("WS").closest("button");
+    fireEvent.click(trigger!);
+
+    // There should be exactly one "Plan: ..." indicator (on the PRD row, not on the plan row)
+    const planIndicators = screen.getAllByText(PLAN_LABEL_PATTERN);
+    expect(planIndicators).toHaveLength(1);
+  });
+});
+
+// T-5.1: Preview deployment state badge in WorkstreamSection header
+describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(cleanup);
+
+  test("renders deployment state badge in header when preview link has READY state metadata", () => {
+    mockUseExternalLinks.mockReturnValue({
+      data: [
+        {
+          id: "link-1",
+          workstreamId: "ws-1",
+          externalUrl: "https://preview.example.com/feature-x",
+          type: "PREVIEW_DEPLOYMENT",
+          metadata: {
+            state: "READY",
+            environment: "preview",
+            ref: null,
+            sha: null,
+          },
+        },
+      ],
+    });
+
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "PRD Alpha",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Feature X",
+          state: "IMPLEMENTATION_IN_PROGRESS",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    // Deployment state badge (uppercased "READY") should appear in the section header
+    expect(screen.getByText("READY")).toBeInTheDocument();
+  });
+
+  test("renders deployment state badge with BUILDING state", () => {
+    mockUseExternalLinks.mockReturnValue({
+      data: [
+        {
+          id: "link-1",
+          workstreamId: "ws-1",
+          externalUrl: "https://preview.example.com/feature-x",
+          type: "PREVIEW_DEPLOYMENT",
+          metadata: {
+            state: "BUILDING",
+            environment: "preview",
+            ref: null,
+            sha: null,
+          },
+        },
+      ],
+    });
+
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "PRD Alpha",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Feature X",
+          state: "INITIATED",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    expect(screen.getByText("BUILDING")).toBeInTheDocument();
+  });
+
+  test("does not render deployment state badge when metadata has no state", () => {
+    mockUseExternalLinks.mockReturnValue({
+      data: [
+        {
+          id: "link-1",
+          workstreamId: "ws-1",
+          externalUrl: "https://preview.example.com/feature-x",
+          type: "PREVIEW_DEPLOYMENT",
+          metadata: null,
+        },
+      ],
+    });
+
+    const artifacts: ArtifactWithWorkstream[] = [
+      createWorkstreamArtifact({
+        id: "1",
+        title: "PRD Alpha",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Feature X",
+          state: "INITIATED",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    expect(screen.queryByText("READY")).not.toBeInTheDocument();
+    expect(screen.queryByText("BUILDING")).not.toBeInTheDocument();
+  });
+});
+
 describe("ArtifactsThreadedView - Preview Links", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -690,7 +1098,7 @@ describe("ArtifactsThreadedView - Preview Links", () => {
   afterEach(cleanup);
 
   test("renders PreviewLink when preview URL is available for workstream", () => {
-    // Mock external links data with a preview URL
+    // Mock external links data with a preview URL (metadata included)
     mockUseExternalLinks.mockReturnValue({
       data: [
         {
@@ -698,6 +1106,7 @@ describe("ArtifactsThreadedView - Preview Links", () => {
           workstreamId: "ws-1",
           externalUrl: "https://preview.example.com/feature-x",
           type: "PREVIEW_DEPLOYMENT",
+          metadata: null,
         },
       ],
     });

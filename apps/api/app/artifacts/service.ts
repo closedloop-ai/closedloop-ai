@@ -9,6 +9,8 @@ import {
   type FindArtifactsOptions,
   type GenerationStatus,
   type PullRequestInfo,
+  type PullRequestState,
+  type ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -120,7 +122,7 @@ export const artifactsService = {
       })
     );
 
-    // Batch-fetch GitHubActionRun records for generation status
+    // Collect unique workstream IDs for batch queries
     const uniqueWorkstreamIds = [
       ...new Set(
         artifacts
@@ -180,8 +182,39 @@ export const artifactsService = {
       }
     }
 
+    // Batch-fetch GitHubPullRequest records for each workstream
+    const pullRequestRecords =
+      uniqueWorkstreamIds.length > 0
+        ? await withDb((db) =>
+            db.gitHubPullRequest.findMany({
+              where: { workstreamId: { in: uniqueWorkstreamIds } },
+              select: {
+                id: true,
+                number: true,
+                title: true,
+                htmlUrl: true,
+                state: true,
+                headBranch: true,
+                baseBranch: true,
+                createdAt: true,
+                reviewDecision: true,
+                workstreamId: true,
+              },
+              orderBy: { createdAt: "desc" },
+            })
+          )
+        : [];
+
+    // Build Map keyed by workstreamId (one PR per workstream - most recent)
+    const pullRequestMap = new Map<string, PullRequestInfo>();
+    for (const pr of pullRequestRecords) {
+      if (pr.workstreamId && !pullRequestMap.has(pr.workstreamId)) {
+        pullRequestMap.set(pr.workstreamId, toPullRequestInfo(pr));
+      }
+    }
+
     return artifacts.map((a) =>
-      toArtifactWithWorkstream(a, generationStatusMap)
+      toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
     );
   },
 
@@ -203,7 +236,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -224,7 +257,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -2058,12 +2091,43 @@ function extractContentSnippet(content: string): string | null {
   return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
 }
 
+/** Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type */
+function toPullRequestInfo(pr: {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  reviewDecision: string | null;
+}): PullRequestInfo {
+  return {
+    id: pr.id,
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.htmlUrl,
+    state: pr.state as PullRequestState,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+    createdAt: pr.createdAt,
+    reviewDecision: pr.reviewDecision as ReviewDecision | null,
+  };
+}
+
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
-  generationStatusMap?: Map<string, GenerationStatus>
+  maps?: {
+    generationStatusMap?: Map<string, GenerationStatus>;
+    pullRequestMap?: Map<string, PullRequestInfo>;
+  }
 ): ArtifactWithWorkstream {
-  const generationStatus = generationStatusMap?.get(artifact.id);
+  const generationStatus = maps?.generationStatusMap?.get(artifact.id);
+  const pullRequest = artifact.workstreamId
+    ? (maps?.pullRequestMap?.get(artifact.workstreamId) ?? null)
+    : null;
   const rawContent = artifact.versions?.[0]?.content ?? null;
   const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
@@ -2077,6 +2141,7 @@ function toArtifactWithWorkstream(
         }
       : null,
     ...(generationStatus && { generationStatus }),
+    ...(maps && "pullRequestMap" in maps && { pullRequest }),
     ...(snippet !== null && { snippet }),
   };
 }

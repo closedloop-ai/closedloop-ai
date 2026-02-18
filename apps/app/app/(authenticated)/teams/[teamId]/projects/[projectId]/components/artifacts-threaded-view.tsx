@@ -5,7 +5,7 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { parsePreviewDeploymentMetadata } from "@repo/api/src/types/external-link-utils";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -33,6 +33,13 @@ import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { PreviewLink } from "@/components/preview-link";
+import {
+  previewDeploymentStateColors,
+  prReviewDecisionColors,
+  prStatusColors,
+  StatusBadge,
+  WorkstreamStateBadge,
+} from "@/components/status-badge";
 import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import {
@@ -52,43 +59,6 @@ type ArtifactsThreadedViewProps = {
   onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
-
-const WORKSTREAM_STATE_LABELS: Record<string, string> = {
-  INITIATED: "Initiated",
-  REQUIREMENTS_GENERATING: "Generating Requirements",
-  REQUIREMENTS_PENDING_APPROVAL: "Requirements Review",
-  DESIGN_IN_PROGRESS: "Designing",
-  DESIGN_PENDING_APPROVAL: "Design Review",
-  IMPLEMENTATION_PLANNING: "Planning",
-  IMPLEMENTATION_IN_PROGRESS: "Implementing",
-  IMPLEMENTATION_PENDING_REVIEW: "Implementation Review",
-  CODE_REVIEW_RUNNING: "Code Review",
-  CODE_REVIEW_PENDING_APPROVAL: "Code Review Approval",
-  VISUAL_QA_RUNNING: "Visual QA",
-  VISUAL_QA_PENDING_APPROVAL: "Visual QA Approval",
-  MERGING: "Merging",
-  DEPLOYED: "Deployed",
-  COMPLETED: "Completed",
-  BLOCKED: "Blocked",
-  CANCELLED: "Cancelled",
-};
-
-function getWorkstreamStateBadgeVariant(
-  state: string
-): "default" | "secondary" | "destructive" | "outline" {
-  switch (state) {
-    case "COMPLETED":
-    case "DEPLOYED":
-      return "default";
-    case "BLOCKED":
-    case "CANCELLED":
-      return "destructive";
-    case "INITIATED":
-      return "outline";
-    default:
-      return "secondary";
-  }
-}
 
 type WorkstreamGroup = {
   id: string | null;
@@ -187,11 +157,15 @@ function ArtifactRow({
   onRowClick,
   onRequestDelete,
   onRequestMove,
+  workstreamPreviewUrl,
+  siblingPlan,
 }: {
   artifact: ArtifactWithWorkstream;
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
   onRequestMove: (artifact: ArtifactWithWorkstream) => void;
+  workstreamPreviewUrl?: string | null;
+  siblingPlan?: ArtifactWithWorkstream | null;
 }) {
   const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
   const isClickable = isNavigableArtifact(artifact);
@@ -210,6 +184,12 @@ function ArtifactRow({
       }
     : {};
 
+  const isImplementationPlan = artifact.type === "IMPLEMENTATION_PLAN";
+  const hasPullRequest = isImplementationPlan && artifact.pullRequest != null;
+  const isPipelineGreen =
+    artifact.generationStatus?.status === "SUCCESS" &&
+    artifact.generationStatus?.command === "execute";
+
   return (
     <div
       {...interactiveProps}
@@ -223,6 +203,38 @@ function ArtifactRow({
         <GenerationStatusIndicator
           generationStatus={artifact.generationStatus}
         />
+        {hasPullRequest && (
+          <StatusBadge
+            colorMap={prStatusColors}
+            status={artifact.pullRequest!.state}
+          />
+        )}
+        {hasPullRequest &&
+          artifact.pullRequest!.reviewDecision !== null &&
+          (artifact.pullRequest!.reviewDecision === "APPROVED" ||
+            artifact.pullRequest!.reviewDecision === "CHANGES_REQUESTED") && (
+            <StatusBadge
+              colorMap={prReviewDecisionColors}
+              status={artifact.pullRequest!.reviewDecision}
+            />
+          )}
+        {artifact.type === "PRD" && siblingPlan != null && (
+          <span
+            className={`text-xs ${ARTIFACT_STATUS_COLORS[siblingPlan.status] ?? "text-muted-foreground"}`}
+          >
+            Plan:{" "}
+            {ARTIFACT_STATUS_LABELS[siblingPlan.status] ?? siblingPlan.status}
+          </span>
+        )}
+        {isImplementationPlan && isPipelineGreen && workstreamPreviewUrl && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="none"
+          >
+            <PreviewLink url={workstreamPreviewUrl} />
+          </div>
+        )}
       </div>
       <ArtifactTypeBadge type={artifact.type} />
       <span
@@ -275,13 +287,18 @@ function WorkstreamSection({
   onRequestDelete,
   onRequestMove,
   previewUrl,
+  previewDeploymentState,
 }: {
   group: WorkstreamGroup;
   onRowClick: (artifact: ArtifactWithWorkstream) => void;
   onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
   onRequestMove: (artifact: ArtifactWithWorkstream) => void;
   previewUrl?: string | null;
+  previewDeploymentState?: string | null;
 }) {
+  const siblingPlan =
+    group.artifacts.find((a) => a.type === "IMPLEMENTATION_PLAN") ?? null;
+
   return (
     <Collapsible className="rounded-lg border">
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
@@ -293,10 +310,14 @@ function WorkstreamSection({
           {group.artifacts.length}{" "}
           {group.artifacts.length === 1 ? "artifact" : "artifacts"}
         </span>
-        {group.state && (
-          <Badge variant={getWorkstreamStateBadgeVariant(group.state)}>
-            {WORKSTREAM_STATE_LABELS[group.state] ?? group.state}
-          </Badge>
+        {group.state && <WorkstreamStateBadge state={group.state} />}
+        {previewDeploymentState && (
+          <StatusBadge
+            className="px-1.5 py-0 text-xs"
+            colorMap={previewDeploymentStateColors}
+            defaultStyle="bg-muted text-muted-foreground border-muted"
+            status={previewDeploymentState.toUpperCase()}
+          />
         )}
         {previewUrl && <PreviewLink url={previewUrl} />}
       </CollapsibleTrigger>
@@ -309,6 +330,8 @@ function WorkstreamSection({
               onRequestDelete={onRequestDelete}
               onRequestMove={onRequestMove}
               onRowClick={onRowClick}
+              siblingPlan={artifact.type === "PRD" ? siblingPlan : undefined}
+              workstreamPreviewUrl={previewUrl}
             />
           ))}
         </div>
@@ -339,12 +362,19 @@ export function ArtifactsThreadedView({
     type: ExternalLinkType.PreviewDeployment,
   });
 
-  // Build workstreamId -> previewUrl map
+  // Build workstreamId -> { url, deploymentState } map
   const previewUrlsByWorkstream = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<
+      string,
+      { url: string; deploymentState: string | null }
+    >();
     for (const link of externalLinks) {
       if (link.workstreamId) {
-        map.set(link.workstreamId, link.externalUrl);
+        const parsed = parsePreviewDeploymentMetadata(link.metadata);
+        map.set(link.workstreamId, {
+          url: link.externalUrl,
+          deploymentState: parsed?.state ?? null,
+        });
       }
     }
     return map;
@@ -382,18 +412,22 @@ export function ArtifactsThreadedView({
 
   return (
     <div className="space-y-3">
-      {workstreamGroups.map((group) => (
-        <WorkstreamSection
-          group={group}
-          key={group.id ?? "unassigned"}
-          onRequestDelete={deleteConfirmation.requestDelete}
-          onRequestMove={handleRequestMove}
-          onRowClick={handleRowClick}
-          previewUrl={
-            group.id ? previewUrlsByWorkstream.get(group.id) : undefined
-          }
-        />
-      ))}
+      {workstreamGroups.map((group) => {
+        const preview = group.id
+          ? previewUrlsByWorkstream.get(group.id)
+          : undefined;
+        return (
+          <WorkstreamSection
+            group={group}
+            key={group.id ?? "unassigned"}
+            onRequestDelete={deleteConfirmation.requestDelete}
+            onRequestMove={handleRequestMove}
+            onRowClick={handleRowClick}
+            previewDeploymentState={preview?.deploymentState ?? null}
+            previewUrl={preview?.url ?? null}
+          />
+        );
+      })}
 
       <DeleteConfirmationDialog
         isPending={deleteConfirmation.isPending}
