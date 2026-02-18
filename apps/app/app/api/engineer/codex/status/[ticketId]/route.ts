@@ -1,0 +1,226 @@
+import { existsSync } from "node:fs";
+import { readFile, stat, unlink } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { type NextRequest, NextResponse } from "next/server";
+import {
+  expandHome,
+  getWorktreeParentDir,
+  isRepoAllowed,
+} from "@/lib/engineer/repos";
+
+export const dynamic = "force-dynamic";
+
+type ReviewState = {
+  status: "running" | "completed" | "failed" | "stopped";
+  pid?: number;
+  startedAt: string;
+  completedAt?: string;
+  exitCode?: number;
+  provider?: "claude" | "codex";
+  config: {
+    model: string;
+    reasoningEffort: string;
+    reviewMode: "uncommitted" | "base";
+    baseBranch: string;
+    instructions?: string;
+  };
+};
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * GET /api/codex/status/[ticketId]?repo=~/Source/claude_code
+ *
+ * Returns the current codex review status and logs
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ ticketId: string }> }
+) {
+  const { ticketId } = await params;
+  const { searchParams } = new URL(request.url);
+  const repoPath = searchParams.get("repo");
+
+  if (!ticketId) {
+    return NextResponse.json(
+      { error: "ticketId is required" },
+      { status: 400 }
+    );
+  }
+
+  if (!repoPath) {
+    return NextResponse.json(
+      { error: "repo query parameter is required" },
+      { status: 400 }
+    );
+  }
+
+  if (!isRepoAllowed(repoPath)) {
+    return NextResponse.json(
+      { error: `Repository not allowed: ${repoPath}` },
+      { status: 403 }
+    );
+  }
+
+  const provider = searchParams.get("provider"); // optional — if omitted, scan both
+
+  // Build worktree path
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const expandedRepoPath = expandHome(repoPath);
+  const repoName = basename(expandedRepoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+  const workDir = join(worktreeDir, ".claude", "work");
+
+  // Check if worktree exists
+  if (!existsSync(worktreeDir)) {
+    return NextResponse.json({
+      hasReview: false,
+      worktreeDir,
+      message: "Worktree not found",
+    });
+  }
+
+  // Determine which provider's files to read
+  const targetProvider = provider ?? resolveProvider(workDir);
+  if (!targetProvider) {
+    return NextResponse.json({
+      hasReview: false,
+      worktreeDir,
+      message: "No review has been started",
+    });
+  }
+
+  const statePath = join(workDir, `codex-review-${targetProvider}.json`);
+  const logPath = join(workDir, `codex-review-${targetProvider}.log`);
+
+  if (!existsSync(statePath)) {
+    return NextResponse.json({
+      hasReview: false,
+      worktreeDir,
+      message: "No review has been started",
+    });
+  }
+
+  try {
+    const stateContent = await readFile(statePath, "utf-8");
+    const state: ReviewState = JSON.parse(stateContent);
+
+    // Check if process is still running
+    let processRunning = false;
+    if (state.status === "running" && state.pid) {
+      processRunning = isProcessRunning(state.pid);
+      // If state says running but process is dead, update status
+      if (!processRunning) {
+        state.status = "stopped";
+      }
+    }
+
+    // Read log file if it exists
+    let log = "";
+    let logSize = 0;
+    if (existsSync(logPath)) {
+      const logStats = await stat(logPath);
+      logSize = logStats.size;
+      // Read last 100KB of log for large files
+      if (logSize > 100 * 1024) {
+        const buffer = Buffer.alloc(100 * 1024);
+        const fd = await import("node:fs/promises").then((fs) =>
+          fs.open(logPath, "r")
+        );
+        await fd.read(buffer, 0, buffer.length, logSize - buffer.length);
+        await fd.close();
+        log = buffer.toString("utf-8");
+      } else {
+        log = await readFile(logPath, "utf-8");
+      }
+    }
+
+    return NextResponse.json({
+      hasReview: true,
+      worktreeDir,
+      status: state.status,
+      processRunning,
+      pid: state.pid,
+      provider: state.provider,
+      startedAt: state.startedAt,
+      completedAt: state.completedAt,
+      exitCode: state.exitCode,
+      config: state.config,
+      log,
+      logSize,
+    });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json(
+      { error: `Failed to read status: ${errorMessage}` },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/codex/status/[ticketId]?repo=~/Source/claude_code&provider=claude
+ *
+ * Clears the review state and log files so the review is no longer visible.
+ * If provider is specified, only deletes that provider's files. Otherwise deletes both.
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ ticketId: string }> }
+) {
+  const { ticketId } = await params;
+  const { searchParams } = new URL(request.url);
+  const repoPath = searchParams.get("repo");
+  const provider = searchParams.get("provider");
+
+  if (!(ticketId && repoPath)) {
+    return NextResponse.json(
+      { error: "ticketId and repo are required" },
+      { status: 400 }
+    );
+  }
+
+  if (!isRepoAllowed(repoPath)) {
+    return NextResponse.json(
+      { error: `Repository not allowed: ${repoPath}` },
+      { status: 403 }
+    );
+  }
+
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const expandedRepoPath = expandHome(repoPath);
+  const repoName = basename(expandedRepoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+  const workDir = join(worktreeDir, ".claude", "work");
+
+  const providers = provider ? [provider] : ["claude", "codex"];
+  const filesToDelete = providers.flatMap((p) => [
+    join(workDir, `codex-review-${p}.json`),
+    join(workDir, `codex-review-${p}.log`),
+    join(workDir, `codex-review-${p}.pid`),
+    join(workDir, `review-findings-${p}.json`),
+  ]);
+
+  await Promise.all(filesToDelete.map((f) => unlink(f).catch(() => {})));
+
+  return NextResponse.json({ success: true });
+}
+
+/** Scan for any existing provider state file (backwards compat when no provider param given) */
+function resolveProvider(workDir: string): string | null {
+  for (const p of ["claude", "codex"]) {
+    if (existsSync(join(workDir, `codex-review-${p}.json`))) {
+      return p;
+    }
+  }
+  return null;
+}

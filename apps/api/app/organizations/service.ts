@@ -43,7 +43,6 @@ export const organizationsService = {
           clerkId: input.clerkId,
           name: input.name,
           slug: input.slug,
-          anthropicApiKey: input.anthropicApiKey,
         },
       })
     ) as Promise<Organization>;

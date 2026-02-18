@@ -10,6 +10,8 @@ import { ArtifactsTable } from "../artifacts-table";
 const mockUseRouter = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
+  usePathname: () => "/teams/test-team/projects/test-project",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 // Mock delete confirmation hook

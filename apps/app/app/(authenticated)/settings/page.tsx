@@ -24,6 +24,9 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
+import { isAdminRole } from "@/lib/role-utils";
+import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
+import { ComputeModeCard } from "./components/compute-mode-card";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
 import { GoogleIntegrationCard } from "./components/google-integration-card";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
@@ -64,7 +67,7 @@ const clerkAppearance = {
 
 export default function SettingsPage() {
   const { membership } = useOrganization();
-  const isAdmin = membership?.role === "org:admin";
+  const isAdmin = isAdminRole(membership?.role);
   const searchParams = useSearchParams();
 
   // Handle OAuth callback results from URL params (GitHub + Google)
@@ -198,6 +201,8 @@ export default function SettingsPage() {
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="integrations">
+          <ComputeModeCard />
+          <AnthropicApiKeyCard />
           <GitHubIntegrationCard />
           <GoogleIntegrationCard />
           <LinearIntegrationCard />
