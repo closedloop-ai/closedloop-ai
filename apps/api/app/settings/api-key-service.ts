@@ -1,6 +1,7 @@
 import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { getAwsCredentials } from "@/lib/aws-credentials";
 
 const ENCRYPTION_CONTEXT = { purpose: "claude-api-key" } as const;
 
@@ -9,6 +10,7 @@ function getKmsClient(): KMSClient {
   if (!_kmsClient) {
     _kmsClient = new KMSClient({
       region: process.env.AWS_REGION ?? "us-east-1",
+      credentials: getAwsCredentials(),
     });
   }
   return _kmsClient;

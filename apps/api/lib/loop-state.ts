@@ -7,6 +7,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { log } from "@repo/observability/log";
+import { getAwsCredentials } from "@/lib/aws-credentials";
 
 /**
  * S3 key structure for Loop state:
@@ -30,6 +31,7 @@ function getS3Client(): S3Client {
   if (!_s3Client) {
     _s3Client = new S3Client({
       region: process.env.AWS_REGION ?? "us-east-1",
+      credentials: getAwsCredentials(),
     });
   }
   return _s3Client;
