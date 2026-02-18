@@ -41,7 +41,7 @@ export const PUT = withAuth<SetKeyResponse, "/settings/api-keys/user">(
 
       return successResponse({
         isSet: true,
-        lastFour: null,
+        lastFour: body.key.slice(-4),
         setAt: new Date().toISOString(),
       });
     } catch (error) {
