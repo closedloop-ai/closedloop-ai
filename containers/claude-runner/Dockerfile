@@ -43,9 +43,8 @@ RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/"
     git config --global --add url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
     claude plugin marketplace add closedloop-ai/claude_code && \
     claude plugin install experimental@closedloop && \
-    claude plugin install symphony-core@closedloop ; \
-    git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null; \
-    true
+    claude plugin install symphony-core@closedloop && \
+    (git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null || true)
 
 # Copy the harness agent and install its dependencies locally
 COPY harness-agent.mjs /opt/harness/harness-agent.mjs
