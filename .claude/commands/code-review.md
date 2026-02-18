@@ -190,13 +190,16 @@ high_risk = has_security_files or has_data_files
 
 ### Model Routing
 
-Route models based on **total changed LOC + risk**, not file count. A 10K LOC PR in 8 files is not "Small."
+Route models based on **total changed LOC + risk**, not file count. A 10K LOC PR in 8 files is not "Small." Evaluate conditions **top-to-bottom**; first match wins:
 
 | Condition | Bug Hunter A | Bug Hunter B | CLAUDE.md Auditor | Codebase Conventions | Validation |
 |-----------|-------------|-------------|-------------------|---------------------|------------|
-| **Small (≤500 LOC) OR high_risk** | opus | opus | sonnet | sonnet | opus |
+| **Small (≤500 LOC)** | opus | opus | sonnet | sonnet | opus |
+| **Medium (501-2000 LOC) AND high_risk** | opus | opus | sonnet | sonnet | opus |
 | **Medium (501-2000 LOC)** | opus | sonnet | sonnet | sonnet | opus |
 | **Large (2001+ LOC)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
+
+**Large + high_risk note:** The Opus sampling pass (below) already targets the riskiest files with Opus. Do NOT upgrade all agents to Opus for Large diffs — the cost and context pressure outweigh the benefit.
 
 **For large diffs, add Opus sampling pass**: Select up to 5 high-risk files via deterministic scoring:
 
@@ -255,6 +258,13 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
 **CONTEXT BUDGET WARNING:** The orchestrator must NOT read source files or fetch patches itself. All file reading and patch fetching is delegated to sub-agents. The orchestrator's context should contain ONLY: file lists, statuses, LOC counts, risk scores, and agent results (small JSON). If the orchestrator reads source files or fetches diffs, it will exhaust its context window on large PRs and fail.
 
+**Orchestrator context management:** The orchestrator's context window must have enough headroom to construct ALL sub-agent prompts. Context-heavy operations that cause "Prompt is too long" failures:
+- **Do NOT** perform LOC arithmetic or partition bin-packing in prose — use Bash (a short Python/Node one-liner)
+- **Do NOT** manually sort or enumerate file lists — use Bash to sort and partition
+- **Do NOT** load CLAUDE.md into orchestrator context — pass the file path to Bug Hunter B and let it read the file itself
+- **Do NOT** include CHANGED_RANGES data in agent prompts — agents compute their own ranges from `git diff -U0`
+- The `-U0` output from Step 2 stays in context (needed for hygiene checks), but discard it mentally after Step 2.5 — do not reference or re-parse it in later steps
+
 ### Agent Type (CRITICAL — prevents context overflow)
 
 **ALL agents spawned by this command MUST use `subagent_type: "general-purpose"` in the Task tool call.** Do NOT omit the subagent_type parameter — Claude Code will auto-select `symphony-core:code-reviewer` or `experimental:code-reviewer`, which have 130-330 line system prompts and load additional files at startup. This bloats every sub-agent's context by ~50K+ tokens before your prompt even starts, causing "long context beta" failures on large PRs. The review instructions are already fully specified in the prompt below — a specialized code-reviewer agent is redundant and harmful.
@@ -297,6 +307,16 @@ Use FILE_LOC from Step 2 to partition:
 3. For each file, add to the current partition. If adding would exceed the 400 LOC budget, start a new partition.
 4. **Single-file overflow (hunk-level chunking)**: If a single file exceeds 400 LOC, split it by hunks using CHANGED_RANGES from Step 2. Group consecutive hunk ranges into chunks of ≤400 LOC each, and assign each chunk to a separate partition. Tell the agent the line range to review: `file.ts (modified, lines 1-200 of 800)`. The agent fetches only that range: `git diff $DIFF_SCOPE -- file.ts | head -n <approx_lines>` or uses Read to inspect the relevant section.
 5. **Max 20 files per partition** even if LOC budget allows more (keeps agent prompts manageable).
+
+### Partition-to-Agent Mapping
+
+Partitions are computed ONCE. Each partition is reviewed by one instance of each active agent type.
+
+**Layer 2 agents skip test files.** CLAUDE.md Auditor and Codebase Conventions focus on production code patterns — compute a separate non-test partition set for them (exclude `*.test.*`, `*.spec.*`, `__tests__/` files). This significantly reduces agent count on test-heavy PRs.
+
+**Total agents** = (full partitions × 2 Bug Hunters) + (non-test partitions × 2 auditors) + domain critics. **Cap at 16 total.** If over budget, merge smallest partitions (allow up to 600 LOC) and limit Layer 2 to 2 partitions max.
+
+**Use Bash for partition computation** — sorting files by LOC, summing, and bin-packing in prose wastes orchestrator tokens and is error-prone. Pipe FILE_LOC through a short Python/Node script to produce the partition assignments.
 
 ### Shared Prompt Prefix (ALL agents get this)
 
@@ -484,10 +504,11 @@ Focus areas:
 
 For DRY claims, one concrete example of prior art is sufficient (cite file path + function name).
 
-{CLAUDE_MD_CONTENT}
+IMPORTANT: Read the repository root CLAUDE.md file before starting your review. Use it for
+DRY detection (check Learned Patterns for known conventions) and pattern consistency checks.
 ```
 
-Include the full CLAUDE.md content (from repository root) in Bug Hunter B's prompt so it has project context for DRY and convention checks.
+Do NOT embed the full CLAUDE.md in Bug Hunter B's prompt — it consumes orchestrator context. The agent reads the file itself via the Read tool.
 
 **CLAUDE.md Auditor** (sonnet):
 ```

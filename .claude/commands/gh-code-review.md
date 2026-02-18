@@ -227,13 +227,16 @@ high_risk = has_security_files or has_data_files
 
 ### Model Routing
 
-Based on PR size and risk, determine model assignments:
+Based on PR size and risk, determine model assignments. Evaluate conditions **top-to-bottom**; first match wins:
 
 | Condition | Bug Hunter A | Bug Hunter B | CLAUDE.md Auditor | Codebase Conventions | Validation |
 |-----------|-------------|-------------|-------------------|---------------------|------------|
-| **Small PR (≤10 files) OR high_risk** | opus | opus | sonnet | sonnet | opus |
+| **Small PR (≤10 files)** | opus | opus | sonnet | sonnet | opus |
+| **Medium PR (11-40 files) AND high_risk** | opus | opus | sonnet | sonnet | opus |
 | **Medium PR (11-40 files)** | opus | sonnet | sonnet | sonnet | opus |
 | **Large PR (41+ files)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
+
+**Large + high_risk note:** The Opus sampling pass (below) already targets the riskiest files with Opus. Do NOT upgrade all agents to Opus for Large PRs — the cost and context pressure outweigh the benefit.
 
 **For large PRs, add Opus sampling pass**: Select up to 5 high-risk hunks via deterministic scoring:
 
@@ -326,6 +329,14 @@ Background agents do NOT have Bash tool access. All review data MUST be provided
 1. **Small PRs (≤30 files)**: Include ALL file patches in each agent's prompt
 2. **Medium PRs (31-80 files)**: Partition files so each agent gets at most 30 files
 3. **Large PRs (81+ files)**: Cap at 25 files per agent. Create multiple agent instances if needed
+
+### Partition-to-Agent Mapping
+
+Partitions are computed ONCE. Each partition is reviewed by one instance of each active agent type.
+
+**Layer 2 agents skip test files.** CLAUDE.md Auditor and Codebase Conventions focus on production code patterns — exclude `*.test.*`, `*.spec.*`, `__tests__/` files from their partitions. This significantly reduces agent count on test-heavy PRs.
+
+**Total agents** = (full partitions × 2 Bug Hunters) + (non-test partitions × 2 auditors) + domain critics. **Cap at 16 total.** If over budget, merge smallest partitions and limit Layer 2 to 2 partitions max.
 
 ### Shared Prompt Prefix (ALL agents get this)
 
@@ -512,10 +523,11 @@ Focus areas:
 
 For DRY claims, one concrete example of prior art is sufficient (cite file path + function name).
 
-{CLAUDE_MD_CONTENT}
+IMPORTANT: Read the repository root CLAUDE.md file before starting your review. Use it for
+DRY detection (check Learned Patterns for known conventions) and pattern consistency checks.
 ```
 
-Include the full CLAUDE.md content (from repository root) in Bug Hunter B's prompt so it has project context for DRY and convention checks.
+Do NOT embed the full CLAUDE.md in Bug Hunter B's prompt — it consumes orchestrator context. The agent reads the file itself via the Read tool.
 
 **CLAUDE.md Auditor** (sonnet):
 ```
