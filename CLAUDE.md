@@ -157,6 +157,28 @@ type GenerationStatus = { status: "NONE" | "PENDING" | ... };
 // (Zod validators and route params don't belong in the shared package)
 ```
 
+### Engineer Feature — Architectural Exception (SECURITY CRITICAL)
+
+The Engineer feature intentionally deviates from the standard data access pattern described above.
+
+**Location:** `apps/app/app/api/engineer/` (frontend app, NOT `apps/api`)
+
+**Why it's different:** These routes spawn local CLI processes (Claude CLI, git, codex), access the
+local filesystem, and execute shell commands. This requires the server process to be running on the
+same machine as the developer's tools — impossible in a deployed environment.
+
+**Security boundary:** The feature is **localhost-only**. Two independent guards enforce this:
+
+1. **`EngineerGuard` component** (`apps/app/app/(authenticated)/engineer/engineer-guard.tsx`) — blocks the UI when `appEnvironment !== "local"`. This is a UX guard, NOT a security boundary.
+2. **Next.js middleware** (`apps/app/middleware.ts`) — rejects all `/api/engineer/*` requests with HTTP 403 when the `Host` header is not `localhost` or `127.0.0.1`. This is the actual security enforcement.
+
+**CRITICAL:** Do NOT remove or weaken the middleware guard. Exposing these routes in a deployed
+environment would allow arbitrary command execution on the server.
+
+**Do NOT "fix" this to conform to the standard `apps/api` pattern.** The filesystem and process
+spawning requirements make that impossible — the `apps/api` server runs separately and has no
+access to the developer's local CLI tools.
+
 ## Self-Improving CLAUDE.md
 
 When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
