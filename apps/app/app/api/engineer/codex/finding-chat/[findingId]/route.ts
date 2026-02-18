@@ -38,6 +38,7 @@ type FindingChatHistory = {
   findingId: string;
   findingContext?: FindingContext;
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 // Allowed tools
@@ -251,7 +252,7 @@ export async function GET(
 }
 
 /**
- * POST /api/codex/finding-chat/[findingId]?ticketId=...&repo=...
+ * POST /api/engineer/codex/finding-chat/[findingId]?ticketId=...&repo=...
  *
  * Sends a message to Claude for discussing a specific finding and streams the response.
  * Body: { message: string, findingContext?: FindingContext }
@@ -484,6 +485,9 @@ export async function POST(
 
           if (capturedSessionId && !history.sessionId) {
             history.sessionId = capturedSessionId;
+          }
+          if (streamState.contextPercent !== null) {
+            history.contextPercent = streamState.contextPercent;
           }
 
           saveFindingChatHistory(paths.historyPath, history);

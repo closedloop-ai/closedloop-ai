@@ -35,6 +35,10 @@ export type UseCommentChatReturn = {
   setInput: (value: string) => void;
   isStreaming: boolean;
   isWaitingForResponse: boolean;
+  /** Stable timestamp captured once when streaming begins */
+  streamStartedAt: string;
+  /** Context window usage percentage (0-100), updated after each turn */
+  contextPercent: number | null;
   streamingContent: string;
   streamingBlocks: ContentBlock[];
   error: string | null;
@@ -102,6 +106,8 @@ export function useCommentChat({
 }: UseCommentChatOptions): UseCommentChatReturn {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamStartedAt, setStreamStartedAt] = useState("");
+  const [contextPercent, setContextPercent] = useState<number | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
   const [pendingUserMessage, setPendingUserMessage] =
@@ -252,7 +258,7 @@ export function useCommentChat({
     learningsPollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `/api/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -294,9 +300,14 @@ export function useCommentChat({
       name?: string;
       id?: string;
       input?: unknown;
+      contextPercent?: number;
     },
     accumulated: string
   ): string => {
+    if (event.type === "usage" && event.contextPercent != null) {
+      setContextPercent(event.contextPercent);
+      return accumulated;
+    }
     if (event.type === "text" && event.content) {
       const next = accumulated + event.content;
       setStreamingContent(next);
@@ -405,6 +416,7 @@ export function useCommentChat({
       };
       setPendingUserMessage(userMessage);
 
+      setStreamStartedAt(new Date().toISOString());
       setIsStreaming(true);
       setStreamingContent("");
       setStreamingBlocks([]);
@@ -415,7 +427,7 @@ export function useCommentChat({
 
       try {
         const response = await fetch(
-          `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -475,6 +487,7 @@ export function useCommentChat({
         setStreamingBlocks([]);
         setPendingUserMessage(null);
         abortControllerRef.current = null;
+        setStreamStartedAt("");
       }
     },
     [
@@ -689,7 +702,7 @@ export function useCommentChat({
       setHasResponded(true);
 
       // Persist responded flag on the message so it survives navigation
-      const patchUrl = `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       fetch(patchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -760,7 +773,7 @@ export function useCommentChat({
     async (index: number) => {
       try {
         const response = await fetch(
-          `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
           { method: "DELETE" }
         );
         if (response.ok) {
@@ -786,7 +799,7 @@ export function useCommentChat({
     }
     try {
       const response = await fetch(
-        `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       );
       if (response.ok) {
@@ -838,6 +851,8 @@ export function useCommentChat({
     setInput,
     isStreaming,
     isWaitingForResponse,
+    streamStartedAt,
+    contextPercent: contextPercent ?? history?.contextPercent ?? null,
     streamingContent,
     streamingBlocks,
     error,

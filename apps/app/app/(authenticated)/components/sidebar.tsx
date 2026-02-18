@@ -37,6 +37,7 @@ import {
   InboxIcon,
   LifeBuoyIcon,
   LightbulbIcon,
+  RotateCcwIcon,
   SendIcon,
   SettingsIcon,
   UsersIcon,
@@ -129,6 +130,12 @@ const baseWorkspaceItems: NavItem[] = [
     url: "/my-documents",
     icon: FileTextIcon,
     disabled: true,
+  },
+  {
+    title: "Loops",
+    url: "/loops",
+    icon: RotateCcwIcon,
+    disabled: false,
   },
   {
     title: "Members",

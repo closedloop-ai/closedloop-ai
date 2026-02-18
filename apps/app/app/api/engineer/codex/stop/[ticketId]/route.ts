@@ -46,7 +46,7 @@ function getReviewPaths(ticketId: string, repoPath: string, provider: string) {
 }
 
 /**
- * POST /api/codex/stop/[ticketId]
+ * POST /api/engineer/codex/stop/[ticketId]
  * Body: { repo: string }
  *
  * Stops a running codex review

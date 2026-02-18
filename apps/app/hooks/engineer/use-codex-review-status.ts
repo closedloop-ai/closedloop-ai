@@ -33,7 +33,7 @@ export function useCodexReviewStatus(
         return { hasReview: false };
       }
       const res = await fetch(
-        `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       return res.json();
     },

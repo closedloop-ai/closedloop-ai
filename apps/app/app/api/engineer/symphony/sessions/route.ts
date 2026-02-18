@@ -81,7 +81,7 @@ export function GET() {
 }
 
 /**
- * POST /api/symphony/sessions
+ * POST /api/engineer/symphony/sessions
  * Add or update a session
  * Body: { ticketId, repoPath, worktreePath }
  */

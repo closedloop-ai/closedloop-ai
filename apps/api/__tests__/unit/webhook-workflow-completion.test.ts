@@ -462,6 +462,156 @@ describe("handleWorkflowSuccess", () => {
     );
   });
 
+  it("persists perf summary when perf.jsonl is present in zip", async () => {
+    const correlationId = "test-correlation-perf";
+    const artifactId = "artifact-perf";
+    const workstreamId = "ws-perf";
+    const runId = 5_555_555_000;
+    const actionRunId = "action-run-perf";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const planContent = "# Plan with perf";
+    const perfLine = JSON.stringify({
+      event: "iteration",
+      run_id: "run-1",
+      iteration: 1,
+      duration_s: 42.5,
+      status: "success",
+      started_at: "2026-01-01T00:00:00Z",
+      ended_at: "2026-01-01T00:00:42Z",
+      claude_exit_code: 0,
+    });
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: planContent,
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "perf.jsonl", content: perfLine },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "test-org-id",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-perf" }),
+      },
+      gitHubActionRunPerformance: {
+        upsert: vi.fn().mockResolvedValue({ id: "perf-record-1" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+
+    expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
+      where: {
+        artifactId_actionRunId: {
+          artifactId,
+          actionRunId,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId,
+        summaryData: expect.objectContaining({ totalIterations: 1 }),
+      },
+      update: {
+        summaryData: expect.objectContaining({ totalIterations: 1 }),
+      },
+    });
+  });
+
+  it("does not persist perf summary when perf.jsonl is absent", async () => {
+    const correlationId = "test-correlation-no-perf";
+    const artifactId = "artifact-no-perf";
+    const workstreamId = "ws-no-perf";
+    const runId = 5_555_555_001;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan without perf",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "test-org-id",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-no-perf" }),
+      },
+      gitHubActionRunPerformance: {
+        upsert: vi.fn(),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+
+    expect(mockDb.gitHubActionRunPerformance.upsert).not.toHaveBeenCalled();
+  });
+
   it("logs error when artifactId is missing in context", async () => {
     const correlationId = "test-correlation-no-artifact";
     const workstreamId = "ws-no-artifact";

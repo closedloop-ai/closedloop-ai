@@ -43,7 +43,7 @@ export function useLearnings({
     pollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `/api/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {

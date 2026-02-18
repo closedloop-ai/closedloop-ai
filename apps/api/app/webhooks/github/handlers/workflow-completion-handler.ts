@@ -3,7 +3,7 @@ import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import { withDb } from "@repo/database";
+import { type Prisma, withDb } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -239,10 +239,13 @@ export async function handleWorkflowSuccess(
     questionsContent,
     executionResult,
     judgesReport,
+    perfSummary,
     artifactKeys,
   } = result;
 
-  // Handle execute command differently - create PR record instead of updating artifact
+  // Handle execute command differently - create PR record instead of updating artifact.
+  // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
+  // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
     await handleExecutionSuccess(ctx, executionResult);
     return;
@@ -256,6 +259,7 @@ export async function handleWorkflowSuccess(
     artifactId,
     hasContent: !!finalContent,
     contentLength: finalContent?.length ?? 0,
+    hasPerfSummary: !!perfSummary,
     command,
   });
 
@@ -356,6 +360,30 @@ export async function handleWorkflowSuccess(
       artifactId,
       reportId: judgesReport.report_id,
       judgesCount: judgesReport.stats.length,
+    });
+  }
+
+  // Persist perf summary if available (upsert to handle webhook replay idempotently)
+  if (perfSummary !== null && perfSummary !== undefined && ctx.actionRunId) {
+    await tx.gitHubActionRunPerformance.upsert({
+      where: {
+        artifactId_actionRunId: {
+          artifactId,
+          actionRunId: ctx.actionRunId,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId: ctx.actionRunId,
+        summaryData: perfSummary as unknown as Prisma.InputJsonValue,
+      },
+      update: {
+        summaryData: perfSummary as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    log.info("[handleWorkflowSuccess] Persisted perf summary", {
+      artifactId,
     });
   }
 

@@ -55,7 +55,10 @@ type ChatModeViewProps = {
   onChatInputChange: (value: string) => void;
   onSendChat: () => void;
   chatHistory?: { messages: ChatMessage[] };
-  activeChatHistory?: { messages: ChatMessage[] };
+  activeChatHistory?: {
+    messages: ChatMessage[];
+    contextPercent?: number | null;
+  };
   // Streams
   activeStream: ReturnType<typeof useChatStream>;
   // Debate
@@ -166,12 +169,19 @@ export function ChatModeView({
             <div className="flex-1 space-y-4 overflow-y-auto p-4">
               <ChatMessageList
                 chatMessages={chatMessages}
+                contextPercent={
+                  activeStream.contextPercent ??
+                  activeChatHistory?.contextPercent ??
+                  null
+                }
                 debate={debate}
                 isAnyStreaming={isAnyStreaming}
                 onAction={onAction}
               />
               <StreamingBubbles
                 activeStream={activeStream}
+                activeStreamStartedAt={activeStream.streamStartedAt}
+                codexStreamStartedAt={debate.codexStream.streamStartedAt}
                 debate={debate}
                 selectedFindingIndex={selectedFindingIndex}
               />
@@ -368,6 +378,7 @@ type ChatMessageListProps = {
   isAnyStreaming: boolean;
   debate: ReturnType<typeof useCodexDebate>;
   onAction: (message: string) => void;
+  contextPercent: number | null;
 };
 
 function ChatMessageList({
@@ -375,6 +386,7 @@ function ChatMessageList({
   isAnyStreaming,
   debate,
   onAction,
+  contextPercent,
 }: Readonly<ChatMessageListProps>) {
   return (
     <>
@@ -402,6 +414,7 @@ function ChatMessageList({
         return (
           <ChatBubble
             actions={effectiveActions}
+            contextPercent={isLastAssistant ? contextPercent : undefined}
             index={idx}
             key={msg.id}
             messageRole={effectiveSender === "codex" ? "user" : msg.role}
@@ -424,12 +437,16 @@ type StreamingBubblesProps = {
   activeStream: ReturnType<typeof useChatStream>;
   debate: ReturnType<typeof useCodexDebate>;
   selectedFindingIndex: number | null;
+  activeStreamStartedAt: string;
+  codexStreamStartedAt: string;
 };
 
 function StreamingBubbles({
   activeStream,
   debate,
   selectedFindingIndex,
+  activeStreamStartedAt,
+  codexStreamStartedAt,
 }: Readonly<StreamingBubblesProps>) {
   return (
     <>
@@ -444,7 +461,7 @@ function StreamingBubbles({
                 ? "claude"
                 : undefined
             }
-            timestamp={new Date().toISOString()}
+            timestamp={activeStreamStartedAt}
           >
             <MessageContent
               blocks={activeStream.streamingBlocks}
@@ -458,7 +475,7 @@ function StreamingBubbles({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexStreamStartedAt}
         >
           <MessageContent
             blocks={debate.codexStream.pendingUserMessage.blocks}

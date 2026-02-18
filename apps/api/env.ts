@@ -10,6 +10,7 @@ import { keys as observability } from "@repo/observability/keys";
 import { keys as payments } from "@repo/payments/keys";
 import { keys as rateLimit } from "@repo/rate-limit/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
+import { z } from "zod";
 
 // Note: @repo/github and @repo/aws keys are validated at runtime (not build time)
 // because they're optional integrations. See isGitHubConfigured() / isS3Configured().
@@ -29,7 +30,13 @@ export const env = createEnv({
     payments(),
     rateLimit(),
   ],
-  server: {},
+  server: {
+    INTERNAL_API_SECRET: z.string().optional(),
+    SLACK_SIGNING_SECRET: z.string().optional(),
+  },
   client: {},
-  runtimeEnv: {},
+  runtimeEnv: {
+    INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
+  },
 });

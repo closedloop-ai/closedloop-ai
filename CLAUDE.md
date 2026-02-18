@@ -289,6 +289,10 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 - **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
 
+### Tables & Sorting
+- **[pattern]**: When sorting by nested object fields using SortConfig in this codebase, use the accessor function to extract the comparable value (e.g., `accessor: (p) => p.owner ? getUserDisplayName(p.owner) : null`). The `sortItems()` utility handles nulls with nulls-last policy automatically. (context: tables|sorting|SortConfig|accessor|nested-objects)
+- **[pattern]**: When rendering multiple sortable tables on the same page, each `useSortParams` call must use a unique `paramPrefix` to prevent URL sort param collision. Derive the prefix from a unique identifier (e.g., artifact type or section name). (context: tables|sorting|useSortParams|paramPrefix|url-params)
+
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
@@ -304,6 +308,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)
+- **[mistake]**: When mocking `next/navigation` in Vitest, always provide all three navigation hooks: `useRouter`, `usePathname`, and `useSearchParams`. Missing any one causes failures when utility hooks depending on multiple navigation APIs are introduced. (context: testing|vitest|next/navigation|mocking|hooks)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
@@ -312,6 +317,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
 - **[mistake]**: Do not mark service methods as `async` if they only `return withDb(...)` or `return withDb.tx(...)` without any `await` in the function body. Biome's `useAwait` rule flags `async` functions that lack `await` expressions. Only use `async` when the function body itself needs to `await` something before returning. (context: biome|useAwait|async|service-layer|withDb)
 - **[pattern]**: When importing multiple named exports in Next.js App Router routes, Biome requires alphabetical order: constants/types first (UPPERCASE), then functions (camelCase). Run pnpm lint:fix to auto-fix import ordering. (context: biome|import-order|next.js|api-routes)
+- **[mistake]**: Biome's `useBlockStatements` rule requires braces on ALL `if` statement bodies, including single-line early-returns like `if (closed) return;`. Write `if (closed) { return; }` instead. These are flagged as "unsafe fixes" by Biome so `pnpm lint:fix` won't auto-fix them — run `npx biome check --write --unsafe <file>` to apply. (context: biome|useBlockStatements|if-statements|early-return)
 
 ### OAuth Integrations
 - **[pattern]**: OAuth integrations in this Next.js app follow a consistent three-part architecture: (1) Frontend OAuth routes in apps/app/app/api/integrations/{provider}/ handle PKCE generation, state cookies, and provider redirect, (2) Callback route validates state with timing-safe comparison and calls API endpoint for token storage, (3) TanStack Query hooks provide status/disconnect/action mutations with proper cache invalidation. Always follow the Linear integration as the reference implementation. (context: oauth|architecture|integration-patterns|pkce|state-validation)

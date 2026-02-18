@@ -114,7 +114,7 @@ export function CommitDialog({
   const fetchCommitMessage = useCallback(
     async (signal?: AbortSignal) => {
       const messageResponse = await fetch(
-        `/api/symphony/commit-message/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/commit-message/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         { signal }
       ).catch(() => null);
 

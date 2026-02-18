@@ -27,6 +27,7 @@ import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 import { EvaluationSection } from "./evaluation-section";
+import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
 import { PullRequestSection } from "./pull-request-section";
@@ -177,6 +178,8 @@ export function PlanMetadataPanel({
           </CollapsibleSection>
 
           <EvaluationSection judgesReport={judgesReport} />
+
+          <PerformanceSection artifactId={plan.id} />
 
           <CollapsibleSection
             onOpenChange={setIsRatingOpen}

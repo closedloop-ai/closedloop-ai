@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatModeView } from "@/components/engineer/codex-review/ChatModeView";
 import {
@@ -125,7 +125,7 @@ export function CodexReviewDialog({
   );
 
   const debateSaveEndpoint = findingId
-    ? `/api/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+    ? `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
     : undefined;
   const debateInvalidateKey = findingId
     ? queryKeys.findingChatHistory(ticketId, findingId, repoPath)
@@ -165,6 +165,11 @@ export function CodexReviewDialog({
     reviewStatus?.status === "failed" ||
     reviewStatus?.status === "stopped";
 
+  // Destructure stable callbacks to avoid depending on the entire object
+  // (useCodexDebate/useLearnings return new objects every render)
+  const resetDebate = debate.reset;
+  const closeLearnings = learnings.handleClose;
+
   // Reset callback used by both useResetOnClose and explicit reset actions
   const resetReviewState = useCallback(() => {
     setLocalOutput("");
@@ -174,9 +179,9 @@ export function CodexReviewDialog({
     setSelectedFindingIndex(null);
     setChatMode(false);
     setChatInput("");
-    debate.reset();
-    learnings.handleClose();
-  }, [debate, learnings]);
+    resetDebate();
+    closeLearnings();
+  }, [resetDebate, closeLearnings]);
 
   // --- Effects ---
   useSyncOutput(
@@ -198,7 +203,7 @@ export function CodexReviewDialog({
   );
   usePersistPreference(LOCAL_STORAGE_KEYS.model, model);
   usePersistPreference(LOCAL_STORAGE_KEYS.reasoning, reasoningEffort);
-  useResetOnClose(open, isRunning, debate, resetReviewState);
+  useResetOnClose(open, isRunning, resetReviewState);
   useRefetchOnOpen(open, refetchStatus);
 
   // --- Handlers ---
@@ -307,7 +312,7 @@ export function CodexReviewDialog({
         "Analyze the Codex code review findings. Read the referenced source files and assess whether each finding is valid or a false positive.",
       timestamp: new Date().toISOString(),
     });
-    const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       {
@@ -351,7 +356,7 @@ export function CodexReviewDialog({
       // Check server for existing history
       try {
         const res = await fetch(
-          `/api/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
         );
         if (res.ok) {
           const data = await res.json();
@@ -375,7 +380,7 @@ export function CodexReviewDialog({
         timestamp: new Date().toISOString(),
       });
 
-      const url = `/api/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       findingStream.sendMessage(
         url,
         {
@@ -438,7 +443,7 @@ export function CodexReviewDialog({
     });
 
     if (selectedFindingIndex !== null && findingId) {
-      const url = `/api/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       await findingStream.sendMessage(
         url,
         { message: trimmed },
@@ -456,7 +461,7 @@ export function CodexReviewDialog({
         }
       );
     } else {
-      const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         { message: trimmed, activeTab: "plan", codexReview: { model } },
@@ -577,7 +582,7 @@ export function CodexReviewDialog({
     try {
       if (selectedFindingIndex !== null && findingId) {
         await fetch(
-          `/api/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
@@ -591,7 +596,7 @@ export function CodexReviewDialog({
         );
       } else {
         await fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         );
         queryClient.setQueryData(
@@ -615,7 +620,7 @@ export function CodexReviewDialog({
     const promises = findings.findings.map((_, idx) => {
       const fId = `finding-${idx}`;
       return fetch(
-        `/api/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/codex/finding-chat/${encodeURIComponent(fId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       ).catch(() => {});
     });
@@ -630,11 +635,11 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
@@ -665,7 +670,7 @@ export function CodexReviewDialog({
     try {
       await Promise.all([
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "DELETE" }
         ),
         clearAllFindingChats(),
@@ -855,7 +860,7 @@ function handleDismissAction(ctx: DismissActionContext) {
     setCurrentDebateFindingIndex(null);
     const dId = `finding-${dismissIdx}`;
     fetch(
-      `/api/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+      `/api/engineer/codex/finding-chat/${encodeURIComponent(dId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
       { method: "DELETE" }
     ).catch(() => {});
     queryClient.setQueryData(
@@ -918,7 +923,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
     onLearningsUsed,
   } = ctx;
   if (selectedFindingIndex !== null && findingId) {
-    const url = `/api/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
     findingStream.sendMessage(
       url,
       { message },
@@ -936,7 +941,7 @@ function sendActionMessage(ctx: SendActionContext, message: string) {
       }
     );
   } else {
-    const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     stream.sendMessage(
       url,
       { message, activeTab: "plan", codexReview: { model } },
@@ -1013,14 +1018,19 @@ function usePersistPreference(key: string, value: string) {
 function useResetOnClose(
   open: boolean,
   isRunning: boolean | undefined,
-  _debate: ReturnType<typeof useCodexDebate>,
   resetFn: () => void
 ) {
+  // Use a ref for resetFn so the effect only fires when open/isRunning change,
+  // not when the callback identity changes (which can cause infinite loops if
+  // the callback depends on objects that get new references every render).
+  const resetFnRef = useRef(resetFn);
+  resetFnRef.current = resetFn;
+
   useEffect(() => {
     if (!(open || isRunning)) {
-      resetFn();
+      resetFnRef.current();
     }
-  }, [open, isRunning, resetFn]);
+  }, [open, isRunning]);
 }
 
 function useRefetchOnOpen(open: boolean, refetchStatus: () => void) {

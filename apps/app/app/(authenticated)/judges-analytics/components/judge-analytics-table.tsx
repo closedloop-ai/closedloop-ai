@@ -1,3 +1,5 @@
+"use client";
+
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import {
   Table,
@@ -7,16 +9,55 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import { useMemo } from "react";
+import { SortableColumnHeader } from "@/components/sortable-column-header";
+import { useSortParams } from "@/hooks/use-sort-params";
+import type { SortConfig } from "@/lib/table-utils";
+import { sortTableData } from "@/lib/table-utils";
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
 };
 
-function formatOrDash(value: number | null): string {
-  return value !== null ? value.toFixed(2) : "\u2014";
-}
+const JUDGE_SORT_COLUMNS = [
+  "judgeName",
+  "artifactsEvaluated",
+  "min",
+  "mean",
+  "max",
+  "stdDev",
+] as const;
 
-export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
+type JudgeSortColumn = (typeof JUDGE_SORT_COLUMNS)[number];
+
+const JUDGE_SORT_CONFIGS: Record<
+  JudgeSortColumn,
+  SortConfig<JudgeAggregateStats>
+> = {
+  judgeName: { key: "judgeName", columnType: "string" },
+  artifactsEvaluated: { key: "artifactsEvaluated", columnType: "number" },
+  min: { key: "min", columnType: "number" },
+  mean: { key: "mean", columnType: "number" },
+  max: { key: "max", columnType: "number" },
+  stdDev: { key: "stdDev", columnType: "number" },
+};
+
+export function JudgeAnalyticsTable({
+  data,
+  humanRatingsCount = 0,
+  humanCommentsCount = 0,
+}: JudgeAnalyticsTableProps) {
+  const { sortBy, sortDir, setSort } = useSortParams<JudgeSortColumn>({
+    defaultColumn: null,
+    defaultDirection: "desc",
+    validColumns: JUDGE_SORT_COLUMNS,
+  });
+
+  const sortedData = useMemo(
+    () => sortTableData(data, sortBy, JUDGE_SORT_CONFIGS, sortDir),
+    [data, sortBy, sortDir]
+  );
+
   return (
     <Table>
       <TableHeader>
@@ -46,7 +87,7 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {data.map((judge: JudgeAggregateStats) => (
+        {sortedData.map((judge: JudgeAggregateStats) => (
           <TableRow key={judge.judgeName}>
             <TableCell className="break-words" title={judge.judgeName}>
               {judge.judgeName}

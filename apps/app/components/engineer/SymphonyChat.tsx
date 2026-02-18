@@ -381,7 +381,7 @@ export function SymphonyChat({
 
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
-      const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -482,7 +482,7 @@ export function SymphonyChat({
                 : undefined,
           };
           await fetch(
-            `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -550,7 +550,7 @@ export function SymphonyChat({
 
       // Save user message to chat history so it persists after the pending state clears
       await fetch(
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -560,7 +560,7 @@ export function SymphonyChat({
         /* best-effort */
       });
 
-      const url = `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       // Build recent chat history for context (last 10 messages, excluding blocks)
       const recentHistory = (history?.messages || []).slice(-10).map((m) => ({
@@ -641,7 +641,7 @@ export function SymphonyChat({
       timestamp: new Date().toISOString(),
     };
     await fetch(
-      `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+      `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -669,7 +669,7 @@ export function SymphonyChat({
       timestamp: new Date().toISOString(),
     };
     await fetch(
-      `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+      `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -807,7 +807,7 @@ export function SymphonyChat({
     globalThis.getSelection()?.removeAllRanges();
 
     streamingPidRef.current = null;
-    const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+    const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     await stream.sendMessage(
       url,
       {
@@ -845,7 +845,7 @@ export function SymphonyChat({
       if (partialContent) {
         try {
           await fetch(
-            `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -897,7 +897,7 @@ export function SymphonyChat({
 
       // Save the forwarded indicator to chat history so it persists
       await fetch(
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -912,7 +912,7 @@ export function SymphonyChat({
 
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
-      const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -984,7 +984,7 @@ export function SymphonyChat({
       setExpandedStreamingBlocks(new Set());
       streamingPidRef.current = null;
 
-      const url = `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await stream.sendMessage(
         url,
         {
@@ -1111,7 +1111,7 @@ export function SymphonyChat({
         formData.append("file", file);
 
         const res = await fetch(
-          `/api/symphony/upload/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/upload/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           { method: "POST", body: formData }
         );
 
@@ -1331,7 +1331,7 @@ export function SymphonyChat({
     }
     try {
       const response = await fetch(
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       );
       if (response.ok) {
@@ -1577,6 +1577,7 @@ export function SymphonyChat({
       messages={messages}
       messagesEndRef={messagesEndRef}
       onToggleStreamingBlock={toggleStreamingBlock}
+      savedContextPercent={history?.contextPercent}
       sendActionMessage={sendActionMessage}
       stream={stream}
     />
@@ -2071,7 +2072,7 @@ function transformAttachedImages(
       return paths
         .map((filePath) => {
           const filename = filePath.split("/").pop() || "";
-          const apiUrl = `/api/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+          const apiUrl = `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
           return `![${filename}](${apiUrl})`;
         })
         .join("\n");
@@ -2280,6 +2281,7 @@ const MessageBubble = memo(
     index,
     isStreaming = false,
     isLastAssistantMessage = false,
+    contextPercent,
     onSendAction,
     onCopy,
     onForward,
@@ -2288,6 +2290,7 @@ const MessageBubble = memo(
     index: number;
     isStreaming?: boolean;
     isLastAssistantMessage?: boolean;
+    contextPercent?: number | null;
     onSendAction?: (message: string) => void;
     onCopy?: (index: number) => void;
     onForward?: (index: number) => void;
@@ -2311,6 +2314,7 @@ const MessageBubble = memo(
     return (
       <ChatBubble
         actions={actions}
+        contextPercent={isLastAssistantMessage ? contextPercent : undefined}
         forwardLabel="Forward to Codex"
         index={index}
         isStreaming={isStreaming}
@@ -2344,6 +2348,7 @@ const MessageBubble = memo(
     prev.index === next.index &&
     prev.isStreaming === next.isStreaming &&
     prev.isLastAssistantMessage === next.isLastAssistantMessage &&
+    prev.contextPercent === next.contextPercent &&
     (prev.onSendAction == null) === (next.onSendAction == null) &&
     (prev.onCopy == null) === (next.onCopy == null) &&
     (prev.onForward == null) === (next.onForward == null)
@@ -2366,6 +2371,7 @@ type ChatMessageItemProps = Readonly<{
   handleForwardMessage: (index: number) => void;
   handleForwardCodexMessage: (index: number) => void;
   canForward: boolean;
+  savedContextPercent?: number | null;
 }>;
 
 function ChatMessageItem(props: ChatMessageItemProps) {
@@ -2489,6 +2495,13 @@ function renderDefaultBubble(
   const isInHistory = idx < historyMessages.length;
   return (
     <MessageBubble
+      contextPercent={
+        isLastAssistant
+          ? (props.stream.contextPercent ??
+            props.savedContextPercent ??
+            undefined)
+          : undefined
+      }
       index={idx}
       isLastAssistantMessage={isLastAssistant}
       message={msg}
@@ -2587,7 +2600,7 @@ function transformImageSrc(
   const attachmentsMatch = /(?:\.claude\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
-    return `/api/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+    return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
   }
   return src;
 }
@@ -3137,6 +3150,9 @@ type StreamingBubbleProps = Readonly<{
   codexChatMsg: ChatMessage | null;
   expandedStreamingBlocks: Set<string>;
   onToggleStreamingBlock: (id: string) => void;
+  streamStartedAt: string;
+  codexDebateStreamStartedAt: string;
+  codexChatStreamStartedAt: string;
 }>;
 
 function StreamingBubble({
@@ -3146,6 +3162,9 @@ function StreamingBubble({
   codexChatMsg,
   expandedStreamingBlocks,
   onToggleStreamingBlock,
+  streamStartedAt,
+  codexDebateStreamStartedAt,
+  codexChatStreamStartedAt,
 }: StreamingBubbleProps) {
   return (
     <>
@@ -3158,7 +3177,7 @@ function StreamingBubble({
                 {debateMode ? "Claude" : "closedloop.dev"}
               </span>
               <span className="font-mono text-[10px] text-muted-foreground/70">
-                {formatTime(new Date().toISOString())}
+                {formatTime(streamStartedAt)}
               </span>
             </div>
             {/* Streaming content bubble */}
@@ -3209,7 +3228,7 @@ function StreamingBubble({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexDebateStreamStartedAt}
         >
           <MessageContent
             blocks={codexDebateMsg.blocks}
@@ -3223,7 +3242,7 @@ function StreamingBubble({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexChatStreamStartedAt}
         >
           <MessageContent
             blocks={codexChatMsg.blocks}
@@ -3303,6 +3322,7 @@ type ChatMessagesAreaProps = Readonly<{
   activeTab: LeftPaneTab;
   isMobile: boolean;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  savedContextPercent?: number | null;
 }>;
 
 function ChatMessagesArea({
@@ -3322,6 +3342,7 @@ function ChatMessagesArea({
   activeTab,
   isMobile,
   messagesEndRef,
+  savedContextPercent,
 }: ChatMessagesAreaProps) {
   const isEmpty =
     !isLoadingHistory && messages.length === 0 && !stream.isStreaming;
@@ -3380,6 +3401,7 @@ function ChatMessagesArea({
                 key={msg.id}
                 messages={messages}
                 msg={msg}
+                savedContextPercent={savedContextPercent}
                 sendActionMessage={sendActionMessage}
                 stream={stream}
               />
@@ -3387,11 +3409,14 @@ function ChatMessagesArea({
           })}
           <StreamingBubble
             codexChatMsg={codexChatStream.pendingUserMessage}
+            codexChatStreamStartedAt={codexChatStream.streamStartedAt}
             codexDebateMsg={debate.codexStream.pendingUserMessage}
+            codexDebateStreamStartedAt={debate.codexStream.streamStartedAt}
             debateMode={debate.debateMode}
             expandedStreamingBlocks={expandedStreamingBlocks}
             onToggleStreamingBlock={onToggleStreamingBlock}
             stream={stream}
+            streamStartedAt={stream.streamStartedAt}
           />
           <div ref={messagesEndRef} />
         </>

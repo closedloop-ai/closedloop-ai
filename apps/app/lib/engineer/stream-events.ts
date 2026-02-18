@@ -30,6 +30,13 @@ type ClaudeStreamEvent = {
   subtype?: string;
   message?: { content: ClaudeBlock[] };
   delta?: { type: string; text?: string };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  context_window?: number;
 };
 
 export type StreamState = {
@@ -37,6 +44,7 @@ export type StreamState = {
   assistantBlocks: ContentBlock[];
   capturedSessionId: string | null;
   usedEditTools: boolean;
+  contextPercent: number | null;
   onSessionId?: (sessionId: string) => void;
 };
 
@@ -48,6 +56,7 @@ export function createStreamState(
     assistantBlocks: [],
     capturedSessionId: null,
     usedEditTools: false,
+    contextPercent: null,
     onSessionId,
   };
 }
@@ -199,6 +208,18 @@ export function processStreamEvent(
     if (!state.capturedSessionId && event.session_id) {
       state.capturedSessionId = event.session_id;
       state.onSessionId?.(event.session_id);
+    }
+    if (event.usage) {
+      const total =
+        (event.usage.input_tokens ?? 0) +
+        (event.usage.output_tokens ?? 0) +
+        (event.usage.cache_creation_input_tokens ?? 0) +
+        (event.usage.cache_read_input_tokens ?? 0);
+      const contextWindow = event.context_window ?? 200_000;
+      const percent =
+        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+      state.contextPercent = percent;
+      enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
     }
     enqueue(JSON.stringify({ type: "result", success: true }));
   }

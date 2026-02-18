@@ -117,7 +117,7 @@ function buildCodexPrompt(
 }
 
 /**
- * POST /api/codex/argue/[ticketId]?repo=...
+ * POST /api/engineer/codex/argue/[ticketId]?repo=...
  *
  * Send Claude's argument to Codex and stream the response back.
  */
