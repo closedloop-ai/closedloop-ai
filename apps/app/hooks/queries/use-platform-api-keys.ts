@@ -13,9 +13,9 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
-export const platformApiKeyKeys = {
+export const platformApiKeys = {
   all: ["platform-api-keys"] as const,
-  lists: () => [...platformApiKeyKeys.all, "list"] as const,
+  lists: () => [...platformApiKeys.all, "list"] as const,
 };
 
 export function usePlatformApiKeys(
@@ -24,7 +24,7 @@ export function usePlatformApiKeys(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: platformApiKeyKeys.lists(),
+    queryKey: platformApiKeys.lists(),
     queryFn: () => apiClient.get<ApiKey[]>("/api-keys"),
     ...options,
   });
@@ -38,7 +38,7 @@ export function useCreatePlatformApiKey() {
     mutationFn: (input: CreateApiKeyInput) =>
       apiClient.post<CreateApiKeyResponse>("/api-keys", input),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: platformApiKeyKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: platformApiKeys.lists() });
     },
   });
 }
@@ -51,7 +51,7 @@ export function useRevokePlatformApiKey() {
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/api-keys/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: platformApiKeyKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: platformApiKeys.lists() });
     },
   });
 }

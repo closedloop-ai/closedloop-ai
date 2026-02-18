@@ -21,9 +21,9 @@ type SetKeyResponse = {
 };
 
 // Query key factory
-export const claudeApiKeyKeys = {
+export const claudeApiKeys = {
   all: ["claude-api-keys"] as const,
-  info: () => [...claudeApiKeyKeys.all, "info"] as const,
+  info: () => [...claudeApiKeys.all, "info"] as const,
 };
 
 /**
@@ -35,7 +35,7 @@ export function useClaudeApiKeyInfo(
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: claudeApiKeyKeys.info(),
+    queryKey: claudeApiKeys.info(),
     queryFn: () => apiClient.get<ClaudeApiKeyInfo>("/settings/api-keys"),
     ...options,
   });
@@ -52,7 +52,7 @@ export function useSetOrgClaudeApiKey() {
     mutationFn: (key: string) =>
       apiClient.put<SetKeyResponse>("/settings/api-keys/org", { key }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: claudeApiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -68,7 +68,7 @@ export function useRemoveOrgClaudeApiKey() {
     mutationFn: () =>
       apiClient.delete<{ deleted: true }>("/settings/api-keys/org"),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: claudeApiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -84,7 +84,7 @@ export function useSetUserClaudeApiKey() {
     mutationFn: (key: string) =>
       apiClient.put<SetKeyResponse>("/settings/api-keys/user", { key }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: claudeApiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -100,7 +100,7 @@ export function useRemoveUserClaudeApiKey() {
     mutationFn: () =>
       apiClient.delete<{ deleted: true }>("/settings/api-keys/user"),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: claudeApiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
