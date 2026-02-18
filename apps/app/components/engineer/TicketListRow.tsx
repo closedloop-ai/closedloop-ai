@@ -140,11 +140,17 @@ export function TicketListRow({
           {ticket.sourceType}
         </span>
 
-        {/* Title */}
-        <span className="truncate font-medium text-sm">{ticket.title}</span>
-
-        {/* Spacer */}
-        <div className="flex-1" />
+        {/* Title + Description */}
+        <div className="min-w-0 flex-1">
+          <span className="block truncate font-medium text-sm">
+            {ticket.title}
+          </span>
+          {ticket.description && (
+            <span className="block truncate text-muted-foreground/60 text-xs">
+              {ticket.description}
+            </span>
+          )}
+        </div>
 
         {/* Status badge */}
         <span

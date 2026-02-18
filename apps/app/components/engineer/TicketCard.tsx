@@ -936,16 +936,16 @@ export function TicketCard({
         </h3>
 
         {/* Description */}
-        <p className="line-clamp-2 min-h-[2.5rem] whitespace-pre-line text-muted-foreground text-sm leading-relaxed">
-          {ticket.description
-            ? ticket.description
-                .replaceAll(/!\[.*?\]\(.*?\)/g, "")
-                .replaceAll(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-                .replaceAll(/[*_#`]/g, "")
-                .replaceAll(/[^\S\n]{2,}/g, " ")
-                .trim()
-            : "\u00A0"}
-        </p>
+        {ticket.description && (
+          <p className="line-clamp-2 whitespace-pre-line text-muted-foreground text-sm leading-relaxed">
+            {ticket.description
+              .replaceAll(/!\[.*?\]\(.*?\)/g, "")
+              .replaceAll(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+              .replaceAll(/[*_#`]/g, "")
+              .replaceAll(/[^\S\n]{2,}/g, " ")
+              .trim()}
+          </p>
+        )}
       </div>
 
       {/* Content section */}

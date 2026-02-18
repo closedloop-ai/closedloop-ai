@@ -57,6 +57,11 @@ export const artifactIncludeWithContext = {
       },
     },
   },
+  versions: {
+    orderBy: { version: "desc" as const },
+    take: 1,
+    select: { content: true },
+  },
   ...artifactIncludeWithUser,
 } as const;
 

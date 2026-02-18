@@ -187,7 +187,7 @@ export function artifactToEngineerTicket(
     id: artifact.id,
     identifier: artifact.slug,
     title: artifact.title,
-    description: undefined,
+    description: artifact.snippet ?? undefined,
     sourceType: artifactTypeToSourceType(artifact.type),
     status: {
       id: artifact.status,

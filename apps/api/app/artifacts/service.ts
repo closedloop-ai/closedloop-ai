@@ -1996,7 +1996,27 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
+  versions: { content: string | null }[];
 };
+
+/**
+ * Extract a plain-text snippet from markdown content for display in list views.
+ * Strips markdown syntax and collapses whitespace to a single line.
+ */
+function extractContentSnippet(content: string): string | null {
+  const stripped = content
+    .replaceAll(/```[\s\S]*?```/g, " ")
+    .replaceAll(/!\[.*?\]\(.*?\)/g, "")
+    .replaceAll(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replaceAll(/^#{1,6}\s+/gm, "")
+    .replaceAll(/[*_`]/g, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  if (!stripped) {
+    return null;
+  }
+  return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
+}
 
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
@@ -2004,6 +2024,8 @@ function toArtifactWithWorkstream(
   generationStatusMap?: Map<string, GenerationStatus>
 ): ArtifactWithWorkstream {
   const generationStatus = generationStatusMap?.get(artifact.id);
+  const rawContent = artifact.versions[0]?.content ?? null;
+  const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
   return {
     ...artifact,
@@ -2015,6 +2037,7 @@ function toArtifactWithWorkstream(
         }
       : null,
     ...(generationStatus && { generationStatus }),
+    ...(snippet !== null && { snippet }),
   };
 }
 
