@@ -185,14 +185,14 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
     plotTop + (1 - (value - yMin) / yRange) * plotHeight;
 
   const hasHuman = payload.humanMedian !== null;
-  const evalCenterX = hasHuman ? x + width * 0.3 : x + width / 2;
-  const evalHalfWidth = hasHuman ? width * 0.3 : width * 0.5;
+  const centerX = x + width / 2;
+  const halfWidth = width * 0.5;
 
   return (
     <g>
       {renderCandlestick({
-        centerX: evalCenterX,
-        halfWidth: evalHalfWidth,
+        centerX,
+        halfWidth,
         valueToY,
         lowerWhisker: payload.lowerWhisker,
         lowerBox: payload.lowerBox,
@@ -203,8 +203,8 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
       })}
       {hasHuman &&
         renderCandlestick({
-          centerX: x + width * 0.7,
-          halfWidth: width * 0.3,
+          centerX,
+          halfWidth,
           valueToY,
           lowerWhisker: payload.humanLowerWhisker!,
           lowerBox: payload.humanLowerBox!,
