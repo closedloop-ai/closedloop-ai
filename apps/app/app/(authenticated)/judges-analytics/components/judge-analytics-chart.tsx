@@ -325,10 +325,10 @@ export function JudgeAnalyticsChart({
       judge.humanMax !== null;
     const humanBounds = hasHuman
       ? computeBoxBounds(
-          judge.humanMean,
-          judge.humanStdDev,
-          judge.humanMin,
-          judge.humanMax
+          judge.humanMean!,
+          judge.humanStdDev!,
+          judge.humanMin!,
+          judge.humanMax!
         )
       : null;
 
