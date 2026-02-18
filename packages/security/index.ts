@@ -4,6 +4,7 @@ import arcjet, {
   detectBot,
   request,
   shield,
+  slidingWindow,
 } from "@arcjet/next";
 import { keys } from "./keys";
 
@@ -41,6 +42,44 @@ export const secure = async (
       throw new Error("No bots allowed");
     }
 
+    if (decision.reason.isRateLimit()) {
+      throw new Error("Rate limit exceeded");
+    }
+
+    throw new Error("Access denied");
+  }
+};
+
+export const rateLimit = async (
+  customKey: string,
+  max: number,
+  window: string,
+  sourceRequest?: Request
+) => {
+  if (!arcjetKey) {
+    return;
+  }
+
+  const base = arcjet({
+    key: arcjetKey,
+    // Define a stable custom characteristic name and pass its dynamic value in protect().
+    characteristics: ["rateLimitKey"],
+    rules: [
+      shield({
+        mode: "LIVE",
+      }),
+      slidingWindow({
+        mode: "LIVE",
+        max,
+        interval: window,
+      }),
+    ],
+  });
+
+  const req = sourceRequest ?? (await request());
+  const decision = await base.protect(req, { rateLimitKey: customKey });
+
+  if (decision.isDenied()) {
     if (decision.reason.isRateLimit()) {
       throw new Error("Rate limit exceeded");
     }

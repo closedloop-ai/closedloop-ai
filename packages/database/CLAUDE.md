@@ -93,3 +93,4 @@ This applies all pending migrations without prompting for input.
 - **Commit migration files to git** - they are the source of truth for schema evolution
 - The generated Prisma client lives in `packages/database/generated/` (configured in `prisma.config.ts`)
 - After any schema change, `prisma generate` must run to update TypeScript types
+- **relationMode = "prisma"** - The schema uses Prisma-managed relations; there are no DB-level foreign key constraints. Cascade deletes only run through the Prisma client. Direct SQL deletes (e.g. of parent rows) can leave orphaned child rows; document this in migrations that drop FKs.

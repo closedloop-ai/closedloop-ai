@@ -9,6 +9,14 @@ import {
   type HandledPullRequestEvent,
   handlePullRequest,
 } from "./handlers/pull-request-handler";
+import {
+  type HandledPullRequestReviewCommentEvent,
+  handlePullRequestReviewComment,
+} from "./handlers/pull-request-review-comment-handler";
+import {
+  type HandledPullRequestReviewEvent,
+  handlePullRequestReview,
+} from "./handlers/pull-request-review-handler";
 import { handlePush } from "./handlers/push-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
@@ -67,6 +75,16 @@ export async function POST(request: Request): Promise<Response> {
 
       case "pull_request":
         return await handlePullRequest(parsedBody as HandledPullRequestEvent);
+
+      case "pull_request_review":
+        return await handlePullRequestReview(
+          parsedBody as HandledPullRequestReviewEvent
+        );
+
+      case "pull_request_review_comment":
+        return await handlePullRequestReviewComment(
+          parsedBody as HandledPullRequestReviewCommentEvent
+        );
 
       case "push":
         return await handlePush(parsedBody as PushEvent);
