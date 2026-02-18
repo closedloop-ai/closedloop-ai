@@ -118,6 +118,7 @@ export async function handleExecutionSuccess(
     await tx.gitHubPullRequest.create({
       data: {
         workstreamId,
+        organizationId: workstream.organizationId,
         repositoryId,
         artifactId: ctx.artifactId,
         githubId: executionResult.github_id ?? prNumber,

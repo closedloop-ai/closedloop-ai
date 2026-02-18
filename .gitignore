@@ -50,6 +50,9 @@ Temporary Items
 # production
 /build
 
+# IDE / editor (keep local only)
+.cursorignore
+
 # misc
 *.pem
 
@@ -297,3 +300,6 @@ packages/database/generated
 .claude/work/
 .claude/symphony-loop.local.md
 plan-docs
+
+# Review artifacts
+reviews/

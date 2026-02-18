@@ -116,6 +116,19 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
   }),
 }));
 
+// Mock pull request rating hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
+  usePullRequestRating: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+  useSubmitPullRequestRating: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+  }),
+}));
+
 // Regex patterns for testing (hoisted to module level per Biome lint rules)
 const VERSION_PATTERN = /version: v1/i;
 const CREATED_PATTERN = /created:/i;

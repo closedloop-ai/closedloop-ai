@@ -1,7 +1,11 @@
 "use client";
 
 import type { PullRequestInfo } from "@repo/api/src/types/artifact";
-import { prStatusColors, StatusBadge } from "./status-badge";
+import {
+  prReviewDecisionColors,
+  prStatusColors,
+  StatusBadge,
+} from "./status-badge";
 
 export function PullRequestStatusBadge({
   pullRequest,
@@ -13,10 +17,19 @@ export function PullRequestStatusBadge({
   }
 
   return (
-    <StatusBadge
-      className="text-xs"
-      colorMap={prStatusColors}
-      status={pullRequest.state}
-    />
+    <div className="flex items-center gap-1.5">
+      <StatusBadge
+        className="text-xs"
+        colorMap={prStatusColors}
+        status={pullRequest.state}
+      />
+      {pullRequest.reviewDecision && (
+        <StatusBadge
+          className="text-xs"
+          colorMap={prReviewDecisionColors}
+          status={pullRequest.reviewDecision}
+        />
+      )}
+    </div>
   );
 }

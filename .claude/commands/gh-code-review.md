@@ -288,6 +288,12 @@ Mark todo as `completed`.
 
 Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
+### Agent Type (CRITICAL — prevents context overflow)
+
+**ALL agents spawned by this command MUST use `subagent_type: "general-purpose"` in the Task tool call.** Do NOT omit the subagent_type parameter — Claude Code will auto-select `symphony-core:code-reviewer` or `experimental:code-reviewer`, which have 130-330 line system prompts and load additional files at startup. This bloats every sub-agent's context by ~50K+ tokens before your prompt even starts, causing "long context beta" failures on large PRs. The review instructions are already fully specified in the prompt below — a specialized code-reviewer agent is redundant and harmful.
+
+The only exceptions are domain critics (Layer 4), which use their own `symphony-fe:*` subagent types as specified in the critic-agent mapping table.
+
 ### Review Architecture — 4 Layers
 
 **Layer 1 — General Bug Detection** (always runs):
@@ -623,7 +629,7 @@ Then for each finding:
 
 ### Step 5.4: Agent Validation (Layer B — targeted)
 
-Validate findings where LLM verification adds value. Spawn a single Opus validation agent (or process sequentially) for:
+Validate findings where LLM verification adds value. Spawn a single Opus validation agent (use `subagent_type: "general-purpose"`) for:
 
 - **All BLOCKING/HIGH findings** (regardless of confidence)
 - **MEDIUM findings involving API contracts, DRY, or cross-file semantics**
