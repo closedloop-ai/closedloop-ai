@@ -1,7 +1,13 @@
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { JudgeAnalyticsTable } from "../judge-analytics-table";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => "/judges-analytics",
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 function makeJudge(
   overrides?: Partial<JudgeAggregateStats>
