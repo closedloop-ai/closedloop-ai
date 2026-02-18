@@ -40,7 +40,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # CI:     uses secrets.PLUGIN_REPO_TOKEN or a GitHub App token
 ARG GITHUB_TOKEN
 RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" && \
-    git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
+    git config --global --add url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
     claude plugin marketplace add closedloop-ai/claude_code && \
     claude plugin install experimental@closedloop && \
     claude plugin install symphony-core@closedloop ; \
