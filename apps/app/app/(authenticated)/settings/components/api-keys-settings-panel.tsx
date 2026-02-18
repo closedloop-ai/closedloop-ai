@@ -223,6 +223,67 @@ function ApiKeysCardContent({
   );
 }
 
+function QuickStartGuide() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Quick Start</CardTitle>
+        <CardDescription>
+          Use your API key to access the Symphony API programmatically.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <p className="font-medium text-sm">REST API</p>
+          <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {`curl https://api.closedloop.ai/artifacts \\
+  -H "Authorization: Bearer sk_live_YOUR_KEY"`}
+          </pre>
+        </div>
+        <div className="space-y-2">
+          <p className="font-medium text-sm">
+            MCP (Claude Code / Claude Desktop)
+          </p>
+          <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {`// claude_desktop_config.json
+{
+  "mcpServers": {
+    "symphony": {
+      "url": "https://mcp.closedloop.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer sk_live_YOUR_KEY"
+      }
+    }
+  }
+}`}
+          </pre>
+        </div>
+        <div className="space-y-1">
+          <p className="font-medium text-sm">Available endpoints</p>
+          <ul className="list-inside list-disc text-muted-foreground text-xs">
+            <li>
+              <code className="text-xs">GET /projects</code> — List projects
+            </li>
+            <li>
+              <code className="text-xs">GET /artifacts</code> — List artifacts
+            </li>
+            <li>
+              <code className="text-xs">GET /artifacts/:id</code> — Get artifact
+            </li>
+            <li>
+              <code className="text-xs">POST /artifacts</code> — Create artifact
+            </li>
+            <li>
+              <code className="text-xs">POST /artifacts/batch-create</code> —
+              Batch create artifacts
+            </li>
+          </ul>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ApiKeysSettingsPanel() {
   const { data: apiKeys, isLoading } = usePlatformApiKeys();
   const revokeApiKey = useRevokePlatformApiKey();
@@ -268,6 +329,8 @@ export function ApiKeysSettingsPanel() {
           />
         </CardContent>
       </Card>
+
+      <QuickStartGuide />
 
       <CreateApiKeyDialog
         onCreated={setCreatedKey}
