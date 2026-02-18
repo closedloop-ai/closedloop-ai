@@ -256,3 +256,7 @@ export type PlanJson = {
   gaps: PlanGap[];
   manualTasks?: PlanTask[];
 };
+
+export type BatchCreateArtifactInput = {
+  items: CreateArtifactInput[];
+};
