@@ -264,15 +264,27 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
   let eventCount = 0;
   return new ReadableStream({
     start(controller) {
+      let controllerClosed = false;
       console.log(
         `[codex-stream] ReadableStream started for pid ${childProcess.pid}`
       );
+
+      const closeController = () => {
+        if (controllerClosed) {
+          return;
+        }
+        controllerClosed = true;
+        controller.close();
+      };
 
       const sendEvent = (data: {
         type: string;
         content?: string;
         exitCode?: number;
       }) => {
+        if (controllerClosed) {
+          return;
+        }
         eventCount++;
         console.log(
           `[codex-stream] sendEvent #${eventCount}: type=${data.type}, content length=${data.content?.length ?? 0}`
@@ -299,13 +311,13 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
           `[codex-stream] process closed with code ${code}, total events: ${eventCount}`
         );
         sendEvent({ type: "done", exitCode: code ?? 1 });
-        controller.close();
+        closeController();
       });
 
       childProcess.on("error", (err) => {
         console.log("[codex-stream] process error:", err.message);
         sendEvent({ type: "error", content: err.message });
-        controller.close();
+        closeController();
       });
     },
     cancel() {
@@ -325,6 +337,15 @@ function createClaudeStream(
   return new ReadableStream({
     start(controller) {
       let buffer = "";
+      let controllerClosed = false;
+
+      const closeController = () => {
+        if (controllerClosed) {
+          return;
+        }
+        controllerClosed = true;
+        controller.close();
+      };
 
       const sendEvent = (data: {
         type: string;
@@ -333,6 +354,9 @@ function createClaudeStream(
         sessionId?: string;
         reviewCommand?: string;
       }) => {
+        if (controllerClosed) {
+          return;
+        }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`));
         } catch {
@@ -390,12 +414,12 @@ function createClaudeStream(
           }
         }
         sendEvent({ type: "done", exitCode: code ?? 1 });
-        controller.close();
+        closeController();
       });
 
       childProcess.on("error", (err) => {
         sendEvent({ type: "error", content: err.message });
-        controller.close();
+        closeController();
       });
     },
     cancel() {
