@@ -252,7 +252,7 @@ export function useCommentChat({
     learningsPollingRef.current = setInterval(async () => {
       try {
         const res = await fetch(
-          `/api/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+          `/api/engineer/symphony/learnings-status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
         );
         const data = await res.json();
         if (data.status === "completed") {
@@ -415,7 +415,7 @@ export function useCommentChat({
 
       try {
         const response = await fetch(
-          `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -689,7 +689,7 @@ export function useCommentChat({
       setHasResponded(true);
 
       // Persist responded flag on the message so it survives navigation
-      const patchUrl = `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
       fetch(patchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -760,7 +760,7 @@ export function useCommentChat({
     async (index: number) => {
       try {
         const response = await fetch(
-          `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
           { method: "DELETE" }
         );
         if (response.ok) {
@@ -786,7 +786,7 @@ export function useCommentChat({
     }
     try {
       const response = await fetch(
-        `/api/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
         { method: "DELETE" }
       );
       if (response.ok) {

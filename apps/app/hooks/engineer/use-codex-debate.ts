@@ -27,9 +27,9 @@ type UseCodexDebateOptions = {
   saveEndpoint?: string;
   /** Override which query key to invalidate after saving (default: symphonyChatHistory) */
   invalidateKey?: readonly unknown[];
-  /** Override URL to POST Claude messages during debate (default: /api/symphony/chat/{ticketId}?repo=...) */
+  /** Override URL to POST Claude messages during debate (default: /api/engineer/symphony/chat/{ticketId}?repo=...) */
   claudeUrl?: string;
-  /** Override URL to GET latest messages after Claude responds (default: /api/symphony/chat-history/{ticketId}?repo=...) */
+  /** Override URL to GET latest messages after Claude responds (default: /api/engineer/symphony/chat-history/{ticketId}?repo=...) */
   historyUrl?: string;
   /** Optional middle action shown between the primary and "End debate" buttons.
    *  Defaults to none. CodexReviewDialog passes { label: "Dismiss Finding", message: "/dismiss" }. */
@@ -162,7 +162,7 @@ export function useCodexDebate({
       };
       const url =
         saveEndpoint ||
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       const method = saveEndpoint ? "PATCH" : "POST";
       await fetch(url, {
         method,
@@ -183,7 +183,7 @@ export function useCodexDebate({
       finding: string,
       history: { sender: string; content: string }[]
     ) => {
-      const url = `/api/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       const abortController = new AbortController();
       codexAbortRef.current = abortController;
@@ -445,7 +445,7 @@ export function useCodexDebate({
 
     const url =
       claudeUrlProp ||
-      `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
     await claudeStream.sendMessage(
       url,
       {
@@ -468,7 +468,7 @@ export function useCodexDebate({
             // Fetch the latest messages to get Claude's response for debate history
             const fetchHistoryUrl =
               historyUrlProp ||
-              `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+              `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
             const res = await fetch(fetchHistoryUrl);
             const data = await res.json();
             const messages = data.messages || [];
@@ -584,7 +584,7 @@ export function useCodexDebate({
 
       const url =
         claudeUrlProp ||
-        `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       await claudeStream.sendMessage(
         url,
         {
@@ -698,7 +698,7 @@ export function useCodexDebate({
       };
       const url =
         saveEndpoint ||
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
       const method = saveEndpoint ? "PATCH" : "POST";
       await fetch(url, {
         method,

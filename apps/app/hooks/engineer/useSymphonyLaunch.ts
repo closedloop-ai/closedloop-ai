@@ -117,7 +117,9 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
       setError(null);
 
       try {
-        console.log("[useSymphonyLaunch] Making POST to /api/symphony/launch");
+        console.log(
+          "[useSymphonyLaunch] Making POST to /api/engineer/symphony/launch"
+        );
         const response = await fetch("/api/engineer/symphony/launch", {
           method: "POST",
           headers: {

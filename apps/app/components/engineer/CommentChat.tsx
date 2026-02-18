@@ -100,7 +100,7 @@ export function CommentChat({
   const codexChatStream = useChatStream();
 
   // Build comment-chat specific URLs
-  const commentApiBase = `/api/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
 
   const debate = useCodexDebate({
     ticketId,
@@ -231,7 +231,7 @@ export function CommentChat({
         queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
 
-      const url = `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       // Build recent chat history for context
       const recentHistory = (chat.history?.messages || [])

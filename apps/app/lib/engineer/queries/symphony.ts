@@ -112,7 +112,7 @@ export function symphonyStatusOptions(
     queryKey: queryKeys.symphonyStatus(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
+        `/api/engineer/symphony/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath || "")}`
       );
       return response.json();
     },
@@ -125,7 +125,7 @@ export function symphonyPlanOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyPlan(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/symphony/plan/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       return response.json();
     },
@@ -137,7 +137,7 @@ export function symphonyChatHistoryOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       return response.json();
     },
@@ -149,7 +149,7 @@ export function symphonyLogsOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyLogs(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
+        `/api/engineer/symphony/logs/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&lines=1000`
       );
       return response.json();
     },
@@ -166,7 +166,7 @@ export function commentChatHistoryOptions(
     queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         return {
@@ -207,7 +207,7 @@ export function findingChatHistoryOptions(
     queryKey: queryKeys.findingChatHistory(ticketId, findingId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/codex/finding-chat/${encodeURIComponent(findingId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
       );
       if (!response.ok) {
         return { messages: [], ticketId, repoPath, findingId };
@@ -222,7 +222,7 @@ export function symphonyJudgesOptions(ticketId: string, repoPath: string) {
     queryKey: queryKeys.symphonyJudges(ticketId, repoPath),
     queryFn: async () => {
       const response = await fetch(
-        `/api/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
+        `/api/engineer/symphony/judges/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`
       );
       return response.json();
     },

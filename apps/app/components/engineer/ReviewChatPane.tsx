@@ -126,7 +126,7 @@ export function ReviewChatPane({
   });
 
   // Fetch persisted findings to restore commented status
-  const findingsUrl = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+  const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
     findings: Array<{ commented: boolean }>;
   }>({
@@ -330,7 +330,7 @@ export function ReviewChatPane({
       // resume the same Claude session (full review context preserved).
       if (config.provider === "claude" && sessionIdRef.current) {
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -368,7 +368,7 @@ export function ReviewChatPane({
   }
 
   const pollRunningReview = async (signal: AbortSignal) => {
-    const statusUrl = `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+    const statusUrl = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
     let pollCount = 0;
     console.log("[poll] Starting poll for running review");
     while (!signal.aborted) {
@@ -474,7 +474,7 @@ export function ReviewChatPane({
     (message: string): { url: string; body: Record<string, unknown> } => {
       if (config.provider === "codex") {
         return {
-          url: `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt: message,
             chatHistory: [],
@@ -484,7 +484,7 @@ export function ReviewChatPane({
         };
       }
       return {
-        url: `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        url: `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         body: {
           message,
           activeTab: "plan",
@@ -1348,7 +1348,7 @@ function saveReviewFindings(
   model: string,
   findings: ReviewFinding[]
 ): void {
-  const url = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1362,7 +1362,7 @@ function markFindingCommented(
   provider: string,
   index: number
 ): void {
-  const url = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

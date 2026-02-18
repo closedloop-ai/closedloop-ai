@@ -106,7 +106,7 @@ export async function POST(
     const buffer = Buffer.from(await entry.arrayBuffer());
     writeFileSync(savedPath, buffer);
 
-    const apiUrl = `/api/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(savedName)}?repo=${encodeURIComponent(repoPath)}`;
+    const apiUrl = `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(savedName)}?repo=${encodeURIComponent(repoPath)}`;
 
     files.push({
       originalName: entry.name,

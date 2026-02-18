@@ -36,7 +36,7 @@ export function deployStatusOptions(
         params.set("pid", String(pid));
       }
       const response = await fetch(
-        `/api/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
+        `/api/engineer/deploy/status/${encodeURIComponent(ticketId)}?${params.toString()}`
       );
       if (!response.ok) {
         throw new Error("Failed to fetch deploy status");
