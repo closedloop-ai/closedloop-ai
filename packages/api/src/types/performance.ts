@@ -132,11 +132,3 @@ export type PerfSummary = {
   agentBreakdown: AgentBreakdown[];
   pipelineStepBreakdown: PipelineStepBreakdown[];
 };
-
-/**
- * API response wrapper for performance data.
- * Returns the summary, or null if perf.jsonl not found.
- */
-export type PerformanceDataResponse =
-  | { status: "success"; data: PerfSummary }
-  | { status: "not_found"; data: null };

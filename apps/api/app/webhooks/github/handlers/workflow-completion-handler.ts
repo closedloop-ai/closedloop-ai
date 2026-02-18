@@ -259,6 +259,7 @@ export async function handleWorkflowSuccess(
     artifactId,
     hasContent: !!finalContent,
     contentLength: finalContent?.length ?? 0,
+    hasPerfSummary: !!perfSummary,
     command,
   });
 
@@ -362,14 +363,21 @@ export async function handleWorkflowSuccess(
     });
   }
 
-  // Persist perf summary if available
-  // Webhook replay will create duplicate rows; this is acceptable since
-  // the API always returns the most recent record (ORDER BY createdAt DESC LIMIT 1)
-  if (perfSummary !== null && perfSummary !== undefined) {
-    await tx.gitHubActionRunPerformance.create({
-      data: {
+  // Persist perf summary if available (upsert to handle webhook replay idempotently)
+  if (perfSummary !== null && perfSummary !== undefined && ctx.actionRunId) {
+    await tx.gitHubActionRunPerformance.upsert({
+      where: {
+        artifactId_actionRunId: {
+          artifactId,
+          actionRunId: ctx.actionRunId,
+        },
+      },
+      create: {
         artifactId,
-        actionRunId: ctx.actionRunId ?? null,
+        actionRunId: ctx.actionRunId,
+        summaryData: perfSummary as unknown as Prisma.InputJsonValue,
+      },
+      update: {
         summaryData: perfSummary as unknown as Prisma.InputJsonValue,
       },
     });

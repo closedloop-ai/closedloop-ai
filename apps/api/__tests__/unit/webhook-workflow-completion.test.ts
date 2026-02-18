@@ -528,16 +528,25 @@ describe("handleWorkflowSuccess", () => {
         create: vi.fn().mockResolvedValue({ id: "event-perf" }),
       },
       gitHubActionRunPerformance: {
-        create: vi.fn().mockResolvedValue({ id: "perf-record-1" }),
+        upsert: vi.fn().mockResolvedValue({ id: "perf-record-1" }),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx, false);
 
-    expect(mockDb.gitHubActionRunPerformance.create).toHaveBeenCalledWith({
-      data: {
+    expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
+      where: {
+        artifactId_actionRunId: {
+          artifactId,
+          actionRunId,
+        },
+      },
+      create: {
         artifactId,
         actionRunId,
+        summaryData: expect.objectContaining({ totalIterations: 1 }),
+      },
+      update: {
         summaryData: expect.objectContaining({ totalIterations: 1 }),
       },
     });
@@ -594,13 +603,13 @@ describe("handleWorkflowSuccess", () => {
         create: vi.fn().mockResolvedValue({ id: "event-no-perf" }),
       },
       gitHubActionRunPerformance: {
-        create: vi.fn(),
+        upsert: vi.fn(),
       },
     };
 
     await handleWorkflowSuccess(asTx(mockDb), ctx, false);
 
-    expect(mockDb.gitHubActionRunPerformance.create).not.toHaveBeenCalled();
+    expect(mockDb.gitHubActionRunPerformance.upsert).not.toHaveBeenCalled();
   });
 
   it("logs error when artifactId is missing in context", async () => {

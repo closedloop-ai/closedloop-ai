@@ -1422,25 +1422,20 @@ Please try again or contact support if the issue persists.`
 
   /**
    * Get performance data for an artifact from the GitHubActionRunPerformance table.
-   * Two-step org-scoping: first verify artifact belongs to org, then query perf table.
+   * Org-scoping is enforced via Prisma relation filter on the artifact FK.
    * Returns null when no performance data is available for the artifact.
    */
   async getPerformanceData(
     artifactId: string,
     organizationId: string
   ): Promise<PerfSummary | null> {
-    // Step 1: Verify artifact exists and belongs to organization (org-scoping gate)
-    const artifact = await this.findByIdSimple(artifactId, organizationId);
-    if (!artifact) {
-      return null;
-    }
-
-    // Step 2: Query performance table by artifactId
-    // SECURITY: gitHubActionRunPerformance has no organizationId column;
-    // org isolation is enforced via the artifact FK check above.
+    // Single query: join through artifact relation to enforce org-scoping
     const perfRecord = await withDb((db) =>
       db.gitHubActionRunPerformance.findFirst({
-        where: { artifactId },
+        where: {
+          artifactId,
+          artifact: { organizationId },
+        },
         orderBy: { createdAt: "desc" },
       })
     );

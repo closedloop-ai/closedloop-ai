@@ -1,10 +1,10 @@
 import { success } from "@repo/api/src/types/common";
-import type { PerformanceDataResponse } from "@repo/api/src/types/performance";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/auth/with-auth";
 import { artifactsService } from "../../service";
 
-export const GET = withAuth<PerformanceDataResponse, "/artifacts/[id]/perf">(
+export const GET = withAuth<PerfSummary | null, "/artifacts/[id]/perf">(
   async ({ user }, _request, params) => {
     const { id } = await params;
 
@@ -13,11 +13,6 @@ export const GET = withAuth<PerformanceDataResponse, "/artifacts/[id]/perf">(
       user.organizationId
     );
 
-    const response: PerformanceDataResponse =
-      result !== null
-        ? { status: "success", data: result }
-        : { status: "not_found", data: null };
-
-    return NextResponse.json(success(response));
+    return NextResponse.json(success(result));
   }
 );
