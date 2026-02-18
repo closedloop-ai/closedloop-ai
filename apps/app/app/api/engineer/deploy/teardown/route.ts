@@ -5,7 +5,7 @@ import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 /**
  * API route to tear down a local dev server
  *
- * POST /api/deploy/teardown
+ * POST /api/engineer/deploy/teardown
  * Body: { repoPath, worktreePath, serviceId?, pid?, port? }
  *
  * Kill strategy (in order):

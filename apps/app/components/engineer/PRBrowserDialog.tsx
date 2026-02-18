@@ -124,6 +124,14 @@ function markReviewDone(
   if (!entry) {
     return prev;
   }
+  // Already marked done with same values — return same reference to avoid re-render
+  if (
+    entry.done &&
+    entry.initialOutput === output &&
+    entry.findingCount === findingCount
+  ) {
+    return prev;
+  }
   return {
     ...prev,
     [provider]: { ...entry, initialOutput: output, done: true, findingCount },
@@ -409,7 +417,7 @@ export function PRBrowserDialog({
     const restoreProvider = async (provider: "claude" | "codex") => {
       try {
         const res = await fetch(
-          `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
+          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
         );
         const data = await res.json();
         if (cancelled || !data.hasReview) {
@@ -493,7 +501,7 @@ export function PRBrowserDialog({
       // Fetch the other provider's findings from disk (already persisted)
       try {
         const res = await fetch(
-          `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${otherProvider}`
+          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${otherProvider}`
         );
         const data = await res.json();
         const otherFindings: ReviewFinding[] = data.findings ?? [];
@@ -669,11 +677,11 @@ export function PRBrowserDialog({
       if (selectedPR && selectedRepo) {
         const ticketId = `pr-${selectedPR.number}`;
         fetch(
-          `/api/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}`,
           { method: "DELETE" }
         ).catch(() => {});
       }
@@ -752,7 +760,7 @@ export function PRBrowserDialog({
           commented: true,
         }));
         fetch(
-          `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(entry.config.provider)}`,
+          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(entry.config.provider)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1079,7 +1087,7 @@ export function PRBrowserDialog({
                     const results = await Promise.all(
                       (["claude", "codex"] as const).map((p) =>
                         fetch(
-                          `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
+                          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
                         )
                           .then((res) => res.json())
                           .then((data) => ({ provider: p, data }))
@@ -1174,7 +1182,7 @@ export function PRBrowserDialog({
                         const results = await Promise.all(
                           (["claude", "codex"] as const).map((p) =>
                             fetch(
-                              `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
+                              `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
                             )
                               .then((res) => res.json())
                               .then((data) => ({ provider: p, data }))
@@ -1684,7 +1692,7 @@ async function fetchCommentedIndices(
 ): Promise<Set<number>> {
   try {
     const res = await fetch(
-      `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
+      `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
     );
     const data = await res.json();
     const indices = new Set<number>();

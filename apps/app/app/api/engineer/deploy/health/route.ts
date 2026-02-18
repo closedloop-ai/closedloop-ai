@@ -3,7 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 /**
  * API route to health-check a deployed URL
  *
- * POST /api/deploy/health
+ * POST /api/engineer/deploy/health
  * Body: { url }
  */
 export async function POST(request: NextRequest) {

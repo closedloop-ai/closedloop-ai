@@ -62,7 +62,7 @@ export function GET(request: NextRequest) {
 }
 
 /**
- * POST /api/symphony/process-learnings
+ * POST /api/engineer/symphony/process-learnings
  *
  * Processes pending learnings captured during a chat session.
  * Called when the chat dialog closes and learnings were captured.

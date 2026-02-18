@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ChatMessage,
   ContentBlock,
@@ -28,6 +28,10 @@ type UseChatStreamReturn = {
     callbacks?: UseChatStreamCallbacks
   ) => Promise<void>;
   stopStreaming: () => void;
+  /** Stable timestamp captured once when streaming begins */
+  streamStartedAt: string;
+  /** Context window usage percentage (0-100), updated after each turn */
+  contextPercent: number | null;
 };
 
 /**
@@ -42,12 +46,29 @@ export function useChatStream(): UseChatStreamReturn {
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingUserMessage, setPendingUserMessage] =
+  const [pendingUserMessage, setPendingUserMessageRaw] =
     useState<ChatMessage | null>(null);
+  const [streamStartedAt, setStreamStartedAt] = useState("");
+  const [contextPercent, setContextPercent] = useState<number | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
   const latestTextRef = useRef("");
+  const prevPendingRef = useRef<ChatMessage | null>(null);
+
+  // Track null→non-null transitions on pendingUserMessage to capture
+  // streamStartedAt for flows that use setPendingUserMessage directly
+  // (e.g., codex debate) rather than sendMessage.
+  useEffect(() => {
+    if (pendingUserMessage !== null && prevPendingRef.current === null) {
+      setStreamStartedAt((prev) => prev || new Date().toISOString());
+    }
+    prevPendingRef.current = pendingUserMessage;
+  }, [pendingUserMessage]);
+
+  const setPendingUserMessage = useCallback((msg: ChatMessage | null) => {
+    setPendingUserMessageRaw(msg);
+  }, []);
 
   const stopStreaming = useCallback(() => {
     abortControllerRef.current?.abort();
@@ -63,6 +84,7 @@ export function useChatStream(): UseChatStreamReturn {
         return;
       }
 
+      setStreamStartedAt(new Date().toISOString());
       setIsStreaming(true);
       isStreamingRef.current = true;
       setStreamingContent("");
@@ -136,6 +158,7 @@ export function useChatStream(): UseChatStreamReturn {
           },
           onPid: (pid) => callbacks?.onPid?.(pid),
           onLearnings: () => callbacks?.onLearnings?.(),
+          onUsage: (pct) => setContextPercent(pct),
         });
 
         // Await consumer cleanup (e.g. query invalidation) BEFORE finally
@@ -162,9 +185,10 @@ export function useChatStream(): UseChatStreamReturn {
         isStreamingRef.current = false;
         setStreamingContent("");
         setStreamingBlocks([]);
-        setPendingUserMessage(null);
+        setPendingUserMessageRaw(null);
         abortControllerRef.current = null;
         latestTextRef.current = "";
+        setStreamStartedAt("");
       }
     },
     []
@@ -179,5 +203,7 @@ export function useChatStream(): UseChatStreamReturn {
     setPendingUserMessage,
     sendMessage,
     stopStreaming,
+    streamStartedAt,
+    contextPercent,
   };
 }

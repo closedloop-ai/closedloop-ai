@@ -14,7 +14,7 @@ import { copyEnvLocalFiles } from "@/lib/engineer/worktree";
 /**
  * API route to start a deployment (local dev server)
  *
- * POST /api/deploy
+ * POST /api/engineer/deploy
  * Body: { ticketId, repoPath, worktreePath }
  */
 export async function POST(request: NextRequest) {

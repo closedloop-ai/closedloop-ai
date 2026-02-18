@@ -4,7 +4,7 @@ import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 /**
  * API route to extract deployment details
  *
- * POST /api/deploy/extract-info
+ * POST /api/engineer/deploy/extract-info
  * Body: { repoPath, logs }
  *
  * For local deployments, returns localhost:PORT directly.

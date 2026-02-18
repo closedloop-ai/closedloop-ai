@@ -22,6 +22,8 @@ type ChatBubbleProps = {
   onCopy?: () => void;
   onForward?: () => void;
   forwardLabel?: string;
+  /** Context window usage percentage (0-100) — shown in role bar when present */
+  contextPercent?: number | null;
 };
 
 /**
@@ -46,6 +48,7 @@ export const ChatBubble = memo(
     onCopy,
     onForward,
     forwardLabel,
+    contextPercent,
   }: Readonly<ChatBubbleProps>) {
     const isCodex = sender === "codex";
     const isUser = isCodex ? false : messageRole === "user";
@@ -105,6 +108,11 @@ export const ChatBubble = memo(
           <span className="font-mono text-[10px] text-muted-foreground/70">
             {formatTime(timestamp)}
           </span>
+          {contextPercent != null && (
+            <span className="font-mono text-[10px] text-muted-foreground/50">
+              · {contextPercent}%
+            </span>
+          )}
           {onDelete && !isStreaming && (
             <button
               className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
@@ -197,5 +205,6 @@ export const ChatBubble = memo(
     (prev.onCopy == null) === (next.onCopy == null) &&
     (prev.onForward == null) === (next.onForward == null) &&
     (prev.onAction == null) === (next.onAction == null) &&
+    prev.contextPercent === next.contextPercent &&
     JSON.stringify(prev.actions) === JSON.stringify(next.actions)
 );

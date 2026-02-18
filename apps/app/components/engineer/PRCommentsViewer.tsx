@@ -106,6 +106,18 @@ function buildThreads(comments: PRComment[]): CommentThread[] {
   );
 }
 
+function isThreadVisible(status: string, filter: FilterType): boolean {
+  if (filter === "pending") {
+    return status === "pending";
+  }
+  if (filter === "resolved") {
+    return (
+      status === "addressed" || status === "responded" || status === "dismissed"
+    );
+  }
+  return true;
+}
+
 /**
  * PRCommentsViewer displays all PR comments with filtering and status tracking.
  * Polls for new comments every 30 seconds when visible.
@@ -124,7 +136,7 @@ export function PRCommentsViewer({
     null
   );
   const [addressingReplies, setAddressingReplies] = useState<PRComment[]>([]);
-  const [_statusVersion, setStatusVersion] = useState(0); // Trigger re-computation of statuses
+  const [statusVersion, setStatusVersion] = useState(0);
   const { data: codexData } = useCodexAvailable();
   const { seen: overflowSeen, markSeen: markOverflowSeen } = useFeatureSeen(
     "pr-comment-overflow"
@@ -144,10 +156,12 @@ export function PRCommentsViewer({
     staleTime: 10_000, // Consider data stale after 10 seconds
   });
 
-  // Get local status for all comments
+  // Get local status for all comments — re-read from localStorage whenever statusVersion changes
   const commentStatuses = useMemo(() => {
     return getCommentStatuses(prNumber);
-  }, [prNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+    // statusVersion is intentionally included to force re-read after dismiss/reopen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prNumber, statusVersion]);
 
   // Build threads from flat comments
   const threads = useMemo(() => {
@@ -166,29 +180,16 @@ export function PRCommentsViewer({
       prNumber,
       threads.map((t) => t.root.id)
     );
-  }, [prNumber, threads]); // eslint-disable-line react-hooks/exhaustive-deps
+    // statusVersion included so counts update after dismiss/reopen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prNumber, threads, statusVersion]);
 
   // Filter threads based on selected filter, grouped into inline and general
   const filteredThreads = useMemo(() => {
     const filtered = threads.filter((thread) => {
-      const status = commentStatuses[thread.root.id]?.status || "pending";
-
-      if (filter === "all") {
-        return true;
-      }
-      if (filter === "pending") {
-        return status === "pending";
-      }
-      if (filter === "resolved") {
-        return (
-          status === "addressed" ||
-          status === "responded" ||
-          status === "dismissed"
-        );
-      }
-      return true;
+      const status = commentStatuses[thread.root.id]?.status ?? "pending";
+      return isThreadVisible(status, filter);
     });
-
     return {
       inline: filtered.filter((t) => t.root.path),
       general: filtered.filter((t) => !t.root.path),
@@ -449,7 +450,7 @@ function CommentSection({
   onProposeFixCodex,
   onDismiss,
   onReopen,
-}: {
+}: Readonly<{
   label: string;
   icon: React.ReactNode;
   threads: CommentThread[];
@@ -467,7 +468,7 @@ function CommentSection({
   onProposeFixCodex: (comment: PRComment, replies: PRComment[]) => void;
   onDismiss: (commentId: string) => void;
   onReopen: (commentId: string) => void;
-}) {
+}>) {
   return (
     <div>
       <div className="mt-1 mb-2 flex items-center gap-2">

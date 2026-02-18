@@ -133,7 +133,7 @@ export function TicketChatDialog({
       });
 
       await stream.sendMessage(
-        "/api/ticket-chat",
+        "/api/engineer/ticket-chat",
         {
           ticketId: ticket.identifier,
           message: trimmedInput,
@@ -227,7 +227,7 @@ export function TicketChatDialog({
     }
     try {
       const response = await fetch(
-        `/api/ticket-chat?ticketId=${encodeURIComponent(ticket.identifier)}`,
+        `/api/engineer/ticket-chat?ticketId=${encodeURIComponent(ticket.identifier)}`,
         { method: "DELETE" }
       );
       if (response.ok) {

@@ -619,7 +619,7 @@ function handleCodex(
 }
 
 /**
- * POST /api/terminal-chat
+ * POST /api/engineer/terminal-chat
  *
  * Chat with Claude (default) or Codex (@codex prefix)
  * Body: { message: string }

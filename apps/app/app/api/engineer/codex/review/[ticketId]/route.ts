@@ -172,7 +172,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       "--model",
       model,
       "--allowedTools",
-      "Bash(gh:*) Bash(git:*) Read Glob Grep",
+      "Bash Read Glob Grep Task TodoWrite",
       "--append-system-prompt",
       REVIEW_SYSTEM_PROMPT,
     ],
@@ -264,15 +264,27 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
   let eventCount = 0;
   return new ReadableStream({
     start(controller) {
+      let controllerClosed = false;
       console.log(
         `[codex-stream] ReadableStream started for pid ${childProcess.pid}`
       );
+
+      const closeController = () => {
+        if (controllerClosed) {
+          return;
+        }
+        controllerClosed = true;
+        controller.close();
+      };
 
       const sendEvent = (data: {
         type: string;
         content?: string;
         exitCode?: number;
       }) => {
+        if (controllerClosed) {
+          return;
+        }
         eventCount++;
         console.log(
           `[codex-stream] sendEvent #${eventCount}: type=${data.type}, content length=${data.content?.length ?? 0}`
@@ -299,13 +311,13 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
           `[codex-stream] process closed with code ${code}, total events: ${eventCount}`
         );
         sendEvent({ type: "done", exitCode: code ?? 1 });
-        controller.close();
+        closeController();
       });
 
       childProcess.on("error", (err) => {
         console.log("[codex-stream] process error:", err.message);
         sendEvent({ type: "error", content: err.message });
-        controller.close();
+        closeController();
       });
     },
     cancel() {
@@ -325,6 +337,15 @@ function createClaudeStream(
   return new ReadableStream({
     start(controller) {
       let buffer = "";
+      let controllerClosed = false;
+
+      const closeController = () => {
+        if (controllerClosed) {
+          return;
+        }
+        controllerClosed = true;
+        controller.close();
+      };
 
       const sendEvent = (data: {
         type: string;
@@ -332,7 +353,11 @@ function createClaudeStream(
         exitCode?: number;
         sessionId?: string;
         reviewCommand?: string;
+        contextPercent?: number;
       }) => {
+        if (controllerClosed) {
+          return;
+        }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(data)}\n`));
         } catch {
@@ -390,12 +415,12 @@ function createClaudeStream(
           }
         }
         sendEvent({ type: "done", exitCode: code ?? 1 });
-        controller.close();
+        closeController();
       });
 
       childProcess.on("error", (err) => {
         sendEvent({ type: "error", content: err.message });
-        controller.close();
+        closeController();
       });
     },
     cancel() {
@@ -407,7 +432,7 @@ function createClaudeStream(
 }
 
 /**
- * Try spawning Claude with /code-review skill first.
+ * Try spawning Claude with /experimental:code-review skill first.
  * If the process exits without producing real model output (only system/init/result
  * events), fall back to /review <prNum>.
  *
@@ -423,9 +448,11 @@ async function resolveClaudeReviewProcess(
   provider: string
 ): Promise<{ process: ChildProcess; command: string }> {
   const first = spawnClaudeReview(cwd, model);
-  first.stdin?.write("/code-review");
+  first.stdin?.write("/experimental:code-review");
   first.stdin?.end();
-  console.log(`[codex-review] Trying /code-review (pid: ${first.pid})`);
+  console.log(
+    `[codex-review] Trying /experimental:code-review (pid: ${first.pid})`
+  );
 
   type ProbeResult = { type: "working" } | { type: "exited"; code: number };
 
@@ -486,16 +513,16 @@ async function resolveClaudeReviewProcess(
   });
 
   if (result.type === "working") {
-    console.log("[codex-review] /code-review is producing output");
+    console.log("[codex-review] /experimental:code-review is producing output");
     // Put consumed probe data back in reverse order so stream consumers see it
     for (const chunk of probeChunks.reverse()) {
       first.stdout?.unshift(chunk);
     }
-    return { process: first, command: "/code-review" };
+    return { process: first, command: "/experimental:code-review" };
   }
 
   console.log(
-    `[codex-review] /code-review exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
+    `[codex-review] /experimental:code-review exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
   );
   await clearReviewLog(stateDir, provider);
 
@@ -862,6 +889,7 @@ function processClaudeStreamLine(
     exitCode?: number;
     sessionId?: string;
     reviewCommand?: string;
+    contextPercent?: number;
   }) => void
 ): void {
   try {
@@ -872,6 +900,20 @@ function processClaudeStreamLine(
       console.log(`[codex-review] Claude session ID captured: ${sid}`);
       sendEvent({ type: "sessionId", sessionId: sid });
     }
+
+    // Extract context usage from result events
+    if (event.type === "result" && event.subtype === "success" && event.usage) {
+      const total =
+        (event.usage.input_tokens ?? 0) +
+        (event.usage.output_tokens ?? 0) +
+        (event.usage.cache_creation_input_tokens ?? 0) +
+        (event.usage.cache_read_input_tokens ?? 0);
+      const contextWindow = event.context_window ?? 200_000;
+      const percent =
+        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+      sendEvent({ type: "usage", contextPercent: percent });
+    }
+
     const text = extractClaudeText(event);
     if (text) {
       console.log(

@@ -408,7 +408,7 @@ function runCodex(
 }
 
 /**
- * POST /api/codex/chat/[ticketId]?repo=...
+ * POST /api/engineer/codex/chat/[ticketId]?repo=...
  *
  * Send a freeform chat message to Codex and stream the response back.
  * If a resumed session is stale (missing from Codex state db), automatically

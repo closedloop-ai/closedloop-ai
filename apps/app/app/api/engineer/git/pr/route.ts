@@ -9,7 +9,7 @@ const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
 /**
  * API route to create Pull Requests using gh CLI
  *
- * POST /api/git/pr
+ * POST /api/engineer/git/pr
  * Body: { repoPath: string, title: string, body: string, ticketUrl?: string }
  */
 

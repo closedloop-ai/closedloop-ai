@@ -277,7 +277,9 @@ $RECYCLE.BIN/
 !.claude/agents
 !.claude/commands
 !.claude/settings
+!.claude/scripts
 !.claude/skills
+!.claude/settings.json
 apps/*/.claude/
 
 

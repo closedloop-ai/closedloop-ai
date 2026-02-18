@@ -10,7 +10,7 @@ import {
 } from "@/lib/engineer/repos";
 
 /**
- * POST /api/symphony/record-learning-use
+ * POST /api/engineer/symphony/record-learning-use
  *
  * Records learnings cited by the LLM in interactive chat to outcomes.log,
  * then triggers compute_success_rates.py to update org-patterns.toon.

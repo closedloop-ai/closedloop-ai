@@ -166,7 +166,7 @@ export function DeployDialog({
     setErrorMessage(null);
 
     try {
-      const response = await fetch("/api/deploy", {
+      const response = await fetch("/api/engineer/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId, repoPath, worktreePath }),
