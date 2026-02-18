@@ -106,7 +106,7 @@ export type AgentBreakdown = {
  *
  * Attributes:
  * - stepName: Human-readable name of the pipeline step
- * - callCount: Number of times this step was executed (not skipped)
+ * - callCount: Total number of times this step was invoked (including skipped)
  * - skipCount: Number of times this step was skipped
  * - totalDurationS: Cumulative duration across all executions in seconds
  */

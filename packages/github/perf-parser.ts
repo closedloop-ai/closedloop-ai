@@ -124,15 +124,14 @@ function processStepEvent(
   }
   const existing = stepMap.get(stepName);
   if (existing) {
+    existing.callCount++;
     if (e.skipped) {
       existing.skipCount++;
-    } else {
-      existing.callCount++;
     }
     existing.totalDurationS += e.duration_s;
   } else {
     stepMap.set(stepName, {
-      callCount: e.skipped ? 0 : 1,
+      callCount: 1,
       skipCount: e.skipped ? 1 : 0,
       totalDurationS: e.duration_s,
     });
