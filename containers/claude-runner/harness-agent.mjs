@@ -279,7 +279,7 @@ async function requestUploadUrls(keys) {
   if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return null;
   }
-  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/upload-urls`;
+  const url = `${config.apiBaseUrl}/loops/${config.loopId}/upload-urls`;
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -307,7 +307,7 @@ async function requestDownloadUrls(prefix) {
   if (!(config.authToken && config.apiBaseUrl && config.loopId)) {
     return null;
   }
-  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/download-urls`;
+  const url = `${config.apiBaseUrl}/loops/${config.loopId}/download-urls`;
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -594,7 +594,7 @@ async function downloadState(workDir) {
 // Event reporting
 // ---------------------------------------------------------------------------
 async function reportEvent(event) {
-  const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/events`;
+  const url = `${config.apiBaseUrl}/loops/${config.loopId}/events`;
   const payload = sanitizeValue({
     ...event,
     timestamp: event.timestamp || new Date().toISOString(),
@@ -631,7 +631,7 @@ async function refreshGitHubToken() {
     return;
   }
   try {
-    const url = `${config.apiBaseUrl}/api/loops/${config.loopId}/github-token`;
+    const url = `${config.apiBaseUrl}/loops/${config.loopId}/github-token`;
     const resp = await fetch(url, {
       method: "POST",
       headers: {
