@@ -34,6 +34,19 @@ function compareSortValues<T>(
   const aValue = (a as Record<string, unknown>)[config.key as string];
   const bValue = (b as Record<string, unknown>)[config.key as string];
 
+  // Nulls-last: null/undefined values always sort to the end
+  const aNull = aValue == null;
+  const bNull = bValue == null;
+  if (aNull && bNull) {
+    return 0;
+  }
+  if (aNull) {
+    return 1;
+  }
+  if (bNull) {
+    return -1;
+  }
+
   if (config.columnType === "date") {
     const aDate =
       typeof aValue === "string" ? parseDateLocal(aValue) : (aValue as Date);

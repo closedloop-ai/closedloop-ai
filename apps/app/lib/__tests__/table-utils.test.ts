@@ -109,10 +109,10 @@ describe("sortItems", () => {
     });
   });
 
-  describe("null and undefined values", () => {
+  describe("null and undefined values (nulls-last)", () => {
     type NullableItem = { id: string; label: string | null | undefined };
 
-    test("treats null values as empty string in string sort", () => {
+    test("sorts null values to the end in ascending order", () => {
       const items: NullableItem[] = [
         { id: "a", label: "zebra" },
         { id: "b", label: null },
@@ -123,11 +123,24 @@ describe("sortItems", () => {
         columnType: "string",
       };
       const sorted = sortItems(items, config, "asc");
-      // null coerces to "", which sorts before "apple"
-      expect(sorted.map((i) => i.id)).toEqual(["b", "c", "a"]);
+      expect(sorted.map((i) => i.id)).toEqual(["c", "a", "b"]);
     });
 
-    test("treats undefined values as empty string in string sort", () => {
+    test("sorts null values to the end in descending order", () => {
+      const items: NullableItem[] = [
+        { id: "a", label: "zebra" },
+        { id: "b", label: null },
+        { id: "c", label: "apple" },
+      ];
+      const config: SortConfig<NullableItem> = {
+        key: "label",
+        columnType: "string",
+      };
+      const sorted = sortItems(items, config, "desc");
+      expect(sorted.map((i) => i.id)).toEqual(["a", "c", "b"]);
+    });
+
+    test("sorts undefined values to the end", () => {
       const items: NullableItem[] = [
         { id: "a", label: "zebra" },
         { id: "b", label: undefined },
@@ -138,7 +151,36 @@ describe("sortItems", () => {
         columnType: "string",
       };
       const sorted = sortItems(items, config, "asc");
-      expect(sorted.map((i) => i.id)).toEqual(["b", "c", "a"]);
+      expect(sorted.map((i) => i.id)).toEqual(["c", "a", "b"]);
+    });
+
+    test("sorts null date values to the end", () => {
+      type NullableDateItem = { id: string; date: Date | null };
+      const items: NullableDateItem[] = [
+        { id: "a", date: new Date("2024-06-01") },
+        { id: "b", date: null },
+        { id: "c", date: new Date("2024-01-01") },
+      ];
+      const config: SortConfig<NullableDateItem> = {
+        key: "date",
+        columnType: "date",
+      };
+      const sorted = sortItems(items, config, "asc");
+      expect(sorted.map((i) => i.id)).toEqual(["c", "a", "b"]);
+    });
+
+    test("keeps both-null items in original order", () => {
+      const items: NullableItem[] = [
+        { id: "a", label: null },
+        { id: "b", label: null },
+        { id: "c", label: "apple" },
+      ];
+      const config: SortConfig<NullableItem> = {
+        key: "label",
+        columnType: "string",
+      };
+      const sorted = sortItems(items, config, "asc");
+      expect(sorted.map((i) => i.id)).toEqual(["c", "a", "b"]);
     });
   });
 
