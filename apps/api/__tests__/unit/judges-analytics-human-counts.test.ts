@@ -195,7 +195,7 @@ type ScoreScenario = {
   description: string;
   ratings: ScoreRatingRow[];
   artifactIds: string[];
-  expected: Record<string, number>;
+  expected: Record<string, number[]>;
 };
 
 const SCORE_SCENARIOS: ScoreScenario[] = [
@@ -215,45 +215,44 @@ const SCORE_SCENARIOS: ScoreScenario[] = [
   },
   {
     name: "single_rating_score_3",
-    description: "Single rating score=3 yields 0.6 (3/5)",
+    description: "Single rating score=3 yields [0.6]",
     ratings: [{ artifactId: "a1", score: 3 }],
     artifactIds: ["a1"],
-    expected: { a1: 0.6 },
+    expected: { a1: [0.6] },
   },
   {
     name: "min_score",
-    description: "score=1 yields 0.2 (1/5)",
+    description: "score=1 yields [0.2]",
     ratings: [{ artifactId: "a1", score: 1 }],
     artifactIds: ["a1"],
-    expected: { a1: 0.2 },
+    expected: { a1: [0.2] },
   },
   {
     name: "max_score",
-    description: "score=5 yields 1.0 (5/5)",
+    description: "score=5 yields [1.0]",
     ratings: [{ artifactId: "a1", score: 5 }],
     artifactIds: ["a1"],
-    expected: { a1: 1.0 },
+    expected: { a1: [1.0] },
   },
   {
     name: "multiple_ratings_same_artifact",
-    description:
-      "Two ratings scores 2,4 on same artifact: avg = (2/5 + 4/5)/2 = 0.6",
+    description: "Two ratings on same artifact: [0.4, 0.8]",
     ratings: [
       { artifactId: "a1", score: 2 },
       { artifactId: "a1", score: 4 },
     ],
     artifactIds: ["a1"],
-    expected: { a1: 0.6 },
+    expected: { a1: [0.4, 0.8] },
   },
   {
     name: "multiple_artifacts",
-    description: "Different artifacts get independent scores",
+    description: "Different artifacts get independent score arrays",
     ratings: [
       { artifactId: "a1", score: 5 },
       { artifactId: "a2", score: 1 },
     ],
     artifactIds: ["a1", "a2"],
-    expected: { a1: 1.0, a2: 0.2 },
+    expected: { a1: [1.0], a2: [0.2] },
   },
 ];
 
@@ -285,8 +284,11 @@ describe("getHumanRatingsByArtifact", () => {
       );
 
       const actual = Object.fromEntries(result);
-      for (const [key, expectedVal] of Object.entries(scenario.expected)) {
-        expect(actual[key]).toBeCloseTo(expectedVal, 10);
+      for (const [key, expectedScores] of Object.entries(scenario.expected)) {
+        expect(actual[key]).toHaveLength(expectedScores.length);
+        for (let i = 0; i < expectedScores.length; i++) {
+          expect(actual[key][i]).toBeCloseTo(expectedScores[i], 10);
+        }
       }
       expect(Object.keys(actual)).toHaveLength(
         Object.keys(scenario.expected).length

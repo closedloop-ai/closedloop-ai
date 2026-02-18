@@ -1,6 +1,6 @@
 /**
  * Unit tests for JudgeAnalyticsTable component.
- * Tests rendering of the "Human Rating (avg)" column per judge row.
+ * Tests rendering of grouped Eval/Human columns per judge row.
  */
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import { render, screen } from "@testing-library/react";
@@ -15,7 +15,10 @@ const BASE_JUDGE: JudgeAggregateStats = {
   mean: 0.75,
   max: 1.0,
   stdDev: 0.15,
-  humanRatingScore: null,
+  humanMin: null,
+  humanMax: null,
+  humanMean: null,
+  humanStdDev: null,
 };
 
 const SECOND_JUDGE: JudgeAggregateStats = {
@@ -25,31 +28,75 @@ const SECOND_JUDGE: JudgeAggregateStats = {
   mean: 0.6,
   max: 0.9,
   stdDev: 0.2,
-  humanRatingScore: 0.8,
+  humanMin: 0.4,
+  humanMax: 1.0,
+  humanMean: 0.7,
+  humanStdDev: 0.15,
 };
 
 describe("JudgeAnalyticsTable", () => {
-  describe("Human Rating column", () => {
-    it("always renders Human Rating column header", () => {
-      render(<JudgeAnalyticsTable data={[BASE_JUDGE]} />);
+  describe("Grouped column headers", () => {
+    it("renders Eval and Human group headers", () => {
+      render(<JudgeAnalyticsTable data={[]} />);
 
-      expect(screen.getByText("Human Rating (avg)")).toBeInTheDocument();
+      expect(screen.getByText("Eval")).toBeInTheDocument();
+      expect(screen.getByText("Human")).toBeInTheDocument();
     });
 
-    it("shows dash when judge has no human rating", () => {
+    it("renders sub-column headers for both groups", () => {
+      render(<JudgeAnalyticsTable data={[]} />);
+
+      // Min, Max, Mean, Std Dev appear twice (Eval + Human)
+      expect(screen.getAllByText("Min")).toHaveLength(2);
+      expect(screen.getAllByText("Max")).toHaveLength(2);
+      expect(screen.getAllByText("Mean")).toHaveLength(2);
+      expect(screen.getAllByText("Std Dev")).toHaveLength(2);
+    });
+
+    it("renders Judge Name and Artifacts Evaluated headers", () => {
+      render(<JudgeAnalyticsTable data={[]} />);
+
+      expect(screen.getByText("Judge Name")).toBeInTheDocument();
+      expect(screen.getByText("Artifacts Evaluated")).toBeInTheDocument();
+    });
+  });
+
+  describe("Human stats columns", () => {
+    it("shows dashes when judge has no human ratings", () => {
       render(<JudgeAnalyticsTable data={[BASE_JUDGE]} />);
 
       const rows = screen.getAllByRole("row");
-      // Row 0 = header, Row 1 = judge
-      const judgeCells = rows[1].querySelectorAll("td");
-      // Human Rating is column index 6
-      expect(judgeCells[6].textContent).toBe("—");
+      // Row 0 = group header, Row 1 = sub-header, Row 2 = judge
+      const judgeCells = rows[2].querySelectorAll("td");
+      // Human columns are indices 6-9 (after Judge Name, Artifacts, Eval Min/Max/Mean/StdDev)
+      expect(judgeCells[6].textContent).toBe("\u2014");
+      expect(judgeCells[7].textContent).toBe("\u2014");
+      expect(judgeCells[8].textContent).toBe("\u2014");
+      expect(judgeCells[9].textContent).toBe("\u2014");
     });
 
-    it("shows formatted score when judge has human rating", () => {
+    it("shows formatted human stats when available", () => {
       render(<JudgeAnalyticsTable data={[SECOND_JUDGE]} />);
 
-      expect(screen.getByText("0.80")).toBeInTheDocument();
+      const rows = screen.getAllByRole("row");
+      const judgeCells = rows[2].querySelectorAll("td");
+      expect(judgeCells[6].textContent).toBe("0.40"); // humanMin
+      expect(judgeCells[7].textContent).toBe("1.00"); // humanMax
+      expect(judgeCells[8].textContent).toBe("0.70"); // humanMean
+      expect(judgeCells[9].textContent).toBe("0.15"); // humanStdDev
+    });
+  });
+
+  describe("Eval stats columns", () => {
+    it("renders eval stats formatted to two decimal places", () => {
+      render(<JudgeAnalyticsTable data={[BASE_JUDGE]} />);
+
+      const rows = screen.getAllByRole("row");
+      const judgeCells = rows[2].querySelectorAll("td");
+      expect(judgeCells[2].textContent).toBe("0.50"); // min
+      expect(judgeCells[3].textContent).toBe("1.00"); // max
+      expect(judgeCells[4].textContent).toBe("0.75"); // mean
+      expect(judgeCells[5].textContent).toBe("0.15"); // stdDev
     });
   });
 
@@ -61,33 +108,10 @@ describe("JudgeAnalyticsTable", () => {
       expect(screen.getByText("brevity-judge")).toBeInTheDocument();
     });
 
-    it("renders judge stats formatted to two decimal places", () => {
-      render(<JudgeAnalyticsTable data={[BASE_JUDGE]} />);
-
-      expect(screen.getByText("0.50")).toBeInTheDocument();
-      expect(screen.getByText("0.75")).toBeInTheDocument();
-      expect(screen.getByText("1.00")).toBeInTheDocument();
-      expect(screen.getByText("0.15")).toBeInTheDocument();
-    });
-
-    it("renders artifactsEvaluated count for each judge", () => {
+    it("renders artifactsEvaluated count", () => {
       render(<JudgeAnalyticsTable data={[BASE_JUDGE]} />);
 
       expect(screen.getByText("10")).toBeInTheDocument();
-    });
-  });
-
-  describe("Fixed column headers", () => {
-    it("always renders standard column headers", () => {
-      render(<JudgeAnalyticsTable data={[]} />);
-
-      expect(screen.getByText("Judge Name")).toBeInTheDocument();
-      expect(screen.getByText("Artifacts Evaluated")).toBeInTheDocument();
-      expect(screen.getByText("Min")).toBeInTheDocument();
-      expect(screen.getByText("Mean")).toBeInTheDocument();
-      expect(screen.getByText("Max")).toBeInTheDocument();
-      expect(screen.getByText("Std Dev")).toBeInTheDocument();
-      expect(screen.getByText("Human Rating (avg)")).toBeInTheDocument();
     });
   });
 });

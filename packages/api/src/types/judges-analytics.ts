@@ -27,8 +27,14 @@ export type JudgeAggregateStats = {
   mean: number;
   max: number;
   stdDev: number;
-  /** Average normalized (0-1) human star rating for the artifacts this judge evaluated. null when no human ratings exist for those artifacts. */
-  humanRatingScore: number | null;
+  /** Minimum normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  humanMin: number | null;
+  /** Maximum normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  humanMax: number | null;
+  /** Mean normalized (0-1) human star rating across the artifacts this judge evaluated. null when no human ratings exist. */
+  humanMean: number | null;
+  /** Standard deviation of normalized (0-1) human star ratings across the artifacts this judge evaluated. null when no human ratings exist. */
+  humanStdDev: number | null;
 };
 
 /**

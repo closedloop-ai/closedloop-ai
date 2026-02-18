@@ -15,14 +15,23 @@ type JudgeAnalyticsChartProps = {
 
 type BoxPlotDataPoint = {
   name: string;
+  // Eval stats
   lowerWhisker: number;
   lowerBox: number;
   median: number;
   upperBox: number;
   upperWhisker: number;
   count: number;
-  humanRatingScore: number | null;
+  // Human stats (null when no human ratings)
+  humanLowerWhisker: number | null;
+  humanLowerBox: number | null;
+  humanMedian: number | null;
+  humanUpperBox: number | null;
+  humanUpperWhisker: number | null;
 };
+
+const EVAL_COLOR = "#2563EB";
+const HUMAN_COLOR = "#EAB308";
 
 const RechartsBarChart = BarChart as unknown as React.ComponentType<
   Record<string, unknown>
@@ -44,10 +53,109 @@ type BoxPlotShapeProps = {
   width?: number;
   height?: number;
   payload?: BoxPlotDataPoint;
-  fill?: string;
   /** Y domain [min, max] for the chart. Used to convert data values to pixel Y. */
   yDomain?: [number, number];
 };
+
+type CandlestickParams = {
+  centerX: number;
+  halfWidth: number;
+  valueToY: (value: number) => number;
+  lowerWhisker: number;
+  lowerBox: number;
+  median: number;
+  upperBox: number;
+  upperWhisker: number;
+  color: string;
+};
+
+/** Renders a single candlestick (whiskers + box + median line). */
+function renderCandlestick(params: CandlestickParams): React.ReactNode {
+  const { centerX, halfWidth, valueToY, color } = params;
+  const boxWidth = halfWidth * 0.7;
+  const whiskerWidth = halfWidth * 0.35;
+
+  const whiskerLowerY = valueToY(params.lowerWhisker);
+  const boxLowerY = valueToY(params.lowerBox);
+  const medianY = valueToY(params.median);
+  const boxUpperY = valueToY(params.upperBox);
+  const whiskerUpperY = valueToY(params.upperWhisker);
+
+  const dataRange = params.upperWhisker - params.lowerWhisker;
+  if (dataRange === 0) {
+    return (
+      <line
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={2}
+        x1={centerX - halfWidth / 2}
+        x2={centerX + halfWidth / 2}
+        y1={medianY}
+        y2={medianY}
+      />
+    );
+  }
+
+  return (
+    <g>
+      <line
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={1}
+        x1={centerX}
+        x2={centerX}
+        y1={whiskerLowerY}
+        y2={boxLowerY}
+      />
+      <line
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={1}
+        x1={centerX - whiskerWidth / 2}
+        x2={centerX + whiskerWidth / 2}
+        y1={whiskerLowerY}
+        y2={whiskerLowerY}
+      />
+      <rect
+        fill={color}
+        fillOpacity={0.35}
+        height={boxLowerY - boxUpperY}
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={1}
+        width={boxWidth}
+        x={centerX - boxWidth / 2}
+        y={boxUpperY}
+      />
+      <line
+        stroke={color}
+        strokeWidth={2}
+        x1={centerX - boxWidth / 2}
+        x2={centerX + boxWidth / 2}
+        y1={medianY}
+        y2={medianY}
+      />
+      <line
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={1}
+        x1={centerX}
+        x2={centerX}
+        y1={boxUpperY}
+        y2={whiskerUpperY}
+      />
+      <line
+        stroke={color}
+        strokeOpacity={0.7}
+        strokeWidth={1}
+        x1={centerX - whiskerWidth / 2}
+        x2={centerX + whiskerWidth / 2}
+        y1={whiskerUpperY}
+        y2={whiskerUpperY}
+      />
+    </g>
+  );
+}
 
 const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
   x = 0,
@@ -55,7 +163,6 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
   width = 0,
   height = 0,
   payload,
-  fill,
   yDomain = [0, 1],
 }) => {
   if (!payload) {
@@ -70,129 +177,61 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
 
   // Recharts gives us a bar slot from yMin to median in data space. Derive the global
   // plot scale so we can position the box in chart coordinates (not slot coordinates).
-  const median = payload.median;
-  const dataSpan = median - yMin;
+  const dataSpan = payload.median - yMin;
   const plotHeight = dataSpan > 0 ? (height * yRange) / dataSpan : height;
   const plotTop = y + height - plotHeight;
 
   const valueToY = (value: number) =>
     plotTop + (1 - (value - yMin) / yRange) * plotHeight;
 
-  const whiskerLowerY = valueToY(payload.lowerWhisker);
-  const boxLowerY = valueToY(payload.lowerBox);
-  const medianY = valueToY(payload.median);
-  const boxUpperY = valueToY(payload.upperBox);
-  const whiskerUpperY = valueToY(payload.upperWhisker);
-
-  const dataRange = payload.upperWhisker - payload.lowerWhisker;
-  if (dataRange === 0) {
-    const lineY = valueToY(payload.median);
-    return (
-      <g>
-        <line
-          stroke={fill || "#2563EB"}
-          strokeWidth={2}
-          x1={x}
-          x2={x + width}
-          y1={lineY}
-          y2={lineY}
-        />
-        {payload.humanRatingScore !== null && (
-          <line
-            stroke="#EAB308"
-            strokeDasharray="6 3"
-            strokeWidth={2}
-            x1={x}
-            x2={x + width}
-            y1={valueToY(payload.humanRatingScore)}
-            y2={valueToY(payload.humanRatingScore)}
-          />
-        )}
-      </g>
-    );
-  }
-
-  const centerX = x + width / 2;
-  const boxWidth = width * 0.6;
-  const whiskerWidth = width * 0.3;
+  const hasHuman = payload.humanMedian !== null;
+  const evalCenterX = hasHuman ? x + width * 0.3 : x + width / 2;
+  const evalHalfWidth = hasHuman ? width * 0.3 : width * 0.5;
 
   return (
     <g>
-      {/* Lower whisker line */}
-      <line
-        stroke={fill || "#2563EB"}
-        strokeWidth={1}
-        x1={centerX}
-        x2={centerX}
-        y1={whiskerLowerY}
-        y2={boxLowerY}
-      />
-      {/* Lower whisker cap */}
-      <line
-        stroke={fill || "#2563EB"}
-        strokeWidth={1}
-        x1={centerX - whiskerWidth / 2}
-        x2={centerX + whiskerWidth / 2}
-        y1={whiskerLowerY}
-        y2={whiskerLowerY}
-      />
-
-      {/* Box (from lowerBox to upperBox) */}
-      <rect
-        fill={fill || "#2563EB"}
-        fillOpacity={0.6}
-        height={boxLowerY - boxUpperY}
-        stroke={fill || "#2563EB"}
-        strokeWidth={1}
-        width={boxWidth}
-        x={centerX - boxWidth / 2}
-        y={boxUpperY}
-      />
-
-      {/* Median line (black) */}
-      <line
-        stroke="#000"
-        strokeWidth={2}
-        x1={centerX - boxWidth / 2}
-        x2={centerX + boxWidth / 2}
-        y1={medianY}
-        y2={medianY}
-      />
-
-      {/* Human rating line (yellow, dashed) */}
-      {payload.humanRatingScore !== null && (
-        <line
-          stroke="#EAB308"
-          strokeDasharray="6 3"
-          strokeWidth={2}
-          x1={centerX - boxWidth / 2}
-          x2={centerX + boxWidth / 2}
-          y1={valueToY(payload.humanRatingScore)}
-          y2={valueToY(payload.humanRatingScore)}
-        />
-      )}
-
-      {/* Upper whisker line */}
-      <line
-        stroke={fill || "#2563EB"}
-        strokeWidth={1}
-        x1={centerX}
-        x2={centerX}
-        y1={boxUpperY}
-        y2={whiskerUpperY}
-      />
-      {/* Upper whisker cap */}
-      <line
-        stroke={fill || "#2563EB"}
-        strokeWidth={1}
-        x1={centerX - whiskerWidth / 2}
-        x2={centerX + whiskerWidth / 2}
-        y1={whiskerUpperY}
-        y2={whiskerUpperY}
-      />
+      {renderCandlestick({
+        centerX: evalCenterX,
+        halfWidth: evalHalfWidth,
+        valueToY,
+        lowerWhisker: payload.lowerWhisker,
+        lowerBox: payload.lowerBox,
+        median: payload.median,
+        upperBox: payload.upperBox,
+        upperWhisker: payload.upperWhisker,
+        color: EVAL_COLOR,
+      })}
+      {hasHuman &&
+        renderCandlestick({
+          centerX: x + width * 0.7,
+          halfWidth: width * 0.3,
+          valueToY,
+          lowerWhisker: payload.humanLowerWhisker!,
+          lowerBox: payload.humanLowerBox!,
+          median: payload.humanMedian!,
+          upperBox: payload.humanUpperBox!,
+          upperWhisker: payload.humanUpperWhisker!,
+          color: HUMAN_COLOR,
+        })}
     </g>
   );
 };
+
+// Tooltip stat row helper
+function TooltipRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}): React.ReactElement {
+  return (
+    <div className="flex justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium font-mono">{value}</span>
+    </div>
+  );
+}
 
 // Custom tooltip component
 const BoxPlotTooltip: React.FC<{
@@ -209,43 +248,40 @@ const BoxPlotTooltip: React.FC<{
     <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
       <p className="mb-2 font-medium">{data.name}</p>
       <div className="grid gap-1.5">
-        <div className="flex justify-between gap-4">
-          <span className="text-muted-foreground">Max:</span>
-          <span className="font-medium font-mono">
-            {data.upperWhisker.toFixed(2)}
-          </span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-muted-foreground">Mean + 1σ:</span>
-          <span className="font-medium font-mono">
-            {data.upperBox.toFixed(2)}
-          </span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-muted-foreground">Mean:</span>
-          <span className="font-medium font-mono">
-            {data.median.toFixed(2)}
-          </span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-muted-foreground">Mean - 1σ:</span>
-          <span className="font-medium font-mono">
-            {data.lowerBox.toFixed(2)}
-          </span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-muted-foreground">Min:</span>
-          <span className="font-medium font-mono">
-            {data.lowerWhisker.toFixed(2)}
-          </span>
-        </div>
-        {data.humanRatingScore !== null && (
-          <div className="flex justify-between gap-4">
-            <span style={{ color: "#EAB308" }}>Human Rating:</span>
-            <span className="font-medium font-mono">
-              {data.humanRatingScore.toFixed(2)}
-            </span>
-          </div>
+        <p className="font-medium text-xs" style={{ color: EVAL_COLOR }}>
+          Eval
+        </p>
+        <TooltipRow label="Max:" value={data.upperWhisker.toFixed(2)} />
+        <TooltipRow label="Mean + 1σ:" value={data.upperBox.toFixed(2)} />
+        <TooltipRow label="Mean:" value={data.median.toFixed(2)} />
+        <TooltipRow label="Mean - 1σ:" value={data.lowerBox.toFixed(2)} />
+        <TooltipRow label="Min:" value={data.lowerWhisker.toFixed(2)} />
+        {data.humanMedian !== null && (
+          <>
+            <p
+              className="mt-1 border-border/50 border-t pt-1 font-medium text-xs"
+              style={{ color: HUMAN_COLOR }}
+            >
+              Human
+            </p>
+            <TooltipRow
+              label="Max:"
+              value={data.humanUpperWhisker!.toFixed(2)}
+            />
+            <TooltipRow
+              label="Mean + 1σ:"
+              value={data.humanUpperBox!.toFixed(2)}
+            />
+            <TooltipRow label="Mean:" value={data.humanMedian.toFixed(2)} />
+            <TooltipRow
+              label="Mean - 1σ:"
+              value={data.humanLowerBox!.toFixed(2)}
+            />
+            <TooltipRow
+              label="Min:"
+              value={data.humanLowerWhisker!.toFixed(2)}
+            />
+          </>
         )}
         <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
           <span className="text-muted-foreground">Count:</span>
@@ -256,21 +292,61 @@ const BoxPlotTooltip: React.FC<{
   );
 };
 
+/** Computes box bounds clamped to whisker range. */
+function computeBoxBounds(
+  mean: number,
+  stdDev: number,
+  min: number,
+  max: number
+): { lowerBox: number; upperBox: number } {
+  return {
+    lowerBox: Math.max(mean - stdDev, min),
+    upperBox: Math.min(mean + stdDev, max),
+  };
+}
+
 export function JudgeAnalyticsChart({
   data,
   artifactType,
 }: JudgeAnalyticsChartProps) {
   // Assumes data is pre-sorted descending by mean from API
-  const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => ({
-    name: judge.judgeName,
-    lowerWhisker: judge.min,
-    lowerBox: Math.max(judge.mean - judge.stdDev, judge.min),
-    median: judge.mean,
-    upperBox: Math.min(judge.mean + judge.stdDev, judge.max),
-    upperWhisker: judge.max,
-    count: judge.artifactsEvaluated,
-    humanRatingScore: judge.humanRatingScore,
-  }));
+  const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => {
+    const evalBounds = computeBoxBounds(
+      judge.mean,
+      judge.stdDev,
+      judge.min,
+      judge.max
+    );
+
+    const hasHuman =
+      judge.humanMean !== null &&
+      judge.humanStdDev !== null &&
+      judge.humanMin !== null &&
+      judge.humanMax !== null;
+    const humanBounds = hasHuman
+      ? computeBoxBounds(
+          judge.humanMean,
+          judge.humanStdDev,
+          judge.humanMin,
+          judge.humanMax
+        )
+      : null;
+
+    return {
+      name: judge.judgeName,
+      lowerWhisker: judge.min,
+      lowerBox: evalBounds.lowerBox,
+      median: judge.mean,
+      upperBox: evalBounds.upperBox,
+      upperWhisker: judge.max,
+      count: judge.artifactsEvaluated,
+      humanLowerWhisker: judge.humanMin,
+      humanLowerBox: humanBounds?.lowerBox ?? null,
+      humanMedian: judge.humanMean,
+      humanUpperBox: humanBounds?.upperBox ?? null,
+      humanUpperWhisker: judge.humanMax,
+    };
+  });
 
   // Generate chart config with colors for each judge
   const chartConfig = boxPlotData.reduce(
@@ -285,13 +361,16 @@ export function JudgeAnalyticsChart({
     {} as Record<string, { label: string; color: string }>
   );
 
-  // Y domain: adaptive to data, clamped to [0, 1]. Include humanRatingScore in bounds.
+  // Y domain: adaptive to data, clamped to [0, 1]. Include human whiskers in bounds.
   let yDomain: [number, number] = [0, 1];
   if (boxPlotData.length > 0) {
     const allValues = boxPlotData.flatMap((d) => {
       const vals = [d.lowerWhisker, d.upperWhisker];
-      if (d.humanRatingScore !== null) {
-        vals.push(d.humanRatingScore);
+      if (d.humanLowerWhisker !== null) {
+        vals.push(d.humanLowerWhisker);
+      }
+      if (d.humanUpperWhisker !== null) {
+        vals.push(d.humanUpperWhisker);
       }
       return vals;
     });
@@ -329,13 +408,9 @@ export function JudgeAnalyticsChart({
         <ChartTooltip content={<BoxPlotTooltip />} />
         <RechartsBar
           dataKey="median"
-          fill="#2563EB"
+          fill={EVAL_COLOR}
           shape={(props: unknown) => (
-            <BoxPlotShape
-              {...(props as BoxPlotShapeProps)}
-              fill={(props as { fill?: string }).fill}
-              yDomain={yDomain}
-            />
+            <BoxPlotShape {...(props as BoxPlotShapeProps)} yDomain={yDomain} />
           )}
         />
       </RechartsBarChart>

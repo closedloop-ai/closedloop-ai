@@ -234,8 +234,8 @@ export async function getHumanCountsByType(
 }
 
 /**
- * Fetches human ratings and computes the average normalized score (0-1) per artifact.
- * Formula: sum(score/5) / count for each artifact.
+ * Fetches human ratings and returns all normalized scores (0-1) per artifact.
+ * Each score is raw_score / 5. Multiple ratings per artifact are preserved as an array.
  *
  * @internal Exported for unit testing.
  */
@@ -244,7 +244,7 @@ export async function getHumanRatingsByArtifact(
   startDate: Date,
   endDate: Date,
   artifactIds: string[]
-): Promise<Map<string, number>> {
+): Promise<Map<string, number[]>> {
   if (artifactIds.length === 0) {
     return new Map();
   }
@@ -260,28 +260,14 @@ export async function getHumanRatingsByArtifact(
     })
   );
 
-  // Accumulate sum of normalized scores and count per artifact
-  const sumByArtifact = new Map<string, number>();
-  const countByArtifact = new Map<string, number>();
-
+  const scoresByArtifact = new Map<string, number[]>();
   for (const r of ratings) {
-    sumByArtifact.set(
-      r.artifactId,
-      (sumByArtifact.get(r.artifactId) ?? 0) + r.score / 5
-    );
-    countByArtifact.set(
-      r.artifactId,
-      (countByArtifact.get(r.artifactId) ?? 0) + 1
-    );
+    const scores = scoresByArtifact.get(r.artifactId) ?? [];
+    scores.push(r.score / 5);
+    scoresByArtifact.set(r.artifactId, scores);
   }
 
-  const result = new Map<string, number>();
-  for (const [artifactId, sum] of sumByArtifact) {
-    const count = countByArtifact.get(artifactId) ?? 1;
-    result.set(artifactId, sum / count);
-  }
-
-  return result;
+  return scoresByArtifact;
 }
 
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
@@ -306,7 +292,7 @@ function collectAllArtifactIds(
 function computeJudgeStats(
   judgeName: string,
   judgeData: { scores: number[]; artifactIds: Set<string> },
-  humanRatingsByArtifact: Map<string, number>
+  humanRatingsByArtifact: Map<string, number[]>
 ): JudgeAggregateStats | null {
   const scores = judgeData.scores;
   const count = scores.length;
@@ -324,18 +310,13 @@ function computeJudgeStats(
     scores.reduce((acc, score) => acc + (score - mean) ** 2, 0) / count;
   const stdDev = Math.sqrt(variance);
 
-  // Compute per-judge human rating: avg of human ratings for artifacts this judge evaluated
-  let humanRatingScore: number | null = null;
+  // Pool all human scores across this judge's artifacts
   const judgeHumanScores: number[] = [];
   for (const artifactId of judgeData.artifactIds) {
-    const rating = humanRatingsByArtifact.get(artifactId);
-    if (rating !== undefined) {
-      judgeHumanScores.push(rating);
+    const artifactScores = humanRatingsByArtifact.get(artifactId);
+    if (artifactScores) {
+      judgeHumanScores.push(...artifactScores);
     }
-  }
-  if (judgeHumanScores.length > 0) {
-    humanRatingScore =
-      judgeHumanScores.reduce((a, b) => a + b, 0) / judgeHumanScores.length;
   }
 
   return {
@@ -345,8 +326,35 @@ function computeJudgeStats(
     mean,
     max,
     stdDev,
-    humanRatingScore,
+    ...computeHumanStats(judgeHumanScores),
   };
+}
+
+/** Computes human rating stats from pooled normalized scores. Returns all-null when no scores. */
+function computeHumanStats(scores: number[]): {
+  humanMin: number | null;
+  humanMax: number | null;
+  humanMean: number | null;
+  humanStdDev: number | null;
+} {
+  if (scores.length === 0) {
+    return {
+      humanMin: null,
+      humanMax: null,
+      humanMean: null,
+      humanStdDev: null,
+    };
+  }
+
+  const humanMin = Math.min(...scores);
+  const humanMax = Math.max(...scores);
+  const humanSum = scores.reduce((acc, s) => acc + s, 0);
+  const humanMean = humanSum / scores.length;
+  const humanVariance =
+    scores.reduce((acc, s) => acc + (s - humanMean) ** 2, 0) / scores.length;
+  const humanStdDev = Math.sqrt(humanVariance);
+
+  return { humanMin, humanMax, humanMean, humanStdDev };
 }
 
 /**
@@ -408,7 +416,7 @@ export const judgesAnalyticsService = {
     const { humanRatingsByType, humanCommentsByType } =
       await getHumanCountsByType(organizationId, startDate, endDate, types);
 
-    // Fetch per-artifact human ratings (avg normalized 0-1 score)
+    // Fetch per-artifact human ratings (all normalized 0-1 scores)
     const humanRatingsByArtifact = await getHumanRatingsByArtifact(
       organizationId,
       startDate,
