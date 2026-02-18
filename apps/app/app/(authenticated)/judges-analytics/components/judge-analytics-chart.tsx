@@ -11,6 +11,8 @@ import { Bar, BarChart, XAxis, YAxis } from "recharts";
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
   artifactType: string;
+  humanRatingScore?: number | null;
+  humanRatingsCount?: number;
 };
 
 type BoxPlotDataPoint = {
@@ -21,6 +23,7 @@ type BoxPlotDataPoint = {
   upperBox: number;
   upperWhisker: number;
   count: number;
+  isHuman?: boolean;
 };
 
 const RechartsBarChart = BarChart as unknown as React.ComponentType<
@@ -180,6 +183,26 @@ const BoxPlotTooltip: React.FC<{
 
   const data = payload[0].payload;
 
+  if (data.isHuman) {
+    return (
+      <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
+        <p className="mb-2 font-medium">{data.name}</p>
+        <div className="grid gap-1.5">
+          <div className="flex justify-between gap-4">
+            <span className="text-muted-foreground">Rating:</span>
+            <span className="font-medium font-mono">
+              {data.median.toFixed(2)}
+            </span>
+          </div>
+          <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
+            <span className="text-muted-foreground">Count:</span>
+            <span className="font-medium font-mono">{data.count}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
       <p className="mb-2 font-medium">{data.name}</p>
@@ -226,6 +249,8 @@ const BoxPlotTooltip: React.FC<{
 export function JudgeAnalyticsChart({
   data,
   artifactType,
+  humanRatingScore,
+  humanRatingsCount,
 }: JudgeAnalyticsChartProps) {
   // Assumes data is pre-sorted descending by mean from API
   const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => ({
@@ -238,7 +263,36 @@ export function JudgeAnalyticsChart({
     count: judge.artifactsEvaluated,
   }));
 
+  // Generate chart config with colors for each judge.
+  // Use data.length as divisor to prevent hue shifts when Human is added.
+  const chartConfig = boxPlotData.reduce(
+    (acc, judge, index) => {
+      const hue = (index * 360) / data.length;
+      acc[judge.name] = {
+        label: judge.name,
+        color: `hsl(${hue}, 70%, 50%)`,
+      };
+      return acc;
+    },
+    {} as Record<string, { label: string; color: string }>
+  );
+
+  if (humanRatingScore !== null && humanRatingScore !== undefined) {
+    boxPlotData.push({
+      name: "Human",
+      lowerWhisker: humanRatingScore,
+      lowerBox: humanRatingScore,
+      median: humanRatingScore,
+      upperBox: humanRatingScore,
+      upperWhisker: humanRatingScore,
+      count: humanRatingsCount ?? 0,
+      isHuman: true,
+    });
+    chartConfig.Human = { label: "Human", color: "hsl(30, 90%, 55%)" };
+  }
+
   // Y domain: adaptive to data, clamped to [0, 1]. Y_min = max(0, 0.8*min); Y_max = min(1, max).
+  // Computed AFTER human entry is appended so it is included in min/max bounds.
   let yDomain: [number, number] = [0, 1];
   if (boxPlotData.length > 0) {
     const rawMin = Math.min(...boxPlotData.map((d) => d.lowerWhisker));
@@ -250,19 +304,6 @@ export function JudgeAnalyticsChart({
     }
     yDomain = [yMin, yMax];
   }
-
-  // Generate chart config with colors for each judge
-  const chartConfig = boxPlotData.reduce(
-    (acc, judge, index) => {
-      const hue = (index * 360) / boxPlotData.length;
-      acc[judge.name] = {
-        label: judge.name,
-        color: `hsl(${hue}, 70%, 50%)`,
-      };
-      return acc;
-    },
-    {} as Record<string, { label: string; color: string }>
-  );
 
   return (
     <ChartContainer className="h-64 w-full" config={chartConfig}>

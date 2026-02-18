@@ -179,17 +179,24 @@ export async function getHumanCountsByType(
 ): Promise<{
   humanRatingsByType: Map<ArtifactType, number>;
   humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingScoreByType: Map<ArtifactType, number | null>;
 }> {
   const humanRatingsByType = new Map<ArtifactType, number>();
   const humanCommentsByType = new Map<ArtifactType, number>();
+  const scoreSumByType = new Map<ArtifactType, number>();
+  const scoreCountByType = new Map<ArtifactType, number>();
+
+  if (types.length === 0) {
+    return {
+      humanRatingsByType,
+      humanCommentsByType,
+      humanRatingScoreByType: new Map(),
+    };
+  }
 
   for (const type of types) {
     humanRatingsByType.set(type, 0);
     humanCommentsByType.set(type, 0);
-  }
-
-  if (types.length === 0) {
-    return { humanRatingsByType, humanCommentsByType };
   }
 
   const artifacts = await withDb((db) =>
@@ -206,16 +213,21 @@ export async function getHumanCountsByType(
   const orgArtifactIds = artifacts.map((a) => a.id);
 
   if (orgArtifactIds.length === 0) {
-    return { humanRatingsByType, humanCommentsByType };
+    return {
+      humanRatingsByType,
+      humanCommentsByType,
+      humanRatingScoreByType: new Map(),
+    };
   }
 
   const ratings = await withDb((db) =>
     db.artifactRating.findMany({
       where: {
+        organizationId,
         artifactId: { in: orgArtifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
-      select: { artifactId: true, comment: true },
+      select: { artifactId: true, comment: true, score: true },
     })
   );
 
@@ -226,10 +238,20 @@ export async function getHumanCountsByType(
       if (r.comment != null && r.comment.trim() !== "") {
         humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
       }
+      const prevSum = scoreSumByType.get(type) ?? 0;
+      const prevCount = scoreCountByType.get(type) ?? 0;
+      scoreSumByType.set(type, prevSum + r.score);
+      scoreCountByType.set(type, prevCount + 1);
     }
   }
 
-  return { humanRatingsByType, humanCommentsByType };
+  const humanRatingScoreByType = new Map<ArtifactType, number | null>();
+  for (const [type, count] of scoreCountByType) {
+    const sum = scoreSumByType.get(type) ?? 0;
+    humanRatingScoreByType.set(type, count === 0 ? null : sum / (count * 5));
+  }
+
+  return { humanRatingsByType, humanCommentsByType, humanRatingScoreByType };
 }
 
 /**
@@ -288,7 +310,7 @@ export const judgesAnalyticsService = {
     const aggregator = extractJudgeScores(evaluations);
 
     const types = Array.from(aggregator.keys());
-    const { humanRatingsByType, humanCommentsByType } =
+    const { humanRatingsByType, humanCommentsByType, humanRatingScoreByType } =
       await getHumanCountsByType(organizationId, startDate, endDate, types);
 
     // Compute statistics for each judge within each artifact type
@@ -334,6 +356,7 @@ export const judgesAnalyticsService = {
         judges,
         humanRatingsCount: humanRatingsByType.get(artifactType) ?? 0,
         humanCommentsCount: humanCommentsByType.get(artifactType) ?? 0,
+        humanRatingScore: humanRatingScoreByType.get(artifactType) ?? null,
       });
     }
 
