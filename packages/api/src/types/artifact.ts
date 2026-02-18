@@ -124,6 +124,7 @@ export type FindArtifactsOptions = {
   type?: ArtifactType;
   workstreamId?: string;
   projectId?: string;
+  ownerId?: string;
 };
 
 export type CreateArtifactInput = {

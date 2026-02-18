@@ -32,6 +32,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  CodeIcon,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
@@ -114,46 +115,57 @@ type GlobalSidebarProperties = {
   readonly children: ReactNode;
 };
 
+type NavItem = {
+  title: string;
+  url: string;
+  icon: LucideIcon;
+  disabled: boolean;
+};
+
+const baseWorkspaceItems: NavItem[] = [
+  {
+    title: "Inbox",
+    url: "/inbox",
+    icon: InboxIcon,
+    disabled: false,
+  },
+  {
+    title: "Initiatives",
+    url: "/initiatives",
+    icon: LightbulbIcon,
+    disabled: true,
+  },
+  {
+    title: "My Documents",
+    url: "/my-documents",
+    icon: FileTextIcon,
+    disabled: true,
+  },
+  {
+    title: "Members",
+    url: "/members",
+    icon: UsersIcon,
+    disabled: false,
+  },
+];
+
+const engineerNavItem: NavItem = {
+  title: "Engineer",
+  url: "/engineer",
+  icon: CodeIcon,
+  disabled: false,
+};
+
+const workspaceItems: NavItem[] =
+  appEnvironment === "local"
+    ? [...baseWorkspaceItems, engineerNavItem]
+    : baseWorkspaceItems;
+
 const data: {
-  workspace: {
-    title: string;
-    url: string;
-    icon: LucideIcon;
-    disabled: boolean;
-  }[];
-  navSecondary: {
-    title: string;
-    url: string;
-    icon: LucideIcon;
-    disabled: boolean;
-  }[];
+  workspace: NavItem[];
+  navSecondary: NavItem[];
 } = {
-  workspace: [
-    {
-      title: "Inbox",
-      url: "/inbox",
-      icon: InboxIcon,
-      disabled: false,
-    },
-    {
-      title: "Initiatives",
-      url: "/initiatives",
-      icon: LightbulbIcon,
-      disabled: true,
-    },
-    {
-      title: "My Documents",
-      url: "/my-documents",
-      icon: FileTextIcon,
-      disabled: true,
-    },
-    {
-      title: "Members",
-      url: "/members",
-      icon: UsersIcon,
-      disabled: false,
-    },
-  ],
+  workspace: workspaceItems,
   navSecondary: [
     {
       title: "Judges",

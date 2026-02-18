@@ -101,7 +101,7 @@ export const artifactsService = {
   async findAll(
     options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
-    const { organizationId, type, workstreamId, projectId } = options;
+    const { organizationId, type, workstreamId, projectId, ownerId } = options;
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -110,6 +110,7 @@ export const artifactsService = {
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(type ? { type } : {}),
+          ...(ownerId ? { ownerId } : {}),
         },
         include: artifactIncludeWithContext,
         orderBy: { createdAt: "desc" },

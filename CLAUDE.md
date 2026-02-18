@@ -177,6 +177,25 @@ When responding to PR review comments, never use phrases like "you're right", "g
 - `biome.jsonc` - Linting/formatting config (extends ultracite)
 - `packages/*/keys.ts` - Environment variable validation schemas (t3-env)
 
+## Code Style
+
+- Use `RegExp.exec(str)` instead of `str.match(regex)` (SonarQube S6594)
+- Use `String#replaceAll()` instead of `String#replace()` with global regex (SonarQube S7781)
+- Use `globalThis` instead of `window` (SonarQube S7764). For SSR guards (`typeof window === "undefined"`), replace with `globalThis.window === undefined` — but first verify the function is only called from `"use client"` components. If it could run in a server context (API routes, RSC, middleware), keep the `typeof` check since `globalThis.window` may not exist.
+- Prefer `Image` from `next/image` over `<img>` elements
+- Never place JSX comments (`{/* */}`) between `(` and the root JSX element — use regular JS comments above the assignment instead
+- Use a single `Array#push()` call with multiple arguments instead of consecutive calls — `parts.push(a, b, c)` not `parts.push(a); parts.push(b); parts.push(c)` (SonarQube S7778)
+- Use `String.raw` for literal backslash sequences — `` String.raw`\n` `` not `"\\n"` (Sonar80)
+- Keep function Cognitive Complexity under 15 (SonarQube S3776). Extract helper functions to flatten deeply nested if/else or loop branches rather than inlining everything.
+- Do not use nested ternary operators (SonarQube S3358). Use `if/else if/else` or extract a helper function instead.
+- In if/else blocks, put the positive condition first — `if (x === null)` not `if (x !== null)` (SonarQube S7735)
+- Double quotes, semicolons, trailing commas (ES5), 100 char print width (see `.prettierrc.json`)
+- Add new functions, types, constants, and helpers at the bottom of the file, not the top
+
+## Git Commits
+
+When creating a git commit, read `.gitmessage` first and follow its format for the commit message.
+
 ## Background
 
 The following sections provide the business perspective for what this repository is meant to deliver.
