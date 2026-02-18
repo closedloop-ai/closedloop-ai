@@ -1531,8 +1531,11 @@ async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
 // ---------------------------------------------------------------------------
 // Command builders
 // ---------------------------------------------------------------------------
-function buildRunLoopArgs(runLoopPath, _workDir) {
+function buildRunLoopArgs(runLoopPath, workDir) {
   const args = [runLoopPath];
+
+  // Pass workdir as positional argument so run-loop.sh knows where to operate
+  args.push(workDir);
 
   switch (config.command) {
     case "PLAN":
