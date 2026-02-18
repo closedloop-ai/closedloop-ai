@@ -33,10 +33,10 @@ import { Loader2Icon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { ConfirmationDialog } from "@/components/confirmation-dialog";
 import {
-  useApiKeys,
-  useCreateApiKey,
-  useRevokeApiKey,
-} from "@/hooks/queries/use-api-keys";
+  useCreatePlatformApiKey,
+  usePlatformApiKeys,
+  useRevokePlatformApiKey,
+} from "@/hooks/queries/use-platform-api-keys";
 import { CreateApiKeySuccessDialog } from "./create-api-key-success-dialog";
 
 function getKeyStatus(key: ApiKey): {
@@ -82,7 +82,7 @@ function CreateApiKeyDialog({
   onCreated,
 }: Readonly<CreateApiKeyDialogProps>) {
   const [name, setName] = useState("");
-  const createApiKey = useCreateApiKey();
+  const createApiKey = useCreatePlatformApiKey();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -224,8 +224,8 @@ function ApiKeysCardContent({
 }
 
 export function ApiKeysSettingsPanel() {
-  const { data: apiKeys, isLoading } = useApiKeys();
-  const revokeApiKey = useRevokeApiKey();
+  const { data: apiKeys, isLoading } = usePlatformApiKeys();
+  const revokeApiKey = useRevokePlatformApiKey();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [createdKey, setCreatedKey] = useState<CreateApiKeyResponse | null>(
     null

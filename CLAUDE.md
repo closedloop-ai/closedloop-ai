@@ -157,6 +157,28 @@ type GenerationStatus = { status: "NONE" | "PENDING" | ... };
 // (Zod validators and route params don't belong in the shared package)
 ```
 
+### Engineer Feature — Architectural Exception (SECURITY CRITICAL)
+
+The Engineer feature intentionally deviates from the standard data access pattern described above.
+
+**Location:** `apps/app/app/api/engineer/` (frontend app, NOT `apps/api`)
+
+**Why it's different:** These routes spawn local CLI processes (Claude CLI, git, codex), access the
+local filesystem, and execute shell commands. This requires the server process to be running on the
+same machine as the developer's tools — impossible in a deployed environment.
+
+**Security boundary:** The feature is **localhost-only**. Two independent guards enforce this:
+
+1. **`EngineerGuard` component** (`apps/app/app/(authenticated)/engineer/engineer-guard.tsx`) — blocks the UI when `appEnvironment !== "local"`. This is a UX guard, NOT a security boundary.
+2. **Next.js middleware** (`apps/app/middleware.ts`) — rejects all `/api/engineer/*` requests with HTTP 403 when the `Host` header is not `localhost` or `127.0.0.1`. This is the actual security enforcement.
+
+**CRITICAL:** Do NOT remove or weaken the middleware guard. Exposing these routes in a deployed
+environment would allow arbitrary command execution on the server.
+
+**Do NOT "fix" this to conform to the standard `apps/api` pattern.** The filesystem and process
+spawning requirements make that impossible — the `apps/api` server runs separately and has no
+access to the developer's local CLI tools.
+
 ## Self-Improving CLAUDE.md
 
 When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
@@ -176,6 +198,25 @@ When responding to PR review comments, never use phrases like "you're right", "g
 - `turbo.json` - Turborepo task configuration
 - `biome.jsonc` - Linting/formatting config (extends ultracite)
 - `packages/*/keys.ts` - Environment variable validation schemas (t3-env)
+
+## Code Style
+
+- Use `RegExp.exec(str)` instead of `str.match(regex)` (SonarQube S6594)
+- Use `String#replaceAll()` instead of `String#replace()` with global regex (SonarQube S7781)
+- Use `globalThis` instead of `window` (SonarQube S7764). For SSR guards (`typeof window === "undefined"`), replace with `globalThis.window === undefined` — but first verify the function is only called from `"use client"` components. If it could run in a server context (API routes, RSC, middleware), keep the `typeof` check since `globalThis.window` may not exist.
+- Prefer `Image` from `next/image` over `<img>` elements
+- Never place JSX comments (`{/* */}`) between `(` and the root JSX element — use regular JS comments above the assignment instead
+- Use a single `Array#push()` call with multiple arguments instead of consecutive calls — `parts.push(a, b, c)` not `parts.push(a); parts.push(b); parts.push(c)` (SonarQube S7778)
+- Use `String.raw` for literal backslash sequences — `` String.raw`\n` `` not `"\\n"` (Sonar80)
+- Keep function Cognitive Complexity under 15 (SonarQube S3776). Extract helper functions to flatten deeply nested if/else or loop branches rather than inlining everything.
+- Do not use nested ternary operators (SonarQube S3358). Use `if/else if/else` or extract a helper function instead.
+- In if/else blocks, put the positive condition first — `if (x === null)` not `if (x !== null)` (SonarQube S7735)
+- Double quotes, semicolons, trailing commas (ES5), 100 char print width (see `.prettierrc.json`)
+- Add new functions, types, constants, and helpers at the bottom of the file, not the top
+
+## Git Commits
+
+When creating a git commit, read `.gitmessage` first and follow its format for the commit message.
 
 ## Background
 
@@ -248,6 +289,10 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 - **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
 
+### Tables & Sorting
+- **[pattern]**: When sorting by nested object fields using SortConfig in this codebase, use the accessor function to extract the comparable value (e.g., `accessor: (p) => p.owner ? getUserDisplayName(p.owner) : null`). The `sortItems()` utility handles nulls with nulls-last policy automatically. (context: tables|sorting|SortConfig|accessor|nested-objects)
+- **[pattern]**: When rendering multiple sortable tables on the same page, each `useSortParams` call must use a unique `paramPrefix` to prevent URL sort param collision. Derive the prefix from a unique identifier (e.g., artifact type or section name). (context: tables|sorting|useSortParams|paramPrefix|url-params)
+
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
@@ -263,6 +308,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)
+- **[mistake]**: When mocking `next/navigation` in Vitest, always provide all three navigation hooks: `useRouter`, `usePathname`, and `useSearchParams`. Missing any one causes failures when utility hooks depending on multiple navigation APIs are introduced. (context: testing|vitest|next/navigation|mocking|hooks)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)

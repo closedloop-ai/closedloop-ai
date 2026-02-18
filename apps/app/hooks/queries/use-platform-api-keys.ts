@@ -13,24 +13,24 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
-export const apiKeyKeys = {
-  all: ["api-keys"] as const,
-  lists: () => [...apiKeyKeys.all, "list"] as const,
+export const platformApiKeyKeys = {
+  all: ["platform-api-keys"] as const,
+  lists: () => [...platformApiKeyKeys.all, "list"] as const,
 };
 
-export function useApiKeys(
+export function usePlatformApiKeys(
   options?: Omit<UseQueryOptions<ApiKey[]>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: apiKeyKeys.lists(),
+    queryKey: platformApiKeyKeys.lists(),
     queryFn: () => apiClient.get<ApiKey[]>("/api-keys"),
     ...options,
   });
 }
 
-export function useCreateApiKey() {
+export function useCreatePlatformApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -38,12 +38,12 @@ export function useCreateApiKey() {
     mutationFn: (input: CreateApiKeyInput) =>
       apiClient.post<CreateApiKeyResponse>("/api-keys", input),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: platformApiKeyKeys.lists() });
     },
   });
 }
 
-export function useRevokeApiKey() {
+export function useRevokePlatformApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -51,7 +51,7 @@ export function useRevokeApiKey() {
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/api-keys/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: platformApiKeyKeys.lists() });
     },
   });
 }

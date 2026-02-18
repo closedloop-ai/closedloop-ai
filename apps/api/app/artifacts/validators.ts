@@ -64,6 +64,7 @@ export const findArtifactsQueryValidator = z.object({
   type: artifactTypeEnum.optional(),
   workstreamId: z.uuidv7().optional(),
   projectId: z.uuidv7().optional(),
+  ownerId: z.uuidv7().optional(),
 });
 
 export const reorderArtifactsValidator = z.object({
