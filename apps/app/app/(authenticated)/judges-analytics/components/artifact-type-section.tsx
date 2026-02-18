@@ -14,13 +14,10 @@ export function ArtifactTypeSection({ group }: ArtifactTypeSectionProps) {
         <JudgeAnalyticsChart
           artifactType={group.artifactType}
           data={group.judges}
-          humanRatingScore={group.humanRatingScore}
-          humanRatingsCount={group.humanRatingsCount}
         />
         <JudgeAnalyticsTable
           data={group.judges}
           humanCommentsCount={group.humanCommentsCount}
-          humanRatingScore={group.humanRatingScore}
           humanRatingsCount={group.humanRatingsCount}
         />
       </div>

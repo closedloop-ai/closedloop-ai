@@ -12,17 +12,13 @@ type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
   humanRatingsCount?: number;
   humanCommentsCount?: number;
-  humanRatingScore?: number | null;
 };
 
 export function JudgeAnalyticsTable({
   data,
   humanRatingsCount = 0,
   humanCommentsCount = 0,
-  humanRatingScore = null,
 }: JudgeAnalyticsTableProps) {
-  const showHumanRating = humanRatingScore !== null;
-
   return (
     <Table>
       <TableHeader>
@@ -33,9 +29,9 @@ export function JudgeAnalyticsTable({
           <TableHead>Mean</TableHead>
           <TableHead>Max</TableHead>
           <TableHead>Std Dev</TableHead>
+          <TableHead>Human Rating</TableHead>
           <TableHead>Human Ratings</TableHead>
           <TableHead>Human Comments</TableHead>
-          {showHumanRating && <TableHead>Human Rating</TableHead>}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -49,11 +45,13 @@ export function JudgeAnalyticsTable({
             <TableCell>{judge.mean.toFixed(2)}</TableCell>
             <TableCell>{judge.max.toFixed(2)}</TableCell>
             <TableCell>{judge.stdDev.toFixed(2)}</TableCell>
+            <TableCell>
+              {judge.humanRatingScore !== null
+                ? judge.humanRatingScore.toFixed(2)
+                : "—"}
+            </TableCell>
             <TableCell className="text-muted-foreground">—</TableCell>
             <TableCell className="text-muted-foreground">—</TableCell>
-            {showHumanRating && (
-              <TableCell className="text-muted-foreground">—</TableCell>
-            )}
           </TableRow>
         ))}
         <TableRow>
@@ -63,11 +61,9 @@ export function JudgeAnalyticsTable({
           <TableCell className="text-muted-foreground">—</TableCell>
           <TableCell className="text-muted-foreground">—</TableCell>
           <TableCell className="text-muted-foreground">—</TableCell>
+          <TableCell className="text-muted-foreground">—</TableCell>
           <TableCell>{humanRatingsCount}</TableCell>
           <TableCell>{humanCommentsCount}</TableCell>
-          {showHumanRating && (
-            <TableCell>{humanRatingScore!.toFixed(2)}</TableCell>
-          )}
         </TableRow>
       </TableBody>
     </Table>

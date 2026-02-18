@@ -27,6 +27,8 @@ export type JudgeAggregateStats = {
   mean: number;
   max: number;
   stdDev: number;
+  /** Average normalized (0-1) human star rating for the artifacts this judge evaluated. null when no human ratings exist for those artifacts. */
+  humanRatingScore: number | null;
 };
 
 /**
@@ -37,14 +39,12 @@ export type JudgeAggregateStats = {
  * - judges: Array of aggregate statistics per judge, sorted descending by mean score
  * - humanRatingsCount: Number of human ratings (ArtifactRating) created in the same date range for artifacts of this type in the org
  * - humanCommentsCount: Number of artifact ratings with a non-empty comment (artifact_ratings.comment) in the same date range for artifacts of this type in the org
- * - humanRatingScore: Average normalized (0-1) human star rating for this artifact type. null when no ratings exist. Formula: sum(score/5) / count.
  */
 export type ArtifactTypeGroup = {
   artifactType: ArtifactType;
   judges: JudgeAggregateStats[];
   humanRatingsCount: number;
   humanCommentsCount: number;
-  humanRatingScore: number | null;
 };
 
 /**

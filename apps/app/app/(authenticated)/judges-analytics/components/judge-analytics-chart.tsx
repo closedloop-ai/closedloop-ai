@@ -11,8 +11,6 @@ import { Bar, BarChart, XAxis, YAxis } from "recharts";
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
   artifactType: string;
-  humanRatingScore?: number | null;
-  humanRatingsCount?: number;
 };
 
 type BoxPlotDataPoint = {
@@ -23,7 +21,7 @@ type BoxPlotDataPoint = {
   upperBox: number;
   upperWhisker: number;
   count: number;
-  isHuman?: boolean;
+  humanRatingScore: number | null;
 };
 
 const RechartsBarChart = BarChart as unknown as React.ComponentType<
@@ -92,13 +90,24 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
     return (
       <g>
         <line
-          stroke={fill || "#8884d8"}
+          stroke={fill || "#2563EB"}
           strokeWidth={2}
           x1={x}
           x2={x + width}
           y1={lineY}
           y2={lineY}
         />
+        {payload.humanRatingScore !== null && (
+          <line
+            stroke="#EAB308"
+            strokeDasharray="6 3"
+            strokeWidth={2}
+            x1={x}
+            x2={x + width}
+            y1={valueToY(payload.humanRatingScore)}
+            y2={valueToY(payload.humanRatingScore)}
+          />
+        )}
       </g>
     );
   }
@@ -111,7 +120,7 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
     <g>
       {/* Lower whisker line */}
       <line
-        stroke={fill || "#8884d8"}
+        stroke={fill || "#2563EB"}
         strokeWidth={1}
         x1={centerX}
         x2={centerX}
@@ -120,7 +129,7 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
       />
       {/* Lower whisker cap */}
       <line
-        stroke={fill || "#8884d8"}
+        stroke={fill || "#2563EB"}
         strokeWidth={1}
         x1={centerX - whiskerWidth / 2}
         x2={centerX + whiskerWidth / 2}
@@ -130,17 +139,17 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
 
       {/* Box (from lowerBox to upperBox) */}
       <rect
-        fill={fill || "#8884d8"}
+        fill={fill || "#2563EB"}
         fillOpacity={0.6}
         height={boxLowerY - boxUpperY}
-        stroke={fill || "#8884d8"}
+        stroke={fill || "#2563EB"}
         strokeWidth={1}
         width={boxWidth}
         x={centerX - boxWidth / 2}
         y={boxUpperY}
       />
 
-      {/* Median line */}
+      {/* Median line (black) */}
       <line
         stroke="#000"
         strokeWidth={2}
@@ -150,9 +159,22 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
         y2={medianY}
       />
 
+      {/* Human rating line (yellow, dashed) */}
+      {payload.humanRatingScore !== null && (
+        <line
+          stroke="#EAB308"
+          strokeDasharray="6 3"
+          strokeWidth={2}
+          x1={centerX - boxWidth / 2}
+          x2={centerX + boxWidth / 2}
+          y1={valueToY(payload.humanRatingScore)}
+          y2={valueToY(payload.humanRatingScore)}
+        />
+      )}
+
       {/* Upper whisker line */}
       <line
-        stroke={fill || "#8884d8"}
+        stroke={fill || "#2563EB"}
         strokeWidth={1}
         x1={centerX}
         x2={centerX}
@@ -161,7 +183,7 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
       />
       {/* Upper whisker cap */}
       <line
-        stroke={fill || "#8884d8"}
+        stroke={fill || "#2563EB"}
         strokeWidth={1}
         x1={centerX - whiskerWidth / 2}
         x2={centerX + whiskerWidth / 2}
@@ -182,26 +204,6 @@ const BoxPlotTooltip: React.FC<{
   }
 
   const data = payload[0].payload;
-
-  if (data.isHuman) {
-    return (
-      <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
-        <p className="mb-2 font-medium">{data.name}</p>
-        <div className="grid gap-1.5">
-          <div className="flex justify-between gap-4">
-            <span className="text-muted-foreground">Rating:</span>
-            <span className="font-medium font-mono">
-              {data.median.toFixed(2)}
-            </span>
-          </div>
-          <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
-            <span className="text-muted-foreground">Count:</span>
-            <span className="font-medium font-mono">{data.count}</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
@@ -237,6 +239,14 @@ const BoxPlotTooltip: React.FC<{
             {data.lowerWhisker.toFixed(2)}
           </span>
         </div>
+        {data.humanRatingScore !== null && (
+          <div className="flex justify-between gap-4">
+            <span style={{ color: "#EAB308" }}>Human Rating:</span>
+            <span className="font-medium font-mono">
+              {data.humanRatingScore.toFixed(2)}
+            </span>
+          </div>
+        )}
         <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
           <span className="text-muted-foreground">Count:</span>
           <span className="font-medium font-mono">{data.count}</span>
@@ -249,8 +259,6 @@ const BoxPlotTooltip: React.FC<{
 export function JudgeAnalyticsChart({
   data,
   artifactType,
-  humanRatingScore,
-  humanRatingsCount,
 }: JudgeAnalyticsChartProps) {
   // Assumes data is pre-sorted descending by mean from API
   const boxPlotData: BoxPlotDataPoint[] = data.map((judge) => ({
@@ -261,13 +269,13 @@ export function JudgeAnalyticsChart({
     upperBox: Math.min(judge.mean + judge.stdDev, judge.max),
     upperWhisker: judge.max,
     count: judge.artifactsEvaluated,
+    humanRatingScore: judge.humanRatingScore,
   }));
 
-  // Generate chart config with colors for each judge.
-  // Use data.length as divisor to prevent hue shifts when Human is added.
+  // Generate chart config with colors for each judge
   const chartConfig = boxPlotData.reduce(
     (acc, judge, index) => {
-      const hue = (index * 360) / data.length;
+      const hue = (index * 360) / boxPlotData.length;
       acc[judge.name] = {
         label: judge.name,
         color: `hsl(${hue}, 70%, 50%)`,
@@ -277,26 +285,18 @@ export function JudgeAnalyticsChart({
     {} as Record<string, { label: string; color: string }>
   );
 
-  if (humanRatingScore !== null && humanRatingScore !== undefined) {
-    boxPlotData.push({
-      name: "Human",
-      lowerWhisker: humanRatingScore,
-      lowerBox: humanRatingScore,
-      median: humanRatingScore,
-      upperBox: humanRatingScore,
-      upperWhisker: humanRatingScore,
-      count: humanRatingsCount ?? 0,
-      isHuman: true,
-    });
-    chartConfig.Human = { label: "Human", color: "hsl(30, 90%, 55%)" };
-  }
-
-  // Y domain: adaptive to data, clamped to [0, 1]. Y_min = max(0, 0.8*min); Y_max = min(1, max).
-  // Computed AFTER human entry is appended so it is included in min/max bounds.
+  // Y domain: adaptive to data, clamped to [0, 1]. Include humanRatingScore in bounds.
   let yDomain: [number, number] = [0, 1];
   if (boxPlotData.length > 0) {
-    const rawMin = Math.min(...boxPlotData.map((d) => d.lowerWhisker));
-    const rawMax = Math.max(...boxPlotData.map((d) => d.upperWhisker));
+    const allValues = boxPlotData.flatMap((d) => {
+      const vals = [d.lowerWhisker, d.upperWhisker];
+      if (d.humanRatingScore !== null) {
+        vals.push(d.humanRatingScore);
+      }
+      return vals;
+    });
+    const rawMin = Math.min(...allValues);
+    const rawMax = Math.max(...allValues);
     const yMin = Math.max(0, 0.8 * rawMin);
     let yMax = Math.min(1, rawMax);
     if (yMax <= yMin) {
@@ -328,7 +328,7 @@ export function JudgeAnalyticsChart({
         <ChartTooltip content={<BoxPlotTooltip />} />
         <RechartsBar
           dataKey="median"
-          fill="#8884d8"
+          fill="#2563EB"
           shape={(props: unknown) => (
             <BoxPlotShape
               {...(props as BoxPlotShapeProps)}
