@@ -10,7 +10,6 @@ import {
   TableRow,
 } from "@repo/design-system/components/ui/table";
 import { useMemo } from "react";
-import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useSortParams } from "@/hooks/use-sort-params";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
@@ -18,6 +17,10 @@ import { sortTableData } from "@/lib/table-utils";
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
 };
+
+function formatOrDash(value: number | null): string {
+  return value !== null ? value.toFixed(2) : "\u2014";
+}
 
 const JUDGE_SORT_COLUMNS = [
   "judgeName",
@@ -42,12 +45,8 @@ const JUDGE_SORT_CONFIGS: Record<
   stdDev: { key: "stdDev", columnType: "number" },
 };
 
-export function JudgeAnalyticsTable({
-  data,
-  humanRatingsCount = 0,
-  humanCommentsCount = 0,
-}: JudgeAnalyticsTableProps) {
-  const { sortBy, sortDir, setSort } = useSortParams<JudgeSortColumn>({
+export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
+  const { sortBy, sortDir } = useSortParams<JudgeSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
     validColumns: JUDGE_SORT_COLUMNS,
