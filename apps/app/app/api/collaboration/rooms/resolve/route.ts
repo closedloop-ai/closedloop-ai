@@ -53,20 +53,24 @@ export async function GET(request: Request): Promise<Response> {
 
     // Cap at BATCH_META_MAX_SLUGS rooms per request to match batch-meta endpoint limit
     const cappedRoomIds = orgScopedRoomIds.slice(0, BATCH_META_MAX_SLUGS);
-    const results = await resolveRoomMetadata(cappedRoomIds);
+
+    // Extract slugs for title enrichment (derived from cappedRoomIds, independent of resolveRoomMetadata)
+    const slugs = cappedRoomIds.flatMap((roomId) => {
+      try {
+        return [parseArtifactRoomId(roomId).slug];
+      } catch {
+        return [];
+      }
+    });
+
+    // Parallelize: room metadata resolution and title fetching are independent
+    const [results, titleMap] = await Promise.all([
+      resolveRoomMetadata(cappedRoomIds),
+      fetchBatchMeta(slugs, getToken),
+    ]);
 
     // Enrich room names with human-readable artifact titles from the BFF API
     try {
-      const slugs = cappedRoomIds.flatMap((roomId) => {
-        try {
-          return [parseArtifactRoomId(roomId).slug];
-        } catch {
-          return [];
-        }
-      });
-
-      const titleMap = await fetchBatchMeta(slugs, getToken);
-
       const enrichedResults = results.map((room) => {
         try {
           const { slug } = parseArtifactRoomId(room.roomId);

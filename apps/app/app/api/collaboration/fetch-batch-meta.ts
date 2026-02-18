@@ -13,6 +13,10 @@ export async function fetchBatchMeta(
   slugs: string[],
   getToken: () => Promise<string | null>
 ): Promise<ArtifactTitleMap> {
+  if (slugs.length === 0) {
+    return {};
+  }
+
   if (!env.NEXT_PUBLIC_API_URL) {
     log.error("NEXT_PUBLIC_API_URL is not set");
     return {};
