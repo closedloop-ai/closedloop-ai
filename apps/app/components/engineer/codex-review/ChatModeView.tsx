@@ -55,7 +55,10 @@ type ChatModeViewProps = {
   onChatInputChange: (value: string) => void;
   onSendChat: () => void;
   chatHistory?: { messages: ChatMessage[] };
-  activeChatHistory?: { messages: ChatMessage[] };
+  activeChatHistory?: {
+    messages: ChatMessage[];
+    contextPercent?: number | null;
+  };
   // Streams
   activeStream: ReturnType<typeof useChatStream>;
   // Debate
@@ -166,6 +169,11 @@ export function ChatModeView({
             <div className="flex-1 space-y-4 overflow-y-auto p-4">
               <ChatMessageList
                 chatMessages={chatMessages}
+                contextPercent={
+                  activeStream.contextPercent ??
+                  activeChatHistory?.contextPercent ??
+                  null
+                }
                 debate={debate}
                 isAnyStreaming={isAnyStreaming}
                 onAction={onAction}
@@ -370,6 +378,7 @@ type ChatMessageListProps = {
   isAnyStreaming: boolean;
   debate: ReturnType<typeof useCodexDebate>;
   onAction: (message: string) => void;
+  contextPercent: number | null;
 };
 
 function ChatMessageList({
@@ -377,6 +386,7 @@ function ChatMessageList({
   isAnyStreaming,
   debate,
   onAction,
+  contextPercent,
 }: Readonly<ChatMessageListProps>) {
   return (
     <>
@@ -404,6 +414,7 @@ function ChatMessageList({
         return (
           <ChatBubble
             actions={effectiveActions}
+            contextPercent={isLastAssistant ? contextPercent : undefined}
             index={idx}
             key={msg.id}
             messageRole={effectiveSender === "codex" ? "user" : msg.role}

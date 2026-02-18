@@ -42,6 +42,7 @@ export type ChatHistory = {
   messages: ChatMessage[];
   ticketId: string;
   repoPath: string;
+  contextPercent?: number | null;
 };
 
 export type CommentChatHistory = {
@@ -55,6 +56,7 @@ export type CommentChatHistory = {
     path?: string;
     line?: number;
   };
+  contextPercent?: number | null;
 };
 
 export type LogResponse = {
@@ -208,6 +210,7 @@ export type FindingChatHistory = {
     suggestion?: string;
   };
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 export function findingChatHistoryOptions(

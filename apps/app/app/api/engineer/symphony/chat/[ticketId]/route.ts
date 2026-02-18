@@ -40,6 +40,7 @@ type ChatHistory = {
   ticketId: string;
   repoPath: string;
   sessionId?: string; // Claude session ID for --resume
+  contextPercent?: number | null; // Context window usage % from last turn
 };
 
 // Allowed tools (excluding Playwright)
@@ -748,5 +749,8 @@ function appendChatMessageToHistory(
   if (capturedSessionId && !history.sessionId) {
     history.sessionId = capturedSessionId;
     console.log("[Chat API] Saved session ID to history:", capturedSessionId);
+  }
+  if (streamState.contextPercent !== null) {
+    history.contextPercent = streamState.contextPercent;
   }
 }

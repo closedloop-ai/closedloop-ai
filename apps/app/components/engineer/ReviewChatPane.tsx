@@ -108,6 +108,12 @@ export function ReviewChatPane({
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
+  // Refs for parent callbacks — avoids depending on callback identity in effects
+  // (these are often inline functions in PRBrowserDialog that change every render)
+  const onReviewCompleteRef = useRef(onReviewComplete);
+  onReviewCompleteRef.current = onReviewComplete;
+  const onStructuredFindingsRef = useRef(onStructuredFindings);
+  onStructuredFindingsRef.current = onStructuredFindings;
 
   // Guard against StrictMode double-mount: only start the review once.
   // Refs survive across StrictMode re-mounts, so the second mount sees true and skips.
@@ -199,7 +205,11 @@ export function ReviewChatPane({
       return;
     }
     const split = splitReviewOutput(initialOutput, config.provider);
-    onReviewComplete?.(initialOutput, split.findings.length, split.findings);
+    onReviewCompleteRef.current?.(
+      initialOutput,
+      split.findings.length,
+      split.findings
+    );
     if (split.findings.length > 0 && !findingsSavedRef.current) {
       findingsSavedRef.current = true;
       saveReviewFindings(
@@ -210,14 +220,7 @@ export function ReviewChatPane({
         split.findings
       );
     }
-  }, [
-    config.model,
-    config.provider,
-    initialOutput,
-    onReviewComplete,
-    repoPath,
-    ticketId,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config.model, config.provider, initialOutput, repoPath, ticketId]);
 
   // Start the review on mount (skip if restoring a previous result)
   useEffect(() => {
@@ -317,7 +320,11 @@ export function ReviewChatPane({
       setReviewOutput(accumulated);
       setReviewDone(true);
       const split = splitReviewOutput(accumulated, config.provider);
-      onReviewComplete?.(accumulated, split.findings.length, split.findings);
+      onReviewCompleteRef.current?.(
+        accumulated,
+        split.findings.length,
+        split.findings
+      );
       toast.success("Code review completed");
 
       // Persist findings to disk
@@ -366,7 +373,7 @@ export function ReviewChatPane({
         description: err instanceof Error ? err.message : "Unknown error",
       });
       setReviewDone(true);
-      onReviewComplete?.(reviewOutput, 0);
+      onReviewCompleteRef.current?.(reviewOutput, 0);
     } finally {
       setIsReviewing(false);
       abortRef.current = null;
@@ -402,7 +409,7 @@ export function ReviewChatPane({
           setReviewOutput(finalOutput);
           setReviewDone(true);
           const split = splitReviewOutput(finalOutput, config.provider);
-          onReviewComplete?.(
+          onReviewCompleteRef.current?.(
             finalOutput,
             split.findings.length,
             split.findings
@@ -699,7 +706,7 @@ export function ReviewChatPane({
           console.log(
             `[review-extract] Got ${data.findings.length} structured findings`
           );
-          onStructuredFindings?.(data.findings);
+          onStructuredFindingsRef.current?.(data.findings);
           // Overwrite persisted findings with structured ones (better file paths)
           saveReviewFindings(
             ticketId,
@@ -718,7 +725,7 @@ export function ReviewChatPane({
         console.warn("[review-extract] Extraction failed silently:", err);
       }
     },
-    [ticketId, repoPath, config.provider, config.model, onStructuredFindings]
+    [ticketId, repoPath, config.provider, config.model]
   );
 
   const handleChatAboutFinding = useCallback(
@@ -893,30 +900,45 @@ export function ReviewChatPane({
 
         {/* Chat messages (after review completes) */}
         {reviewDone &&
-          chatMessages.map((msg) => (
-            <ChatBubble
-              bubbleClassName={
-                msg.role === "user"
-                  ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
-                  : "bg-muted text-foreground border border-border"
-              }
-              key={msg.id}
-              messageRole={msg.role}
-              roleClassName={
-                msg.role === "user"
-                  ? "text-blue-600 dark:text-blue-400"
-                  : "text-emerald-600 dark:text-emerald-400"
-              }
-              roleLabel={msg.role === "user" ? "you" : "cl.dev"}
-              timestamp={msg.timestamp}
-            >
-              {msg.role === "user" ? (
-                <UserMessageContent content={msg.content} />
-              ) : (
-                <MessageContent blocks={msg.blocks} content={msg.content} />
-              )}
-            </ChatBubble>
-          ))}
+          chatMessages.map((msg, idx) => {
+            const isLastAssistant =
+              msg.role === "assistant" &&
+              !chatMessages
+                .slice(idx + 1)
+                .some((m) => m.role === "assistant") &&
+              !stream.isStreaming;
+            return (
+              <ChatBubble
+                bubbleClassName={
+                  msg.role === "user"
+                    ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
+                    : "bg-muted text-foreground border border-border"
+                }
+                contextPercent={
+                  isLastAssistant
+                    ? (stream.contextPercent ??
+                      chatHistory?.contextPercent ??
+                      undefined)
+                    : undefined
+                }
+                key={msg.id}
+                messageRole={msg.role}
+                roleClassName={
+                  msg.role === "user"
+                    ? "text-blue-600 dark:text-blue-400"
+                    : "text-emerald-600 dark:text-emerald-400"
+                }
+                roleLabel={msg.role === "user" ? "you" : "cl.dev"}
+                timestamp={msg.timestamp}
+              >
+                {msg.role === "user" ? (
+                  <UserMessageContent content={msg.content} />
+                ) : (
+                  <MessageContent blocks={msg.blocks} content={msg.content} />
+                )}
+              </ChatBubble>
+            );
+          })}
 
         {/* Streaming chat response */}
         {stream.isStreaming &&

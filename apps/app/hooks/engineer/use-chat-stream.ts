@@ -30,6 +30,8 @@ type UseChatStreamReturn = {
   stopStreaming: () => void;
   /** Stable timestamp captured once when streaming begins */
   streamStartedAt: string;
+  /** Context window usage percentage (0-100), updated after each turn */
+  contextPercent: number | null;
 };
 
 /**
@@ -47,6 +49,7 @@ export function useChatStream(): UseChatStreamReturn {
   const [pendingUserMessage, setPendingUserMessageRaw] =
     useState<ChatMessage | null>(null);
   const [streamStartedAt, setStreamStartedAt] = useState("");
+  const [contextPercent, setContextPercent] = useState<number | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const isStreamingRef = useRef(false);
@@ -155,6 +158,7 @@ export function useChatStream(): UseChatStreamReturn {
           },
           onPid: (pid) => callbacks?.onPid?.(pid),
           onLearnings: () => callbacks?.onLearnings?.(),
+          onUsage: (pct) => setContextPercent(pct),
         });
 
         // Await consumer cleanup (e.g. query invalidation) BEFORE finally
@@ -200,5 +204,6 @@ export function useChatStream(): UseChatStreamReturn {
     sendMessage,
     stopStreaming,
     streamStartedAt,
+    contextPercent,
   };
 }

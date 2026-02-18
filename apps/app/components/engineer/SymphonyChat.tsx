@@ -1577,6 +1577,7 @@ export function SymphonyChat({
       messages={messages}
       messagesEndRef={messagesEndRef}
       onToggleStreamingBlock={toggleStreamingBlock}
+      savedContextPercent={history?.contextPercent}
       sendActionMessage={sendActionMessage}
       stream={stream}
     />
@@ -2280,6 +2281,7 @@ const MessageBubble = memo(
     index,
     isStreaming = false,
     isLastAssistantMessage = false,
+    contextPercent,
     onSendAction,
     onCopy,
     onForward,
@@ -2288,6 +2290,7 @@ const MessageBubble = memo(
     index: number;
     isStreaming?: boolean;
     isLastAssistantMessage?: boolean;
+    contextPercent?: number | null;
     onSendAction?: (message: string) => void;
     onCopy?: (index: number) => void;
     onForward?: (index: number) => void;
@@ -2311,6 +2314,7 @@ const MessageBubble = memo(
     return (
       <ChatBubble
         actions={actions}
+        contextPercent={isLastAssistantMessage ? contextPercent : undefined}
         forwardLabel="Forward to Codex"
         index={index}
         isStreaming={isStreaming}
@@ -2344,6 +2348,7 @@ const MessageBubble = memo(
     prev.index === next.index &&
     prev.isStreaming === next.isStreaming &&
     prev.isLastAssistantMessage === next.isLastAssistantMessage &&
+    prev.contextPercent === next.contextPercent &&
     (prev.onSendAction == null) === (next.onSendAction == null) &&
     (prev.onCopy == null) === (next.onCopy == null) &&
     (prev.onForward == null) === (next.onForward == null)
@@ -2366,6 +2371,7 @@ type ChatMessageItemProps = Readonly<{
   handleForwardMessage: (index: number) => void;
   handleForwardCodexMessage: (index: number) => void;
   canForward: boolean;
+  savedContextPercent?: number | null;
 }>;
 
 function ChatMessageItem(props: ChatMessageItemProps) {
@@ -2489,6 +2495,13 @@ function renderDefaultBubble(
   const isInHistory = idx < historyMessages.length;
   return (
     <MessageBubble
+      contextPercent={
+        isLastAssistant
+          ? (props.stream.contextPercent ??
+            props.savedContextPercent ??
+            undefined)
+          : undefined
+      }
       index={idx}
       isLastAssistantMessage={isLastAssistant}
       message={msg}
@@ -3309,6 +3322,7 @@ type ChatMessagesAreaProps = Readonly<{
   activeTab: LeftPaneTab;
   isMobile: boolean;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  savedContextPercent?: number | null;
 }>;
 
 function ChatMessagesArea({
@@ -3328,6 +3342,7 @@ function ChatMessagesArea({
   activeTab,
   isMobile,
   messagesEndRef,
+  savedContextPercent,
 }: ChatMessagesAreaProps) {
   const isEmpty =
     !isLoadingHistory && messages.length === 0 && !stream.isStreaming;
@@ -3386,6 +3401,7 @@ function ChatMessagesArea({
                 key={msg.id}
                 messages={messages}
                 msg={msg}
+                savedContextPercent={savedContextPercent}
                 sendActionMessage={sendActionMessage}
                 stream={stream}
               />

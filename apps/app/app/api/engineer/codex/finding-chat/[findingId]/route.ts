@@ -38,6 +38,7 @@ type FindingChatHistory = {
   findingId: string;
   findingContext?: FindingContext;
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 // Allowed tools
@@ -484,6 +485,9 @@ export async function POST(
 
           if (capturedSessionId && !history.sessionId) {
             history.sessionId = capturedSessionId;
+          }
+          if (streamState.contextPercent !== null) {
+            history.contextPercent = streamState.contextPercent;
           }
 
           saveFindingChatHistory(paths.historyPath, history);

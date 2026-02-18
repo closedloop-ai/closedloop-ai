@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatModeView } from "@/components/engineer/codex-review/ChatModeView";
 import {
@@ -165,6 +165,11 @@ export function CodexReviewDialog({
     reviewStatus?.status === "failed" ||
     reviewStatus?.status === "stopped";
 
+  // Destructure stable callbacks to avoid depending on the entire object
+  // (useCodexDebate/useLearnings return new objects every render)
+  const resetDebate = debate.reset;
+  const closeLearnings = learnings.handleClose;
+
   // Reset callback used by both useResetOnClose and explicit reset actions
   const resetReviewState = useCallback(() => {
     setLocalOutput("");
@@ -174,9 +179,9 @@ export function CodexReviewDialog({
     setSelectedFindingIndex(null);
     setChatMode(false);
     setChatInput("");
-    debate.reset();
-    learnings.handleClose();
-  }, [debate, learnings]);
+    resetDebate();
+    closeLearnings();
+  }, [resetDebate, closeLearnings]);
 
   // --- Effects ---
   useSyncOutput(
@@ -198,7 +203,7 @@ export function CodexReviewDialog({
   );
   usePersistPreference(LOCAL_STORAGE_KEYS.model, model);
   usePersistPreference(LOCAL_STORAGE_KEYS.reasoning, reasoningEffort);
-  useResetOnClose(open, isRunning, debate, resetReviewState);
+  useResetOnClose(open, isRunning, resetReviewState);
   useRefetchOnOpen(open, refetchStatus);
 
   // --- Handlers ---
@@ -1013,14 +1018,19 @@ function usePersistPreference(key: string, value: string) {
 function useResetOnClose(
   open: boolean,
   isRunning: boolean | undefined,
-  _debate: ReturnType<typeof useCodexDebate>,
   resetFn: () => void
 ) {
+  // Use a ref for resetFn so the effect only fires when open/isRunning change,
+  // not when the callback identity changes (which can cause infinite loops if
+  // the callback depends on objects that get new references every render).
+  const resetFnRef = useRef(resetFn);
+  resetFnRef.current = resetFn;
+
   useEffect(() => {
     if (!(open || isRunning)) {
-      resetFn();
+      resetFnRef.current();
     }
-  }, [open, isRunning, resetFn]);
+  }, [open, isRunning]);
 }
 
 function useRefetchOnOpen(open: boolean, refetchStatus: () => void) {

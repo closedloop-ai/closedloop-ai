@@ -124,6 +124,14 @@ function markReviewDone(
   if (!entry) {
     return prev;
   }
+  // Already marked done with same values — return same reference to avoid re-render
+  if (
+    entry.done &&
+    entry.initialOutput === output &&
+    entry.findingCount === findingCount
+  ) {
+    return prev;
+  }
   return {
     ...prev,
     [provider]: { ...entry, initialOutput: output, done: true, findingCount },

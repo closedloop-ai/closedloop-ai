@@ -37,6 +37,8 @@ export type UseCommentChatReturn = {
   isWaitingForResponse: boolean;
   /** Stable timestamp captured once when streaming begins */
   streamStartedAt: string;
+  /** Context window usage percentage (0-100), updated after each turn */
+  contextPercent: number | null;
   streamingContent: string;
   streamingBlocks: ContentBlock[];
   error: string | null;
@@ -105,6 +107,7 @@ export function useCommentChat({
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamStartedAt, setStreamStartedAt] = useState("");
+  const [contextPercent, setContextPercent] = useState<number | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
   const [pendingUserMessage, setPendingUserMessage] =
@@ -297,9 +300,14 @@ export function useCommentChat({
       name?: string;
       id?: string;
       input?: unknown;
+      contextPercent?: number;
     },
     accumulated: string
   ): string => {
+    if (event.type === "usage" && event.contextPercent != null) {
+      setContextPercent(event.contextPercent);
+      return accumulated;
+    }
     if (event.type === "text" && event.content) {
       const next = accumulated + event.content;
       setStreamingContent(next);
@@ -844,6 +852,7 @@ export function useCommentChat({
     isStreaming,
     isWaitingForResponse,
     streamStartedAt,
+    contextPercent: contextPercent ?? history?.contextPercent ?? null,
     streamingContent,
     streamingBlocks,
     error,

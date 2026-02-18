@@ -25,6 +25,7 @@ type ChatHistory = {
   ticketId: string;
   repoPath: string;
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 /**

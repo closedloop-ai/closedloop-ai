@@ -41,6 +41,7 @@ type CommentChatHistory = {
   commentId: string;
   commentContext: CommentContext;
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 // Allowed tools
@@ -796,7 +797,12 @@ function appendCommentMessageToHistory(
   history: CommentChatHistory,
   streamState: ReturnType<typeof createStreamState>
 ): void {
-  const { assistantContent, assistantBlocks, capturedSessionId } = streamState;
+  const {
+    assistantContent,
+    assistantBlocks,
+    capturedSessionId,
+    contextPercent,
+  } = streamState;
   if (assistantContent.trim() || assistantBlocks.length > 0) {
     const assistantMessage: ChatMessage = {
       id: `assistant-${Date.now()}`,
@@ -809,5 +815,8 @@ function appendCommentMessageToHistory(
   }
   if (capturedSessionId && !history.sessionId) {
     history.sessionId = capturedSessionId;
+  }
+  if (contextPercent !== null) {
+    history.contextPercent = contextPercent;
   }
 }
