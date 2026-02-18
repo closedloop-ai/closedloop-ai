@@ -203,7 +203,7 @@ export function EngineerDashboard() {
                   ? "Switch to list view"
                   : "Switch to grid view"
               }
-              className="relative flex size-10 cursor-pointer items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-300 ease-out hover:scale-105 hover:border-primary/30 hover:text-primary hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 active:scale-95"
+              className="relative flex size-10 cursor-pointer items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-300 ease-out hover:scale-105 hover:border-primary/30 hover:text-primary hover:shadow-md focus:outline-none focus-visible:border-transparent focus-visible:ring-[3px] focus-visible:ring-primary/50 active:scale-95"
               onClick={() => {
                 markListViewSeen();
                 setViewMode((prev) => (prev === "grid" ? "list" : "grid"));
@@ -268,14 +268,17 @@ export function EngineerDashboard() {
         open={terminalChatOpen}
       />
       {/* Floating chat button */}
-      <button
-        aria-label="Open chat"
-        className="fixed right-6 bottom-6 z-50 flex size-12 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all hover:scale-105 hover:shadow-xl active:scale-95"
-        onClick={() => setTerminalChatOpen(true)}
-        type="button"
-      >
-        <MessageCircle className="size-5" />
-      </button>
+      <div className="group fixed right-6 bottom-6 z-50">
+        <span className="absolute inset-0 rounded-full bg-violet-500 opacity-0 transition-opacity group-hover:animate-ping group-hover:opacity-40" />
+        <button
+          aria-label="Open chat"
+          className="relative flex size-12 cursor-pointer items-center justify-center rounded-full bg-violet-600 text-white shadow-lg shadow-violet-900/50 transition-all hover:scale-105 hover:bg-violet-500 hover:shadow-violet-700/60 active:scale-95"
+          onClick={() => setTerminalChatOpen(true)}
+          type="button"
+        >
+          <MessageCircle className="size-5" />
+        </button>
+      </div>
     </div>
   );
 }

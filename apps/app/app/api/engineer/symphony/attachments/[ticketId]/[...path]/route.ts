@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, extname, join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
@@ -44,9 +44,11 @@ export async function GET(
     filename
   );
 
-  // Security check: ensure the path stays within attachments directory
+  // Security check: ensure the path stays within attachments directory.
+  // Use attachmentsDir + sep to prevent prefix-collision bypass where a path
+  // like /path/to/attachments-private/file satisfies startsWith("/path/to/attachments").
   const attachmentsDir = join(worktreeDir, ".claude", "work", "attachments");
-  if (!filePath.startsWith(attachmentsDir)) {
+  if (!filePath.startsWith(attachmentsDir + sep)) {
     return NextResponse.json({ error: "Invalid path" }, { status: 403 });
   }
 

@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -168,21 +168,25 @@ function mapInlineComment(ic: GitHubInlineCommentRaw): PRComment {
   };
 }
 
-async function fetchInlineComments(
+function fetchInlineComments(
   repoNwo: string,
   prNumber: string,
   cwd: string,
   seenIds: Set<string>
-): Promise<PRComment[]> {
+): PRComment[] {
   if (!repoNwo) {
     return [];
   }
   try {
-    const { stdout } = await execAsync(
-      `gh api repos/${repoNwo}/pulls/${prNumber}/comments --paginate`,
-      { cwd }
+    const result = spawnSync(
+      "gh",
+      ["api", `repos/${repoNwo}/pulls/${prNumber}/comments`, "--paginate"],
+      { cwd, encoding: "utf-8" }
     );
-    const inlineComments = JSON.parse(stdout);
+    if (result.status !== 0) {
+      throw new Error(result.stderr || "gh api failed");
+    }
+    const inlineComments = JSON.parse(result.stdout);
     return inlineComments
       .map(mapInlineComment)
       .filter((c: PRComment) => !seenIds.has(c.id));
@@ -252,24 +256,27 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  if (!/^\d+$/.test(prNumber)) {
+    return NextResponse.json({ error: "Invalid PR number" }, { status: 400 });
+  }
+
   const cwd = expandPath(repoPath);
 
   try {
     const repoNwo = await getRepoNwo(cwd);
 
-    const { stdout } = await execAsync(
-      `gh pr view ${prNumber} --json number,url,comments,reviews`,
-      { cwd }
+    const viewResult = spawnSync(
+      "gh",
+      ["pr", "view", prNumber, "--json", "number,url,comments,reviews"],
+      { cwd, encoding: "utf-8" }
     );
-    const prData: GitHubPRResponse = JSON.parse(stdout);
+    if (viewResult.status !== 0) {
+      throw new Error(viewResult.stderr || "Failed to fetch PR data");
+    }
+    const prData: GitHubPRResponse = JSON.parse(viewResult.stdout);
 
     const { comments, seenIds } = collectGraphQLComments(prData);
-    const inlineComments = await fetchInlineComments(
-      repoNwo,
-      prNumber,
-      cwd,
-      seenIds
-    );
+    const inlineComments = fetchInlineComments(repoNwo, prNumber, cwd, seenIds);
     comments.push(...inlineComments);
 
     comments.sort(

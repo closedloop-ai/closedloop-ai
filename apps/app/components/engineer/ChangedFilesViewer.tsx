@@ -13,8 +13,11 @@ import {
   GitCommitHorizontal,
   Loader2,
 } from "lucide-react";
-import { useState } from "react";
-import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
+import { type ComponentType, useState } from "react";
+import ReactDiffViewerBase, {
+  DiffMethod,
+  type ReactDiffViewerProps,
+} from "react-diff-viewer-continued";
 import { CommitDialog } from "@/components/engineer/CommitDialog";
 import { useThemeContext } from "@/components/engineer/ThemeProvider";
 import {
@@ -23,6 +26,12 @@ import {
   gitDiffOptions,
   gitStatusOptions,
 } from "@/lib/engineer/queries/git";
+
+// react-diff-viewer-continued@4.1.2 ships a class component whose types are
+// incompatible with @types/react@19 JSX inference. Casting to ComponentType
+// lets TypeScript treat it as a standard React component in JSX.
+const ReactDiffViewer =
+  ReactDiffViewerBase as unknown as ComponentType<ReactDiffViewerProps>;
 
 type DiffMode = "working" | "branch";
 

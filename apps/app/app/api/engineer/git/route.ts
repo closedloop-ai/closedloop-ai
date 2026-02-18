@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { auth } from "@repo/auth/server";
 import { type NextRequest, NextResponse } from "next/server";
 import simpleGit, { type SimpleGit, type StatusResult } from "simple-git";
 import { isRepoAllowed } from "@/lib/engineer/repos";
@@ -419,6 +420,11 @@ const ACTION_HANDLERS: Record<
 
 export async function POST(request: NextRequest) {
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body: GitActionRequest = await request.json();
     const { action, repoPath } = body;
 
