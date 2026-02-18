@@ -75,4 +75,28 @@ export const clerkService = {
       phoneNumber: primaryPhone?.phoneNumber ?? null,
     };
   },
+
+  /**
+   * Fetch a user's organization membership role from Clerk.
+   */
+  async getOrganizationMembershipRole(
+    organizationId: string,
+    userId: string
+  ): Promise<string | null> {
+    const client = await clerkClient();
+    const memberships =
+      await client.organizations.getOrganizationMembershipList({
+        organizationId,
+        userId: [userId],
+        limit: 1,
+      });
+
+    const membership = memberships.data[0];
+
+    if (!membership) {
+      return null;
+    }
+
+    return membership.role;
+  },
 };

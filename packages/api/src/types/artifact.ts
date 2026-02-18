@@ -113,6 +113,8 @@ export type ArtifactWithWorkstream = Artifact & {
   owner?: ProjectOwner | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
+  /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
+  snippet?: string | null;
 };
 
 /** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */
@@ -124,6 +126,7 @@ export type FindArtifactsOptions = {
   type?: ArtifactType;
   workstreamId?: string;
   projectId?: string;
+  ownerId?: string;
 };
 
 export type CreateArtifactInput = {
