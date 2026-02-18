@@ -77,3 +77,10 @@ export const batchMoveArtifactsValidator = z.object({
     .min(1, "At least one artifact ID required"),
   targetProjectId: z.uuidv7(),
 });
+
+export const batchCreateArtifactsValidator = z.object({
+  items: z
+    .array(createArtifactValidator)
+    .min(1, "At least one artifact required")
+    .max(50, "Maximum 50 artifacts per batch"),
+});

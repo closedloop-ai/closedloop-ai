@@ -26,6 +26,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { isAdminRole } from "@/lib/role-utils";
 import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
+import { ApiKeysSettingsPanel } from "./components/api-keys-settings-panel";
 import { ComputeModeCard } from "./components/compute-mode-card";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
 import { GoogleIntegrationCard } from "./components/google-integration-card";
@@ -106,7 +107,10 @@ export default function SettingsPage() {
 
       <Separator />
 
-      <Tabs className="flex-1" defaultValue="profile">
+      <Tabs
+        className="flex-1"
+        defaultValue={searchParams.get("tab") ?? "profile"}
+      >
         <TabsList className="h-auto rounded-none border-border border-b bg-transparent p-0">
           <TabsTrigger
             className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
@@ -133,6 +137,12 @@ export default function SettingsPage() {
             value="integrations"
           >
             Integrations
+          </TabsTrigger>
+          <TabsTrigger
+            className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+            value="api-keys"
+          >
+            API Keys
           </TabsTrigger>
         </TabsList>
 
@@ -216,6 +226,10 @@ export default function SettingsPage() {
               </CardDescription>
             </CardHeader>
           </Card>
+        </TabsContent>
+
+        <TabsContent className="mt-6 space-y-6" value="api-keys">
+          <ApiKeysSettingsPanel />
         </TabsContent>
       </Tabs>
     </div>

@@ -9,7 +9,7 @@ import {
 import { useApiClient } from "@/hooks/use-api-client";
 
 // Types
-type ApiKeyInfo = {
+type ClaudeApiKeyInfo = {
   org: { isSet: boolean; lastFour: string | null; setAt?: string | null };
   user: { isSet: boolean; lastFour: string | null; setAt?: string | null };
 };
@@ -21,22 +21,22 @@ type SetKeyResponse = {
 };
 
 // Query key factory
-export const apiKeyKeys = {
-  all: ["api-keys"] as const,
-  info: () => [...apiKeyKeys.all, "info"] as const,
+export const claudeApiKeys = {
+  all: ["claude-api-keys"] as const,
+  info: () => [...claudeApiKeys.all, "info"] as const,
 };
 
 /**
- * Fetch org and user API key info (masked).
+ * Fetch org and user Claude API key info (masked).
  */
-export function useApiKeyInfo(
-  options?: Omit<UseQueryOptions<ApiKeyInfo>, "queryKey" | "queryFn">
+export function useClaudeApiKeyInfo(
+  options?: Omit<UseQueryOptions<ClaudeApiKeyInfo>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
-    queryKey: apiKeyKeys.info(),
-    queryFn: () => apiClient.get<ApiKeyInfo>("/settings/api-keys"),
+    queryKey: claudeApiKeys.info(),
+    queryFn: () => apiClient.get<ClaudeApiKeyInfo>("/settings/api-keys"),
     ...options,
   });
 }
@@ -44,7 +44,7 @@ export function useApiKeyInfo(
 /**
  * Set the organization-level Claude API key.
  */
-export function useSetOrgApiKey() {
+export function useSetOrgClaudeApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -52,7 +52,7 @@ export function useSetOrgApiKey() {
     mutationFn: (key: string) =>
       apiClient.put<SetKeyResponse>("/settings/api-keys/org", { key }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -60,7 +60,7 @@ export function useSetOrgApiKey() {
 /**
  * Remove the organization-level Claude API key.
  */
-export function useRemoveOrgApiKey() {
+export function useRemoveOrgClaudeApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -68,7 +68,7 @@ export function useRemoveOrgApiKey() {
     mutationFn: () =>
       apiClient.delete<{ deleted: true }>("/settings/api-keys/org"),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -76,7 +76,7 @@ export function useRemoveOrgApiKey() {
 /**
  * Set the user-level Claude API key override.
  */
-export function useSetUserApiKey() {
+export function useSetUserClaudeApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -84,7 +84,7 @@ export function useSetUserApiKey() {
     mutationFn: (key: string) =>
       apiClient.put<SetKeyResponse>("/settings/api-keys/user", { key }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
@@ -92,7 +92,7 @@ export function useSetUserApiKey() {
 /**
  * Remove the user-level Claude API key override.
  */
-export function useRemoveUserApiKey() {
+export function useRemoveUserClaudeApiKey() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
 
@@ -100,7 +100,7 @@ export function useRemoveUserApiKey() {
     mutationFn: () =>
       apiClient.delete<{ deleted: true }>("/settings/api-keys/user"),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiKeyKeys.all });
+      queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
   });
 }
