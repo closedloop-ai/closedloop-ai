@@ -1149,8 +1149,29 @@ function findRunLoop() {
     return runLoopPath;
   }
 
-  // Fallback: search common locations
+  // Fallback: search common locations (marketplace install, cache, global)
   const fallbackPaths = [
+    path.join(
+      os.homedir(),
+      ".claude",
+      "plugins",
+      "marketplaces",
+      "closedloop",
+      "closedloop",
+      "experimental",
+      "scripts",
+      "run-loop.sh"
+    ),
+    path.join(
+      os.homedir(),
+      ".claude",
+      "plugins",
+      "marketplaces",
+      "closedloop",
+      "closedloop",
+      "experimental",
+      "run-loop.sh"
+    ),
     path.join(
       os.homedir(),
       ".claude",
