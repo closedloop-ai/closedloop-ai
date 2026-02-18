@@ -289,6 +289,10 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 - **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
 
+### Tables & Sorting
+- **[pattern]**: When sorting by nested object fields using SortConfig in this codebase, use the accessor function to extract the comparable value (e.g., `accessor: (p) => p.owner ? getUserDisplayName(p.owner) : null`). The `sortItems()` utility handles nulls with nulls-last policy automatically. (context: tables|sorting|SortConfig|accessor|nested-objects)
+- **[pattern]**: When rendering multiple sortable tables on the same page, each `useSortParams` call must use a unique `paramPrefix` to prevent URL sort param collision. Derive the prefix from a unique identifier (e.g., artifact type or section name). (context: tables|sorting|useSortParams|paramPrefix|url-params)
+
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
 - **[convention]**: Domain-specific parsers (e.g., GitHub Actions artifacts) belong in the corresponding domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath. (context: code-organization|domain-packages)
@@ -304,6 +308,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)
+- **[mistake]**: When mocking `next/navigation` in Vitest, always provide all three navigation hooks: `useRouter`, `usePathname`, and `useSearchParams`. Missing any one causes failures when utility hooks depending on multiple navigation APIs are introduced. (context: testing|vitest|next/navigation|mocking|hooks)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
