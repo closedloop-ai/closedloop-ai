@@ -970,10 +970,11 @@ function detectBranchName(workDir) {
 /**
  * Detect branch/PR info from the working directory and process output.
  *
- * NOTE: run-loop.sh does NOT create PRs or write execution-result.json with
- * PR URLs. PR creation is owned by the harness (createPullRequest), mirroring
- * the pattern from symphony-dispatch.yml. This function only detects branch
- * info and checks if Claude happened to create a PR during execution.
+ * NOTE: run-loop.sh does NOT create PRs or write execution-result.json.
+ * PR creation is owned by the harness (createPullRequest), and
+ * execution-result.json is written by writeExecutionResult() before S3 upload.
+ * This function only detects branch info and checks if Claude happened to
+ * create a PR during execution.
  */
 function parsePrInfo(workDir, outputLines) {
   // Strategy 1: Get branch name from git (primary — always available after execute)
@@ -1879,6 +1880,58 @@ async function executeWithTimeout(cmd, args, workDir, childEnv) {
 }
 
 // ---------------------------------------------------------------------------
+// execution-result.json (consumed by webhook zip-parser + S3 artifact upload)
+// ---------------------------------------------------------------------------
+/**
+ * Get the HEAD commit SHA from the working directory.
+ */
+function getHeadCommitSha(workDir) {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 5000,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write execution-result.json to the work directory.
+ *
+ * This file is expected by the webhook zip-parser (zip-parser.ts) and is
+ * listed in the keyFiles array for S3 upload. The schema matches the
+ * ExecutionResult type defined in zip-parser.ts.
+ *
+ * Must be called BEFORE uploadState() so the file is included in the
+ * artifacts/ prefix upload.
+ */
+function writeExecutionResult(workDir, prInfo) {
+  try {
+    const hasChanges = !!(prInfo?.prUrl);
+    const commitSha = getHeadCommitSha(workDir);
+
+    const result = {
+      has_changes: hasChanges,
+      pr_url: prInfo?.prUrl || "",
+      pr_number: prInfo?.prNumber || 0,
+      branch_name: prInfo?.branchName || "",
+      base_ref: config.targetBranch || "main",
+      commit_sha: commitSha,
+    };
+
+    const filePath = path.join(workDir, "execution-result.json");
+    fs.writeFileSync(filePath, JSON.stringify(result, null, 2));
+    log("info", `Wrote execution-result.json (has_changes=${hasChanges})`);
+  } catch (err) {
+    log("error", `Failed to write execution-result.json: ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Report final status (completed, failed, or timed out)
 // ---------------------------------------------------------------------------
 async function reportFinalStatus(
@@ -1921,11 +1974,15 @@ async function reportFinalStatus(
     log("info", `Session ID: ${capturedSessionId}`);
   }
 
-  // Step 5: Upload state + metadata
+  // Step 5: Write execution-result.json (must precede uploadState so it's
+  // included in the artifacts/ prefix upload to S3)
+  writeExecutionResult(workDir, prInfo);
+
+  // Step 6: Upload state + metadata
   await uploadState(workDir, output);
   await uploadMetadata(workDir, output, tokenUsage, startTime);
 
-  // Step 6: Report event
+  // Step 7: Report event
   if (timedOut) {
     await reportEvent({
       type: "error",
@@ -2131,6 +2188,13 @@ async function main() {
       if (prInfo?.prNumber) {
         labelPrIncomplete(workDir, prInfo.prNumber);
       }
+    } catch (_) {
+      // ignore
+    }
+
+    // Best-effort: write execution-result.json before upload
+    try {
+      writeExecutionResult(workDir, prInfo);
     } catch (_) {
       // ignore
     }

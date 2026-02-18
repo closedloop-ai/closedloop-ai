@@ -61,8 +61,8 @@ export const loopEventValidator = z
     data: z.record(z.string(), z.unknown()).default({}),
   })
   .strict()
-  .refine((val) => jsonSizeWithinLimit(val, 1_000_000), {
-    message: "Event payload too large (max 1MB)",
+  .refine((val) => jsonSizeWithinLimit(val, 20_000_000), {
+    message: "Event payload too large (max 20MB)",
   });
 
 /**
@@ -75,8 +75,8 @@ export const loopEventPayloadValidator = z.union([
   z
     .object({ type: loopEventType })
     .catchall(z.unknown())
-    .refine((val) => jsonSizeWithinLimit(val, 1_000_000), {
-      message: "Event payload too large (max 1MB)",
+    .refine((val) => jsonSizeWithinLimit(val, 20_000_000), {
+      message: "Event payload too large (max 20MB)",
     }),
 ]);
 
