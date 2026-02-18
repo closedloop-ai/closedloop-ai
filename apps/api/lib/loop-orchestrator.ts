@@ -20,6 +20,7 @@ import {
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
+import { getAwsCredentials } from "@/lib/aws-credentials";
 import {
   type ContextPack,
   downloadMetadata,
@@ -83,6 +84,7 @@ function getEcsClient(): ECSClient {
   if (!_ecsClient) {
     _ecsClient = new ECSClient({
       region: process.env.AWS_REGION ?? "us-east-1",
+      credentials: getAwsCredentials(),
     });
   }
   return _ecsClient;

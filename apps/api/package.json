@@ -35,6 +35,7 @@
     "@repo/payments": "workspace:*",
     "@repo/rate-limit": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.10",
+    "@vercel/functions": "^3.4.2",
     "adm-zip": "^0.5.16",
     "import-in-the-middle": "^2.0.6",
     "jose": "^5.2.1",
