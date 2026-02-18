@@ -256,3 +256,13 @@ export type PlanJson = {
   gaps: PlanGap[];
   manualTasks?: PlanTask[];
 };
+
+/**
+ * Map of artifact slug to artifact title.
+ * Returned by the batch-meta endpoint for lightweight name lookups.
+ * Slugs not found in the org are omitted.
+ */
+export type ArtifactTitleMap = Record<string, string>;
+
+/** Maximum number of slugs accepted by GET /artifacts/batch-meta */
+export const BATCH_META_MAX_SLUGS = 50;
