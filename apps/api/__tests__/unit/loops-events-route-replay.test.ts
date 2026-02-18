@@ -1,8 +1,14 @@
 import { vi } from "vitest";
 
-vi.mock("@/lib/auth/loop-runner-jwt", () => ({
-  verifyLoopRunnerToken: vi.fn(),
-}));
+vi.mock("@/lib/auth/loop-runner-jwt", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/lib/auth/loop-runner-jwt")
+  >("@/lib/auth/loop-runner-jwt");
+  return {
+    ...actual,
+    verifyLoopRunnerToken: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/loop-orchestrator", () => ({
   handleLoopEvent: vi.fn(),

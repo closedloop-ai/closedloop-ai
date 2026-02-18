@@ -11,7 +11,7 @@ describe("loop event payload validator", () => {
   });
 
   it("rejects oversized envelope payload", () => {
-    const big = "x".repeat(1_100_000);
+    const big = "x".repeat(21_000_000);
     const result = loopEventPayloadValidator.safeParse({
       type: "output",
       data: { chunk: big },
@@ -20,7 +20,7 @@ describe("loop event payload validator", () => {
   });
 
   it("rejects oversized flattened payload", () => {
-    const big = "x".repeat(1_100_000);
+    const big = "x".repeat(21_000_000);
     const result = loopEventPayloadValidator.safeParse({
       type: "output",
       chunk: big,
