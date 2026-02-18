@@ -54,7 +54,7 @@ function log(level, ...args) {
 // ---------------------------------------------------------------------------
 const config = {
   loopId: process.env.LOOP_ID,
-  command: process.env.COMMAND, // "plan" | "execute" | "chat" | "explore" | "request_changes"
+  command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES"
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
@@ -155,8 +155,8 @@ function validateConfig() {
 
   // targetRepo is only required for commands that operate on a repository.
   // chat/explore can run prompt-only without a repo.
-  const repoCommands = new Set(["plan", "execute", "request_changes"]);
-  if (repoCommands.has(config.command?.toLowerCase())) {
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  if (repoCommands.has(config.command)) {
     requiredEnv.push("targetRepo");
   }
 
@@ -203,8 +203,8 @@ function validateSecrets() {
   const requiredSecrets = ["anthropicApiKey"];
 
   // Repo commands need a GitHub token for clone/push operations.
-  const repoCommands = new Set(["plan", "execute", "request_changes"]);
-  if (repoCommands.has(config.command?.toLowerCase())) {
+  const repoCommands = new Set(["PLAN", "EXECUTE", "REQUEST_CHANGES"]);
+  if (repoCommands.has(config.command)) {
     requiredSecrets.push("githubToken");
   }
 
@@ -1510,14 +1510,13 @@ async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
 // Command builders
 // ---------------------------------------------------------------------------
 function buildRunLoopArgs(runLoopPath, _workDir) {
-  const command = config.command.toLowerCase();
   const args = [runLoopPath];
 
-  switch (command) {
-    case "plan":
+  switch (config.command) {
+    case "PLAN":
       args.push("--max-iterations", String(config.maxIterations || 50));
       break;
-    case "execute":
+    case "EXECUTE":
       args.push("--max-iterations", String(config.maxIterations || 150));
       break;
     default:
@@ -1529,7 +1528,6 @@ function buildRunLoopArgs(runLoopPath, _workDir) {
 }
 
 function buildClaudeDirectArgs(workDir) {
-  const command = config.command.toLowerCase();
   const args = [];
 
   // If resuming from a parent loop, use --resume to continue the session
@@ -1537,8 +1535,8 @@ function buildClaudeDirectArgs(workDir) {
     args.push("--resume", config.parentSessionId);
   }
 
-  switch (command) {
-    case "request_changes": {
+  switch (config.command) {
+    case "REQUEST_CHANGES": {
       // Use the amend-plan skill
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
@@ -1549,8 +1547,8 @@ function buildClaudeDirectArgs(workDir) {
       args.push("/experimental:amend-plan", prompt);
       break;
     }
-    case "chat":
-    case "explore": {
+    case "CHAT":
+    case "EXPLORE": {
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
@@ -1558,14 +1556,14 @@ function buildClaudeDirectArgs(workDir) {
         prompt = fs.readFileSync(promptFile, "utf-8");
       }
       if (!prompt) {
-        throw new Error(`No prompt found for ${command} command`);
+        throw new Error(`No prompt found for ${config.command} command`);
       }
       args.push(prompt);
       break;
     }
     default:
       throw new Error(
-        `Unexpected command for direct claude invocation: ${command}`
+        `Unexpected command for direct claude invocation: ${config.command}`
       );
   }
 
@@ -1682,8 +1680,7 @@ function prepareWorkspace(workDir) {
 }
 
 function shouldCreateWorkingBranch() {
-  const command = config.command?.toLowerCase();
-  return command === "execute" || command === "request_changes";
+  return config.command === "EXECUTE" || config.command === "REQUEST_CHANGES";
 }
 
 function createWorkingBranch(workDir) {
@@ -1775,20 +1772,19 @@ function createWorkingBranch(workDir) {
 }
 
 function validatePreRunInputs(command, contextPack) {
-  const normalized = command.toLowerCase();
   const hasPrompt =
     typeof contextPack?.prompt === "string" &&
     contextPack.prompt.trim().length > 0;
   const hasArtifacts =
     Array.isArray(contextPack?.artifacts) && contextPack.artifacts.length > 0;
 
-  if (normalized === "execute" && !(hasArtifacts || hasPrompt)) {
+  if (command === "EXECUTE" && !(hasArtifacts || hasPrompt)) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
       "Pre-run validation failed: EXECUTE requires prompt or artifacts in context pack"
     );
   }
-  if (normalized === "request_changes" && !hasPrompt) {
+  if (command === "REQUEST_CHANGES" && !hasPrompt) {
     throw new HarnessError(
       ERROR_CODES.preRunValidation,
       "Pre-run validation failed: REQUEST_CHANGES requires a non-empty prompt"
@@ -1797,8 +1793,7 @@ function validatePreRunInputs(command, contextPack) {
 }
 
 function buildCommand(workDir) {
-  const command = config.command.toLowerCase();
-  const usesRunLoop = command === "plan" || command === "execute";
+  const usesRunLoop = config.command === "PLAN" || config.command === "EXECUTE";
 
   if (usesRunLoop) {
     let runLoopPath;

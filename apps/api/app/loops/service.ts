@@ -4,7 +4,6 @@ import type {
   CreateLoopRequest,
   CreateLoopResponse,
   Loop,
-  LoopCommand,
   LoopEvent,
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
@@ -15,6 +14,7 @@ import type {
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
@@ -77,19 +77,63 @@ const TERMINAL_STATUSES = new Set<LoopStatus>([
 ]);
 
 /**
+ * Validate a JSON value as a Loop["repo"] shape, returning null on mismatch.
+ */
+function parseRepo(value: unknown): Loop["repo"] {
+  if (value == null) {
+    return null;
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "fullName" in value &&
+    "branch" in value &&
+    typeof (value as Record<string, unknown>).fullName === "string" &&
+    typeof (value as Record<string, unknown>).branch === "string"
+  ) {
+    return value as Loop["repo"];
+  }
+  log.warn("Malformed loop.repo JSON, returning null", { value });
+  return null;
+}
+
+/**
+ * Validate a JSON value as a Loop["error"] shape, returning null on mismatch.
+ */
+function parseError(value: unknown): Loop["error"] {
+  if (value == null) {
+    return null;
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "code" in value &&
+    "message" in value &&
+    typeof (value as Record<string, unknown>).code === "string" &&
+    typeof (value as Record<string, unknown>).message === "string"
+  ) {
+    return value as Loop["error"];
+  }
+  log.warn("Malformed loop.error JSON, returning null", { value });
+  return null;
+}
+
+/**
  * Transform a Prisma loop record to the API Loop type.
  * Handles Decimal → number conversion for estimatedCost and
- * typed JSON field casts for repo, contextRefs, error, metadata, tokensByModel.
+ * runtime-validated JSON field parsing for repo, error.
+ * contextRefs, metadata, and tokensByModel use structural casts
+ * since they are always written by trusted backend code.
  */
 function toLoop(record: PrismaLoop): Loop {
   return {
     ...record,
     estimatedCost:
       record.estimatedCost != null ? Number(record.estimatedCost) : null,
-    repo: record.repo as Loop["repo"],
+    repo: parseRepo(record.repo),
     contextRefs: record.contextRefs as Loop["contextRefs"],
-    error: record.error as Loop["error"],
-    metadata: record.metadata as Loop["metadata"],
+    error: parseError(record.error),
+    metadata: (record.metadata ?? {}) as Loop["metadata"],
     tokensByModel: record.tokensByModel as Loop["tokensByModel"],
   };
 }
@@ -558,6 +602,10 @@ export const loopsService = {
     }
 
     // Ignore non-terminal events after the loop is terminal.
+    // Known TOCTOU gap: status could change to terminal between this check
+    // and the insert below, allowing a late non-terminal event through.
+    // Acceptable for V1 — the unique constraint prevents duplicates and the
+    // frontend displays state from loop.status, not event order.
     if (
       TERMINAL_STATUSES.has(loop.status as LoopStatus) &&
       !["completed", "error", "cancelled"].includes(event.type)
@@ -720,10 +768,19 @@ export const loopsService = {
   ): Promise<LoopUsageSummary> {
     const { startDate, endDate, userId, command } = filters;
 
+    const validCommands = new Set<string>(Object.values(LoopCommand));
+    const validatedCommand =
+      command && validCommands.has(command) ? command : undefined;
+
     const where = {
       organizationId,
       ...(userId ? { userId } : {}),
-      ...(command ? { command: command as never } : {}),
+      ...(validatedCommand
+        ? {
+            command:
+              validatedCommand as (typeof LoopCommand)[keyof typeof LoopCommand],
+          }
+        : {}),
       ...(startDate || endDate
         ? {
             createdAt: {

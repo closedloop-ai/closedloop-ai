@@ -5,7 +5,12 @@ import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { launchLoop } from "@/lib/loop-orchestrator";
-import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
+import {
+  badRequestResponse,
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+} from "@/lib/route-utils";
 import { artifactsService } from "../../service";
 import { runLoopSchema } from "./validators";
 
@@ -52,6 +57,13 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         sourceArtifact?.targetRepo ??
         artifact.targetRepo ??
         existingRepository?.fullName;
+
+      if (!targetRepo) {
+        return badRequestResponse(
+          "No repository configured. Link a repository to the project or set a target repo on the artifact."
+        );
+      }
+
       const targetBranch =
         sourceArtifact?.targetBranch ??
         artifact.targetBranch ??
@@ -67,9 +79,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           artifactId,
           workstreamId: workstream?.id,
           prompt: body.prompt,
-          repo: targetRepo
-            ? { fullName: targetRepo, branch: targetBranch }
-            : undefined,
+          repo: { fullName: targetRepo, branch: targetBranch },
         }
       );
 

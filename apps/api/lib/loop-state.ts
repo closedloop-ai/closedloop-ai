@@ -251,13 +251,14 @@ export async function generateDownloadUrl(
  */
 export async function generateUploadUrl(
   key: string,
-  contentType = "application/octet-stream",
   expiresIn = DEFAULT_PRESIGN_EXPIRY_SECONDS
 ): Promise<string> {
+  // Intentionally omit ContentType so the pre-signed URL accepts any content
+  // type the harness sends (text/plain for logs, application/json for metadata,
+  // application/octet-stream for binary state files, etc.).
   const command = new PutObjectCommand({
     Bucket: requireBucket(),
     Key: key,
-    ContentType: contentType,
   });
   return await getSignedUrl(getS3Client(), command, { expiresIn });
 }

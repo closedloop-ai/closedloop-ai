@@ -414,6 +414,25 @@ async function claimOrPersistRunning(
           containerId: taskArn,
           s3StateKey,
         });
+        // The started-event handler scrubs secrets based on loop.s3StateKey,
+        // but it likely already fired before persistLaunchInfo wrote the key.
+        // Scrub now to close the window.
+        try {
+          await scrubContextPackSecrets(s3StateKey);
+        } catch (scrubError) {
+          log.error(
+            "[loop-orchestrator] Failed to scrub secrets in runner-race path",
+            {
+              loopId,
+              s3StateKey,
+              error:
+                scrubError instanceof Error
+                  ? scrubError.message
+                  : String(scrubError),
+            }
+          );
+          await recordScrubFailureWarning(loopId, organizationId);
+        }
         log.info(
           "[loop-orchestrator] Loop already RUNNING (runner raced ahead), persisted launch info",
           { loopId, taskArn }
@@ -951,21 +970,6 @@ async function handleLoopCompleted(
   event: LoopEventCompleted,
   replayContext?: RunnerReplayContext
 ): Promise<void> {
-  // Store the completion event
-  await loopsService.addEvent(
-    loopId,
-    organizationId,
-    {
-      type: event.type,
-      data: {
-        result: event.result,
-        tokensUsed: event.tokensUsed ?? null,
-        timestamp: event.timestamp,
-      } as Record<string, unknown>,
-    },
-    replayContext
-  );
-
   // Try to download metadata from S3 for detailed token counts
   const loop = await loopsService.findById(loopId, organizationId);
   const metadata = loop?.s3StateKey
@@ -985,6 +989,9 @@ async function handleLoopCompleted(
     event as unknown as Record<string, unknown>
   );
 
+  // Transition status before persisting the event. If the loop is already
+  // terminal (e.g., timed out by cron), the transition throws and we avoid
+  // leaving an inconsistent timeline (terminal loop with a later completed event).
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
     completedAt: new Date(),
     tokensInput,
@@ -993,6 +1000,21 @@ async function handleLoopCompleted(
     estimatedCost,
     ...prSession,
   });
+
+  // Persist the completion event only after transition succeeds
+  await loopsService.addEvent(
+    loopId,
+    organizationId,
+    {
+      type: event.type,
+      data: {
+        result: event.result,
+        tokensUsed: event.tokensUsed ?? null,
+        timestamp: event.timestamp,
+      } as Record<string, unknown>,
+    },
+    replayContext
+  );
 
   log.info("[loop-orchestrator] Loop completed", {
     loopId,
@@ -1100,6 +1122,12 @@ async function handleLoopError(
   if (event.code === "TIMED_OUT") {
     const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
+    await loopsService.updateStatus(loopId, organizationId, "TIMED_OUT", {
+      completedAt: new Date(),
+      error: { code: event.code, message: event.message },
+      ...prSession,
+    });
+
     await loopsService.addEvent(
       loopId,
       organizationId,
@@ -1114,12 +1142,6 @@ async function handleLoopError(
       replayContext
     );
 
-    await loopsService.updateStatus(loopId, organizationId, "TIMED_OUT", {
-      completedAt: new Date(),
-      error: { code: event.code, message: event.message },
-      ...prSession,
-    });
-
     log.info("[loop-orchestrator] Loop timed out", {
       loopId,
       message: event.message,
@@ -1130,7 +1152,13 @@ async function handleLoopError(
   // Extract PR/session info from error event (harness includes these even on failure)
   const prSession = extractPrSessionInfo(event as Record<string, unknown>);
 
-  // Store the error event
+  await loopsService.updateStatus(loopId, organizationId, "FAILED", {
+    completedAt: new Date(),
+    error: { code: event.code, message: event.message },
+    ...prSession,
+  });
+
+  // Persist the error event only after transition succeeds
   await loopsService.addEvent(
     loopId,
     organizationId,
@@ -1144,12 +1172,6 @@ async function handleLoopError(
     },
     replayContext
   );
-
-  await loopsService.updateStatus(loopId, organizationId, "FAILED", {
-    completedAt: new Date(),
-    error: { code: event.code, message: event.message },
-    ...prSession,
-  });
 
   log.error("[loop-orchestrator] Loop failed", {
     loopId,

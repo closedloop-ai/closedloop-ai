@@ -308,6 +308,9 @@ export const apiKeyService = {
       // Auto-migrate legacy plaintext key to KMS-encrypted storage.
       // If migration fails (e.g., KMS unavailable), throw rather than returning
       // the plaintext key — prevents transmitting unencrypted secrets during KMS outages.
+      // Note: concurrent requests may both detect the legacy key and call
+      // setUserKey simultaneously. This is idempotent (same plaintext encrypted
+      // twice) and harmless — the extra KMS call is not worth a lock.
       log.warn(
         "Legacy plaintext user API key detected — attempting auto-migration",
         { userId }
@@ -350,6 +353,9 @@ export const apiKeyService = {
     if (org?.anthropicApiKey) {
       // Auto-migrate legacy plaintext key to KMS-encrypted storage.
       // If migration fails, throw rather than returning the plaintext key.
+      // Note: concurrent requests may both detect the legacy key and call
+      // setOrgKey simultaneously. This is idempotent (same plaintext encrypted
+      // twice) and harmless — the extra KMS call is not worth a lock.
       log.warn(
         "Legacy plaintext org API key detected — attempting auto-migration",
         { organizationId }
