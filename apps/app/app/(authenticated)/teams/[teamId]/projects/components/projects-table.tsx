@@ -116,6 +116,9 @@ export function ProjectsTable({
     }
   };
 
+  // Memoize project IDs to provide a stable reference for SortableContext
+  const projectIds = useMemo(() => projects.map((p) => p.id), [projects]);
+
   if (projects.length === 0) {
     return (
       <EmptyState
@@ -143,7 +146,7 @@ export function ProjectsTable({
         </TableHeader>
         <SortableContext
           id="projects-list"
-          items={projects.map((p) => p.id)}
+          items={projectIds}
           strategy={verticalListSortingStrategy}
         >
           <TableBody>

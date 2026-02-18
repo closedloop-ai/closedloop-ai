@@ -132,6 +132,12 @@ function ArtifactSection({
     });
   }, [artifacts]);
 
+  // Memoize artifact IDs to provide a stable reference for SortableContext
+  const sortedArtifactIds = useMemo(
+    () => sortedArtifacts.map((a) => a.id),
+    [sortedArtifacts]
+  );
+
   return (
     <Collapsible defaultOpen>
       <CollapsibleTrigger className="group flex w-full items-center gap-2 px-0 py-3 text-left font-semibold text-lg hover:opacity-80">
@@ -154,7 +160,7 @@ function ArtifactSection({
           </TableHeader>
           <SortableContext
             id={title}
-            items={sortedArtifacts.map((a) => a.id)}
+            items={sortedArtifactIds}
             strategy={verticalListSortingStrategy}
           >
             <TableBody>
