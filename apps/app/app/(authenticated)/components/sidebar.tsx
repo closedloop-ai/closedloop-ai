@@ -32,6 +32,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  CodeIcon,
   FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
@@ -94,20 +95,9 @@ const orgSwitcherAppearance = {
   },
 } as const;
 
-const envBadge: Record<
-  AppEnvironment,
-  { label: string; className: string } | null
-> = {
-  local: {
-    label: "DEV",
-    className:
-      "rounded bg-blue-100 px-1.5 py-0.5 font-medium text-[10px] text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  },
-  stage: {
-    label: "STAGE",
-    className:
-      "rounded bg-amber-100 px-1.5 py-0.5 font-medium text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-200",
-  },
+const envBadge: Record<AppEnvironment, string | null> = {
+  local: process.env.NEXT_PUBLIC_API_URL ?? "localhost",
+  stage: null,
   prod: null,
 };
 
@@ -115,52 +105,63 @@ type GlobalSidebarProperties = {
   readonly children: ReactNode;
 };
 
+type NavItem = {
+  title: string;
+  url: string;
+  icon: LucideIcon;
+  disabled: boolean;
+};
+
+const baseWorkspaceItems: NavItem[] = [
+  {
+    title: "Inbox",
+    url: "/inbox",
+    icon: InboxIcon,
+    disabled: false,
+  },
+  {
+    title: "Initiatives",
+    url: "/initiatives",
+    icon: LightbulbIcon,
+    disabled: true,
+  },
+  {
+    title: "My Documents",
+    url: "/my-documents",
+    icon: FileTextIcon,
+    disabled: true,
+  },
+  {
+    title: "Loops",
+    url: "/loops",
+    icon: RotateCcwIcon,
+    disabled: false,
+  },
+  {
+    title: "Members",
+    url: "/members",
+    icon: UsersIcon,
+    disabled: false,
+  },
+];
+
+const engineerNavItem: NavItem = {
+  title: "Engineer",
+  url: "/engineer",
+  icon: CodeIcon,
+  disabled: false,
+};
+
+const workspaceItems: NavItem[] =
+  appEnvironment === "local"
+    ? [...baseWorkspaceItems, engineerNavItem]
+    : baseWorkspaceItems;
+
 const data: {
-  workspace: {
-    title: string;
-    url: string;
-    icon: LucideIcon;
-    disabled: boolean;
-  }[];
-  navSecondary: {
-    title: string;
-    url: string;
-    icon: LucideIcon;
-    disabled: boolean;
-  }[];
+  workspace: NavItem[];
+  navSecondary: NavItem[];
 } = {
-  workspace: [
-    {
-      title: "Inbox",
-      url: "/inbox",
-      icon: InboxIcon,
-      disabled: false,
-    },
-    {
-      title: "Initiatives",
-      url: "/initiatives",
-      icon: LightbulbIcon,
-      disabled: true,
-    },
-    {
-      title: "My Documents",
-      url: "/my-documents",
-      icon: FileTextIcon,
-      disabled: true,
-    },
-    {
-      title: "Loops",
-      url: "/loops",
-      icon: RotateCcwIcon,
-      disabled: false,
-    },
-    {
-      title: "Members",
-      url: "/members",
-      icon: UsersIcon,
-      disabled: false,
-    },
-  ],
+  workspace: workspaceItems,
   navSecondary: [
     {
       title: "Judges",
@@ -195,7 +196,11 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
   const mounted = useIsMounted();
-  const activeEnvBadge = envBadge[appEnvironment];
+  const isLocalhost =
+    mounted &&
+    (globalThis.location.hostname === "localhost" ||
+      globalThis.location.hostname === "127.0.0.1");
+  const activeEnvBadge = isLocalhost ? envBadge[appEnvironment] : null;
 
   // Clear cache when organization changes
   useEffect(() => {
@@ -222,8 +227,12 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
             <SidebarMenuItem>
               <div
                 className={cn(
-                  "flex h-[36px] items-center gap-2 overflow-hidden transition-all",
-                  sidebar.open ? "px-2" : "justify-center"
+                  "flex overflow-hidden transition-all",
+                  sidebar.open && activeEnvBadge
+                    ? "flex-col items-start gap-1 px-2 py-1"
+                    : "h-[36px] items-center gap-2",
+                  !sidebar.open && "justify-center px-0",
+                  sidebar.open && !activeEnvBadge && "px-2"
                 )}
               >
                 {!mounted && (
@@ -233,9 +242,20 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                   <>
                     <OrganizationSwitcher appearance={orgSwitcherAppearance} />
                     {activeEnvBadge && (
-                      <span className={activeEnvBadge.className}>
-                        {activeEnvBadge.label}
-                      </span>
+                      <div className="w-full rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 dark:border-amber-500/20 dark:bg-amber-500/10">
+                        <div className="mb-0.5 flex items-center gap-1.5">
+                          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
+                          <span className="font-bold font-mono text-[9px] text-amber-700 uppercase tracking-wider dark:text-amber-400">
+                            local
+                          </span>
+                        </div>
+                        <p
+                          className="truncate font-mono text-[9px] text-amber-700/60 leading-tight dark:text-amber-400/60"
+                          title={activeEnvBadge}
+                        >
+                          {activeEnvBadge}
+                        </p>
+                      </div>
                     )}
                   </>
                 )}

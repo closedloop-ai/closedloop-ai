@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 const TRAILING_SLASH_REGEX = /\/$/;
 const LEADING_DOT_REGEX = /^\./;
 const DEFAULT_PREVIEW_SUFFIX = "preview.closedloop-stage.ai";
+const LOCALHOST_ORIGIN_REGEX = /^http:\/\/localhost:\d+$/;
 
 // Allowed origins for CORS - built from environment variables
 function getAllowedOrigins(): Set<string> {
@@ -64,8 +65,20 @@ function isPreviewOrigin(origin: string | null): boolean {
   }
 }
 
+function isLocalhostOrigin(origin: string | null): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+  return !!origin && LOCALHOST_ORIGIN_REGEX.test(origin);
+}
+
 function isOriginAllowed(origin: string | null): boolean {
-  return !!origin && (allowedOrigins.has(origin) || isPreviewOrigin(origin));
+  return (
+    !!origin &&
+    (allowedOrigins.has(origin) ||
+      isLocalhostOrigin(origin) ||
+      isPreviewOrigin(origin))
+  );
 }
 
 function getCorsHeaders(origin: string | null): Record<string, string> {
