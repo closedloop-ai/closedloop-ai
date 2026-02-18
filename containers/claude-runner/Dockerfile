@@ -34,9 +34,6 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install AWS SDK v3 globally (used by harness agent for S3 operations)
-RUN npm install -g @aws-sdk/client-s3
-
 # Install ClosedLoop plugins (marketplace).
 # Requires GITHUB_TOKEN build arg for private repo access.
 # Local:  docker build --build-arg GITHUB_TOKEN=$(gh auth token) ...
@@ -46,11 +43,13 @@ RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/"
     git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
     claude plugin marketplace add closedloop-ai/claude_code && \
     claude plugin install experimental@closedloop && \
-    claude plugin install symphony-core@closedloop && \
-    git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf || true
+    claude plugin install symphony-core@closedloop ; \
+    git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null; \
+    true
 
-# Copy the harness agent (must happen as root for /opt write access)
+# Copy the harness agent and install its dependencies locally
 COPY harness-agent.mjs /opt/harness/harness-agent.mjs
+RUN cd /opt/harness && npm init -y && npm install @aws-sdk/client-s3
 
 # Create non-root user for runtime.
 # The harness, git clone, and Claude Code all run as this user.
