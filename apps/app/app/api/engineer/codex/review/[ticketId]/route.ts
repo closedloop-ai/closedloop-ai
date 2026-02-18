@@ -172,7 +172,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       "--model",
       model,
       "--allowedTools",
-      "Bash(gh:*) Bash(git:*) Read Glob Grep",
+      "Bash Read Glob Grep Task TodoWrite",
       "--append-system-prompt",
       REVIEW_SYSTEM_PROMPT,
     ],
@@ -353,6 +353,7 @@ function createClaudeStream(
         exitCode?: number;
         sessionId?: string;
         reviewCommand?: string;
+        contextPercent?: number;
       }) => {
         if (controllerClosed) {
           return;
@@ -888,6 +889,7 @@ function processClaudeStreamLine(
     exitCode?: number;
     sessionId?: string;
     reviewCommand?: string;
+    contextPercent?: number;
   }) => void
 ): void {
   try {
@@ -898,6 +900,20 @@ function processClaudeStreamLine(
       console.log(`[codex-review] Claude session ID captured: ${sid}`);
       sendEvent({ type: "sessionId", sessionId: sid });
     }
+
+    // Extract context usage from result events
+    if (event.type === "result" && event.subtype === "success" && event.usage) {
+      const total =
+        (event.usage.input_tokens ?? 0) +
+        (event.usage.output_tokens ?? 0) +
+        (event.usage.cache_creation_input_tokens ?? 0) +
+        (event.usage.cache_read_input_tokens ?? 0);
+      const contextWindow = event.context_window ?? 200_000;
+      const percent =
+        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+      sendEvent({ type: "usage", contextPercent: percent });
+    }
+
     const text = extractClaudeText(event);
     if (text) {
       console.log(

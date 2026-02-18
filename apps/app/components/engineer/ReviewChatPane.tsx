@@ -108,6 +108,9 @@ export function ReviewChatPane({
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
+  const [reviewContextPercent, setReviewContextPercent] = useState<
+    number | null
+  >(null);
   // Refs for parent callbacks — avoids depending on callback identity in effects
   // (these are often inline functions in PRBrowserDialog that change every render)
   const onReviewCompleteRef = useRef(onReviewComplete);
@@ -299,7 +302,8 @@ export function ReviewChatPane({
         (sid) => {
           sessionIdRef.current = sid;
         },
-        setReviewCommand
+        setReviewCommand,
+        setReviewContextPercent
       );
       console.log(
         "[review-stream] Stream ended, accumulated:",
@@ -364,8 +368,10 @@ export function ReviewChatPane({
         triggerExtraction(sessionIdRef.current);
       }
     } catch (err) {
-      // Abort from strict-mode cleanup or user stop — don't mark as done
+      // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
+        setReviewDone(true);
+        onReviewCompleteRef.current?.(reviewOutput, 0);
         return;
       }
       console.error("Review error:", err);
@@ -851,6 +857,7 @@ export function ReviewChatPane({
         {reviewSplit && (
           <>
             <ChatBubble
+              contextPercent={reviewContextPercent ?? undefined}
               messageRole="assistant"
               sender={config.provider === "claude" ? "claude" : "codex"}
               timestamp={reviewStartedAtRef.current}
@@ -1406,7 +1413,8 @@ async function streamReviewOutput(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   setOutput: (value: string) => void,
   onSessionId?: (sessionId: string) => void,
-  onReviewCommand?: (command: string) => void
+  onReviewCommand?: (command: string) => void,
+  onContextPercent?: (percent: number) => void
 ): Promise<{ text: string; completed: boolean }> {
   const decoder = new TextDecoder();
   let accumulated = "";
@@ -1444,6 +1452,8 @@ async function streamReviewOutput(
         } else if (event.type === "output" && event.content) {
           accumulated += event.content;
           setOutput(accumulated);
+        } else if (event.type === "usage" && event.contextPercent != null) {
+          onContextPercent?.(event.contextPercent);
         } else if (event.type === "done") {
           console.log(`[stream-reader] Done event, exitCode=${event.exitCode}`);
           receivedDone = true;
