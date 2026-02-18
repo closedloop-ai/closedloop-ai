@@ -1,4 +1,4 @@
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
@@ -264,6 +264,8 @@ function validateLaunchBody(
   return { ticketIdentifier, repoPath, ticket, baseBranch };
 }
 
+const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
+
 type WorktreeResult = {
   resolvedBaseBranch: string;
   parentTicketId: string | null;
@@ -283,32 +285,37 @@ function createGitWorktree(
     let parentTicketId: string | null = null;
 
     if (baseBranch) {
-      try {
-        execSync(`git rev-parse --verify ${baseBranch}`, {
+      if (!SAFE_REF_REGEX.test(baseBranch)) {
+        return NextResponse.json(
+          { error: `Invalid branch name: ${baseBranch}` },
+          { status: 400 }
+        );
+      }
+      const verifyResult = spawnSync(
+        "git",
+        ["rev-parse", "--verify", baseBranch],
+        {
           cwd: expandedRepoPath,
           stdio: "pipe",
-        });
-        resolvedBaseBranch = baseBranch;
-        parentTicketId = extractTicketIdFromBranch(baseBranch);
-      } catch {
+        }
+      );
+      if (verifyResult.status !== 0) {
         return NextResponse.json(
           { error: `Branch not found: ${baseBranch}` },
           { status: 400 }
         );
       }
+      resolvedBaseBranch = baseBranch;
+      parentTicketId = extractTicketIdFromBranch(baseBranch);
     } else {
       resolvedBaseBranch = getRemoteDefaultBranch(expandedRepoPath);
     }
 
     // Create the branch from the base ref (it might already exist)
-    try {
-      execSync(`git branch ${branchName} ${resolvedBaseBranch}`, {
-        cwd: expandedRepoPath,
-        stdio: "pipe",
-      });
-    } catch {
-      // Branch might already exist, that's fine
-    }
+    spawnSync("git", ["branch", branchName, resolvedBaseBranch], {
+      cwd: expandedRepoPath,
+      stdio: "pipe",
+    });
 
     addWorktree(expandedRepoPath, worktreeDir, branchName);
 

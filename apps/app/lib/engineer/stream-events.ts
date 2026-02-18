@@ -1,3 +1,5 @@
+import { formatToolResultContent } from "@/lib/engineer/chat-utils";
+
 export type ContentBlock = {
   type: "text" | "tool_use" | "tool_result" | "thinking";
   text?: string;
@@ -97,21 +99,6 @@ function processToolResultBlock(
       is_error: block.is_error,
     })
   );
-}
-
-function formatToolResultContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((c) => (typeof c === "string" ? c : JSON.stringify(c, null, 2)))
-      .join("\n");
-  }
-  if (content === null || content === undefined) {
-    return "";
-  }
-  return JSON.stringify(content, null, 2);
 }
 
 function processThinkingBlock(

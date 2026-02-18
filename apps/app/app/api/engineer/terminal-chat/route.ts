@@ -220,6 +220,7 @@ function handleClaude(
   encoder: TextEncoder
 ): ReadableStream {
   const isResuming = !!history.claudeSessionId;
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
 
   return new ReadableStream({
     start(controller) {
@@ -264,6 +265,7 @@ function handleClaude(
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
+        claudeProcess = claude;
 
         console.log("[terminal-chat] Claude PID:", claude.pid);
 
@@ -309,6 +311,7 @@ function handleClaude(
         });
 
         claude.on("close", (code) => {
+          claudeProcess = null;
           if (stdoutBuffer.trim()) {
             try {
               processStreamEvent(
@@ -353,6 +356,7 @@ function handleClaude(
         });
 
         claude.on("error", (err) => {
+          claudeProcess = null;
           console.error("[terminal-chat] Claude spawn error:", err);
           enqueue(
             JSON.stringify({
@@ -371,6 +375,13 @@ function handleClaude(
           )
         );
         controller.close();
+      }
+    },
+
+    cancel() {
+      if (claudeProcess) {
+        claudeProcess.kill("SIGTERM");
+        claudeProcess = null;
       }
     },
   });

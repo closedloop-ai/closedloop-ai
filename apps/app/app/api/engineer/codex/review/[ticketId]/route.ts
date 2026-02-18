@@ -1,4 +1,9 @@
-import { type ChildProcess, execSync, spawn } from "node:child_process";
+import {
+  type ChildProcess,
+  execSync,
+  spawn,
+  spawnSync,
+} from "node:child_process";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   appendFile,
@@ -25,6 +30,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300; // 5 minutes max for long reviews
 
 const PR_PREFIX_REGEX = /^pr-/;
+const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
 
 type ReviewRequest = {
   instructions?: string;
@@ -744,14 +750,19 @@ function resolveEffectiveReviewMode(
     return reviewMode;
   }
   try {
+    if (!SAFE_REF_REGEX.test(baseBranch)) {
+      throw new Error(`Invalid branch name: ${baseBranch}`);
+    }
     const headSha = execSync("git rev-parse HEAD", {
       cwd: worktreeDir,
       encoding: "utf-8",
     }).trim();
-    const mergeBase = execSync(`git merge-base HEAD "origin/${baseBranch}"`, {
-      cwd: worktreeDir,
-      encoding: "utf-8",
-    }).trim();
+    const mergeBaseResult = spawnSync(
+      "git",
+      ["merge-base", "HEAD", `origin/${baseBranch}`],
+      { cwd: worktreeDir, encoding: "utf-8" }
+    );
+    const mergeBase = (mergeBaseResult.stdout as string).trim();
     if (mergeBase !== headSha) {
       return reviewMode;
     }
@@ -770,15 +781,19 @@ function applyMergedPrDiff(
   ticketId: string
 ): "uncommitted" | "base" {
   const prNum = ticketId.replace(PR_PREFIX_REGEX, "");
+  if (!/^\d+$/.test(prNum)) {
+    throw new Error(`Invalid PR ticket ID: ${ticketId}`);
+  }
   console.log(
     "[codex-review] Merged PR detected. Applying gh pr diff for codex."
   );
 
-  const diff = execSync(`gh pr diff ${prNum}`, {
+  const diffResult = spawnSync("gh", ["pr", "diff", prNum], {
     cwd: worktreeDir,
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
   });
+  const diff = (diffResult.stdout as string) ?? "";
 
   if (!diff.trim()) {
     console.log(
@@ -787,16 +802,19 @@ function applyMergedPrDiff(
     return "base";
   }
 
-  const mergeOid = execSync(
-    `gh pr view ${prNum} --json mergeCommit --jq '.mergeCommit.oid'`,
+  const mergeOidResult = spawnSync(
+    "gh",
+    ["pr", "view", prNum, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
     { cwd: worktreeDir, encoding: "utf-8" }
-  ).trim();
+  );
+  const mergeOid = (mergeOidResult.stdout as string).trim();
   if (mergeOid) {
-    const baseCommit = execSync(`git rev-parse "${mergeOid}^1"`, {
+    const baseCommitResult = spawnSync("git", ["rev-parse", `${mergeOid}^1`], {
       cwd: worktreeDir,
       encoding: "utf-8",
-    }).trim();
-    execSync(`git checkout --detach "${baseCommit}"`, {
+    });
+    const baseCommit = (baseCommitResult.stdout as string).trim();
+    spawnSync("git", ["checkout", "--detach", baseCommit], {
       cwd: worktreeDir,
       stdio: "pipe",
     });

@@ -1,7 +1,7 @@
-import { withDb } from "@repo/database";
 import { z } from "zod";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { issueCommentsService } from "./service";
 
 const createCommentValidator = z.object({
   body: z.string().min(1),
@@ -27,11 +27,9 @@ export const POST = withAuth<{ created: boolean }, "/issues/[id]/comments">(
       }
 
       // Look up the issue to get its workstreamId
-      const issue = await withDb((db) =>
-        db.issue.findFirst({
-          where: { id, organizationId: user.organizationId },
-          select: { id: true, workstreamId: true },
-        })
+      const issue = await issueCommentsService.findIssue(
+        id,
+        user.organizationId
       );
 
       if (!issue) {
@@ -40,14 +38,10 @@ export const POST = withAuth<{ created: boolean }, "/issues/[id]/comments">(
 
       // Only persist if the issue has a workstream (Comment requires workstreamId)
       if (issue.workstreamId) {
-        await withDb((db) =>
-          db.comment.create({
-            data: {
-              workstreamId: issue.workstreamId as string,
-              authorId: user.id,
-              content: body.body,
-            },
-          })
+        await issueCommentsService.create(
+          issue.workstreamId,
+          user.id,
+          body.body
         );
       }
 

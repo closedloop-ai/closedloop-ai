@@ -794,16 +794,8 @@ export function useCodexDebate({
   }, []);
 
   const reset = useCallback(() => {
-    setDebateMode(false);
-    setDebateFinding("");
-    setDebateHistory([]);
-    setLastDebateSender("claude");
-    setAutoDebateState(false);
-    autoDebateRef.current = false;
-    setCurrentRound(0);
-    currentRoundRef.current = 0;
-    setLastDebateStatus(null);
-  }, []);
+    handleEndDebate();
+  }, [handleEndDebate]);
 
   /**
    * Returns true if the action was handled (argue_codex: prefix or debate internal action).

@@ -331,7 +331,7 @@ export function useCommentChat({
     }
     if (event.type === "result" || event.type === "done") {
       queryClient.invalidateQueries({
-        queryKey: queryKeys.commentChatHistory(ticketId, comment.id),
+        queryKey: queryKeys.commentChatHistory(ticketId, comment.id, repoPath),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.gitStatus(worktreePath),
@@ -697,7 +697,11 @@ export function useCommentChat({
       })
         .then(() => {
           queryClient.invalidateQueries({
-            queryKey: queryKeys.commentChatHistory(ticketId, comment.id),
+            queryKey: queryKeys.commentChatHistory(
+              ticketId,
+              comment.id,
+              repoPath
+            ),
           });
         })
         .catch(() => {
@@ -761,7 +765,11 @@ export function useCommentChat({
         );
         if (response.ok) {
           queryClient.invalidateQueries({
-            queryKey: queryKeys.commentChatHistory(ticketId, comment.id),
+            queryKey: queryKeys.commentChatHistory(
+              ticketId,
+              comment.id,
+              repoPath
+            ),
           });
         }
       } catch (err) {
@@ -785,7 +793,11 @@ export function useCommentChat({
         setHasAutoStarted(false);
         setHasAcceptedChanges(false);
         queryClient.invalidateQueries({
-          queryKey: queryKeys.commentChatHistory(ticketId, comment.id),
+          queryKey: queryKeys.commentChatHistory(
+            ticketId,
+            comment.id,
+            repoPath
+          ),
         });
       }
     } catch (err) {

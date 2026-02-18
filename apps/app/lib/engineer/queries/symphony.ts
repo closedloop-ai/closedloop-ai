@@ -163,7 +163,7 @@ export function commentChatHistoryOptions(
   commentContext: { author: string; body: string; path?: string; line?: number }
 ) {
   return queryOptions<CommentChatHistory>({
-    queryKey: queryKeys.commentChatHistory(ticketId, commentId),
+    queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
     queryFn: async () => {
       const response = await fetch(
         `/api/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`

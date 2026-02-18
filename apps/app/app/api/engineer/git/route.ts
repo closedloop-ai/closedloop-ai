@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { type NextRequest, NextResponse } from "next/server";
 import simpleGit, { type SimpleGit, type StatusResult } from "simple-git";
+import { isRepoAllowed } from "@/lib/engineer/repos";
 
 /**
  * API route to perform git operations
@@ -431,6 +432,14 @@ export async function POST(request: NextRequest) {
     }
 
     const cwd = repoPath ? expandPath(repoPath) : process.cwd();
+
+    if (repoPath && !isRepoAllowed(cwd)) {
+      return NextResponse.json(
+        { error: `Repository not allowed: ${cwd}` },
+        { status: 403 }
+      );
+    }
+
     const git: SimpleGit = simpleGit(cwd);
 
     try {

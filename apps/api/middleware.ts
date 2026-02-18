@@ -66,6 +66,9 @@ function isPreviewOrigin(origin: string | null): boolean {
 }
 
 function isLocalhostOrigin(origin: string | null): boolean {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
   return !!origin && LOCALHOST_ORIGIN_REGEX.test(origin);
 }
 

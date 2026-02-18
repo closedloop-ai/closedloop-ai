@@ -111,7 +111,7 @@ export function CommentChat({
     claudeUrl: commentApiBase,
     historyUrl: commentApiBase,
     saveEndpoint: commentApiBase,
-    invalidateKey: queryKeys.commentChatHistory(ticketId, commentId),
+    invalidateKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
   });
 
   const hadChangesRef = useRef(false);
@@ -174,7 +174,7 @@ export function CommentChat({
         /* best-effort */
       });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.commentChatHistory(ticketId, commentId),
+        queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
     },
     [commentApiBase, queryClient, ticketId, commentId]
@@ -228,7 +228,7 @@ export function CommentChat({
 
       // Invalidate so StatusNote appears immediately
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.commentChatHistory(ticketId, commentId),
+        queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
 
       const url = `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
@@ -292,7 +292,7 @@ export function CommentChat({
           body: JSON.stringify({ message: msg }),
         });
         await queryClient.invalidateQueries({
-          queryKey: queryKeys.commentChatHistory(ticketId, commentId),
+          queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
         });
       };
       await readCodexStream(

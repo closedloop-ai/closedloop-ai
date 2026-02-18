@@ -189,7 +189,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
   // Logout is a no-op since we use Clerk auth
   const logout = useCallback(() => {
     queryClient.clear();
-    window.location.href = "/";
+    globalThis.location.href = "/";
   }, [queryClient]);
 
   return {

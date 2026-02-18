@@ -15,8 +15,8 @@ export const queryKeys = {
     ["symphony-logs", ticketId, repoPath] as const,
   symphonyJudges: (ticketId: string, repoPath: string) =>
     ["symphony-judges", ticketId, repoPath] as const,
-  commentChatHistory: (ticketId: string, commentId: string) =>
-    ["comment-chat-history", ticketId, commentId] as const,
+  commentChatHistory: (ticketId: string, commentId: string, repoPath: string) =>
+    ["comment-chat-history", ticketId, commentId, repoPath] as const,
   findingChatHistory: (ticketId: string, findingId: string, repoPath: string) =>
     ["finding-chat-history", ticketId, findingId, repoPath] as const,
 

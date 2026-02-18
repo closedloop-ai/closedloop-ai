@@ -6,10 +6,7 @@ const VERSION_REGEX = /codex-cli ([\d.]+)/;
 
 export function GET() {
   return new Promise<Response>((resolve) => {
-    const child = spawn("codex", ["--version"], {
-      timeout: 5000,
-      shell: true,
-    });
+    const child = spawn("codex", ["--version"], { timeout: 5000 });
     let output = "";
 
     child.stdout.on("data", (data: Buffer) => {

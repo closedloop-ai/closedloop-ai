@@ -1,8 +1,9 @@
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
  * Expand ~ to home directory
@@ -29,11 +30,7 @@ function removeNonWorktree(expandedPath: string, force: boolean): NextResponse {
 }
 
 function forceRemoveWorktree(expandedPath: string): NextResponse {
-  try {
-    execSync("git worktree prune", { stdio: "pipe", cwd: expandedPath });
-  } catch {
-    // Ignore prune errors
-  }
+  spawnSync("git", ["worktree", "prune"], { stdio: "pipe", cwd: expandedPath });
   rmSync(expandedPath, { recursive: true, force: true });
   return NextResponse.json({
     success: true,
@@ -82,11 +79,17 @@ function removeWorktree(expandedPath: string, force: boolean): NextResponse {
   }
 
   try {
-    const forceFlag = force ? "--force" : "";
-    execSync(`git worktree remove ${forceFlag} "${expandedPath}"`, {
-      stdio: "pipe",
-      cwd: expandedPath,
-    });
+    const args = ["worktree", "remove"];
+    if (force) {
+      args.push("--force");
+    }
+    args.push(expandedPath);
+    const result = spawnSync("git", args, { stdio: "pipe", cwd: expandedPath });
+    if (result.status !== 0) {
+      throw new Error(
+        result.stderr?.toString() ?? "git worktree remove failed"
+      );
+    }
     return NextResponse.json({
       success: true,
       message: "Worktree removed successfully",
@@ -119,7 +122,16 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    return removeWorktree(expandPath(worktreePath), force);
+    const expandedPath = expandPath(worktreePath);
+    const worktreeParentDir = getWorktreeParentDir();
+    if (!expandedPath.startsWith(worktreeParentDir + sep)) {
+      return NextResponse.json(
+        { error: `Path is outside allowed directory: ${expandedPath}` },
+        { status: 403 }
+      );
+    }
+
+    return removeWorktree(expandedPath, force);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(

@@ -170,6 +170,13 @@ export function prReviewsOptions(
       const response = await fetch(
         `/api/engineer/git/pr/reviews?owner=${owner!}&repo=${repo!}&number=${prNumber!}`
       );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          (errorData as { error?: string }).error ??
+            "Failed to fetch PR reviews"
+        );
+      }
       return response.json();
     },
     enabled: !!owner && !!repo && !!prNumber,
