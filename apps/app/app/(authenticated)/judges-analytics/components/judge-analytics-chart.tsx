@@ -324,6 +324,7 @@ export function JudgeAnalyticsChart({
         <RechartsYAxis
           domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
+          tickFormatter={(v: number) => v.toFixed(1)}
         />
         <ChartTooltip content={<BoxPlotTooltip />} />
         <RechartsBar

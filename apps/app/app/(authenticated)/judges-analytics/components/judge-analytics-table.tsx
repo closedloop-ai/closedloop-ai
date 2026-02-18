@@ -10,15 +10,9 @@ import {
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
-  humanRatingsCount?: number;
-  humanCommentsCount?: number;
 };
 
-export function JudgeAnalyticsTable({
-  data,
-  humanRatingsCount = 0,
-  humanCommentsCount = 0,
-}: JudgeAnalyticsTableProps) {
+export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
   return (
     <Table>
       <TableHeader>
@@ -29,9 +23,7 @@ export function JudgeAnalyticsTable({
           <TableHead>Mean</TableHead>
           <TableHead>Max</TableHead>
           <TableHead>Std Dev</TableHead>
-          <TableHead>Human Rating</TableHead>
-          <TableHead>Human Ratings</TableHead>
-          <TableHead>Human Comments</TableHead>
+          <TableHead>Human Rating (avg)</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -50,21 +42,8 @@ export function JudgeAnalyticsTable({
                 ? judge.humanRatingScore.toFixed(2)
                 : "—"}
             </TableCell>
-            <TableCell className="text-muted-foreground">—</TableCell>
-            <TableCell className="text-muted-foreground">—</TableCell>
           </TableRow>
         ))}
-        <TableRow>
-          <TableCell className="font-medium">Human</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell className="text-muted-foreground">—</TableCell>
-          <TableCell>{humanRatingsCount}</TableCell>
-          <TableCell>{humanCommentsCount}</TableCell>
-        </TableRow>
       </TableBody>
     </Table>
   );
