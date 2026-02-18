@@ -1,5 +1,7 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PerfSummary } from "@repo/api/src/types/performance";
+import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
 
@@ -20,6 +22,7 @@ export type ZipContent = {
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  perfSummary: PerfSummary | null;
   entries: { name: string; data: Buffer }[];
 };
 
@@ -96,6 +99,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
   let judgesReport: JudgesReport | null = null;
+  let perfSummary: PerfSummary | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
@@ -135,6 +139,11 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     else if (name.endsWith("judges.json")) {
       judgesReport = parseJudgesReport(content, name);
     }
+    // Check for perf summary
+    else if (name.endsWith("perf.jsonl")) {
+      perfSummary = parsePerfSummary(content);
+      log.info(`Found perf.jsonl: ${name}`);
+    }
   }
 
   return {
@@ -142,6 +151,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     questionsContent,
     executionResult,
     judgesReport,
+    perfSummary,
     entries,
   };
 }

@@ -16,6 +16,7 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
@@ -1417,6 +1418,35 @@ Please try again or contact support if the issue persists.`
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  },
+
+  /**
+   * Get performance data for an artifact from the GitHubActionRunPerformance table.
+   * Org-scoping is enforced via Prisma relation filter on the artifact FK.
+   * Returns null when no performance data is available for the artifact.
+   */
+  async getPerformanceData(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PerfSummary | null> {
+    // Single query: join through artifact relation to enforce org-scoping
+    const perfRecord = await withDb((db) =>
+      db.gitHubActionRunPerformance.findFirst({
+        where: {
+          artifactId,
+          artifact: { organizationId },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!perfRecord) {
+      return null;
+    }
+
+    // Safe cast: summaryData was stored by parsePerfSummary() which always
+    // produces a valid PerfSummary shape. Schema drift would require a deploy.
+    return perfRecord.summaryData as PerfSummary;
   },
 
   /**
