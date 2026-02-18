@@ -231,7 +231,7 @@ export function ReviewChatPane({
     // The Stop button calls handleStopReview which aborts via abortRef.
   }, [initialOutput, startReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const startReview = async (signal: AbortSignal) => {
+  async function startReview(signal: AbortSignal) {
     setIsReviewing(true);
     setReviewOutput("");
     setReviewDone(false);
@@ -365,7 +365,7 @@ export function ReviewChatPane({
       setIsReviewing(false);
       abortRef.current = null;
     }
-  };
+  }
 
   const pollRunningReview = async (signal: AbortSignal) => {
     const statusUrl = `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
@@ -818,6 +818,7 @@ export function ReviewChatPane({
         {isReviewing && (
           <ChatBubble
             isStreaming
+            messageRole="assistant"
             sender={config.provider === "claude" ? "claude" : "codex"}
             timestamp={new Date().toISOString()}
           >
@@ -837,6 +838,7 @@ export function ReviewChatPane({
         {reviewSplit && (
           <>
             <ChatBubble
+              messageRole="assistant"
               sender={config.provider === "claude" ? "claude" : "codex"}
               timestamp={new Date().toISOString()}
             >
@@ -893,7 +895,7 @@ export function ReviewChatPane({
                   : "bg-muted text-foreground border border-border"
               }
               key={msg.id}
-              role={msg.role}
+              messageRole={msg.role}
               roleClassName={
                 msg.role === "user"
                   ? "text-blue-600 dark:text-blue-400"
@@ -916,6 +918,7 @@ export function ReviewChatPane({
             <ChatBubble
               bubbleClassName="bg-muted text-foreground border border-border border-emerald-500/30"
               isStreaming
+              messageRole="assistant"
               roleClassName="text-emerald-600 dark:text-emerald-400"
               roleLabel="cl.dev"
               timestamp={new Date().toISOString()}

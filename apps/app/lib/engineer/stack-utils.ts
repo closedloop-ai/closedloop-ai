@@ -187,5 +187,5 @@ export function getStackRoot(
   sessions: ActiveSession[]
 ): string {
   const ancestors = getAncestorChain(ticketId, sessions);
-  return ancestors.length > 0 ? ancestors.at(-1) : ticketId;
+  return ancestors.length > 0 ? (ancestors.at(-1) as string) : ticketId;
 }

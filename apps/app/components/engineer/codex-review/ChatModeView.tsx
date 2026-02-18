@@ -404,8 +404,8 @@ function ChatMessageList({
             actions={effectiveActions}
             index={idx}
             key={msg.id}
+            messageRole={effectiveSender === "codex" ? "user" : msg.role}
             onAction={onAction}
-            role={effectiveSender === "codex" ? "user" : msg.role}
             sender={effectiveSender}
             timestamp={msg.timestamp}
           >
@@ -438,6 +438,7 @@ function StreamingBubbles({
           activeStream.streamingBlocks.length > 0) && (
           <ChatBubble
             isStreaming
+            messageRole="assistant"
             sender={
               debate.debateMode && selectedFindingIndex === null
                 ? "claude"
@@ -455,6 +456,7 @@ function StreamingBubbles({
       {debate.codexStream.pendingUserMessage && (
         <ChatBubble
           isStreaming
+          messageRole="assistant"
           sender="codex"
           timestamp={new Date().toISOString()}
         >

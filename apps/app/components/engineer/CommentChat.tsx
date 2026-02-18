@@ -942,13 +942,13 @@ function renderSenderBubble(
       forwardLabel={isCodex ? "Forward to Claude" : "Forward to Codex"}
       index={idx}
       key={msg.id}
+      messageRole={isCodex ? "user" : msg.role}
       onAction={debateActions.length > 0 ? ctx.onAction : undefined}
       onForward={
         ctx.canForward && msg.role === "assistant"
           ? () => forwardHandler(idx)
           : undefined
       }
-      role={isCodex ? "user" : msg.role}
       sender={sender}
       timestamp={msg.timestamp}
     >
@@ -1216,6 +1216,7 @@ function ChatMessagesArea({
         (debateClaudeContent || debateClaudeBlocks.length > 0) && (
           <ChatBubble
             isStreaming
+            messageRole="assistant"
             sender="claude"
             timestamp={new Date().toISOString()}
           >
@@ -1230,6 +1231,7 @@ function ChatMessagesArea({
       {debateCodexPending && (
         <ChatBubble
           isStreaming
+          messageRole="assistant"
           sender="codex"
           timestamp={new Date().toISOString()}
         >
@@ -1244,6 +1246,7 @@ function ChatMessagesArea({
       {codexChatPending && (
         <ChatBubble
           isStreaming
+          messageRole="assistant"
           sender="codex"
           timestamp={new Date().toISOString()}
         >
@@ -1835,9 +1838,9 @@ const CommentMessageBubble = memo(
         forwardLabel={forwardLabel}
         index={index}
         isStreaming={isStreaming}
+        messageRole={message.role}
         onCopy={isStreaming ? undefined : handleCopy}
         onForward={isUser || isStreaming ? undefined : onForward}
-        role={message.role}
         roleClassName={
           isUser
             ? "text-blue-600 dark:text-blue-400"

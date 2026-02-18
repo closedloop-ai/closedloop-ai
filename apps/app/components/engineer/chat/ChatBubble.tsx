@@ -6,7 +6,7 @@ import { memo } from "react";
 import { formatTime, type SuggestedAction } from "@/lib/engineer/chat-utils";
 
 type ChatBubbleProps = {
-  role: "user" | "assistant";
+  messageRole: "user" | "assistant";
   timestamp: string;
   roleLabel?: string;
   sender?: "claude" | "codex";
@@ -30,7 +30,7 @@ type ChatBubbleProps = {
  */
 export const ChatBubble = memo(
   function ChatBubble({
-    role,
+    messageRole,
     timestamp,
     roleLabel,
     sender,
@@ -48,8 +48,8 @@ export const ChatBubble = memo(
     forwardLabel,
   }: Readonly<ChatBubbleProps>) {
     const isCodex = sender === "codex";
-    const isUser = isCodex ? false : role === "user";
-    const isAssistant = isCodex || role === "assistant";
+    const isUser = isCodex ? false : messageRole === "user";
+    const isAssistant = isCodex || messageRole === "assistant";
     function defaultLabel() {
       if (isCodex) {
         return "Codex";
@@ -182,7 +182,7 @@ export const ChatBubble = memo(
     );
   },
   (prev, next) =>
-    prev.role === next.role &&
+    prev.messageRole === next.messageRole &&
     prev.timestamp === next.timestamp &&
     prev.roleLabel === next.roleLabel &&
     prev.sender === next.sender &&

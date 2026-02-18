@@ -2314,10 +2314,10 @@ const MessageBubble = memo(
         forwardLabel="Forward to Codex"
         index={index}
         isStreaming={isStreaming}
+        messageRole={message.role}
         onAction={onSendAction}
         onCopy={onCopy ? () => onCopy(index) : undefined}
         onForward={!isUser && onForward ? () => onForward(index) : undefined}
-        role={message.role}
         roleLabel={isUser ? "you" : "cl.dev"}
         timestamp={message.timestamp}
       >
@@ -2412,6 +2412,7 @@ function renderDebateActionsBubble(
       actions={debateActions}
       forwardLabel={getForwardLabel(sender)}
       index={idx}
+      messageRole={getSenderRole(sender, msg.role)}
       onAction={sendActionMessage}
       onCopy={() => handleCopyMessage(idx)}
       onForward={getForwardHandler(
@@ -2422,7 +2423,6 @@ function renderDebateActionsBubble(
         handleForwardMessage,
         handleForwardCodexMessage
       )}
-      role={getSenderRole(sender, msg.role)}
       sender={sender}
       timestamp={msg.timestamp}
     >
@@ -2453,6 +2453,7 @@ function renderSenderLabeledBubble(
       actions={isLastAssistant && !isAnyStreaming ? codexActions : undefined}
       forwardLabel={getForwardLabel(msg.sender)}
       index={idx}
+      messageRole={getSenderRole(msg.sender, msg.role)}
       onAction={isLastAssistant ? sendActionMessage : undefined}
       onCopy={() => handleCopyMessage(idx)}
       onForward={getForwardHandler(
@@ -2463,7 +2464,6 @@ function renderSenderLabeledBubble(
         handleForwardMessage,
         handleForwardCodexMessage
       )}
-      role={getSenderRole(msg.sender, msg.role)}
       sender={msg.sender}
       timestamp={msg.timestamp}
     >
@@ -3207,6 +3207,7 @@ function StreamingBubble({
       {codexDebateMsg && (
         <ChatBubble
           isStreaming
+          messageRole="assistant"
           sender="codex"
           timestamp={new Date().toISOString()}
         >
@@ -3220,6 +3221,7 @@ function StreamingBubble({
       {codexChatMsg && (
         <ChatBubble
           isStreaming
+          messageRole="assistant"
           sender="codex"
           timestamp={new Date().toISOString()}
         >
