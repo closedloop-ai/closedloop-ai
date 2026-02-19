@@ -120,6 +120,7 @@ enum WorkstreamEventType {
   ASSIGNEE_CHANGED
   BLOCKED
   UNBLOCKED
+  LOOP_COMPLETED
 }
 
 enum LinearSyncStatus {

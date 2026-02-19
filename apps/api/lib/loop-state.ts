@@ -363,3 +363,29 @@ export function validateKeyBelongsToLoop(
   }
   return key.startsWith(`${organizationId}/loops/${loopId}/`);
 }
+
+/**
+ * Download a single artifact file from a loop's S3 state.
+ * Returns the file content as a Buffer, or null if not found.
+ */
+export async function downloadArtifactFile(
+  stateKeyPrefix: string,
+  filename: string
+): Promise<Buffer | null> {
+  try {
+    const key = `${stateKeyPrefix}/artifacts/${filename}`;
+    return await getObject(key);
+  } catch (error) {
+    const code =
+      (error as { Code?: string; name?: string }).Code ??
+      (error as { name?: string }).name;
+    if (code !== "NoSuchKey" && code !== "NotFound") {
+      throw error;
+    }
+    log.warn("[loop-state] Artifact file not found", {
+      stateKeyPrefix,
+      filename,
+    });
+    return null;
+  }
+}
