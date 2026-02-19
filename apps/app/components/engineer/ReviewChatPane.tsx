@@ -589,7 +589,10 @@ export function ReviewChatPane({
         timestamp: new Date().toISOString(),
       };
       stream.setPendingUserMessage(userMsg);
-      persistMessage(userMsg);
+      // Claude route persists messages server-side; only persist client-side for codex
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
 
       const { url, body } = buildChatRequest(actualMessage);
       // For Claude path with context, pass displayContent so chat history stores
@@ -599,13 +602,13 @@ export function ReviewChatPane({
       }
       stream.sendMessage(url, body, {
         onComplete: async (accumulatedText) => {
-          if (accumulatedText) {
+          if (accumulatedText && config.provider !== "claude") {
             await persistMessage({
               id: crypto.randomUUID(),
               role: "assistant",
               content: accumulatedText,
               timestamp: new Date().toISOString(),
-              sender: config.provider === "codex" ? "codex" : "claude",
+              sender: "codex",
             });
           }
           await queryClient.invalidateQueries({
@@ -648,18 +651,21 @@ export function ReviewChatPane({
       timestamp: new Date().toISOString(),
     };
     stream.setPendingUserMessage(userMsg);
-    persistMessage(userMsg);
+    // Claude route persists messages server-side; only persist client-side for codex
+    if (config.provider !== "claude") {
+      persistMessage(userMsg);
+    }
 
     const { url, body } = buildChatRequest(trimmed);
     stream.sendMessage(url, body, {
       onComplete: async (accumulatedText) => {
-        if (accumulatedText) {
+        if (accumulatedText && config.provider !== "claude") {
           await persistMessage({
             id: crypto.randomUUID(),
             role: "assistant",
             content: accumulatedText,
             timestamp: new Date().toISOString(),
-            sender: config.provider === "codex" ? "codex" : "claude",
+            sender: "codex",
           });
         }
         await queryClient.invalidateQueries({
@@ -837,7 +843,10 @@ export function ReviewChatPane({
         timestamp: new Date().toISOString(),
       };
       stream.setPendingUserMessage(userMsg);
-      persistMessage(userMsg);
+      // Claude route persists messages server-side; only persist client-side for codex
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
 
       setHasSentInitial(true);
       const { url, body } = buildChatRequest(actualMessage);
@@ -847,13 +856,13 @@ export function ReviewChatPane({
       }
       stream.sendMessage(url, body, {
         onComplete: async (accumulatedText) => {
-          if (accumulatedText) {
+          if (accumulatedText && config.provider !== "claude") {
             await persistMessage({
               id: crypto.randomUUID(),
               role: "assistant",
               content: accumulatedText,
               timestamp: new Date().toISOString(),
-              sender: config.provider === "codex" ? "codex" : "claude",
+              sender: "codex",
             });
           }
           await queryClient.invalidateQueries({
