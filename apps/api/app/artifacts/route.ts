@@ -2,6 +2,7 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -15,7 +16,11 @@ import {
   findArtifactsQueryValidator,
 } from "./validators";
 
-export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
+/**
+ * GET /artifacts - List artifacts
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
+ */
+export const GET = withAnyAuth<ArtifactWithWorkstream[], "/artifacts">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
