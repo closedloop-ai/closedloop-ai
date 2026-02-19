@@ -826,12 +826,12 @@ function findExistingRunDir(workDir) {
  * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
 function writePrdFile(targetDir, contextPack) {
-  let prdContent = contextPack?.prompt || null;
+  let prdContent = contextPack?.prompt ?? null;
 
   // Fall back to the first PRD-type artifact from context refs
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
     const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type && a.type.toUpperCase().includes("PRD")
+      (a) => a.type === "PRD"
     );
     if (prdArtifact?.content) {
       prdContent = prdArtifact.content;
