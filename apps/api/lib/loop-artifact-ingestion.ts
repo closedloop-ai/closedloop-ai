@@ -263,6 +263,14 @@ export async function ingestExecutionArtifacts(
       ? Number.parseInt(executionResult.pr_number, 10)
       : executionResult.pr_number;
 
+  if (Number.isNaN(prNumber)) {
+    log.warn(
+      "[loop-artifact-ingestion] Invalid pr_number, skipping execution ingestion",
+      { loopId: loop.id, raw: executionResult.pr_number }
+    );
+    return;
+  }
+
   const prTitle =
     executionResult.pr_title ||
     `Symphony: ${executionResult.branch_name || `PR #${prNumber}`}`;
