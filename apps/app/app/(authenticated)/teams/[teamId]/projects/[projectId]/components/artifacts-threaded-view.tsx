@@ -137,8 +137,13 @@ function groupByWorkstream(
   const workstreamTitles = new Map<string, string | null | undefined>();
 
   for (const artifact of artifacts) {
+    // PRDs without a workstream get their own group (each PRD is a standalone thread).
+    // All other unassigned artifact types share a single "Unassigned" group.
     const key =
-      artifact.workstreamId ?? `${UNASSIGNED_KEY_PREFIX}${artifact.id}`;
+      artifact.workstreamId ??
+      (artifact.type === "PRD"
+        ? `${UNASSIGNED_KEY_PREFIX}${artifact.id}`
+        : `${UNASSIGNED_KEY_PREFIX}shared`);
 
     if (!groups.has(key)) {
       groups.set(key, {

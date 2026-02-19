@@ -4,8 +4,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
-const PRD_TEXT_REGEX = /PRD/;
-
 // Mock dependencies
 const mockRouterPush = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -108,6 +106,7 @@ vi.mock("@/hooks/queries/use-external-links", () => ({
 }));
 
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Template/;
+const PRD_TEXT_REGEX = /PRD/;
 
 describe("ArtifactsThreadedView - Empty State", () => {
   beforeEach(() => {

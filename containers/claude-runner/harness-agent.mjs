@@ -22,8 +22,6 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
-const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
-
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — loaded from the global install
 // ---------------------------------------------------------------------------
@@ -1035,6 +1033,8 @@ function parsePrInfo(workDir, outputLines) {
  * Skips creation if a PR was already detected (e.g., Claude created one
  * during execution) or if there are no commits ahead of the target branch.
  */
+const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
+
 function createPullRequest(workDir, existingPrInfo) {
   if (existingPrInfo?.prUrl) {
     return existingPrInfo;
