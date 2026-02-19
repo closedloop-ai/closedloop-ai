@@ -4,7 +4,9 @@ import type { ApiClient } from "../api-client.js";
 
 const artifactItemSchema = z.object({
   title: z.string().describe("Title of the artifact"),
-  type: z.string().describe("Type of the artifact"),
+  type: z
+    .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
+    .describe("Type of the artifact"),
   projectId: z.string().describe("ID of the project to associate with"),
   content: z.string().describe("Content/body of the artifact"),
 });

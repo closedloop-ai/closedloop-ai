@@ -1935,7 +1935,7 @@ function getHeadCommitSha(workDir) {
  */
 function writeExecutionResult(workDir, prInfo) {
   try {
-    const hasChanges = !!(prInfo?.prUrl);
+    const hasChanges = !!prInfo?.prUrl;
     const commitSha = getHeadCommitSha(workDir);
 
     const result = {

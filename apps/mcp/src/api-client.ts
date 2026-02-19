@@ -95,6 +95,12 @@ export async function verifyApiKey(
     body: JSON.stringify({ key: plaintextKey }),
   });
   if (!response.ok) {
+    // 401 means the key is invalid; 5xx means the server is broken
+    if (response.status >= 500) {
+      throw new Error(
+        `API key verification failed: ${response.status} ${response.statusText}`
+      );
+    }
     return null;
   }
   return response.json() as Promise<VerifiedApiKeyContext>;

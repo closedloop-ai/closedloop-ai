@@ -8,15 +8,11 @@ import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { usersService } from "@/app/users/service";
 import { unauthorizedResponse } from "../route-utils";
-import type { AuthContext, AuthenticatedHandler } from "./with-auth";
-
-/**
- * Next.js route context - matches generated type from @/.next/types/routes
- * In App Router, all route params are single strings (not arrays)
- */
-type RouteContext<_TRoute extends string = string> = {
-  params: Promise<Record<string, string>>;
-};
+import type {
+  AuthContext,
+  AuthenticatedHandler,
+  RouteContext,
+} from "./with-auth";
 
 /**
  * Higher-order function that wraps route handlers with API key authentication.

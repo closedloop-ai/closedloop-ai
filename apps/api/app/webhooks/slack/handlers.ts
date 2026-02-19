@@ -2,8 +2,7 @@ import { ArtifactType } from "@repo/api/src/types/artifact";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactsService } from "../../artifacts/service";
-
-const WHITESPACE_REGEX = /\s+/;
+import { WHITESPACE_REGEX } from "./webhook-utils";
 
 export type SlackSlashCommandPayload = {
   team_id: string;
