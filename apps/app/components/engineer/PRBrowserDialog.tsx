@@ -124,6 +124,14 @@ function markReviewDone(
   if (!entry) {
     return prev;
   }
+  // Already marked done with same values — return same reference to avoid re-render
+  if (
+    entry.done &&
+    entry.initialOutput === output &&
+    entry.findingCount === findingCount
+  ) {
+    return prev;
+  }
   return {
     ...prev,
     [provider]: { ...entry, initialOutput: output, done: true, findingCount },
@@ -409,7 +417,7 @@ export function PRBrowserDialog({
     const restoreProvider = async (provider: "claude" | "codex") => {
       try {
         const res = await fetch(
-          `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
+          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${provider}`
         );
         const data = await res.json();
         if (cancelled || !data.hasReview) {
@@ -481,6 +489,46 @@ export function PRBrowserDialog({
   const reviewEntries = Object.entries(reviews);
   const hasAnyReview = reviewEntries.length > 0;
 
+  /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
+  const restoreOrShowSettings = useCallback(async () => {
+    if (!(selectedRepo && selectedPR)) {
+      return;
+    }
+    if (hasAnyReview) {
+      setShowReviewSettings(true);
+      return;
+    }
+    const ticketId = `pr-${selectedPR.number}`;
+    let restored = false;
+    try {
+      const results = await Promise.all(
+        (["claude", "codex"] as const).map((p) =>
+          fetch(
+            `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
+          )
+            .then((res) => res.json())
+            .then((data) => ({ provider: p, data }))
+            .catch(() => ({ provider: p, data: null }))
+        )
+      );
+      for (const { provider, data } of results) {
+        if (data?.hasReview && data.status === "completed" && data.log) {
+          setReviews((prev) => addReviewEntry(prev, provider, data));
+          if (!restored) {
+            setActiveReviewProvider(provider);
+            setSelectedComment(null);
+            restored = true;
+          }
+        }
+      }
+    } catch {
+      // Fall through to settings
+    }
+    if (!restored) {
+      setShowReviewSettings(true);
+    }
+  }, [selectedRepo, selectedPR, hasAnyReview]);
+
   const triggerDedup = useCallback(
     async (completingProvider: string, completingFindings: ReviewFinding[]) => {
       if (!(selectedRepo && selectedPR)) {
@@ -493,7 +541,7 @@ export function PRBrowserDialog({
       // Fetch the other provider's findings from disk (already persisted)
       try {
         const res = await fetch(
-          `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${otherProvider}`
+          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${otherProvider}`
         );
         const data = await res.json();
         const otherFindings: ReviewFinding[] = data.findings ?? [];
@@ -669,11 +717,11 @@ export function PRBrowserDialog({
       if (selectedPR && selectedRepo) {
         const ticketId = `pr-${selectedPR.number}`;
         fetch(
-          `/api/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
+          `/api/engineer/codex/stop/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(provider)}`,
           { method: "DELETE" }
         ).catch(() => {});
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}`,
           { method: "DELETE" }
         ).catch(() => {});
       }
@@ -752,7 +800,7 @@ export function PRBrowserDialog({
           commented: true,
         }));
         fetch(
-          `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(entry.config.provider)}`,
+          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(entry.config.provider)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1066,49 +1114,7 @@ export function PRBrowserDialog({
                   "cursor-pointer border border-border bg-background transition-colors hover:bg-muted",
                   "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 )}
-                onClick={async () => {
-                  // If reviews are already loaded in state, go straight to settings
-                  if (hasAnyReview) {
-                    setShowReviewSettings(true);
-                    return;
-                  }
-                  // Check for existing completed reviews (both providers) and restore them
-                  const ticketId = `pr-${selectedPR.number}`;
-                  let restored = false;
-                  try {
-                    const results = await Promise.all(
-                      (["claude", "codex"] as const).map((p) =>
-                        fetch(
-                          `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
-                        )
-                          .then((res) => res.json())
-                          .then((data) => ({ provider: p, data }))
-                          .catch(() => ({ provider: p, data: null }))
-                      )
-                    );
-                    for (const { provider, data } of results) {
-                      if (
-                        data?.hasReview &&
-                        data.status === "completed" &&
-                        data.log
-                      ) {
-                        setReviews((prev) =>
-                          addReviewEntry(prev, provider, data)
-                        );
-                        if (!restored) {
-                          setActiveReviewProvider(provider);
-                          setSelectedComment(null);
-                          restored = true;
-                        }
-                      }
-                    }
-                  } catch {
-                    // Fall through to settings
-                  }
-                  if (!restored) {
-                    setShowReviewSettings(true);
-                  }
-                }}
+                onClick={restoreOrShowSettings}
               >
                 <Search className="size-3.5" />
                 Review
@@ -1162,47 +1168,7 @@ export function PRBrowserDialog({
                     onReviewCodex={async (commentId) => {
                       markChatStarted(selectedPR.number, commentId);
                       setCommentStatusKey((k) => k + 1);
-                      // If reviews already loaded, go straight to settings
-                      if (hasAnyReview) {
-                        setShowReviewSettings(true);
-                        return;
-                      }
-                      // Check for existing completed reviews (both providers) before showing settings
-                      const ticketId = `pr-${selectedPR.number}`;
-                      let restored = false;
-                      try {
-                        const results = await Promise.all(
-                          (["claude", "codex"] as const).map((p) =>
-                            fetch(
-                              `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
-                            )
-                              .then((res) => res.json())
-                              .then((data) => ({ provider: p, data }))
-                              .catch(() => ({ provider: p, data: null }))
-                          )
-                        );
-                        for (const { provider, data } of results) {
-                          if (
-                            data?.hasReview &&
-                            data.status === "completed" &&
-                            data.log
-                          ) {
-                            setReviews((prev) =>
-                              addReviewEntry(prev, provider, data, false)
-                            );
-                            if (!restored) {
-                              setActiveReviewProvider(provider);
-                              setSelectedComment(null);
-                              restored = true;
-                            }
-                          }
-                        }
-                      } catch {
-                        // Failed to check — fall through to settings
-                      }
-                      if (!restored) {
-                        setShowReviewSettings(true);
-                      }
+                      await restoreOrShowSettings();
                     }}
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
@@ -1684,7 +1650,7 @@ async function fetchCommentedIndices(
 ): Promise<Set<number>> {
   try {
     const res = await fetch(
-      `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
+      `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
     );
     const data = await res.json();
     const indices = new Set<number>();

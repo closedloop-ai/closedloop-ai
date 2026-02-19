@@ -196,7 +196,7 @@ export function PlanViewer({
 /**
  * Transform local file paths to API URLs for attachments
  * Input: /Users/.../repoName-ticketId/.claude/work/attachments/image-1.png
- * Output: /api/symphony/attachments/ticketId/image-1.png?repo=~/Source/repoName
+ * Output: /api/engineer/symphony/attachments/ticketId/image-1.png?repo=~/Source/repoName
  */
 function transformImageSrc(
   src: string,
@@ -207,7 +207,7 @@ function transformImageSrc(
   const attachmentsMatch = /(?:\.claude\/work\/)?attachments\/(.+)$/.exec(src);
   if (attachmentsMatch) {
     const filename = attachmentsMatch[1];
-    return `/api/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
+    return `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(filename)}?repo=${encodeURIComponent(repoPath)}`;
   }
   return src;
 }

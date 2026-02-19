@@ -219,56 +219,47 @@ Compute these values from FILES_TO_REVIEW:
 
 ```
 files_changed = len(FILES_TO_REVIEW)
-
-has_security_files = any file path contains: auth, session, payment, rbac, permission, clerk, jwt, middleware
-has_data_files = any file path contains: prisma, migration, database
-high_risk = has_security_files or has_data_files
 ```
 
 ### Model Routing
 
-Based on PR size and risk, determine model assignments:
+Based on PR size, determine model assignments. Evaluate conditions **top-to-bottom**; first match wins:
 
 | Condition | Bug Hunter A | Bug Hunter B | CLAUDE.md Auditor | Codebase Conventions | Validation |
 |-----------|-------------|-------------|-------------------|---------------------|------------|
-| **Small PR (≤10 files) OR high_risk** | opus | opus | sonnet | sonnet | opus |
+| **Small PR (≤10 files)** | opus | opus | sonnet | sonnet | opus |
 | **Medium PR (11-40 files)** | opus | sonnet | sonnet | sonnet | opus |
 | **Large PR (41+ files)** | sonnet | sonnet | sonnet | sonnet | opus targeted |
 
-**For large PRs, add Opus sampling pass**: Select up to 5 high-risk hunks via deterministic scoring:
+**For large PRs, add Opus sampling pass**: Select up to 5 high-risk files via deterministic scoring. Risk scores are derived from `.claude/settings/critic-gates.json` moduleCritics patterns:
 
 ```
+Read .claude/settings/critic-gates.json and extract all moduleCritics patterns.
+
 For each file in FILES_TO_REVIEW, compute risk score:
-  +3  auth/session/payment/permission files (path contains auth|session|payment|rbac)
-  +3  database/migration files (path contains prisma|migration|database)
-  +2  state management (patch contains useState|useReducer|useMutation)
-  +2  API route handlers (path matches app/api/ or route.ts)
-  +1  error handling (patch contains catch|throw|try)
+  For each moduleCritic entry in critic-gates.json:
+    +2  if file path (lowercased) contains any pattern from this module's patterns array
   +1  files with >50 changed lines
 
 Sort by score DESC, then by file path ASC (stable tiebreaker).
 Take top 5. Feed these to an Opus agent for direct review.
 ```
 
+Files matching multiple module patterns score higher, naturally surfacing code at domain intersections.
+
 ### Select Domain Critics (Layer 4)
 
 Read `.claude/settings/critic-gates.json` and extract:
 - **baseCritics**: Always-run critics (used for reference, but replaced by Layers 1-2)
 - **moduleCritics**: Pattern-to-critic mappings
-- **reviewBudget**: Max additional domain critics (from config, currently 5; capped at min(reviewBudget, 2) for Layer 4 to limit cost)
+- **reviewBudget**: Max additional domain critics (capped at 2 for Layer 4)
 
 ```python
-# Only select domain critics for high-stakes areas
 selected_domain_critics = []
 pr_context = " ".join(FILES_TO_REVIEW).lower()
 max_domain_critics = min(critic_config["defaults"]["reviewBudget"], 2)
 
-# Only trigger for security, database, payment modules
-high_stakes_modules = [m for m in critic_config["moduleCritics"]
-                       if any(p in ["auth", "session", "payment", "prisma", "database", "stripe"]
-                              for p in m["patterns"])]
-
-for module in high_stakes_modules:
+for module in critic_config["moduleCritics"]:
     for pattern in module["patterns"]:
         if pattern.lower() in pr_context:
             selected_domain_critics.extend(module["critics"])
@@ -292,8 +283,6 @@ Mark todo "Spawn reviewer agents in parallel" as `in_progress`.
 
 **ALL agents spawned by this command MUST use `subagent_type: "general-purpose"` in the Task tool call.** Do NOT omit the subagent_type parameter — Claude Code will auto-select `symphony-core:code-reviewer` or `experimental:code-reviewer`, which have 130-330 line system prompts and load additional files at startup. This bloats every sub-agent's context by ~50K+ tokens before your prompt even starts, causing "long context beta" failures on large PRs. The review instructions are already fully specified in the prompt below — a specialized code-reviewer agent is redundant and harmful.
 
-The only exceptions are domain critics (Layer 4), which use their own `symphony-fe:*` subagent types as specified in the critic-agent mapping table.
-
 ### Review Architecture — 4 Layers
 
 **Layer 1 — General Bug Detection** (always runs):
@@ -308,12 +297,12 @@ The only exceptions are domain critics (Layer 4), which use their own `symphony-
 | Agent | Role | Focus |
 |-------|------|-------|
 | CLAUDE.md Auditor | Project rule compliance | Check against ALL CLAUDE.md rules + learned patterns |
-| Codebase Conventions | Architectural rules | Data access patterns, type locations, service layer |
+| Codebase Conventions | Architectural rules | Verify patterns documented in CLAUDE.md are followed |
 
 **Layer 3 — Codebase-Aware Deep Review** (built into Bug Hunter B's prompt)
 
 **Layer 4 — Domain Amplification** (conditional, from critic-gates.json):
-- Only for high-stakes domains (auth, database, payments)
+- Triggered when changed files match moduleCritic patterns
 - Max 2 supplementary Sonnet critics
 - Run alongside Layers 1-2
 
@@ -326,6 +315,14 @@ Background agents do NOT have Bash tool access. All review data MUST be provided
 1. **Small PRs (≤30 files)**: Include ALL file patches in each agent's prompt
 2. **Medium PRs (31-80 files)**: Partition files so each agent gets at most 30 files
 3. **Large PRs (81+ files)**: Cap at 25 files per agent. Create multiple agent instances if needed
+
+### Partition-to-Agent Mapping
+
+Partitions are computed ONCE. Each partition is reviewed by one instance of each active agent type.
+
+**Layer 2 agents skip test files.** CLAUDE.md Auditor and Codebase Conventions focus on production code patterns — exclude `*.test.*`, `*.spec.*`, `__tests__/` files from their partitions. This significantly reduces agent count on test-heavy PRs.
+
+**Total agents** = (full partitions × 2 Bug Hunters) + (non-test partitions × 2 auditors) + domain critics. **Cap at 16 total.** If over budget, merge smallest partitions and limit Layer 2 to 2 partitions max.
 
 ### Shared Prompt Prefix (ALL agents get this)
 
@@ -360,14 +357,23 @@ TOOL RESTRICTIONS:
 - You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
 - All patch/diff data is provided in <diff> above. Do NOT try to fetch it from GitHub.
 
+FILE RESTRICTION (CRITICAL — violations cause false positives):
+- You may ONLY report findings for files listed in <files_assigned> above.
+- NEVER report findings for files not in the PR diff, even if you discover issues while exploring the codebase for context.
+- Every finding MUST have a `file` field that exactly matches one of the paths in <files_assigned>.
+- If you cannot cite a specific file and line FROM THE DIFF, do not report it.
+
 FLAG an issue ONLY when ALL are true:
-1. Introduced in this PR (not pre-existing)
-2. The original author would likely fix it if aware
-3. Does not rely on unstated assumptions
-4. Discrete and actionable
-5. Concrete evidence cited
+1. The file is listed in <files_assigned> above
+2. The line exists in the <diff> (added or modified line)
+3. Introduced in this PR (not pre-existing)
+4. The original author would likely fix it if aware
+5. Does not rely on unstated assumptions
+6. Discrete and actionable
+7. Concrete evidence cited from the diff
 
 Do NOT flag:
+- Issues in files not listed in <files_assigned> — even if real
 - Pre-existing issues, style preferences, linter-catchable issues
 - General quality concerns (coverage, docs), pedantic nitpicks
 - Hypothetical edge cases dependent on specific inputs/state
@@ -490,10 +496,10 @@ You are Bug Hunter A — a diff-only reviewer focused on correctness.
 
 Focus areas:
 - Syntax/type errors, null/undefined handling, logic bugs
-- Security: injection, auth bypass, data exposure
-- State management: double-trigger patterns (onKeyDown + onBlur), stale closures
-- API calls: parameter semantics (undefined vs null vs empty string)
+- Security: injection, auth bypass, path traversal, data exposure
+- State management: race conditions, stale closures, double-trigger patterns
 - Error handling: missing try-catch on async, unhandled promise rejections
+- Data transformations: off-by-one, incorrect parsing, wrong parameter types
 
 You must use Read, Grep, and Glob tools (NOT Bash) for codebase context.
 ```
@@ -512,10 +518,11 @@ Focus areas:
 
 For DRY claims, one concrete example of prior art is sufficient (cite file path + function name).
 
-{CLAUDE_MD_CONTENT}
+IMPORTANT: Read the repository root CLAUDE.md file before starting your review. Use it for
+DRY detection (check Learned Patterns for known conventions) and pattern consistency checks.
 ```
 
-Include the full CLAUDE.md content (from repository root) in Bug Hunter B's prompt so it has project context for DRY and convention checks.
+Do NOT embed the full CLAUDE.md in Bug Hunter B's prompt — it consumes orchestrator context. The agent reads the file itself via the Read tool.
 
 **CLAUDE.md Auditor** (sonnet):
 ```
@@ -533,44 +540,40 @@ For each changed file, check against:
 
 For every finding, cite the exact rule text from CLAUDE.md.
 
-Dynamically build your checklist based on changed file types:
-- .ts/.tsx in apps/app/ → check data access pattern, type locations
-- .ts in apps/api/ → check service layer, route structure, error handling
-- .prisma → check migration conventions
-- packages/** → check code organization rules
+Dynamically build your checklist from what CLAUDE.md describes — do not assume which
+rules apply based on file type. Read CLAUDE.md first, then check every changed file
+against ALL documented rules, patterns, and conventions.
 ```
 
 **Codebase Conventions** (sonnet):
 ```
 You are the Codebase Conventions reviewer — you verify architectural rules.
 
-Focus areas:
-- Data access patterns: Frontend must NOT import @repo/database directly
-- Type locations: Shared types in packages/api/src/types/, not duplicated
-- Service layer: Routes delegate to services, services handle DB access
-- Incomplete changes: Component without export, route without registration
-- Import ordering: @repo/* before @/* path aliases
+Read the repository root CLAUDE.md to understand the project architecture and conventions.
+Then verify changed files follow documented patterns:
+- Data access and import patterns
+- Type definition locations and sharing rules
+- Service/route layer responsibilities
+- Code organization conventions
+- Any other architectural rules documented in CLAUDE.md
 
 Use Grep and Glob to verify claims. Do NOT flag issues without searching first.
 ```
 
 **Domain Critics** (from critic-gates.json, if selected in Step 3):
 
-Use the same critic-agent mapping as before, but only for selected domain critics:
+All domain critics use `subagent_type: "general-purpose"` and `model: "sonnet"`.
 
-| Critic | Subagent Type |
-|--------|---------------|
-| security-privacy | symphony-fe:security-privacy |
-| auth-security-expert | symphony-fe:auth-security-expert |
-| database-architect | symphony-fe:database-architect |
-| api-architect | symphony-fe:api-architect |
-| caching-strategist | symphony-fe:caching-strategist |
+For each selected domain critic, create a prompt:
+```
+You are a domain expert reviewer: {critic_name}.
+Review the assigned files for issues within your domain expertise.
+Read the repository CLAUDE.md for project context.
+Return findings in the standard JSON format.
+```
 
-**Guard:** If a selected domain critic has no entry in this table, skip it and log a warning
-(e.g., `"⚠️ Skipping unmapped critic: {name}"`). This prevents failures when critic-gates.json
-adds new critics before this mapping is updated.
-
-Use `model: "sonnet"` for all domain critics.
+**Guard:** If critic-gates.json references a critic name that doesn't map to a known
+subagent type, use `subagent_type: "general-purpose"` (the default for all domain critics).
 
 ### Opus Sampling Pass (Large PRs only)
 
@@ -618,8 +621,13 @@ Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findi
 
 Then for each finding:
 
-1. **File in PR?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
+1. **File in PR? (CRITICAL — this is the #1 source of false positives)**
+   - Build the set of valid file paths from FILES_TO_REVIEW before iterating findings.
+   - For each finding: check `finding.file` against this set using EXACT string match.
+   - If finding's file is NOT in the set → **DISCARD** with reason `DISCARD_FILE_NOT_CHANGED`.
+   - **This check is non-negotiable.** Agents hallucinate files not in the PR. Every finding that survives this step MUST have a file path that exactly matches an entry in FILES_TO_REVIEW.
    - Exception: findings with `inline === false` skip this check (summary-only findings from Step 2.5 may reference files outside the PR, e.g., missing .gitignore patterns)
+   - **Log discarded findings**: Print each discarded finding's file path so hallucinations are visible in logs.
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
    - Exception: findings with `inline === false` skip this check (summary-only)
 3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
@@ -807,39 +815,23 @@ Mark todo "Post inline comments for validated findings" as `in_progress`.
 
 For each validated finding where `inline !== false` (all severities):
 
-1. **Check dedup map**: If `file:line:category` already has comment, SKIP
-2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
-3. **Create inline comment** (with error handling):
+1. **File in PR? (HARD GATE — check BEFORE posting)**: If `finding.file` is NOT in FILES_TO_REVIEW → **SKIP** and log "BLOCKED: {file} not in PR". This is a final safety net against hallucinated files that survived validation.
+2. **Check dedup map**: If `file:line:category` already has comment, SKIP
+3. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
+4. **Create inline comment using MCP tool** (REQUIRED):
 
-Use the `mcp__github_inline_comment__create_inline_comment` tool if available, OR use gh api:
+**ALWAYS use the `mcp__github_inline_comment__create_inline_comment` MCP tool to post inline comments.** Do NOT use `gh api` or Bash for posting comments. The MCP tool is available in the CI environment and is the only supported method.
 
-```bash
-# Wrap in error handling - don't fail entire review if one comment fails
-COMMENT_RESULT=$(gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/comments \
-  -f body="**[SEVERITY]** Category
+Call the tool with these parameters for each finding:
+- `owner`: OWNER
+- `repo`: REPO_NAME
+- `pull_number`: PR_NUMBER
+- `body`: The formatted comment body (see Comment Format below)
+- `path`: The file path
+- `line`: The line number
+- `commit_id`: HEAD_SHA
 
-Issue description
-
-**Recommendation:** How to fix
-
-\`\`\`
-code snippet
-\`\`\`" \
-  -f path="<FILE_PATH>" \
-  -F line=<LINE_NUMBER> \
-  -f commit_id="<HEAD_SHA>" 2>&1) || true
-
-# Check for line resolution errors - these are expected for edge cases
-if echo "$COMMENT_RESULT" | grep -q "could not be resolved"; then
-  echo "Warning: Could not post comment on <FILE_PATH>:<LINE_NUMBER> - line not in diff"
-  # Continue to next finding, don't fail
-fi
-```
-
-**Error Handling**: If inline comment fails with "line could not be resolved":
-- Log warning but continue processing other findings
-- Add to summary as "comment skipped - line not in diff"
-- Do NOT fail the entire review
+If the MCP tool call fails for a specific finding (e.g., line not in diff), log the error and continue to the next finding. Do NOT fail the entire review.
 
 **Comment Format (with priority annotation):**
 

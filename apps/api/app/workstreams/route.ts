@@ -2,6 +2,7 @@ import type {
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -14,7 +15,11 @@ import { projectsService } from "../projects/service";
 import { workstreamsService } from "./service";
 import { createWorkstreamValidator } from "./validators";
 
-export const GET = withAuth<Workstream[], "/workstreams">(
+/**
+ * GET /workstreams - List workstreams for a project
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
+ */
+export const GET = withAnyAuth<Workstream[], "/workstreams">(
   async ({ user }, request) => {
     try {
       const { searchParams } = new URL(request.url);

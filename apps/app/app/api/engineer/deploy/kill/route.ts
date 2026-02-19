@@ -3,7 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 /**
  * API route to kill a deploy process
  *
- * POST /api/deploy/kill
+ * POST /api/engineer/deploy/kill
  * Body: { pid: number }
  *
  * Same SIGTERM→SIGKILL pattern as /api/symphony/kill

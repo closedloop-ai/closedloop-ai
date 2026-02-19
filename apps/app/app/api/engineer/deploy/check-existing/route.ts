@@ -8,7 +8,7 @@ import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 /**
  * API route to detect locally running dev servers
  *
- * POST /api/deploy/check-existing
+ * POST /api/engineer/deploy/check-existing
  * Body: { repoPath, worktreePath }
  */
 export async function POST(request: NextRequest) {

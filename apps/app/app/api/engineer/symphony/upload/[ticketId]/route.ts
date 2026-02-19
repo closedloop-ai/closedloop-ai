@@ -20,7 +20,7 @@ const EXT_MAP: Record<string, string> = {
 };
 
 /**
- * POST /api/symphony/upload/[ticketId]?repo=<repoPath>
+ * POST /api/engineer/symphony/upload/[ticketId]?repo=<repoPath>
  *
  * Accepts multipart/form-data with image files.
  * Saves to .claude/work/attachments/ and returns metadata.
@@ -106,7 +106,7 @@ export async function POST(
     const buffer = Buffer.from(await entry.arrayBuffer());
     writeFileSync(savedPath, buffer);
 
-    const apiUrl = `/api/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(savedName)}?repo=${encodeURIComponent(repoPath)}`;
+    const apiUrl = `/api/engineer/symphony/attachments/${encodeURIComponent(ticketId)}/${encodeURIComponent(savedName)}?repo=${encodeURIComponent(repoPath)}`;
 
     files.push({
       originalName: entry.name,

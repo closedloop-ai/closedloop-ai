@@ -2,7 +2,7 @@
 
 import { cn } from "@repo/design-system/lib/utils";
 import { Copy, Forward, PlayCircle, Trash2 } from "lucide-react";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { formatTime, type SuggestedAction } from "@/lib/engineer/chat-utils";
 
 type ChatBubbleProps = {
@@ -22,6 +22,8 @@ type ChatBubbleProps = {
   onCopy?: () => void;
   onForward?: () => void;
   forwardLabel?: string;
+  /** Context window usage percentage (0-100) — shown in role bar when present */
+  contextPercent?: number | null;
 };
 
 /**
@@ -46,6 +48,7 @@ export const ChatBubble = memo(
     onCopy,
     onForward,
     forwardLabel,
+    contextPercent,
   }: Readonly<ChatBubbleProps>) {
     const isCodex = sender === "codex";
     const isUser = isCodex ? false : messageRole === "user";
@@ -105,6 +108,11 @@ export const ChatBubble = memo(
           <span className="font-mono text-[10px] text-muted-foreground/70">
             {formatTime(timestamp)}
           </span>
+          {contextPercent != null && (
+            <span className="font-mono text-[10px] text-muted-foreground/50">
+              · {contextPercent}%
+            </span>
+          )}
           {onDelete && !isStreaming && (
             <button
               className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
@@ -144,6 +152,13 @@ export const ChatBubble = memo(
         >
           {children}
         </div>
+
+        {/* Elapsed time while streaming */}
+        {isAssistant && isStreaming && (
+          <div className="px-1">
+            <ElapsedTimer start={timestamp} />
+          </div>
+        )}
 
         {/* Visibility note for Codex messages */}
         {isCodex && !isStreaming && (
@@ -197,5 +212,33 @@ export const ChatBubble = memo(
     (prev.onCopy == null) === (next.onCopy == null) &&
     (prev.onForward == null) === (next.onForward == null) &&
     (prev.onAction == null) === (next.onAction == null) &&
+    prev.contextPercent === next.contextPercent &&
     JSON.stringify(prev.actions) === JSON.stringify(next.actions)
 );
+
+/**
+ * Displays elapsed time since a given start timestamp, updating every second.
+ */
+function ElapsedTimer({ start }: Readonly<{ start: string }>) {
+  const [elapsed, setElapsed] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 1000))
+  );
+
+  useEffect(() => {
+    const t0 = new Date(start).getTime();
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [start]);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <span className="font-mono text-[10px] text-muted-foreground/50">
+      · {label}
+    </span>
+  );
+}

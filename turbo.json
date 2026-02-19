@@ -18,6 +18,10 @@
       "cache": false,
       "dependsOn": ["^build"]
     },
+    "@repo/mcp#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },

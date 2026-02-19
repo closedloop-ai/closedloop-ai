@@ -41,6 +41,7 @@ type CommentChatHistory = {
   commentId: string;
   commentContext: CommentContext;
   sessionId?: string;
+  contextPercent?: number | null;
 };
 
 // Allowed tools
@@ -351,7 +352,7 @@ export async function GET(
 }
 
 /**
- * POST /api/symphony/comment-chat/[commentId]?ticketId=...&repo=...
+ * POST /api/engineer/symphony/comment-chat/[commentId]?ticketId=...&repo=...
  *
  * Sends a message to Claude for addressing a PR comment and streams the response.
  * Body: { message: string, commentContext?: CommentContext }
@@ -796,7 +797,12 @@ function appendCommentMessageToHistory(
   history: CommentChatHistory,
   streamState: ReturnType<typeof createStreamState>
 ): void {
-  const { assistantContent, assistantBlocks, capturedSessionId } = streamState;
+  const {
+    assistantContent,
+    assistantBlocks,
+    capturedSessionId,
+    contextPercent,
+  } = streamState;
   if (assistantContent.trim() || assistantBlocks.length > 0) {
     const assistantMessage: ChatMessage = {
       id: `assistant-${Date.now()}`,
@@ -809,5 +815,8 @@ function appendCommentMessageToHistory(
   }
   if (capturedSessionId && !history.sessionId) {
     history.sessionId = capturedSessionId;
+  }
+  if (contextPercent !== null) {
+    history.contextPercent = contextPercent;
   }
 }

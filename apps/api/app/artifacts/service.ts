@@ -5,6 +5,7 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
   BATCH_META_MAX_SLUGS,
+  type BatchCreateArtifactInput,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
@@ -18,10 +19,12 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
 import {
@@ -89,6 +92,83 @@ async function getCommitterInfo(
     committerName: name || user.email,
     committerEmail: user.email,
   };
+}
+
+/**
+ * Create a single artifact record within an existing transaction.
+ * Does NOT call withDb.tx internally - takes the tx parameter directly.
+ * Used by both create() and batchCreate() to avoid code duplication.
+ *
+ * NOTE: validateOwnerInOrg uses withDb (non-transactional) and opens separate
+ * connections. This matches the behavior of the existing create() method.
+ */
+async function createArtifactRecord(
+  tx: TransactionClient,
+  organizationId: string,
+  userId: string,
+  input: CreateArtifactInput
+): Promise<Artifact | null> {
+  const isTemplate = input.type === ArtifactType.Template;
+
+  // Resolve projectId from workstream if needed (non-templates only)
+  if (!(isTemplate || input.projectId)) {
+    const workstream = await tx.workstream.findUnique({
+      where: { id: input.workstreamId, organizationId },
+    });
+    if (!workstream) {
+      return null;
+    }
+    input.projectId = workstream.projectId;
+  }
+
+  const resolvedOwnerId = input.ownerId ?? userId;
+  await validateOwnerInOrg(resolvedOwnerId, organizationId);
+
+  if (input.approverId) {
+    await validateOwnerInOrg(input.approverId, organizationId);
+  }
+
+  const slug = generateSlug();
+  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+    input;
+
+  const artifact = await tx.artifact.create({
+    data: {
+      ...artifactInput,
+      organizationId,
+      slug,
+      latestVersion: 1,
+      generatedBy: userId,
+      ownerId: resolvedOwnerId,
+    },
+    include: artifactIncludeWithUser,
+  });
+
+  // Create initial artifact version
+  await tx.artifactVersion.create({
+    data: {
+      artifactId: artifact.id,
+      version: 1,
+      content,
+      createdById: userId,
+    },
+  });
+
+  if (sourceId && sourceType) {
+    await tx.entityLink.create({
+      data: {
+        sourceId,
+        sourceType,
+        sourceVersion,
+        targetId: artifact.id,
+        targetType: "ARTIFACT",
+        targetVersion: artifact.latestVersion,
+        linkType: LinkType.PRODUCES,
+      },
+    });
+  }
+
+  return artifact;
 }
 
 // Result types for service operations
@@ -409,67 +489,9 @@ export const artifactsService = {
       );
     }
 
-    const createdArtifact = await withDb.tx(async (tx) => {
-      // Resolve projectId from workstream if needed (non-templates only)
-      if (!(isTemplate || input.projectId)) {
-        const workstream = await tx.workstream.findUnique({
-          where: { id: input.workstreamId, organizationId },
-        });
-        if (!workstream) {
-          return null;
-        }
-        input.projectId = workstream.projectId;
-      }
-
-      const resolvedOwnerId = input.ownerId ?? userId;
-      await validateOwnerInOrg(resolvedOwnerId, organizationId);
-
-      if (input.approverId) {
-        await validateOwnerInOrg(input.approverId, organizationId);
-      }
-
-      const slug = generateSlug();
-      const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
-        input;
-
-      const artifact = await tx.artifact.create({
-        data: {
-          ...artifactInput,
-          organizationId,
-          slug,
-          latestVersion: 1,
-          generatedBy: userId,
-          ownerId: resolvedOwnerId,
-        },
-        include: artifactIncludeWithUser,
-      });
-
-      // Create initial artifact version
-      await tx.artifactVersion.create({
-        data: {
-          artifactId: artifact.id,
-          version: 1,
-          content,
-          createdById: userId,
-        },
-      });
-
-      if (sourceId && sourceType) {
-        await tx.entityLink.create({
-          data: {
-            sourceId,
-            sourceType,
-            sourceVersion,
-            targetId: artifact.id,
-            targetType: "ARTIFACT",
-            targetVersion: artifact.latestVersion,
-            linkType: LinkType.PRODUCES,
-          },
-        });
-      }
-
-      return artifact;
-    });
+    const createdArtifact = await withDb.tx((tx) =>
+      createArtifactRecord(tx, organizationId, userId, input)
+    );
 
     if (createdArtifact) {
       // Create Liveblocks room for all artifacts
@@ -477,6 +499,45 @@ export const artifactsService = {
     }
 
     return createdArtifact;
+  },
+
+  /**
+   * Create multiple artifacts in a single transaction.
+   * All items are created atomically - if any fails, the entire batch is rolled back.
+   * Liveblocks rooms are created after the transaction completes.
+   *
+   * @param organizationId - Organization ID for all artifacts
+   * @param userId - User ID for authorship attribution
+   * @param input - Batch input with array of artifact creation inputs (1-50 items)
+   */
+  async batchCreate(
+    organizationId: string,
+    userId: string,
+    input: BatchCreateArtifactInput
+  ): Promise<Artifact[]> {
+    const createdArtifacts = await withDb.tx(async (tx) => {
+      const results: Artifact[] = [];
+      for (const item of input.items) {
+        const artifact = await createArtifactRecord(
+          tx,
+          organizationId,
+          userId,
+          item
+        );
+        if (!artifact) {
+          throw new Error(
+            `Failed to create artifact: workstream not found for item "${item.title}"`
+          );
+        }
+        results.push(artifact);
+      }
+      return results;
+    });
+
+    // Create Liveblocks rooms after transaction completes
+    await Promise.all(createdArtifacts.map((a) => createArtifactRoom(a)));
+
+    return createdArtifacts;
   },
 
   /**
@@ -1453,6 +1514,35 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
+   * Get performance data for an artifact from the GitHubActionRunPerformance table.
+   * Org-scoping is enforced via Prisma relation filter on the artifact FK.
+   * Returns null when no performance data is available for the artifact.
+   */
+  async getPerformanceData(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PerfSummary | null> {
+    // Single query: join through artifact relation to enforce org-scoping
+    const perfRecord = await withDb((db) =>
+      db.gitHubActionRunPerformance.findFirst({
+        where: {
+          artifactId,
+          artifact: { organizationId },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!perfRecord) {
+      return null;
+    }
+
+    // Safe cast: summaryData was stored by parsePerfSummary() which always
+    // produces a valid PerfSummary shape. Schema drift would require a deploy.
+    return perfRecord.summaryData as PerfSummary;
+  },
+
+  /**
    * Execute an approved implementation plan.
    * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
    */
@@ -1877,6 +1967,81 @@ Please try again or contact support if the issue persists.`
 
       return uniqueIds;
     });
+  },
+
+  /**
+   * Find all approved PRDs for a project (org-scoped).
+   * Used to enumerate PRDs before batch-regenerating implementation plans.
+   */
+  findApprovedPrds(
+    projectId: string,
+    organizationId: string
+  ): Promise<Artifact[]> {
+    return withDb((db) =>
+      db.artifact.findMany({
+        where: {
+          projectId,
+          organizationId,
+          type: PrismaArtifactType.PRD,
+          status: "APPROVED",
+        },
+        include: artifactIncludeWithUser,
+        orderBy: { createdAt: "asc" },
+      })
+    );
+  },
+
+  /**
+   * Batch-regenerate implementation plans for all approved PRDs in a project.
+   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
+   * relationships and calls regenerateImplementationPlan on it.
+   * Returns the count of triggered plans and their artifact IDs.
+   */
+  async batchRegenerateImplementationPlans(
+    projectId: string,
+    organizationId: string,
+    userId: string
+  ): Promise<{ triggered: number; artifactIds: string[] }> {
+    const prds = await this.findApprovedPrds(projectId, organizationId);
+
+    const artifactIds: string[] = [];
+    for (const prd of prds) {
+      // Find the implementation plan(s) that this PRD produced via PRODUCES links
+      const targetLinks = await entityLinksService.findTargetLinks(
+        prd.id,
+        "ARTIFACT",
+        LinkType.PRODUCES
+      );
+
+      if (targetLinks.length === 0) {
+        continue;
+      }
+
+      // Look up the linked artifacts and find the IMPLEMENTATION_PLAN
+      const linkedArtifacts = await withDb((db) =>
+        db.artifact.findMany({
+          where: {
+            id: { in: targetLinks.map((l) => l.targetId) },
+            organizationId,
+            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
+          },
+          select: { id: true },
+        })
+      );
+
+      for (const plan of linkedArtifacts) {
+        const result = await this.regenerateImplementationPlan(
+          plan.id,
+          organizationId,
+          userId
+        );
+        if (result.success) {
+          artifactIds.push(result.artifact.id);
+        }
+      }
+    }
+
+    return { triggered: artifactIds.length, artifactIds };
   },
 
   /**

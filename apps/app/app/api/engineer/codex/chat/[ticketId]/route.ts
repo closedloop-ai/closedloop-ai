@@ -214,6 +214,32 @@ function appendPrdSummary(
   }
 }
 
+function appendReviewOutput(
+  parts: string[],
+  paths: ReturnType<typeof getWorkPaths>
+): void {
+  // Include previous review output so Codex has context on its own review
+  const logPath = join(paths.claudeWorkDir, "codex-review-codex.log");
+  if (!existsSync(logPath)) {
+    return;
+  }
+  try {
+    const output = readFileSync(logPath, "utf-8").trim();
+    if (!output) {
+      return;
+    }
+    parts.push(
+      "\n## Your Previous Code Review",
+      "You previously reviewed this PR. Here is your review output — use it as context when answering follow-up questions:",
+      "```",
+      output.slice(-8000),
+      "```"
+    );
+  } catch {
+    // Review log couldn't be read
+  }
+}
+
 function appendChatHistory(
   parts: string[],
   chatHistory?: ChatHistoryMessage[]
@@ -276,6 +302,7 @@ function buildCodexPrompt(
 
   appendPlanSummary(parts, paths);
   appendPrdSummary(parts, paths);
+  appendReviewOutput(parts, paths);
 
   // Include changed files
   if (changedFiles) {
@@ -408,7 +435,7 @@ function runCodex(
 }
 
 /**
- * POST /api/codex/chat/[ticketId]?repo=...
+ * POST /api/engineer/codex/chat/[ticketId]?repo=...
  *
  * Send a freeform chat message to Codex and stream the response back.
  * If a resumed session is stale (missing from Codex state db), automatically

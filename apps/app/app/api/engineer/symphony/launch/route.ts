@@ -331,7 +331,7 @@ function createGitWorktree(
 /**
  * API route to launch Symphony run-loop.sh script
  *
- * POST /api/symphony/launch
+ * POST /api/engineer/symphony/launch
  * Body: { ticketIdentifier: string, repoPath: string, ticket?: TicketDetails, baseBranch?: string }
  *
  * This route:

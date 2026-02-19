@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
@@ -136,6 +136,171 @@ export async function DELETE(request: NextRequest) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
       { error: `Failed to process worktree removal: ${errorMessage}` },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * Parse `git worktree list --porcelain` output into entries.
+ * Each entry has a path and optional branch ref.
+ */
+function parseWorktreeList(
+  output: string
+): { path: string; branch: string | null }[] {
+  const entries: { path: string; branch: string | null }[] = [];
+  let currentPath: string | null = null;
+  let currentBranch: string | null = null;
+
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (currentPath) {
+        entries.push({ path: currentPath, branch: currentBranch });
+      }
+      currentPath = line.slice("worktree ".length);
+      currentBranch = null;
+    } else if (line.startsWith("branch ")) {
+      currentBranch = line.slice("branch ".length);
+    }
+  }
+
+  if (currentPath) {
+    entries.push({ path: currentPath, branch: currentBranch });
+  }
+
+  return entries;
+}
+
+/**
+ * Check if a branch ref still exists on the remote.
+ * Returns true if the branch is gone (merged/deleted).
+ */
+function isRemoteBranchGone(mainRepoPath: string, branchRef: string): boolean {
+  // Extract short branch name from refs/heads/...
+  const shortName = branchRef.startsWith("refs/heads/")
+    ? branchRef.slice("refs/heads/".length)
+    : branchRef;
+
+  const result = spawnSync(
+    "git",
+    ["ls-remote", "--heads", "origin", shortName],
+    { stdio: "pipe", cwd: mainRepoPath, timeout: 15_000 }
+  );
+
+  // If ls-remote returns empty output, the branch doesn't exist on remote
+  if (result.status === 0) {
+    const output = result.stdout?.toString().trim() ?? "";
+    return output.length === 0;
+  }
+
+  // If ls-remote fails (e.g., no remote), don't clean up
+  return false;
+}
+
+/**
+ * POST /api/engineer/git/worktree
+ *
+ * Scans for stale PR worktrees (matching /-pr-\d+$/) and removes those
+ * whose branch has been deleted from the remote.
+ *
+ * Returns: { removed: string[], kept: string[], errors: string[] }
+ */
+export async function POST() {
+  try {
+    const worktreeParentDir = getWorktreeParentDir();
+
+    if (!existsSync(worktreeParentDir)) {
+      return NextResponse.json({ removed: [], kept: [], errors: [] });
+    }
+
+    // Find PR worktree directories
+    const dirEntries = readdirSync(worktreeParentDir, { withFileTypes: true });
+    const prPattern = /-pr-\d+$/;
+    const prDirs = dirEntries
+      .filter((e) => e.isDirectory() && prPattern.test(e.name))
+      .map((e) => join(worktreeParentDir, e.name));
+
+    if (prDirs.length === 0) {
+      return NextResponse.json({ removed: [], kept: [], errors: [] });
+    }
+
+    // Find the main repo by parsing `git worktree list --porcelain` from the first PR worktree
+    // The first entry in `git worktree list` is always the main worktree
+    const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
+      stdio: "pipe",
+      cwd: prDirs[0],
+      timeout: 10_000,
+    });
+
+    if (listResult.status !== 0) {
+      return NextResponse.json(
+        { error: "Failed to list worktrees" },
+        { status: 500 }
+      );
+    }
+
+    const worktreeEntries = parseWorktreeList(
+      listResult.stdout?.toString() ?? ""
+    );
+    const mainRepoPath = worktreeEntries[0]?.path;
+
+    if (!mainRepoPath) {
+      return NextResponse.json(
+        { error: "Could not determine main repo path" },
+        { status: 500 }
+      );
+    }
+
+    // Build a map of worktree path -> branch from the porcelain output
+    const branchByPath = new Map<string, string | null>();
+    for (const entry of worktreeEntries) {
+      branchByPath.set(entry.path, entry.branch);
+    }
+
+    const removed: string[] = [];
+    const kept: string[] = [];
+    const errors: string[] = [];
+
+    for (const prDir of prDirs) {
+      try {
+        // Security: ensure path is inside worktreeParentDir
+        if (!prDir.startsWith(worktreeParentDir + sep)) {
+          continue;
+        }
+
+        const branch = branchByPath.get(prDir);
+        if (!branch) {
+          // Not tracked as a worktree — skip
+          kept.push(prDir);
+          continue;
+        }
+
+        if (isRemoteBranchGone(mainRepoPath, branch)) {
+          // Branch is gone from remote — remove the worktree (non-force to protect dirty worktrees)
+          const result = removeWorktree(prDir, false);
+          const body = await result.json();
+          if (body.success) {
+            removed.push(prDir);
+          } else if (body.hasChanges) {
+            kept.push(prDir);
+          } else {
+            errors.push(`${prDir}: ${body.error || "removal failed"}`);
+          }
+        } else {
+          kept.push(prDir);
+        }
+      } catch (err) {
+        errors.push(
+          `${prDir}: ${err instanceof Error ? err.message : "unknown error"}`
+        );
+      }
+    }
+
+    return NextResponse.json({ removed, kept, errors });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json(
+      { error: `Worktree cleanup failed: ${errorMessage}` },
       { status: 500 }
     );
   }

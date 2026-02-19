@@ -100,7 +100,7 @@ export function CommentChat({
   const codexChatStream = useChatStream();
 
   // Build comment-chat specific URLs
-  const commentApiBase = `/api/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
 
   const debate = useCodexDebate({
     ticketId,
@@ -231,7 +231,7 @@ export function CommentChat({
         queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
       });
 
-      const url = `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+      const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
       // Build recent chat history for context
       const recentHistory = (chat.history?.messages || [])
@@ -527,11 +527,15 @@ export function CommentChat({
         <ChatMessagesArea
           canForward={canForward}
           codexChatPending={codexChatStream.pendingUserMessage}
+          codexChatStreamStartedAt={codexChatStream.streamStartedAt}
+          contextPercent={chat.contextPercent}
           debate={debate}
           debateClaudeBlocks={debateClaudeStream.streamingBlocks}
           debateClaudeContent={debateClaudeStream.streamingContent}
           debateClaudeStreaming={debateClaudeStream.isStreaming}
+          debateClaudeStreamStartedAt={debateClaudeStream.streamStartedAt}
           debateCodexPending={debate.codexStream.pendingUserMessage}
+          debateCodexStreamStartedAt={debate.codexStream.streamStartedAt}
           debateMode={debate.debateMode}
           error={chat.error}
           hasAcceptedChanges={chat.hasAcceptedChanges}
@@ -550,6 +554,7 @@ export function CommentChat({
           respondedMessageIds={respondedMessageIds}
           streamingBlocks={chat.streamingBlocks}
           streamingContent={chat.streamingContent}
+          streamStartedAt={chat.streamStartedAt}
         />
         <ChatInputArea
           autoDebate={debate.autoDebate}
@@ -922,6 +927,7 @@ type MessageRenderContext = {
   onSendResponse?: (text: string, messageId: string) => void;
   respondedMessageIds: Set<string>;
   hasAcceptedChanges: boolean;
+  contextPercent: number | null;
 };
 
 function renderSenderBubble(
@@ -993,8 +999,11 @@ function renderChatMessage(
   }
 
   // Normal comment message bubble (with PR-specific features)
+  const isLastAssistant =
+    msg.role === "assistant" && isLast && !ctx.isAnyStreaming;
   return (
     <CommentMessageBubble
+      contextPercent={isLastAssistant ? ctx.contextPercent : undefined}
       forwardLabel="Forward to Codex"
       hasAcceptedChanges={ctx.hasAcceptedChanges}
       index={idx}
@@ -1024,6 +1033,7 @@ function ChatMessagesArea({
   isWaitingForResponse,
   streamingContent,
   streamingBlocks,
+  streamStartedAt,
   error,
   hasAcceptedChanges,
   onAcceptChanges,
@@ -1039,9 +1049,13 @@ function ChatMessagesArea({
   onForwardCodexMessage,
   debateCodexPending,
   codexChatPending,
+  contextPercent,
   debateClaudeStreaming,
   debateClaudeContent,
   debateClaudeBlocks,
+  debateClaudeStreamStartedAt,
+  debateCodexStreamStartedAt,
+  codexChatStreamStartedAt,
 }: Readonly<{
   isLoadingHistory: boolean;
   messages: ChatMessage[];
@@ -1049,6 +1063,7 @@ function ChatMessagesArea({
   isWaitingForResponse: boolean;
   streamingContent: string;
   streamingBlocks: ContentBlock[];
+  streamStartedAt: string;
   error: string | null;
   hasAcceptedChanges: boolean;
   onAcceptChanges: () => void;
@@ -1068,6 +1083,10 @@ function ChatMessagesArea({
   debateClaudeStreaming: boolean;
   debateClaudeContent: string;
   debateClaudeBlocks: ContentBlock[];
+  contextPercent: number | null;
+  debateClaudeStreamStartedAt: string;
+  debateCodexStreamStartedAt: string;
+  codexChatStreamStartedAt: string;
 }>) {
   // Smart scroll state — must be before early returns to satisfy hook rules
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1179,6 +1198,7 @@ function ChatMessagesArea({
           onSendResponse,
           respondedMessageIds,
           hasAcceptedChanges,
+          contextPercent,
         })
       )}
       {/* Main Claude streaming */}
@@ -1191,7 +1211,7 @@ function ChatMessagesArea({
             id: "streaming",
             role: "assistant",
             content: streamingContent,
-            timestamp: new Date().toISOString(),
+            timestamp: streamStartedAt,
             blocks: streamingBlocks,
           }}
         />
@@ -1218,7 +1238,7 @@ function ChatMessagesArea({
             isStreaming
             messageRole="assistant"
             sender="claude"
-            timestamp={new Date().toISOString()}
+            timestamp={debateClaudeStreamStartedAt}
           >
             <MessageContent
               blocks={debateClaudeBlocks}
@@ -1233,7 +1253,7 @@ function ChatMessagesArea({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={debateCodexStreamStartedAt}
         >
           <MessageContent
             blocks={debateCodexPending.blocks}
@@ -1248,7 +1268,7 @@ function ChatMessagesArea({
           isStreaming
           messageRole="assistant"
           sender="codex"
-          timestamp={new Date().toISOString()}
+          timestamp={codexChatStreamStartedAt}
         >
           <MessageContent
             blocks={codexChatPending.blocks}
@@ -1717,6 +1737,7 @@ const CommentMessageBubble = memo(
     hasAcceptedChanges,
     onForward,
     forwardLabel,
+    contextPercent,
   }: Readonly<{
     message: ChatMessage;
     index: number;
@@ -1726,6 +1747,7 @@ const CommentMessageBubble = memo(
     hasAcceptedChanges?: boolean;
     onForward?: () => void;
     forwardLabel?: string;
+    contextPercent?: number | null;
   }>) {
     const isUser = message.role === "user";
     const contentLower = message.content.toLowerCase();
@@ -1773,6 +1795,7 @@ const CommentMessageBubble = memo(
             : "border border-border bg-muted text-foreground",
           isStreaming && "border-emerald-500/30"
         )}
+        contextPercent={contextPercent}
         extraActions={
           !(isUser || isStreaming) && (hasCodeChanges || isPushbackResponse) ? (
             <div className="mt-2 flex items-center gap-2 px-1">
@@ -1846,7 +1869,7 @@ const CommentMessageBubble = memo(
             ? "text-blue-600 dark:text-blue-400"
             : "text-emerald-600 dark:text-emerald-400"
         }
-        roleLabel={isUser ? "you" : "cl.dev"}
+        roleLabel={isUser ? "you" : "claude"}
         timestamp={message.timestamp}
       >
         {isUser ? (
@@ -1871,7 +1894,8 @@ const CommentMessageBubble = memo(
     (prev.onAcceptChanges == null) === (next.onAcceptChanges == null) &&
     (prev.onSendResponse == null) === (next.onSendResponse == null) &&
     (prev.onForward == null) === (next.onForward == null) &&
-    prev.forwardLabel === next.forwardLabel
+    prev.forwardLabel === next.forwardLabel &&
+    prev.contextPercent === next.contextPercent
 );
 
 /**

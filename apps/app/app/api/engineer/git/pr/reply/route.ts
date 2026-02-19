@@ -181,7 +181,7 @@ function handleGhError(error: unknown): NextResponse {
 }
 
 /**
- * POST /api/git/pr/reply
+ * POST /api/engineer/git/pr/reply
  * Replies to a specific PR review comment thread or adds a new comment to the PR
  *
  * Uses stdin to pass the body content to avoid shell escaping/truncation issues

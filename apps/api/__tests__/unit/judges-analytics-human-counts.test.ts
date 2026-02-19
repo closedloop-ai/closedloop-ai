@@ -1,6 +1,5 @@
 /**
- * Unit tests for getHumanCountsByType -- fetches human ratings and comments
- * counts per artifact type within an org and date range.
+ * Unit tests for getHumanCountsByType and getHumanRatingsByArtifact.
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
@@ -12,7 +11,10 @@ vi.mock("@repo/database", () => ({
 }));
 
 import { withDb } from "@repo/database";
-import { getHumanCountsByType } from "@/app/judges-analytics/service";
+import {
+  getHumanCountsByType,
+  getHumanRatingsByArtifact,
+} from "@/app/judges-analytics/service";
 
 // ---------------------------------------------------------------------------
 // Helper types
@@ -21,7 +23,7 @@ import { getHumanCountsByType } from "@/app/judges-analytics/service";
 type ArtifactRow = { id: string; type: ArtifactType };
 type RatingRow = { artifactId: string; comment: string | null };
 
-type ScenarioConfig = {
+type CountScenarioConfig = {
   name: string;
   description: string;
   organizationId: string;
@@ -40,10 +42,10 @@ function mapToObject(m: Map<string, number>): Record<string, number> {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario registry
+// getHumanCountsByType scenarios
 // ---------------------------------------------------------------------------
 
-const SCENARIO_REGISTRY: ScenarioConfig[] = [
+const COUNT_SCENARIOS: CountScenarioConfig[] = [
   {
     name: "empty_types",
     description: "Empty types returns empty maps",
@@ -144,16 +146,12 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Parametrized test
-// ---------------------------------------------------------------------------
-
 describe("getHumanCountsByType", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe.each(SCENARIO_REGISTRY)("$name", (scenario) => {
+  describe.each(COUNT_SCENARIOS)("$name", (scenario) => {
     it(scenario.description, async () => {
       const mockDb = {
         artifact: { findMany: vi.fn().mockResolvedValue(scenario.artifacts) },
@@ -182,6 +180,118 @@ describe("getHumanCountsByType", () => {
       );
       expect(mapToObject(humanCommentsByType as Map<string, number>)).toEqual(
         scenario.expectedComments
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getHumanRatingsByArtifact scenarios
+// ---------------------------------------------------------------------------
+
+type ScoreRatingRow = { artifactId: string; score: number };
+type ScoreScenario = {
+  name: string;
+  description: string;
+  ratings: ScoreRatingRow[];
+  artifactIds: string[];
+  expected: Record<string, number[]>;
+};
+
+const SCORE_SCENARIOS: ScoreScenario[] = [
+  {
+    name: "empty_artifacts",
+    description: "No artifact IDs returns empty map",
+    ratings: [],
+    artifactIds: [],
+    expected: {},
+  },
+  {
+    name: "no_ratings",
+    description: "Artifacts with no ratings returns empty map",
+    ratings: [],
+    artifactIds: ["a1"],
+    expected: {},
+  },
+  {
+    name: "single_rating_score_3",
+    description: "Single rating score=3 yields [0.6]",
+    ratings: [{ artifactId: "a1", score: 3 }],
+    artifactIds: ["a1"],
+    expected: { a1: [0.6] },
+  },
+  {
+    name: "min_score",
+    description: "score=1 yields [0.2]",
+    ratings: [{ artifactId: "a1", score: 1 }],
+    artifactIds: ["a1"],
+    expected: { a1: [0.2] },
+  },
+  {
+    name: "max_score",
+    description: "score=5 yields [1.0]",
+    ratings: [{ artifactId: "a1", score: 5 }],
+    artifactIds: ["a1"],
+    expected: { a1: [1.0] },
+  },
+  {
+    name: "multiple_ratings_same_artifact",
+    description: "Two ratings on same artifact: [0.4, 0.8]",
+    ratings: [
+      { artifactId: "a1", score: 2 },
+      { artifactId: "a1", score: 4 },
+    ],
+    artifactIds: ["a1"],
+    expected: { a1: [0.4, 0.8] },
+  },
+  {
+    name: "multiple_artifacts",
+    description: "Different artifacts get independent score arrays",
+    ratings: [
+      { artifactId: "a1", score: 5 },
+      { artifactId: "a2", score: 1 },
+    ],
+    artifactIds: ["a1", "a2"],
+    expected: { a1: [1.0], a2: [0.2] },
+  },
+];
+
+describe("getHumanRatingsByArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe.each(SCORE_SCENARIOS)("$name", (scenario) => {
+    it(scenario.description, async () => {
+      const mockDb = {
+        artifactRating: {
+          findMany: vi.fn().mockResolvedValue(scenario.ratings),
+        },
+      };
+      vi.mocked(withDb).mockImplementation((callback) =>
+        Promise.resolve(
+          callback(
+            mockDb as unknown as Parameters<Parameters<typeof withDb>[0]>[0]
+          )
+        )
+      );
+
+      const result = await getHumanRatingsByArtifact(
+        "org-1",
+        new Date("2026-01-01"),
+        new Date("2026-01-31"),
+        scenario.artifactIds
+      );
+
+      const actual = Object.fromEntries(result);
+      for (const [key, expectedScores] of Object.entries(scenario.expected)) {
+        expect(actual[key]).toHaveLength(expectedScores.length);
+        for (let i = 0; i < expectedScores.length; i++) {
+          expect(actual[key][i]).toBeCloseTo(expectedScores[i], 10);
+        }
+      }
+      expect(Object.keys(actual)).toHaveLength(
+        Object.keys(scenario.expected).length
       );
     });
   });

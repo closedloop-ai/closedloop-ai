@@ -92,7 +92,7 @@ function deletePidFile(pidFilePath: string | null): void {
 /**
  * API route to kill a Symphony process
  *
- * POST /api/symphony/kill
+ * POST /api/engineer/symphony/kill
  * Body: { pid: number } OR { ticketId: string, repoPath: string }
  *
  * Kills the process group using negative PID to ensure

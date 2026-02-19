@@ -1,4 +1,5 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
@@ -18,6 +19,7 @@ export type ProcessArtifactResult = {
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  perfSummary: PerfSummary | null;
   artifactKeys: string[];
 };
 
@@ -57,6 +59,7 @@ export function mergeZipContent(
     questionsContent: result.questionsContent ?? current.questionsContent,
     executionResult: result.executionResult ?? current.executionResult,
     judgesReport: result.judgesReport ?? current.judgesReport,
+    perfSummary: result.perfSummary ?? current.perfSummary,
   };
 }
 
@@ -86,6 +89,7 @@ export async function processArtifactZip(
     questionsContent: null,
     executionResult: null,
     judgesReport: null,
+    perfSummary: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
@@ -138,6 +142,7 @@ export async function processArtifactUploads(
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
   let judgesReport: JudgesReport | null = null;
+  let perfSummary: PerfSummary | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -154,6 +159,7 @@ export async function processArtifactUploads(
     questionsContent = result.questionsContent ?? questionsContent;
     executionResult = result.executionResult ?? executionResult;
     judgesReport = result.judgesReport ?? judgesReport;
+    perfSummary = result.perfSummary ?? perfSummary;
     artifactKeys.push(...result.artifactKeys);
   }
 
@@ -172,6 +178,7 @@ export async function processArtifactUploads(
     questionsContent,
     executionResult,
     judgesReport,
+    perfSummary,
     artifactKeys,
   };
 }

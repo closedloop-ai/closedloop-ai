@@ -176,6 +176,18 @@ function buildClaudeSystemPrompt(): string {
     "You help engineers with questions about their projects, code, debugging, architecture, and development workflow.",
     "",
     "Be concise and helpful. Use markdown formatting for code and structure.",
+    "",
+    "## Destructive Actions",
+    "Any destructive or hard-to-reverse action REQUIRES explicit human approval before execution. This includes but is not limited to:",
+    "- Deleting files, branches, or directories (rm, git branch -D, etc.)",
+    "- Force-pushing (git push --force, --force-with-lease)",
+    "- Resetting or discarding changes (git reset --hard, git checkout ., git clean)",
+    "- Dropping or truncating database tables",
+    "- Killing processes",
+    "- Overwriting uncommitted work",
+    "- Modifying CI/CD pipelines or shared infrastructure",
+    "",
+    "The ONLY exception is when the user's message explicitly requests the destructive action (e.g., 'delete the tmp branch', 'force push to origin'). Even then, confirm if the scope is ambiguous.",
   ];
 
   const config = loadReposConfig();
@@ -248,7 +260,7 @@ function handleClaude(
           "--verbose",
           "--output-format",
           "stream-json",
-          "--allowedTools=WebSearch,WebFetch",
+          "--allowedTools=WebSearch,WebFetch,Bash",
           "--append-system-prompt",
           buildClaudeSystemPrompt(),
         ];
@@ -619,7 +631,7 @@ function handleCodex(
 }
 
 /**
- * POST /api/terminal-chat
+ * POST /api/engineer/terminal-chat
  *
  * Chat with Claude (default) or Codex (@codex prefix)
  * Body: { message: string }

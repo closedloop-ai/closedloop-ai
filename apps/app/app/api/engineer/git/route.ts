@@ -7,7 +7,7 @@ import { isRepoAllowed } from "@/lib/engineer/repos";
 /**
  * API route to perform git operations
  *
- * POST /api/git
+ * POST /api/engineer/git
  * Body: { action: "branch" | "commit" | "push" | "status", branchName?: string, message?: string }
  *
  * This route uses simple-git to execute git operations server-side.

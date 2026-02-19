@@ -425,25 +425,26 @@ function PendingOverflowMenu({
   onProposeFix,
   onProposeFixCodex,
   onReviewCodex,
-}: {
+}: Readonly<{
   comment: PRComment;
   overflowSeen: boolean;
   markOverflowSeen?: () => void;
   onProposeFix?: () => void;
   onProposeFixCodex?: () => void;
   onReviewCodex?: () => void;
-}) {
+}>) {
   const hasFixItems = !!(onProposeFix || onProposeFixCodex || onReviewCodex);
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (open) {
+          markOverflowSeen?.();
+        }
+      }}
+    >
       <DropdownMenuTrigger asChild>
-        <Button
-          className="relative h-7 w-7 p-0"
-          onClick={() => markOverflowSeen?.()}
-          size="sm"
-          variant="ghost"
-        >
+        <Button className="relative h-7 w-7 p-0" size="sm" variant="ghost">
           <MoreVertical className="size-4" />
           {!overflowSeen && (
             <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-emerald-500" />
@@ -496,7 +497,7 @@ function PendingOverflowMenu({
 /**
  * Minimal overflow with just "View on GitHub" — used for resolved and analyzing states
  */
-function GitHubOnlyOverflow({ url }: { url?: string }) {
+function GitHubOnlyOverflow({ url }: Readonly<{ url?: string }>) {
   if (!url) {
     return null;
   }

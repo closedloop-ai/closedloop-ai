@@ -108,10 +108,24 @@ export function ReviewChatPane({
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
+  const [reviewContextPercent, setReviewContextPercent] = useState<
+    number | null
+  >(null);
+  // Refs for parent callbacks — avoids depending on callback identity in effects
+  // (these are often inline functions in PRBrowserDialog that change every render)
+  const onReviewCompleteRef = useRef(onReviewComplete);
+  onReviewCompleteRef.current = onReviewComplete;
+  const onStructuredFindingsRef = useRef(onStructuredFindings);
+  onStructuredFindingsRef.current = onStructuredFindings;
 
   // Guard against StrictMode double-mount: only start the review once.
   // Refs survive across StrictMode re-mounts, so the second mount sees true and skips.
   const hasStartedRef = useRef(false);
+  // Stable timestamp for the review bubble — captured once when the review starts.
+  // For restored reviews (initialOutput), use the current time at mount.
+  const reviewStartedAtRef = useRef(
+    initialOutput ? new Date().toISOString() : ""
+  );
 
   // Phase 2: chat
   const [chatInput, setChatInput] = useState("");
@@ -126,7 +140,7 @@ export function ReviewChatPane({
   });
 
   // Fetch persisted findings to restore commented status
-  const findingsUrl = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+  const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
     findings: Array<{ commented: boolean }>;
   }>({
@@ -194,7 +208,11 @@ export function ReviewChatPane({
       return;
     }
     const split = splitReviewOutput(initialOutput, config.provider);
-    onReviewComplete?.(initialOutput, split.findings.length, split.findings);
+    onReviewCompleteRef.current?.(
+      initialOutput,
+      split.findings.length,
+      split.findings
+    );
     if (split.findings.length > 0 && !findingsSavedRef.current) {
       findingsSavedRef.current = true;
       saveReviewFindings(
@@ -205,14 +223,7 @@ export function ReviewChatPane({
         split.findings
       );
     }
-  }, [
-    config.model,
-    config.provider,
-    initialOutput,
-    onReviewComplete,
-    repoPath,
-    ticketId,
-  ]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [config.model, config.provider, initialOutput, repoPath, ticketId]);
 
   // Start the review on mount (skip if restoring a previous result)
   useEffect(() => {
@@ -232,6 +243,7 @@ export function ReviewChatPane({
   }, [initialOutput, startReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function startReview(signal: AbortSignal) {
+    reviewStartedAtRef.current = new Date().toISOString();
     setIsReviewing(true);
     setReviewOutput("");
     setReviewDone(false);
@@ -290,7 +302,8 @@ export function ReviewChatPane({
         (sid) => {
           sessionIdRef.current = sid;
         },
-        setReviewCommand
+        setReviewCommand,
+        setReviewContextPercent
       );
       console.log(
         "[review-stream] Stream ended, accumulated:",
@@ -311,7 +324,11 @@ export function ReviewChatPane({
       setReviewOutput(accumulated);
       setReviewDone(true);
       const split = splitReviewOutput(accumulated, config.provider);
-      onReviewComplete?.(accumulated, split.findings.length, split.findings);
+      onReviewCompleteRef.current?.(
+        accumulated,
+        split.findings.length,
+        split.findings
+      );
       toast.success("Code review completed");
 
       // Persist findings to disk
@@ -330,7 +347,7 @@ export function ReviewChatPane({
       // resume the same Claude session (full review context preserved).
       if (config.provider === "claude" && sessionIdRef.current) {
         fetch(
-          `/api/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -351,8 +368,10 @@ export function ReviewChatPane({
         triggerExtraction(sessionIdRef.current);
       }
     } catch (err) {
-      // Abort from strict-mode cleanup or user stop — don't mark as done
+      // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
+        setReviewDone(true);
+        onReviewCompleteRef.current?.(reviewOutput, 0);
         return;
       }
       console.error("Review error:", err);
@@ -360,7 +379,7 @@ export function ReviewChatPane({
         description: err instanceof Error ? err.message : "Unknown error",
       });
       setReviewDone(true);
-      onReviewComplete?.(reviewOutput, 0);
+      onReviewCompleteRef.current?.(reviewOutput, 0);
     } finally {
       setIsReviewing(false);
       abortRef.current = null;
@@ -368,7 +387,7 @@ export function ReviewChatPane({
   }
 
   const pollRunningReview = async (signal: AbortSignal) => {
-    const statusUrl = `/api/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
+    const statusUrl = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
     let pollCount = 0;
     console.log("[poll] Starting poll for running review");
     while (!signal.aborted) {
@@ -396,7 +415,7 @@ export function ReviewChatPane({
           setReviewOutput(finalOutput);
           setReviewDone(true);
           const split = splitReviewOutput(finalOutput, config.provider);
-          onReviewComplete?.(
+          onReviewCompleteRef.current?.(
             finalOutput,
             split.findings.length,
             split.findings
@@ -474,7 +493,7 @@ export function ReviewChatPane({
     (message: string): { url: string; body: Record<string, unknown> } => {
       if (config.provider === "codex") {
         return {
-          url: `/api/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+          url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt: message,
             chatHistory: [],
@@ -484,7 +503,7 @@ export function ReviewChatPane({
         };
       }
       return {
-        url: `/api/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        url: `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
         body: {
           message,
           activeTab: "plan",
@@ -503,12 +522,14 @@ export function ReviewChatPane({
       }
       setHasSentInitial(true);
 
-      // For Claude reviews with a seeded session, skip heavy context injection —
-      // the resumed session already has full review context.
-      const isClaudeResumed =
-        config.provider === "claude" && !!sessionIdRef.current;
+      // Claude with a seeded session: skip context injection (session has full review context).
+      // Codex: skip client-side injection (server-side buildCodexPrompt reads review log from disk).
+      // Claude without session: inject review context into the first message.
+      const skipContextInjection =
+        config.provider === "codex" ||
+        (config.provider === "claude" && !!sessionIdRef.current);
       let actualMessage = userMessage;
-      if (!isClaudeResumed) {
+      if (!skipContextInjection) {
         const findings = parseCodexReviewOutput(reviewOutput);
         actualMessage = formatReviewContextForChat(
           findings,
@@ -527,7 +548,7 @@ export function ReviewChatPane({
       const { url, body } = buildChatRequest(actualMessage);
       // For Claude path with context, pass displayContent so chat history stores
       // the user-facing text, not the giant context block
-      if (!isClaudeResumed && config.provider === "claude") {
+      if (!skipContextInjection && config.provider === "claude") {
         (body as Record<string, unknown>).displayContent = userMessage;
       }
       stream.sendMessage(url, body, {
@@ -693,7 +714,7 @@ export function ReviewChatPane({
           console.log(
             `[review-extract] Got ${data.findings.length} structured findings`
           );
-          onStructuredFindings?.(data.findings);
+          onStructuredFindingsRef.current?.(data.findings);
           // Overwrite persisted findings with structured ones (better file paths)
           saveReviewFindings(
             ticketId,
@@ -712,7 +733,7 @@ export function ReviewChatPane({
         console.warn("[review-extract] Extraction failed silently:", err);
       }
     },
-    [ticketId, repoPath, config.provider, config.model, onStructuredFindings]
+    [ticketId, repoPath, config.provider, config.model]
   );
 
   const handleChatAboutFinding = useCallback(
@@ -721,25 +742,22 @@ export function ReviewChatPane({
         return;
       }
 
-      const isClaudeResumed =
-        config.provider === "claude" && !!sessionIdRef.current;
       const title = finding.message.split("\n")[0].slice(0, 80);
       const userFacingMessage = `Explain finding #${index + 1}: ${title}`;
 
-      // Build the actual message sent to the LLM
-      let actualMessage: string;
-      if (isClaudeResumed) {
-        // Session already has review context — just ask about the finding
-        actualMessage = userFacingMessage;
-      } else {
-        // Codex or no session — inject full finding context
-        actualMessage = formatFindingContextForChat(
-          finding,
-          index,
-          reviewOutput,
-          config.model
-        );
-      }
+      // Claude with session or Codex: send plain message (context available server-side).
+      // Claude without session: inject finding context into the message.
+      const skipContextInjection =
+        config.provider === "codex" ||
+        (config.provider === "claude" && !!sessionIdRef.current);
+      const actualMessage = skipContextInjection
+        ? userFacingMessage
+        : formatFindingContextForChat(
+            finding,
+            index,
+            reviewOutput,
+            config.model
+          );
 
       stream.setPendingUserMessage({
         id: crypto.randomUUID(),
@@ -751,7 +769,7 @@ export function ReviewChatPane({
       setHasSentInitial(true);
       const { url, body } = buildChatRequest(actualMessage);
       // Store user-facing text in chat history for Claude path
-      if (!isClaudeResumed && config.provider === "claude") {
+      if (!skipContextInjection && config.provider === "claude") {
         (body as Record<string, unknown>).displayContent = userFacingMessage;
       }
       stream.sendMessage(url, body, {
@@ -820,7 +838,7 @@ export function ReviewChatPane({
             isStreaming
             messageRole="assistant"
             sender={config.provider === "claude" ? "claude" : "codex"}
-            timestamp={new Date().toISOString()}
+            timestamp={reviewStartedAtRef.current}
           >
             <MessageContent
               blocks={
@@ -838,9 +856,10 @@ export function ReviewChatPane({
         {reviewSplit && (
           <>
             <ChatBubble
+              contextPercent={reviewContextPercent ?? undefined}
               messageRole="assistant"
               sender={config.provider === "claude" ? "claude" : "codex"}
-              timestamp={new Date().toISOString()}
+              timestamp={reviewStartedAtRef.current}
             >
               <MessageContent
                 blocks={
@@ -887,30 +906,52 @@ export function ReviewChatPane({
 
         {/* Chat messages (after review completes) */}
         {reviewDone &&
-          chatMessages.map((msg) => (
-            <ChatBubble
-              bubbleClassName={
-                msg.role === "user"
-                  ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
-                  : "bg-muted text-foreground border border-border"
-              }
-              key={msg.id}
-              messageRole={msg.role}
-              roleClassName={
-                msg.role === "user"
-                  ? "text-blue-600 dark:text-blue-400"
-                  : "text-emerald-600 dark:text-emerald-400"
-              }
-              roleLabel={msg.role === "user" ? "you" : "cl.dev"}
-              timestamp={msg.timestamp}
-            >
-              {msg.role === "user" ? (
-                <UserMessageContent content={msg.content} />
-              ) : (
-                <MessageContent blocks={msg.blocks} content={msg.content} />
-              )}
-            </ChatBubble>
-          ))}
+          chatMessages.map((msg, idx) => {
+            const isLastAssistant =
+              msg.role === "assistant" &&
+              !chatMessages
+                .slice(idx + 1)
+                .some((m) => m.role === "assistant") &&
+              !stream.isStreaming;
+            return (
+              <ChatBubble
+                bubbleClassName={
+                  msg.role === "user"
+                    ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
+                    : "bg-muted text-foreground border border-border"
+                }
+                contextPercent={
+                  isLastAssistant
+                    ? (stream.contextPercent ??
+                      chatHistory?.contextPercent ??
+                      undefined)
+                    : undefined
+                }
+                key={msg.id}
+                messageRole={msg.role}
+                roleClassName={
+                  msg.role === "user"
+                    ? "text-blue-600 dark:text-blue-400"
+                    : "text-emerald-600 dark:text-emerald-400"
+                }
+                roleLabel={msg.role === "user" ? "you" : undefined}
+                sender={
+                  msg.role === "assistant"
+                    ? config.provider === "codex"
+                      ? "codex"
+                      : "claude"
+                    : undefined
+                }
+                timestamp={msg.timestamp}
+              >
+                {msg.role === "user" ? (
+                  <UserMessageContent content={msg.content} />
+                ) : (
+                  <MessageContent blocks={msg.blocks} content={msg.content} />
+                )}
+              </ChatBubble>
+            );
+          })}
 
         {/* Streaming chat response */}
         {stream.isStreaming &&
@@ -919,9 +960,13 @@ export function ReviewChatPane({
               bubbleClassName="bg-muted text-foreground border border-border border-emerald-500/30"
               isStreaming
               messageRole="assistant"
-              roleClassName="text-emerald-600 dark:text-emerald-400"
-              roleLabel="cl.dev"
-              timestamp={new Date().toISOString()}
+              roleClassName={
+                config.provider === "codex"
+                  ? undefined
+                  : "text-emerald-600 dark:text-emerald-400"
+              }
+              sender={config.provider === "codex" ? "codex" : "claude"}
+              timestamp={stream.streamStartedAt}
             >
               <MessageContent
                 blocks={stream.streamingBlocks}
@@ -1348,7 +1393,7 @@ function saveReviewFindings(
   model: string,
   findings: ReviewFinding[]
 ): void {
-  const url = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1362,7 +1407,7 @@ function markFindingCommented(
   provider: string,
   index: number
 ): void {
-  const url = `/api/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
   fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1378,7 +1423,8 @@ async function streamReviewOutput(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   setOutput: (value: string) => void,
   onSessionId?: (sessionId: string) => void,
-  onReviewCommand?: (command: string) => void
+  onReviewCommand?: (command: string) => void,
+  onContextPercent?: (percent: number) => void
 ): Promise<{ text: string; completed: boolean }> {
   const decoder = new TextDecoder();
   let accumulated = "";
@@ -1416,6 +1462,8 @@ async function streamReviewOutput(
         } else if (event.type === "output" && event.content) {
           accumulated += event.content;
           setOutput(accumulated);
+        } else if (event.type === "usage" && event.contextPercent != null) {
+          onContextPercent?.(event.contextPercent);
         } else if (event.type === "done") {
           console.log(`[stream-reader] Done event, exitCode=${event.exitCode}`);
           receivedDone = true;

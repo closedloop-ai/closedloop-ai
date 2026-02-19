@@ -30,7 +30,7 @@ export function formatTime(timestamp: string): string {
   return date.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hour12: true,
   });
 }
 
@@ -91,6 +91,7 @@ export type StreamEvent = {
   input?: unknown;
   id?: string;
   is_error?: boolean;
+  contextPercent?: number;
 };
 
 /**
@@ -109,6 +110,7 @@ export type StreamEventHandlers = {
   onComplete: () => void;
   onPid?: (pid: number) => void;
   onLearnings?: () => void;
+  onUsage?: (contextPercent: number) => void;
 };
 
 /**
@@ -154,6 +156,12 @@ function dispatchStreamEvent(
     handlers.onLearnings
   ) {
     handlers.onLearnings();
+  } else if (
+    event.type === "usage" &&
+    event.contextPercent != null &&
+    handlers.onUsage
+  ) {
+    handlers.onUsage(event.contextPercent);
   } else if (event.type === "error" && event.error) {
     handlers.onError(event.error);
   } else if (event.type === "result" || event.type === "done") {

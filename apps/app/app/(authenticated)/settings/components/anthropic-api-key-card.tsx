@@ -16,12 +16,12 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { CheckCircleIcon, KeyIcon, Loader2Icon, TrashIcon } from "lucide-react";
 import { useState } from "react";
 import {
-  useApiKeyInfo,
-  useRemoveOrgApiKey,
-  useRemoveUserApiKey,
-  useSetOrgApiKey,
-  useSetUserApiKey,
-} from "@/hooks/queries/use-api-keys";
+  useClaudeApiKeyInfo,
+  useRemoveOrgClaudeApiKey,
+  useRemoveUserClaudeApiKey,
+  useSetOrgClaudeApiKey,
+  useSetUserClaudeApiKey,
+} from "@/hooks/queries/use-claude-api-keys";
 import { isAdminRole } from "@/lib/role-utils";
 
 function KeyStatusRow({
@@ -75,11 +75,11 @@ export function AnthropicApiKeyCard() {
   const { membership } = useOrganization();
   const isAdmin = isAdminRole(membership?.role);
 
-  const { data: keyInfo, isLoading } = useApiKeyInfo();
-  const setOrgKey = useSetOrgApiKey();
-  const removeOrgKey = useRemoveOrgApiKey();
-  const setUserKey = useSetUserApiKey();
-  const removeUserKey = useRemoveUserApiKey();
+  const { data: keyInfo, isLoading } = useClaudeApiKeyInfo();
+  const setOrgKey = useSetOrgClaudeApiKey();
+  const removeOrgKey = useRemoveOrgClaudeApiKey();
+  const setUserKey = useSetUserClaudeApiKey();
+  const removeUserKey = useRemoveUserClaudeApiKey();
 
   const [orgKeyInput, setOrgKeyInput] = useState("");
   const [userKeyInput, setUserKeyInput] = useState("");
