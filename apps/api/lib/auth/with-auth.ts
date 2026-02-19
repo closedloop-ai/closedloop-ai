@@ -27,6 +27,7 @@ export type AuthContext = {
   user: User;
   clerkUserId: string;
   clerkOrgId: string;
+  orgRole?: string;
 };
 
 /**
@@ -81,7 +82,7 @@ export function withAuth<TResponse, TRoute extends string = string>(
     routeContext: RouteContext<TRoute>
   ): Promise<NextResponse<ApiResult<TResponse>>> => {
     try {
-      const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
+      const { userId: clerkUserId, orgId: clerkOrgId, orgRole } = await auth();
 
       if (!(clerkUserId && clerkOrgId)) {
         return unauthorizedResponse();
@@ -93,7 +94,12 @@ export function withAuth<TResponse, TRoute extends string = string>(
         return unauthorizedResponse();
       }
 
-      const authContext: AuthContext = { user, clerkUserId, clerkOrgId };
+      const authContext: AuthContext = {
+        user,
+        clerkUserId,
+        clerkOrgId,
+        orgRole: orgRole ?? undefined,
+      };
 
       return handler(authContext, request, routeContext.params);
     } catch (error) {

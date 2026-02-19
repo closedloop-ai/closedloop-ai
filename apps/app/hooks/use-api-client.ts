@@ -44,7 +44,7 @@ export function useApiClient() {
 const LOCAL_API_FALLBACK = "http://localhost:3002";
 const APP_PREFIX_REGEX = /^app-/;
 
-function resolveApiUrl(): string {
+export function resolveApiUrl(): string {
   // Runtime detection for preview suffix domains (e.g., app-stage.preview.closedloop-stage.ai)
   // This takes priority because build-time env vars point to .vercel.app URLs,
   // not the custom preview suffix domain the user is actually on.

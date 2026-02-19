@@ -20,6 +20,65 @@
   "javascript": {
     "globals": ["Liveblocks"]
   },
+  "overrides": [
+    {
+      "includes": [
+        "apps/app/components/engineer/**",
+        "apps/app/app/api/engineer/**",
+        "apps/app/hooks/engineer/**",
+        "apps/app/lib/engineer/**",
+        "apps/app/types/engineer.ts",
+        "apps/app/types/repos.ts",
+        "apps/app/types/run-viewer.ts",
+        "apps/app/app/(authenticated)/engineer/**"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "useButtonType": "off",
+            "useSemanticElements": "off",
+            "noSvgWithoutTitle": "off",
+            "useKeyWithClickEvents": "off",
+            "noStaticElementInteractions": "off",
+            "noNoninteractiveElementInteractions": "off"
+          },
+          "complexity": {
+            "noExcessiveCognitiveComplexity": {
+              "level": "error",
+              "options": { "maxAllowedComplexity": 120 }
+            },
+            "noForEach": "off"
+          },
+          "style": {
+            "useFilenamingConvention": "off",
+            "noNestedTernary": "off",
+            "useDefaultSwitchClause": "off",
+            "noEnum": "off",
+            "noExportedImports": "off"
+          },
+          "performance": {
+            "useTopLevelRegex": "off",
+            "noBarrelFile": "off",
+            "noImgElement": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off",
+            "noAlert": "off",
+            "useIterableCallbackReturn": "off",
+            "noControlCharactersInRegex": "off",
+            "noExplicitAny": "off",
+            "noMisleadingCharacterClass": "off"
+          },
+          "correctness": {
+            "noUnusedFunctionParameters": "off",
+            "useImageSize": "off",
+            "useExhaustiveDependencies": "off",
+            "noInvalidUseBeforeDeclaration": "off"
+          }
+        }
+      }
+    }
+  ],
   "files": {
     "includes": [
       "**/*",

@@ -1,0 +1,89 @@
+import "server-only";
+
+import type { ApiResult } from "@repo/api/src/types/common";
+import { failure } from "@repo/api/src/types/common";
+import { parseError } from "@repo/observability/error";
+import { log } from "@repo/observability/log";
+import { type NextRequest, NextResponse } from "next/server";
+import { apiKeysService } from "@/app/api-keys/service";
+import { usersService } from "@/app/users/service";
+import { unauthorizedResponse } from "../route-utils";
+import type { AuthContext, AuthenticatedHandler } from "./with-auth";
+
+/**
+ * Next.js route context - matches generated type from @/.next/types/routes
+ * In App Router, all route params are single strings (not arrays)
+ */
+type RouteContext<_TRoute extends string = string> = {
+  params: Promise<Record<string, string>>;
+};
+
+/**
+ * Higher-order function that wraps route handlers with API key authentication.
+ *
+ * Mirrors withAuth() signature but authenticates via Bearer token instead of Clerk session.
+ *
+ * Ensures:
+ * - Authorization header is present with a Bearer token starting with `sk_live_`
+ * - The API key is valid (not revoked, not expired)
+ * - The associated user exists in the database and is active
+ *
+ * API-key sessions do not have an orgRole, so orgRole is always undefined.
+ *
+ * @example
+ * export const GET = withApiKeyAuth<ResponseType, '/path'>(async ({ user }, request) => {
+ *   return NextResponse.json(success(data));
+ * });
+ */
+export function withApiKeyAuth<TResponse, TRoute extends string = string>(
+  handler: AuthenticatedHandler<TResponse, TRoute>
+): (
+  request: NextRequest,
+  context: RouteContext<TRoute>
+) => Promise<NextResponse<ApiResult<TResponse>>> {
+  return async (
+    request: NextRequest,
+    routeContext: RouteContext<TRoute>
+  ): Promise<NextResponse<ApiResult<TResponse>>> => {
+    try {
+      const authHeader = request.headers.get("authorization");
+      const token = authHeader?.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : null;
+
+      if (!token?.startsWith("sk_live_")) {
+        return unauthorizedResponse();
+      }
+
+      const keyContext = await apiKeysService.verifyKey(token);
+
+      if (!keyContext) {
+        return unauthorizedResponse();
+      }
+
+      const user = await usersService.findById(
+        keyContext.userId,
+        keyContext.organizationId
+      );
+
+      if (!user?.active) {
+        return unauthorizedResponse();
+      }
+
+      const authContext: AuthContext = {
+        user,
+        clerkUserId: user.clerkId,
+        clerkOrgId: keyContext.organizationId,
+        orgRole: undefined,
+      };
+
+      return handler(authContext, request, routeContext.params);
+    } catch (error) {
+      const errorMessage = parseError(error);
+      log.error("API key authentication failed", { error: errorMessage });
+      return NextResponse.json(failure("Authentication failed"), {
+        status: 500,
+      });
+    }
+  };
+}

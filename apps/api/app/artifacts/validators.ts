@@ -64,6 +64,7 @@ export const findArtifactsQueryValidator = z.object({
   type: artifactTypeEnum.optional(),
   workstreamId: z.uuidv7().optional(),
   projectId: z.uuidv7().optional(),
+  ownerId: z.uuidv7().optional(),
 });
 
 export const reorderArtifactsValidator = z.object({
@@ -75,4 +76,11 @@ export const batchMoveArtifactsValidator = z.object({
     .array(z.string().uuid())
     .min(1, "At least one artifact ID required"),
   targetProjectId: z.uuidv7(),
+});
+
+export const batchCreateArtifactsValidator = z.object({
+  items: z
+    .array(createArtifactValidator)
+    .min(1, "At least one artifact required")
+    .max(50, "Maximum 50 artifacts per batch"),
 });

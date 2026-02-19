@@ -143,7 +143,7 @@ try {
   try {
     const migrationResult = await client.query(`
       SELECT COUNT(*) as total,
-             COUNT(*) FILTER (WHERE finished_at IS NULL) as pending
+             COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL) as pending
       FROM _prisma_migrations
     `);
     const { total, pending } = migrationResult.rows[0];

@@ -113,6 +113,8 @@ export type ArtifactWithWorkstream = Artifact & {
   owner?: ProjectOwner | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
+  /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
+  snippet?: string | null;
 };
 
 /** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */
@@ -124,6 +126,7 @@ export type FindArtifactsOptions = {
   type?: ArtifactType;
   workstreamId?: string;
   projectId?: string;
+  ownerId?: string;
 };
 
 export type CreateArtifactInput = {
@@ -256,3 +259,17 @@ export type PlanJson = {
   gaps: PlanGap[];
   manualTasks?: PlanTask[];
 };
+
+export type BatchCreateArtifactInput = {
+  items: CreateArtifactInput[];
+};
+
+/**
+ * Map of artifact slug to artifact title.
+ * Returned by the batch-meta endpoint for lightweight name lookups.
+ * Slugs not found in the org are omitted.
+ */
+export type ArtifactTitleMap = Record<string, string>;
+
+/** Maximum number of slugs accepted by GET /artifacts/batch-meta */
+export const BATCH_META_MAX_SLUGS = 50;

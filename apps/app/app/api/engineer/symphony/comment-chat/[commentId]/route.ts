@@ -1,0 +1,822 @@
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import type { NextRequest } from "next/server";
+import {
+  getLearningAttributionInstruction,
+  getLearningCaptureInstruction,
+  getOrgPatternsContext,
+  triggerAsyncLearningExtraction,
+} from "@/lib/engineer/learnings";
+import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
+import {
+  type ContentBlock,
+  createStreamState,
+  processStreamEvent,
+} from "@/lib/engineer/stream-events";
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  sender?: "claude" | "codex";
+  blocks?: ContentBlock[];
+  responded?: boolean;
+};
+
+type CommentContext = {
+  author: string;
+  body: string;
+  path?: string;
+  line?: number;
+  url?: string;
+  replies?: Array<{ author: string; body: string }>;
+};
+
+type CommentChatHistory = {
+  messages: ChatMessage[];
+  ticketId: string;
+  repoPath: string;
+  commentId: string;
+  commentContext: CommentContext;
+  sessionId?: string;
+  contextPercent?: number | null;
+};
+
+// Allowed tools
+const ALLOWED_TOOLS = [
+  "Bash",
+  "Grep",
+  "Glob",
+  "Read",
+  "Edit",
+  "Write",
+  "Task",
+  "TodoWrite",
+  "WebSearch",
+  "WebFetch",
+].join(",");
+
+/**
+ * Get work directory paths for a ticket
+ */
+function getWorkPaths(ticketId: string, repoPath: string, commentId: string) {
+  const expandedRepoPath = expandHome(repoPath);
+
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const sanitizedCommentId = commentId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const repoName = basename(expandedRepoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+
+  // Use worktree if it exists, otherwise fall back to base repo
+  const effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
+  const claudeWorkDir = join(effectiveDir, ".claude", "work");
+  const commentChatsDir = join(claudeWorkDir, "comment-chats");
+
+  return {
+    worktreeDir,
+    effectiveDir,
+    claudeWorkDir,
+    commentChatsDir,
+    historyPath: join(commentChatsDir, `${sanitizedCommentId}.json`),
+    planPath: join(claudeWorkDir, "plan.json"),
+    prdPath: join(claudeWorkDir, "prd.md"),
+  };
+}
+
+/**
+ * Load comment chat history
+ */
+function loadCommentChatHistory(
+  historyPath: string,
+  ticketId: string,
+  repoPath: string,
+  commentId: string,
+  commentContext?: CommentContext
+): CommentChatHistory {
+  if (!existsSync(historyPath)) {
+    return {
+      messages: [],
+      ticketId,
+      repoPath,
+      commentId,
+      commentContext: commentContext || { author: "", body: "" },
+    };
+  }
+  try {
+    const content = readFileSync(historyPath, "utf-8");
+    return JSON.parse(content) as CommentChatHistory;
+  } catch {
+    return {
+      messages: [],
+      ticketId,
+      repoPath,
+      commentId,
+      commentContext: commentContext || { author: "", body: "" },
+    };
+  }
+}
+
+/**
+ * Save comment chat history
+ */
+function saveCommentChatHistory(
+  historyPath: string,
+  history: CommentChatHistory
+): void {
+  const dir = join(historyPath, "..");
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(historyPath, JSON.stringify(history, null, 2));
+}
+
+/**
+ * Build system context prompt for PR comment
+ */
+function buildContextPrompt(
+  paths: ReturnType<typeof getWorkPaths>,
+  commentContext: CommentContext
+): string {
+  const parts: string[] = [];
+
+  // --- Role + environment ---
+  parts.push(
+    `You are a senior engineer helping a teammate address a PR review comment from @${commentContext.author}.`,
+    "Your job: investigate thoroughly, then propose ONE clear action. The human decides what ships — you never apply changes unilaterally.",
+    `\nWork directory: ${paths.claudeWorkDir}`,
+    `Worktree directory: ${paths.effectiveDir}`
+  );
+
+  // --- PR comment + thread + project context ---
+  appendCommentContext(parts, commentContext);
+  appendProjectContext(parts, paths);
+
+  // --- Workflow + examples + format + constraints (static) ---
+  parts.push(WORKFLOW_PROMPT);
+
+  // --- Dynamic suffixes: org learnings + learning capture ---
+  const orgPatterns = getOrgPatternsContext();
+  if (orgPatterns) {
+    parts.push(`\n${orgPatterns}`, `\n${getLearningAttributionInstruction()}`);
+  }
+  parts.push(
+    `\n${getLearningCaptureInstruction(paths.claudeWorkDir, "comments")}`
+  );
+
+  return parts.join("\n");
+}
+
+function appendCommentContext(parts: string[], ctx: CommentContext): void {
+  const commentLines = ["\n## PR Comment to Address"];
+  if (ctx.path) {
+    const loc = ctx.line ? `:${ctx.line}` : "";
+    commentLines.push(`**File:** \`${ctx.path}${loc}\``);
+  }
+  commentLines.push(`\n> ${ctx.body.split("\n").join("\n> ")}`);
+  if (ctx.replies && ctx.replies.length > 0) {
+    commentLines.push(`\n### Thread (${ctx.replies.length} replies)`);
+    for (const r of ctx.replies) {
+      commentLines.push(`> **@${r.author}:** ${r.body}`);
+    }
+  }
+  parts.push(...commentLines);
+}
+
+const WORKFLOW_PROMPT = `
+## Workflow
+
+### 1. Investigate
+Read the file at the flagged location. Don't stop at one line — read enough context to understand the function, component, or module it belongs to.
+- Grep for callers, consumers, and related types
+- Check for tests that exercise this code path
+- If the reviewer cites a specific concern (race condition, perf, type safety, etc.), verify it against the actual code — don't take the claim at face value
+
+### 2. Classify the comment
+Before responding, determine which category applies:
+- **Bug / correctness** — the code is wrong or will break. Fix required.
+- **Design / architecture** — the code works but the approach is questionable. Propose an alternative or explain the tradeoff.
+- **Style / nitpick** — naming, formatting, minor preference. Respond concisely.
+- **Question / clarification** — the reviewer is asking "why?", not requesting a change. Answer with evidence from the code.
+- **Invalid / misunderstanding** — the reviewer misread the code. Respectfully correct with evidence.
+
+State the category and your reasoning in 1-2 sentences before proposing anything.
+
+### 3. Assess impact
+Briefly state:
+1. What the reviewer is asking for (in your own words)
+2. Whether the concern is valid — cite specific code you read as evidence
+3. What else depends on this code (callers, tests, sibling logic) and whether your fix affects them
+
+### 4. Respond — exactly ONE of these two paths:
+
+**Path A — Code changes needed:**
+Show proposed changes in \`\`\`diff fenced blocks. The UI detects these to surface an "Accept Changes" button.
+- Do NOT use Edit or Write tools — only Read files and show diffs
+- Do NOT include a <pr_response> tag in the same message as diff blocks
+- Include the file path as the diff header: \`\`\`diff /path/to/file.ts
+
+**Path B — No code changes needed:**
+Explain why with code evidence, then wrap a suggested reviewer reply in <pr_response>...</pr_response> tags. The UI detects this to surface a "Send Response" button.
+
+## Examples
+
+### Example A: Code change needed
+\`\`\`
+**Category:** Bug — the null check is missing and will throw at runtime.
+
+The reviewer is right. \`user.settings\` can be \`undefined\` when the account
+was created via SSO (confirmed by checking \`createSSOUser()\` at auth.ts:84
+which skips the settings initialization step).
+
+Two callers: \`ProfilePage\` and \`SettingsAPI\`. Both pass through this path.
+
+\`\`\`diff /src/utils/user.ts
+- const theme = user.settings.theme;
++ const theme = user.settings?.theme ?? "light";
+\`\`\`
+\`\`\`
+
+### Example B: No change needed — push back
+\`\`\`
+**Category:** Invalid — the reviewer misread the control flow.
+
+This looks like a race condition at first glance, but \`mutex.acquire()\`
+at line 42 guarantees exclusive access. The lock is released in the
+\`finally\` block at line 58. I confirmed no other code path bypasses
+the lock by grepping for direct calls to \`updateBalance\`.
+
+<pr_response>
+Good catch on the concurrency concern! This is actually safe — the \`mutex.acquire()\` call at line 42 serializes access, and the lock is always released in the \`finally\` block. No other caller bypasses the lock.
+</pr_response>
+\`\`\`
+
+## Output format (critical — the UI parses these)
+- Code proposals MUST use \`\`\`diff blocks (not \`\`\`typescript, \`\`\`tsx, etc.). This triggers the "Accept Changes" button.
+- Reviewer replies MUST use <pr_response>...</pr_response> tags. This triggers the "Send Response" button.
+- Never combine both in one message — the UI handles one action at a time.
+- Every response must lead to exactly one of these two actions.
+
+## Constraints
+- **Propose, don't apply.** Never use Edit or Write tools unless the human explicitly approves. Present diffs and rationale, then wait.
+- **Stay scoped.** Fix only what the reviewer asked about — no surrounding refactors, no unrelated improvements, no drive-by cleanups.
+- **Simplest correct fix wins.** Don't over-engineer. If a one-line change addresses the concern, prefer it over a refactor.
+- **When the reviewer is wrong, say so respectfully.** Back it up with evidence from the code. Don't make unnecessary changes just to appease.
+- **When the comment is ambiguous, investigate first.** Read the code to determine the most likely intent before asking for clarification. If you still can't tell after investigation, state your best interpretation and ask the human to confirm.`;
+
+/**
+ * Append plan and PRD context to the prompt if available in the work directory.
+ */
+function appendProjectContext(
+  parts: string[],
+  paths: ReturnType<typeof getWorkPaths>
+): void {
+  const prd = readFileSafe(paths.prdPath);
+  if (prd) {
+    const summary = prd.substring(0, 2000);
+    parts.push(
+      `\n## PRD (feature context):\n${summary}${prd.length > 2000 ? "\n...(truncated)" : ""}`
+    );
+  }
+
+  const planText = readPlanContent(paths.planPath);
+  if (planText) {
+    const limit = prd ? 1500 : 3000;
+    const summary = planText.substring(0, limit);
+    parts.push(
+      `\n## Implementation Plan (summary):\n${summary}${planText.length > limit ? "\n...(truncated)" : ""}`
+    );
+  }
+}
+
+function readFileSafe(filePath: string): string | null {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const content = readFileSync(filePath, "utf-8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
+function readPlanContent(planPath: string): string | null {
+  const raw = readFileSafe(planPath);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const plan = JSON.parse(raw);
+    return plan.content || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /api/symphony/comment-chat/[commentId]?ticketId=...&repo=...
+ *
+ * Returns the chat history for a specific PR comment
+ */
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ commentId: string }> }
+) {
+  const { commentId } = await params;
+  const searchParams = request.nextUrl.searchParams;
+  const ticketId = searchParams.get("ticketId");
+  const repoPath = searchParams.get("repo");
+
+  if (!(ticketId && repoPath)) {
+    return new Response(
+      JSON.stringify({ error: "ticketId and repo parameters are required" }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const history = loadCommentChatHistory(
+    paths.historyPath,
+    ticketId,
+    repoPath,
+    commentId
+  );
+
+  return Response.json(history);
+}
+
+/**
+ * POST /api/engineer/symphony/comment-chat/[commentId]?ticketId=...&repo=...
+ *
+ * Sends a message to Claude for addressing a PR comment and streams the response.
+ * Body: { message: string, commentContext?: CommentContext }
+ */
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ commentId: string }> }
+) {
+  const { commentId } = await params;
+  const searchParams = request.nextUrl.searchParams;
+  const ticketId = searchParams.get("ticketId");
+  const repoPath = searchParams.get("repo");
+
+  if (!(ticketId && repoPath)) {
+    return new Response(
+      JSON.stringify({ error: "ticketId and repo parameters are required" }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  const body = await request.json();
+  const { message, displayContent, commentContext } = body as {
+    message: string;
+    displayContent?: string;
+    commentContext?: CommentContext;
+  };
+
+  if (!message || typeof message !== "string") {
+    return new Response(JSON.stringify({ error: "message is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const paths = getWorkPaths(ticketId, repoPath, commentId);
+
+  // Check if effective directory exists
+  if (!existsSync(paths.effectiveDir)) {
+    return new Response(JSON.stringify({ error: "Work directory not found" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Load and update chat history with user message
+  const history = loadCommentChatHistory(
+    paths.historyPath,
+    ticketId,
+    repoPath,
+    commentId,
+    commentContext
+  );
+
+  // Update comment context if provided
+  if (commentContext) {
+    history.commentContext = commentContext;
+  }
+
+  // Store the display content (with <context> block) if provided, otherwise extract
+  // user guidance from the full message (which contains the full context prompt for Claude)
+  const userInput = displayContent ?? message;
+
+  const userMessage: ChatMessage = {
+    id: `user-${Date.now()}`,
+    role: "user",
+    content: userInput,
+    timestamp: new Date().toISOString(),
+  };
+  history.messages.push(userMessage);
+  saveCommentChatHistory(paths.historyPath, history);
+
+  // Determine if we're resuming or starting new
+  const isResuming = !!history.sessionId;
+  const prompt = isResuming
+    ? message
+    : `${buildContextPrompt(paths, history.commentContext)}\n\n---\n\n${message}`;
+
+  // Create streaming response
+  const encoder = new TextEncoder();
+
+  // Hoisted so the cancel callback can kill the process
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
+  let streamStateRef: ReturnType<typeof createStreamState> | null = null;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      const streamState = createStreamState((sessionId) => {
+        // Eagerly persist session ID so we can resume if Claude gets killed
+        if (!history.sessionId) {
+          history.sessionId = sessionId;
+          saveCommentChatHistory(paths.historyPath, history);
+          console.log(
+            "[Comment Chat API] Persisted session ID early:",
+            sessionId
+          );
+        }
+      });
+      streamStateRef = streamState;
+
+      try {
+        console.log("[Comment Chat API] Spawning Claude...");
+        console.log("[Comment Chat API] CWD:", paths.effectiveDir);
+        console.log("[Comment Chat API] Comment ID:", commentId);
+
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({
+              type: "status",
+              status: "spawning",
+              resuming: isResuming,
+            })}\n`
+          )
+        );
+
+        const claudeArgs = [
+          "-p",
+          "--model",
+          "opus",
+          "--verbose",
+          "--output-format",
+          "stream-json",
+          `--allowedTools=${ALLOWED_TOOLS}`,
+        ];
+
+        if (isResuming && history.sessionId) {
+          claudeArgs.push("--resume", history.sessionId);
+        }
+
+        const claude = spawn("claude", claudeArgs, {
+          cwd: paths.effectiveDir,
+          env: {
+            ...process.env,
+            SYMPHONY_WORKDIR: paths.claudeWorkDir,
+            PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        claudeProcess = claude;
+
+        console.log("[Comment Chat API] Claude PID:", claude.pid);
+
+        claude.stdin.write(prompt);
+        claude.stdin.end();
+
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({
+              type: "status",
+              status: "running",
+              pid: claude.pid,
+            })}\n`
+          )
+        );
+
+        let clientDisconnected = false;
+        const enqueue = (msg: string) => {
+          if (clientDisconnected) {
+            return;
+          }
+          try {
+            controller.enqueue(encoder.encode(`${msg}\n`));
+          } catch {
+            // Client disconnected (tab switch, navigation, etc.)
+            clientDisconnected = true;
+          }
+        };
+
+        let stdoutBuffer = "";
+        claude.stdout.on("data", (data: Buffer) => {
+          stdoutBuffer += data.toString();
+          const lines = stdoutBuffer.split("\n");
+          // Keep the last partial line in the buffer
+          stdoutBuffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              continue;
+            }
+            try {
+              processStreamEvent(JSON.parse(trimmed), streamState, enqueue);
+            } catch {
+              // Not valid JSON — skip
+            }
+          }
+        });
+
+        claude.stderr.on("data", (data: Buffer) => {
+          const text = data.toString();
+          console.error("[Comment Chat stderr]", text);
+          enqueue(JSON.stringify({ type: "error", error: text }));
+        });
+
+        claude.on("close", (code) => {
+          claudeProcess = null;
+          stdoutBuffer = flushCommentStdoutBuffer(
+            stdoutBuffer,
+            streamState,
+            enqueue
+          );
+
+          console.log("[Comment Chat API] Claude exited with code:", code);
+          console.log(
+            "[Comment Chat API] Content length:",
+            streamState.assistantContent.length
+          );
+          console.log(
+            "[Comment Chat API] Session ID:",
+            streamState.capturedSessionId || "none"
+          );
+          console.log(
+            "[Comment Chat API] Client disconnected:",
+            clientDisconnected
+          );
+
+          appendCommentMessageToHistory(history, streamState);
+          saveCommentChatHistory(paths.historyPath, history);
+
+          if (streamState.usedEditTools && ticketId) {
+            enqueue(JSON.stringify({ type: "learnings", status: "triggered" }));
+            triggerAsyncLearningExtraction({
+              symphonyWorkDir: paths.claudeWorkDir,
+              worktreeDir: paths.effectiveDir,
+              chatHistoryPath: paths.historyPath,
+              activeTab: "comments",
+              ticketId,
+            });
+          }
+
+          enqueue(JSON.stringify({ type: "done", exitCode: code }));
+          try {
+            controller.close();
+          } catch {
+            // Stream already closed (client disconnected)
+          }
+        });
+
+        claude.on("error", (err) => {
+          claudeProcess = null;
+          console.error("[Comment Chat API] Claude spawn error:", err);
+          enqueue(
+            JSON.stringify({
+              type: "error",
+              error: `Failed to start Claude: ${err.message}`,
+            })
+          );
+          try {
+            controller.close();
+          } catch {
+            // Stream already closed
+          }
+        });
+      } catch (err) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Unknown error";
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({ type: "error", error: errorMessage })}\n`
+          )
+        );
+        controller.close();
+      }
+    },
+
+    cancel() {
+      // Client aborted the request (stop button pressed)
+      if (claudeProcess) {
+        console.log(
+          "[Comment Chat API] Client cancelled — killing Claude PID:",
+          claudeProcess.pid
+        );
+        claudeProcess.kill("SIGTERM");
+
+        // Save partial response so it's not lost
+        if (streamStateRef) {
+          const { assistantContent, assistantBlocks, capturedSessionId } =
+            streamStateRef;
+          if (assistantContent.trim() || assistantBlocks.length > 0) {
+            history.messages.push({
+              id: `assistant-${Date.now()}`,
+              role: "assistant",
+              content: assistantContent.trim(),
+              timestamp: new Date().toISOString(),
+              blocks: assistantBlocks.length > 0 ? assistantBlocks : undefined,
+            });
+          }
+          if (capturedSessionId && !history.sessionId) {
+            history.sessionId = capturedSessionId;
+          }
+          saveCommentChatHistory(paths.historyPath, history);
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
+  });
+}
+
+/**
+ * DELETE /api/symphony/comment-chat/[commentId]?ticketId=...&repo=...&index=...
+ *
+ * Deletes a specific message from the chat history by index
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ commentId: string }> }
+) {
+  const { commentId } = await params;
+  const searchParams = request.nextUrl.searchParams;
+  const ticketId = searchParams.get("ticketId");
+  const repoPath = searchParams.get("repo");
+  const indexStr = searchParams.get("index");
+
+  if (!(ticketId && repoPath)) {
+    return new Response(
+      JSON.stringify({ error: "ticketId and repo parameters are required" }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const history = loadCommentChatHistory(
+    paths.historyPath,
+    ticketId,
+    repoPath,
+    commentId
+  );
+
+  if (indexStr === null) {
+    // Clear all messages
+    history.messages = [];
+    history.sessionId = undefined;
+    saveCommentChatHistory(paths.historyPath, history);
+  } else {
+    // Delete specific message by index
+    const index = Number.parseInt(indexStr, 10);
+    if (index >= 0 && index < history.messages.length) {
+      history.messages.splice(index, 1);
+      saveCommentChatHistory(paths.historyPath, history);
+    }
+  }
+
+  return Response.json({ success: true });
+}
+
+/**
+ * PATCH /api/symphony/comment-chat/[commentId]?ticketId=...&repo=...
+ *
+ * Appends a single message to comment chat history.
+ * Used by the debate hook's saveDebateMessage and sendHumanToCodex.
+ * Body: { message: ChatMessage }
+ */
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ commentId: string }> }
+) {
+  const { commentId } = await params;
+  const searchParams = request.nextUrl.searchParams;
+  const ticketId = searchParams.get("ticketId");
+  const repoPath = searchParams.get("repo");
+
+  if (!(ticketId && repoPath)) {
+    return new Response(
+      JSON.stringify({ error: "ticketId and repo parameters are required" }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  const body = await request.json();
+  const { message, markResponded } = body as {
+    message?: ChatMessage;
+    markResponded?: string;
+  };
+
+  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const history = loadCommentChatHistory(
+    paths.historyPath,
+    ticketId,
+    repoPath,
+    commentId
+  );
+
+  // Mark a message as responded (by ID)
+  if (markResponded) {
+    const target = history.messages.find((m) => m.id === markResponded);
+    if (target) {
+      target.responded = true;
+      saveCommentChatHistory(paths.historyPath, history);
+    }
+    return Response.json({ success: true });
+  }
+
+  // Append a new message
+  if (!(message?.id && message.role) || typeof message.content !== "string") {
+    return new Response(
+      JSON.stringify({
+        error: "valid message object or markResponded is required",
+      }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
+  }
+
+  history.messages.push(message);
+  saveCommentChatHistory(paths.historyPath, history);
+
+  return Response.json({ success: true });
+}
+
+function flushCommentStdoutBuffer(
+  buffer: string,
+  streamState: ReturnType<typeof createStreamState>,
+  enqueue: (msg: string) => void
+): string {
+  if (buffer.trim()) {
+    try {
+      processStreamEvent(JSON.parse(buffer.trim()), streamState, enqueue);
+    } catch {
+      // Not valid JSON
+    }
+  }
+  return "";
+}
+
+function appendCommentMessageToHistory(
+  history: CommentChatHistory,
+  streamState: ReturnType<typeof createStreamState>
+): void {
+  const {
+    assistantContent,
+    assistantBlocks,
+    capturedSessionId,
+    contextPercent,
+  } = streamState;
+  if (assistantContent.trim() || assistantBlocks.length > 0) {
+    const assistantMessage: ChatMessage = {
+      id: `assistant-${Date.now()}`,
+      role: "assistant",
+      content: assistantContent.trim(),
+      timestamp: new Date().toISOString(),
+      blocks: assistantBlocks.length > 0 ? assistantBlocks : undefined,
+    };
+    history.messages.push(assistantMessage);
+  }
+  if (capturedSessionId && !history.sessionId) {
+    history.sessionId = capturedSessionId;
+  }
+  if (contextPercent !== null) {
+    history.contextPercent = contextPercent;
+  }
+}
