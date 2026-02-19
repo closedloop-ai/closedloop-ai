@@ -349,7 +349,10 @@ export function ProjectsTable({
                 </TableCell>
                 <TableCell>
                   <Tooltip>
-                    <TooltipTrigger>
+                    <TooltipTrigger asChild>
+                      <span className="inline-flex">
+                        <HexagonProgress value={project.status} />
+                      </span>
                       <HexagonProgress value={project.status} />
                     </TooltipTrigger>
                     <TooltipContent>
