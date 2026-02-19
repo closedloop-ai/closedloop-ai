@@ -261,6 +261,7 @@ export function ReviewChatPane({
     setIsReviewing(true);
     setReviewOutput("");
     setReviewDone(false);
+    let accumulatedOutput = "";
 
     try {
       const response = await fetch(
@@ -312,7 +313,10 @@ export function ReviewChatPane({
       console.log("[review-stream] Starting stream read");
       const { text: accumulated, completed } = await streamReviewOutput(
         reader,
-        setReviewOutput,
+        (text) => {
+          accumulatedOutput = text;
+          setReviewOutput(text);
+        },
         (sid) => {
           sessionIdRef.current = sid;
         },
@@ -385,7 +389,7 @@ export function ReviewChatPane({
       // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
         setReviewDone(true);
-        onReviewCompleteRef.current?.(reviewOutput, 0);
+        onReviewCompleteRef.current?.(accumulatedOutput, 0);
         return;
       }
       console.error("Review error:", err);
@@ -393,7 +397,7 @@ export function ReviewChatPane({
         description: err instanceof Error ? err.message : "Unknown error",
       });
       setReviewDone(true);
-      onReviewCompleteRef.current?.(reviewOutput, 0);
+      onReviewCompleteRef.current?.(accumulatedOutput, 0);
     } finally {
       setIsReviewing(false);
       abortRef.current = null;
@@ -1490,12 +1494,12 @@ export function stripWorktreePath(filePath: string): string {
 
 /**
  * Resolve a short/relative file path against the PR's changed file list.
- * Returns the full repo-relative path if found, or null if the file is not in the PR.
+ * Returns the full repo-relative path if found, "ambiguous" if multiple matches, or null if not in the PR.
  */
 export function resolveFullPath(
   shortName: string,
   prFiles: string[]
-): string | null {
+): string | "ambiguous" | null {
   if (prFiles.includes(shortName)) {
     return shortName;
   }
@@ -1504,6 +1508,9 @@ export function resolveFullPath(
   );
   if (matches.length === 1) {
     return matches[0];
+  }
+  if (matches.length > 1) {
+    return "ambiguous";
   }
   return null;
 }

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { getWorktreeParentDir } from "@/lib/engineer/repos";
 
@@ -35,7 +35,10 @@ function removeNonWorktree(
 }
 
 function forceRemoveWorktree(expandedPath: string): WorktreeResult {
-  spawnSync("git", ["worktree", "prune"], { stdio: "pipe", cwd: expandedPath });
+  spawnSync("git", ["worktree", "prune"], {
+    stdio: "pipe",
+    cwd: dirname(expandedPath),
+  });
   rmSync(expandedPath, { recursive: true, force: true });
   return { success: true, message: "Worktree forcefully removed" };
 }
@@ -78,7 +81,10 @@ function removeWorktree(expandedPath: string, force: boolean): WorktreeResult {
       args.push("--force");
     }
     args.push(expandedPath);
-    const result = spawnSync("git", args, { stdio: "pipe", cwd: expandedPath });
+    const result = spawnSync("git", args, {
+      stdio: "pipe",
+      cwd: dirname(expandedPath),
+    });
     if (result.status !== 0) {
       throw new Error(
         result.stderr?.toString() ?? "git worktree remove failed"
@@ -180,7 +186,7 @@ function isRemoteBranchGone(mainRepoPath: string, branchRef: string): boolean {
   const result = spawnSync(
     "git",
     ["ls-remote", "--heads", "origin", shortName],
-    { stdio: "pipe", cwd: mainRepoPath, timeout: 15_000 }
+    { stdio: "pipe", cwd: mainRepoPath, timeout: 5000 }
   );
 
   // If ls-remote returns empty output, the branch doesn't exist on remote
@@ -220,11 +226,15 @@ export function POST() {
       return NextResponse.json({ removed: [], kept: [], errors: [] });
     }
 
+    // Cap the number of worktrees to scan — each requires a blocking ls-remote call
+    const MAX_WORKTREES = 10;
+    const cappedPrDirs = prDirs.slice(0, MAX_WORKTREES);
+
     // Find the main repo by parsing `git worktree list --porcelain` from the first PR worktree
     // The first entry in `git worktree list` is always the main worktree
     const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
       stdio: "pipe",
-      cwd: prDirs[0],
+      cwd: cappedPrDirs[0],
       timeout: 10_000,
     });
 
@@ -257,7 +267,7 @@ export function POST() {
     const kept: string[] = [];
     const errors: string[] = [];
 
-    for (const prDir of prDirs) {
+    for (const prDir of cappedPrDirs) {
       try {
         // Security: ensure path is inside worktreeParentDir
         if (!prDir.startsWith(worktreeParentDir + sep)) {

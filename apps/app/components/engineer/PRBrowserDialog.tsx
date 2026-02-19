@@ -1353,7 +1353,10 @@ function classifyFindings(
       continue;
     }
     const fullPath = resolveFullPath(shortPath, prFiles);
-    if (fullPath) {
+    if (fullPath === "ambiguous") {
+      // Multiple PR files match — fall back to general comment
+      general.push(finding);
+    } else if (fullPath) {
       inline.push({ finding, fullPath });
     } else if (prFiles.length === 0) {
       // PR file list unavailable (fetch failed) — fall back to general comment

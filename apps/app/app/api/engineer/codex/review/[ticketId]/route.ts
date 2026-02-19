@@ -438,32 +438,27 @@ function createClaudeStream(
           if (!trimmed) {
             continue;
           }
-          processClaudeStreamLine(trimmed, sessionIdHolder, sendEvent);
+          const isResult = processClaudeStreamLine(
+            trimmed,
+            sessionIdHolder,
+            sendEvent
+          );
 
           // Start kill timer once we see a result event (Claude CLI may hang)
-          if (!resultKillTimerSet) {
-            try {
-              const ev = JSON.parse(trimmed);
-              if (ev.type === "result") {
-                resultKillTimerSet = true;
-                const killTimer = setTimeout(() => {
-                  console.warn(
-                    "[codex-review] Kill timeout after result: SIGTERM"
-                  );
-                  try {
-                    childProcess.kill("SIGTERM");
-                  } catch {}
-                  setTimeout(() => {
-                    try {
-                      childProcess.kill("SIGKILL");
-                    } catch {}
-                  }, 5000);
-                }, 30_000);
-                childProcess.once("close", () => clearTimeout(killTimer));
-              }
-            } catch {
-              // Not JSON — skip kill timer check
-            }
+          if (isResult && !resultKillTimerSet) {
+            resultKillTimerSet = true;
+            const killTimer = setTimeout(() => {
+              console.warn("[codex-review] Kill timeout after result: SIGTERM");
+              try {
+                childProcess.kill("SIGTERM");
+              } catch {}
+              setTimeout(() => {
+                try {
+                  childProcess.kill("SIGKILL");
+                } catch {}
+              }, 5000);
+            }, 30_000);
+            childProcess.once("close", () => clearTimeout(killTimer));
           }
         }
       });
@@ -866,11 +861,12 @@ function resolveEffectiveReviewMode(
     const headSha = execSync("git rev-parse HEAD", {
       cwd: worktreeDir,
       encoding: "utf-8",
+      timeout: 10_000,
     }).trim();
     const mergeBaseResult = spawnSync(
       "git",
       ["merge-base", "HEAD", `origin/${baseBranch}`],
-      { cwd: worktreeDir, encoding: "utf-8" }
+      { cwd: worktreeDir, encoding: "utf-8", timeout: 10_000 }
     );
     const mergeBase = (mergeBaseResult.stdout as string).trim();
     if (mergeBase !== headSha) {
@@ -902,6 +898,7 @@ function applyMergedPrDiff(
     cwd: worktreeDir,
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
+    timeout: 30_000,
   });
   const diff = (diffResult.stdout as string) ?? "";
 
@@ -915,19 +912,38 @@ function applyMergedPrDiff(
   const mergeOidResult = spawnSync(
     "gh",
     ["pr", "view", prNum, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
-    { cwd: worktreeDir, encoding: "utf-8" }
+    { cwd: worktreeDir, encoding: "utf-8", timeout: 30_000 }
   );
   const mergeOid = (mergeOidResult.stdout as string).trim();
   if (mergeOid) {
     const baseCommitResult = spawnSync("git", ["rev-parse", `${mergeOid}^1`], {
       cwd: worktreeDir,
       encoding: "utf-8",
+      timeout: 10_000,
     });
     const baseCommit = (baseCommitResult.stdout as string).trim();
-    spawnSync("git", ["checkout", "--detach", baseCommit], {
-      cwd: worktreeDir,
-      stdio: "pipe",
-    });
+    if (!baseCommit || baseCommitResult.status !== 0) {
+      console.warn(
+        "[codex-review] Failed to resolve base commit for merged PR"
+      );
+      return "base";
+    }
+    const checkoutResult = spawnSync(
+      "git",
+      ["checkout", "--detach", baseCommit],
+      {
+        cwd: worktreeDir,
+        stdio: "pipe",
+        timeout: 10_000,
+      }
+    );
+    if (checkoutResult.status !== 0) {
+      console.warn(
+        "[codex-review] Failed to checkout base commit:",
+        baseCommit
+      );
+      return "base";
+    }
   }
 
   const patchPath = join(worktreeDir, ".pr-review-diff.patch");
@@ -974,7 +990,7 @@ function processClaudeStreamLine(
     reviewCommand?: string;
     contextPercent?: number;
   }) => void
-): void {
+): boolean {
   try {
     const event = JSON.parse(trimmed);
     const sid = extractClaudeSessionId(event);
@@ -992,20 +1008,22 @@ function processClaudeStreamLine(
           : "Claude encountered an error";
       console.warn(`[codex-review] Claude result error: ${errorText}`);
       sendEvent({ type: "error", content: errorText });
-      return;
+      return true;
     }
 
-    // Extract context usage from result events
-    if (event.type === "result" && event.subtype === "success" && event.usage) {
-      const total =
-        (event.usage.input_tokens ?? 0) +
-        (event.usage.output_tokens ?? 0) +
-        (event.usage.cache_creation_input_tokens ?? 0) +
-        (event.usage.cache_read_input_tokens ?? 0);
-      const contextWindow = event.context_window ?? 200_000;
-      const percent =
-        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
-      sendEvent({ type: "usage", contextPercent: percent });
+    if (event.type === "result") {
+      if (event.subtype === "success" && event.usage) {
+        const total =
+          (event.usage.input_tokens ?? 0) +
+          (event.usage.output_tokens ?? 0) +
+          (event.usage.cache_creation_input_tokens ?? 0) +
+          (event.usage.cache_read_input_tokens ?? 0);
+        const contextWindow = event.context_window ?? 200_000;
+        const percent =
+          contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+        sendEvent({ type: "usage", contextPercent: percent });
+      }
+      return true;
     }
 
     const text = extractClaudeText(event);
@@ -1025,4 +1043,5 @@ function processClaudeStreamLine(
     );
     sendEvent({ type: "output", content: `${trimmed}\n` });
   }
+  return false;
 }
