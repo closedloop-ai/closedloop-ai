@@ -170,23 +170,32 @@ export async function ingestPlanArtifacts(
     });
   }
 
-  // Create workstream completion event
+  // Create workstream completion event (idempotent — skip if already exists)
   if (loop.workstreamId) {
-    await withDb((db) =>
-      db.workstreamEvent.create({
-        data: {
+    await withDb(async (db) => {
+      const existing = await db.workstreamEvent.findFirst({
+        where: {
           workstreamId: loop.workstreamId!,
           type: "LOOP_COMPLETED",
-          actorType: "system",
-          data: {
-            loopId: loop.id,
-            artifactId,
-            command: loop.command,
-            conclusion: "success",
-          },
+          data: { path: ["loopId"], equals: loop.id },
         },
-      })
-    );
+      });
+      if (!existing) {
+        await db.workstreamEvent.create({
+          data: {
+            workstreamId: loop.workstreamId!,
+            type: "LOOP_COMPLETED",
+            actorType: "system",
+            data: {
+              loopId: loop.id,
+              artifactId,
+              command: loop.command,
+              conclusion: "success",
+            },
+          },
+        });
+      }
+    });
   }
 
   log.info("[loop-artifact-ingestion] Plan content ingested", {
