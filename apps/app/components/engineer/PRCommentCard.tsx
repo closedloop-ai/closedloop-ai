@@ -497,7 +497,7 @@ function PendingOverflowMenu({
 /**
  * Minimal overflow with just "View on GitHub" — used for resolved and analyzing states
  */
-function GitHubOnlyOverflow({ url }: { url?: string }) {
+function GitHubOnlyOverflow({ url }: Readonly<{ url?: string }>) {
   if (!url) {
     return null;
   }

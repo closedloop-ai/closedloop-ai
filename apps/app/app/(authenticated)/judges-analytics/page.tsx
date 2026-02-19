@@ -5,7 +5,6 @@ import { format, subDays } from "date-fns";
 import { useState } from "react";
 import { useJudgesAnalytics } from "@/hooks/queries/use-judges-analytics";
 import { ArtifactTypeSection } from "./components/artifact-type-section";
-import { ArtifactsCreatedChart } from "./components/artifacts-created-chart";
 import { DateRangeFilter } from "./components/date-range-filter";
 
 export default function JudgesAnalyticsPage() {
@@ -43,9 +42,6 @@ export default function JudgesAnalyticsPage() {
         }}
         startDate={startDate}
       />
-
-      {/* Artifacts created bar chart (uses page date range, group by is chart-specific) */}
-      <ArtifactsCreatedChart endDate={endDate} startDate={startDate} />
 
       {/* Content area with conditional rendering */}
       {isLoading && (

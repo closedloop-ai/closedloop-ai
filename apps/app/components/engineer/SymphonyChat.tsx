@@ -117,7 +117,7 @@ export function SymphonyChat({
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [isExpanded, setIsExpanded] = useState(false);
   const [leftPaneFraction, setLeftPaneFraction] = useState(() => {
-    if (typeof globalThis.localStorage === "undefined") {
+    if (globalThis.localStorage === undefined) {
       return 0.5;
     }
     const stored = localStorage.getItem("symphony-chat-split");
@@ -2322,7 +2322,7 @@ const MessageBubble = memo(
         onAction={onSendAction}
         onCopy={onCopy ? () => onCopy(index) : undefined}
         onForward={!isUser && onForward ? () => onForward(index) : undefined}
-        roleLabel={isUser ? "you" : "cl.dev"}
+        roleLabel={isUser ? "you" : "claude"}
         timestamp={message.timestamp}
       >
         {isUser ? (

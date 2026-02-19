@@ -1,5 +1,6 @@
 import type { ProjectWithDetails } from "@repo/api/src/types/organization";
 import { z } from "zod";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -12,11 +13,12 @@ import { createProjectValidator } from "./validators";
 
 /**
  * GET /projects - List all projects
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
  * Query params:
  *   - teamId: Filter by team
  *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
  */
-export const GET = withAuth<ProjectWithDetails[], "/projects">(
+export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
     try {
       const url = new URL(request.url);

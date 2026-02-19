@@ -10,16 +10,17 @@ import {
   TableRow,
 } from "@repo/design-system/components/ui/table";
 import { useMemo } from "react";
-import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useSortParams } from "@/hooks/use-sort-params";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
-  humanRatingsCount?: number;
-  humanCommentsCount?: number;
 };
+
+function formatOrDash(value: number | null): string {
+  return value !== null ? value.toFixed(2) : "\u2014";
+}
 
 const JUDGE_SORT_COLUMNS = [
   "judgeName",
@@ -44,12 +45,8 @@ const JUDGE_SORT_CONFIGS: Record<
   stdDev: { key: "stdDev", columnType: "number" },
 };
 
-export function JudgeAnalyticsTable({
-  data,
-  humanRatingsCount = 0,
-  humanCommentsCount = 0,
-}: JudgeAnalyticsTableProps) {
-  const { sortBy, sortDir, setSort } = useSortParams<JudgeSortColumn>({
+export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
+  const { sortBy, sortDir } = useSortParams<JudgeSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
     validColumns: JUDGE_SORT_COLUMNS,
@@ -64,50 +61,28 @@ export function JudgeAnalyticsTable({
     <Table>
       <TableHeader>
         <TableRow>
-          <SortableColumnHeader
-            column="judgeName"
-            label="Judge Name"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <SortableColumnHeader
-            column="artifactsEvaluated"
-            label="Artifacts Evaluated"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <SortableColumnHeader
-            column="min"
-            label="Min"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <SortableColumnHeader
-            column="mean"
-            label="Mean"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <SortableColumnHeader
-            column="max"
-            label="Max"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <SortableColumnHeader
-            column="stdDev"
-            label="Std Dev"
-            onSort={setSort}
-            sortBy={sortBy}
-            sortDir={sortDir}
-          />
-          <TableHead>Human Ratings</TableHead>
-          <TableHead>Human Comments</TableHead>
+          <TableHead className="align-bottom" rowSpan={2}>
+            Judge Name
+          </TableHead>
+          <TableHead className="align-bottom" rowSpan={2}>
+            Artifacts Evaluated
+          </TableHead>
+          <TableHead className="border-b-0 text-center" colSpan={4}>
+            Eval
+          </TableHead>
+          <TableHead className="border-b-0 text-center" colSpan={4}>
+            Human
+          </TableHead>
+        </TableRow>
+        <TableRow>
+          <TableHead>Min</TableHead>
+          <TableHead>Max</TableHead>
+          <TableHead>Mean</TableHead>
+          <TableHead>Std Dev</TableHead>
+          <TableHead>Min</TableHead>
+          <TableHead>Max</TableHead>
+          <TableHead>Mean</TableHead>
+          <TableHead>Std Dev</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -118,23 +93,15 @@ export function JudgeAnalyticsTable({
             </TableCell>
             <TableCell>{judge.artifactsEvaluated}</TableCell>
             <TableCell>{judge.min.toFixed(2)}</TableCell>
-            <TableCell>{judge.mean.toFixed(2)}</TableCell>
             <TableCell>{judge.max.toFixed(2)}</TableCell>
+            <TableCell>{judge.mean.toFixed(2)}</TableCell>
             <TableCell>{judge.stdDev.toFixed(2)}</TableCell>
-            <TableCell className="text-muted-foreground">&mdash;</TableCell>
-            <TableCell className="text-muted-foreground">&mdash;</TableCell>
+            <TableCell>{formatOrDash(judge.humanMin)}</TableCell>
+            <TableCell>{formatOrDash(judge.humanMax)}</TableCell>
+            <TableCell>{formatOrDash(judge.humanMean)}</TableCell>
+            <TableCell>{formatOrDash(judge.humanStdDev)}</TableCell>
           </TableRow>
         ))}
-        <TableRow>
-          <TableCell className="font-medium">Human</TableCell>
-          <TableCell className="text-muted-foreground">&mdash;</TableCell>
-          <TableCell className="text-muted-foreground">&mdash;</TableCell>
-          <TableCell className="text-muted-foreground">&mdash;</TableCell>
-          <TableCell className="text-muted-foreground">&mdash;</TableCell>
-          <TableCell className="text-muted-foreground">&mdash;</TableCell>
-          <TableCell>{humanRatingsCount}</TableCell>
-          <TableCell>{humanCommentsCount}</TableCell>
-        </TableRow>
       </TableBody>
     </Table>
   );

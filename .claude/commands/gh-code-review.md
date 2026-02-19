@@ -357,14 +357,23 @@ TOOL RESTRICTIONS:
 - You CAN use: Read, Grep, Glob tools to explore the local codebase for additional context.
 - All patch/diff data is provided in <diff> above. Do NOT try to fetch it from GitHub.
 
+FILE RESTRICTION (CRITICAL — violations cause false positives):
+- You may ONLY report findings for files listed in <files_assigned> above.
+- NEVER report findings for files not in the PR diff, even if you discover issues while exploring the codebase for context.
+- Every finding MUST have a `file` field that exactly matches one of the paths in <files_assigned>.
+- If you cannot cite a specific file and line FROM THE DIFF, do not report it.
+
 FLAG an issue ONLY when ALL are true:
-1. Introduced in this PR (not pre-existing)
-2. The original author would likely fix it if aware
-3. Does not rely on unstated assumptions
-4. Discrete and actionable
-5. Concrete evidence cited
+1. The file is listed in <files_assigned> above
+2. The line exists in the <diff> (added or modified line)
+3. Introduced in this PR (not pre-existing)
+4. The original author would likely fix it if aware
+5. Does not rely on unstated assumptions
+6. Discrete and actionable
+7. Concrete evidence cited from the diff
 
 Do NOT flag:
+- Issues in files not listed in <files_assigned> — even if real
 - Pre-existing issues, style preferences, linter-catchable issues
 - General quality concerns (coverage, docs), pedantic nitpicks
 - Hypothetical edge cases dependent on specific inputs/state
@@ -612,8 +621,13 @@ Add findings from Step 2.5 (deterministic hygiene) to the normalized agent findi
 
 Then for each finding:
 
-1. **File in PR?** If finding's file NOT in FILES_TO_REVIEW → **DISCARD**
+1. **File in PR? (CRITICAL — this is the #1 source of false positives)**
+   - Build the set of valid file paths from FILES_TO_REVIEW before iterating findings.
+   - For each finding: check `finding.file` against this set using EXACT string match.
+   - If finding's file is NOT in the set → **DISCARD** with reason `DISCARD_FILE_NOT_CHANGED`.
+   - **This check is non-negotiable.** Agents hallucinate files not in the PR. Every finding that survives this step MUST have a file path that exactly matches an entry in FILES_TO_REVIEW.
    - Exception: findings with `inline === false` skip this check (summary-only findings from Step 2.5 may reference files outside the PR, e.g., missing .gitignore patterns)
+   - **Log discarded findings**: Print each discarded finding's file path so hallucinations are visible in logs.
 2. **Line in changed lines ±3?** If finding's line NOT within 3 lines of CHANGED_LINES[file] → **DISCARD**
    - Exception: findings with `inline === false` skip this check (summary-only)
 3. **Duplicate?** Same file + line (±3) + same category → **MERGE** (keep highest severity). Also merge if same file + line (±3) + same recommendation, even across categories.
@@ -801,39 +815,23 @@ Mark todo "Post inline comments for validated findings" as `in_progress`.
 
 For each validated finding where `inline !== false` (all severities):
 
-1. **Check dedup map**: If `file:line:category` already has comment, SKIP
-2. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
-3. **Create inline comment** (with error handling):
+1. **File in PR? (HARD GATE — check BEFORE posting)**: If `finding.file` is NOT in FILES_TO_REVIEW → **SKIP** and log "BLOCKED: {file} not in PR". This is a final safety net against hallucinated files that survived validation.
+2. **Check dedup map**: If `file:line:category` already has comment, SKIP
+3. **Verify line is in diff**: Only post if line exists in CHANGED_LINES[file] (±3 line tolerance)
+4. **Create inline comment using MCP tool** (REQUIRED):
 
-Use the `mcp__github_inline_comment__create_inline_comment` tool if available, OR use gh api:
+**ALWAYS use the `mcp__github_inline_comment__create_inline_comment` MCP tool to post inline comments.** Do NOT use `gh api` or Bash for posting comments. The MCP tool is available in the CI environment and is the only supported method.
 
-```bash
-# Wrap in error handling - don't fail entire review if one comment fails
-COMMENT_RESULT=$(gh api repos/<OWNER>/<REPO_NAME>/pulls/<PR_NUMBER>/comments \
-  -f body="**[SEVERITY]** Category
+Call the tool with these parameters for each finding:
+- `owner`: OWNER
+- `repo`: REPO_NAME
+- `pull_number`: PR_NUMBER
+- `body`: The formatted comment body (see Comment Format below)
+- `path`: The file path
+- `line`: The line number
+- `commit_id`: HEAD_SHA
 
-Issue description
-
-**Recommendation:** How to fix
-
-\`\`\`
-code snippet
-\`\`\`" \
-  -f path="<FILE_PATH>" \
-  -F line=<LINE_NUMBER> \
-  -f commit_id="<HEAD_SHA>" 2>&1) || true
-
-# Check for line resolution errors - these are expected for edge cases
-if echo "$COMMENT_RESULT" | grep -q "could not be resolved"; then
-  echo "Warning: Could not post comment on <FILE_PATH>:<LINE_NUMBER> - line not in diff"
-  # Continue to next finding, don't fail
-fi
-```
-
-**Error Handling**: If inline comment fails with "line could not be resolved":
-- Log warning but continue processing other findings
-- Add to summary as "comment skipped - line not in diff"
-- Do NOT fail the entire review
+If the MCP tool call fails for a specific finding (e.g., line not in diff), log the error and continue to the next finding. Do NOT fail the entire review.
 
 **Comment Format (with priority annotation):**
 

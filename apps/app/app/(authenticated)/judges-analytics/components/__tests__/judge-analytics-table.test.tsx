@@ -1,5 +1,5 @@
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { JudgeAnalyticsTable } from "../judge-analytics-table";
 
@@ -19,6 +19,10 @@ function makeJudge(
     mean: 3.5,
     max: 5.0,
     stdDev: 0.8,
+    humanMin: null,
+    humanMax: null,
+    humanMean: null,
+    humanStdDev: null,
     ...overrides,
   };
 }
@@ -27,45 +31,47 @@ afterEach(() => {
   cleanup();
 });
 
-describe("JudgeAnalyticsTable - smoke test", () => {
-  test("renders the table with column headers", () => {
-    render(
-      <JudgeAnalyticsTable
-        data={[]}
-        humanCommentsCount={0}
-        humanRatingsCount={0}
-      />
-    );
-
-    expect(screen.getByText("Judge Name")).toBeInTheDocument();
-    expect(screen.getByText("Artifacts Evaluated")).toBeInTheDocument();
-    expect(screen.getByText("Min")).toBeInTheDocument();
-    expect(screen.getByText("Mean")).toBeInTheDocument();
-    expect(screen.getByText("Max")).toBeInTheDocument();
-    expect(screen.getByText("Std Dev")).toBeInTheDocument();
-    expect(screen.getByText("Human Ratings")).toBeInTheDocument();
-    expect(screen.getByText("Human Comments")).toBeInTheDocument();
-  });
-
-  test("renders Human row even when data array is empty", () => {
+describe("JudgeAnalyticsTable - grouped column headers", () => {
+  test("renders Eval and Human group headers", () => {
     render(<JudgeAnalyticsTable data={[]} />);
 
+    expect(screen.getByText("Eval")).toBeInTheDocument();
     expect(screen.getByText("Human")).toBeInTheDocument();
   });
 
-  test("renders judge data rows with correct values", () => {
-    const judges: JudgeAggregateStats[] = [
-      makeJudge({
-        judgeName: "claude-opus",
-        mean: 4.2,
-        min: 2.0,
-        max: 5.0,
-        stdDev: 0.5,
-        artifactsEvaluated: 20,
-      }),
-    ];
+  test("renders sub-column headers for both groups", () => {
+    render(<JudgeAnalyticsTable data={[]} />);
 
-    render(<JudgeAnalyticsTable data={judges} />);
+    expect(screen.getAllByText("Min")).toHaveLength(2);
+    expect(screen.getAllByText("Max")).toHaveLength(2);
+    expect(screen.getAllByText("Mean")).toHaveLength(2);
+    expect(screen.getAllByText("Std Dev")).toHaveLength(2);
+  });
+
+  test("renders Judge Name and Artifacts Evaluated headers", () => {
+    render(<JudgeAnalyticsTable data={[]} />);
+
+    expect(screen.getByText("Judge Name")).toBeInTheDocument();
+    expect(screen.getByText("Artifacts Evaluated")).toBeInTheDocument();
+  });
+});
+
+describe("JudgeAnalyticsTable - eval stats columns", () => {
+  test("renders eval stats formatted to two decimal places", () => {
+    render(
+      <JudgeAnalyticsTable
+        data={[
+          makeJudge({
+            judgeName: "claude-opus",
+            min: 2.0,
+            max: 5.0,
+            mean: 4.2,
+            stdDev: 0.5,
+            artifactsEvaluated: 20,
+          }),
+        ]}
+      />
+    );
 
     expect(screen.getByText("claude-opus")).toBeInTheDocument();
     expect(screen.getByText("20")).toBeInTheDocument();
@@ -74,80 +80,65 @@ describe("JudgeAnalyticsTable - smoke test", () => {
     expect(screen.getByText("5.00")).toBeInTheDocument();
     expect(screen.getByText("0.50")).toBeInTheDocument();
   });
+});
 
-  test("displays humanRatingsCount and humanCommentsCount in Human row", () => {
+describe("JudgeAnalyticsTable - human stats columns", () => {
+  test("shows dashes when judge has no human ratings", () => {
+    render(<JudgeAnalyticsTable data={[makeJudge()]} />);
+
+    const rows = screen.getAllByRole("row");
+    // Row 0 = group header, Row 1 = sub-header, Row 2 = judge
+    const judgeCells = rows[2].querySelectorAll("td");
+    // Human columns are indices 6-9 (after Judge Name, Artifacts, Eval Min/Max/Mean/StdDev)
+    expect(judgeCells[6].textContent).toBe("\u2014");
+    expect(judgeCells[7].textContent).toBe("\u2014");
+    expect(judgeCells[8].textContent).toBe("\u2014");
+    expect(judgeCells[9].textContent).toBe("\u2014");
+  });
+
+  test("shows formatted human stats when available", () => {
     render(
       <JudgeAnalyticsTable
-        data={[]}
-        humanCommentsCount={17}
-        humanRatingsCount={42}
+        data={[
+          makeJudge({
+            humanMin: 0.4,
+            humanMax: 1.0,
+            humanMean: 0.7,
+            humanStdDev: 0.15,
+          }),
+        ]}
       />
     );
 
-    expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText("17")).toBeInTheDocument();
-  });
-
-  test("defaults humanRatingsCount and humanCommentsCount to 0 when not provided", () => {
-    render(<JudgeAnalyticsTable data={[]} />);
-
     const rows = screen.getAllByRole("row");
-    const humanRow = rows.at(-1);
-    expect(
-      within(humanRow as HTMLElement).getByText("Human")
-    ).toBeInTheDocument();
+    const judgeCells = rows[2].querySelectorAll("td");
+    expect(judgeCells[6].textContent).toBe("0.40");
+    expect(judgeCells[7].textContent).toBe("1.00");
+    expect(judgeCells[8].textContent).toBe("0.70");
+    expect(judgeCells[9].textContent).toBe("0.15");
   });
 });
 
-describe("JudgeAnalyticsTable - Human row pinning", () => {
-  const judges: JudgeAggregateStats[] = [
-    makeJudge({
-      judgeName: "zebra-judge",
-      mean: 1.0,
-      min: 1.0,
-      max: 1.0,
-      stdDev: 0.0,
-      artifactsEvaluated: 5,
-    }),
-    makeJudge({
-      judgeName: "alpha-judge",
-      mean: 5.0,
-      min: 5.0,
-      max: 5.0,
-      stdDev: 0.0,
-      artifactsEvaluated: 3,
-    }),
-    makeJudge({
-      judgeName: "middle-judge",
-      mean: 3.0,
-      min: 2.0,
-      max: 4.0,
-      stdDev: 0.5,
-      artifactsEvaluated: 8,
-    }),
-  ];
+describe("JudgeAnalyticsTable - judge rows", () => {
+  test("renders one row per judge with name", () => {
+    render(
+      <JudgeAnalyticsTable
+        data={[
+          makeJudge({ judgeName: "clarity-judge" }),
+          makeJudge({ judgeName: "brevity-judge" }),
+        ]}
+      />
+    );
 
-  test("Human row is always the last row in the table body", () => {
-    render(<JudgeAnalyticsTable data={judges} />);
-
-    const rows = screen.getAllByRole("row");
-    // rows[0] is the header row, subsequent rows are data rows, last is Human
-    const lastRow = rows.at(-1);
-    expect(
-      within(lastRow as HTMLElement).getByText("Human")
-    ).toBeInTheDocument();
+    expect(screen.getByText("clarity-judge")).toBeInTheDocument();
+    expect(screen.getByText("brevity-judge")).toBeInTheDocument();
   });
 
-  test("data rows appear before Human row", () => {
-    render(<JudgeAnalyticsTable data={judges} />);
+  test("renders artifactsEvaluated count", () => {
+    render(
+      <JudgeAnalyticsTable data={[makeJudge({ artifactsEvaluated: 10 })]} />
+    );
 
-    const rows = screen.getAllByRole("row");
-    // Header row + 3 data rows + Human row = 5 rows total
-    expect(rows).toHaveLength(5);
-
-    expect(screen.getByText("zebra-judge")).toBeInTheDocument();
-    expect(screen.getByText("alpha-judge")).toBeInTheDocument();
-    expect(screen.getByText("middle-judge")).toBeInTheDocument();
-    expect(screen.getByText("Human")).toBeInTheDocument();
+    expect(screen.getByText("10")).toBeInTheDocument();
   });
 });

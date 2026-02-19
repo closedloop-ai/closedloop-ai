@@ -1,6 +1,11 @@
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { errorResponse, successResponse } from "@/lib/route-utils";
+import {
+  errorResponse,
+  notFoundResponse,
+  successResponse,
+} from "@/lib/route-utils";
 import { artifactsService } from "../../../artifacts/service";
+import { projectsService } from "../../../projects/service";
 
 /**
  * POST /projects/:id/generate-plans
@@ -13,6 +18,12 @@ export const POST = withAnyAuth<
 >(async ({ user }, _, params) => {
   try {
     const { id } = await params;
+
+    const project = await projectsService.findById(id, user.organizationId);
+    if (!project) {
+      return notFoundResponse("Project");
+    }
+
     const result = await artifactsService.batchRegenerateImplementationPlans(
       id,
       user.organizationId,

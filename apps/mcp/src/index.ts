@@ -68,7 +68,7 @@ function extractApiKey(authHeader: string | null): string | null {
   if (!authHeader) {
     return null;
   }
-  const match = authHeader.match(BEARER_API_KEY_REGEX);
+  const match = BEARER_API_KEY_REGEX.exec(authHeader);
   return match ? match[1] : null;
 }
 
