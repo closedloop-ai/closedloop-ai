@@ -660,6 +660,18 @@ export function TicketList({
     }
   }, []);
 
+  // Silently clean up stale PR worktrees on mount (throttled to once per hour)
+  useEffect(() => {
+    const THROTTLE_KEY = "lastWorktreeCleanup";
+    const ONE_HOUR = 60 * 60 * 1000;
+    const last = localStorage.getItem(THROTTLE_KEY);
+    if (last && Date.now() - Number(last) < ONE_HOUR) {
+      return;
+    }
+    localStorage.setItem(THROTTLE_KEY, Date.now().toString());
+    fetch("/api/engineer/git/worktree", { method: "POST" }).catch(() => {});
+  }, []);
+
   // Discover external deployments (e.g., `vercel --yes` from CLI) on page load
   useEffect(() => {
     // Guard: wait for work directory status to be loaded
