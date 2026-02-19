@@ -522,12 +522,14 @@ export function ReviewChatPane({
       }
       setHasSentInitial(true);
 
-      // For Claude reviews with a seeded session, skip heavy context injection —
-      // the resumed session already has full review context.
-      const isClaudeResumed =
-        config.provider === "claude" && !!sessionIdRef.current;
+      // Claude with a seeded session: skip context injection (session has full review context).
+      // Codex: skip client-side injection (server-side buildCodexPrompt reads review log from disk).
+      // Claude without session: inject review context into the first message.
+      const skipContextInjection =
+        config.provider === "codex" ||
+        (config.provider === "claude" && !!sessionIdRef.current);
       let actualMessage = userMessage;
-      if (!isClaudeResumed) {
+      if (!skipContextInjection) {
         const findings = parseCodexReviewOutput(reviewOutput);
         actualMessage = formatReviewContextForChat(
           findings,
@@ -546,7 +548,7 @@ export function ReviewChatPane({
       const { url, body } = buildChatRequest(actualMessage);
       // For Claude path with context, pass displayContent so chat history stores
       // the user-facing text, not the giant context block
-      if (!isClaudeResumed && config.provider === "claude") {
+      if (!skipContextInjection && config.provider === "claude") {
         (body as Record<string, unknown>).displayContent = userMessage;
       }
       stream.sendMessage(url, body, {
@@ -740,25 +742,22 @@ export function ReviewChatPane({
         return;
       }
 
-      const isClaudeResumed =
-        config.provider === "claude" && !!sessionIdRef.current;
       const title = finding.message.split("\n")[0].slice(0, 80);
       const userFacingMessage = `Explain finding #${index + 1}: ${title}`;
 
-      // Build the actual message sent to the LLM
-      let actualMessage: string;
-      if (isClaudeResumed) {
-        // Session already has review context — just ask about the finding
-        actualMessage = userFacingMessage;
-      } else {
-        // Codex or no session — inject full finding context
-        actualMessage = formatFindingContextForChat(
-          finding,
-          index,
-          reviewOutput,
-          config.model
-        );
-      }
+      // Claude with session or Codex: send plain message (context available server-side).
+      // Claude without session: inject finding context into the message.
+      const skipContextInjection =
+        config.provider === "codex" ||
+        (config.provider === "claude" && !!sessionIdRef.current);
+      const actualMessage = skipContextInjection
+        ? userFacingMessage
+        : formatFindingContextForChat(
+            finding,
+            index,
+            reviewOutput,
+            config.model
+          );
 
       stream.setPendingUserMessage({
         id: crypto.randomUUID(),
@@ -770,7 +769,7 @@ export function ReviewChatPane({
       setHasSentInitial(true);
       const { url, body } = buildChatRequest(actualMessage);
       // Store user-facing text in chat history for Claude path
-      if (!isClaudeResumed && config.provider === "claude") {
+      if (!skipContextInjection && config.provider === "claude") {
         (body as Record<string, unknown>).displayContent = userFacingMessage;
       }
       stream.sendMessage(url, body, {
@@ -935,7 +934,14 @@ export function ReviewChatPane({
                     ? "text-blue-600 dark:text-blue-400"
                     : "text-emerald-600 dark:text-emerald-400"
                 }
-                roleLabel={msg.role === "user" ? "you" : "cl.dev"}
+                roleLabel={msg.role === "user" ? "you" : undefined}
+                sender={
+                  msg.role === "assistant"
+                    ? config.provider === "codex"
+                      ? "codex"
+                      : "claude"
+                    : undefined
+                }
                 timestamp={msg.timestamp}
               >
                 {msg.role === "user" ? (
@@ -954,8 +960,12 @@ export function ReviewChatPane({
               bubbleClassName="bg-muted text-foreground border border-border border-emerald-500/30"
               isStreaming
               messageRole="assistant"
-              roleClassName="text-emerald-600 dark:text-emerald-400"
-              roleLabel="cl.dev"
+              roleClassName={
+                config.provider === "codex"
+                  ? undefined
+                  : "text-emerald-600 dark:text-emerald-400"
+              }
+              sender={config.provider === "codex" ? "codex" : "claude"}
               timestamp={stream.streamStartedAt}
             >
               <MessageContent

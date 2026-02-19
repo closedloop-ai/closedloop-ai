@@ -489,6 +489,46 @@ export function PRBrowserDialog({
   const reviewEntries = Object.entries(reviews);
   const hasAnyReview = reviewEntries.length > 0;
 
+  /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
+  const restoreOrShowSettings = useCallback(async () => {
+    if (!(selectedRepo && selectedPR)) {
+      return;
+    }
+    if (hasAnyReview) {
+      setShowReviewSettings(true);
+      return;
+    }
+    const ticketId = `pr-${selectedPR.number}`;
+    let restored = false;
+    try {
+      const results = await Promise.all(
+        (["claude", "codex"] as const).map((p) =>
+          fetch(
+            `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
+          )
+            .then((res) => res.json())
+            .then((data) => ({ provider: p, data }))
+            .catch(() => ({ provider: p, data: null }))
+        )
+      );
+      for (const { provider, data } of results) {
+        if (data?.hasReview && data.status === "completed" && data.log) {
+          setReviews((prev) => addReviewEntry(prev, provider, data));
+          if (!restored) {
+            setActiveReviewProvider(provider);
+            setSelectedComment(null);
+            restored = true;
+          }
+        }
+      }
+    } catch {
+      // Fall through to settings
+    }
+    if (!restored) {
+      setShowReviewSettings(true);
+    }
+  }, [selectedRepo, selectedPR, hasAnyReview]);
+
   const triggerDedup = useCallback(
     async (completingProvider: string, completingFindings: ReviewFinding[]) => {
       if (!(selectedRepo && selectedPR)) {
@@ -1074,49 +1114,7 @@ export function PRBrowserDialog({
                   "cursor-pointer border border-border bg-background transition-colors hover:bg-muted",
                   "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 )}
-                onClick={async () => {
-                  // If reviews are already loaded in state, go straight to settings
-                  if (hasAnyReview) {
-                    setShowReviewSettings(true);
-                    return;
-                  }
-                  // Check for existing completed reviews (both providers) and restore them
-                  const ticketId = `pr-${selectedPR.number}`;
-                  let restored = false;
-                  try {
-                    const results = await Promise.all(
-                      (["claude", "codex"] as const).map((p) =>
-                        fetch(
-                          `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
-                        )
-                          .then((res) => res.json())
-                          .then((data) => ({ provider: p, data }))
-                          .catch(() => ({ provider: p, data: null }))
-                      )
-                    );
-                    for (const { provider, data } of results) {
-                      if (
-                        data?.hasReview &&
-                        data.status === "completed" &&
-                        data.log
-                      ) {
-                        setReviews((prev) =>
-                          addReviewEntry(prev, provider, data)
-                        );
-                        if (!restored) {
-                          setActiveReviewProvider(provider);
-                          setSelectedComment(null);
-                          restored = true;
-                        }
-                      }
-                    }
-                  } catch {
-                    // Fall through to settings
-                  }
-                  if (!restored) {
-                    setShowReviewSettings(true);
-                  }
-                }}
+                onClick={restoreOrShowSettings}
               >
                 <Search className="size-3.5" />
                 Review
@@ -1170,47 +1168,7 @@ export function PRBrowserDialog({
                     onReviewCodex={async (commentId) => {
                       markChatStarted(selectedPR.number, commentId);
                       setCommentStatusKey((k) => k + 1);
-                      // If reviews already loaded, go straight to settings
-                      if (hasAnyReview) {
-                        setShowReviewSettings(true);
-                        return;
-                      }
-                      // Check for existing completed reviews (both providers) before showing settings
-                      const ticketId = `pr-${selectedPR.number}`;
-                      let restored = false;
-                      try {
-                        const results = await Promise.all(
-                          (["claude", "codex"] as const).map((p) =>
-                            fetch(
-                              `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
-                            )
-                              .then((res) => res.json())
-                              .then((data) => ({ provider: p, data }))
-                              .catch(() => ({ provider: p, data: null }))
-                          )
-                        );
-                        for (const { provider, data } of results) {
-                          if (
-                            data?.hasReview &&
-                            data.status === "completed" &&
-                            data.log
-                          ) {
-                            setReviews((prev) =>
-                              addReviewEntry(prev, provider, data, false)
-                            );
-                            if (!restored) {
-                              setActiveReviewProvider(provider);
-                              setSelectedComment(null);
-                              restored = true;
-                            }
-                          }
-                        }
-                      } catch {
-                        // Failed to check — fall through to settings
-                      }
-                      if (!restored) {
-                        setShowReviewSettings(true);
-                      }
+                      await restoreOrShowSettings();
                     }}
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
