@@ -22,6 +22,11 @@ import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import { getAwsCredentials } from "@/lib/aws-credentials";
 import {
+  downloadLoopArtifacts,
+  ingestExecutionArtifacts,
+  ingestPlanArtifacts,
+} from "./loop-artifact-ingestion";
+import {
   type ContextPack,
   downloadMetadata,
   generateDownloadUrl,
@@ -1026,6 +1031,26 @@ async function handleLoopCompleted(
     estimatedCost,
     ...prSession,
   });
+
+  // Ingest artifacts from S3 into the platform (best-effort)
+  if (loop?.s3StateKey && loop.artifactId) {
+    try {
+      const loopArtifacts = await downloadLoopArtifacts(loop.s3StateKey);
+
+      if (loop.command === "PLAN" || loop.command === "REQUEST_CHANGES") {
+        await ingestPlanArtifacts(loop, organizationId, loopArtifacts);
+      }
+
+      if (loop.command === "EXECUTE") {
+        await ingestExecutionArtifacts(loop, loopArtifacts);
+      }
+    } catch (err) {
+      log.error("[loop-orchestrator] Artifact ingestion failed", {
+        loopId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 /**
