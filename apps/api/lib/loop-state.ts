@@ -375,7 +375,12 @@ export async function downloadArtifactFile(
   try {
     const key = `${stateKeyPrefix}/artifacts/${filename}`;
     return await getObject(key);
-  } catch {
+  } catch (error) {
+    log.warn("[loop-state] Failed to download artifact file", {
+      stateKeyPrefix,
+      filename,
+      error,
+    });
     return null;
   }
 }

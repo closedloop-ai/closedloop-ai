@@ -1546,6 +1546,7 @@ async function uploadState(workDir, output, runDir) {
     "plan.json",
     "plan.md",
     "implementation-plan.md",
+    "open-questions.md",
     "execution-result.json",
     "judges.json",
     "code-judges.json",
