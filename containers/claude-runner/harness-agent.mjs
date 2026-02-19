@@ -597,17 +597,11 @@ async function downloadState(workDir) {
     );
   }
 
-  // 3. Restore key artifact files (plan.json, plan.md, etc.) from parent's artifacts.
-  // These files live at repo root and are normally restored via git branch checkout.
-  // Downloading from S3 ensures they're available even if the parent's safety
-  // commit failed to push.
-  try {
-    const artifactsPrefix = `${parentPrefix}/artifacts`;
-    const count = await downloadDirectoryFromS3(artifactsPrefix, workDir);
-    log("info", `Restored ${count} artifact files to ${workDir}`);
-  } catch (err) {
-    log("error", `Failed to download artifacts (best-effort): ${err.message}`);
-  }
+  // Note: artifacts/ is NOT restored here. The run directory (which contains
+  // plan.json, plan.md, etc.) is already restored as part of claude-state/
+  // above (at .claude/runs/TIMESTAMP/). findExistingRunDir() locates it,
+  // and syncPlanFromContextPack() updates it with the latest user edits.
+  // Restoring artifacts/ to repo root would create confusing duplicates.
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +799,93 @@ function writeContextPackFiles(workDir, pack) {
       "Failed to write context pack files",
       err
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Run directory management
+// ---------------------------------------------------------------------------
+
+/**
+ * Find an existing run directory restored from parent state.
+ * downloadState() restores .claude/ from the parent, which includes
+ * .claude/runs/TIMESTAMP/. We find that directory so child loops
+ * (REQUEST_CHANGES, EXECUTE) operate on the same workspace as the parent.
+ *
+ * Returns the path to the most recent run directory, or null if none exists
+ * (indicating this is a fresh PLAN with no parent).
+ */
+function findExistingRunDir(workDir) {
+  const runsDir = path.join(workDir, ".claude", "runs");
+  if (!fs.existsSync(runsDir)) {
+    return null;
+  }
+  try {
+    const entries = fs.readdirSync(runsDir, { withFileTypes: true });
+    const dirs = entries
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort(); // Timestamp-prefixed names sort chronologically
+    if (dirs.length === 0) {
+      return null;
+    }
+    // Use the most recent run directory (last when sorted alphabetically)
+    return path.join(runsDir, dirs[dirs.length - 1]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write prd.md to the run directory. Used by all commands that have a prompt.
+ */
+function writePrdFile(targetDir, contextPack) {
+  if (!contextPack?.prompt) {
+    return null;
+  }
+  const prdPath = path.join(targetDir, "prd.md");
+  fs.writeFileSync(prdPath, contextPack.prompt);
+  log("info", `Wrote prd.md to ${prdPath}`);
+  return prdPath;
+}
+
+/**
+ * Sync plan.json in the run directory with the latest content from the
+ * context pack. This ensures manual edits the user made in the Liveblocks
+ * editor (stored as artifact versions in the DB) are reflected in plan.json
+ * before amend-plan or execute runs.
+ *
+ * The context pack's primary artifact (artifacts[0]) contains the latest
+ * artifact version content from the platform.
+ */
+function syncPlanFromContextPack(runDir, contextPack) {
+  if (!contextPack?.artifacts?.length) {
+    return;
+  }
+
+  // The primary artifact is the plan content (latest version from DB)
+  const primaryArtifact = contextPack.artifacts[0];
+  if (!primaryArtifact?.content) {
+    return;
+  }
+
+  const planJsonPath = path.join(runDir, "plan.json");
+
+  // If plan.json exists, update its .content field preserving other fields
+  // (pendingTasks, openQuestions, etc.). If it doesn't exist, the parent
+  // may not have produced one yet (edge case) — skip.
+  if (!fs.existsSync(planJsonPath)) {
+    log("info", "No existing plan.json in run dir — skipping context pack sync");
+    return;
+  }
+
+  try {
+    const existing = JSON.parse(fs.readFileSync(planJsonPath, "utf-8"));
+    existing.content = primaryArtifact.content;
+    fs.writeFileSync(planJsonPath, JSON.stringify(existing, null, 2));
+    log("info", `Synced plan.json with latest artifact content (${primaryArtifact.content.length} chars)`);
+  } catch (err) {
+    log("error", `Failed to sync plan.json from context pack: ${err.message}`);
   }
 }
 
@@ -1427,7 +1508,7 @@ function normalizeModelName(rawName) {
 // ---------------------------------------------------------------------------
 // State upload
 // ---------------------------------------------------------------------------
-async function uploadState(workDir, output) {
+async function uploadState(workDir, output, runDir) {
   if (!config.s3StateKey) {
     log("info", "No S3_STATE_KEY set, skipping state upload");
     return;
@@ -1445,7 +1526,10 @@ async function uploadState(workDir, output) {
     log("error", `Failed to upload output log: ${err.message}`);
   }
 
-  // 2. Upload .claude directory (conversation history, run state)
+  // 2. Upload .claude directory (conversation history, run state).
+  // This is the single source of truth — mirrors what symphony-artifact does
+  // in GitHub Actions (zip .claude/runs/ and upload). The run directory
+  // (symphonyWorkDir) lives INSIDE .claude/runs/, so this captures everything.
   const claudeDir = path.join(workDir, ".claude");
   if (fs.existsSync(claudeDir)) {
     try {
@@ -1474,26 +1558,36 @@ async function uploadState(workDir, output) {
     }
   }
 
-  // 3. Upload key work directory files (plan.json, plan.md, etc.)
-  const keyFiles = [
+  // 3. Upload key artifact files from the run directory.
+  // The run directory (.claude/runs/TIMESTAMP/) is the single source of truth —
+  // run-loop.sh, amend-plan, and syncPlanFromContextPack all write there.
+  // We upload specific files to artifacts/ at flat paths so the backend
+  // ingestion pipeline can read them by name (e.g., artifacts/plan.json).
+  // The full run directory is already captured in claude-state/ (step 2).
+  const KEY_ARTIFACT_FILES = [
     "plan.json",
     "plan.md",
     "implementation-plan.md",
-    ".claude/symphony-loop.local.md",
+    "open-questions.md",
     "execution-result.json",
+    "judges.json",
+    "code-judges.json",
+    "perf.jsonl",
+    "state.json",
   ];
-  for (const relPath of keyFiles) {
-    const absPath = path.join(workDir, relPath);
+  const artifactDir = runDir || workDir;
+  for (const fileName of KEY_ARTIFACT_FILES) {
+    const absPath = path.join(artifactDir, fileName);
     if (fs.existsSync(absPath)) {
       try {
         const content = fs.readFileSync(absPath);
         await uploadFile(
-          `${statePrefix}/artifacts/${relPath}`,
+          `${statePrefix}/artifacts/${fileName}`,
           content,
           "application/octet-stream"
         );
       } catch (err) {
-        log("error", `Failed to upload ${relPath}: ${err.message}`);
+        log("error", `Failed to upload artifact ${fileName}: ${err.message}`);
       }
     }
   }
@@ -1553,7 +1647,7 @@ async function uploadMetadata(_workDir, output, tokenUsage, startTime) {
 // ---------------------------------------------------------------------------
 // Command builders
 // ---------------------------------------------------------------------------
-function buildRunLoopArgs(runLoopPath, workDir) {
+function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   const args = [runLoopPath];
 
   // Pass workdir as positional argument so run-loop.sh knows where to operate
@@ -1569,6 +1663,10 @@ function buildRunLoopArgs(runLoopPath, workDir) {
     default:
       args.push("--max-iterations", String(config.maxIterations || 50));
       break;
+  }
+
+  if (prdPath) {
+    args.push("--prd", prdPath);
   }
 
   return { cmd: "bash", args };
@@ -1624,6 +1722,8 @@ let currentChild = null;
 let shuttingDown = false;
 // Module-level output buffer so timeout/shutdown paths can access accumulated output
 let liveOutputChunks = [];
+// Symphony workdir inside the repo (e.g., .claude/runs/YYYYMMDD-HHMMSS-loop-xxx/)
+let symphonyWorkDir = null;
 
 function setupShutdownHandlers(workDir) {
   async function handleShutdown(signal) {
@@ -1664,15 +1764,18 @@ function setupShutdownHandlers(workDir) {
     // Refresh token before safety commit (may have expired during run)
     await refreshGitHubToken();
 
-    // Attempt safety commit before uploading state
-    attemptSafetyCommit(
-      workDir,
-      "[INCOMPLETE] WIP: Safety commit — loop cancelled"
-    );
+    // Attempt safety commit before uploading state (only for code-producing commands)
+    const shouldCommitAndPush = config.command === "EXECUTE";
+    if (shouldCommitAndPush) {
+      attemptSafetyCommit(
+        workDir,
+        "[INCOMPLETE] WIP: Safety commit — loop cancelled"
+      );
+    }
 
     // Try to upload whatever state we have
     try {
-      await uploadState(workDir, []);
+      await uploadState(workDir, [], symphonyWorkDir);
     } catch (err) {
       log(
         "error",
@@ -1727,7 +1830,7 @@ function prepareWorkspace(workDir) {
 }
 
 function shouldCreateWorkingBranch() {
-  return config.command === "EXECUTE" || config.command === "REQUEST_CHANGES";
+  return config.command === "EXECUTE";
 }
 
 function createWorkingBranch(workDir) {
@@ -1839,7 +1942,7 @@ function validatePreRunInputs(command, contextPack) {
   }
 }
 
-function buildCommand(workDir) {
+function buildCommand(workDir, symphonyWD, prdPath) {
   const usesRunLoop = config.command === "PLAN" || config.command === "EXECUTE";
 
   if (usesRunLoop) {
@@ -1853,7 +1956,7 @@ function buildCommand(workDir) {
         err
       );
     }
-    return buildRunLoopArgs(runLoopPath, workDir);
+    return buildRunLoopArgs(runLoopPath, symphonyWD || workDir, prdPath);
   }
   return buildClaudeDirectArgs(workDir);
 }
@@ -1983,34 +2086,38 @@ function writeExecutionResult(workDir, prInfo) {
 async function reportFinalStatus(
   workDir,
   output,
-  { timedOut, exitCode, signal, duration, tokenUsage, startTime }
+  { timedOut, exitCode, signal, duration, tokenUsage, startTime, symphonyWorkDir: swDir }
 ) {
   // Step 0: Refresh GitHub token before safety commit (token may have expired
   // during the 55-minute run window)
   await refreshGitHubToken();
 
-  // Step 1: Safety commit + push on ALL exit paths (matches dispatch `if: always()` pattern)
+  const shouldCommitAndPush = config.command === "EXECUTE";
+
+  // Step 1: Safety commit + push only for commands that produce code changes
   const isIncomplete = timedOut || exitCode !== 0;
-  let commitMsg;
-  if (timedOut) {
-    commitMsg = "[INCOMPLETE] WIP: Safety commit — loop timed out";
-  } else if (exitCode !== 0) {
-    commitMsg = "[INCOMPLETE] WIP: Safety commit — process failed";
-  } else {
-    commitMsg = "Post-run: uncommitted changes from loop execution";
-  }
-  attemptSafetyCommit(workDir, commitMsg);
-  ensureBranchPushed(workDir);
+  const commitMsg = timedOut
+    ? "[INCOMPLETE] WIP: Safety commit — loop timed out"
+    : exitCode !== 0
+      ? "[INCOMPLETE] WIP: Safety commit — process failed"
+      : "Post-run: uncommitted changes from loop execution";
 
-  // Step 2: Detect branch info and any PR Claude may have created during execution
-  let prInfo = parsePrInfo(workDir, output);
+  let prInfo = null;
 
-  // Step 3: Create PR (harness owns PR creation, not run-loop — mirrors dispatch workflow)
-  prInfo = createPullRequest(workDir, prInfo);
+  if (shouldCommitAndPush) {
+    attemptSafetyCommit(workDir, commitMsg);
+    ensureBranchPushed(workDir);
 
-  // Step 4: Label incomplete PRs
-  if (isIncomplete && prInfo?.prNumber) {
-    labelPrIncomplete(workDir, prInfo.prNumber);
+    // Step 2: Detect branch info and any PR Claude may have created during execution
+    prInfo = parsePrInfo(workDir, output);
+
+    // Step 3: Create PR (harness owns PR creation, not run-loop — mirrors dispatch workflow)
+    prInfo = createPullRequest(workDir, prInfo);
+
+    // Step 4: Label incomplete PRs
+    if (isIncomplete && prInfo?.prNumber) {
+      labelPrIncomplete(workDir, prInfo.prNumber);
+    }
   }
 
   if (prInfo) {
@@ -2023,12 +2130,14 @@ async function reportFinalStatus(
     log("info", `Session ID: ${capturedSessionId}`);
   }
 
-  // Step 5: Write execution-result.json (must precede uploadState so it's
-  // included in the artifacts/ prefix upload to S3)
-  writeExecutionResult(workDir, prInfo);
+  // Step 5: Write execution-result.json to the run directory so it's
+  // included in the artifacts/ upload to S3.
+  if (shouldCommitAndPush) {
+    writeExecutionResult(swDir || workDir, prInfo);
+  }
 
   // Step 6: Upload state + metadata
-  await uploadState(workDir, output);
+  await uploadState(workDir, output, swDir);
   await uploadMetadata(workDir, output, tokenUsage, startTime);
 
   // Step 7: Report event
@@ -2223,6 +2332,34 @@ async function main() {
     // non-empty dir, and we want fresh context to overwrite .claude/context/.
     writeContextPackFiles(workDir, contextPack);
 
+    // Step 3b2: Resolve the symphony run directory.
+    // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
+    // - PLAN (fresh): creates a new run dir
+    // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
+    // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
+    // the same .claude/runs/TIMESTAMP/ directory across all steps.
+    symphonyWorkDir = findExistingRunDir(workDir);
+    if (symphonyWorkDir) {
+      log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
+    } else {
+      const runTs = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID()).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 50);
+      symphonyWorkDir = path.join(workDir, ".claude", "runs", `${runTs}-loop-${loopSuffix}`);
+      fs.mkdirSync(symphonyWorkDir, { recursive: true });
+      log("info", `Created new run directory: ${symphonyWorkDir}`);
+    }
+
+    // Write PRD to the run directory (all commands that have a prompt)
+    let prdPath = writePrdFile(symphonyWorkDir, contextPack);
+
+    // For child loops: write the latest plan content from the context pack to
+    // plan.json in the run dir. This picks up manual edits the user made in
+    // the Liveblocks editor between runs. The context pack's primary artifact
+    // contains the latest artifact version content from the DB.
+    if (config.s3ParentStateKey) {
+      syncPlanFromContextPack(symphonyWorkDir, contextPack);
+    }
+
     // Step 3c: Command-level validation and branch hardening.
     validatePreRunInputs(config.command, contextPack);
     if (shouldCreateWorkingBranch()) {
@@ -2230,7 +2367,7 @@ async function main() {
     }
 
     // Step 4: Determine execution mode and build command
-    const { cmd, args } = buildCommand(workDir);
+    const { cmd, args } = buildCommand(workDir, symphonyWorkDir, prdPath);
 
     // Step 5: Build environment for the child process
     const childEnv = {
@@ -2278,12 +2415,97 @@ async function main() {
       duration,
       tokenUsage,
       startTime,
+      symphonyWorkDir,
     });
 
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    await handleFatalError(err, workDir, output, startTime);
+    const harnessError = toHarnessError(err);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    const errorMessage = harnessError.message;
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    log(
+      "error",
+      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+    );
+    if (errorStack) {
+      log("error", redactSensitive(errorStack));
+    }
+
+    // Best-effort: refresh token, safety commit, push, create PR, label
+    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+    // even on fatal errors.
+    const shouldCommitAndPush = config.command === "EXECUTE";
+
+    try {
+      await refreshGitHubToken();
+    } catch (_) {
+      // ignore
+    }
+
+    let prInfo = null;
+    if (shouldCommitAndPush) {
+      try {
+        attemptSafetyCommit(
+          workDir,
+          "[INCOMPLETE] WIP: Safety commit — harness error"
+        );
+        ensureBranchPushed(workDir);
+      } catch (_) {
+        // ignore
+      }
+
+      try {
+        prInfo = parsePrInfo(workDir, output);
+        prInfo = createPullRequest(workDir, prInfo);
+        if (prInfo?.prNumber) {
+          labelPrIncomplete(workDir, prInfo.prNumber);
+        }
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    // Best-effort: write execution-result.json before upload
+    if (shouldCommitAndPush) {
+      try {
+        writeExecutionResult(symphonyWorkDir || workDir, prInfo);
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    // Best-effort: upload whatever state we have
+    try {
+      await uploadState(workDir, output, symphonyWorkDir);
+    } catch (uploadErr) {
+      log(
+        "error",
+        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+      );
+    }
+
+    // Best-effort: report failure with PR info
+    try {
+      await reportEvent({
+        type: "error",
+        code: harnessError.code,
+        message: redactSensitive(errorMessage),
+        result: {
+          ...(prInfo || {}),
+          sessionId: capturedSessionId,
+        },
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+      });
+    } catch (reportErr) {
+      log(
+        "error",
+        `Failed to report error event: ${redactSensitive(reportErr.message)}`
+      );
+    }
+
     process.exit(1);
   }
 }

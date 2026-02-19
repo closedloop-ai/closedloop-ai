@@ -22,6 +22,11 @@ import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
 import { getAwsCredentials } from "@/lib/aws-credentials";
 import {
+  downloadLoopArtifacts,
+  ingestExecutionArtifacts,
+  ingestPlanArtifacts,
+} from "./loop-artifact-ingestion";
+import {
   type ContextPack,
   downloadMetadata,
   generateDownloadUrl,
@@ -991,7 +996,23 @@ async function handleLoopCompleted(
     event as unknown as Record<string, unknown>
   );
 
-  // Transition status before persisting the event. If the loop is already
+  // Ingest artifacts BEFORE marking the loop as COMPLETED.
+  // If ingestion fails, the loop stays in its current status (e.g., RUNNING)
+  // so the completed event can be replayed. Once a loop is COMPLETED the
+  // status transition is irreversible, leaving no recovery path for the artifact.
+  if (loop?.s3StateKey && loop.artifactId) {
+    const loopArtifacts = await downloadLoopArtifacts(loop.s3StateKey);
+
+    if (loop.command === "PLAN" || loop.command === "REQUEST_CHANGES") {
+      await ingestPlanArtifacts(loop, organizationId, loopArtifacts);
+    }
+
+    if (loop.command === "EXECUTE") {
+      await ingestExecutionArtifacts(loop, loopArtifacts);
+    }
+  }
+
+  // Transition status after ingestion succeeds. If the loop is already
   // terminal (e.g., timed out by cron), the transition throws and we avoid
   // leaving an inconsistent timeline (terminal loop with a later completed event).
   await loopsService.updateStatus(loopId, organizationId, "COMPLETED", {
