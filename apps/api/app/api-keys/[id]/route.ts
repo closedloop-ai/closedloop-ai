@@ -7,10 +7,15 @@ import {
 import { apiKeysService } from "../service";
 
 export const DELETE = withAuth<{ deleted: true }, "/api-keys/[id]">(
-  async ({ user }, _, params) => {
+  async ({ user, orgRole }, _, params) => {
     try {
       const { id } = await params;
-      const revoked = await apiKeysService.revoke(id, user.organizationId);
+      const revoked = await apiKeysService.revoke(
+        id,
+        user.organizationId,
+        user.id,
+        orgRole
+      );
 
       if (!revoked) {
         return notFoundResponse("API key");

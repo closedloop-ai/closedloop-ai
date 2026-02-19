@@ -320,11 +320,12 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    await apiKeysService.revoke("key-1", ORG_ID);
+    await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
 
     expect(capturedArgs?.where).toEqual({
       id: "key-1",
       organizationId: ORG_ID,
+      userId: USER_ID,
       revokedAt: null,
     });
   });
@@ -339,7 +340,7 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    const result = await apiKeysService.revoke("key-1", ORG_ID);
+    const result = await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
 
     expect(result).toBe(true);
   });
@@ -354,7 +355,11 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    const result = await apiKeysService.revoke("nonexistent-key", ORG_ID);
+    const result = await apiKeysService.revoke(
+      "nonexistent-key",
+      ORG_ID,
+      USER_ID
+    );
 
     expect(result).toBe(false);
   });

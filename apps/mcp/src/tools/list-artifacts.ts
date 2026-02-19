@@ -12,22 +12,21 @@ export function registerListArtifacts(
 ): void {
   server.tool(
     "list-artifacts",
-    "List artifacts with optional filters by projectId, type, and status",
+    "List artifacts with optional filters by projectId and type",
     {
       projectId: z.string().optional().describe("Filter by project ID"),
-      type: z.string().optional().describe("Filter by artifact type"),
-      status: z.string().optional().describe("Filter by artifact status"),
+      type: z
+        .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
+        .optional()
+        .describe("Filter by artifact type"),
     },
-    async ({ projectId, type, status }) => {
+    async ({ projectId, type }) => {
       const query: Record<string, string> = {};
       if (projectId !== undefined) {
         query.projectId = projectId;
       }
       if (type !== undefined) {
         query.type = type;
-      }
-      if (status !== undefined) {
-        query.status = status;
       }
 
       const artifacts = await apiClient.get<unknown[]>("/artifacts", query);
