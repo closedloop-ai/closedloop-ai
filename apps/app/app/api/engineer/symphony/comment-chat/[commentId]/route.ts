@@ -442,17 +442,36 @@ export async function POST(
 
   const stream = new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        // Eagerly persist session ID so we can resume if Claude gets killed
-        if (!history.sessionId) {
-          history.sessionId = sessionId;
-          saveCommentChatHistory(paths.historyPath, history);
-          console.log(
-            "[Comment Chat API] Persisted session ID early:",
-            sessionId
-          );
+      const streamState = createStreamState(
+        (sessionId) => {
+          // Eagerly persist session ID so we can resume if Claude gets killed
+          if (!history.sessionId) {
+            history.sessionId = sessionId;
+            saveCommentChatHistory(paths.historyPath, history);
+            console.log(
+              "[Comment Chat API] Persisted session ID early:",
+              sessionId
+            );
+          }
+        },
+        () => {
+          // Claude CLI may hang after result event — kill after 30s
+          const killTimer = setTimeout(() => {
+            console.warn(
+              "[Comment Chat API] Kill timeout: SIGTERM after result event"
+            );
+            try {
+              claudeProcess?.kill("SIGTERM");
+            } catch {}
+            setTimeout(() => {
+              try {
+                claudeProcess?.kill("SIGKILL");
+              } catch {}
+            }, 5000);
+          }, 30_000);
+          claudeProcess?.once("close", () => clearTimeout(killTimer));
         }
-      });
+      );
       streamStateRef = streamState;
 
       try {

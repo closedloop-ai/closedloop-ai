@@ -251,7 +251,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### Debugging
 - **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
-- **[insight]**: `codex review` is a one-shot command — no resumable session. `codex exec` creates sessions with `thread_id` for resumption via `codex exec resume`. To give chat context after a review, inject the review log from disk into the exec prompt server-side. (context: codex|session-management|review-vs-exec)
+- **[insight]**: `codex review` outputs a `session id:` in its startup banner. Capture it and save to `codex-chat.json` so `codex exec resume` can continue the review session in chat. The review route parses the session ID from plain-text stdout (not JSON events like Claude). (context: codex|session-management|review-vs-exec)
 
 ### Prisma & Database
 - **[mistake]**: When `pnpm typecheck` fails with "Property does not exist on type" for Prisma model fields or `TransactionClient`, do NOT dismiss these as "pre-existing" without checking. Run: (1) `pnpm install` (missing dependencies like `jose`, `@aws-sdk/*`), (2) `just db-generate` or `cd packages/database && pnpm prisma generate` (stale generated client). These two commands fix the vast majority of typecheck failures after rebasing or pulling new code. Verify the fields exist in `schema.prisma` first — if they do, the generated client is just stale. (context: prisma|typecheck|generated-client|stale-types|debugging)

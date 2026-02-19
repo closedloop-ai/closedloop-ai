@@ -28,6 +28,8 @@ type ClaudeStreamEvent = {
   sessionId?: string;
   session_id?: string;
   subtype?: string;
+  is_error?: boolean;
+  result?: unknown;
   message?: { content: ClaudeBlock[] };
   delta?: { type: string; text?: string };
   usage?: {
@@ -46,10 +48,12 @@ export type StreamState = {
   usedEditTools: boolean;
   contextPercent: number | null;
   onSessionId?: (sessionId: string) => void;
+  onResultEvent?: () => void;
 };
 
 export function createStreamState(
-  onSessionId?: (sessionId: string) => void
+  onSessionId?: (sessionId: string) => void,
+  onResultEvent?: () => void
 ): StreamState {
   return {
     assistantContent: "",
@@ -58,6 +62,7 @@ export function createStreamState(
     usedEditTools: false,
     contextPercent: null,
     onSessionId,
+    onResultEvent,
   };
 }
 
@@ -205,10 +210,23 @@ export function processStreamEvent(
   }
 
   if (event.type === "result" && event.subtype === "success") {
+    // Always capture session ID first (even for errors)
     if (!state.capturedSessionId && event.session_id) {
       state.capturedSessionId = event.session_id;
       state.onSessionId?.(event.session_id);
     }
+
+    // Detect context limit / error results (e.g. "Prompt is too long")
+    if (event.is_error) {
+      const errorText =
+        typeof event.result === "string"
+          ? event.result
+          : "Claude encountered an error";
+      enqueue(JSON.stringify({ type: "error", error: errorText }));
+      state.onResultEvent?.();
+      return;
+    }
+
     if (event.usage) {
       const total =
         (event.usage.input_tokens ?? 0) +
@@ -222,5 +240,6 @@ export function processStreamEvent(
       enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
     }
     enqueue(JSON.stringify({ type: "result", success: true }));
+    state.onResultEvent?.();
   }
 }

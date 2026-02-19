@@ -212,19 +212,41 @@ export async function POST(request: NextRequest) {
   // Create a ReadableStream to stream the response
   const encoder = new TextEncoder();
 
+  // Hoisted so the cancel callback can kill the process
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
+
   const stream = new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        // Eagerly persist session ID for resume capability
-        if (!history.sessionId) {
-          history.sessionId = sessionId;
-          saveChatHistory(historyPath, history);
-          console.log(
-            "[Ticket Chat API] Persisted session ID early:",
-            sessionId
-          );
+      const streamState = createStreamState(
+        (sessionId) => {
+          // Eagerly persist session ID for resume capability
+          if (!history.sessionId) {
+            history.sessionId = sessionId;
+            saveChatHistory(historyPath, history);
+            console.log(
+              "[Ticket Chat API] Persisted session ID early:",
+              sessionId
+            );
+          }
+        },
+        () => {
+          // Claude CLI may hang after result event — kill after 30s
+          const killTimer = setTimeout(() => {
+            console.warn(
+              "[Ticket Chat API] Kill timeout: SIGTERM after result event"
+            );
+            try {
+              claudeProcess?.kill("SIGTERM");
+            } catch {}
+            setTimeout(() => {
+              try {
+                claudeProcess?.kill("SIGKILL");
+              } catch {}
+            }, 5000);
+          }, 30_000);
+          claudeProcess?.once("close", () => clearTimeout(killTimer));
         }
-      });
+      );
 
       try {
         console.log("[Ticket Chat API] Spawning Claude...");
@@ -272,6 +294,7 @@ export async function POST(request: NextRequest) {
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
+        claudeProcess = claude;
 
         console.log("[Ticket Chat API] Claude PID:", claude.pid);
 
@@ -325,6 +348,7 @@ export async function POST(request: NextRequest) {
         });
 
         claude.on("close", (code) => {
+          claudeProcess = null;
           // Flush any remaining buffered stdout
           if (stdoutBuffer.trim()) {
             try {
@@ -375,6 +399,7 @@ export async function POST(request: NextRequest) {
         });
 
         claude.on("error", (err) => {
+          claudeProcess = null;
           console.error("[Ticket Chat API] Claude spawn error:", err);
           enqueue(
             JSON.stringify({
@@ -393,6 +418,17 @@ export async function POST(request: NextRequest) {
           )
         );
         controller.close();
+      }
+    },
+
+    cancel() {
+      if (claudeProcess) {
+        console.log(
+          "[Ticket Chat API] Client cancelled — killing Claude PID:",
+          claudeProcess.pid
+        );
+        claudeProcess.kill("SIGTERM");
+        claudeProcess = null;
       }
     },
   });

@@ -1629,13 +1629,7 @@ function ChatInputArea({
             disabled={isStreaming}
             onChange={handleInputChange}
             onKeyDown={handleKeyDownWithMention}
-            placeholder={
-              messageCount === 0
-                ? 'Type "Fix this" or provide guidance...'
-                : autoProvider === "codex"
-                  ? "@claude to use Claude..."
-                  : "Continue the conversation..."
-            }
+            placeholder={chatInputPlaceholder(messageCount, autoProvider)}
             ref={inputRef}
             rows={1}
             style={{
@@ -2004,4 +1998,17 @@ export function CommentEmptyState() {
       </p>
     </div>
   );
+}
+
+function chatInputPlaceholder(
+  messageCount: number,
+  autoProvider: string | undefined
+): string {
+  if (messageCount === 0) {
+    return 'Type "Fix this" or provide guidance...';
+  }
+  if (autoProvider === "codex") {
+    return "@claude to use Claude...";
+  }
+  return "Continue the conversation...";
 }

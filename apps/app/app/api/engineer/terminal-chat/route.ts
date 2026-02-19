@@ -236,12 +236,31 @@ function handleClaude(
 
   return new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        if (!history.claudeSessionId) {
-          history.claudeSessionId = sessionId;
-          saveChatHistory(history);
+      const streamState = createStreamState(
+        (sessionId) => {
+          if (!history.claudeSessionId) {
+            history.claudeSessionId = sessionId;
+            saveChatHistory(history);
+          }
+        },
+        () => {
+          // Claude CLI may hang after result event — kill after 30s
+          const killTimer = setTimeout(() => {
+            console.warn(
+              "[terminal-chat] Kill timeout: SIGTERM after result event"
+            );
+            try {
+              claudeProcess?.kill("SIGTERM");
+            } catch {}
+            setTimeout(() => {
+              try {
+                claudeProcess?.kill("SIGKILL");
+              } catch {}
+            }, 5000);
+          }, 30_000);
+          claudeProcess?.once("close", () => clearTimeout(killTimer));
         }
-      });
+      );
 
       try {
         controller.enqueue(

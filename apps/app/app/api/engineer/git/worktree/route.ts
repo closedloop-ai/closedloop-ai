@@ -15,63 +15,57 @@ function expandPath(path: string): string {
   return path;
 }
 
-function removeNonWorktree(expandedPath: string, force: boolean): NextResponse {
+type WorktreeResult = {
+  success?: boolean;
+  error?: string;
+  hasChanges?: boolean;
+  message?: string;
+  status?: number;
+};
+
+function removeNonWorktree(
+  expandedPath: string,
+  force: boolean
+): WorktreeResult {
   if (force) {
     rmSync(expandedPath, { recursive: true, force: true });
-    return NextResponse.json({
-      success: true,
-      message: "Directory removed (not a git worktree)",
-    });
+    return { success: true, message: "Directory removed (not a git worktree)" };
   }
-  return NextResponse.json(
-    { error: "Path is not a git worktree" },
-    { status: 400 }
-  );
+  return { error: "Path is not a git worktree", status: 400 };
 }
 
-function forceRemoveWorktree(expandedPath: string): NextResponse {
+function forceRemoveWorktree(expandedPath: string): WorktreeResult {
   spawnSync("git", ["worktree", "prune"], { stdio: "pipe", cwd: expandedPath });
   rmSync(expandedPath, { recursive: true, force: true });
-  return NextResponse.json({
-    success: true,
-    message: "Worktree forcefully removed",
-  });
+  return { success: true, message: "Worktree forcefully removed" };
 }
 
 function handleWorktreeRemoveError(
   err: unknown,
   force: boolean,
   expandedPath: string
-): NextResponse {
+): WorktreeResult {
   const errorMessage = err instanceof Error ? err.message : "Unknown error";
 
   if (errorMessage.includes("contains modified or untracked files") && !force) {
-    return NextResponse.json(
-      {
-        error: "Worktree has uncommitted changes",
-        hasChanges: true,
-        message: "Use force=true to remove anyway",
-      },
-      { status: 409 }
-    );
+    return {
+      error: "Worktree has uncommitted changes",
+      hasChanges: true,
+      message: "Use force=true to remove anyway",
+      status: 409,
+    };
   }
 
   if (force) {
     return forceRemoveWorktree(expandedPath);
   }
 
-  return NextResponse.json(
-    { error: `Failed to remove worktree: ${errorMessage}` },
-    { status: 500 }
-  );
+  return { error: `Failed to remove worktree: ${errorMessage}`, status: 500 };
 }
 
-function removeWorktree(expandedPath: string, force: boolean): NextResponse {
+function removeWorktree(expandedPath: string, force: boolean): WorktreeResult {
   if (!existsSync(expandedPath)) {
-    return NextResponse.json({
-      success: true,
-      message: "Worktree does not exist",
-    });
+    return { success: true, message: "Worktree does not exist" };
   }
 
   if (!existsSync(join(expandedPath, ".git"))) {
@@ -90,13 +84,15 @@ function removeWorktree(expandedPath: string, force: boolean): NextResponse {
         result.stderr?.toString() ?? "git worktree remove failed"
       );
     }
-    return NextResponse.json({
-      success: true,
-      message: "Worktree removed successfully",
-    });
+    return { success: true, message: "Worktree removed successfully" };
   } catch (err) {
     return handleWorktreeRemoveError(err, force, expandedPath);
   }
+}
+
+function worktreeResponse(result: WorktreeResult): NextResponse {
+  const { status, ...body } = result;
+  return NextResponse.json(body, status ? { status } : undefined);
 }
 
 /**
@@ -131,7 +127,7 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    return removeWorktree(expandedPath, force);
+    return worktreeResponse(removeWorktree(expandedPath, force));
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
@@ -205,7 +201,7 @@ function isRemoteBranchGone(mainRepoPath: string, branchRef: string): boolean {
  *
  * Returns: { removed: string[], kept: string[], errors: string[] }
  */
-export async function POST() {
+export function POST() {
   try {
     const worktreeParentDir = getWorktreeParentDir();
 
@@ -278,13 +274,12 @@ export async function POST() {
         if (isRemoteBranchGone(mainRepoPath, branch)) {
           // Branch is gone from remote — remove the worktree (non-force to protect dirty worktrees)
           const result = removeWorktree(prDir, false);
-          const body = await result.json();
-          if (body.success) {
+          if (result.success) {
             removed.push(prDir);
-          } else if (body.hasChanges) {
+          } else if (result.hasChanges) {
             kept.push(prDir);
           } else {
-            errors.push(`${prDir}: ${body.error || "removal failed"}`);
+            errors.push(`${prDir}: ${result.error || "removal failed"}`);
           }
         } else {
           kept.push(prDir);

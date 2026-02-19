@@ -242,14 +242,36 @@ function spawnClaude(
     : `${systemPrompt}\n\n---\n\nUser: ${message}`;
   const hasRunDir = runDir && existsSync(runDir);
 
+  // Hoisted so the cancel callback can kill the process
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
+
   return new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        if (!history.claudeSessionId) {
-          history.claudeSessionId = sessionId;
-          saveChatHistory(history);
+      const streamState = createStreamState(
+        (sessionId) => {
+          if (!history.claudeSessionId) {
+            history.claudeSessionId = sessionId;
+            saveChatHistory(history);
+          }
+        },
+        () => {
+          // Claude CLI may hang after result event — kill after 30s
+          const killTimer = setTimeout(() => {
+            console.warn(
+              "[run-viewer-chat] Kill timeout: SIGTERM after result event"
+            );
+            try {
+              claudeProcess?.kill("SIGTERM");
+            } catch {}
+            setTimeout(() => {
+              try {
+                claudeProcess?.kill("SIGKILL");
+              } catch {}
+            }, 5000);
+          }, 30_000);
+          claudeProcess?.once("close", () => clearTimeout(killTimer));
         }
-      });
+      );
 
       try {
         controller.enqueue(
@@ -286,6 +308,7 @@ function spawnClaude(
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
+        claudeProcess = claude;
 
         console.log("[run-viewer-chat] Claude PID:", claude.pid);
 
@@ -331,6 +354,7 @@ function spawnClaude(
         });
 
         claude.on("close", (code) => {
+          claudeProcess = null;
           if (stdoutBuffer.trim()) {
             try {
               processStreamEvent(
@@ -374,6 +398,7 @@ function spawnClaude(
         });
 
         claude.on("error", (err) => {
+          claudeProcess = null;
           console.error("[run-viewer-chat] Claude spawn error:", err);
           enqueue(
             JSON.stringify({
@@ -392,6 +417,17 @@ function spawnClaude(
           )
         );
         controller.close();
+      }
+    },
+
+    cancel() {
+      if (claudeProcess) {
+        console.log(
+          "[run-viewer-chat] Client cancelled — killing Claude PID:",
+          claudeProcess.pid
+        );
+        claudeProcess.kill("SIGTERM");
+        claudeProcess = null;
       }
     },
   });

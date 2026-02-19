@@ -68,6 +68,8 @@ type ReviewChatPaneProps = {
   duplicateIndices?: Set<number>;
   /** Indices of findings flagged as duplicates of existing PR comments */
   prCommentDupIndices?: Set<number>;
+  /** Files changed in the PR — findings outside this list are filtered out */
+  prFiles?: string[];
   /** Whether the PR has been merged (shows a visual indicator) */
   isMerged?: boolean;
   /** Called when all findings have been individually commented */
@@ -88,6 +90,7 @@ export function ReviewChatPane({
   onStructuredFindings,
   duplicateIndices,
   prCommentDupIndices,
+  prFiles,
   isMerged,
   onAllCommented,
 }: Readonly<ReviewChatPaneProps>) {
@@ -179,13 +182,24 @@ export function ReviewChatPane({
     return base;
   }, [chatHistory?.messages, stream.pendingUserMessage]);
 
-  // Split completed review output into thinking (process log) + findings
+  // Split completed review output into thinking (process log) + findings,
+  // filtering out findings for files not in the PR diff.
   const reviewSplit = useMemo(() => {
     if (!(reviewDone && reviewOutput)) {
       return null;
     }
-    return splitReviewOutput(reviewOutput, config.provider);
-  }, [reviewDone, reviewOutput, config.provider]);
+    const split = splitReviewOutput(reviewOutput, config.provider);
+    if (prFiles && prFiles.length > 0) {
+      split.findings = split.findings.filter((f) => {
+        if (!f.file) {
+          return true; // Keep findings with no file (general observations)
+        }
+        const short = stripWorktreePath(f.file);
+        return resolveFullPath(short, prFiles) !== null;
+      });
+    }
+    return split;
+  }, [reviewDone, reviewOutput, config.provider, prFiles]);
 
   // Notify parent when all findings have been individually commented (fire once)
   const allCommentedFiredRef = useRef(false);
@@ -343,8 +357,8 @@ export function ReviewChatPane({
         );
       }
 
-      // Seed the review session ID into chat history so follow-up chats
-      // resume the same Claude session (full review context preserved).
+      // Claude: seed session ID into chat-history.json (Claude chat route reads it).
+      // Codex: codex-chat.json is written server-side in the review route's close handler.
       if (config.provider === "claude" && sessionIdRef.current) {
         fetch(
           `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
@@ -492,11 +506,19 @@ export function ReviewChatPane({
   const buildChatRequest = useCallback(
     (message: string): { url: string; body: Record<string, unknown> } => {
       if (config.provider === "codex") {
+        // Pass last 10 messages so Codex has conversation context (matching SymphonyChat pattern)
+        const recentHistory = (chatHistory?.messages || [])
+          .slice(-10)
+          .map((m) => ({
+            role: m.role,
+            content: m.content,
+            sender: m.sender,
+          }));
         return {
           url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt: message,
-            chatHistory: [],
+            chatHistory: recentHistory,
             repoPath,
             activeTab: "plan",
           },
@@ -511,7 +533,29 @@ export function ReviewChatPane({
         },
       };
     },
-    [config.provider, config.model, ticketId, repoPath]
+    [config.provider, config.model, ticketId, repoPath, chatHistory?.messages]
+  );
+
+  // Persist a message to chat-history.json so it survives after streaming state clears
+  const persistMessage = useCallback(
+    (message: {
+      id: string;
+      role: string;
+      content: string;
+      timestamp: string;
+      sender?: string;
+    }) =>
+      fetch(
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        }
+      ).catch(() => {
+        // Non-critical — messages still show from streaming/query
+      }),
+    [ticketId, repoPath]
   );
 
   // Send initial chat message when review completes (with review context)
@@ -538,12 +582,14 @@ export function ReviewChatPane({
         );
       }
 
-      stream.setPendingUserMessage({
+      const userMsg = {
         id: crypto.randomUUID(),
-        role: "user",
+        role: "user" as const,
         content: userMessage,
         timestamp: new Date().toISOString(),
-      });
+      };
+      stream.setPendingUserMessage(userMsg);
+      persistMessage(userMsg);
 
       const { url, body } = buildChatRequest(actualMessage);
       // For Claude path with context, pass displayContent so chat history stores
@@ -552,10 +598,20 @@ export function ReviewChatPane({
         (body as Record<string, unknown>).displayContent = userMessage;
       }
       stream.sendMessage(url, body, {
-        onComplete: () =>
-          queryClient.invalidateQueries({
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText) {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: config.provider === "codex" ? "codex" : "claude",
+            });
+          }
+          await queryClient.invalidateQueries({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-          }),
+          });
+        },
       });
     },
     [
@@ -568,6 +624,7 @@ export function ReviewChatPane({
       repoPath,
       queryClient,
       buildChatRequest,
+      persistMessage,
     ]
   );
 
@@ -584,19 +641,31 @@ export function ReviewChatPane({
       return;
     }
 
-    stream.setPendingUserMessage({
+    const userMsg = {
       id: crypto.randomUUID(),
-      role: "user",
+      role: "user" as const,
       content: trimmed,
       timestamp: new Date().toISOString(),
-    });
+    };
+    stream.setPendingUserMessage(userMsg);
+    persistMessage(userMsg);
 
     const { url, body } = buildChatRequest(trimmed);
     stream.sendMessage(url, body, {
-      onComplete: () =>
-        queryClient.invalidateQueries({
+      onComplete: async (accumulatedText) => {
+        if (accumulatedText) {
+          await persistMessage({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: accumulatedText,
+            timestamp: new Date().toISOString(),
+            sender: config.provider === "codex" ? "codex" : "claude",
+          });
+        }
+        await queryClient.invalidateQueries({
           queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-        }),
+        });
+      },
     });
   }, [
     chatInput,
@@ -607,6 +676,8 @@ export function ReviewChatPane({
     repoPath,
     queryClient,
     buildChatRequest,
+    persistMessage,
+    config.provider,
   ]);
 
   const handleKeyDown = useCallback(
@@ -759,12 +830,14 @@ export function ReviewChatPane({
             config.model
           );
 
-      stream.setPendingUserMessage({
+      const userMsg = {
         id: crypto.randomUUID(),
-        role: "user",
+        role: "user" as const,
         content: userFacingMessage,
         timestamp: new Date().toISOString(),
-      });
+      };
+      stream.setPendingUserMessage(userMsg);
+      persistMessage(userMsg);
 
       setHasSentInitial(true);
       const { url, body } = buildChatRequest(actualMessage);
@@ -773,10 +846,20 @@ export function ReviewChatPane({
         (body as Record<string, unknown>).displayContent = userFacingMessage;
       }
       stream.sendMessage(url, body, {
-        onComplete: () =>
-          queryClient.invalidateQueries({
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText) {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: config.provider === "codex" ? "codex" : "claude",
+            });
+          }
+          await queryClient.invalidateQueries({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-          }),
+          });
+        },
       });
     },
     [
@@ -788,6 +871,7 @@ export function ReviewChatPane({
       repoPath,
       queryClient,
       buildChatRequest,
+      persistMessage,
     ]
   );
 
@@ -1291,18 +1375,14 @@ function FindingCard({
       )}
     >
       <div className="flex items-start gap-2.5">
-        <button
+        <div
           className={cn(
-            "mt-0.5 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors",
-            "hover:ring-2 hover:ring-foreground/10",
+            "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full",
             style.badge
           )}
-          onClick={() => setCollapsed(true)}
-          title="Collapse"
-          type="button"
         >
           <Icon className={cn("size-3.5", style.text)} />
-        </button>
+        </div>
         <div className="min-w-0 flex-1 space-y-1">
           {finding.priority && (
             <span
@@ -1329,6 +1409,14 @@ function FindingCard({
             </div>
           )}
         </div>
+        <button
+          className="mt-0.5 shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/[0.08] hover:text-foreground"
+          onClick={() => setCollapsed(true)}
+          title="Collapse"
+          type="button"
+        >
+          <ChevronRight className="size-3.5 rotate-90" />
+        </button>
       </div>
       <div className="pl-[34px] text-[12px] text-foreground/90 leading-relaxed">
         <ReactMarkdown
@@ -1349,21 +1437,28 @@ function FindingCard({
           </button>
         )}
         {showCommentButton && (
-          <button
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-[11px] transition-colors",
-              commentButtonStyle(isSubmitted, isSubmitting, isDuplicate)
+          <>
+            <button
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-[11px] transition-colors",
+                commentButtonStyle(isSubmitting, isDuplicate)
+              )}
+              disabled={isSubmitting || isDuplicate}
+              onClick={() => onSubmitComment(index, finding)}
+            >
+              <CommentButtonContent
+                duplicateLabel={duplicateLabel}
+                isDuplicate={isDuplicate}
+                isSubmitting={isSubmitting}
+              />
+            </button>
+            {isSubmitted && (
+              <span className="inline-flex items-center gap-1 font-medium text-[11px] text-emerald-600 dark:text-emerald-400">
+                <Check className="size-3" />
+                Commented
+              </span>
             )}
-            disabled={isSubmitted || isSubmitting || isDuplicate}
-            onClick={() => onSubmitComment(index, finding)}
-          >
-            <CommentButtonContent
-              duplicateLabel={duplicateLabel}
-              isDuplicate={isDuplicate}
-              isSubmitted={isSubmitted}
-              isSubmitting={isSubmitting}
-            />
-          </button>
+          </>
         )}
       </div>
     </div>
@@ -1382,6 +1477,26 @@ export function stripWorktreePath(filePath: string): string {
     return sourceMatch[1];
   }
   return filePath;
+}
+
+/**
+ * Resolve a short/relative file path against the PR's changed file list.
+ * Returns the full repo-relative path if found, or null if the file is not in the PR.
+ */
+export function resolveFullPath(
+  shortName: string,
+  prFiles: string[]
+): string | null {
+  if (prFiles.includes(shortName)) {
+    return shortName;
+  }
+  const matches = prFiles.filter(
+    (f) => f === shortName || f.endsWith(`/${shortName}`)
+  );
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  return null;
 }
 
 // --- Findings persistence helpers ---
@@ -1482,13 +1597,9 @@ async function streamReviewOutput(
 // --- Comment button helpers (avoids nested ternaries — SonarQube S3358) ---
 
 function commentButtonStyle(
-  isSubmitted: boolean,
   isSubmitting: boolean,
   isDuplicate: boolean
 ): string {
-  if (isSubmitted) {
-    return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 cursor-default";
-  }
   if (isDuplicate) {
     return "bg-amber-500/10 text-amber-600 dark:text-amber-400 cursor-default";
   }
@@ -1499,24 +1610,14 @@ function commentButtonStyle(
 }
 
 function CommentButtonContent({
-  isSubmitted,
   isSubmitting,
   isDuplicate,
   duplicateLabel,
 }: Readonly<{
-  isSubmitted: boolean;
   isSubmitting: boolean;
   isDuplicate: boolean;
   duplicateLabel?: string;
 }>) {
-  if (isSubmitted) {
-    return (
-      <>
-        <Check className="size-3" />
-        Commented
-      </>
-    );
-  }
   if (isDuplicate) {
     return (
       <>

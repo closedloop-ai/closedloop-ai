@@ -31,6 +31,7 @@ export const maxDuration = 300; // 5 minutes max for long reviews
 
 const PR_PREFIX_REGEX = /^pr-/;
 const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
+const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 type ReviewRequest = {
   instructions?: string;
@@ -193,7 +194,7 @@ function setupProcessLifecycle(
   worktreeDir: string,
   initialState: ReviewState,
   pidPath: string,
-  sessionIdHolder?: { value: string | null }
+  sessionIdHolder: { value: string | null }
 ) {
   const provider = initialState.provider;
 
@@ -219,8 +220,29 @@ function setupProcessLifecycle(
       }
     });
   } else {
+    // Buffer the first ~2KB of Codex stdout to capture the session ID from its startup banner.
+    // Once found (or buffer limit hit), stop scanning but keep appending to the review log.
+    let startupBuffer = "";
+    let sessionIdCaptured = false;
+
     childProcess.stdout?.on("data", async (data: Buffer) => {
-      await appendReviewLog(worktreeDir, provider, data.toString());
+      const text = data.toString();
+      await appendReviewLog(worktreeDir, provider, text);
+
+      if (!sessionIdCaptured) {
+        startupBuffer += text;
+        const match = CODEX_SESSION_ID_REGEX.exec(startupBuffer);
+        if (match) {
+          sessionIdHolder.value = match[1];
+          sessionIdCaptured = true;
+          startupBuffer = "";
+          console.log(`[codex-review] Codex session ID captured: ${match[1]}`);
+        } else if (startupBuffer.length > 2048) {
+          // Stop scanning after 2KB — session ID should appear in the first few lines
+          sessionIdCaptured = true;
+          startupBuffer = "";
+        }
+      }
     });
   }
 
@@ -237,11 +259,33 @@ function setupProcessLifecycle(
       status: code === 0 ? "completed" : "failed",
       completedAt: new Date().toISOString(),
       exitCode: code ?? 1,
-      sessionId: sessionIdHolder?.value ?? initialState.sessionId,
+      sessionId: sessionIdHolder.value ?? initialState.sessionId,
     };
     await writeReviewState(worktreeDir, provider, finalState);
     if (existsSync(pidPath)) {
       await unlink(pidPath).catch(() => {});
+    }
+
+    // Persist Codex session ID to codex-chat.json so the chat route can resume it
+    if (provider === "codex" && sessionIdHolder.value) {
+      const chatStatePath = join(
+        worktreeDir,
+        ".claude",
+        "work",
+        "codex-chat.json"
+      );
+      await mkdir(join(worktreeDir, ".claude", "work"), { recursive: true });
+      await writeFile(
+        chatStatePath,
+        JSON.stringify(
+          { sessionId: sessionIdHolder.value, messageCount: 0 },
+          null,
+          2
+        )
+      );
+      console.log(
+        `[codex-review] Wrote codex-chat.json with session ${sessionIdHolder.value}`
+      );
     }
   });
 
@@ -259,12 +303,16 @@ function setupProcessLifecycle(
   childProcess.unref();
 }
 
-function createCodexStream(childProcess: ChildProcess): ReadableStream {
+function createCodexStream(
+  childProcess: ChildProcess,
+  sessionIdHolder: { value: string | null }
+): ReadableStream {
   const encoder = new TextEncoder();
   let eventCount = 0;
   return new ReadableStream({
     start(controller) {
       let controllerClosed = false;
+      let sessionIdEmitted = false;
       console.log(
         `[codex-stream] ReadableStream started for pid ${childProcess.pid}`
       );
@@ -281,6 +329,7 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
         type: string;
         content?: string;
         exitCode?: number;
+        sessionId?: string;
       }) => {
         if (controllerClosed) {
           return;
@@ -298,6 +347,11 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
 
       childProcess.stdout?.on("data", (data: Buffer) => {
         console.log(`[codex-stream] stdout data: ${data.length} bytes`);
+        // Emit sessionId event once when setupProcessLifecycle has captured it
+        if (!sessionIdEmitted && sessionIdHolder.value) {
+          sessionIdEmitted = true;
+          sendEvent({ type: "sessionId", sessionId: sessionIdHolder.value });
+        }
         sendEvent({ type: "output", content: data.toString() });
       });
 
@@ -370,6 +424,9 @@ function createClaudeStream(
         sendEvent({ type: "reviewCommand", reviewCommand });
       }
 
+      // Track whether we've started the kill timer after a result event
+      let resultKillTimerSet = false;
+
       childProcess.stdout?.on("data", (data: Buffer) => {
         buffer += data.toString();
         const lines = buffer.split("\n");
@@ -382,6 +439,32 @@ function createClaudeStream(
             continue;
           }
           processClaudeStreamLine(trimmed, sessionIdHolder, sendEvent);
+
+          // Start kill timer once we see a result event (Claude CLI may hang)
+          if (!resultKillTimerSet) {
+            try {
+              const ev = JSON.parse(trimmed);
+              if (ev.type === "result") {
+                resultKillTimerSet = true;
+                const killTimer = setTimeout(() => {
+                  console.warn(
+                    "[codex-review] Kill timeout after result: SIGTERM"
+                  );
+                  try {
+                    childProcess.kill("SIGTERM");
+                  } catch {}
+                  setTimeout(() => {
+                    try {
+                      childProcess.kill("SIGKILL");
+                    } catch {}
+                  }, 5000);
+                }, 30_000);
+                childProcess.once("close", () => clearTimeout(killTimer));
+              }
+            } catch {
+              // Not JSON — skip kill timer check
+            }
+          }
         }
       });
 
@@ -680,9 +763,9 @@ export async function POST(
     await writeFile(pidPath, String(pid));
   }
 
-  // Session ID holder — populated by createClaudeStream, saved by setupProcessLifecycle
-  const sessionIdHolder =
-    provider === "claude" ? { value: null as string | null } : undefined;
+  // Session ID holder — populated by stream handlers, saved by setupProcessLifecycle.
+  // Universal: Claude extracts from stream-json events, Codex parses from startup banner.
+  const sessionIdHolder: { value: string | null } = { value: null };
 
   // Set up lifecycle handlers (log capture, state updates on close/error)
   setupProcessLifecycle(
@@ -697,7 +780,7 @@ export async function POST(
   const stream =
     provider === "claude"
       ? createClaudeStream(childProcess, sessionIdHolder, reviewCommand)
-      : createCodexStream(childProcess);
+      : createCodexStream(childProcess, sessionIdHolder);
 
   console.log(
     `[codex-review] Returning streaming response for ${provider}, pid ${pid}`
@@ -862,12 +945,12 @@ async function processClaudeLogLine(
   trimmed: string,
   worktreeDir: string,
   provider: "claude" | "codex",
-  sessionIdHolder?: { value: string | null }
+  sessionIdHolder: { value: string | null }
 ): Promise<void> {
   try {
     const event = JSON.parse(trimmed);
     const sid = extractClaudeSessionId(event);
-    if (sid && sessionIdHolder) {
+    if (sid) {
       sessionIdHolder.value = sid;
     }
     const text = extractClaudeText(event);
@@ -899,6 +982,17 @@ function processClaudeStreamLine(
       sessionIdHolder.value = sid;
       console.log(`[codex-review] Claude session ID captured: ${sid}`);
       sendEvent({ type: "sessionId", sessionId: sid });
+    }
+
+    // Detect context limit / error results (e.g. "Prompt is too long")
+    if (event.type === "result" && event.is_error) {
+      const errorText =
+        typeof event.result === "string"
+          ? event.result
+          : "Claude encountered an error";
+      console.warn(`[codex-review] Claude result error: ${errorText}`);
+      sendEvent({ type: "error", content: errorText });
+      return;
     }
 
     // Extract context usage from result events

@@ -48,6 +48,7 @@ import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
 import {
   ReviewChatPane,
+  resolveFullPath,
   splitReviewOutput,
   stripWorktreePath,
 } from "@/components/engineer/ReviewChatPane";
@@ -210,6 +211,7 @@ export function PRBrowserDialog({
     string | null
   >(null);
   const [commitSha, setCommitSha] = useState<string | undefined>();
+  const [prFiles, setPrFiles] = useState<string[]>([]);
   const [leftPaneFraction, setLeftPaneFraction] = useState(() => {
     if (globalThis.localStorage === undefined) {
       return 0.45;
@@ -331,16 +333,19 @@ export function PRBrowserDialog({
     setSelectedComment(null);
     setReviews({});
     setCommitSha(undefined);
+    setPrFiles([]);
   };
 
-  // Fetch head commit SHA whenever the selected PR changes (including localStorage restore)
+  // Fetch head commit SHA and changed file list whenever the selected PR changes
   useEffect(() => {
     if (!(selectedRepo && selectedPR)) {
       setCommitSha(undefined);
+      setPrFiles([]);
       return;
     }
+    const encodedRepo = encodeURIComponent(selectedRepo.path);
     fetch(
-      `/api/engineer/git/pr/head-sha?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
+      `/api/engineer/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
     )
       .then((res) => res.json())
       .then((data) => {
@@ -349,6 +354,7 @@ export function PRBrowserDialog({
         }
       })
       .catch(() => {});
+    fetchPRFiles(selectedRepo.path, selectedPR.number).then(setPrFiles);
   }, [selectedRepo, selectedPR]);
 
   const handleCommentSelected = useCallback(
@@ -969,6 +975,7 @@ export function PRBrowserDialog({
                   handleStructuredFindings(provider, findings)
                 }
                 prCommentDupIndices={entry.prCommentDupIndices}
+                prFiles={prFiles}
                 prNumber={selectedPR.number}
                 repoPath={selectedRepo.path}
               />
@@ -1319,21 +1326,6 @@ async function fetchPRFiles(
   }
 }
 
-function resolveFullPath(shortName: string, prFiles: string[]): string | null {
-  // Exact match first
-  if (prFiles.includes(shortName)) {
-    return shortName;
-  }
-  // Match by suffix (short filename or partial path)
-  const matches = prFiles.filter(
-    (f) => f === shortName || f.endsWith(`/${shortName}`)
-  );
-  if (matches.length === 1) {
-    return matches[0];
-  }
-  return null;
-}
-
 function classifyFindings(
   findings: ReviewFinding[],
   commitSha: string | undefined,
@@ -1351,17 +1343,20 @@ function classifyFindings(
       general.push(finding);
       continue;
     }
+    const shortPath = stripWorktreePath(finding.file);
     if (skipFileResolution) {
+      // Structured findings have full paths — still validate against PR files
+      if (prFiles.length > 0 && !resolveFullPath(shortPath, prFiles)) {
+        continue; // File not in PR, drop the finding
+      }
       inline.push({ finding, fullPath: finding.file });
       continue;
     }
-    const shortPath = stripWorktreePath(finding.file);
     const fullPath = resolveFullPath(shortPath, prFiles);
     if (fullPath) {
       inline.push({ finding, fullPath });
-    } else {
-      general.push(finding);
     }
+    // else: file not in PR, drop the finding
   }
 
   return { inline, general };
