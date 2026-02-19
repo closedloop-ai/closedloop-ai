@@ -32,6 +32,11 @@ import {
   TableRow,
 } from "@repo/design-system/components/ui/table";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import {
   type User as PopoverUser,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
@@ -343,7 +348,14 @@ export function ProjectsTable({
                   )}
                 </TableCell>
                 <TableCell>
-                  <HexagonProgress value={project.status} />
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <HexagonProgress value={project.status} />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      % of artifacts in &quot;Complete&quot; status
+                    </TooltipContent>
+                  </Tooltip>
                 </TableCell>
                 <TableCell>
                   <span className="text-muted-foreground text-sm">
