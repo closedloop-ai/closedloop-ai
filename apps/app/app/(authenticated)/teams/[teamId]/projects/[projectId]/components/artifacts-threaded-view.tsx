@@ -185,7 +185,7 @@ function ArtifactRow({
     : {};
 
   const isImplementationPlan = artifact.type === "IMPLEMENTATION_PLAN";
-  const hasPullRequest = isImplementationPlan && artifact.pullRequest != null;
+  const pr = isImplementationPlan ? (artifact.pullRequest ?? null) : null;
   const isPipelineGreen =
     artifact.generationStatus?.status === "SUCCESS" &&
     artifact.generationStatus?.command === "execute";
@@ -203,19 +203,13 @@ function ArtifactRow({
         <GenerationStatusIndicator
           generationStatus={artifact.generationStatus}
         />
-        {hasPullRequest && (
-          <StatusBadge
-            colorMap={prStatusColors}
-            status={artifact.pullRequest!.state}
-          />
-        )}
-        {hasPullRequest &&
-          artifact.pullRequest!.reviewDecision !== null &&
-          (artifact.pullRequest!.reviewDecision === "APPROVED" ||
-            artifact.pullRequest!.reviewDecision === "CHANGES_REQUESTED") && (
+        {pr && <StatusBadge colorMap={prStatusColors} status={pr.state} />}
+        {pr?.reviewDecision &&
+          (pr.reviewDecision === "APPROVED" ||
+            pr.reviewDecision === "CHANGES_REQUESTED") && (
             <StatusBadge
               colorMap={prReviewDecisionColors}
-              status={artifact.pullRequest!.reviewDecision}
+              status={pr.reviewDecision}
             />
           )}
         {artifact.type === "PRD" && siblingPlan != null && (

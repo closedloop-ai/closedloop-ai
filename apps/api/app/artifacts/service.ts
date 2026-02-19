@@ -9,8 +9,8 @@ import {
   type FindArtifactsOptions,
   type GenerationStatus,
   type PullRequestInfo,
-  type PullRequestState,
-  type ReviewDecision,
+  PullRequestState,
+  ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -2091,31 +2091,6 @@ function extractContentSnippet(content: string): string | null {
   return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
 }
 
-/** Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type */
-function toPullRequestInfo(pr: {
-  id: string;
-  number: number;
-  title: string;
-  htmlUrl: string;
-  state: string;
-  headBranch: string;
-  baseBranch: string;
-  createdAt: Date;
-  reviewDecision: string | null;
-}): PullRequestInfo {
-  return {
-    id: pr.id,
-    number: pr.number,
-    title: pr.title,
-    htmlUrl: pr.htmlUrl,
-    state: pr.state as PullRequestState,
-    headBranch: pr.headBranch,
-    baseBranch: pr.baseBranch,
-    createdAt: pr.createdAt,
-    reviewDecision: pr.reviewDecision as ReviewDecision | null,
-  };
-}
-
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
@@ -2141,6 +2116,9 @@ function toArtifactWithWorkstream(
         }
       : null,
     ...(generationStatus && { generationStatus }),
+    // Three-state contract for pullRequest:
+    //   - maps omitted          → field absent (caller didn't request PR data)
+    //   - maps.pullRequestMap   → field set to PullRequestInfo | null
     ...(maps && "pullRequestMap" in maps && { pullRequest }),
     ...(snippet !== null && { snippet }),
   };
@@ -2224,4 +2202,43 @@ Configure the following environment variables to enable plan generation:
 - GITHUB_APP_DISPATCH_REPO
 - WEBAPP_ENV
 `;
+}
+
+const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
+const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
+
+/** Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type */
+function toPullRequestInfo(pr: {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  reviewDecision: string | null;
+}): PullRequestInfo {
+  if (!VALID_PR_STATES.has(pr.state)) {
+    throw new Error(`Invalid PR state "${pr.state}" for PR #${pr.number}`);
+  }
+  if (
+    pr.reviewDecision !== null &&
+    !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
+  ) {
+    throw new Error(
+      `Invalid review decision "${pr.reviewDecision}" for PR #${pr.number}`
+    );
+  }
+  return {
+    id: pr.id,
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.htmlUrl,
+    state: pr.state as PullRequestState,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+    createdAt: pr.createdAt,
+    reviewDecision: pr.reviewDecision as ReviewDecision | null,
+  };
 }
