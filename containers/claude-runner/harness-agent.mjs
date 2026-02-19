@@ -817,14 +817,33 @@ function findExistingRunDir(workDir) {
 }
 
 /**
- * Write prd.md to the run directory. Used by all commands that have a prompt.
+ * Write prd.md to the run directory.
+ *
+ * Content priority:
+ * 1. contextPack.prompt — explicit user prompt (e.g., request-changes text)
+ * 2. First PRD artifact in contextPack.artifacts — the source PRD passed via contextRefs
+ *
+ * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
 function writePrdFile(targetDir, contextPack) {
-  if (!contextPack?.prompt) {
+  let prdContent = contextPack?.prompt || null;
+
+  // Fall back to the first PRD-type artifact from context refs
+  if (!prdContent && Array.isArray(contextPack?.artifacts)) {
+    const prdArtifact = contextPack.artifacts.find(
+      (a) => a.type && a.type.toUpperCase().includes("PRD")
+    );
+    if (prdArtifact?.content) {
+      prdContent = prdArtifact.content;
+      log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
+    }
+  }
+
+  if (!prdContent) {
     return null;
   }
   const prdPath = path.join(targetDir, "prd.md");
-  fs.writeFileSync(prdPath, contextPack.prompt);
+  fs.writeFileSync(prdPath, prdContent);
   log("info", `Wrote prd.md to ${prdPath}`);
   return prdPath;
 }
