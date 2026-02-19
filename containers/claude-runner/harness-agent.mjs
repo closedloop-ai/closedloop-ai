@@ -22,6 +22,8 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
+const PR_NUMBER_REGEX = /\/pull\/(\d+)/;
+
 // ---------------------------------------------------------------------------
 // AWS SDK v3 — loaded from the global install
 // ---------------------------------------------------------------------------
@@ -399,7 +401,9 @@ function collectFiles(dirPath, prefix = "") {
  */
 async function uploadDirectory(dirPath, s3Prefix) {
   const files = collectFiles(dirPath);
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    return;
+  }
 
   const s3Keys = files.map((f) => `${s3Prefix}/${f.relativePath}`);
 
@@ -430,53 +434,47 @@ async function uploadDirectory(dirPath, s3Prefix) {
 }
 
 /**
- * Download an entire S3 "directory" (prefix) to a local directory.
- * Prefers pre-signed URL path (via API callback), falls back to S3 SDK.
+ * Download files from pre-signed URLs to a local directory.
+ * Returns count of files downloaded, or null if no entries were available.
  */
-async function downloadDirectoryFromS3(s3Prefix, localDir) {
-  // Try pre-signed URL path first
-  try {
-    const entries = await requestDownloadUrls(s3Prefix);
-    if (entries && entries.length > 0) {
-      const normalizedPrefix = s3Prefix.endsWith("/")
-        ? s3Prefix
-        : `${s3Prefix}/`;
-      let downloaded = 0;
-      const resolvedLocalDir = path.resolve(localDir);
-      for (const entry of entries) {
-        const relativePath = entry.key.slice(normalizedPrefix.length);
-        if (!relativePath) continue;
-
-        const localPath = path.join(localDir, relativePath);
-        const resolvedLocalPath = path.resolve(localPath);
-        if (
-          !resolvedLocalPath.startsWith(resolvedLocalDir + path.sep) &&
-          resolvedLocalPath !== resolvedLocalDir
-        ) {
-          log("error", `Path traversal attempt blocked: ${entry.key}`);
-          continue;
-        }
-
-        fs.mkdirSync(path.dirname(localPath), { recursive: true });
-
-        const data = await downloadFromPresignedUrl(entry.url);
-        fs.writeFileSync(localPath, data);
-        downloaded++;
-      }
-      log(
-        "info",
-        `Downloaded ${downloaded} files via pre-signed URLs to ${localDir}`
-      );
-      return downloaded;
+async function downloadViaPresignedUrls(entries, s3Prefix, localDir) {
+  const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
+  let downloaded = 0;
+  const resolvedLocalDir = path.resolve(localDir);
+  for (const entry of entries) {
+    const relativePath = entry.key.slice(normalizedPrefix.length);
+    if (!relativePath) {
+      continue;
     }
-  } catch (err) {
-    log(
-      "info",
-      `Pre-signed download URLs unavailable, using SDK fallback: ${err.message}`
-    );
-  }
 
-  // Fallback: direct S3 SDK
+    const localPath = path.join(localDir, relativePath);
+    const resolvedLocalPath = path.resolve(localPath);
+    if (
+      !resolvedLocalPath.startsWith(resolvedLocalDir + path.sep) &&
+      resolvedLocalPath !== resolvedLocalDir
+    ) {
+      log("error", `Path traversal attempt blocked: ${entry.key}`);
+      continue;
+    }
+
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+
+    const data = await downloadFromPresignedUrl(entry.url);
+    fs.writeFileSync(localPath, data);
+    downloaded++;
+  }
+  log(
+    "info",
+    `Downloaded ${downloaded} files via pre-signed URLs to ${localDir}`
+  );
+  return downloaded;
+}
+
+/**
+ * Download files from S3 directly via SDK to a local directory.
+ * Lists all objects under the prefix and downloads each one.
+ */
+async function downloadViaS3Sdk(s3Prefix, localDir) {
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
   const normalizedPrefix = s3Prefix.endsWith("/") ? s3Prefix : `${s3Prefix}/`;
   const client = getS3Client();
@@ -508,7 +506,9 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
       continue;
     }
     const relativePath = obj.Key.slice(normalizedPrefix.length);
-    if (!relativePath) continue;
+    if (!relativePath) {
+      continue;
+    }
 
     const localPath = path.join(localDir, relativePath);
     const resolvedPath = path.resolve(localPath);
@@ -528,6 +528,28 @@ async function downloadDirectoryFromS3(s3Prefix, localDir) {
   }
   log("info", `Downloaded ${downloaded} files via SDK fallback to ${localDir}`);
   return downloaded;
+}
+
+/**
+ * Download an entire S3 "directory" (prefix) to a local directory.
+ * Prefers pre-signed URL path (via API callback), falls back to S3 SDK.
+ */
+async function downloadDirectoryFromS3(s3Prefix, localDir) {
+  // Try pre-signed URL path first
+  try {
+    const entries = await requestDownloadUrls(s3Prefix);
+    if (entries && entries.length > 0) {
+      return await downloadViaPresignedUrls(entries, s3Prefix, localDir);
+    }
+  } catch (err) {
+    log(
+      "info",
+      `Pre-signed download URLs unavailable, using SDK fallback: ${err.message}`
+    );
+  }
+
+  // Fallback: direct S3 SDK
+  return downloadViaS3Sdk(s3Prefix, localDir);
 }
 
 /**
@@ -1076,7 +1098,7 @@ function createPullRequest(workDir, existingPrInfo) {
     );
 
     const prUrl = result.toString().trim();
-    const prMatch = prUrl.match(/\/pull\/(\d+)/);
+    const prMatch = PR_NUMBER_REGEX.exec(prUrl);
     log("info", `PR created: ${prUrl}`);
     return {
       prUrl,
@@ -1932,7 +1954,7 @@ function getHeadCommitSha(workDir) {
  */
 function writeExecutionResult(workDir, prInfo) {
   try {
-    const hasChanges = !!(prInfo?.prUrl);
+    const hasChanges = !!prInfo?.prUrl;
     const commitSha = getHeadCommitSha(workDir);
 
     const result = {
@@ -1966,11 +1988,14 @@ async function reportFinalStatus(
 
   // Step 1: Safety commit + push on ALL exit paths (matches dispatch `if: always()` pattern)
   const isIncomplete = timedOut || exitCode !== 0;
-  const commitMsg = timedOut
-    ? "[INCOMPLETE] WIP: Safety commit — loop timed out"
-    : exitCode !== 0
-      ? "[INCOMPLETE] WIP: Safety commit — process failed"
-      : "Post-run: uncommitted changes from loop execution";
+  let commitMsg;
+  if (timedOut) {
+    commitMsg = "[INCOMPLETE] WIP: Safety commit — loop timed out";
+  } else if (exitCode !== 0) {
+    commitMsg = "[INCOMPLETE] WIP: Safety commit — process failed";
+  } else {
+    commitMsg = "Post-run: uncommitted changes from loop execution";
+  }
   attemptSafetyCommit(workDir, commitMsg);
   ensureBranchPushed(workDir);
 
@@ -2053,6 +2078,89 @@ async function reportFinalStatus(
       loopId: config.loopId,
     });
     log("info", "Reported FAILED event");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fatal error handler (extracted to keep main() complexity under limit)
+// ---------------------------------------------------------------------------
+async function handleFatalError(err, workDir, output, startTime) {
+  const harnessError = toHarnessError(err);
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  const errorMessage = harnessError.message;
+  const errorStack = err instanceof Error ? err.stack : undefined;
+  log(
+    "error",
+    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+  );
+  if (errorStack) {
+    log("error", redactSensitive(errorStack));
+  }
+
+  // Best-effort: refresh token, safety commit, push, create PR, label
+  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+  // even on fatal errors.
+  try {
+    await refreshGitHubToken();
+  } catch (_) {
+    // ignore
+  }
+  try {
+    attemptSafetyCommit(
+      workDir,
+      "[INCOMPLETE] WIP: Safety commit — harness error"
+    );
+    ensureBranchPushed(workDir);
+  } catch (_) {
+    // ignore — attemptSafetyCommit is already best-effort internally
+  }
+
+  let prInfo = null;
+  try {
+    prInfo = parsePrInfo(workDir, output);
+    prInfo = createPullRequest(workDir, prInfo);
+    if (prInfo?.prNumber) {
+      labelPrIncomplete(workDir, prInfo.prNumber);
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  // Best-effort: write execution-result.json before upload
+  try {
+    writeExecutionResult(workDir, prInfo);
+  } catch (_) {
+    // ignore
+  }
+
+  // Best-effort: upload whatever state we have
+  try {
+    await uploadState(workDir, output);
+  } catch (uploadErr) {
+    log(
+      "error",
+      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+    );
+  }
+
+  // Best-effort: report failure with PR info
+  try {
+    await reportEvent({
+      type: "error",
+      code: harnessError.code,
+      message: redactSensitive(errorMessage),
+      result: {
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+      },
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+  } catch (reportErr) {
+    log(
+      "error",
+      `Failed to report error event: ${redactSensitive(reportErr.message)}`
+    );
   }
 }
 
@@ -2172,84 +2280,7 @@ async function main() {
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    const harnessError = toHarnessError(err);
-    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const errorMessage = harnessError.message;
-    const errorStack = err instanceof Error ? err.stack : undefined;
-    log(
-      "error",
-      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-    );
-    if (errorStack) {
-      log("error", redactSensitive(errorStack));
-    }
-
-    // Best-effort: refresh token, safety commit, push, create PR, label
-    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-    // even on fatal errors.
-    try {
-      await refreshGitHubToken();
-    } catch (_) {
-      // ignore
-    }
-    try {
-      attemptSafetyCommit(
-        workDir,
-        "[INCOMPLETE] WIP: Safety commit — harness error"
-      );
-      ensureBranchPushed(workDir);
-    } catch (_) {
-      // ignore — attemptSafetyCommit is already best-effort internally
-    }
-
-    let prInfo = null;
-    try {
-      prInfo = parsePrInfo(workDir, output);
-      prInfo = createPullRequest(workDir, prInfo);
-      if (prInfo?.prNumber) {
-        labelPrIncomplete(workDir, prInfo.prNumber);
-      }
-    } catch (_) {
-      // ignore
-    }
-
-    // Best-effort: write execution-result.json before upload
-    try {
-      writeExecutionResult(workDir, prInfo);
-    } catch (_) {
-      // ignore
-    }
-
-    // Best-effort: upload whatever state we have
-    try {
-      await uploadState(workDir, output);
-    } catch (uploadErr) {
-      log(
-        "error",
-        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-      );
-    }
-
-    // Best-effort: report failure with PR info
-    try {
-      await reportEvent({
-        type: "error",
-        code: harnessError.code,
-        message: redactSensitive(errorMessage),
-        result: {
-          ...(prInfo || {}),
-          sessionId: capturedSessionId,
-        },
-        correlationId: config.correlationId,
-        loopId: config.loopId,
-      });
-    } catch (reportErr) {
-      log(
-        "error",
-        `Failed to report error event: ${redactSensitive(reportErr.message)}`
-      );
-    }
-
+    await handleFatalError(err, workDir, output, startTime);
     process.exit(1);
   }
 }

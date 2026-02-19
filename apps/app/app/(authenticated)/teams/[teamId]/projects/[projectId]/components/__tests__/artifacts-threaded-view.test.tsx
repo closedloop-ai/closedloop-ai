@@ -4,12 +4,16 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { ArtifactsThreadedView } from "../artifacts-threaded-view";
 
+const PRD_TEXT_REGEX = /PRD/;
+
 // Mock dependencies
 const mockRouterPush = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: mockRouterPush,
   }),
+  usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/delete-confirmation-dialog", () => ({
@@ -105,13 +109,6 @@ vi.mock("@/hooks/queries/use-external-links", () => ({
 
 const ARTIFACT_NAME_PATTERN = /The PRD|The Plan|Template/;
 
-const createWorkstreamArtifact = (
-  overrides: Partial<ArtifactWithWorkstream>
-): ArtifactWithWorkstream =>
-  createMockArtifact({
-    ...overrides,
-  }) as ArtifactWithWorkstream;
-
 describe("ArtifactsThreadedView - Empty State", () => {
   beforeEach(() => {
     mockUseExternalLinks.mockReturnValue({ data: [] });
@@ -141,7 +138,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("groups artifacts by workstream", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
@@ -151,7 +148,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
           state: "IMPLEMENTATION_IN_PROGRESS",
         },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "2",
         title: "Plan Alpha",
         type: "IMPLEMENTATION_PLAN",
@@ -162,7 +159,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
           state: "IMPLEMENTATION_IN_PROGRESS",
         },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "3",
         title: "PRD Beta",
         workstreamId: "ws-2",
@@ -184,13 +181,13 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("shows artifact count per workstream", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
         workstream: { id: "ws-1", title: "Feature X", state: "INITIATED" },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "2",
         title: "Plan Alpha",
         type: "IMPLEMENTATION_PLAN",
@@ -208,7 +205,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("shows singular 'artifact' for single artifact groups", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Solo",
         workstreamId: "ws-1",
@@ -225,7 +222,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("uses PRD title as title for unassigned groups", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Orphan PRD",
         workstreamId: null,
@@ -241,9 +238,53 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     expect(screen.queryByText("Unassigned")).toBeNull();
   });
 
+  test("renders separate collapsible groups for multiple unassigned PRDs in alphabetical order", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Gamma PRD",
+        type: "PRD",
+        workstreamId: null,
+        workstream: null,
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Alpha PRD",
+        type: "PRD",
+        workstreamId: null,
+        workstream: null,
+      }),
+      createMockArtifact({
+        id: "3",
+        title: "Beta PRD",
+        type: "PRD",
+        workstreamId: null,
+        workstream: null,
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    // All 3 PRD titles should be visible as group headers (each unassigned PRD forms its own group)
+    expect(screen.getByText("Alpha PRD")).toBeDefined();
+    expect(screen.getByText("Beta PRD")).toBeDefined();
+    expect(screen.getByText("Gamma PRD")).toBeDefined();
+
+    // Groups should be alphabetically ordered
+    const allGroupHeaders = screen.getAllByText(PRD_TEXT_REGEX);
+    const headerTexts = allGroupHeaders.map((el) => el.textContent);
+    const sortedHeaderTexts = [...headerTexts].sort();
+    expect(headerTexts).toEqual(sortedHeaderTexts);
+
+    // No preview URL applies since workstreamId is null
+    expect(screen.queryByText("Preview")).toBeNull();
+  });
+
   test("falls back to 'Unassigned' when no PRD in group", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Template",
         type: "TEMPLATE",
@@ -261,21 +302,21 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("sorts artifacts within group: PRD, plan, template", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Template",
         type: "TEMPLATE",
         workstreamId: "ws-1",
         workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "2",
         title: "The PRD",
         type: "PRD",
         workstreamId: "ws-1",
         workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "3",
         title: "The Plan",
         type: "IMPLEMENTATION_PLAN",
@@ -299,7 +340,7 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
   test("shows workstream state badge", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
@@ -317,6 +358,54 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
 
     expect(screen.getByText("Implementing")).toBeDefined();
   });
+
+  test("artifacts sharing the same workstreamId are grouped together with no regression", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "PRD Shared",
+        type: "PRD",
+        workstreamId: "ws-shared",
+        workstream: {
+          id: "ws-shared",
+          title: "Shared Stream",
+          state: "INITIATED",
+        },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Plan Shared",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-shared",
+        workstream: {
+          id: "ws-shared",
+          title: "Shared Stream",
+          state: "INITIATED",
+        },
+      }),
+      createMockArtifact({
+        id: "3",
+        title: "Unassigned PRD",
+        type: "PRD",
+        workstreamId: null,
+        workstream: null,
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+    );
+
+    // Only 2 collapsible groups should render: one for ws-shared, one for the unassigned artifact
+    const groups = document.querySelectorAll(".rounded-lg.border");
+    expect(groups.length).toBe(2);
+
+    // The shared workstream group header must be visible
+    expect(screen.getByText("Shared Stream")).toBeDefined();
+
+    // The shared workstream group must show 2 artifacts
+    expect(screen.getByText("2 artifacts")).toBeDefined();
+  });
 });
 
 describe("ArtifactsThreadedView - Collapsible Behavior", () => {
@@ -328,7 +417,7 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
 
   test("sections are collapsed by default", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
@@ -348,7 +437,7 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
 
   test("clicking a section expands it to show artifacts", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
@@ -378,7 +467,7 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
 
   test("renders artifact with type badge and status", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Full Artifact",
         type: "IMPLEMENTATION_PLAN",
@@ -403,14 +492,14 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
 
   test("renders correct badges for each type", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "A PRD",
         type: "PRD",
         workstreamId: "ws-1",
         workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
       }),
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "2",
         title: "A Plan",
         type: "IMPLEMENTATION_PLAN",
@@ -440,7 +529,7 @@ describe("ArtifactsThreadedView - Links", () => {
 
   test("renders internal link for PRD artifact", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Product Requirements",
         type: "PRD",
@@ -475,7 +564,7 @@ describe("ArtifactsThreadedView - Navigation", () => {
 
   test("navigable artifacts have cursor-pointer class", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Product Requirements",
         type: "PRD",
@@ -501,7 +590,7 @@ describe("ArtifactsThreadedView - Navigation", () => {
 
   test("non-navigable artifacts do not have cursor-pointer", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Template",
         type: "TEMPLATE",
@@ -532,7 +621,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
 
   test("renders generation status indicator for artifact with active status", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Generating Artifact",
         type: "PRD",
@@ -567,7 +656,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
 
   test("does not render indicator when status is NONE", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Artifact",
         type: "PRD",
@@ -597,7 +686,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
 
   test("does not render indicator when generationStatus is undefined", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Artifact",
         type: "PRD",
@@ -622,7 +711,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
 
   test("status transitions from PENDING to SUCCESS", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Transitioning Artifact",
         type: "PRD",
@@ -651,7 +740,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
 
     // Update to SUCCESS state
     const updatedArtifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Transitioning Artifact",
         type: "PRD",
@@ -703,7 +792,7 @@ describe("ArtifactsThreadedView - Preview Links", () => {
     });
 
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Alpha",
         workstreamId: "ws-1",
@@ -736,7 +825,7 @@ describe("ArtifactsThreadedView - Preview Links", () => {
     });
 
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "PRD Beta",
         workstreamId: "ws-2",
@@ -766,7 +855,7 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
 
   test("renders 'Move to project' menu item in dropdown", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Test Artifact",
         workstreamId: "ws-1",
@@ -791,7 +880,7 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
 
   test("clicking 'Move to project' opens MoveArtifactDialog", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Test Artifact",
         workstreamId: "ws-1",
@@ -821,7 +910,7 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
 
   test("closing MoveArtifactDialog hides it", () => {
     const artifacts: ArtifactWithWorkstream[] = [
-      createWorkstreamArtifact({
+      createMockArtifact({
         id: "1",
         title: "Test Artifact",
         workstreamId: "ws-1",
