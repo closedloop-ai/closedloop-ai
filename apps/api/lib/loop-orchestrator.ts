@@ -204,6 +204,13 @@ async function fetchPrimaryArtifact(
     return [];
   }
 
+  // PLAN starts fresh from the PRD — the plan is either empty (new) or being
+  // fully regenerated. Including it would add noise. The PRD comes via contextRefs.
+  // REQUEST_CHANGES needs the existing plan so it knows what to amend.
+  if (loop.command === "PLAN") {
+    return [];
+  }
+
   const artifact = await artifactsService.findByIdSimple(
     loop.artifactId,
     organizationId
