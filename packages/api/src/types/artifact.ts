@@ -260,6 +260,10 @@ export type PlanJson = {
   manualTasks?: PlanTask[];
 };
 
+export type BatchCreateArtifactInput = {
+  items: CreateArtifactInput[];
+};
+
 /**
  * Map of artifact slug to artifact title.
  * Returned by the batch-meta endpoint for lightweight name lookups.
