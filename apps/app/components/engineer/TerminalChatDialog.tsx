@@ -818,6 +818,8 @@ export function TerminalChatDialog({
           "border-black/[0.06] text-foreground dark:border-white/[0.08]"
         )}
         isExpanded={isExpanded}
+        onInteractOutside={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
         showCloseButton={false}
         showOverlay={false}
         style={dialogStyle}

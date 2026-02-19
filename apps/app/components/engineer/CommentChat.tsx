@@ -1869,7 +1869,7 @@ const CommentMessageBubble = memo(
             ? "text-blue-600 dark:text-blue-400"
             : "text-emerald-600 dark:text-emerald-400"
         }
-        roleLabel={isUser ? "you" : "cl.dev"}
+        roleLabel={isUser ? "you" : "claude"}
         timestamp={message.timestamp}
       >
         {isUser ? (

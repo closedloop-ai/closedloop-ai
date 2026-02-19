@@ -262,29 +262,37 @@ export async function POST() {
     const errors: string[] = [];
 
     for (const prDir of prDirs) {
-      // Security: ensure path is inside worktreeParentDir
-      if (!prDir.startsWith(worktreeParentDir + sep)) {
-        continue;
-      }
-
-      const branch = branchByPath.get(prDir);
-      if (!branch) {
-        // Not tracked as a worktree — skip
-        kept.push(prDir);
-        continue;
-      }
-
-      if (isRemoteBranchGone(mainRepoPath, branch)) {
-        // Branch is gone from remote — remove the worktree
-        const result = removeWorktree(prDir, true);
-        const body = await result.json();
-        if (body.success) {
-          removed.push(prDir);
-        } else {
-          errors.push(`${prDir}: ${body.error || "removal failed"}`);
+      try {
+        // Security: ensure path is inside worktreeParentDir
+        if (!prDir.startsWith(worktreeParentDir + sep)) {
+          continue;
         }
-      } else {
-        kept.push(prDir);
+
+        const branch = branchByPath.get(prDir);
+        if (!branch) {
+          // Not tracked as a worktree — skip
+          kept.push(prDir);
+          continue;
+        }
+
+        if (isRemoteBranchGone(mainRepoPath, branch)) {
+          // Branch is gone from remote — remove the worktree (non-force to protect dirty worktrees)
+          const result = removeWorktree(prDir, false);
+          const body = await result.json();
+          if (body.success) {
+            removed.push(prDir);
+          } else if (body.hasChanges) {
+            kept.push(prDir);
+          } else {
+            errors.push(`${prDir}: ${body.error || "removal failed"}`);
+          }
+        } else {
+          kept.push(prDir);
+        }
+      } catch (err) {
+        errors.push(
+          `${prDir}: ${err instanceof Error ? err.message : "unknown error"}`
+        );
       }
     }
 

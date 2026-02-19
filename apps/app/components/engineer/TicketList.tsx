@@ -668,8 +668,9 @@ export function TicketList({
     if (last && Date.now() - Number(last) < ONE_HOUR) {
       return;
     }
-    localStorage.setItem(THROTTLE_KEY, Date.now().toString());
-    fetch("/api/engineer/git/worktree", { method: "POST" }).catch(() => {});
+    fetch("/api/engineer/git/worktree", { method: "POST" })
+      .then(() => localStorage.setItem(THROTTLE_KEY, Date.now().toString()))
+      .catch(() => {});
   }, []);
 
   // Discover external deployments (e.g., `vercel --yes` from CLI) on page load
