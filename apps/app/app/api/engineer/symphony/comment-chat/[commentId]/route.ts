@@ -12,6 +12,7 @@ import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
@@ -547,23 +548,7 @@ export async function POST(
             );
           }
         },
-        () => {
-          // Claude CLI may hang after result event — kill after 30s
-          const killTimer = setTimeout(() => {
-            console.warn(
-              "[Comment Chat API] Kill timeout: SIGTERM after result event"
-            );
-            try {
-              claudeProcess?.kill("SIGTERM");
-            } catch {}
-            setTimeout(() => {
-              try {
-                claudeProcess?.kill("SIGKILL");
-              } catch {}
-            }, 5000);
-          }, 30_000);
-          claudeProcess?.once("close", () => clearTimeout(killTimer));
-        }
+        makeResultKillTimer(() => claudeProcess, "Comment Chat API")
       );
       streamStateRef = streamState;
 

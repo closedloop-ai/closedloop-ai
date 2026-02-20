@@ -11,6 +11,7 @@ import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -243,23 +244,7 @@ function handleClaude(
             saveChatHistory(history);
           }
         },
-        () => {
-          // Claude CLI may hang after result event — kill after 30s
-          const killTimer = setTimeout(() => {
-            console.warn(
-              "[terminal-chat] Kill timeout: SIGTERM after result event"
-            );
-            try {
-              claudeProcess?.kill("SIGTERM");
-            } catch {}
-            setTimeout(() => {
-              try {
-                claudeProcess?.kill("SIGKILL");
-              } catch {}
-            }, 5000);
-          }, 30_000);
-          claudeProcess?.once("close", () => clearTimeout(killTimer));
-        }
+        makeResultKillTimer(() => claudeProcess, "terminal-chat")
       );
 
       try {

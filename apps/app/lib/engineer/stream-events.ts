@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { formatToolResultContent } from "@/lib/engineer/chat-utils";
 
 export type ContentBlock = {
@@ -63,6 +64,30 @@ export function createStreamState(
     contextPercent: null,
     onSessionId,
     onResultEvent,
+  };
+}
+
+export function makeResultKillTimer(
+  getProcess: () => ChildProcess | null,
+  label: string
+): () => void {
+  return () => {
+    const proc = getProcess();
+    if (!proc) {
+      return;
+    }
+    const killTimer = setTimeout(() => {
+      console.warn(`[${label}] Kill timeout: SIGTERM after result event`);
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }, 5000);
+    }, 30_000);
+    proc.once("close", () => clearTimeout(killTimer));
   };
 }
 

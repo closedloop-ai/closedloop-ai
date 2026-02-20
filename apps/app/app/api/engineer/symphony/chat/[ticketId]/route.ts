@@ -12,6 +12,7 @@ import {
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import {
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -501,21 +502,7 @@ export async function POST(
             console.log("[Chat API] Persisted session ID early:", sessionId);
           }
         },
-        () => {
-          // Claude CLI may hang after result event — kill after 30s
-          const killTimer = setTimeout(() => {
-            console.warn("[Chat API] Kill timeout: SIGTERM after result event");
-            try {
-              claudeProcess?.kill("SIGTERM");
-            } catch {}
-            setTimeout(() => {
-              try {
-                claudeProcess?.kill("SIGKILL");
-              } catch {}
-            }, 5000);
-          }, 30_000);
-          claudeProcess?.once("close", () => clearTimeout(killTimer));
-        }
+        makeResultKillTimer(() => claudeProcess, "Chat API")
       );
       streamStateRef = streamState;
 
