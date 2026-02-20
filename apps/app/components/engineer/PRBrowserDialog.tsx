@@ -535,6 +535,7 @@ export function PRBrowserDialog({
       }
       return changed ? next : prev;
     });
+    setPreviewComment((prev) => (prev?.comment.id === commentId ? null : prev));
     // Auto-heal effect handles updating activeCommentChatKey
   }, []);
 
