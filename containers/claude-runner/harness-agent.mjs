@@ -839,7 +839,7 @@ function findExistingRunDir(workDir) {
       return null;
     }
     // Use the most recent run directory (last when sorted alphabetically)
-    return path.join(runsDir, dirs[dirs.length - 1]);
+    return path.join(runsDir, dirs.at(-1));
   } catch {
     return null;
   }
@@ -859,9 +859,7 @@ function writePrdFile(targetDir, contextPack) {
 
   // Fall back to the first PRD-type artifact from context refs
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type === "PRD"
-    );
+    const prdArtifact = contextPack.artifacts.find((a) => a.type === "PRD");
     if (prdArtifact?.content) {
       prdContent = prdArtifact.content;
       log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
@@ -903,7 +901,10 @@ function syncPlanFromContextPack(runDir, contextPack) {
   // (pendingTasks, openQuestions, etc.). If it doesn't exist, the parent
   // may not have produced one yet (edge case) — skip.
   if (!fs.existsSync(planJsonPath)) {
-    log("info", "No existing plan.json in run dir — skipping context pack sync");
+    log(
+      "info",
+      "No existing plan.json in run dir — skipping context pack sync"
+    );
     return;
   }
 
@@ -911,7 +912,10 @@ function syncPlanFromContextPack(runDir, contextPack) {
     const existing = JSON.parse(fs.readFileSync(planJsonPath, "utf-8"));
     existing.content = primaryArtifact.content;
     fs.writeFileSync(planJsonPath, JSON.stringify(existing, null, 2));
-    log("info", `Synced plan.json with latest artifact content (${primaryArtifact.content.length} chars)`);
+    log(
+      "info",
+      `Synced plan.json with latest artifact content (${primaryArtifact.content.length} chars)`
+    );
   } catch (err) {
     log("error", `Failed to sync plan.json from context pack: ${err.message}`);
   }
@@ -2119,7 +2123,15 @@ function writeExecutionResult(workDir, prInfo) {
 async function reportFinalStatus(
   workDir,
   output,
-  { timedOut, exitCode, signal, duration, tokenUsage, startTime, symphonyWorkDir: swDir }
+  {
+    timedOut,
+    exitCode,
+    signal,
+    duration,
+    tokenUsage,
+    startTime,
+    symphonyWorkDir: swDir,
+  }
 ) {
   // Step 0: Refresh GitHub token before safety commit (token may have expired
   // during the 55-minute run window)
@@ -2129,11 +2141,14 @@ async function reportFinalStatus(
 
   // Step 1: Safety commit + push only for commands that produce code changes
   const isIncomplete = timedOut || exitCode !== 0;
-  const commitMsg = timedOut
-    ? "[INCOMPLETE] WIP: Safety commit — loop timed out"
-    : exitCode !== 0
-      ? "[INCOMPLETE] WIP: Safety commit — process failed"
-      : "Post-run: uncommitted changes from loop execution";
+  let commitMsg;
+  if (timedOut) {
+    commitMsg = "[INCOMPLETE] WIP: Safety commit — loop timed out";
+  } else if (exitCode !== 0) {
+    commitMsg = "[INCOMPLETE] WIP: Safety commit — process failed";
+  } else {
+    commitMsg = "Post-run: uncommitted changes from loop execution";
+  }
 
   let prInfo = null;
 
@@ -2292,15 +2307,27 @@ async function main() {
     if (symphonyWorkDir) {
       log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
     } else {
-      const runTs = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-      const loopSuffix = (config.loopId || randomUUID()).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 50);
-      symphonyWorkDir = path.join(workDir, ".claude", "runs", `${runTs}-loop-${loopSuffix}`);
+      const runTs = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID())
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      symphonyWorkDir = path.join(
+        workDir,
+        ".claude",
+        "runs",
+        `${runTs}-loop-${loopSuffix}`
+      );
       fs.mkdirSync(symphonyWorkDir, { recursive: true });
       log("info", `Created new run directory: ${symphonyWorkDir}`);
     }
 
     // Write PRD to the run directory (all commands that have a prompt)
-    let prdPath = writePrdFile(symphonyWorkDir, contextPack);
+    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
 
     // For child loops: write the latest plan content from the context pack to
     // plan.json in the run dir. This picks up manual edits the user made in
@@ -2371,91 +2398,7 @@ async function main() {
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    const harnessError = toHarnessError(err);
-    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const errorMessage = harnessError.message;
-    const errorStack = err instanceof Error ? err.stack : undefined;
-    log(
-      "error",
-      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-    );
-    if (errorStack) {
-      log("error", redactSensitive(errorStack));
-    }
-
-    // Best-effort: refresh token, safety commit, push, create PR, label
-    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-    // even on fatal errors.
-    const shouldCommitAndPush = config.command === "EXECUTE";
-
-    try {
-      await refreshGitHubToken();
-    } catch (_) {
-      // ignore
-    }
-
-    let prInfo = null;
-    if (shouldCommitAndPush) {
-      try {
-        attemptSafetyCommit(
-          workDir,
-          "[INCOMPLETE] WIP: Safety commit — harness error"
-        );
-        ensureBranchPushed(workDir);
-      } catch (_) {
-        // ignore
-      }
-
-      try {
-        prInfo = parsePrInfo(workDir, output);
-        prInfo = createPullRequest(workDir, prInfo);
-        if (prInfo?.prNumber) {
-          labelPrIncomplete(workDir, prInfo.prNumber);
-        }
-      } catch (_) {
-        // ignore
-      }
-    }
-
-    // Best-effort: write execution-result.json before upload
-    if (shouldCommitAndPush) {
-      try {
-        writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-      } catch (_) {
-        // ignore
-      }
-    }
-
-    // Best-effort: upload whatever state we have
-    try {
-      await uploadState(workDir, output, symphonyWorkDir);
-    } catch (uploadErr) {
-      log(
-        "error",
-        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-      );
-    }
-
-    // Best-effort: report failure with PR info
-    try {
-      await reportEvent({
-        type: "error",
-        code: harnessError.code,
-        message: redactSensitive(errorMessage),
-        result: {
-          ...(prInfo || {}),
-          sessionId: capturedSessionId,
-        },
-        correlationId: config.correlationId,
-        loopId: config.loopId,
-      });
-    } catch (reportErr) {
-      log(
-        "error",
-        `Failed to report error event: ${redactSensitive(reportErr.message)}`
-      );
-    }
-
+    await handleFatalError(err, workDir, output, startTime, symphonyWorkDir);
     process.exit(1);
   }
 }
