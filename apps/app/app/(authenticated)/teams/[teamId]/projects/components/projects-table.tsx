@@ -353,7 +353,7 @@ export function ProjectsTable({
                       <span className="inline-flex">
                         <HexagonProgress value={project.status} />
                       </span>
-                      <HexagonProgress value={project.status} />
+                    </TooltipTrigger>
                     </TooltipTrigger>
                     <TooltipContent>
                       % of artifacts in &quot;Complete&quot; status
