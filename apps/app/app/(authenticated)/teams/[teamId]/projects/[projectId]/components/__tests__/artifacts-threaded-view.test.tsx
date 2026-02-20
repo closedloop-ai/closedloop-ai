@@ -891,7 +891,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -913,7 +917,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -935,7 +943,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -972,7 +984,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -997,7 +1013,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1022,7 +1042,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1047,7 +1071,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1088,7 +1116,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1110,7 +1142,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1140,7 +1176,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1192,7 +1232,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // Deployment state badge (uppercased "READY") should appear in the section header
@@ -1231,7 +1275,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("BUILDING")).toBeInTheDocument();
@@ -1264,7 +1312,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.queryByText("READY")).not.toBeInTheDocument();
