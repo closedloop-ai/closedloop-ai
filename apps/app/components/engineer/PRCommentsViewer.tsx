@@ -179,14 +179,7 @@ export function PRCommentsViewer({
   // Get local status for all comments — re-read from localStorage whenever
   // statusVersion (internal dismiss/reopen) or statusRefreshKey (parent signals) changes
   const commentStatuses = useMemo(() => {
-    const statuses = getCommentStatuses(prNumber);
-    console.log("[PRCommentsViewer] re-read commentStatuses", {
-      prNumber,
-      statusVersion,
-      statusRefreshKey,
-      statuses,
-    });
-    return statuses;
+    return getCommentStatuses(prNumber);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prNumber, statusVersion, statusRefreshKey]);
 
@@ -245,10 +238,6 @@ export function PRCommentsViewer({
     provider?: "codex"
   ) => {
     if (autoStart) {
-      console.log("[PRCommentsViewer] markChatStarted", {
-        prNumber,
-        commentId: comment.id,
-      });
       markChatStarted(prNumber, comment.id);
       setStatusVersion((v) => v + 1);
     }

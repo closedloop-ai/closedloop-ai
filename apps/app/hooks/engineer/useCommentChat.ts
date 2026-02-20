@@ -614,7 +614,7 @@ export function useCommentChat({
   const handleCommitAndResolve = async () => {
     setIsCommitting(true);
     try {
-      // 1. Commit changes
+      // 1. Commit changes (must succeed before we can resolve)
       const commitResponse = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -631,62 +631,25 @@ export function useCommentChat({
       }
       const commitSha = commitData.commit?.slice(0, 7) || "unknown";
 
-      // 2. Push changes
-      const pushResponse = await fetch("/api/engineer/git", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "push",
-          repoPath: worktreePath,
-        }),
-      });
-
-      if (!pushResponse.ok) {
-        const data = await pushResponse.json();
-        throw new Error(data.error || "Failed to push");
-      }
-
-      // 3. Reply to the PR comment thread (use base repoPath for git remote lookup)
-      //    Skip @mention for bot authors (e.g. codex connector) to avoid triggering them.
-      const replyToId =
-        comment.databaseId && comment.databaseId > 0
-          ? comment.databaseId
-          : undefined;
-      if (replyToId) {
-        const isBot = comment.author.endsWith("[bot]");
-        const replyBody = isBot
-          ? `Issue addressed in ${commitSha} ✓`
-          : `@${comment.author} Issue addressed in ${commitSha} ✓`;
-        await fetch("/api/engineer/git/pr/reply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            repoPath,
-            commentId: replyToId,
-            prNumber,
-            body: replyBody,
-          }),
-        });
-      }
-
-      // 4. Update local status
+      // 2. Update local status and close the chat immediately — don't
+      //    block on push + GitHub reply which are slow network calls.
       markCommentAddressed(prNumber, comment.id, commitSha);
-
-      // 5. Reset state and refresh git status + PR comments
       setHasAcceptedChanges(false);
+      toast.success("Comment addressed!", {
+        description: `Changes committed and pushed (${commitSha})`,
+      });
+      onResolved?.();
+      triggerLearningsExtraction();
+
+      // 3. Push + reply in the background (best-effort, errors shown as toasts)
+      pushAndReply(worktreePath, repoPath, prNumber, comment, commitSha);
+
       queryClient.invalidateQueries({
         queryKey: queryKeys.gitStatus(worktreePath),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.prComments(prNumber, repoPath),
       });
-
-      toast.success("Comment addressed!", {
-        description: `Changes committed and pushed (${commitSha})`,
-      });
-
-      triggerLearningsExtraction();
-      onResolved?.();
     } catch (err) {
       console.error("Commit error:", err);
       toast.error("Failed to commit", {
@@ -938,4 +901,58 @@ export function useCommentChat({
     learningsCount,
     pollLearningsStatus,
   };
+}
+
+/**
+ * Fire-and-forget: push committed changes and reply to the PR comment thread.
+ * Errors are shown as toasts but don't block the resolved UI state.
+ */
+async function pushAndReply(
+  worktreePath: string,
+  repoPath: string,
+  prNumber: number,
+  comment: PRComment,
+  commitSha: string
+): Promise<void> {
+  try {
+    const pushResponse = await fetch("/api/engineer/git", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "push", repoPath: worktreePath }),
+    });
+    if (!pushResponse.ok) {
+      const data = await pushResponse.json();
+      toast.error("Push failed", {
+        description: data.error || "Failed to push changes",
+      });
+      return;
+    }
+  } catch {
+    toast.error("Push failed", { description: "Network error" });
+    return;
+  }
+
+  // Reply to the PR comment thread (best-effort)
+  const replyToId =
+    comment.databaseId && comment.databaseId > 0
+      ? comment.databaseId
+      : undefined;
+  if (replyToId) {
+    const isBot = comment.author.endsWith("[bot]");
+    const replyBody = isBot
+      ? `Issue addressed in ${commitSha}`
+      : `@${comment.author} Issue addressed in ${commitSha}`;
+    fetch("/api/engineer/git/pr/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        repoPath,
+        commentId: replyToId,
+        prNumber,
+        body: replyBody,
+      }),
+    }).catch(() => {
+      // Best-effort — don't toast for reply failures
+    });
+  }
 }

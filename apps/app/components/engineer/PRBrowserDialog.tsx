@@ -504,11 +504,15 @@ export function PRBrowserDialog({
 
   const handleCommentChatResolved = useCallback(
     (key: string, _commentId: string) => {
+      console.log("[PRBrowserDialog] handleCommentChatResolved", { key });
       setCommentChats((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
       });
+      // Clear immediately so the right pane doesn't go blank while the
+      // auto-heal effect waits for the next render cycle.
+      setActiveCommentChatKey(null);
       // Don't reset comment status here — the hook already wrote the final
       // status (addressed/responded) before calling onResolved. Resetting
       // would undo that and make the card flash back to "pending".
@@ -1411,7 +1415,7 @@ export function PRBrowserDialog({
                   ))}
                   <PRCommentsViewer
                     activeChatCommentIds={streamingCommentIds}
-                    key={`${selectedPR.number}-${commentStatusKey}`}
+                    key={selectedPR.number}
                     onCommentDismissed={handleCommentDismissed}
                     onCommentSelected={handleCommentSelected}
                     onReviewCodex={async (commentId) => {
