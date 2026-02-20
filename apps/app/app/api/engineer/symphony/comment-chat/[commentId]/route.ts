@@ -113,6 +113,25 @@ function getWorkPaths(
 }
 
 /**
+ * Safe wrapper around getWorkPaths that catches worktree resolution failures
+ * and returns a structured error Response instead of throwing.
+ */
+function safeGetWorkPaths(
+  ...args: Parameters<typeof getWorkPaths>
+): ReturnType<typeof getWorkPaths> | Response {
+  try {
+    return getWorkPaths(...args);
+  } catch (err) {
+    return Response.json(
+      {
+        error: `Worktree resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { status: 500 }
+    );
+  }
+}
+
+/**
  * Load comment chat history
  */
 function loadCommentChatHistory(
@@ -368,13 +387,16 @@ export async function GET(
 
   const branch = searchParams.get("branch");
   const prNum = searchParams.get("prNumber");
-  const paths = getWorkPaths(
+  const paths = safeGetWorkPaths(
     ticketId,
     repoPath,
     commentId,
     branch,
     prNum ? Number(prNum) : null
   );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -427,13 +449,16 @@ export async function POST(
     });
   }
 
-  const paths = getWorkPaths(
+  const paths = safeGetWorkPaths(
     ticketId,
     repoPath,
     commentId,
     branchName,
     prNumber
   );
+  if (paths instanceof Response) {
+    return paths;
+  }
 
   // Check if effective directory exists
   if (!existsSync(paths.effectiveDir)) {
@@ -758,13 +783,16 @@ export async function DELETE(
 
   const branch = searchParams.get("branch");
   const prNum = searchParams.get("prNumber");
-  const paths = getWorkPaths(
+  const paths = safeGetWorkPaths(
     ticketId,
     repoPath,
     commentId,
     branch,
     prNum ? Number(prNum) : null
   );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -824,13 +852,16 @@ export async function PATCH(
     markResponded?: string;
   };
 
-  const paths = getWorkPaths(
+  const paths = safeGetWorkPaths(
     ticketId,
     repoPath,
     commentId,
     branch,
     prNum ? Number(prNum) : null
   );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
