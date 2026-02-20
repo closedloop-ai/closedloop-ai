@@ -50,11 +50,19 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         return notFoundResponse("Artifact");
       }
 
-      // Resolve repo info from the artifact's workstream/project
-      const workstream = artifact.workstream;
+      // Use findOrCreateWorkstream for robust PRD discovery via entity links,
+      // title matching, and auto-workstream creation — matching the pattern
+      // used by regenerate/requestChanges/executePlan service methods.
+      const { workstream: resolvedWorkstream, sourceArtifact } =
+        await artifactsService.findOrCreateWorkstream(
+          user.organizationId,
+          artifact,
+          user.id
+        );
+
+      const workstream = resolvedWorkstream ?? artifact.workstream;
       const project = workstream?.project;
       const existingRepository = project?.repositories[0];
-      const sourceArtifact = workstream?.artifacts[0];
 
       const targetRepo =
         sourceArtifact?.targetRepo ??
