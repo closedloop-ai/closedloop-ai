@@ -1959,9 +1959,10 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Batch-regenerate implementation plans for all approved PRDs in a project.
-   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
-   * relationships and calls regenerateImplementationPlan on it.
+   * Batch-generate (or regenerate) implementation plans for all approved PRDs in a project.
+   * For each approved PRD:
+   * - If a linked IMPLEMENTATION_PLAN exists via PRODUCES link, regenerates it.
+   * - If no linked plan exists, creates a new IMPLEMENTATION_PLAN and triggers generation.
    * Returns the count of triggered plans and their artifact IDs.
    */
   async batchRegenerateImplementationPlans(
@@ -1981,6 +1982,32 @@ Please try again or contact support if the issue persists.`
       );
 
       if (targetLinks.length === 0) {
+        // No linked plan exists — create a new IMPLEMENTATION_PLAN from the PRD
+        const newPlan = await this.create(organizationId, userId, {
+          type: ArtifactType.ImplementationPlan,
+          title: `Implementation Plan: ${prd.title}`,
+          content: "",
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          sourceVersion: prd.latestVersion,
+          projectId: prd.projectId ?? undefined,
+          workstreamId: prd.workstreamId ?? undefined,
+          targetRepo: prd.targetRepo ?? undefined,
+          targetBranch: prd.targetBranch ?? undefined,
+          ownerId: userId,
+          status: "DRAFT",
+        });
+
+        if (newPlan) {
+          const result = await this.regenerateImplementationPlan(
+            newPlan.id,
+            organizationId,
+            userId
+          );
+          if (result.success) {
+            artifactIds.push(result.artifact.id);
+          }
+        }
         continue;
       }
 
