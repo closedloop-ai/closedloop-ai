@@ -117,7 +117,7 @@ function removeLegacyConfig(): void {
     // Clean up .cache dir if empty
     const cacheDir = join(process.cwd(), ".cache");
     if (existsSync(cacheDir) && readdirSync(cacheDir).length === 0) {
-      rmSync(cacheDir, { force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
     }
   } catch {
     // Best-effort cleanup
