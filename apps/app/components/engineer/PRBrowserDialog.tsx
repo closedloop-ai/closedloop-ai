@@ -459,22 +459,9 @@ export function PRBrowserDialog({
         // autoStart: create persistent chat entry
         setPreviewComment(null);
 
-        // Clear stale history from disk and query cache so the auto-start
-        // effect fires fresh instead of seeing old messages.
-        if (selectedPR && selectedRepo) {
-          const tid = `pr-${selectedPR.number}`;
-          queryClient.removeQueries({
-            queryKey: queryKeys.commentChatHistory(
-              tid,
-              comment.id,
-              selectedRepo.path
-            ),
-          });
-          fetch(
-            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
-            { method: "DELETE" }
-          ).catch(() => {});
-        }
+        // Track whether the updater actually created a new entry, so we
+        // only wipe disk/cache when genuinely starting fresh (not deduping).
+        const created = { value: false };
 
         setCommentChats((prev) => {
           // Dedup: already exists, just switch to it
@@ -482,6 +469,7 @@ export function PRBrowserDialog({
             return prev;
           }
 
+          created.value = true;
           const next = { ...prev };
 
           // Evict oldest non-active slot if at capacity
@@ -498,6 +486,23 @@ export function PRBrowserDialog({
           next[key] = { comment, replies, autoStart, provider };
           return next;
         });
+
+        // Clear stale history from disk and query cache so the auto-start
+        // effect fires fresh instead of seeing old messages.
+        if (created.value && selectedPR && selectedRepo) {
+          const tid = `pr-${selectedPR.number}`;
+          queryClient.removeQueries({
+            queryKey: queryKeys.commentChatHistory(
+              tid,
+              comment.id,
+              selectedRepo.path
+            ),
+          });
+          fetch(
+            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+        }
 
         setActiveCommentChatKey(key);
         setActiveReviewProvider(null);
