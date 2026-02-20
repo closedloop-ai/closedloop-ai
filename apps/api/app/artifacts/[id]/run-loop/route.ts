@@ -87,6 +87,18 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         contextRefs.push({ artifactId: sourceArtifact.id, include: "full" });
       }
 
+      // Find parent loop for non-PLAN commands
+      // REQUEST_CHANGES needs parent's plan.json state
+      // EXECUTE needs parent's plan.json + branch name for code changes
+      let parentLoopId: string | undefined;
+      if (body.command !== "plan") {
+        const parentLoop = await loopsService.findLatestCompletedForArtifact(
+          artifactId,
+          user.organizationId
+        );
+        parentLoopId = parentLoop?.id;
+      }
+
       // Create the Loop
       const loopResponse = await loopsService.create(
         user.organizationId,
@@ -95,6 +107,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           command: COMMAND_MAP[body.command],
           artifactId,
           workstreamId: workstream?.id,
+          parentLoopId,
           prompt: body.prompt,
           repo: { fullName: targetRepo, branch: targetBranch },
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
