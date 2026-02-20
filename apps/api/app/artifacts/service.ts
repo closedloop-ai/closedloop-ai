@@ -589,7 +589,8 @@ export const artifactsService = {
       return;
     }
 
-    // Delete entity links referencing this artifact, then delete the artifact
+    // Delete entity links referencing this artifact, then delete the artifact.
+    // Loops are preserved (onDelete: SetNull) to retain execution history.
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
