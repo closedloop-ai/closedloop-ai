@@ -993,7 +993,6 @@ function attemptSafetyCommit(
     execFileSync("git", ["add", "-A", "--", ":!.claude"], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 5000,
     });
 
     // Check if there are staged changes (exit 1 = changes exist)
@@ -1001,7 +1000,6 @@ function attemptSafetyCommit(
       execFileSync("git", ["diff", "--cached", "--quiet"], {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 5000,
       });
       // Exit 0 means no changes — nothing to commit
       log("info", "Safety commit: no uncommitted changes");
@@ -1013,7 +1011,6 @@ function attemptSafetyCommit(
     execFileSync("git", ["commit", "-m", commitMessage], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 10_000,
     });
 
     const currentBranch = execFileSync(
@@ -1022,7 +1019,6 @@ function attemptSafetyCommit(
       {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 5000,
       }
     )
       .toString()
@@ -1040,7 +1036,6 @@ function attemptSafetyCommit(
     execFileSync("git", ["push", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 15_000,
       env: buildGitAuthEnv(),
     });
 
@@ -1065,7 +1060,6 @@ function ensureBranchPushed(workDir) {
     execFileSync("git", ["push", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 30_000,
       env: buildGitAuthEnv(),
     });
   } catch (err) {
@@ -1088,7 +1082,6 @@ function detectBranchName(workDir) {
     const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 5000,
     })
       .toString()
       .trim();
@@ -1167,7 +1160,7 @@ function createPullRequest(workDir, existingPrInfo) {
     const count = execFileSync(
       "git",
       ["rev-list", "--count", `origin/${config.targetBranch}..HEAD`],
-      { cwd: workDir, stdio: "pipe", timeout: 5000 }
+      { cwd: workDir, stdio: "pipe" }
     )
       .toString()
       .trim();
@@ -1206,7 +1199,6 @@ function createPullRequest(workDir, existingPrInfo) {
       {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 30_000,
         env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
       }
     );
@@ -1246,7 +1238,6 @@ function labelPrIncomplete(workDir, prNumber) {
       {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 15_000,
         env: { ...buildGitAuthEnv(), GH_TOKEN: config.githubToken },
       }
     );
@@ -1893,7 +1884,6 @@ function createWorkingBranch(workDir) {
     {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 5000,
     }
   )
     .toString()
@@ -1914,13 +1904,11 @@ function createWorkingBranch(workDir) {
       execFileSync("git", ["fetch", "origin", config.parentBranchName], {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 30_000,
         env: buildGitAuthEnv(),
       });
       execFileSync("git", ["checkout", config.parentBranchName], {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 5000,
       });
       log("info", `Checked out parent branch: ${config.parentBranchName}`);
       return config.parentBranchName;
@@ -1949,14 +1937,12 @@ function createWorkingBranch(workDir) {
       execFileSync("git", ["checkout", "-b", branchName], {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 5000,
       });
     } catch {
       // Branch may already exist in local clone (e.g., retry). Reuse it.
       execFileSync("git", ["checkout", branchName], {
         cwd: workDir,
         stdio: "pipe",
-        timeout: 5000,
       });
     }
   } catch (err) {
@@ -2020,9 +2006,9 @@ function toHarnessError(err) {
 }
 
 // ---------------------------------------------------------------------------
-// Harness-level timeout (Layer 1 of timeout enforcement)
+// Harness-level safety net (ECS task timeout is the real operational guard)
 // ---------------------------------------------------------------------------
-const MAX_RUNTIME_MS = 55 * 60 * 1000; // 55 minutes (GitHub installation token safe window)
+const MAX_RUNTIME_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Kill the current child process with SIGTERM, wait 5s, then SIGKILL.
@@ -2049,7 +2035,7 @@ function killChild() {
 }
 
 // ---------------------------------------------------------------------------
-// Execute command with timeout enforcement
+// Execute command with safety-net time limit
 // ---------------------------------------------------------------------------
 async function executeWithTimeout(cmd, args, workDir, childEnv) {
   const timeoutPromise = new Promise((_, reject) => {
@@ -2089,7 +2075,6 @@ function getHeadCommitSha(workDir) {
     return execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
-      timeout: 5000,
     })
       .toString()
       .trim();
@@ -2429,7 +2414,7 @@ async function main() {
       LANG: process.env.LANG || "C.UTF-8",
     };
 
-    // Step 6: Execute with timeout
+    // Step 6: Execute
     log("info", `Executing: ${cmd} ${args.join(" ")}`);
     const { result, timedOut } = await executeWithTimeout(
       cmd,
