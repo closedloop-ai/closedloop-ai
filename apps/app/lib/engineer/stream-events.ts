@@ -266,6 +266,11 @@ export function processStreamEvent(
         enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
       }
       enqueue(JSON.stringify({ type: "result", success: true }));
+    } else {
+      console.warn(
+        `[stream-events] Unrecognized result subtype: ${event.subtype}`
+      );
+      enqueue(JSON.stringify({ type: "result", success: false }));
     }
     state.onResultEvent?.();
   }
