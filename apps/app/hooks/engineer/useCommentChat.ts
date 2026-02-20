@@ -73,6 +73,7 @@ export type UseCommentChatReturn = {
   handleStop: () => void;
   handleSend: () => void;
   handleAcceptChanges: () => void;
+  markChangesAccepted: () => void;
   handleCommitAndResolve: () => Promise<void>;
   handleSendResponse: (
     responseText: string,
@@ -302,12 +303,10 @@ export function useCommentChat({
     }, 120_000);
   }, [ticketId, repoPath, stopLearningsPolling]);
 
-  // Abort in-flight stream on unmount
-  useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort();
-    };
-  }, []);
+  // NOTE: no abort on unmount — intentionally let the server-side Claude/Codex
+  // process continue when the dialog closes or the component unmounts.
+  // The explicit Stop button (handleStop) is the only way to abort.
+  // This matches ReviewChatPane's design where streams survive unmount.
 
   // Cleanup polling on unmount
   useEffect(() => stopLearningsPolling, [stopLearningsPolling]);
@@ -885,6 +884,7 @@ export function useCommentChat({
     handleStop,
     handleSend,
     handleAcceptChanges,
+    markChangesAccepted: useCallback(() => setHasAcceptedChanges(true), []),
     handleCommitAndResolve,
     handleSendResponse,
     handleDeleteMessage,

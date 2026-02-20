@@ -14,7 +14,7 @@ type ChatBubbleProps = {
   onDelete?: () => void;
   children: React.ReactNode;
   actions?: SuggestedAction[];
-  onAction?: (message: string) => void;
+  onAction?: (action: SuggestedAction) => void;
   index?: number;
   bubbleClassName?: string;
   roleClassName?: string;
@@ -182,7 +182,8 @@ export const ChatBubble = memo(
                     "cursor-pointer transition-colors hover:border-primary/30 hover:bg-primary/20"
                   )}
                   key={action.label}
-                  onClick={() => onAction(action.message)}
+                  onClick={() => onAction(action)}
+                  title={action.message}
                 >
                   <PlayCircle className="size-3" />
                   {action.label}

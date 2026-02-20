@@ -218,7 +218,13 @@ function buildContextPrompt(
     "**Skip actions when:**",
     `- You're just answering a clarifying question with no follow-up needed`,
     "",
-    `**Guidelines:** 1-3 actions max, short labels (2-4 words), think "what does the user likely want to do next?"`
+    `**Guidelines:** 1-3 actions max, short labels (2-4 words), think "what does the user likely want to do next?"`,
+    "",
+    "**IMPORTANT — typed actions for special UI behaviors:**",
+    `- Apply/accept changes: use type="accept-changes". The message should instruct the assistant to also provide a <pr_response> afterward.`,
+    `  <action label="Apply changes" type="accept-changes">Proceed with the proposed changes. After applying, provide a <pr_response> acknowledging the fix so I can reply to the reviewer.</action>`,
+    `- Send PR response: use type="send-response". The UI will extract the <pr_response> content and post it as a GitHub comment.`,
+    `  <action label="Send response" type="send-response">Send the draft response to the reviewer.</action>`
   );
 
   // --- Dynamic suffixes: org learnings + learning capture ---

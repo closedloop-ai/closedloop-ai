@@ -53,6 +53,8 @@ import {
   stripWorktreePath,
 } from "@/components/engineer/ReviewChatPane";
 import { useGitHubUser } from "@/hooks/engineer/use-github-user";
+import { useLearnings } from "@/hooks/engineer/use-learnings";
+import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 import {
   markChatStarted,
@@ -251,6 +253,27 @@ export function PRBrowserDialog({
   const { login: githubUser } = useGitHubUser();
   const isOwnPR = selectedPR ? selectedPR.author === githubUser : false;
 
+  const reviewTicketId = selectedPR ? `pr-${selectedPR.number}` : "";
+  const learnings = useLearnings({
+    ticketId: reviewTicketId,
+    repoPath: selectedRepo?.path ?? "",
+  });
+
+  const handleLearningsUsed = useCallback(
+    (used: LearningUsed[]) => {
+      fetch("/api/engineer/symphony/record-learning-use", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketId: reviewTicketId,
+          repoPath: selectedRepo?.path ?? "",
+          learnings: used,
+        }),
+      }).catch((err) => console.error("Failed to record learning use:", err));
+    },
+    [reviewTicketId, selectedRepo?.path]
+  );
+
   const restoredRepoRef = useRef(false);
   const restoredPRRef = useRef(false);
 
@@ -371,6 +394,7 @@ export function PRBrowserDialog({
 
   // Handlers
   const handleSelectRepo = (repo: ConfiguredRepo) => {
+    learnings.stopPolling();
     restoredPRRef.current = true;
     resetPendingChats(commentChats);
     setSelectedRepo(repo);
@@ -382,6 +406,7 @@ export function PRBrowserDialog({
   };
 
   const handleSelectPR = (pr: PRListItem) => {
+    learnings.stopPolling();
     resetPendingChats(commentChats);
     setSelectedPR(pr);
     setCommentChats({});
@@ -559,6 +584,7 @@ export function PRBrowserDialog({
       };
       localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(selection));
     }
+    learnings.handleClose();
     resetPendingChats(commentChats);
     setSelectedRepo(null);
     setSelectedPR(null);
@@ -680,6 +706,17 @@ export function PRBrowserDialog({
     () => new Set(Object.values(commentChats).map((e) => e.comment.id)),
     [commentChats]
   );
+  // Derive the comment ID currently shown in the right pane (for left-pane highlight)
+  const selectedCommentId = useMemo(() => {
+    if (previewComment) {
+      return previewComment.comment.id;
+    }
+    if (activeCommentChatKey) {
+      // Key format is "commentId:provider"
+      return activeCommentChatKey.split(":")[0];
+    }
+    return null;
+  }, [previewComment, activeCommentChatKey]);
   /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
   const restoreOrShowSettings = useCallback(async () => {
     if (!(selectedRepo && selectedPR)) {
@@ -1128,14 +1165,19 @@ export function PRBrowserDialog({
               isMerged={prState === "merged"}
               isOwnPR={isOwnPR}
               key={`review-${selectedPR.number}-${provider}-${entry.initialOutput ? "restored" : "live"}`}
+              learningsCount={learnings.count}
+              learningsStatus={learnings.status}
               onAllCommented={() =>
                 patchReview(provider, { isCommented: true })
               }
               onClose={() => setActiveReviewProvider(null)}
+              onLearnings={learnings.poll}
+              onLearningsUsed={handleLearningsUsed}
               onNewReview={() => {
                 handleDeleteReview(provider);
                 setShowReviewSettings(true);
               }}
+              onReflect={learnings.triggerExtract}
               onReviewComplete={(output, count, findings) =>
                 handleReviewComplete(provider, output, count, findings)
               }
@@ -1408,6 +1450,7 @@ export function PRBrowserDialog({
                     }}
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
+                    selectedCommentId={selectedCommentId}
                     statusRefreshKey={commentStatusKey}
                     streamingCommentIds={streamingCommentIds}
                     ticketId={`pr-${selectedPR.number}`}

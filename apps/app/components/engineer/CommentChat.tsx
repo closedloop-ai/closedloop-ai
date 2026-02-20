@@ -409,14 +409,17 @@ export function CommentChat({
     [chat.messages, forwardMessageToClaude]
   );
 
-  // Action message handler (for debate action buttons)
+  // Action message handler (for suggested action and debate action buttons)
   const sendActionMessage = useCallback(
-    async (messageText: string) => {
-      if (debate.handleAction(messageText)) {
+    async (action: SuggestedAction) => {
+      if (debate.handleAction(action.message)) {
         return;
       }
-      // Fall through to normal send
-      await chat.sendMessage(messageText);
+      // Structured type check — the LLM tags accept-changes actions via type attribute
+      if (action.type === "accept-changes") {
+        chat.markChangesAccepted();
+      }
+      await chat.sendMessage(action.message);
     },
     [debate, chat]
   );
@@ -936,7 +939,7 @@ type MessageRenderContext = {
   debateMode: boolean;
   isAnyStreaming: boolean;
   canForward: boolean;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onForwardMessage: (index: number) => void;
   onForwardCodexMessage: (index: number) => void;
   onAcceptChanges: () => void;
@@ -1026,6 +1029,7 @@ function renderChatMessage(
       key={msg.id}
       message={msg}
       onAcceptChanges={ctx.onAcceptChanges}
+      onAction={ctx.onAction}
       onForward={
         ctx.canForward && msg.role === "assistant"
           ? () => ctx.onForwardMessage(idx)
@@ -1090,7 +1094,7 @@ function ChatMessagesArea({
   debate: DebateHandle;
   isAnyStreaming: boolean;
   canForward: boolean;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onCopy: undefined;
   onForwardMessage: (index: number) => void;
   onForwardCodexMessage: (index: number) => void;
@@ -1793,6 +1797,7 @@ const CommentMessageBubble = memo(
     index,
     isStreaming = false,
     onAcceptChanges,
+    onAction,
     onSendResponse,
     hasAcceptedChanges,
     onForward,
@@ -1803,6 +1808,7 @@ const CommentMessageBubble = memo(
     index: number;
     isStreaming?: boolean;
     onAcceptChanges?: () => void;
+    onAction?: (action: SuggestedAction) => void;
     onSendResponse?: (text: string, messageId: string) => void;
     hasAcceptedChanges?: boolean;
     onForward?: () => void;
@@ -1811,6 +1817,18 @@ const CommentMessageBubble = memo(
   }>) {
     const isUser = message.role === "user";
     const contentLower = message.content.toLowerCase();
+
+    // Parse suggested actions from assistant messages
+    const { actions: suggestedActions } = useMemo(
+      () =>
+        isUser || isStreaming
+          ? {
+              actions: [] as SuggestedAction[],
+              contentWithoutActions: message.content,
+            }
+          : parseSuggestedActions(message.content),
+      [message.content, isUser, isStreaming]
+    );
 
     // Detect if this is a "pushback" response (declining to make changes, suggesting a reply instead)
     const isPushbackResponse =
@@ -1849,8 +1867,29 @@ const CommentMessageBubble = memo(
       }
     }, [message.content]);
 
+    // Intercept typed actions that need special handling before falling through
+    const handleAction = useCallback(
+      (action: SuggestedAction) => {
+        if (action.type === "send-response" && onSendResponse) {
+          const tagMatch = /<pr_response>([\s\S]*?)<\/pr_response>/.exec(
+            message.content
+          );
+          const responseText = tagMatch ? tagMatch[1].trim() : "";
+          if (responseText) {
+            onSendResponse(responseText, message.id);
+          } else {
+            toast.error("Could not extract response from message");
+          }
+          return;
+        }
+        onAction?.(action);
+      },
+      [message.content, message.id, onAction, onSendResponse]
+    );
+
     return (
       <ChatBubble
+        actions={suggestedActions.length > 0 ? suggestedActions : undefined}
         bubbleClassName={cn(
           isUser
             ? "border border-blue-500/20 bg-blue-500/10 text-blue-900 dark:bg-blue-500/10 dark:text-blue-100"
@@ -1859,7 +1898,9 @@ const CommentMessageBubble = memo(
         )}
         contextPercent={contextPercent}
         extraActions={
-          !(isUser || isStreaming) && (hasCodeChanges || isPushbackResponse) ? (
+          !(isUser || isStreaming) &&
+          suggestedActions.length === 0 &&
+          (hasCodeChanges || isPushbackResponse) ? (
             <div className="mt-2 flex items-center gap-2 px-1">
               {hasCodeChanges && onAcceptChanges && !hasAcceptedChanges && (
                 <Button
@@ -1924,6 +1965,7 @@ const CommentMessageBubble = memo(
         index={index}
         isStreaming={isStreaming}
         messageRole={message.role}
+        onAction={suggestedActions.length > 0 ? handleAction : undefined}
         onCopy={isStreaming ? undefined : handleCopy}
         onForward={isUser || isStreaming ? undefined : onForward}
         roleClassName={
@@ -1954,6 +1996,7 @@ const CommentMessageBubble = memo(
     prev.isStreaming === next.isStreaming &&
     prev.hasAcceptedChanges === next.hasAcceptedChanges &&
     (prev.onAcceptChanges == null) === (next.onAcceptChanges == null) &&
+    (prev.onAction == null) === (next.onAction == null) &&
     (prev.onSendResponse == null) === (next.onSendResponse == null) &&
     (prev.onForward == null) === (next.onForward == null) &&
     prev.forwardLabel === next.forwardLabel &&
@@ -1973,10 +2016,16 @@ function CommentAssistantContent({
   blocks?: ContentBlock[];
   isStreaming?: boolean;
 }>) {
+  // Strip suggested-actions tags from content (they're rendered as buttons by ChatBubble)
+  const { contentWithoutActions } = useMemo(
+    () => parseSuggestedActions(content),
+    [content]
+  );
+
   // Parse learnings from content (clean content + extracted learnings)
   const { cleanContent, learnings } = useMemo(
-    () => parseLearningsUsed(content),
-    [content]
+    () => parseLearningsUsed(contentWithoutActions),
+    [contentWithoutActions]
   );
 
   // Check if content has pr_response tags
@@ -2042,7 +2091,7 @@ function CommentAssistantContent({
   return (
     <MessageContent
       blocks={blocks}
-      content={content}
+      content={contentWithoutActions}
       isStreaming={isStreaming}
       markdownComponents={commentBubbleMarkdownComponents}
     />

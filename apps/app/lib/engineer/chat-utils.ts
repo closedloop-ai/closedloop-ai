@@ -40,6 +40,8 @@ export function formatTime(timestamp: string): string {
 export type SuggestedAction = {
   label: string;
   message: string;
+  /** Optional semantic type parsed from the action tag (e.g., "accept-changes") */
+  type?: string;
 };
 
 /**
@@ -60,13 +62,14 @@ export function parseSuggestedActions(content: string): {
   const actionsBlock = actionsMatch[1];
   const actions: SuggestedAction[] = [];
 
-  // Parse individual action tags
+  // Parse individual action tags (with optional type attribute)
   for (const match of actionsBlock.matchAll(
-    /<action\s+label="([^"]+)">([\s\S]*?)<\/action>/g
+    /<action\s+label="([^"]*)"(?:\s+type="([^"]*)")?\s*>([\s\S]*?)<\/action>/g
   )) {
     actions.push({
       label: match[1],
-      message: match[2].trim(),
+      message: match[3].trim(),
+      ...(match[2] ? { type: match[2] } : {}),
     });
   }
 

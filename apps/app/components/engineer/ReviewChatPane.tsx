@@ -7,6 +7,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
+  Brain,
   Check,
   ChevronRight,
   FileCode,
@@ -27,10 +28,16 @@ import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDial
 import {
   ChatBubble,
   MessageContent,
+  SlashCommandDropdown,
   UserMessageContent,
 } from "@/components/engineer/chat";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import {
+  type SlashCommand,
+  useSlashCommands,
+} from "@/hooks/engineer/use-slash-commands";
 import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
+import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -74,6 +81,16 @@ type ReviewChatPaneProps = {
   isMerged?: boolean;
   /** Called when all findings have been individually commented */
   onAllCommented?: () => void;
+  /** Called when the server emits a learnings event during chat */
+  onLearnings?: () => void;
+  /** Called when the assistant cites org patterns */
+  onLearningsUsed?: (learnings: LearningUsed[]) => void;
+  /** Called when the user types /reflect */
+  onReflect?: () => void;
+  /** Current learnings extraction status */
+  learningsStatus?: "none" | "processing" | "completed";
+  /** Number of learnings extracted */
+  learningsCount?: number;
 };
 
 export function ReviewChatPane({
@@ -93,6 +110,11 @@ export function ReviewChatPane({
   prFiles,
   isMerged,
   onAllCommented,
+  onLearnings,
+  onLearningsUsed,
+  onReflect,
+  learningsStatus,
+  learningsCount,
 }: Readonly<ReviewChatPaneProps>) {
   const ticketId = `pr-${prNumber}`;
 
@@ -629,6 +651,8 @@ export function ReviewChatPane({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
           });
         },
+        onLearnings,
+        onLearningsUsed,
       });
     },
     [
@@ -642,6 +666,8 @@ export function ReviewChatPane({
       queryClient,
       buildChatRequest,
       persistMessage,
+      onLearnings,
+      onLearningsUsed,
     ]
   );
 
@@ -686,6 +712,8 @@ export function ReviewChatPane({
           queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
         });
       },
+      onLearnings,
+      onLearningsUsed,
     });
   }, [
     chatInput,
@@ -698,16 +726,28 @@ export function ReviewChatPane({
     buildChatRequest,
     persistMessage,
     config.provider,
+    onLearnings,
+    onLearningsUsed,
   ]);
+
+  const slash = useSlashCommands(REVIEW_SLASH_COMMANDS, (command) => {
+    if (command === "/reflect") {
+      setChatInput("");
+      onReflect?.();
+    }
+  });
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (slash.handleKeyDown(e)) {
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSendChat();
       }
     },
-    [handleSendChat]
+    [handleSendChat, slash]
   );
 
   const handleSubmitComment = useCallback(
@@ -883,6 +923,8 @@ export function ReviewChatPane({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
           });
         },
+        onLearnings,
+        onLearningsUsed,
       });
     },
     [
@@ -895,6 +937,8 @@ export function ReviewChatPane({
       queryClient,
       buildChatRequest,
       persistMessage,
+      onLearnings,
+      onLearningsUsed,
     ]
   );
 
@@ -902,7 +946,7 @@ export function ReviewChatPane({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="shrink-0 border-border border-b bg-muted/30 px-5 py-3 pr-10">
-        <div className="flex items-center gap-3">
+        <div className="relative flex items-center gap-3">
           <button
             className="-ml-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={onClose}
@@ -933,6 +977,15 @@ export function ReviewChatPane({
             >
               <RotateCcw className="size-4" />
             </button>
+          )}
+          {learningsStatus === "processing" && (
+            <Brain className="size-4 animate-pulse text-violet-500" />
+          )}
+          {learningsStatus === "completed" && (learningsCount ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 text-violet-500">
+              <Brain className="size-4" />
+              <span className="font-mono text-[10px]">{learningsCount}</span>
+            </span>
           )}
         </div>
       </div>
@@ -1128,6 +1181,13 @@ export function ReviewChatPane({
                 {">"}
               </span>
               <div className="relative flex-1">
+                {slash.slashState?.isOpen && (
+                  <SlashCommandDropdown
+                    commands={slash.filteredCommands}
+                    onSelect={slash.selectCommand}
+                    selectedIndex={slash.slashState.selectedIndex}
+                  />
+                )}
                 <textarea
                   className={cn(
                     "w-full resize-none bg-transparent text-sm placeholder:text-muted-foreground",
@@ -1136,7 +1196,13 @@ export function ReviewChatPane({
                     "disabled:cursor-not-allowed disabled:opacity-50"
                   )}
                   disabled={stream.isStreaming}
-                  onChange={(e) => setChatInput(e.target.value)}
+                  onChange={(e) => {
+                    setChatInput(e.target.value);
+                    slash.detectSlash(
+                      e.target.value,
+                      e.target.selectionStart ?? e.target.value.length
+                    );
+                  }}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about the review findings..."
                   rows={1}
@@ -1191,6 +1257,13 @@ export function ReviewChatPane({
     </div>
   );
 }
+
+const REVIEW_SLASH_COMMANDS: SlashCommand[] = [
+  {
+    command: "/reflect",
+    description: "Extract learnings from this conversation",
+  },
+];
 
 // --- Review findings split + card ---
 

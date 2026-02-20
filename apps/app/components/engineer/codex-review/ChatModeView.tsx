@@ -64,7 +64,7 @@ type ChatModeViewProps = {
   // Debate
   debate: ReturnType<typeof useCodexDebate>;
   // Actions
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onClearChat: () => Promise<void>;
   // Learnings
   learningsStatus?: "none" | "processing" | "completed";
@@ -377,7 +377,7 @@ type ChatMessageListProps = {
   chatMessages: ChatMessage[];
   isAnyStreaming: boolean;
   debate: ReturnType<typeof useCodexDebate>;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   contextPercent: number | null;
 };
 
