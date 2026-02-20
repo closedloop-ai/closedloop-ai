@@ -189,16 +189,24 @@ export function ReviewChatPane({
       return null;
     }
     const split = splitReviewOutput(reviewOutput, config.provider);
-    if (prFiles && prFiles.length > 0) {
-      split.findings = split.findings.filter((f) => {
-        if (!f.file) {
-          return true; // Keep findings with no file (general observations)
-        }
-        const short = stripWorktreePath(f.file);
-        return resolveFullPath(short, prFiles) !== null;
-      });
-    }
-    return split;
+    // Annotate each finding with its original (unfiltered) index so that
+    // external lookups (duplicateIndices, persistence) remain correct
+    // after prFiles filtering removes entries.
+    const annotated = split.findings.map((f, i) => ({
+      ...f,
+      originalIndex: i,
+    }));
+    const filtered =
+      prFiles && prFiles.length > 0
+        ? annotated.filter((f) => {
+            if (!f.file) {
+              return true;
+            }
+            const short = stripWorktreePath(f.file);
+            return resolveFullPath(short, prFiles) !== null;
+          })
+        : annotated;
+    return { processLog: split.processLog, findings: filtered };
   }, [reviewDone, reviewOutput, config.provider, prFiles]);
 
   // Notify parent when all findings have been individually commented (fire once)
@@ -208,7 +216,9 @@ export function ReviewChatPane({
       return;
     }
     if (
-      submittedFindings.size >= reviewSplit.findings.length &&
+      reviewSplit.findings.every((f) =>
+        submittedFindings.has(f.originalIndex)
+      ) &&
       !allCommentedFiredRef.current
     ) {
       allCommentedFiredRef.current = true;
@@ -978,19 +988,20 @@ export function ReviewChatPane({
             </ChatBubble>
             {reviewSplit.findings.length > 0 && (
               <div className="space-y-2 pl-2">
-                {reviewSplit.findings.map((finding, i) => {
-                  const isProviderDup = duplicateIndices?.has(i) ?? false;
-                  const isPRCommentDup = prCommentDupIndices?.has(i) ?? false;
+                {reviewSplit.findings.map((finding) => {
+                  const idx = finding.originalIndex;
+                  const isProviderDup = duplicateIndices?.has(idx) ?? false;
+                  const isPRCommentDup = prCommentDupIndices?.has(idx) ?? false;
                   return (
                     <FindingCard
                       duplicateLabel={isPRCommentDup ? "In PR" : "Dup"}
                       finding={finding}
-                      index={i}
+                      index={idx}
                       isDuplicate={isProviderDup || isPRCommentDup}
                       isOwnPR={isOwnPR}
-                      isSubmitted={submittedFindings.has(i)}
-                      isSubmitting={submittingFindings.has(i)}
-                      key={`finding-${i}`}
+                      isSubmitted={submittedFindings.has(idx)}
+                      isSubmitting={submittingFindings.has(idx)}
+                      key={`finding-${idx}`}
                       onChat={handleChatAboutFinding}
                       onSubmitComment={handleSubmitComment}
                     />
