@@ -3,7 +3,7 @@ import type {
   LinearIntegrationStatus,
 } from "@repo/api/src/types/linear";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { linearService } from "./service";
 
@@ -32,14 +32,17 @@ export const GET = withAnyAuth<LinearIntegrationStatus, "/integrations/linear">(
  * Disconnect the Linear integration for the current organization.
  * Revokes the access token and deletes the integration record.
  */
-export const DELETE = withAuth<
+export const DELETE = withAnyAuth<
   LinearDisconnectResponse,
   "/integrations/linear"
->(async ({ user }) => {
-  try {
-    await linearService.disconnect(user.organizationId);
-    return successResponse({ disconnected: true });
-  } catch (error) {
-    return errorResponse("Failed to disconnect Linear", error);
-  }
-});
+>(
+  async ({ user }) => {
+    try {
+      await linearService.disconnect(user.organizationId);
+      return successResponse({ disconnected: true });
+    } catch (error) {
+      return errorResponse("Failed to disconnect Linear", error);
+    }
+  },
+  { requiredScopes: ["delete"] }
+);

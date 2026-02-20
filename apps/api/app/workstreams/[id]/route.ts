@@ -1,6 +1,6 @@
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -68,7 +68,7 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
   { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAuth<{ deleted: true }, "/workstreams/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
@@ -79,5 +79,6 @@ export const DELETE = withAuth<{ deleted: true }, "/workstreams/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

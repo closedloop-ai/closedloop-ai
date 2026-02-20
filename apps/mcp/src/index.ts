@@ -7,6 +7,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -159,7 +160,10 @@ function requireEnv(name: string): string {
   return value;
 }
 
-const OAUTH_SIGNING_SECRET = requireEnv("INTERNAL_API_SECRET");
+const INTERNAL_AUTH_SECRET =
+  process.env.MCP_INTERNAL_AUTH_SECRET ?? requireEnv("INTERNAL_API_SECRET");
+const OAUTH_SIGNING_SECRET =
+  process.env.MCP_OAUTH_SIGNING_SECRET ?? requireEnv("INTERNAL_API_SECRET");
 const OAUTH_PREVIOUS_SIGNING_SECRETS = (
   process.env.MCP_OAUTH_SIGNING_SECRETS ?? ""
 )
@@ -818,7 +822,17 @@ function isInternalSecretValid(
   req: import("node:http").IncomingMessage
 ): boolean {
   const provided = req.headers["x-internal-secret"];
-  return typeof provided === "string" && provided === OAUTH_SIGNING_SECRET;
+  return (
+    typeof provided === "string" &&
+    timingSafeStringEqual(provided, INTERNAL_AUTH_SECRET)
+  );
+}
+
+function createBufferedIncomingRequest(
+  req: import("node:http").IncomingMessage,
+  body: string
+): import("node:http").IncomingMessage {
+  return Object.assign(Readable.from([body], { encoding: "utf8" }), req);
 }
 
 function isInternalRequestAuthorized(
@@ -1036,6 +1050,21 @@ async function handleMcp(
     return;
   }
 
+  let rawBody: string;
+  try {
+    rawBody = await readRequestBody(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return;
+    }
+    throw error;
+  }
+  const bufferedReq = createBufferedIncomingRequest(req, rawBody);
+
   const acquiredServer = acquireMcpServer(auth);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -1043,8 +1072,9 @@ async function handleMcp(
 
   try {
     await acquiredServer.server.connect(transport);
-    await transport.handleRequest(req, res);
+    await transport.handleRequest(bufferedReq, res);
   } finally {
+    await acquiredServer.server.close();
     acquiredServer.release();
   }
 }

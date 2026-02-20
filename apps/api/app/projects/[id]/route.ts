@@ -1,6 +1,6 @@
 import type { ProjectWithDetails } from "@repo/api/src/types/organization";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -82,7 +82,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
 /**
  * DELETE /projects/:id - Delete a project
  */
-export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -92,5 +92,6 @@ export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete project", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

@@ -1,6 +1,6 @@
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -51,7 +51,7 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAuth<{ deleted: true }, "/issues/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -60,5 +60,6 @@ export const DELETE = withAuth<{ deleted: true }, "/issues/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete issue", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

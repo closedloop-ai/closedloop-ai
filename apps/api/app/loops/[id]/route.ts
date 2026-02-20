@@ -1,7 +1,7 @@
 import type { Loop, LoopEvent } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { stopLoopTask } from "@/lib/loop-orchestrator";
 import {
@@ -29,7 +29,7 @@ export const GET = withAnyAuth<Loop, "/loops/[id]">(
   }
 );
 
-export const DELETE = withAuth<Loop, "/loops/[id]">(
+export const DELETE = withAnyAuth<Loop, "/loops/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -64,5 +64,6 @@ export const DELETE = withAuth<Loop, "/loops/[id]">(
     } catch (error) {
       return errorResponse("Failed to cancel loop", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

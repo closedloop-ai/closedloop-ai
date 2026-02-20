@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const withApiKeyAuthMock = vi.fn(
-  () => async () => ({}) as unknown as Promise<never>
-);
-const withAuthMock = vi.fn(() => async () => ({}) as unknown as Promise<never>);
+const { withApiKeyAuthMock, withAuthMock } = vi.hoisted(() => ({
+  withApiKeyAuthMock: vi.fn(
+    () => async () => ({}) as unknown as Promise<never>
+  ),
+  withAuthMock: vi.fn(() => async () => ({}) as unknown as Promise<never>),
+}));
 
 vi.mock("@/lib/auth/with-api-key-auth", () => ({
   withApiKeyAuth: withApiKeyAuthMock,

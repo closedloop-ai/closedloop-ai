@@ -1,6 +1,6 @@
 import type { Artifact, ArtifactDetail } from "@repo/api/src/types/artifact";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -82,7 +82,7 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
   { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/artifacts/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -91,5 +91,6 @@ export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete artifact", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );
