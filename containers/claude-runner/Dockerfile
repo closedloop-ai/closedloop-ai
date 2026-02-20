@@ -60,6 +60,13 @@ RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/"
     claude plugin install symphony-core@closedloop && \
     (git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null || true)
 
+# Enable weaker nested sandbox for Docker — the container IS the sandbox.
+# Standard bwrap can't create user namespaces inside an unprivileged container,
+# which breaks access to system binaries like /usr/bin/python3 that plugins
+# (experimental) depend on. This setting adjusts bwrap for nested execution.
+RUN mkdir -p /home/runner/.claude && \
+    echo '{"sandbox":{"enableWeakerNestedSandbox":true}}' > /home/runner/.claude/settings.json
+
 WORKDIR /workspace
 
 ENTRYPOINT ["tini", "--"]
