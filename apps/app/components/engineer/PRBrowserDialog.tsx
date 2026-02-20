@@ -189,6 +189,11 @@ export function PRBrowserDialog({
   const [activeCommentChatKey, setActiveCommentChatKey] = useState<
     string | null
   >(null);
+  const activeCommentChatKeyRef = useRef(activeCommentChatKey);
+  useEffect(() => {
+    activeCommentChatKeyRef.current = activeCommentChatKey;
+  }, [activeCommentChatKey]);
+
   // Track which comment IDs have an actively streaming assistant response
   const [streamingCommentIds, setStreamingCommentIds] = useState<Set<string>>(
     () => new Set()
@@ -456,7 +461,10 @@ export function PRBrowserDialog({
 
           // Evict oldest non-active slot if at capacity
           if (Object.keys(next).length >= MAX_CONCURRENT_COMMENT_CHATS) {
-            const evictKey = findEvictableKey(next, activeCommentChatKey);
+            const evictKey = findEvictableKey(
+              next,
+              activeCommentChatKeyRef.current
+            );
             if (evictKey) {
               delete next[evictKey];
             }
@@ -485,7 +493,7 @@ export function PRBrowserDialog({
         });
       }
     },
-    [activeCommentChatKey, selectedPR, selectedRepo, queryClient]
+    [selectedPR, selectedRepo, queryClient]
   );
 
   const handleCommentDismissed = useCallback((commentId: string) => {
