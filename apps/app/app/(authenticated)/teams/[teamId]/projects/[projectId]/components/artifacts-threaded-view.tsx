@@ -4,6 +4,7 @@ import {
   type ArtifactStatus,
   ArtifactType,
   type ArtifactWithWorkstream,
+  type PullRequestInfo,
   ReviewDecision,
 } from "@repo/api/src/types/artifact";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
@@ -21,9 +22,12 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
+  ArrowRightIcon,
   ChevronDown,
+  ExternalLinkIcon,
   FileTextIcon,
   FolderIcon,
+  GitPullRequestIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
@@ -344,7 +348,9 @@ function WorkstreamSection({
               onRequestDelete={onRequestDelete}
               onRequestMove={onRequestMove}
               onRowClick={onRowClick}
-              siblingPlan={artifact.type === ArtifactType.Prd ? siblingPlan : undefined}
+              siblingPlan={
+                artifact.type === ArtifactType.Prd ? siblingPlan : undefined
+              }
               workstreamPreviewUrl={previewUrl}
             />
           ))}
@@ -399,6 +405,20 @@ export function ArtifactsThreadedView({
     [artifacts]
   );
 
+  // Derive unique branches from artifacts that have pull requests
+  const branches = useMemo(() => {
+    const seen = new Set<string>();
+    const result: { artifact: ArtifactWithWorkstream; pr: PullRequestInfo }[] =
+      [];
+    for (const a of artifacts) {
+      if (a.pullRequest && !seen.has(a.pullRequest.headBranch)) {
+        seen.add(a.pullRequest.headBranch);
+        result.push({ artifact: a, pr: a.pullRequest });
+      }
+    }
+    return result;
+  }, [artifacts]);
+
   function handleRowClick(artifact: ArtifactWithWorkstream): void {
     if (isNavigableArtifact(artifact)) {
       const route = getArtifactRoute(artifact);
@@ -443,6 +463,8 @@ export function ArtifactsThreadedView({
         );
       })}
 
+      {branches.length > 0 && <BranchesSection branches={branches} />}
+
       <DeleteConfirmationDialog
         isPending={deleteConfirmation.isPending}
         itemName={deleteConfirmation.itemToDelete?.title ?? ""}
@@ -461,5 +483,70 @@ export function ArtifactsThreadedView({
         />
       )}
     </div>
+  );
+}
+
+type BranchEntry = {
+  artifact: ArtifactWithWorkstream;
+  pr: PullRequestInfo;
+};
+
+function BranchRow({ pr }: { pr: PullRequestInfo }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md px-3 py-2">
+      <GitPullRequestIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate font-mono text-xs">{pr.headBranch}</span>
+        <ArrowRightIcon className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+        <span className="truncate font-mono text-muted-foreground text-xs">
+          {pr.baseBranch}
+        </span>
+        <StatusBadge colorMap={prStatusColors} status={pr.state} />
+        {pr.reviewDecision &&
+          (pr.reviewDecision === ReviewDecision.Approved ||
+            pr.reviewDecision === ReviewDecision.ChangesRequested) && (
+            <StatusBadge
+              colorMap={prReviewDecisionColors}
+              status={pr.reviewDecision}
+            />
+          )}
+      </div>
+      <span className="text-muted-foreground text-xs">
+        #{pr.number} {pr.title}
+      </span>
+      <a
+        aria-label={`Open PR #${pr.number} on GitHub`}
+        className="text-muted-foreground transition-colors hover:text-primary"
+        href={pr.htmlUrl}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        <ExternalLinkIcon className="h-3.5 w-3.5" />
+      </a>
+    </div>
+  );
+}
+
+function BranchesSection({ branches }: { branches: BranchEntry[] }) {
+  return (
+    <Collapsible className="rounded-lg border">
+      <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
+        <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+        <GitPullRequestIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-medium text-sm">
+          Branches
+        </span>
+        <span className="text-muted-foreground text-xs">
+          {branches.length} {branches.length === 1 ? "branch" : "branches"}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t px-1 py-1">
+          {branches.map((entry) => (
+            <BranchRow key={entry.pr.headBranch} pr={entry.pr} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
