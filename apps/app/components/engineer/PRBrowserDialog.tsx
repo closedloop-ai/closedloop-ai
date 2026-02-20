@@ -476,24 +476,20 @@ export function PRBrowserDialog({
 
         setActiveCommentChatKey(key);
         setActiveReviewProvider(null);
+      } else if (commentChats[key]) {
+        // Ephemeral preview — but persistent chat already exists for this
+        // comment+provider, so switch to it instead.
+        setActiveCommentChatKey(key);
+        setActiveReviewProvider(null);
+        setPreviewComment(null);
       } else {
         // Ephemeral preview — no persistent card in left pane.
-        // If there's already a persistent chat for this comment+provider, switch to it instead.
-        setCommentChats((prev) => {
-          if (prev[key]) {
-            setActiveCommentChatKey(key);
-            setActiveReviewProvider(null);
-            setPreviewComment(null);
-          } else {
-            setPreviewComment({ comment, replies, provider });
-            setActiveCommentChatKey(null);
-            setActiveReviewProvider(null);
-          }
-          return prev;
-        });
+        setPreviewComment({ comment, replies, provider });
+        setActiveCommentChatKey(null);
+        setActiveReviewProvider(null);
       }
     },
-    [selectedPR, selectedRepo, queryClient]
+    [commentChats, selectedPR, selectedRepo, queryClient]
   );
 
   const handleCommentDismissed = useCallback((commentId: string) => {
