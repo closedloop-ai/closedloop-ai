@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
@@ -216,22 +216,18 @@ export function isRepoAllowed(path: string): boolean {
 
   return config.repos.some((repo) => {
     const repoExpanded = expandHome(repo.path);
-    // Exact match
-    if (repoExpanded === expandedPath) {
+    const repoName = basename(repoExpanded);
+    const repoParent = dirname(repoExpanded);
+    const pathName = basename(expandedPath);
+    const pathParent = dirname(expandedPath);
+
+    // Exact match (dirname/basename normalizes trailing slashes)
+    if (repoName === pathName && repoParent === pathParent) {
       return true;
     }
+
     // Worktree match: same parent dir, name prefix filter, then validate
     // actual git worktree linkage via .git pointer file
-    const repoName = basename(repoExpanded);
-    const repoParent = repoExpanded.slice(
-      0,
-      repoExpanded.length - repoName.length
-    );
-    const pathName = basename(expandedPath);
-    const pathParent = expandedPath.slice(
-      0,
-      expandedPath.length - pathName.length
-    );
     return (
       pathParent === repoParent &&
       pathName.startsWith(`${repoName}-`) &&
