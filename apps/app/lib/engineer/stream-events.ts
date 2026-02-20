@@ -209,7 +209,7 @@ export function processStreamEvent(
     return;
   }
 
-  if (event.type === "result" && event.subtype === "success") {
+  if (event.type === "result") {
     // Always capture session ID first (even for errors)
     if (!state.capturedSessionId && event.session_id) {
       state.capturedSessionId = event.session_id;
@@ -227,19 +227,21 @@ export function processStreamEvent(
       return;
     }
 
-    if (event.usage) {
-      const total =
-        (event.usage.input_tokens ?? 0) +
-        (event.usage.output_tokens ?? 0) +
-        (event.usage.cache_creation_input_tokens ?? 0) +
-        (event.usage.cache_read_input_tokens ?? 0);
-      const contextWindow = event.context_window ?? 200_000;
-      const percent =
-        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
-      state.contextPercent = percent;
-      enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
+    if (event.subtype === "success") {
+      if (event.usage) {
+        const total =
+          (event.usage.input_tokens ?? 0) +
+          (event.usage.output_tokens ?? 0) +
+          (event.usage.cache_creation_input_tokens ?? 0) +
+          (event.usage.cache_read_input_tokens ?? 0);
+        const contextWindow = event.context_window ?? 200_000;
+        const percent =
+          contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+        state.contextPercent = percent;
+        enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
+      }
+      enqueue(JSON.stringify({ type: "result", success: true }));
     }
-    enqueue(JSON.stringify({ type: "result", success: true }));
     state.onResultEvent?.();
   }
 }
