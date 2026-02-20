@@ -118,6 +118,27 @@ apps/app (frontend)
 
 This separation ensures the frontend never has direct database access and keeps routes thin.
 
+### Background Work in API Routes (CRITICAL)
+
+**Never fire-and-forget a promise in a Vercel serverless function.** Vercel can kill the function the instant the HTTP response is sent — or mid-execution during a deployment. Any un-awaited async work (launching ECS tasks, uploading to S3, sending webhooks) will be silently terminated with zero error logs.
+
+**Always use `waitUntil()` from `@vercel/functions`:**
+
+```typescript
+import { waitUntil } from "@vercel/functions";
+
+// ❌ BAD - Vercel can kill this at any time after the response is sent
+launchLoop(loopId, orgId).catch((err) => log.error(err));
+return NextResponse.json(success(result));
+
+// ✅ GOOD - waitUntil() keeps the function alive until the promise settles
+const launchPromise = launchLoop(loopId, orgId).catch((err) => log.error(err));
+waitUntil(launchPromise);
+return NextResponse.json(success(result));
+```
+
+This applies to **any** async work that happens after the response, not just loop launches. If you see a fire-and-forget `.catch()` pattern without `waitUntil()`, it's a bug.
+
 ### Type Definitions (IMPORTANT)
 
 **Never duplicate type definitions.** If a type is used in more than one file, it must live in one canonical location and be imported everywhere else.

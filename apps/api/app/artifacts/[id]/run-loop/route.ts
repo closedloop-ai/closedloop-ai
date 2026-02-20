@@ -4,6 +4,7 @@ import type {
   CreateLoopResponse,
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
@@ -114,14 +115,20 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         }
       );
 
-      // Fire and forget - launch the loop asynchronously
-      launchLoop(loopResponse.loopId, user.organizationId).catch((error) => {
+      // Launch the loop asynchronously. waitUntil() keeps the serverless
+      // function alive after the response is sent so a Vercel deployment
+      // (or idle timeout) doesn't kill the launch mid-flight.
+      const launchPromise = launchLoop(
+        loopResponse.loopId,
+        user.organizationId
+      ).catch((error) => {
         log.error("[run-loop] Failed to launch loop", {
           loopId: loopResponse.loopId,
           artifactId,
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      waitUntil(launchPromise);
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {
