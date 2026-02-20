@@ -2467,7 +2467,7 @@ async function main() {
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    await handleFatalError(err, workDir, output, startTime);
+    await handleFatalError(err, workDir, output, startTime, symphonyWorkDir);
     process.exit(1);
   }
 }
