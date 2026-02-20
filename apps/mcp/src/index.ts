@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { createServer } from "node:http";
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
@@ -62,11 +63,45 @@ const OAUTH_TOKEN_TTL_SECONDS = Number(
 const OAUTH_AUTH_CODE_TTL_SECONDS = Number(
   process.env.MCP_OAUTH_AUTH_CODE_TTL_SECONDS ?? 600
 );
-const OAUTH_REDIRECT_URI_ALLOWLIST = (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
-  .split(",")
-  .map((value) => value.trim())
-  .filter(Boolean);
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
 const FULL_SCOPES = ["read", "write", "delete", "admin"] as const;
+
+function isLocalOauthEnvironment(): boolean {
+  const nodeEnv = process.env.NODE_ENV ?? NODE_ENV;
+  const webappEnv = process.env.WEBAPP_ENV ?? WEBAPP_ENV;
+
+  if (
+    nodeEnv === "production" ||
+    webappEnv === "stage" ||
+    webappEnv === "prod"
+  ) {
+    return false;
+  }
+
+  return (
+    nodeEnv === "development" || nodeEnv === "test" || webappEnv === "local"
+  );
+}
+
+function getOAuthRedirectUriAllowlist(): string[] {
+  return (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function requireRedirectAllowlistForEnvironment(): void {
+  if (
+    !isLocalOauthEnvironment() &&
+    getOAuthRedirectUriAllowlist().length === 0
+  ) {
+    throw new Error(
+      "MCP_OAUTH_REDIRECT_URIS must be set in non-local environments"
+    );
+  }
+}
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -524,13 +559,18 @@ function parseScopeParam(scopeParam?: string): string[] {
 
 function isValidRedirectUri(uri: string): boolean {
   try {
+    const allowlist = getOAuthRedirectUriAllowlist();
     const parsed = new URL(uri);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return false;
     }
 
-    if (OAUTH_REDIRECT_URI_ALLOWLIST.length > 0) {
-      return OAUTH_REDIRECT_URI_ALLOWLIST.includes(uri);
+    if (allowlist.length > 0) {
+      return allowlist.includes(uri);
+    }
+
+    if (!isLocalOauthEnvironment()) {
+      return false;
     }
 
     return (
@@ -836,105 +876,134 @@ async function handleOAuthToken(
   });
 }
 
-const httpServer = createServer(async (req, res) => {
-  try {
-    if (req.method === "GET" && req.url === "/health") {
-      sendJson(res, 200, {
-        status: "ok",
-        version: "0.0.1",
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
+type HttpRouteHandler = (
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+) => void | Promise<void>;
 
-    if (req.method === "GET" && req.url === "/ready") {
-      await handleReady(res);
-      return;
-    }
+const GET_ROUTES: Record<string, HttpRouteHandler> = {
+  "/health": (_req, res) => {
+    sendJson(res, 200, {
+      status: "ok",
+      version: "0.0.1",
+      timestamp: new Date().toISOString(),
+    });
+  },
+  "/ready": async (_req, res) => {
+    await handleReady(res);
+  },
+  "/.well-known/oauth-protected-resource": (_req, res) => {
+    sendJson(res, 200, {
+      resource: MCP_SERVER_URL,
+      authorization_servers: [
+        `${MCP_SERVER_URL}/.well-known/oauth-authorization-server`,
+      ],
+      bearer_methods_supported: ["header"],
+      resource_documentation: "https://docs.closedloop.ai/mcp",
+    });
+  },
+  "/.well-known/oauth-authorization-server": (_req, res) => {
+    sendJson(res, 200, {
+      issuer: MCP_SERVER_URL,
+      authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
+      token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
+      token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
+      grant_types_supported: ["authorization_code", "client_credentials"],
+      response_types_supported: ["code", "token"],
+      code_challenge_methods_supported: ["S256"],
+      scopes_supported: ["read", "write", "delete", "admin"],
+    });
+  },
+  "/.well-known/mcp.json": (_req, res) => {
+    sendJson(res, 200, {
+      name: "closedloop",
+      version: "0.0.1",
+      description: "ClosedLoop AI software delivery platform — MCP server",
+      url: `${MCP_SERVER_URL}/mcp`,
+      transport: { type: "streamable-http" },
+      authentication: { type: "bearer", format: "sk_live_*" },
+      protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
+      capabilities: { tools: true },
+      tools: TOOL_NAMES,
+    });
+  },
+};
 
-    // OAuth 2.1 Protected Resource Metadata (RFC 9470)
-    // Tells MCP clients how to obtain tokens for this server
-    if (
-      req.method === "GET" &&
-      req.url === "/.well-known/oauth-protected-resource"
-    ) {
-      sendJson(res, 200, {
-        resource: MCP_SERVER_URL,
-        authorization_servers: [
-          `${MCP_SERVER_URL}/.well-known/oauth-authorization-server`,
-        ],
-        bearer_methods_supported: ["header"],
-        resource_documentation: "https://docs.closedloop.ai/mcp",
-      });
-      return;
-    }
+async function dispatchHttpRequest(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<boolean> {
+  const url = req.url ?? "";
 
-    // OAuth 2.1 Authorization Server Metadata
-    if (
-      req.method === "GET" &&
-      req.url === "/.well-known/oauth-authorization-server"
-    ) {
-      sendJson(res, 200, {
-        issuer: MCP_SERVER_URL,
-        authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
-        token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
-        token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-        grant_types_supported: ["authorization_code", "client_credentials"],
-        response_types_supported: ["code", "token"],
-        code_challenge_methods_supported: ["S256"],
-        scopes_supported: ["read", "write", "delete", "admin"],
-      });
-      return;
-    }
+  if (url === "/oauth/authorize") {
+    await handleOAuthAuthorize(req, res);
+    return true;
+  }
 
-    if (req.url === "/oauth/authorize") {
-      await handleOAuthAuthorize(req, res);
-      return;
-    }
+  if (url === "/oauth/token") {
+    await handleOAuthToken(req, res);
+    return true;
+  }
 
-    if (req.url === "/oauth/token") {
-      await handleOAuthToken(req, res);
-      return;
-    }
+  if (url === "/mcp") {
+    await handleMcp(req, res);
+    return true;
+  }
 
-    // MCP Server Card — capability discovery without a session
-    if (req.method === "GET" && req.url === "/.well-known/mcp.json") {
-      sendJson(res, 200, {
-        name: "closedloop",
-        version: "0.0.1",
-        description: "ClosedLoop AI software delivery platform — MCP server",
-        url: `${MCP_SERVER_URL}/mcp`,
-        transport: { type: "streamable-http" },
-        authentication: { type: "bearer", format: "sk_live_*" },
-        protocol_versions: SUPPORTED_PROTOCOL_VERSIONS,
-        capabilities: { tools: true },
-        tools: TOOL_NAMES,
-      });
-      return;
-    }
-
-    if (req.url === "/mcp") {
-      await handleMcp(req, res);
-      return;
-    }
-
-    sendJson(res, 404, { error: "Not found" });
-  } catch (error) {
-    console.error("MCP server error:", error);
-    if (!res.headersSent) {
-      sendJson(res, 500, { error: "Internal server error" });
+  if (req.method === "GET") {
+    const handler = GET_ROUTES[url];
+    if (handler) {
+      await handler(req, res);
+      return true;
     }
   }
-});
 
-httpServer.listen(PORT, () => {
-  console.log(`ClosedLoop MCP server running on port ${PORT}`);
-  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
-  console.log(`Health: http://localhost:${PORT}/health`);
-  console.log(`Ready:  http://localhost:${PORT}/ready`);
-});
+  return false;
+}
 
-httpServer.on("error", (error) => {
-  console.error("HTTP server error:", error);
-  process.exit(1);
-});
+export function createHttpServer(): import("node:http").Server {
+  return createServer(async (req, res) => {
+    try {
+      const handled = await dispatchHttpRequest(req, res);
+      if (!handled) {
+        sendJson(res, 404, { error: "Not found" });
+      }
+    } catch (error) {
+      console.error("MCP server error:", error);
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: "Internal server error" });
+      }
+    }
+  });
+}
+
+export function startHttpServer(port = PORT): import("node:http").Server {
+  requireRedirectAllowlistForEnvironment();
+  const httpServer = createHttpServer();
+  httpServer.listen(port, () => {
+    console.log(`ClosedLoop MCP server running on port ${port}`);
+    console.log(`MCP endpoint: http://localhost:${port}/mcp`);
+    console.log(`Health: http://localhost:${port}/health`);
+    console.log(`Ready:  http://localhost:${port}/ready`);
+  });
+
+  httpServer.on("error", (error) => {
+    console.error("HTTP server error:", error);
+    process.exit(1);
+  });
+
+  return httpServer;
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  startHttpServer();
+}
+
+export const __testables = {
+  handleOAuthAuthorize,
+  handleOAuthToken,
+  requireRedirectAllowlistForEnvironment,
+};
