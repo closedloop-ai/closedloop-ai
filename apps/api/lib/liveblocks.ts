@@ -3,6 +3,7 @@ import {
   type CreateRoomOptions,
   createRoom,
   deleteRoom,
+  updateRoomMetadata,
 } from "@repo/collaboration/room-management";
 import { log } from "@repo/observability/log";
 
@@ -24,6 +25,30 @@ export async function createLiveblocksRoom(
     // Log the error but don't throw - if this fails, RoomProvider will auto-create the room
     log.error("Failed to create Liveblocks room", {
       roomId: options.roomId,
+      error: result.error,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Update metadata on an existing Liveblocks room with logging.
+ * This function handles errors gracefully and will not throw.
+ *
+ * @param roomId - The ID of the room to update
+ * @param metadata - Key-value pairs to merge into existing metadata
+ * @returns Promise that resolves with success status
+ */
+export async function updateLiveblocksRoomMetadata(
+  roomId: string,
+  metadata: Record<string, string | null>
+): Promise<{ success: true } | { success: false; error: string }> {
+  const result = await updateRoomMetadata(roomId, metadata);
+
+  if (!result.success) {
+    log.error("Failed to update Liveblocks room metadata", {
+      roomId,
       error: result.error,
     });
   }

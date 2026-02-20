@@ -105,7 +105,13 @@ export function TiptapEditorCore({
     }
   }, [editor, liveblocksExtension, setMarkdownContent, value]);
 
-  // Seed Liveblocks with initial content if the document is empty once liveblocks has synced.
+  // Seed or reconcile Liveblocks content after sync completes.
+  // - Empty doc: seed with the initial content (first-time room creation).
+  // - Stale doc: clear + re-seed when the Yjs document content no longer
+  //   matches the API version (e.g. a loop created a new version server-side
+  //   but the Liveblocks room was never updated).
+  // The key={latestVersion} on CollaborativeEditor ensures this component
+  // remounts when a new version appears, so hasSeededContent resets.
   useEffect(() => {
     const initialContent = initialContentRef.current;
 
@@ -116,13 +122,28 @@ export function TiptapEditorCore({
       return;
     }
 
-    // Check if editor is empty after Liveblocks sync is complete
     const currentText = editor.getText().trim();
 
-    if (currentText === "" && initialContent.trim() !== "") {
-      // Seed the Liveblocks document with the initial markdown content
+    if (currentText === "") {
+      // Empty doc — seed with initial content
       setMarkdownContent(initialContent);
       hasSeededContent.current = true;
+    } else if (initialContent.trim() !== "") {
+      // Doc has content — check if it matches the API version.
+      // Compare markdown to detect stale Yjs documents.
+      const editorMarkdown = editor.getMarkdown().trim();
+      if (editorMarkdown !== initialContent.trim()) {
+        // Stale content — clear first then re-seed to avoid Yjs CRDT
+        // concatenation. Comments stay in the room; anchors that can't
+        // find their text rebind to the top of the document.
+        queueMicrotask(() => {
+          editor.commands.clearContent();
+          editor.commands.setContent(initialContent, {
+            contentType: "markdown",
+          });
+        });
+        hasSeededContent.current = true;
+      }
     }
   }, [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]);
 
