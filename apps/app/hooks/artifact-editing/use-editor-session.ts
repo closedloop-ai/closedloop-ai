@@ -78,8 +78,8 @@ export function useEditorSession(config: UseEditorSessionConfig) {
   useEffect(() => {
     if (currentVersion !== prevVersionRef.current) {
       prevVersionRef.current = currentVersion;
-      if (!isViewingHistorical && artifact.version.content) {
-        setContentResetValue(artifact.version.content);
+      if (!isViewingHistorical) {
+        setContentResetValue(artifact.version.content ?? "");
         setContentResetKey((key) => (key ?? 0) + 1);
       }
     }
