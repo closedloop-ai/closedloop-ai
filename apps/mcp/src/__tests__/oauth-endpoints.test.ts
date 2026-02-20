@@ -25,6 +25,24 @@ const rateLimitStore = new Map<
     windowExpiresAt: Date;
   }
 >();
+const authCodeStore = new Map<
+  string,
+  {
+    id: string;
+    code: string;
+    encryptedApiKey: string;
+    userId: string;
+    organizationId: string;
+    clientId: string;
+    redirectUri: string;
+    scopes: string[];
+    codeChallenge: string;
+    codeChallengeMethod: "S256";
+    expiresAt: Date;
+    consumedAt: Date | null;
+    createdAt: Date;
+  }
+>();
 
 vi.mock("../api-client.js", () => {
   return {
@@ -153,6 +171,82 @@ vi.mock("@repo/database", () => {
           }
           record.requestCount += data.requestCount.increment;
           return record;
+        }
+      ),
+    },
+    oAuthAuthorizationCode: {
+      deleteMany: vi.fn(
+        ({ where }: { where: { OR: Record<string, unknown>[] } }) => {
+          const expiryClause = where.OR.find((entry) => "expiresAt" in entry) as
+            | { expiresAt: { lte: Date } }
+            | undefined;
+          for (const [code, record] of authCodeStore.entries()) {
+            const expired = expiryClause
+              ? record.expiresAt <= expiryClause.expiresAt.lte
+              : false;
+            const consumed = record.consumedAt !== null;
+            if (expired || consumed) {
+              authCodeStore.delete(code);
+            }
+          }
+          return { count: 0 };
+        }
+      ),
+      create: vi.fn(
+        ({
+          data,
+        }: {
+          data: {
+            code: string;
+            encryptedApiKey: string;
+            userId: string;
+            organizationId: string;
+            clientId: string;
+            redirectUri: string;
+            scopes: string[];
+            codeChallenge: string;
+            codeChallengeMethod: "S256";
+            expiresAt: Date;
+          };
+        }) => {
+          const record = {
+            id: `ac_${Math.random().toString(36).slice(2, 10)}`,
+            code: data.code,
+            encryptedApiKey: data.encryptedApiKey,
+            userId: data.userId,
+            organizationId: data.organizationId,
+            clientId: data.clientId,
+            redirectUri: data.redirectUri,
+            scopes: data.scopes,
+            codeChallenge: data.codeChallenge,
+            codeChallengeMethod: data.codeChallengeMethod,
+            expiresAt: data.expiresAt,
+            consumedAt: null,
+            createdAt: new Date(),
+          };
+          authCodeStore.set(data.code, record);
+          return record;
+        }
+      ),
+      findUnique: vi.fn(({ where }: { where: { code: string } }) => {
+        return authCodeStore.get(where.code) ?? null;
+      }),
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; consumedAt: null };
+          data: { consumedAt: Date };
+        }) => {
+          const record = [...authCodeStore.values()].find(
+            (value) => value.id === where.id
+          );
+          if (!record || record.consumedAt !== null) {
+            return { count: 0 };
+          }
+          record.consumedAt = data.consumedAt;
+          return { count: 1 };
         }
       ),
     },
@@ -300,6 +394,7 @@ beforeEach(() => {
   resetInMemorySecurityState();
   revokedTokenStore.clear();
   rateLimitStore.clear();
+  authCodeStore.clear();
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);

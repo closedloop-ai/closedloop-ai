@@ -25,6 +25,7 @@ import { PrismaClient } from "../generated/client";
 
 // Fixed plaintext key for local dev testing
 const MCP_TEST_KEY = "sk_live_mcp_test_seed_key_0123456789abcdef";
+const MCP_TEST_KEY_SCOPES = ["read", "write", "delete", "admin"] as const;
 const MCP_TEST_KEY_HASH = createHash("sha256")
   .update(MCP_TEST_KEY)
   .digest("hex");
@@ -83,13 +84,19 @@ async function main() {
     });
 
     if (existingKey) {
-      // Un-revoke and un-expire if needed
+      // Ensure existing seeded key remains usable and fully scoped.
       await prisma.apiKey.update({
         where: { id: existingKey.id },
-        data: { revokedAt: null, expiresAt: null },
+        data: {
+          organizationId,
+          userId,
+          revokedAt: null,
+          expiresAt: null,
+          scopes: [...MCP_TEST_KEY_SCOPES],
+        },
       });
       console.log(
-        `API key exists (reset revoked/expired): ${existingKey.keyPrefix}...`
+        `API key exists (reset revoked/expired/scopes): ${existingKey.keyPrefix}...`
       );
     } else {
       await prisma.apiKey.create({
@@ -97,6 +104,7 @@ async function main() {
           organizationId,
           userId,
           name: "MCP Test Key",
+          scopes: [...MCP_TEST_KEY_SCOPES],
           keyHash: MCP_TEST_KEY_HASH,
           keyPrefix: MCP_TEST_KEY.slice(0, 12),
           expiresAt: null,
@@ -432,6 +440,7 @@ async function main() {
     }) {
       const existing = await prisma.entityLink.findFirst({
         where: {
+          organizationId,
           sourceId: data.sourceId,
           targetId: data.targetId,
           linkType: data.linkType,
@@ -447,6 +456,7 @@ async function main() {
 
       const link = await prisma.entityLink.create({
         data: {
+          organizationId,
           sourceId: data.sourceId,
           sourceType: data.sourceType,
           targetId: data.targetId,

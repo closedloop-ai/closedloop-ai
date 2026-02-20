@@ -1,4 +1,6 @@
 import {
+  createCipheriv,
+  createDecipheriv,
   createHash,
   createHmac,
   randomBytes,
@@ -301,7 +303,7 @@ function extractOAuthToken(authHeader: string | null): string | null {
 }
 
 type OAuthAccessTokenPayload = {
-  apiKey: string;
+  apiKeyCiphertext: string;
   userId: string;
   organizationId: string;
   scopes: string[];
@@ -310,7 +312,7 @@ type OAuthAccessTokenPayload = {
 };
 
 type AuthorizationCodeRecord = {
-  apiKey: string;
+  encryptedApiKey: string;
   userId: string;
   organizationId: string;
   clientId: string;
@@ -318,10 +320,12 @@ type AuthorizationCodeRecord = {
   scopes: string[];
   codeChallenge: string;
   codeChallengeMethod: "S256";
-  expiresAt: number;
+  expiresAt: Date;
 };
 
-const authorizationCodes = new Map<string, AuthorizationCodeRecord>();
+const OAUTH_API_KEY_ENCRYPTION_KEY = createHash("sha256")
+  .update(`${OAUTH_SIGNING_SECRET}:api-key-encryption`, "utf8")
+  .digest();
 
 function effectiveKeyScopes(scopes: string[]): string[] {
   return scopes.length > 0 ? scopes : [...FULL_SCOPES];
@@ -331,13 +335,70 @@ function hasWriteScope(scopes: string[]): boolean {
   return scopes.includes("write");
 }
 
-function cleanupExpiredAuthorizationCodes(): void {
-  const now = Date.now();
-  for (const [code, record] of authorizationCodes.entries()) {
-    if (record.expiresAt <= now) {
-      authorizationCodes.delete(code);
+async function cleanupExpiredAuthorizationCodes(): Promise<void> {
+  await withDb((db) =>
+    db.oAuthAuthorizationCode.deleteMany({
+      where: {
+        OR: [{ expiresAt: { lte: new Date() } }, { consumedAt: { not: null } }],
+      },
+    })
+  );
+}
+
+async function storeAuthorizationCode(
+  code: string,
+  record: AuthorizationCodeRecord
+): Promise<void> {
+  await withDb((db) =>
+    db.oAuthAuthorizationCode.create({
+      data: {
+        code,
+        encryptedApiKey: record.encryptedApiKey,
+        userId: record.userId,
+        organizationId: record.organizationId,
+        clientId: record.clientId,
+        redirectUri: record.redirectUri,
+        scopes: record.scopes,
+        codeChallenge: record.codeChallenge,
+        codeChallengeMethod: record.codeChallengeMethod,
+        expiresAt: record.expiresAt,
+      },
+    })
+  );
+}
+
+function consumeAuthorizationCode(
+  code: string
+): Promise<AuthorizationCodeRecord | null> {
+  return withDb.tx(async (db) => {
+    const now = new Date();
+    const record = await db.oAuthAuthorizationCode.findUnique({
+      where: { code },
+    });
+    if (!record || record.consumedAt !== null || record.expiresAt <= now) {
+      return null;
     }
-  }
+
+    const consumeResult = await db.oAuthAuthorizationCode.updateMany({
+      where: { id: record.id, consumedAt: null },
+      data: { consumedAt: now },
+    });
+    if (consumeResult.count !== 1) {
+      return null;
+    }
+
+    return {
+      encryptedApiKey: record.encryptedApiKey,
+      userId: record.userId,
+      organizationId: record.organizationId,
+      clientId: record.clientId,
+      redirectUri: record.redirectUri,
+      scopes: record.scopes,
+      codeChallenge: record.codeChallenge,
+      codeChallengeMethod: record.codeChallengeMethod as "S256",
+      expiresAt: record.expiresAt,
+    };
+  });
 }
 
 function getAccessTokenFingerprint(token: string): string {
@@ -519,6 +580,47 @@ function sha256Base64Url(input: string): string {
     .replace(/=+$/g, "");
 }
 
+function encryptApiKey(apiKey: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    OAUTH_API_KEY_ENCRYPTION_KEY,
+    iv
+  );
+  const ciphertext = Buffer.concat([
+    cipher.update(apiKey, "utf8"),
+    cipher.final(),
+  ]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString("base64url")}.${authTag.toString("base64url")}.${ciphertext.toString("base64url")}`;
+}
+
+function decryptApiKey(encrypted: string): string | null {
+  const parts = encrypted.split(".");
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  try {
+    const [ivPart, tagPart, ciphertextPart] = parts;
+    const iv = Buffer.from(ivPart, "base64url");
+    const authTag = Buffer.from(tagPart, "base64url");
+    const ciphertext = Buffer.from(ciphertextPart, "base64url");
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      OAUTH_API_KEY_ENCRYPTION_KEY,
+      iv
+    );
+    decipher.setAuthTag(authTag);
+    return Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 function issueOAuthAccessToken(
   apiKey: string,
   context: VerifiedApiKeyContext,
@@ -526,7 +628,7 @@ function issueOAuthAccessToken(
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const payload: OAuthAccessTokenPayload = {
-    apiKey,
+    apiKeyCiphertext: encryptApiKey(apiKey),
     userId: context.userId,
     organizationId: context.organizationId,
     scopes,
@@ -562,7 +664,7 @@ function parseSignedOAuthAccessToken(
       b64urlDecode(payloadB64)
     ) as OAuthAccessTokenPayload;
     const now = Math.floor(Date.now() / 1000);
-    if (!payload.apiKey || payload.exp <= now) {
+    if (!payload.apiKeyCiphertext || payload.exp <= now) {
       return null;
     }
     return payload;
@@ -658,7 +760,12 @@ async function resolveMcpAuth(
     return null;
   }
 
-  const context = await verifyApiKey(tokenPayload.apiKey);
+  const plaintextKey = decryptApiKey(tokenPayload.apiKeyCiphertext);
+  if (!plaintextKey) {
+    return null;
+  }
+
+  const context = await verifyApiKey(plaintextKey);
   if (!context) {
     return null;
   }
@@ -669,7 +776,7 @@ async function resolveMcpAuth(
   );
 
   return {
-    plaintextKey: tokenPayload.apiKey,
+    plaintextKey,
     context,
     grantedScopes,
   };
@@ -907,10 +1014,10 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  cleanupExpiredAuthorizationCodes();
+  await cleanupExpiredAuthorizationCodes();
   const code = `mcp_ac_${randomBytes(24).toString("base64url")}`;
-  authorizationCodes.set(code, {
-    apiKey,
+  await storeAuthorizationCode(code, {
+    encryptedApiKey: encryptApiKey(apiKey),
     userId: context.userId,
     organizationId: context.organizationId,
     clientId,
@@ -918,7 +1025,7 @@ async function handleOAuthAuthorize(
     scopes,
     codeChallenge,
     codeChallengeMethod: "S256",
-    expiresAt: Date.now() + OAUTH_AUTH_CODE_TTL_SECONDS * 1000,
+    expiresAt: new Date(Date.now() + OAUTH_AUTH_CODE_TTL_SECONDS * 1000),
   });
 
   redirectWithParams(res, redirectUri, { code, state });
@@ -996,8 +1103,8 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  cleanupExpiredAuthorizationCodes();
-  const codeRecord = authorizationCodes.get(body.code);
+  await cleanupExpiredAuthorizationCodes();
+  const codeRecord = await consumeAuthorizationCode(body.code);
   if (!codeRecord) {
     sendJson(res, 400, {
       error: "invalid_grant",
@@ -1005,8 +1112,6 @@ async function handleAuthorizationCodeGrant(
     });
     return;
   }
-
-  authorizationCodes.delete(body.code);
 
   if (codeRecord.clientId !== body.client_id) {
     sendJson(res, 400, {
@@ -1024,7 +1129,7 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  if (codeRecord.expiresAt <= Date.now()) {
+  if (codeRecord.expiresAt.getTime() <= Date.now()) {
     sendJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code has expired",
@@ -1044,7 +1149,16 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const context = await verifyApiKey(codeRecord.apiKey);
+  const codeApiKey = decryptApiKey(codeRecord.encryptedApiKey);
+  if (!codeApiKey) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Authorization code is no longer valid",
+    });
+    return;
+  }
+
+  const context = await verifyApiKey(codeApiKey);
   if (!context) {
     sendJson(res, 400, {
       error: "invalid_grant",
@@ -1069,7 +1183,7 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const accessToken = issueOAuthAccessToken(codeRecord.apiKey, context, scopes);
+  const accessToken = issueOAuthAccessToken(codeApiKey, context, scopes);
   sendJson(res, 200, {
     access_token: accessToken,
     token_type: "Bearer",
@@ -1160,7 +1274,13 @@ async function handleOAuthIntrospect(
     return;
   }
 
-  const keyContext = await verifyApiKey(payload.apiKey);
+  const plaintextKey = decryptApiKey(payload.apiKeyCiphertext);
+  if (!plaintextKey) {
+    sendJson(res, 200, { active: false });
+    return;
+  }
+
+  const keyContext = await verifyApiKey(plaintextKey);
   if (!keyContext) {
     sendJson(res, 200, { active: false });
     return;
@@ -1275,35 +1395,36 @@ async function dispatchHttpRequest(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
 ): Promise<boolean> {
-  const url = req.url ?? "";
+  const parsedUrl = new URL(req.url ?? "/", MCP_SERVER_URL);
+  const pathname = parsedUrl.pathname;
 
-  if (url === "/oauth/authorize") {
+  if (pathname === "/oauth/authorize") {
     await handleOAuthAuthorize(req, res);
     return true;
   }
 
-  if (url === "/oauth/token") {
+  if (pathname === "/oauth/token") {
     await handleOAuthToken(req, res);
     return true;
   }
 
-  if (url === "/internal/oauth/introspect") {
+  if (pathname === "/internal/oauth/introspect") {
     await handleOAuthIntrospect(req, res);
     return true;
   }
 
-  if (url === "/internal/oauth/revoke") {
+  if (pathname === "/internal/oauth/revoke") {
     await handleOAuthRevoke(req, res);
     return true;
   }
 
-  if (url === "/mcp") {
+  if (pathname === "/mcp") {
     await handleMcp(req, res);
     return true;
   }
 
   if (req.method === "GET") {
-    const handler = GET_ROUTES[url];
+    const handler = GET_ROUTES[pathname];
     if (handler) {
       await handler(req, res);
       return true;
@@ -1362,7 +1483,5 @@ export const __testables = {
   handleOAuthRevoke,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
-  resetInMemorySecurityState: () => {
-    authorizationCodes.clear();
-  },
+  resetInMemorySecurityState: () => {},
 };

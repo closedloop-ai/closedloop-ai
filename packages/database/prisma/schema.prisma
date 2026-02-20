@@ -1068,6 +1068,26 @@ model OAuthRateLimit {
   @@map("oauth_rate_limits")
 }
 
+model OAuthAuthorizationCode {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  code             String    @unique
+  encryptedApiKey  String    @map("encrypted_api_key")
+  userId           String    @map("user_id") @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  clientId         String    @map("client_id")
+  redirectUri      String    @map("redirect_uri")
+  scopes           String[]
+  codeChallenge    String    @map("code_challenge")
+  codeChallengeMethod String @map("code_challenge_method")
+  expiresAt        DateTime  @map("expires_at")
+  consumedAt       DateTime? @map("consumed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@map("oauth_authorization_codes")
+}
+
 // =============================================================================
 // GOOGLE INTEGRATION
 // =============================================================================

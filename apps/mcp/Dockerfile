@@ -21,6 +21,7 @@ COPY tsconfig.json ./
 # Copy only the packages the MCP server depends on
 COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/ packages/api/
+COPY packages/database/ packages/database/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
 # --ignore-scripts: skip root postinstall (prisma generate) which needs packages/database
@@ -47,6 +48,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # Copy package manifests for production install
 COPY apps/mcp/package.json apps/mcp/
 COPY packages/api/package.json packages/api/
+COPY packages/database/package.json packages/database/
 
 # Install production-only dependencies
 RUN pnpm install --frozen-lockfile --filter @repo/mcp... --prod --ignore-scripts
@@ -54,12 +56,13 @@ RUN pnpm install --frozen-lockfile --filter @repo/mcp... --prod --ignore-scripts
 # Copy compiled JavaScript from builder
 COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/
 
-# Copy shared types (needed at runtime for module resolution)
+# Copy shared workspace packages needed at runtime for module resolution
 COPY --from=builder /app/packages/api/src/ packages/api/src/
+COPY --from=builder /app/packages/database/ packages/database/
 
 ENV NODE_ENV=production
 ENV MCP_PORT=3010
 
 EXPOSE 3010
 
-CMD ["node", "apps/mcp/dist/index.js"]
+CMD ["node", "apps/mcp/dist/apps/mcp/src/index.js"]

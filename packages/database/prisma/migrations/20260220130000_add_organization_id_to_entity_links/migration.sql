@@ -45,6 +45,20 @@ WHERE el."target_type" = 'EXTERNAL_LINK'
   AND el."target_id" = ex."id"
   AND el."organization_id" IS NULL;
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "entity_links"
+    WHERE "organization_id" IS NULL
+  ) THEN
+    RAISE EXCEPTION 'entity_links.organization_id backfill incomplete';
+  END IF;
+END $$;
+
+ALTER TABLE "entity_links"
+ALTER COLUMN "organization_id" SET NOT NULL;
+
 CREATE INDEX "entity_links_organization_id_source_id_source_type_link_type_idx"
 ON "entity_links" ("organization_id", "source_id", "source_type", "link_type");
 
