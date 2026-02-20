@@ -64,10 +64,10 @@ type ArtifactsThreadedViewProps = {
 
 type WorkstreamGroup = {
   id: string | null;
+  groupKey: string;
   title: string;
   state: string | null;
   artifacts: ArtifactWithWorkstream[];
-  _workstreamTitle?: string | null;
 };
 
 /** Defines display order of artifact types within a workstream group. */
@@ -76,6 +76,8 @@ const TYPE_ORDER: Record<string, number> = {
   [ArtifactType.ImplementationPlan]: 1,
   [ArtifactType.Template]: 2,
 };
+
+const UNASSIGNED_KEY_PREFIX = "unassigned:" as const;
 
 function sortArtifactsByType(
   artifacts: ArtifactWithWorkstream[]
@@ -103,29 +105,43 @@ function deriveGroupTitle(
 function groupByWorkstream(
   artifacts: ArtifactWithWorkstream[]
 ): WorkstreamGroup[] {
-  const groups = new Map<string | null, WorkstreamGroup>();
+  const groups = new Map<string, WorkstreamGroup>();
+  const workstreamTitles = new Map<string, string | null | undefined>();
 
   for (const artifact of artifacts) {
-    const key = artifact.workstreamId ?? null;
+    // PRDs without a workstream get their own group (each PRD is a standalone thread).
+    // All other unassigned artifact types share a single "Unassigned" group.
+    const key =
+      artifact.workstreamId ??
+      (artifact.type === "PRD"
+        ? `${UNASSIGNED_KEY_PREFIX}${artifact.id}`
+        : `${UNASSIGNED_KEY_PREFIX}shared`);
 
     if (!groups.has(key)) {
       groups.set(key, {
-        id: key,
+        id: artifact.workstreamId,
+        groupKey: key,
         title: "",
         state: artifact.workstream?.state ?? null,
         artifacts: [],
-        _workstreamTitle: artifact.workstream?.title,
       });
+      workstreamTitles.set(key, artifact.workstream?.title);
     }
-    groups.get(key)!.artifacts.push(artifact);
+    const group = groups.get(key);
+    if (group) {
+      group.artifacts.push(artifact);
+    }
   }
 
-  for (const group of groups.values()) {
-    group.title = deriveGroupTitle(group._workstreamTitle, group.artifacts);
+  for (const [key, group] of groups) {
+    group.title = deriveGroupTitle(workstreamTitles.get(key), group.artifacts);
     group.artifacts = sortArtifactsByType(group.artifacts);
   }
 
   const sorted = [...groups.values()].sort((a, b) => {
+    if (a.id === null && b.id === null) {
+      return a.title.localeCompare(b.title);
+    }
     if (a.id === null) {
       return 1;
     }
