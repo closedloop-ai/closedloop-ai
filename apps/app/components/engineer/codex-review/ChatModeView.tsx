@@ -15,6 +15,7 @@ import {
   Search,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
 import { ChatInput } from "@/components/engineer/chat/ChatInput";
 import { MessageContent } from "@/components/engineer/chat/MessageContent";
@@ -419,6 +420,14 @@ function ChatMessageList({
             key={msg.id}
             messageRole={effectiveSender === "codex" ? "user" : msg.role}
             onAction={onAction}
+            onCopy={async () => {
+              try {
+                await navigator.clipboard.writeText(contentWithoutActions);
+                toast.success("Copied to clipboard");
+              } catch {
+                toast.error("Failed to copy");
+              }
+            }}
             sender={effectiveSender}
             timestamp={msg.timestamp}
           >

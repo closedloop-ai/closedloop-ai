@@ -392,9 +392,23 @@ export function CommentChat({
       const { contentWithoutActions } = parseSuggestedActions(msg.content);
       const cleanContent = stripContextBlocks(contentWithoutActions);
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nPlease review and provide your perspective.`;
+      // Scroll after the next render (query invalidation inside sendToCodex
+      // adds the forwarded message, then React re-renders).
+      const scrollAfterRender = () =>
+        requestAnimationFrame(() =>
+          chat.messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+        );
+      // Fire once the PATCH + invalidation lands (before stream completes)
+      setTimeout(scrollAfterRender, 300);
       await sendToCodex(codexPrompt, "__forwarded_to_codex__");
     },
-    [chat.messages, isAnyStreaming, codexData?.available, sendToCodex]
+    [
+      chat.messages,
+      chat.messagesEndRef,
+      isAnyStreaming,
+      codexData?.available,
+      sendToCodex,
+    ]
   );
 
   // Forward a Codex message to Claude (by index)
@@ -969,6 +983,14 @@ function renderSenderBubble(
       key={msg.id}
       messageRole={isCodex ? "user" : msg.role}
       onAction={debateActions.length > 0 ? ctx.onAction : undefined}
+      onCopy={async () => {
+        try {
+          await navigator.clipboard.writeText(contentWithoutActions);
+          toast.success("Copied to clipboard");
+        } catch {
+          toast.error("Failed to copy");
+        }
+      }}
       onForward={
         ctx.canForward && msg.role === "assistant"
           ? () => forwardHandler(idx)

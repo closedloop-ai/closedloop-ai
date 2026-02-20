@@ -225,7 +225,8 @@ export function ReviewChatPane({
               return true;
             }
             const short = stripWorktreePath(f.file);
-            return resolveFullPath(short, prFiles) !== null;
+            const resolved = resolveFullPath(short, prFiles);
+            return resolved !== null && resolved !== "ambiguous";
           })
         : annotated;
     return { processLog: split.processLog, findings: filtered };
@@ -760,8 +761,12 @@ export function ReviewChatPane({
       const [title, ...descParts] = finding.message.split("\n");
       const description = descParts.join("\n").trim();
       const priorityLabel = finding.priority || "P3";
-      const filePath =
+      const shortPath =
         finding.file && commitSha ? stripWorktreePath(finding.file) : undefined;
+      const resolved =
+        shortPath && prFiles ? resolveFullPath(shortPath, prFiles) : null;
+      const filePath =
+        resolved && resolved !== "ambiguous" ? resolved : undefined;
       const isInline = !!filePath;
 
       // Only include file:line in body when not posting as inline comment
@@ -823,6 +828,7 @@ export function ReviewChatPane({
       config.provider,
       duplicateIndices,
       prCommentDupIndices,
+      prFiles,
     ]
   );
 
