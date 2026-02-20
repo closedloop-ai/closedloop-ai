@@ -8,6 +8,9 @@ FROM node:20-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
+# gawk: required by experimental plugin hooks (FPAT support — mawk doesn't have it)
+# python3 + pip: required by experimental plugin post-iteration scripts
+# xxd: required by run-loop.sh for run ID generation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -15,10 +18,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     unzip \
     tini \
+    gawk \
     python3 \
     python3-pip \
     xxd \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages required by experimental plugin
+RUN pip3 install --no-cache-dir --break-system-packages pyyaml
+
+# Install uv (fast Python package manager — used by experimental plugin)
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install GitHub CLI
 RUN ARCH=$(dpkg --print-architecture) && \
