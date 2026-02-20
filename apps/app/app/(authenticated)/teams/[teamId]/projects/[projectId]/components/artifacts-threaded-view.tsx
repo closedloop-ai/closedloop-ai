@@ -433,7 +433,7 @@ export function ArtifactsThreadedView({
         return (
           <WorkstreamSection
             group={group}
-            key={group.id ?? "unassigned"}
+            key={group.groupKey}
             onRequestDelete={deleteConfirmation.requestDelete}
             onRequestMove={handleRequestMove}
             onRowClick={handleRowClick}
