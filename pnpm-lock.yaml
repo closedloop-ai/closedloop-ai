@@ -449,6 +449,9 @@ importers:
       '@repo/api':
         specifier: workspace:*
         version: link:../../packages/api
+      '@repo/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       zod:
         specifier: ^3.23.0
         version: 3.25.76

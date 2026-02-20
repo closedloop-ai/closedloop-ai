@@ -13,6 +13,18 @@ import {
 
 const verifyApiKeyMock = vi.fn();
 const checkApiReachableMock = vi.fn();
+const revokedTokenStore = new Map<string, Date>();
+const rateLimitStore = new Map<
+  string,
+  {
+    id: string;
+    bucket: string;
+    subject: string;
+    requestCount: number;
+    windowStartedAt: Date;
+    windowExpiresAt: Date;
+  }
+>();
 
 vi.mock("../api-client.js", () => {
   return {
@@ -20,6 +32,142 @@ vi.mock("../api-client.js", () => {
     checkApiReachable: checkApiReachableMock,
     createApiClient: vi.fn(() => ({})),
   };
+});
+
+vi.mock("@repo/database", () => {
+  const dbMock = {
+    oAuthRevokedToken: {
+      deleteMany: vi.fn(
+        ({ where }: { where: { expiresAt: { lte: Date } } }) => {
+          for (const [fingerprint, expiresAt] of revokedTokenStore.entries()) {
+            if (expiresAt <= where.expiresAt.lte) {
+              revokedTokenStore.delete(fingerprint);
+            }
+          }
+          return { count: 0 };
+        }
+      ),
+      upsert: vi.fn(
+        ({
+          where,
+          create,
+          update,
+        }: {
+          where: { tokenFingerprint: string };
+          create: { expiresAt: Date };
+          update: { expiresAt: Date };
+        }) => {
+          const expiresAt =
+            revokedTokenStore.get(where.tokenFingerprint) === undefined
+              ? create.expiresAt
+              : update.expiresAt;
+          revokedTokenStore.set(where.tokenFingerprint, expiresAt);
+          return { tokenFingerprint: where.tokenFingerprint, expiresAt };
+        }
+      ),
+      findUnique: vi.fn(
+        ({ where }: { where: { tokenFingerprint: string } }) => {
+          const expiresAt = revokedTokenStore.get(where.tokenFingerprint);
+          if (!expiresAt) {
+            return null;
+          }
+          return { expiresAt };
+        }
+      ),
+    },
+    oAuthRateLimit: {
+      deleteMany: vi.fn(
+        ({ where }: { where: { windowExpiresAt: { lte: Date } } }) => {
+          for (const [key, record] of rateLimitStore.entries()) {
+            if (record.windowExpiresAt <= where.windowExpiresAt.lte) {
+              rateLimitStore.delete(key);
+            }
+          }
+          return { count: 0 };
+        }
+      ),
+      findUnique: vi.fn(
+        ({
+          where,
+        }: {
+          where: { bucket_subject: { bucket: string; subject: string } };
+        }) => {
+          const key = `${where.bucket_subject.bucket}:${where.bucket_subject.subject}`;
+          return rateLimitStore.get(key) ?? null;
+        }
+      ),
+      upsert: vi.fn(
+        ({
+          where,
+          create,
+          update,
+        }: {
+          where: { bucket_subject: { bucket: string; subject: string } };
+          create: {
+            bucket: string;
+            subject: string;
+            requestCount: number;
+            windowStartedAt: Date;
+            windowExpiresAt: Date;
+          };
+          update: {
+            requestCount: number;
+            windowStartedAt: Date;
+            windowExpiresAt: Date;
+          };
+        }) => {
+          const key = `${where.bucket_subject.bucket}:${where.bucket_subject.subject}`;
+          const current = rateLimitStore.get(key);
+          const next = current
+            ? {
+                ...current,
+                requestCount: update.requestCount,
+                windowStartedAt: update.windowStartedAt,
+                windowExpiresAt: update.windowExpiresAt,
+              }
+            : {
+                id: `rate_${Math.random().toString(36).slice(2, 10)}`,
+                bucket: create.bucket,
+                subject: create.subject,
+                requestCount: create.requestCount,
+                windowStartedAt: create.windowStartedAt,
+                windowExpiresAt: create.windowExpiresAt,
+              };
+          rateLimitStore.set(key, next);
+          return next;
+        }
+      ),
+      update: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: { requestCount: { increment: number } };
+        }) => {
+          const record = [...rateLimitStore.values()].find(
+            (row) => row.id === where.id
+          );
+          if (!record) {
+            throw new Error("Rate limit record not found");
+          }
+          record.requestCount += data.requestCount.increment;
+          return record;
+        }
+      ),
+    },
+  };
+
+  const withDb = Object.assign(
+    async <T>(fn: (db: typeof dbMock) => Promise<T> | T): Promise<T> =>
+      fn(dbMock),
+    {
+      tx: async <T>(fn: (db: typeof dbMock) => Promise<T>): Promise<T> =>
+        fn(dbMock),
+    }
+  );
+
+  return { withDb };
 });
 
 const DEFAULT_CONTEXT: VerifiedApiKeyContext = {
@@ -50,6 +198,9 @@ type MockResponse = {
 
 let handleOAuthAuthorize: HandlerFn;
 let handleOAuthToken: HandlerFn;
+let handleOAuthIntrospect: HandlerFn;
+let handleOAuthRevoke: HandlerFn;
+let resetInMemorySecurityState: () => void;
 
 function createMockRequest(options: {
   method: string;
@@ -62,6 +213,7 @@ function createMockRequest(options: {
     method: options.method,
     url: options.url,
     headers: options.headers ?? {},
+    socket: { remoteAddress: "127.0.0.1" },
     [Symbol.asyncIterator]() {
       let sent = false;
       return {
@@ -134,6 +286,10 @@ beforeAll(async () => {
   const mod = await import("../index.js");
   handleOAuthAuthorize = mod.__testables.handleOAuthAuthorize as HandlerFn;
   handleOAuthToken = mod.__testables.handleOAuthToken as HandlerFn;
+  handleOAuthIntrospect = mod.__testables.handleOAuthIntrospect as HandlerFn;
+  handleOAuthRevoke = mod.__testables.handleOAuthRevoke as HandlerFn;
+  resetInMemorySecurityState = mod.__testables
+    .resetInMemorySecurityState as () => void;
 });
 
 afterAll(() => {
@@ -141,6 +297,9 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  resetInMemorySecurityState();
+  revokedTokenStore.clear();
+  rateLimitStore.clear();
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
@@ -497,5 +656,128 @@ describe("OAuth endpoints", () => {
     expect(authorizeRes.statusCode).toBe(400);
     const json = JSON.parse(authorizeRes.body) as { error: string };
     expect(json.error).toBe("invalid_request");
+  });
+
+  it("revokes a token and returns inactive on introspection", async () => {
+    const tokenBody = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: "closedloop-mcp",
+      client_secret: "sk_live_valid",
+      scope: "read",
+    });
+    const issueReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
+    const issueRes = createMockResponse();
+    await handleOAuthToken(issueReq, asServerResponse(issueRes));
+    const issued = JSON.parse(issueRes.body) as { access_token: string };
+    expect(issued.access_token.startsWith("mcp_at_")).toBe(true);
+
+    const introspectReqBefore = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/introspect",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token: issued.access_token }),
+    });
+    const introspectResBefore = createMockResponse();
+    await handleOAuthIntrospect(
+      introspectReqBefore,
+      asServerResponse(introspectResBefore)
+    );
+    expect(introspectResBefore.statusCode).toBe(200);
+    const activeBefore = JSON.parse(introspectResBefore.body) as {
+      active: boolean;
+    };
+    expect(activeBefore.active).toBe(true);
+
+    const revokeReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/revoke",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token: issued.access_token }),
+    });
+    const revokeRes = createMockResponse();
+    await handleOAuthRevoke(revokeReq, asServerResponse(revokeRes));
+    expect(revokeRes.statusCode).toBe(200);
+    const revoked = JSON.parse(revokeRes.body) as { revoked: boolean };
+    expect(revoked.revoked).toBe(true);
+
+    const introspectReqAfter = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/introspect",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token: issued.access_token }),
+    });
+    const introspectResAfter = createMockResponse();
+    await handleOAuthIntrospect(
+      introspectReqAfter,
+      asServerResponse(introspectResAfter)
+    );
+    expect(introspectResAfter.statusCode).toBe(200);
+    const activeAfter = JSON.parse(introspectResAfter.body) as {
+      active: boolean;
+    };
+    expect(activeAfter.active).toBe(false);
+  });
+
+  it("rejects internal introspect/revoke without internal secret", async () => {
+    const introspectReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/introspect",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "mcp_at_fake" }),
+    });
+    const introspectRes = createMockResponse();
+    await handleOAuthIntrospect(introspectReq, asServerResponse(introspectRes));
+    expect(introspectRes.statusCode).toBe(401);
+
+    const revokeReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/revoke",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "mcp_at_fake" }),
+    });
+    const revokeRes = createMockResponse();
+    await handleOAuthRevoke(revokeReq, asServerResponse(revokeRes));
+    expect(revokeRes.statusCode).toBe(401);
+  });
+
+  it("rate limits excessive token requests", async () => {
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: "closedloop-mcp",
+      client_secret: "sk_live_valid",
+      scope: "read",
+    }).toString();
+
+    let lastStatus = 0;
+    for (let index = 0; index < 65; index += 1) {
+      const req = createMockRequest({
+        method: "POST",
+        url: "/oauth/token",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const res = createMockResponse();
+      await handleOAuthToken(req, asServerResponse(res));
+      lastStatus = res.statusCode;
+      if (lastStatus === 429) {
+        break;
+      }
+    }
+
+    expect(lastStatus).toBe(429);
   });
 });

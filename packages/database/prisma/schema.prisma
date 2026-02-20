@@ -1044,6 +1044,30 @@ model ApiKey {
   @@map("api_keys")
 }
 
+model OAuthRevokedToken {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tokenFingerprint String   @unique @map("token_fingerprint")
+  expiresAt        DateTime @map("expires_at")
+  revokedAt        DateTime @default(now()) @map("revoked_at")
+
+  @@index([expiresAt])
+  @@map("oauth_revoked_tokens")
+}
+
+model OAuthRateLimit {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  bucket          String
+  subject         String
+  requestCount    Int      @default(0) @map("request_count")
+  windowStartedAt DateTime @map("window_started_at")
+  windowExpiresAt DateTime @map("window_expires_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([bucket, subject])
+  @@index([windowExpiresAt])
+  @@map("oauth_rate_limits")
+}
+
 // =============================================================================
 // GOOGLE INTEGRATION
 // =============================================================================

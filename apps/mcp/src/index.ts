@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
+import { withDb } from "@repo/database";
 import {
   checkApiReachable,
   createApiClient,
@@ -66,6 +67,15 @@ const OAUTH_AUTH_CODE_TTL_SECONDS = Number(
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
 const FULL_SCOPES = ["read", "write", "delete", "admin"] as const;
+const OAUTH_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.MCP_OAUTH_RATE_LIMIT_WINDOW_MS ?? 60_000
+);
+const OAUTH_RATE_LIMIT_AUTHORIZE_MAX = Number(
+  process.env.MCP_OAUTH_RATE_LIMIT_AUTHORIZE_MAX ?? 120
+);
+const OAUTH_RATE_LIMIT_TOKEN_MAX = Number(
+  process.env.MCP_OAUTH_RATE_LIMIT_TOKEN_MAX ?? 60
+);
 
 function isLocalOauthEnvironment(): boolean {
   const nodeEnv = process.env.NODE_ENV ?? NODE_ENV;
@@ -91,6 +101,13 @@ function getOAuthRedirectUriAllowlist(): string[] {
     .filter(Boolean);
 }
 
+function getInternalEndpointAllowlist(): string[] {
+  return (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function requireRedirectAllowlistForEnvironment(): void {
   if (
     !isLocalOauthEnvironment() &&
@@ -98,6 +115,17 @@ function requireRedirectAllowlistForEnvironment(): void {
   ) {
     throw new Error(
       "MCP_OAUTH_REDIRECT_URIS must be set in non-local environments"
+    );
+  }
+}
+
+function requireInternalAllowlistForEnvironment(): void {
+  if (
+    !isLocalOauthEnvironment() &&
+    getInternalEndpointAllowlist().length === 0
+  ) {
+    throw new Error(
+      "MCP_INTERNAL_ALLOWED_IPS must be set in non-local environments"
     );
   }
 }
@@ -312,6 +340,153 @@ function cleanupExpiredAuthorizationCodes(): void {
   }
 }
 
+function getAccessTokenFingerprint(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+async function cleanupExpiredRevokedTokens(): Promise<void> {
+  await withDb((db) =>
+    db.oAuthRevokedToken.deleteMany({
+      where: { expiresAt: { lte: new Date() } },
+    })
+  );
+}
+
+async function revokeAccessToken(
+  token: string,
+  expiresAtMs: number
+): Promise<void> {
+  await cleanupExpiredRevokedTokens();
+  const fingerprint = getAccessTokenFingerprint(token);
+  await withDb((db) =>
+    db.oAuthRevokedToken.upsert({
+      where: { tokenFingerprint: fingerprint },
+      create: {
+        tokenFingerprint: fingerprint,
+        expiresAt: new Date(expiresAtMs),
+      },
+      update: {
+        expiresAt: new Date(expiresAtMs),
+        revokedAt: new Date(),
+      },
+    })
+  );
+}
+
+async function isAccessTokenRevoked(token: string): Promise<boolean> {
+  await cleanupExpiredRevokedTokens();
+  const fingerprint = getAccessTokenFingerprint(token);
+  const tokenRecord = await withDb((db) =>
+    db.oAuthRevokedToken.findUnique({
+      where: { tokenFingerprint: fingerprint },
+      select: { expiresAt: true },
+    })
+  );
+  return tokenRecord !== null && tokenRecord.expiresAt.getTime() > Date.now();
+}
+
+function normalizeAddress(address: string): string {
+  return address.startsWith("::ffff:")
+    ? address.slice("::ffff:".length)
+    : address;
+}
+
+function getClientAddress(req: import("node:http").IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) {
+      return normalizeAddress(first);
+    }
+  }
+  return normalizeAddress(req.socket?.remoteAddress ?? "unknown");
+}
+
+function isInternalAddressAllowed(address: string): boolean {
+  const allowlist = getInternalEndpointAllowlist();
+  if (allowlist.length > 0) {
+    return allowlist.includes(address);
+  }
+
+  if (!isLocalOauthEnvironment()) {
+    return false;
+  }
+
+  return (
+    address === "localhost" || address === "127.0.0.1" || address === "::1"
+  );
+}
+
+function consumeOAuthRateLimit(
+  req: import("node:http").IncomingMessage,
+  bucket: "authorize" | "token"
+): Promise<{ limited: boolean; retryAfterSeconds: number }> {
+  const limit =
+    bucket === "authorize"
+      ? OAUTH_RATE_LIMIT_AUTHORIZE_MAX
+      : OAUTH_RATE_LIMIT_TOKEN_MAX;
+  const now = new Date();
+  const address = getClientAddress(req);
+
+  return withDb.tx(async (db) => {
+    await db.oAuthRateLimit.deleteMany({
+      where: { windowExpiresAt: { lte: now } },
+    });
+
+    const windowExpiresAt = new Date(
+      now.getTime() + OAUTH_RATE_LIMIT_WINDOW_MS
+    );
+    const record = await db.oAuthRateLimit.findUnique({
+      where: {
+        bucket_subject: {
+          bucket,
+          subject: address,
+        },
+      },
+    });
+
+    if (!record || record.windowExpiresAt <= now) {
+      await db.oAuthRateLimit.upsert({
+        where: {
+          bucket_subject: {
+            bucket,
+            subject: address,
+          },
+        },
+        create: {
+          bucket,
+          subject: address,
+          requestCount: 1,
+          windowStartedAt: now,
+          windowExpiresAt,
+        },
+        update: {
+          requestCount: 1,
+          windowStartedAt: now,
+          windowExpiresAt,
+        },
+      });
+      return { limited: false, retryAfterSeconds: 0 };
+    }
+
+    if (record.requestCount >= limit) {
+      return {
+        limited: true,
+        retryAfterSeconds: Math.max(
+          1,
+          Math.ceil((record.windowExpiresAt.getTime() - now.getTime()) / 1000)
+        ),
+      };
+    }
+
+    await db.oAuthRateLimit.update({
+      where: { id: record.id },
+      data: { requestCount: { increment: 1 } },
+    });
+    return { limited: false, retryAfterSeconds: 0 };
+  });
+}
+
 function b64urlEncode(input: string): string {
   return Buffer.from(input, "utf8")
     .toString("base64")
@@ -363,7 +538,9 @@ function issueOAuthAccessToken(
   return `mcp_at_${payloadB64}.${signature}`;
 }
 
-function verifyOAuthAccessToken(token: string): OAuthAccessTokenPayload | null {
+function parseSignedOAuthAccessToken(
+  token: string
+): OAuthAccessTokenPayload | null {
   const raw = token.replace(OAUTH_TOKEN_PREFIX_REGEX, "");
   const parts = raw.split(".");
   if (parts.length !== 2) {
@@ -394,6 +571,15 @@ function verifyOAuthAccessToken(token: string): OAuthAccessTokenPayload | null {
   }
 }
 
+async function verifyOAuthAccessToken(
+  token: string
+): Promise<OAuthAccessTokenPayload | null> {
+  if (await isAccessTokenRevoked(token)) {
+    return null;
+  }
+  return parseSignedOAuthAccessToken(token);
+}
+
 function sendJson(
   res: import("node:http").ServerResponse,
   status: number,
@@ -405,6 +591,28 @@ function sendJson(
     ...extraHeaders,
   });
   res.end(JSON.stringify(body));
+}
+
+function isInternalSecretValid(
+  req: import("node:http").IncomingMessage
+): boolean {
+  const provided = req.headers["x-internal-secret"];
+  return typeof provided === "string" && provided === OAUTH_SIGNING_SECRET;
+}
+
+function isInternalRequestAuthorized(
+  req: import("node:http").IncomingMessage
+): boolean {
+  return (
+    isInternalSecretValid(req) &&
+    isInternalAddressAllowed(getClientAddress(req))
+  );
+}
+
+function sendInternalUnauthorized(
+  res: import("node:http").ServerResponse
+): void {
+  sendJson(res, 401, { error: "Unauthorized internal request" });
 }
 
 async function handleReady(
@@ -445,7 +653,7 @@ async function resolveMcpAuth(
     return null;
   }
 
-  const tokenPayload = verifyOAuthAccessToken(oauthToken);
+  const tokenPayload = await verifyOAuthAccessToken(oauthToken);
   if (!tokenPayload) {
     return null;
   }
@@ -535,6 +743,24 @@ async function readRequestBody(
   return Buffer.concat(chunks).toString("utf8");
 }
 
+async function readJsonBody<T>(
+  req: import("node:http").IncomingMessage
+): Promise<T | null> {
+  const contentType = req.headers["content-type"] ?? "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+  const raw = await readRequestBody(req);
+  if (!raw.trim()) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
 function redirectWithParams(
   res: import("node:http").ServerResponse,
   redirectUri: string,
@@ -589,6 +815,20 @@ async function handleOAuthAuthorize(
 ): Promise<void> {
   if (req.method !== "GET") {
     sendJson(res, 405, { error: "Method not allowed" }, { Allow: "GET" });
+    return;
+  }
+
+  const authorizeRateLimit = await consumeOAuthRateLimit(req, "authorize");
+  if (authorizeRateLimit.limited) {
+    sendJson(
+      res,
+      429,
+      {
+        error: "rate_limited",
+        error_description: "Too many authorize requests",
+      },
+      { "Retry-After": String(authorizeRateLimit.retryAfterSeconds) }
+    );
     return;
   }
 
@@ -847,6 +1087,17 @@ async function handleOAuthToken(
     return;
   }
 
+  const tokenRateLimit = await consumeOAuthRateLimit(req, "token");
+  if (tokenRateLimit.limited) {
+    sendJson(
+      res,
+      429,
+      { error: "rate_limited", error_description: "Too many token requests" },
+      { "Retry-After": String(tokenRateLimit.retryAfterSeconds) }
+    );
+    return;
+  }
+
   const contentType = req.headers["content-type"] ?? "";
   if (!contentType.includes("application/x-www-form-urlencoded")) {
     sendJson(res, 415, {
@@ -873,6 +1124,95 @@ async function handleOAuthToken(
     error: "unsupported_grant_type",
     error_description:
       "Supported grant types are client_credentials and authorization_code",
+  });
+}
+
+type InternalTokenBody = {
+  token?: string;
+};
+
+async function handleOAuthIntrospect(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    return;
+  }
+
+  if (!isInternalRequestAuthorized(req)) {
+    sendInternalUnauthorized(res);
+    return;
+  }
+
+  const body = await readJsonBody<InternalTokenBody>(req);
+  if (!body?.token?.startsWith("mcp_at_")) {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "JSON body with token is required",
+    });
+    return;
+  }
+
+  const payload = parseSignedOAuthAccessToken(body.token);
+  if (!payload || (await isAccessTokenRevoked(body.token))) {
+    sendJson(res, 200, { active: false });
+    return;
+  }
+
+  const keyContext = await verifyApiKey(payload.apiKey);
+  if (!keyContext) {
+    sendJson(res, 200, { active: false });
+    return;
+  }
+
+  sendJson(res, 200, {
+    active: true,
+    token_type: "Bearer",
+    scope: payload.scopes.join(" "),
+    exp: payload.exp,
+    iat: payload.iat,
+    user_id: payload.userId,
+    organization_id: payload.organizationId,
+  });
+}
+
+async function handleOAuthRevoke(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    return;
+  }
+
+  if (!isInternalRequestAuthorized(req)) {
+    sendInternalUnauthorized(res);
+    return;
+  }
+
+  const body = await readJsonBody<InternalTokenBody>(req);
+  if (!body?.token?.startsWith("mcp_at_")) {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "JSON body with token is required",
+    });
+    return;
+  }
+
+  const payload = parseSignedOAuthAccessToken(body.token);
+  if (!payload) {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "Invalid token",
+    });
+    return;
+  }
+
+  await revokeAccessToken(body.token, payload.exp * 1000);
+  sendJson(res, 200, {
+    revoked: true,
+    exp: payload.exp,
   });
 }
 
@@ -907,6 +1247,8 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
       issuer: MCP_SERVER_URL,
       authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
       token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
+      introspection_endpoint: `${MCP_SERVER_URL}/internal/oauth/introspect`,
+      revocation_endpoint: `${MCP_SERVER_URL}/internal/oauth/revoke`,
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
       grant_types_supported: ["authorization_code", "client_credentials"],
       response_types_supported: ["code", "token"],
@@ -945,6 +1287,16 @@ async function dispatchHttpRequest(
     return true;
   }
 
+  if (url === "/internal/oauth/introspect") {
+    await handleOAuthIntrospect(req, res);
+    return true;
+  }
+
+  if (url === "/internal/oauth/revoke") {
+    await handleOAuthRevoke(req, res);
+    return true;
+  }
+
   if (url === "/mcp") {
     await handleMcp(req, res);
     return true;
@@ -979,6 +1331,7 @@ export function createHttpServer(): import("node:http").Server {
 
 export function startHttpServer(port = PORT): import("node:http").Server {
   requireRedirectAllowlistForEnvironment();
+  requireInternalAllowlistForEnvironment();
   const httpServer = createHttpServer();
   httpServer.listen(port, () => {
     console.log(`ClosedLoop MCP server running on port ${port}`);
@@ -1005,5 +1358,11 @@ if (
 export const __testables = {
   handleOAuthAuthorize,
   handleOAuthToken,
+  handleOAuthIntrospect,
+  handleOAuthRevoke,
   requireRedirectAllowlistForEnvironment,
+  requireInternalAllowlistForEnvironment,
+  resetInMemorySecurityState: () => {
+    authorizationCodes.clear();
+  },
 };

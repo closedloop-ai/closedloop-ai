@@ -8,6 +8,19 @@ vi.mock("../api-client.js", () => {
   };
 });
 
+vi.mock("@repo/database", () => {
+  const withDb = Object.assign(
+    async <T>(fn: (db: Record<string, never>) => Promise<T> | T): Promise<T> =>
+      fn({}),
+    {
+      tx: async <T>(
+        fn: (db: Record<string, never>) => Promise<T>
+      ): Promise<T> => fn({}),
+    }
+  );
+  return { withDb };
+});
+
 const ORIGINAL_ENV = { ...process.env };
 
 afterEach(() => {
@@ -34,5 +47,15 @@ describe.sequential("OAuth config", () => {
     expect(() =>
       mod.__testables.requireRedirectAllowlistForEnvironment()
     ).not.toThrow();
+  });
+
+  it("requires internal IP allowlist in non-local env", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.WEBAPP_ENV = "stage";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "";
+    const mod = await import("../index.js");
+    expect(() =>
+      mod.__testables.requireInternalAllowlistForEnvironment()
+    ).toThrow("MCP_INTERNAL_ALLOWED_IPS must be set in non-local environments");
   });
 });

@@ -21,6 +21,15 @@
   - Defaults to `600`.
 - `MCP_OAUTH_REDIRECT_URIS` (comma-separated, exact-match allowlist)
   - Example: `https://app.example.com/oauth/callback,https://admin.example.com/oauth/callback`
+- `MCP_OAUTH_RATE_LIMIT_WINDOW_MS` (optional)
+  - Defaults to `60000`.
+- `MCP_OAUTH_RATE_LIMIT_AUTHORIZE_MAX` (optional)
+  - Defaults to `120` requests per window per client IP.
+- `MCP_OAUTH_RATE_LIMIT_TOKEN_MAX` (optional)
+  - Defaults to `60` requests per window per client IP.
+- `MCP_INTERNAL_ALLOWED_IPS` (comma-separated, exact-match allowlist)
+  - Required in stage/prod.
+  - Example: `10.0.0.10,10.0.0.11`
 
 ## Redirect URI Policy
 
@@ -37,3 +46,44 @@ Non-local policy is enforced when either of these is true:
 
 - `NODE_ENV=production`
 - `WEBAPP_ENV=stage` or `WEBAPP_ENV=prod`
+
+For internal endpoints, non-local environments must also set:
+
+- `MCP_INTERNAL_ALLOWED_IPS`
+
+## Internal Security Endpoints
+
+These endpoints require `X-Internal-Secret: <INTERNAL_API_SECRET>`.
+They are also IP-filtered by `MCP_INTERNAL_ALLOWED_IPS` in non-local environments.
+
+- `POST /internal/oauth/introspect`
+  - JSON body: `{ "token": "mcp_at_..." }`
+  - Returns token activity/status metadata.
+- `POST /internal/oauth/revoke`
+  - JSON body: `{ "token": "mcp_at_..." }`
+  - Revokes an issued MCP OAuth access token until its expiry.
+
+## Persistence
+
+- OAuth token revocations are persisted in DB table `oauth_revoked_tokens`.
+- OAuth rate-limit counters are persisted in DB table `oauth_rate_limits`.
+
+### cURL Examples
+
+Revoke token:
+
+```bash
+curl -sS -X POST "http://localhost:3010/internal/oauth/revoke" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: $INTERNAL_API_SECRET" \
+  -d '{"token":"mcp_at_..."}'
+```
+
+Introspect token:
+
+```bash
+curl -sS -X POST "http://localhost:3010/internal/oauth/introspect" \
+  -H "Content-Type: application/json" \
+  -H "X-Internal-Secret: $INTERNAL_API_SECRET" \
+  -d '{"token":"mcp_at_..."}'
+```
