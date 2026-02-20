@@ -1109,6 +1109,8 @@ function ChatMessagesArea({
   const [showNewMessage, setShowNewMessage] = useState(false);
   const lastScrollTopRef = useRef(0);
   const prevMessageCountRef = useRef(messages.length);
+  const pendingScrollRef = useRef(false);
+  const prevHeightRef = useRef(0);
 
   const isNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -1133,7 +1135,12 @@ function ChatMessagesArea({
   // Detect new messages arriving
   useEffect(() => {
     if (messages.length > prevMessageCountRef.current) {
-      if (isNearBottom()) {
+      const el = scrollContainerRef.current;
+      // When hidden (display:none), clientHeight is 0 and scrollIntoView is a
+      // no-op. Defer the scroll to the ResizeObserver recovery.
+      if (el && el.clientHeight === 0) {
+        pendingScrollRef.current = true;
+      } else if (isNearBottom()) {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
       } else {
         setShowNewMessage(true); // eslint-disable-line react-hooks/set-state-in-effect
@@ -1142,10 +1149,16 @@ function ChatMessagesArea({
     prevMessageCountRef.current = messages.length;
   }, [messages.length, isNearBottom, messagesEndRef]);
 
-  // Auto-scroll during streaming when near bottom, show pill when scrolled away
+  // Auto-scroll during streaming when near bottom, show pill when scrolled away.
+  // Watches all streaming sources: Claude main, debate Claude, Codex freeform, debate Codex.
   const wasStreamingRef = useRef(false);
+  const codexContent = codexChatPending?.content || debateCodexPending?.content;
   useEffect(() => {
-    const hasStream = !!(streamingContent || debateClaudeContent);
+    const hasStream = !!(
+      streamingContent ||
+      debateClaudeContent ||
+      codexContent
+    );
     if (hasStream) {
       if (isNearBottom()) {
         const el = scrollContainerRef.current;
@@ -1158,7 +1171,44 @@ function ChatMessagesArea({
       }
     }
     wasStreamingRef.current = hasStream;
-  }, [streamingContent, debateClaudeContent, isNearBottom]);
+  }, [streamingContent, debateClaudeContent, codexContent, isNearBottom]);
+
+  // Recovery scroll: when the container transitions from hidden (display:none)
+  // to visible, scroll to bottom if there's active streaming or new messages
+  // arrived while hidden (scrollIntoView is a no-op on hidden elements).
+  const hasAnyStreamRef = useRef(false);
+  hasAnyStreamRef.current = !!(
+    streamingContent ||
+    debateClaudeContent ||
+    codexChatPending ||
+    debateCodexPending ||
+    isWaitingForResponse
+  );
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      const { height } = entry.contentRect;
+      // Container just became visible (height 0 → positive)
+      if (
+        height > 0 &&
+        prevHeightRef.current === 0 &&
+        (hasAnyStreamRef.current || pendingScrollRef.current)
+      ) {
+        el.scrollTop = el.scrollHeight;
+        pendingScrollRef.current = false;
+      }
+      prevHeightRef.current = height;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []); // stable — uses refs for mutable state
 
   const scrollToBottomAndDismiss = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1776,9 +1826,11 @@ const CommentMessageBubble = memo(
         (contentLower.includes("no code change") &&
           contentLower.includes("response")));
 
-    // Detect if this message contains actual code changes (not just inline code)
+    // Detect if this message contains actual code changes (not just inline code).
+    // A message can have both code changes AND a pushback response (e.g., AI made
+    // changes and also drafted a PR reply) — allow both buttons to coexist.
     const hasCodeChanges =
-      !(isUser || isStreaming || isPushbackResponse) &&
+      !(isUser || isStreaming) &&
       (message.content.includes("```diff") ||
         (message.content.includes("```") &&
           (contentLower.includes("proposed change") ||

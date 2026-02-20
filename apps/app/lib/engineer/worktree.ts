@@ -9,6 +9,12 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
+/** Timeout for local-only git commands (rev-parse, checkout, diff, worktree list/prune). */
+const LOCAL_GIT_TIMEOUT = 10_000;
+
+/** Timeout for network-touching git commands (fetch, pull, rebase) and worktree add. */
+const NETWORK_GIT_TIMEOUT = 30_000;
+
 /**
  * Recursively find all .env and .env.local files in a directory.
  * Skips node_modules and hidden directories.
@@ -58,7 +64,11 @@ export function copyEnvLocalFiles(
  */
 export function fetchOrigin(repoPath: string): void {
   try {
-    execSync("git fetch origin", { cwd: repoPath, stdio: "pipe" });
+    execSync("git fetch origin", {
+      cwd: repoPath,
+      stdio: "pipe",
+      timeout: NETWORK_GIT_TIMEOUT,
+    });
   } catch {
     // Offline — continue with local state
   }
@@ -123,7 +133,11 @@ export function addWorktree(
 
   // Prune stale worktree entries (directory was removed but git still tracks it)
   try {
-    execSync("git worktree prune", { cwd: repoPath, stdio: "pipe" });
+    execSync("git worktree prune", {
+      cwd: repoPath,
+      stdio: "pipe",
+      timeout: LOCAL_GIT_TIMEOUT,
+    });
   } catch {
     // Best effort
   }
@@ -131,6 +145,7 @@ export function addWorktree(
   execSync(`git worktree add "${worktreeDir}" "${ref}"`, {
     cwd: repoPath,
     stdio: "pipe",
+    timeout: NETWORK_GIT_TIMEOUT,
   });
 
   if (savedClaudeDir) {
@@ -163,12 +178,14 @@ export function ensureWorktree(
       execSync(`git checkout "${branchName}"`, {
         cwd: worktreeDir,
         stdio: "pipe",
+        timeout: LOCAL_GIT_TIMEOUT,
       });
     } catch {
       try {
         execSync(`git checkout -B "${branchName}" "origin/${branchName}"`, {
           cwd: worktreeDir,
           stdio: "pipe",
+          timeout: LOCAL_GIT_TIMEOUT,
         });
       } catch {
         // Both named-branch checkouts failed (branch may be checked out in
@@ -177,6 +194,7 @@ export function ensureWorktree(
           execSync(`git checkout --detach "origin/${branchName}"`, {
             cwd: worktreeDir,
             stdio: "pipe",
+            timeout: LOCAL_GIT_TIMEOUT,
           });
         } catch {
           // Best effort — continue with whatever is checked out
@@ -187,19 +205,26 @@ export function ensureWorktree(
       execSync(`git pull --ff-only origin "${branchName}"`, {
         cwd: worktreeDir,
         stdio: "pipe",
+        timeout: NETWORK_GIT_TIMEOUT,
       });
     } catch {
       // ff-only failed (diverged) — try rebase if working tree is clean
       try {
-        execSync("git diff --quiet", { cwd: worktreeDir, stdio: "pipe" });
+        execSync("git diff --quiet", {
+          cwd: worktreeDir,
+          stdio: "pipe",
+          timeout: LOCAL_GIT_TIMEOUT,
+        });
         execSync("git diff --cached --quiet", {
           cwd: worktreeDir,
           stdio: "pipe",
+          timeout: LOCAL_GIT_TIMEOUT,
         });
         // Working tree is clean — safe to rebase
         execSync(`git rebase "origin/${branchName}"`, {
           cwd: worktreeDir,
           stdio: "pipe",
+          timeout: NETWORK_GIT_TIMEOUT,
         });
       } catch {
         // Dirty working tree or rebase failed — continue with current state
@@ -258,6 +283,7 @@ export function resolveWorktreeForPR(
     cwd: repoPath,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
   });
   if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
     return repoPath;
@@ -268,6 +294,7 @@ export function resolveWorktreeForPR(
     cwd: repoPath,
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
+    timeout: LOCAL_GIT_TIMEOUT,
   });
   if (listResult.status === 0) {
     const entries = parseWorktreeListLocal(listResult.stdout);

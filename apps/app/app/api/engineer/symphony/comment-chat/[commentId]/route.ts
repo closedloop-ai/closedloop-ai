@@ -202,6 +202,25 @@ function buildContextPrompt(
   // --- Workflow + examples + format + constraints (static) ---
   parts.push(WORKFLOW_PROMPT);
 
+  // --- Suggested action buttons ---
+  parts.push(
+    "\n## ACTION BUTTONS",
+    "Include suggested action buttons at the END of your message when there are logical next steps. Format:",
+    "<suggested-actions>",
+    `<action label="Short Label">Message to send when clicked</action>`,
+    "</suggested-actions>",
+    "",
+    "**Include actions when:**",
+    "- You proposed a diff and the user might want to apply it or request changes",
+    "- You composed a <pr_response> and the user might want to send it or edit it",
+    `- You want to offer follow-up investigation (e.g., "Check related tests", "Look at callers")`,
+    "",
+    "**Skip actions when:**",
+    `- You're just answering a clarifying question with no follow-up needed`,
+    "",
+    `**Guidelines:** 1-3 actions max, short labels (2-4 words), think "what does the user likely want to do next?"`
+  );
+
   // --- Dynamic suffixes: org learnings + learning capture ---
   const orgPatterns = getOrgPatternsContext();
   if (orgPatterns) {
