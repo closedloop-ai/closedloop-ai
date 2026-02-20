@@ -62,5 +62,6 @@ export const POST = withAnyAuth<IssueWithWorkstream, "/issues">(
     } catch (error) {
       return errorResponse("Failed to create issue", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

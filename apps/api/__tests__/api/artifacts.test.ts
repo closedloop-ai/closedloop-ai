@@ -14,6 +14,8 @@ let mockAuthContext: AuthContext = {
   user: { id: "test-user", organizationId: "test-org" } as any,
   clerkUserId: "clerk_test",
   clerkOrgId: "org_test",
+  authMethod: "session",
+  apiKeyScopes: undefined,
 };
 
 vi.mock("@/lib/auth/with-auth", () => ({

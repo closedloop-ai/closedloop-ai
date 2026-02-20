@@ -78,7 +78,8 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
     } catch (error) {
       return errorResponse("Failed to update artifact", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
 export const DELETE = withAuth<{ deleted: true }, "/artifacts/[id]">(

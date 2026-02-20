@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type {
   ApiKey,
+  ApiKeyScope,
   CreateApiKeyInput,
   CreateApiKeyResponse,
   VerifiedApiKeyContext,
@@ -18,10 +19,12 @@ function toApiKey(record: {
   name: string;
   keyPrefix: string;
   expiresAt: Date | null;
+  scopes: string[];
   lastUsedAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
 }): ApiKey {
+  const scopes = record.scopes as ApiKeyScope[];
   return {
     id: record.id,
     organizationId: record.organizationId,
@@ -29,6 +32,7 @@ function toApiKey(record: {
     name: record.name,
     keyPrefix: record.keyPrefix,
     expiresAt: record.expiresAt,
+    scopes,
     lastUsedAt: record.lastUsedAt,
     createdAt: record.createdAt,
     revokedAt: record.revokedAt,
@@ -54,6 +58,7 @@ export const apiKeysService = {
           organizationId,
           userId,
           name: input.name,
+          scopes: normalizeScopes(input.scopes),
           keyHash: hash,
           keyPrefix: plaintextKey.slice(0, 12),
           expiresAt: input.expiresAt ?? null,
@@ -154,6 +159,16 @@ export const apiKeysService = {
     return {
       userId: record.userId,
       organizationId: record.organizationId,
+      scopes: normalizeScopes(record.scopes as ApiKeyScope[]),
     };
   },
 };
+
+const DEFAULT_SCOPES: ApiKeyScope[] = ["read", "write", "delete", "admin"];
+
+function normalizeScopes(scopes: ApiKeyScope[] | undefined): ApiKeyScope[] {
+  if (!(scopes && scopes.length > 0)) {
+    return DEFAULT_SCOPES;
+  }
+  return [...new Set(scopes)];
+}

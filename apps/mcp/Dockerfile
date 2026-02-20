@@ -23,7 +23,8 @@ COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/ packages/api/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
-RUN pnpm install --frozen-lockfile --filter @repo/mcp...
+# --ignore-scripts: skip root postinstall (prisma generate) which needs packages/database
+RUN pnpm install --frozen-lockfile --filter @repo/mcp... --ignore-scripts
 
 # Copy MCP source code
 COPY apps/mcp/src/ apps/mcp/src/
@@ -48,7 +49,7 @@ COPY apps/mcp/package.json apps/mcp/
 COPY packages/api/package.json packages/api/
 
 # Install production-only dependencies
-RUN pnpm install --frozen-lockfile --filter @repo/mcp... --prod
+RUN pnpm install --frozen-lockfile --filter @repo/mcp... --prod --ignore-scripts
 
 # Copy compiled JavaScript from builder
 COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/

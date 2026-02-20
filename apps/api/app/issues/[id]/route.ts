@@ -47,7 +47,8 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
     } catch (error) {
       return errorResponse("Failed to update issue", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
 export const DELETE = withAuth<{ deleted: true }, "/issues/[id]">(

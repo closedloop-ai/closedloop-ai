@@ -62,5 +62,6 @@ export const POST = withAnyAuth<ExternalLink, "/external-links">(
     } catch (error) {
       return errorResponse("Failed to create external link", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

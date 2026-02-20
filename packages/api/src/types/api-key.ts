@@ -1,3 +1,6 @@
+export const API_KEY_SCOPES = ["read", "write", "delete", "admin"] as const;
+export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
+
 // API key types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
@@ -8,6 +11,7 @@ export type ApiKey = {
   name: string;
   keyPrefix: string;
   expiresAt: Date | null;
+  scopes: ApiKeyScope[];
   lastUsedAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
@@ -16,6 +20,7 @@ export type ApiKey = {
 export type CreateApiKeyInput = {
   name: string;
   expiresAt?: Date;
+  scopes?: ApiKeyScope[];
 };
 
 export type CreateApiKeyResponse = ApiKey & {
@@ -25,4 +30,5 @@ export type CreateApiKeyResponse = ApiKey & {
 export type VerifiedApiKeyContext = {
   userId: string;
   organizationId: string;
+  scopes: ApiKeyScope[];
 };

@@ -56,7 +56,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         { type: "IMPLEMENTATION_PLAN", title: "Implementation Plan" }
       );
 
-      const link = await entityLinksService.createLink({
+      const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         sourceVersion: 1,
@@ -73,6 +73,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Find bidirectional links for artifact1
       const links1 = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT"
       );
@@ -81,6 +82,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Find bidirectional links for artifact2
       const links2 = await entityLinksService.findLinks(
+        testOrgId,
         artifact2.id,
         "ARTIFACT"
       );
@@ -106,7 +108,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         { type: "IMPLEMENTATION_PLAN", title: "Plan" }
       );
 
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact2.id,
@@ -116,6 +118,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Source links for artifact2 (what produced it?) -> artifact1
       const sourceLinks = await entityLinksService.findSourceLinks(
+        testOrgId,
         artifact2.id,
         "ARTIFACT",
         "PRODUCES"
@@ -125,6 +128,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Target links for artifact1 (what did it produce?) -> artifact2
       const targetLinks = await entityLinksService.findTargetLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT",
         "PRODUCES"
@@ -134,6 +138,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Source links for artifact1 (what produced it?) -> nothing
       const noSourceLinks = await entityLinksService.findSourceLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT",
         "PRODUCES"
@@ -159,7 +164,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         externalUrl: "https://github.com/org/repo/pull/42",
       });
 
-      const link = await entityLinksService.createLink({
+      const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact.id,
         sourceType: "ARTIFACT",
         targetId: externalLink.id,
@@ -172,12 +177,14 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Verify bidirectional lookup works
       const fromArtifact = await entityLinksService.findLinks(
+        testOrgId,
         artifact.id,
         "ARTIFACT"
       );
       expect(fromArtifact).toHaveLength(1);
 
       const fromExtLink = await entityLinksService.findLinks(
+        testOrgId,
         externalLink.id,
         "EXTERNAL_LINK"
       );
@@ -197,6 +204,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       );
 
       const resolved = await entityLinksService.resolveEntity(
+        testOrgId,
         artifact.id,
         "ARTIFACT"
       );
@@ -218,6 +226,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       });
 
       const resolved = await entityLinksService.resolveEntity(
+        testOrgId,
         externalLink.id,
         "EXTERNAL_LINK"
       );
@@ -230,7 +239,9 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
   it("returns null for nonexistent entity", async () => {
     await autoRollbackTransaction(async () => {
+      const testOrgId = await createTestOrganization();
       const resolved = await entityLinksService.resolveEntity(
+        testOrgId,
         "00000000-0000-0000-0000-000000000000",
         "ARTIFACT"
       );
@@ -255,7 +266,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         { type: "IMPLEMENTATION_PLAN", title: "Plan" }
       );
 
-      const link = await entityLinksService.createLink({
+      const link = await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact2.id,
@@ -263,9 +274,10 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         linkType: "PRODUCES",
       });
 
-      await entityLinksService.deleteLink(link.id);
+      await entityLinksService.deleteLink(link.id, testOrgId);
 
       const links = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT"
       );
@@ -297,7 +309,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       );
 
       // Create links: artifact1 -> artifact2, artifact1 -> artifact3
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact2.id,
@@ -305,7 +317,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         linkType: "PRODUCES",
       });
 
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact3.id,
@@ -315,15 +327,21 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Verify links exist
       const before = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT"
       );
       expect(before).toHaveLength(2);
 
       // Delete all links for artifact1
-      await entityLinksService.deleteAllLinks(artifact1.id, "ARTIFACT");
+      await entityLinksService.deleteAllLinks(
+        testOrgId,
+        artifact1.id,
+        "ARTIFACT"
+      );
 
       const after = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT"
       );
@@ -354,7 +372,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         { type: "IMPLEMENTATION_PLAN", title: "Another Plan" }
       );
 
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact2.id,
@@ -362,7 +380,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         linkType: "PRODUCES",
       });
 
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(testOrgId, {
         sourceId: artifact1.id,
         sourceType: "ARTIFACT",
         targetId: artifact3.id,
@@ -371,11 +389,16 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
       });
 
       // All links
-      const all = await entityLinksService.findLinks(artifact1.id, "ARTIFACT");
+      const all = await entityLinksService.findLinks(
+        testOrgId,
+        artifact1.id,
+        "ARTIFACT"
+      );
       expect(all).toHaveLength(2);
 
       // Only PRODUCES links
       const produces = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT",
         "PRODUCES"
@@ -385,6 +408,7 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
 
       // Only RELATES_TO links
       const relatesTo = await entityLinksService.findLinks(
+        testOrgId,
         artifact1.id,
         "ARTIFACT",
         "RELATES_TO"

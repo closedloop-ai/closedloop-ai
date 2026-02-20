@@ -13,7 +13,7 @@ import {
 } from "./validators";
 
 export const GET = withAnyAuth<EntityLink[], "/entity-links">(
-  async (_authContext, request) => {
+  async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
       const queryParams = Object.fromEntries(searchParams.entries());
@@ -32,6 +32,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
       switch (direction) {
         case "source":
           links = await entityLinksService.findSourceLinks(
+            user.organizationId,
             entityId,
             entityType,
             linkType
@@ -39,6 +40,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
           break;
         case "target":
           links = await entityLinksService.findTargetLinks(
+            user.organizationId,
             entityId,
             entityType,
             linkType
@@ -46,6 +48,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
           break;
         default:
           links = await entityLinksService.findLinks(
+            user.organizationId,
             entityId,
             entityType,
             linkType
@@ -61,7 +64,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
 );
 
 export const POST = withAnyAuth<EntityLink, "/entity-links">(
-  async (_authContext, request) => {
+  async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
         request,
@@ -71,11 +74,15 @@ export const POST = withAnyAuth<EntityLink, "/entity-links">(
         return parseError;
       }
 
-      const link = await entityLinksService.createLink(body);
+      const link = await entityLinksService.createLink(
+        user.organizationId,
+        body
+      );
 
       return successResponse(link);
     } catch (error) {
       return errorResponse("Failed to create entity link", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

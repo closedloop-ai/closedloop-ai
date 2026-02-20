@@ -10,11 +10,28 @@ import { Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
 export const entityLinksService = {
-  createLink(input: CreateEntityLinkInput): Promise<EntityLink> {
+  async createLink(
+    organizationId: string,
+    input: CreateEntityLinkInput
+  ): Promise<EntityLink> {
+    await Promise.all([
+      assertEntityInOrganization(
+        organizationId,
+        input.sourceId,
+        input.sourceType
+      ),
+      assertEntityInOrganization(
+        organizationId,
+        input.targetId,
+        input.targetType
+      ),
+    ]);
+
     return withDb((db) =>
       db.entityLink.create({
         data: {
           ...input,
+          organizationId,
           metadata: input.metadata ?? Prisma.DbNull,
         },
       })
@@ -22,6 +39,7 @@ export const entityLinksService = {
   },
 
   findLinks(
+    organizationId: string,
     entityId: string,
     entityType: EntityType,
     linkType?: LinkType
@@ -29,6 +47,7 @@ export const entityLinksService = {
     return withDb((db) =>
       db.entityLink.findMany({
         where: {
+          organizationId,
           OR: [
             {
               sourceId: entityId,
@@ -52,6 +71,7 @@ export const entityLinksService = {
    * Returns the source side (e.g., "what produced this entity?").
    */
   findSourceLinks(
+    organizationId: string,
     entityId: string,
     entityType: EntityType,
     linkType?: LinkType
@@ -59,6 +79,7 @@ export const entityLinksService = {
     return withDb((db) =>
       db.entityLink.findMany({
         where: {
+          organizationId,
           targetId: entityId,
           targetType: entityType,
           ...(linkType ? { linkType } : {}),
@@ -73,6 +94,7 @@ export const entityLinksService = {
    * Returns the target side (e.g., "what did this entity produce?").
    */
   findTargetLinks(
+    organizationId: string,
     entityId: string,
     entityType: EntityType,
     linkType?: LinkType
@@ -80,6 +102,7 @@ export const entityLinksService = {
     return withDb((db) =>
       db.entityLink.findMany({
         where: {
+          organizationId,
           sourceId: entityId,
           sourceType: entityType,
           ...(linkType ? { linkType } : {}),
@@ -93,6 +116,7 @@ export const entityLinksService = {
    * Resolve an entity by ID and type into its full object.
    */
   async resolveEntity(
+    organizationId: string,
     id: string,
     entityType: EntityType
   ): Promise<ResolvedEntity | null> {
@@ -100,7 +124,7 @@ export const entityLinksService = {
       case "ARTIFACT": {
         const artifact = await withDb((db) =>
           db.artifact.findUnique({
-            where: { id },
+            where: { id, organizationId },
             include: {
               owner: basicUserSelect,
               approver: basicUserSelect,
@@ -115,7 +139,7 @@ export const entityLinksService = {
       case "ISSUE": {
         const issue = await withDb((db) =>
           db.issue.findUnique({
-            where: { id },
+            where: { id, organizationId },
             include: {
               assignee: basicUserSelect,
               createdBy: basicUserSelect,
@@ -129,7 +153,7 @@ export const entityLinksService = {
       }
       case "EXTERNAL_LINK": {
         const link = await withDb((db) =>
-          db.externalLink.findUnique({ where: { id } })
+          db.externalLink.findUnique({ where: { id, organizationId } })
         );
         if (!link) {
           return null;
@@ -144,20 +168,26 @@ export const entityLinksService = {
     }
   },
 
-  async deleteLink(id: string): Promise<void> {
-    await withDb((db) => db.entityLink.delete({ where: { id } }));
+  async deleteLink(id: string, organizationId: string): Promise<void> {
+    await withDb((db) =>
+      db.entityLink.delete({
+        where: { id, organizationId },
+      })
+    );
   },
 
   /**
    * Delete all links referencing an entity (as source or target).
    */
   async deleteAllLinks(
+    organizationId: string,
     entityId: string,
     entityType: EntityType
   ): Promise<void> {
     await withDb((db) =>
       db.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: entityId, sourceType: entityType },
             { targetId: entityId, targetType: entityType },
@@ -167,3 +197,37 @@ export const entityLinksService = {
     );
   },
 };
+
+async function assertEntityInOrganization(
+  organizationId: string,
+  id: string,
+  entityType: EntityType
+): Promise<void> {
+  const exists = await withDb((db) => {
+    switch (entityType) {
+      case "ARTIFACT":
+        return db.artifact.findFirst({
+          where: { id, organizationId },
+          select: { id: true },
+        });
+      case "ISSUE":
+        return db.issue.findFirst({
+          where: { id, organizationId },
+          select: { id: true },
+        });
+      case "EXTERNAL_LINK":
+        return db.externalLink.findFirst({
+          where: { id, organizationId },
+          select: { id: true },
+        });
+      default:
+        return null;
+    }
+  });
+
+  if (!exists) {
+    throw new Error(
+      `${entityType} ${id} not found in the authenticated organization`
+    );
+  }
+}

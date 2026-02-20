@@ -64,7 +64,8 @@ export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
     } catch (error) {
       return errorResponse("Failed to update workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
 export const DELETE = withAuth<{ deleted: true }, "/workstreams/[id]">(

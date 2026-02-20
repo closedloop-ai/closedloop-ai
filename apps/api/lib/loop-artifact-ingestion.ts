@@ -353,6 +353,7 @@ export async function ingestExecutionArtifacts(
     // Create EntityLink: artifact -> PRODUCES -> PR link
     await tx.entityLink.create({
       data: {
+        organizationId: artifact.organizationId,
         sourceId: loop.artifactId!,
         sourceType: "ARTIFACT",
         targetId: prLink.id,
@@ -384,6 +385,7 @@ export async function ingestExecutionArtifacts(
     // Create EntityLink: PR -> PRODUCES -> preview deployment
     await tx.entityLink.create({
       data: {
+        organizationId: artifact.organizationId,
         sourceId: prLink.id,
         sourceType: "EXTERNAL_LINK",
         targetId: previewLink.id,

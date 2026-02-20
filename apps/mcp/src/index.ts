@@ -1,3 +1,9 @@
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import { createServer } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -43,9 +49,33 @@ import { registerUpdateProject } from "./tools/update-project.js";
 import { registerUpdateWorkstream } from "./tools/update-workstream.js";
 
 const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
+const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
+const OAUTH_TOKEN_PREFIX_REGEX = /^mcp_at_/;
+const SCOPE_SPLIT_REGEX = /\s+/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
 const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26"];
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
+const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "closedloop-mcp";
+const OAUTH_TOKEN_TTL_SECONDS = Number(
+  process.env.MCP_OAUTH_TOKEN_TTL_SECONDS ?? 3600
+);
+const OAUTH_AUTH_CODE_TTL_SECONDS = Number(
+  process.env.MCP_OAUTH_AUTH_CODE_TTL_SECONDS ?? 600
+);
+const OAUTH_REDIRECT_URI_ALLOWLIST = (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const FULL_SCOPES = ["read", "write", "delete", "admin"] as const;
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required but not set`);
+  }
+  return value;
+}
+
+const OAUTH_SIGNING_SECRET = requireEnv("INTERNAL_API_SECRET");
 
 /**
  * Tool manifest for /.well-known/mcp.json Server Card.
@@ -95,7 +125,8 @@ const TOOL_NAMES = [
  */
 function createMcpServer(
   context: VerifiedApiKeyContext,
-  plaintextKey: string
+  plaintextKey: string,
+  grantedScopes: string[]
 ): McpServer {
   const server = new McpServer({
     name: "closedloop",
@@ -114,31 +145,39 @@ function createMcpServer(
   // Projects
   registerListProjects(server, apiClient);
   registerGetProject(server, apiClient);
-  registerCreateProject(server, apiClient);
-  registerUpdateProject(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateProject(server, apiClient);
+    registerUpdateProject(server, apiClient);
+  }
   registerGetProjectStatus(server, apiClient);
 
   // Artifacts
   registerListArtifacts(server, apiClient);
   registerGetArtifact(server, apiClient);
-  registerCreateArtifact(server, apiClient);
-  registerUpdateArtifact(server, apiClient);
-  registerBatchCreateArtifacts(server, apiClient);
-  registerCreateArtifactVersion(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateArtifact(server, apiClient);
+    registerUpdateArtifact(server, apiClient);
+    registerBatchCreateArtifacts(server, apiClient);
+    registerCreateArtifactVersion(server, apiClient);
+  }
   registerListArtifactVersions(server, apiClient);
   registerGetRelatedArtifacts(server, apiClient);
 
   // Issues
   registerListIssues(server, apiClient);
   registerGetIssue(server, apiClient);
-  registerCreateIssue(server, apiClient);
-  registerUpdateIssue(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateIssue(server, apiClient);
+    registerUpdateIssue(server, apiClient);
+  }
 
   // Workstreams
   registerListWorkstreams(server, apiClient);
   registerGetWorkstream(server, apiClient);
-  registerCreateWorkstream(server, apiClient);
-  registerUpdateWorkstream(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateWorkstream(server, apiClient);
+    registerUpdateWorkstream(server, apiClient);
+  }
 
   // Loops
   registerListLoops(server, apiClient);
@@ -152,11 +191,15 @@ function createMcpServer(
 
   // Entity links
   registerListEntityLinks(server, apiClient);
-  registerCreateEntityLink(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateEntityLink(server, apiClient);
+  }
 
   // External links
   registerListExternalLinks(server, apiClient);
-  registerCreateExternalLink(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerCreateExternalLink(server, apiClient);
+  }
 
   // Templates
   registerListTemplates(server, apiClient);
@@ -167,7 +210,9 @@ function createMcpServer(
   registerGetGoogleStatus(server, apiClient);
 
   // Plans
-  registerGeneratePlans(server, apiClient);
+  if (hasWriteScope(grantedScopes)) {
+    registerGeneratePlans(server, apiClient);
+  }
 
   return server;
 }
@@ -182,6 +227,136 @@ function extractApiKey(authHeader: string | null): string | null {
   }
   const match = BEARER_API_KEY_REGEX.exec(authHeader);
   return match ? match[1] : null;
+}
+
+function extractOAuthToken(authHeader: string | null): string | null {
+  if (!authHeader) {
+    return null;
+  }
+  const match = BEARER_OAUTH_TOKEN_REGEX.exec(authHeader);
+  return match ? match[1] : null;
+}
+
+type OAuthAccessTokenPayload = {
+  apiKey: string;
+  userId: string;
+  organizationId: string;
+  scopes: string[];
+  exp: number;
+  iat: number;
+};
+
+type AuthorizationCodeRecord = {
+  apiKey: string;
+  userId: string;
+  organizationId: string;
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
+  codeChallenge: string;
+  codeChallengeMethod: "S256";
+  expiresAt: number;
+};
+
+const authorizationCodes = new Map<string, AuthorizationCodeRecord>();
+
+function effectiveKeyScopes(scopes: string[]): string[] {
+  return scopes.length > 0 ? scopes : [...FULL_SCOPES];
+}
+
+function hasWriteScope(scopes: string[]): boolean {
+  return scopes.includes("write");
+}
+
+function cleanupExpiredAuthorizationCodes(): void {
+  const now = Date.now();
+  for (const [code, record] of authorizationCodes.entries()) {
+    if (record.expiresAt <= now) {
+      authorizationCodes.delete(code);
+    }
+  }
+}
+
+function b64urlEncode(input: string): string {
+  return Buffer.from(input, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function b64urlDecode(input: string): string {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(normalized + padding, "base64").toString("utf8");
+}
+
+function signTokenPayload(payloadB64: string): string {
+  return createHmac("sha256", OAUTH_SIGNING_SECRET)
+    .update(payloadB64)
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function sha256Base64Url(input: string): string {
+  return createHash("sha256")
+    .update(input, "utf8")
+    .digest("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function issueOAuthAccessToken(
+  apiKey: string,
+  context: VerifiedApiKeyContext,
+  scopes: string[]
+): string {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: OAuthAccessTokenPayload = {
+    apiKey,
+    userId: context.userId,
+    organizationId: context.organizationId,
+    scopes,
+    iat: now,
+    exp: now + OAUTH_TOKEN_TTL_SECONDS,
+  };
+  const payloadB64 = b64urlEncode(JSON.stringify(payload));
+  const signature = signTokenPayload(payloadB64);
+  return `mcp_at_${payloadB64}.${signature}`;
+}
+
+function verifyOAuthAccessToken(token: string): OAuthAccessTokenPayload | null {
+  const raw = token.replace(OAUTH_TOKEN_PREFIX_REGEX, "");
+  const parts = raw.split(".");
+  if (parts.length !== 2) {
+    return null;
+  }
+  const [payloadB64, signatureB64] = parts;
+  const expectedSig = signTokenPayload(payloadB64);
+  const actualSigBuf = Buffer.from(signatureB64, "utf8");
+  const expectedSigBuf = Buffer.from(expectedSig, "utf8");
+  if (
+    actualSigBuf.length !== expectedSigBuf.length ||
+    !timingSafeEqual(actualSigBuf, expectedSigBuf)
+  ) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(
+      b64urlDecode(payloadB64)
+    ) as OAuthAccessTokenPayload;
+    const now = Math.floor(Date.now() / 1000);
+    if (!payload.apiKey || payload.exp <= now) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 function sendJson(
@@ -206,6 +381,55 @@ async function handleReady(
     checks: { api: apiReachable ? "reachable" : "unreachable" },
     timestamp: new Date().toISOString(),
   });
+}
+
+type ResolvedMcpAuth = {
+  plaintextKey: string;
+  context: VerifiedApiKeyContext;
+  grantedScopes: string[];
+};
+
+async function resolveMcpAuth(
+  authorizationHeader: string | null
+): Promise<ResolvedMcpAuth | null> {
+  const apiKeyFromHeader = extractApiKey(authorizationHeader);
+  if (apiKeyFromHeader) {
+    const context = await verifyApiKey(apiKeyFromHeader);
+    if (!context) {
+      return null;
+    }
+    return {
+      plaintextKey: apiKeyFromHeader,
+      context,
+      grantedScopes: effectiveKeyScopes(context.scopes),
+    };
+  }
+
+  const oauthToken = extractOAuthToken(authorizationHeader);
+  if (!oauthToken) {
+    return null;
+  }
+
+  const tokenPayload = verifyOAuthAccessToken(oauthToken);
+  if (!tokenPayload) {
+    return null;
+  }
+
+  const context = await verifyApiKey(tokenPayload.apiKey);
+  if (!context) {
+    return null;
+  }
+
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const grantedScopes = tokenPayload.scopes.filter((scope) =>
+    keyScopes.includes(scope)
+  );
+
+  return {
+    plaintextKey: tokenPayload.apiKey,
+    context,
+    grantedScopes,
+  };
 }
 
 async function handleMcp(
@@ -239,28 +463,377 @@ async function handleMcp(
     return;
   }
 
-  const plaintextKey = extractApiKey(req.headers.authorization ?? null);
-  if (!plaintextKey) {
+  const auth = await resolveMcpAuth(req.headers.authorization ?? null);
+  if (!auth) {
     sendJson(res, 401, {
       error:
-        "Missing or invalid Authorization header. Expected: Bearer sk_live_...",
+        "Missing or invalid Authorization header. Expected Bearer token (sk_live_* or OAuth access token).",
     });
     return;
   }
 
-  const context = await verifyApiKey(plaintextKey);
-  if (!context) {
-    sendJson(res, 401, { error: "Invalid or expired API key" });
-    return;
-  }
-
-  const mcpServer = createMcpServer(context, plaintextKey);
+  const mcpServer = createMcpServer(
+    auth.context,
+    auth.plaintextKey,
+    auth.grantedScopes
+  );
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
 
   await mcpServer.connect(transport);
   await transport.handleRequest(req, res);
+}
+
+function parseFormUrlEncoded(body: string): Record<string, string> {
+  const params = new URLSearchParams(body);
+  return Object.fromEntries(params.entries());
+}
+
+async function readRequestBody(
+  req: import("node:http").IncomingMessage
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function redirectWithParams(
+  res: import("node:http").ServerResponse,
+  redirectUri: string,
+  params: Record<string, string | undefined>
+): void {
+  const url = new URL(redirectUri);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      url.searchParams.set(key, value);
+    }
+  }
+  res.writeHead(302, { Location: url.toString() });
+  res.end();
+}
+
+function parseScopeParam(scopeParam?: string): string[] {
+  if (!scopeParam?.trim()) {
+    return [];
+  }
+  return scopeParam.trim().split(SCOPE_SPLIT_REGEX);
+}
+
+function isValidRedirectUri(uri: string): boolean {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return false;
+    }
+
+    if (OAUTH_REDIRECT_URI_ALLOWLIST.length > 0) {
+      return OAUTH_REDIRECT_URI_ALLOWLIST.includes(uri);
+    }
+
+    return (
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]"
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function handleOAuthAuthorize(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "GET" });
+    return;
+  }
+
+  const apiKey = extractApiKey(req.headers.authorization ?? null);
+  if (!apiKey) {
+    sendJson(res, 401, {
+      error: "invalid_client",
+      error_description: "Missing Bearer API key",
+    });
+    return;
+  }
+
+  const context = await verifyApiKey(apiKey);
+  if (!context) {
+    sendJson(res, 401, {
+      error: "invalid_client",
+      error_description: "Invalid API key",
+    });
+    return;
+  }
+
+  const url = new URL(req.url ?? "", MCP_SERVER_URL);
+  const responseType = url.searchParams.get("response_type");
+  const clientId = url.searchParams.get("client_id");
+  const redirectUri = url.searchParams.get("redirect_uri");
+  const state = url.searchParams.get("state") ?? undefined;
+  const codeChallenge = url.searchParams.get("code_challenge");
+  const codeChallengeMethod = url.searchParams.get("code_challenge_method");
+  const requestedScopes = parseScopeParam(url.searchParams.get("scope") ?? "");
+
+  if (!(redirectUri && isValidRedirectUri(redirectUri))) {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "Invalid or missing redirect_uri",
+    });
+    return;
+  }
+
+  if (responseType !== "code") {
+    redirectWithParams(res, redirectUri, {
+      error: "unsupported_response_type",
+      error_description: "Only response_type=code is supported",
+      state,
+    });
+    return;
+  }
+
+  if (!clientId || clientId !== OAUTH_CLIENT_ID) {
+    redirectWithParams(res, redirectUri, {
+      error: "unauthorized_client",
+      error_description: "Invalid client_id",
+      state,
+    });
+    return;
+  }
+
+  if (!codeChallenge || codeChallengeMethod !== "S256") {
+    redirectWithParams(res, redirectUri, {
+      error: "invalid_request",
+      error_description:
+        "code_challenge and code_challenge_method=S256 are required",
+      state,
+    });
+    return;
+  }
+
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const scopes = requestedScopes.length > 0 ? requestedScopes : keyScopes;
+  const hasInvalidScope = scopes.some((scope) => !keyScopes.includes(scope));
+  if (hasInvalidScope) {
+    redirectWithParams(res, redirectUri, {
+      error: "invalid_scope",
+      error_description: "Requested scope is not granted for this key",
+      state,
+    });
+    return;
+  }
+
+  cleanupExpiredAuthorizationCodes();
+  const code = `mcp_ac_${randomBytes(24).toString("base64url")}`;
+  authorizationCodes.set(code, {
+    apiKey,
+    userId: context.userId,
+    organizationId: context.organizationId,
+    clientId,
+    redirectUri,
+    scopes,
+    codeChallenge,
+    codeChallengeMethod: "S256",
+    expiresAt: Date.now() + OAUTH_AUTH_CODE_TTL_SECONDS * 1000,
+  });
+
+  redirectWithParams(res, redirectUri, { code, state });
+}
+
+type OAuthTokenBody = Record<string, string>;
+
+function sendInvalidClient(
+  res: import("node:http").ServerResponse,
+  description: string
+): void {
+  sendJson(res, 401, {
+    error: "invalid_client",
+    error_description: description,
+  });
+}
+
+async function handleClientCredentialsGrant(
+  body: OAuthTokenBody,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (!body.client_id || body.client_id !== OAUTH_CLIENT_ID) {
+    sendInvalidClient(res, "Invalid client credentials");
+    return;
+  }
+
+  const apiKey = body.client_secret;
+  if (!apiKey?.startsWith("sk_live_")) {
+    sendInvalidClient(res, "Invalid client credentials");
+    return;
+  }
+
+  const context = await verifyApiKey(apiKey);
+  if (!context) {
+    sendInvalidClient(res, "Invalid client credentials");
+    return;
+  }
+
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const requestedScopes = parseScopeParam(body.scope);
+  const scopes = requestedScopes.length > 0 ? requestedScopes : keyScopes;
+  const hasInvalidScope = scopes.some((scope) => !keyScopes.includes(scope));
+
+  if (hasInvalidScope) {
+    sendJson(res, 400, {
+      error: "invalid_scope",
+      error_description: "Requested scope is not granted for this key",
+    });
+    return;
+  }
+
+  const accessToken = issueOAuthAccessToken(apiKey, context, scopes);
+  sendJson(res, 200, {
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: OAUTH_TOKEN_TTL_SECONDS,
+    scope: scopes.join(" "),
+  });
+}
+
+async function handleAuthorizationCodeGrant(
+  body: OAuthTokenBody,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (!body.client_id || body.client_id !== OAUTH_CLIENT_ID) {
+    sendInvalidClient(res, "Invalid client_id");
+    return;
+  }
+
+  if (!(body.code && body.redirect_uri && body.code_verifier)) {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "code, redirect_uri, and code_verifier are required",
+    });
+    return;
+  }
+
+  cleanupExpiredAuthorizationCodes();
+  const codeRecord = authorizationCodes.get(body.code);
+  if (!codeRecord) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid or expired authorization code",
+    });
+    return;
+  }
+
+  authorizationCodes.delete(body.code);
+
+  if (codeRecord.clientId !== body.client_id) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Authorization code was not issued to this client",
+    });
+    return;
+  }
+
+  if (codeRecord.redirectUri !== body.redirect_uri) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "redirect_uri does not match authorization request",
+    });
+    return;
+  }
+
+  if (codeRecord.expiresAt <= Date.now()) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Authorization code has expired",
+    });
+    return;
+  }
+
+  const derivedChallenge = sha256Base64Url(body.code_verifier);
+  if (
+    codeRecord.codeChallengeMethod !== "S256" ||
+    derivedChallenge !== codeRecord.codeChallenge
+  ) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid PKCE code_verifier",
+    });
+    return;
+  }
+
+  const context = await verifyApiKey(codeRecord.apiKey);
+  if (!context) {
+    sendJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Authorization code is no longer valid",
+    });
+    return;
+  }
+
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const codeScopes = codeRecord.scopes.filter((scope) =>
+    keyScopes.includes(scope)
+  );
+  const requestedScopes = parseScopeParam(body.scope);
+  const scopes = requestedScopes.length > 0 ? requestedScopes : codeScopes;
+  const hasInvalidScope = scopes.some((scope) => !codeScopes.includes(scope));
+
+  if (hasInvalidScope) {
+    sendJson(res, 400, {
+      error: "invalid_scope",
+      error_description: "Requested scope exceeds the authorization code grant",
+    });
+    return;
+  }
+
+  const accessToken = issueOAuthAccessToken(codeRecord.apiKey, context, scopes);
+  sendJson(res, 200, {
+    access_token: accessToken,
+    token_type: "Bearer",
+    expires_in: OAUTH_TOKEN_TTL_SECONDS,
+    scope: scopes.join(" "),
+  });
+}
+
+async function handleOAuthToken(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    return;
+  }
+
+  const contentType = req.headers["content-type"] ?? "";
+  if (!contentType.includes("application/x-www-form-urlencoded")) {
+    sendJson(res, 415, {
+      error:
+        "Unsupported Media Type. Expected: application/x-www-form-urlencoded",
+    });
+    return;
+  }
+
+  const rawBody = await readRequestBody(req);
+  const body = parseFormUrlEncoded(rawBody);
+
+  if (body.grant_type === "client_credentials") {
+    await handleClientCredentialsGrant(body, res);
+    return;
+  }
+
+  if (body.grant_type === "authorization_code") {
+    await handleAuthorizationCodeGrant(body, res);
+    return;
+  }
+
+  sendJson(res, 400, {
+    error: "unsupported_grant_type",
+    error_description:
+      "Supported grant types are client_credentials and authorization_code",
+  });
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -296,22 +869,31 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
-    // OAuth 2.1 Authorization Server Metadata (placeholder)
-    // Currently API-key-only; this advertises the future OAuth flow
+    // OAuth 2.1 Authorization Server Metadata
     if (
       req.method === "GET" &&
       req.url === "/.well-known/oauth-authorization-server"
     ) {
       sendJson(res, 200, {
         issuer: MCP_SERVER_URL,
+        authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
         token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
-        token_endpoint_auth_methods_supported: ["client_secret_post"],
-        grant_types_supported: ["client_credentials"],
-        response_types_supported: ["token"],
+        token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
+        grant_types_supported: ["authorization_code", "client_credentials"],
+        response_types_supported: ["code", "token"],
         code_challenge_methods_supported: ["S256"],
-        // Indicates API keys are used until full OAuth is implemented
-        _note: "OAuth 2.1 not yet implemented. Use Bearer sk_live_* API keys.",
+        scopes_supported: ["read", "write", "delete", "admin"],
       });
+      return;
+    }
+
+    if (req.url === "/oauth/authorize") {
+      await handleOAuthAuthorize(req, res);
+      return;
+    }
+
+    if (req.url === "/oauth/token") {
+      await handleOAuthToken(req, res);
       return;
     }
 

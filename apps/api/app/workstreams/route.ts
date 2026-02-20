@@ -85,5 +85,6 @@ export const POST = withAnyAuth<Workstream, "/workstreams">(
     } catch (error) {
       return errorResponse("Failed to create workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

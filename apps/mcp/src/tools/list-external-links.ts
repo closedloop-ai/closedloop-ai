@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -9,15 +10,36 @@ export function registerListExternalLinks(
 ): void {
   server.tool(
     "list-external-links",
-    "List external links (PRs, Figma, docs, etc.) attached to an entity",
+    "List external links filtered by workstream or project",
     {
-      entityId: z
+      workstreamId: z
         .string()
-        .describe("ID of the entity to list external links for"),
+        .optional()
+        .describe("ID of the workstream to list links for"),
+      projectId: z
+        .string()
+        .optional()
+        .describe("ID of the project to list links for"),
+      type: z
+        .nativeEnum(ExternalLinkType)
+        .optional()
+        .describe("Filter by external link type"),
     },
-    ({ entityId }) =>
+    ({ workstreamId, projectId, type }) =>
       withErrorHandling(async () => {
-        const query: Record<string, string> = { entityId };
+        if (!(workstreamId || projectId)) {
+          throw new Error("Either workstreamId or projectId is required");
+        }
+        const query: Record<string, string> = {};
+        if (workstreamId !== undefined) {
+          query.workstreamId = workstreamId;
+        }
+        if (projectId !== undefined) {
+          query.projectId = projectId;
+        }
+        if (type !== undefined) {
+          query.type = type;
+        }
 
         const links = await apiClient.get<unknown[]>("/external-links", query);
         const text =

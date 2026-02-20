@@ -66,5 +66,6 @@ export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
       }
       return errorResponse("Failed to create new version", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

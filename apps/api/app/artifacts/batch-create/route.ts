@@ -31,5 +31,6 @@ export const POST = withAnyAuth<Artifact[], "/artifacts/batch-create">(
     } catch (error) {
       return errorResponse("Failed to create artifacts", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

@@ -45,6 +45,7 @@ export async function POST(request: Request) {
     return successResponse({
       userId: context.userId,
       organizationId: context.organizationId,
+      scopes: context.scopes,
     });
   } catch (error) {
     return errorResponse("Failed to verify API key", error);

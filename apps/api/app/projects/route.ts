@@ -92,5 +92,6 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
     } catch (error) {
       return errorResponse("Failed to create project", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

@@ -72,5 +72,6 @@ export const POST = withAnyAuth<Artifact, "/artifacts">(
     } catch (error) {
       return errorResponse("Failed to create artifact", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

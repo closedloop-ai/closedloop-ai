@@ -622,6 +622,7 @@ model ExternalLink {
 
 model EntityLink {
   id            String     @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
   sourceId      String     @map("source_id") @db.Uuid
   sourceType    EntityType @map("source_type")
   sourceVersion Int?       @map("source_version")
@@ -632,6 +633,8 @@ model EntityLink {
   metadata      Json?
   createdAt     DateTime   @default(now()) @map("created_at")
 
+  @@index([organizationId, sourceId, sourceType, linkType])
+  @@index([organizationId, targetId, targetType, linkType])
   @@index([sourceId, sourceType, linkType])
   @@index([targetId, targetType, linkType])
   @@map("entity_links")
@@ -1028,6 +1031,7 @@ model ApiKey {
   organizationId String    @map("organization_id") @db.Uuid
   userId         String    @map("user_id") @db.Uuid
   name           String
+  scopes         String[]  @default([])
   keyHash        String    @unique @map("key_hash")
   keyPrefix      String    @map("key_prefix")
   expiresAt      DateTime? @map("expires_at")

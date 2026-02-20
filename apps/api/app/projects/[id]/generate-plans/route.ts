@@ -15,22 +15,25 @@ import { projectsService } from "../../../projects/service";
 export const POST = withAnyAuth<
   { triggered: number; artifactIds: string[] },
   "/projects/[id]/generate-plans"
->(async ({ user }, _, params) => {
-  try {
-    const { id } = await params;
+>(
+  async ({ user }, _, params) => {
+    try {
+      const { id } = await params;
 
-    const project = await projectsService.findById(id, user.organizationId);
-    if (!project) {
-      return notFoundResponse("Project");
+      const project = await projectsService.findById(id, user.organizationId);
+      if (!project) {
+        return notFoundResponse("Project");
+      }
+
+      const result = await artifactsService.batchRegenerateImplementationPlans(
+        id,
+        user.organizationId,
+        user.id
+      );
+      return successResponse(result);
+    } catch (error) {
+      return errorResponse("Failed to generate plans", error);
     }
-
-    const result = await artifactsService.batchRegenerateImplementationPlans(
-      id,
-      user.organizationId,
-      user.id
-    );
-    return successResponse(result);
-  } catch (error) {
-    return errorResponse("Failed to generate plans", error);
-  }
-});
+  },
+  { requiredScopes: ["write"] }
+);

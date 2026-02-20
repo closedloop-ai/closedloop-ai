@@ -75,7 +75,8 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
     } catch (error) {
       return errorResponse("Failed to update project", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
 /**
