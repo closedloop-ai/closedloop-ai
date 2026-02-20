@@ -22,6 +22,7 @@ COPY tsconfig.json ./
 COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/ packages/api/
 COPY packages/database/ packages/database/
+COPY packages/typescript-config/ packages/typescript-config/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
 RUN pnpm install --frozen-lockfile --filter @repo/mcp... --ignore-scripts
