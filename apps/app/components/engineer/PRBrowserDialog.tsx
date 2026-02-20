@@ -1652,11 +1652,8 @@ async function postReviewFindings(
 ): Promise<{ inlineFailed: number; summary: string }> {
   const providerLabel = provider === "claude" ? "Claude" : "Codex";
 
-  // Fetch PR file list to resolve short filenames to full paths (skip when structured findings have full paths)
-  const prFiles =
-    commitSha && !skipFileResolution
-      ? await fetchPRFiles(repoPath, prNumber)
-      : [];
+  // Fetch PR file list to resolve/validate file paths
+  const prFiles = commitSha ? await fetchPRFiles(repoPath, prNumber) : [];
 
   const { inline: inlineFindings, general: generalFindings } = classifyFindings(
     findings,
