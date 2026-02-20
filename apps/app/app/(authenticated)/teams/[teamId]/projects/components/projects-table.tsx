@@ -354,7 +354,6 @@ export function ProjectsTable({
                         <HexagonProgress value={project.status} />
                       </span>
                     </TooltipTrigger>
-                    </TooltipTrigger>
                     <TooltipContent>
                       % of artifacts in &quot;Complete&quot; status
                     </TooltipContent>
