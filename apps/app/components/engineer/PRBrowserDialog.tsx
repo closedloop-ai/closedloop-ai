@@ -1632,8 +1632,11 @@ function classifyFindings(
     const shortPath = stripWorktreePath(finding.file);
     if (skipFileResolution) {
       // Structured findings have full paths — still validate against PR files
-      if (prFiles.length > 0 && !resolveFullPath(shortPath, prFiles)) {
-        continue; // File not in PR, drop the finding
+      if (prFiles.length > 0) {
+        const resolved = resolveFullPath(shortPath, prFiles);
+        if (!resolved || resolved === "ambiguous") {
+          continue; // File not in PR or ambiguous — drop the finding
+        }
       }
       inline.push({ finding, fullPath: finding.file });
       continue;
