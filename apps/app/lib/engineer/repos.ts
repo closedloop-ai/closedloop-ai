@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
@@ -187,9 +187,28 @@ export function saveReposConfig(config: ReposConfig): void {
 }
 
 /**
+ * Check if candidatePath is a git worktree whose .git pointer resolves
+ * under repoPath/.git/worktrees/. This proves actual git ownership,
+ * not just a naming convention match.
+ */
+function isWorktreeOf(candidatePath: string, repoPath: string): boolean {
+  try {
+    const content = readFileSync(join(candidatePath, ".git"), "utf-8").trim();
+    const match = /^gitdir:\s*(.+)$/.exec(content);
+    if (!match) {
+      return false;
+    }
+    const gitdir = resolve(candidatePath, match[1]);
+    return gitdir.startsWith(`${join(repoPath, ".git", "worktrees")}/`);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check if a path is in the configured repos or is a worktree derived from one.
- * Worktrees live in the same parent directory and are named {repoName}-{ticketId},
- * e.g. ~/Source/symphony-alpha-pr-308 is a worktree of ~/Source/symphony-alpha.
+ * Validates worktrees by checking the .git pointer file links back to the
+ * allowed repo, not just by directory naming convention.
  */
 export function isRepoAllowed(path: string): boolean {
   const config = loadReposConfig();
@@ -201,7 +220,8 @@ export function isRepoAllowed(path: string): boolean {
     if (repoExpanded === expandedPath) {
       return true;
     }
-    // Worktree match: same parent dir, path starts with repoName + "-"
+    // Worktree match: same parent dir, name prefix filter, then validate
+    // actual git worktree linkage via .git pointer file
     const repoName = basename(repoExpanded);
     const repoParent = repoExpanded.slice(
       0,
@@ -212,7 +232,11 @@ export function isRepoAllowed(path: string): boolean {
       0,
       expandedPath.length - pathName.length
     );
-    return pathParent === repoParent && pathName.startsWith(`${repoName}-`);
+    return (
+      pathParent === repoParent &&
+      pathName.startsWith(`${repoName}-`) &&
+      isWorktreeOf(expandedPath, repoExpanded)
+    );
   });
 }
 
