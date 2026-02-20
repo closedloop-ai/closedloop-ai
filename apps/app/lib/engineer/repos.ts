@@ -131,6 +131,7 @@ export function loadReposConfig(): ReposConfig {
   ensureConfigDir();
 
   let config: ReposConfig;
+  let needsSave = false;
 
   if (existsSync(REPOS_CONFIG_PATH)) {
     try {
@@ -146,19 +147,25 @@ export function loadReposConfig(): ReposConfig {
         repos: DEFAULT_REPOS,
         settings: DEFAULT_SETTINGS,
       };
+      needsSave = true; // Overwrite corrupt file with healthy defaults
     }
   } else {
     config = {
       repos: DEFAULT_REPOS,
       settings: DEFAULT_SETTINGS,
     };
+    needsSave = true; // Create file on first load
   }
 
-  // Migrate from legacy location on every load
+  // Check for legacy file before migration (migration deletes it)
+  const hadLegacyConfig = existsSync(LEGACY_CONFIG_PATH);
   config = migrateLegacyConfig(config);
+  needsSave = needsSave || hadLegacyConfig;
 
-  // Persist so the global file always exists after first load
-  saveReposConfig(config);
+  // Only write when something actually changed
+  if (needsSave) {
+    saveReposConfig(config);
+  }
 
   return config;
 }
