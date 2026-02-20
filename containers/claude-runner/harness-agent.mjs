@@ -859,9 +859,7 @@ function writePrdFile(targetDir, contextPack) {
 
   // Fall back to the first PRD-type artifact from context refs
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type === "PRD"
-    );
+    const prdArtifact = contextPack.artifacts.find((a) => a.type === "PRD");
     if (prdArtifact?.content) {
       prdContent = prdArtifact.content;
       log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
@@ -2509,9 +2507,45 @@ async function main() {
     // non-empty dir, and we want fresh context to overwrite .claude/context/.
     writeContextPackFiles(workDir, contextPack);
 
-    // Step 3b2: Resolve the symphony run directory and write PRD/plan files.
-    const { runDir, prdPath } = prepareRunDirectory(workDir, contextPack);
-    symphonyWorkDir = runDir;
+    // Step 3b2: Resolve the symphony run directory.
+    // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
+    // - PLAN (fresh): creates a new run dir
+    // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
+    // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
+    // the same .claude/runs/TIMESTAMP/ directory across all steps.
+    symphonyWorkDir = findExistingRunDir(workDir);
+    if (symphonyWorkDir) {
+      log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
+    } else {
+      const runTs = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID())
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      symphonyWorkDir = path.join(
+        workDir,
+        ".claude",
+        "runs",
+        `${runTs}-loop-${loopSuffix}`
+      );
+      fs.mkdirSync(symphonyWorkDir, { recursive: true });
+      log("info", `Created new run directory: ${symphonyWorkDir}`);
+    }
+
+    // Write PRD to the run directory (all commands that have a prompt)
+    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
+
+    // For child loops: write the latest plan content from the context pack to
+    // plan.json in the run dir. This picks up manual edits the user made in
+    // the Liveblocks editor between runs. The context pack's primary artifact
+    // contains the latest artifact version content from the DB.
+    if (config.s3ParentStateKey) {
+      syncPlanFromContextPack(symphonyWorkDir, contextPack);
+    }
 
     // Step 3c: Command-level validation and branch hardening.
     validatePreRunInputs(config.command, contextPack);
@@ -2573,7 +2607,7 @@ async function main() {
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    await handleFatalError(err, workDir, output, startTime);
+    await handleFatalError(err, workDir, output, startTime, symphonyWorkDir);
     process.exit(1);
   }
 }

@@ -48,7 +48,7 @@ export function createResolveRoomsInfo(organizationId: string) {
       if (resolved) {
         return {
           name: resolved.name,
-          url: resolved.url,
+          url: resolved.url ?? undefined,
         } satisfies RoomInfo;
       }
 
@@ -68,6 +68,8 @@ export function createResolveRoomsInfo(organizationId: string) {
   };
 }
 
-type ResolvedRoom = RoomInfo & {
+type ResolvedRoom = {
   roomId: string;
+  name: string;
+  url: string | null;
 };
