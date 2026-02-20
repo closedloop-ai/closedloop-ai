@@ -307,6 +307,16 @@ export function resolveWorktreeForPR(
   // 3. Create a new worktree
   const repoName = basename(repoPath);
   const worktreeDir = join(worktreeParentDir, `${repoName}-pr-${prNumber}`);
-  ensureWorktree(repoPath, worktreeDir, branchName);
+  try {
+    ensureWorktree(repoPath, worktreeDir, branchName);
+  } catch (err) {
+    // A concurrent request may have won the race — if the worktree now exists, use it
+    if (!existsSync(join(worktreeDir, ".git"))) {
+      throw err;
+    }
+    console.warn(
+      "[worktree] Concurrent worktree creation detected, reusing existing"
+    );
+  }
   return worktreeDir;
 }
