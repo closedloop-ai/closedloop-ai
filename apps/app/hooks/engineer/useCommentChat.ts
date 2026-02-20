@@ -635,7 +635,7 @@ export function useCommentChat({
       markCommentAddressed(prNumber, comment.id, commitSha);
       setHasAcceptedChanges(false);
       toast.success("Comment addressed!", {
-        description: `Changes committed and pushed (${commitSha})`,
+        description: `Changes committed (${commitSha}) — pushing in background...`,
       });
       onResolved?.();
       triggerLearningsExtraction();

@@ -128,9 +128,17 @@ function spawnCodexReview(
     args.push("--base", baseBranch);
   }
 
+  const contextPreamble = [
+    "Review only. Do not make any code changes. Analyze the code and report findings.",
+    "",
+    "IMPORTANT: Before flagging any change, examine the surrounding context — commit messages, PR description, related changes in other files, and code comments — to understand WHY the change was made.",
+    "Only report findings where the issue is clearly unintentional. Skip patterns that appear to be deliberate design decisions, intentional trade-offs, or conscious simplifications.",
+    "If a change looks unusual but is consistent with the overall PR intent, do not flag it.",
+  ].join("\n");
+
   const fullInstructions = instructions
-    ? `Review only. Do not make any code changes. Analyze the code and report findings.\n\n${instructions}`
-    : undefined;
+    ? `${contextPreamble}\n\n${instructions}`
+    : contextPreamble;
   args.push(
     "-c",
     `model="${model}"`,
@@ -154,6 +162,9 @@ function spawnCodexReview(
 }
 
 const REVIEW_SYSTEM_PROMPT = [
+  "IMPORTANT: Before flagging any change, examine the surrounding context — commit messages, PR description, related changes in other files, and code comments — to understand WHY the change was made.",
+  "Only report findings where the issue is clearly unintentional. Skip patterns that appear to be deliberate design decisions, intentional trade-offs, or conscious simplifications.",
+  "If a change looks unusual but is consistent with the overall PR intent, do not flag it.",
   "At the very end of your review, include a ```json fenced code block containing ALL findings as a JSON array.",
   'Each element must have: {"severity": "critical"|"high"|"medium"|"low",',
   '"file": "full/repo-relative/path.ts", "line": <number or null>,',
