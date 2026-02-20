@@ -20,7 +20,7 @@ import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { deleteArtifactRoom } from "@/app/artifacts/room-utils";
+import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
 import { downloadArtifactFile } from "./loop-state";
 
 // ---------------------------------------------------------------------------
@@ -141,15 +141,20 @@ export async function ingestPlanArtifacts(
     db.artifact.update({
       where: { id: artifactId, organizationId },
       data: { status: "DRAFT" },
-      select: { slug: true },
+      select: { slug: true, latestVersion: true },
     })
   );
 
-  // Delete the Liveblocks room so the stale Yjs document is cleared.
-  // The next client to connect will auto-create an empty room and the
-  // seeding logic will populate it with the new version content.
+  // Update the Liveblocks room metadata with the new version number.
+  // The frontend seeding logic compares the editor content with the API
+  // content and re-seeds when they differ, so the room is preserved
+  // (keeping comments) while stale Yjs content gets replaced.
   if (updatedArtifact.slug) {
-    await deleteArtifactRoom(organizationId, updatedArtifact.slug);
+    await updateArtifactRoomVersion(
+      organizationId,
+      updatedArtifact.slug,
+      updatedArtifact.latestVersion
+    );
   }
 
   // Persist judges report if available (upsert for idempotency)
