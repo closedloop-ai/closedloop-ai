@@ -452,7 +452,7 @@ describe("apiKeysService.verifyKey", () => {
     expect(result).toEqual({
       userId: "user-verified",
       organizationId: "org-verified",
-      scopes: ["read", "write", "delete", "admin"],
+      scopes: [],
     });
   });
 

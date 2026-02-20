@@ -222,7 +222,7 @@ export const artifactsService = {
             workflowName: "symphony-dispatch",
           },
           orderBy: { createdAt: "desc" },
-          take: 100,
+          take: uniqueWorkstreamIds.length,
           select: {
             workstreamId: true,
             status: true,

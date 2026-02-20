@@ -20,6 +20,7 @@ export type ApiKey = {
 export type CreateApiKeyInput = {
   name: string;
   expiresAt?: Date;
+  // Optional for backward compatibility. Omitted scopes default to ["read"].
   scopes?: ApiKeyScope[];
 };
 

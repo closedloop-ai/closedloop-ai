@@ -9,6 +9,13 @@ import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
 
+export class EntityOrganizationMismatchError extends Error {
+  constructor(entityType: EntityType, id: string) {
+    super(`${entityType} ${id} not found in the authenticated organization`);
+    this.name = "EntityOrganizationMismatchError";
+  }
+}
+
 export const entityLinksService = {
   async createLink(
     organizationId: string,
@@ -226,8 +233,6 @@ async function assertEntityInOrganization(
   });
 
   if (!exists) {
-    throw new Error(
-      `${entityType} ${id} not found in the authenticated organization`
-    );
+    throw new EntityOrganizationMismatchError(entityType, id);
   }
 }

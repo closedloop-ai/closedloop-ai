@@ -3,10 +3,11 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
+  forbiddenResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { entityLinksService } from "./service";
+import { EntityOrganizationMismatchError, entityLinksService } from "./service";
 import {
   createEntityLinkValidator,
   findEntityLinksQueryValidator,
@@ -81,6 +82,9 @@ export const POST = withAnyAuth<EntityLink, "/entity-links">(
 
       return successResponse(link);
     } catch (error) {
+      if (error instanceof EntityOrganizationMismatchError) {
+        return forbiddenResponse();
+      }
       return errorResponse("Failed to create entity link", error);
     }
   },

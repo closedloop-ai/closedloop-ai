@@ -25,7 +25,10 @@ function toApiKey(record: {
   createdAt: Date;
   revokedAt: Date | null;
 }): ApiKey {
-  const scopes = sanitizeScopes(record.scopes);
+  const scopes = normalizeStoredScopes(
+    sanitizeScopes(record.scopes),
+    record.scopes.length
+  );
   return {
     id: record.id,
     organizationId: record.organizationId,
@@ -169,7 +172,6 @@ export const apiKeysService = {
 };
 
 const DEFAULT_CREATE_SCOPES: ApiKeyScope[] = ["read"];
-const DEFAULT_STORED_SCOPES: ApiKeyScope[] = [...API_KEY_SCOPES];
 const API_KEY_SCOPE_SET = new Set<ApiKeyScope>(API_KEY_SCOPES);
 
 function sanitizeScopes(scopes: string[] | undefined): ApiKeyScope[] {
@@ -192,11 +194,8 @@ function normalizeCreateScopes(
 
 function normalizeStoredScopes(
   scopes: ApiKeyScope[] | undefined,
-  sourceLength?: number
+  _sourceLength?: number
 ): ApiKeyScope[] {
-  if (sourceLength === 0) {
-    return DEFAULT_STORED_SCOPES;
-  }
   if (!(scopes && scopes.length > 0)) {
     return [];
   }

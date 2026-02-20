@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { EXTERNAL_LINK_TYPE_VALUES } from "../tool-enums.js";
 import { withErrorHandling } from "./tool-utils.js";
 
 export function registerCreateExternalLink(
@@ -22,7 +22,7 @@ export function registerCreateExternalLink(
         .describe("ID of the project to attach the link to"),
       externalUrl: z.string().url().describe("URL of the external link"),
       type: z
-        .nativeEnum(ExternalLinkType)
+        .enum(EXTERNAL_LINK_TYPE_VALUES)
         .describe("Type of the external link"),
       title: z.string().describe("Display title for the external link"),
     },

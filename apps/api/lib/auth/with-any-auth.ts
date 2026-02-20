@@ -38,11 +38,15 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
       : null;
 
     if (token?.startsWith("sk_live_")) {
-      const effectiveOptions =
-        options ??
-        (request.method === "GET" || request.method === "HEAD"
-          ? { requiredScopes: ["read"] as ApiKeyScope[] }
-          : { requiredScopes: ["write"] as ApiKeyScope[] });
+      let fallbackOptions: { requiredScopes: ApiKeyScope[] };
+      if (request.method === "GET" || request.method === "HEAD") {
+        fallbackOptions = { requiredScopes: ["read"] as ApiKeyScope[] };
+      } else if (request.method === "DELETE") {
+        fallbackOptions = { requiredScopes: ["delete"] as ApiKeyScope[] };
+      } else {
+        fallbackOptions = { requiredScopes: ["write"] as ApiKeyScope[] };
+      }
+      const effectiveOptions = options ?? fallbackOptions;
       return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
         request,
         context as { params: Promise<Record<string, string>> }

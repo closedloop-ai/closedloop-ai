@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { ENTITY_TYPE_VALUES, LINK_TYPE_VALUES } from "../tool-enums.js";
 import { withErrorHandling } from "./tool-utils.js";
 
 export function registerCreateEntityLink(
@@ -14,13 +14,13 @@ export function registerCreateEntityLink(
     {
       sourceId: z.string().describe("ID of the source entity"),
       sourceType: z
-        .nativeEnum(EntityType)
+        .enum(ENTITY_TYPE_VALUES)
         .describe("Type of the source entity"),
       targetId: z.string().describe("ID of the target entity"),
       targetType: z
-        .nativeEnum(EntityType)
+        .enum(ENTITY_TYPE_VALUES)
         .describe("Type of the target entity"),
-      linkType: z.nativeEnum(LinkType).describe("Type of the link"),
+      linkType: z.enum(LINK_TYPE_VALUES).describe("Type of the link"),
     },
     ({ sourceId, sourceType, targetId, targetType, linkType }) =>
       withErrorHandling(async () => {

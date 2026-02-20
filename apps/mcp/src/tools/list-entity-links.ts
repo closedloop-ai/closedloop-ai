@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { ENTITY_TYPE_VALUES, LINK_TYPE_VALUES } from "../tool-enums.js";
 import { withErrorHandling } from "./tool-utils.js";
 
 export function registerListEntityLinks(
@@ -13,9 +13,9 @@ export function registerListEntityLinks(
     "List links between entities (artifacts, issues, workstreams, etc.)",
     {
       entityId: z.string().describe("ID of the entity to list links for"),
-      entityType: z.nativeEnum(EntityType).describe("Type of the entity"),
+      entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),
       linkType: z
-        .nativeEnum(LinkType)
+        .enum(LINK_TYPE_VALUES)
         .optional()
         .describe("Filter by link type"),
       direction: z

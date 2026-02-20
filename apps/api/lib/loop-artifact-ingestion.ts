@@ -314,6 +314,29 @@ export async function ingestExecutionArtifacts(
       return;
     }
 
+    const existingPr = await tx.gitHubPullRequest.findUnique({
+      where: {
+        repositoryId_number: {
+          repositoryId: repository.id,
+          number: prNumber,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (existingPr) {
+      log.info(
+        "[loop-artifact-ingestion] PR already exists; skipping replayed execution artifact creates",
+        {
+          loopId: loop.id,
+          repositoryId: repository.id,
+          prNumber,
+          pullRequestId: existingPr.id,
+        }
+      );
+      return;
+    }
+
     // Create GitHubPullRequest record
     await tx.gitHubPullRequest.create({
       data: {

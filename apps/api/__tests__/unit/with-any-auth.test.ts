@@ -61,6 +61,18 @@ describe("withAnyAuth", () => {
     });
   });
 
+  it("defaults api-key DELETE requests to required delete scope", async () => {
+    const wrapped = withAnyAuth(async () => ({}) as never);
+    await wrapped(
+      createRequest("DELETE", "Bearer sk_live_test") as never,
+      { params: Promise.resolve({}) } as never
+    );
+
+    expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
+      requiredScopes: ["delete"],
+    });
+  });
+
   it("preserves explicit scope requirements when provided", async () => {
     const wrapped = withAnyAuth(async () => ({}) as never, {
       requiredScopes: ["write"],
