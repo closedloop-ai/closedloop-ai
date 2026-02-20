@@ -6,6 +6,7 @@ import type {
   CreateApiKeyResponse,
   VerifiedApiKeyContext,
 } from "@repo/api/src/types/api-key";
+import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
@@ -24,7 +25,7 @@ function toApiKey(record: {
   createdAt: Date;
   revokedAt: Date | null;
 }): ApiKey {
-  const scopes = record.scopes as ApiKeyScope[];
+  const scopes = sanitizeScopes(record.scopes);
   return {
     id: record.id,
     organizationId: record.organizationId,
@@ -58,9 +59,9 @@ export const apiKeysService = {
           organizationId,
           userId,
           name: input.name,
-          scopes: normalizeScopes(input.scopes),
+          scopes: normalizeCreateScopes(input.scopes),
           keyHash: hash,
-          keyPrefix: plaintextKey.slice(0, 12),
+          keyPrefix: "sk_live_",
           expiresAt: input.expiresAt ?? null,
         },
       })
@@ -159,16 +160,45 @@ export const apiKeysService = {
     return {
       userId: record.userId,
       organizationId: record.organizationId,
-      scopes: normalizeScopes(record.scopes as ApiKeyScope[]),
+      scopes: normalizeStoredScopes(
+        sanitizeScopes(record.scopes),
+        record.scopes.length
+      ),
     };
   },
 };
 
-const DEFAULT_SCOPES: ApiKeyScope[] = ["read", "write", "delete", "admin"];
+const DEFAULT_CREATE_SCOPES: ApiKeyScope[] = ["read"];
+const DEFAULT_STORED_SCOPES: ApiKeyScope[] = [...API_KEY_SCOPES];
+const API_KEY_SCOPE_SET = new Set<ApiKeyScope>(API_KEY_SCOPES);
 
-function normalizeScopes(scopes: ApiKeyScope[] | undefined): ApiKeyScope[] {
+function sanitizeScopes(scopes: string[] | undefined): ApiKeyScope[] {
+  if (!Array.isArray(scopes)) {
+    return [];
+  }
+  return scopes.filter((scope): scope is ApiKeyScope =>
+    API_KEY_SCOPE_SET.has(scope as ApiKeyScope)
+  );
+}
+
+function normalizeCreateScopes(
+  scopes: ApiKeyScope[] | undefined
+): ApiKeyScope[] {
   if (!(scopes && scopes.length > 0)) {
-    return DEFAULT_SCOPES;
+    return DEFAULT_CREATE_SCOPES;
+  }
+  return [...new Set(scopes)];
+}
+
+function normalizeStoredScopes(
+  scopes: ApiKeyScope[] | undefined,
+  sourceLength?: number
+): ApiKeyScope[] {
+  if (sourceLength === 0) {
+    return DEFAULT_STORED_SCOPES;
+  }
+  if (!(scopes && scopes.length > 0)) {
+    return [];
   }
   return [...new Set(scopes)];
 }

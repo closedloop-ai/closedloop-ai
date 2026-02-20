@@ -7,7 +7,6 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { createServer } from "node:http";
-import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -17,6 +16,7 @@ import {
 } from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
 import {
+  type ApiClient,
   checkApiReachable,
   createApiClient,
   verifyApiKey,
@@ -164,6 +164,8 @@ const INTERNAL_AUTH_SECRET =
   process.env.MCP_INTERNAL_AUTH_SECRET ?? requireEnv("INTERNAL_API_SECRET");
 const OAUTH_SIGNING_SECRET =
   process.env.MCP_OAUTH_SIGNING_SECRET ?? requireEnv("INTERNAL_API_SECRET");
+const OAUTH_ENCRYPTION_SECRET =
+  process.env.MCP_OAUTH_ENCRYPTION_SECRET ?? OAUTH_SIGNING_SECRET;
 const OAUTH_PREVIOUS_SIGNING_SECRETS = (
   process.env.MCP_OAUTH_SIGNING_SECRETS ?? ""
 )
@@ -178,11 +180,15 @@ type OAuthSigningKeyEntry = {
 };
 
 function createSigningKeyEntry(secret: string): OAuthSigningKeyEntry {
+  const kid = createHash("sha256")
+    .update(secret, "utf8")
+    .digest("hex")
+    .slice(0, 16);
   return {
-    kid: createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 16),
+    kid,
     signingSecret: secret,
     encryptionKey: createHash("sha256")
-      .update(`${secret}:api-key-encryption`, "utf8")
+      .update(`${OAUTH_ENCRYPTION_SECRET}:${kid}:api-key-encryption`, "utf8")
       .digest(),
   };
 }
@@ -195,48 +201,122 @@ const OAUTH_CURRENT_SIGNING_KEY = OAUTH_SIGNING_KEYS[0];
 const OAUTH_SIGNING_KEY_BY_KID = new Map(
   OAUTH_SIGNING_KEYS.map((entry) => [entry.kid, entry] as const)
 );
+const API_KEY_SCOPE_SET = new Set<string>(API_KEY_SCOPES);
+const OAUTH_NO_STORE_HEADERS = {
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+};
+
+type ToolRegistration = {
+  name: string;
+  register: (server: McpServer, apiClient: ApiClient) => void;
+  requiresWrite?: boolean;
+};
+
+const TOOL_REGISTRATIONS: ToolRegistration[] = [
+  {
+    name: "ping",
+    register: (server) => {
+      server.tool("ping", "Check MCP server connectivity", {}, () =>
+        Promise.resolve({
+          content: [{ type: "text" as const, text: "pong" }],
+        })
+      );
+    },
+  },
+  { name: "list-projects", register: registerListProjects },
+  { name: "get-project", register: registerGetProject },
+  {
+    name: "create-project",
+    register: registerCreateProject,
+    requiresWrite: true,
+  },
+  {
+    name: "update-project",
+    register: registerUpdateProject,
+    requiresWrite: true,
+  },
+  { name: "get-project-status", register: registerGetProjectStatus },
+  { name: "list-artifacts", register: registerListArtifacts },
+  { name: "get-artifact", register: registerGetArtifact },
+  {
+    name: "create-artifact",
+    register: registerCreateArtifact,
+    requiresWrite: true,
+  },
+  {
+    name: "update-artifact",
+    register: registerUpdateArtifact,
+    requiresWrite: true,
+  },
+  {
+    name: "batch-create-artifacts",
+    register: registerBatchCreateArtifacts,
+    requiresWrite: true,
+  },
+  {
+    name: "create-artifact-version",
+    register: registerCreateArtifactVersion,
+    requiresWrite: true,
+  },
+  { name: "list-artifact-versions", register: registerListArtifactVersions },
+  { name: "get-related-artifacts", register: registerGetRelatedArtifacts },
+  { name: "list-issues", register: registerListIssues },
+  { name: "get-issue", register: registerGetIssue },
+  {
+    name: "create-issue",
+    register: registerCreateIssue,
+    requiresWrite: true,
+  },
+  {
+    name: "update-issue",
+    register: registerUpdateIssue,
+    requiresWrite: true,
+  },
+  { name: "list-workstreams", register: registerListWorkstreams },
+  { name: "get-workstream", register: registerGetWorkstream },
+  {
+    name: "create-workstream",
+    register: registerCreateWorkstream,
+    requiresWrite: true,
+  },
+  {
+    name: "update-workstream",
+    register: registerUpdateWorkstream,
+    requiresWrite: true,
+  },
+  { name: "list-loops", register: registerListLoops },
+  { name: "get-loop", register: registerGetLoop },
+  { name: "list-users", register: registerListUsers },
+  { name: "get-dashboard-stats", register: registerGetDashboardStats },
+  { name: "list-entity-links", register: registerListEntityLinks },
+  {
+    name: "create-entity-link",
+    register: registerCreateEntityLink,
+    requiresWrite: true,
+  },
+  { name: "list-external-links", register: registerListExternalLinks },
+  {
+    name: "create-external-link",
+    register: registerCreateExternalLink,
+    requiresWrite: true,
+  },
+  { name: "list-templates", register: registerListTemplates },
+  { name: "get-github-status", register: registerGetGithubStatus },
+  { name: "get-linear-status", register: registerGetLinearStatus },
+  { name: "get-google-status", register: registerGetGoogleStatus },
+  {
+    name: "generate-plans",
+    register: registerGeneratePlans,
+    requiresWrite: true,
+  },
+];
 
 /**
  * Tool manifest for /.well-known/mcp.json Server Card.
  * Built once at startup from the tool registration list.
  */
-const TOOL_NAMES = [
-  "ping",
-  "list-projects",
-  "get-project",
-  "create-project",
-  "update-project",
-  "get-project-status",
-  "list-artifacts",
-  "get-artifact",
-  "create-artifact",
-  "update-artifact",
-  "batch-create-artifacts",
-  "create-artifact-version",
-  "list-artifact-versions",
-  "get-related-artifacts",
-  "list-issues",
-  "get-issue",
-  "create-issue",
-  "update-issue",
-  "list-workstreams",
-  "get-workstream",
-  "create-workstream",
-  "update-workstream",
-  "list-loops",
-  "get-loop",
-  "list-users",
-  "get-dashboard-stats",
-  "list-entity-links",
-  "create-entity-link",
-  "list-external-links",
-  "create-external-link",
-  "list-templates",
-  "get-github-status",
-  "get-linear-status",
-  "get-google-status",
-  "generate-plans",
-];
+const TOOL_NAMES = TOOL_REGISTRATIONS.map((entry) => entry.name);
 
 /**
  * Create a new MCP server instance with all tools registered.
@@ -253,84 +333,13 @@ function createMcpServer(
   });
 
   const apiClient = createApiClient(context, plaintextKey);
+  const allowWriteTools = hasWriteScope(grantedScopes);
 
-  // Connectivity check
-  server.tool("ping", "Check MCP server connectivity", {}, () => {
-    return Promise.resolve({
-      content: [{ type: "text" as const, text: "pong" }],
-    });
-  });
-
-  // Projects
-  registerListProjects(server, apiClient);
-  registerGetProject(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateProject(server, apiClient);
-    registerUpdateProject(server, apiClient);
-  }
-  registerGetProjectStatus(server, apiClient);
-
-  // Artifacts
-  registerListArtifacts(server, apiClient);
-  registerGetArtifact(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateArtifact(server, apiClient);
-    registerUpdateArtifact(server, apiClient);
-    registerBatchCreateArtifacts(server, apiClient);
-    registerCreateArtifactVersion(server, apiClient);
-  }
-  registerListArtifactVersions(server, apiClient);
-  registerGetRelatedArtifacts(server, apiClient);
-
-  // Issues
-  registerListIssues(server, apiClient);
-  registerGetIssue(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateIssue(server, apiClient);
-    registerUpdateIssue(server, apiClient);
-  }
-
-  // Workstreams
-  registerListWorkstreams(server, apiClient);
-  registerGetWorkstream(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateWorkstream(server, apiClient);
-    registerUpdateWorkstream(server, apiClient);
-  }
-
-  // Loops
-  registerListLoops(server, apiClient);
-  registerGetLoop(server, apiClient);
-
-  // Users
-  registerListUsers(server, apiClient);
-
-  // Dashboard
-  registerGetDashboardStats(server, apiClient);
-
-  // Entity links
-  registerListEntityLinks(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateEntityLink(server, apiClient);
-  }
-
-  // External links
-  registerListExternalLinks(server, apiClient);
-  if (hasWriteScope(grantedScopes)) {
-    registerCreateExternalLink(server, apiClient);
-  }
-
-  // Templates
-  registerListTemplates(server, apiClient);
-
-  // Integrations
-  registerGetGithubStatus(server, apiClient);
-  registerGetLinearStatus(server, apiClient);
-  registerGetGoogleStatus(server, apiClient);
-
-  // Plans
-  if (hasWriteScope(grantedScopes)) {
-    registerGeneratePlans(server, apiClient);
+  for (const registration of TOOL_REGISTRATIONS) {
+    if (registration.requiresWrite && !allowWriteTools) {
+      continue;
+    }
+    registration.register(server, apiClient);
   }
 
   return server;
@@ -388,6 +397,7 @@ function hasWriteScope(scopes: string[]): boolean {
 }
 
 let lastOAuthCleanupMs = 0;
+const OAUTH_CLEANUP_LOCK_ID = 8_173_421;
 
 async function maybeCleanupOAuthSecurityTables(): Promise<void> {
   const nowMs = Date.now();
@@ -395,7 +405,39 @@ async function maybeCleanupOAuthSecurityTables(): Promise<void> {
     return;
   }
 
+  await withDb(async (db) => {
+    const client = db as unknown as {
+      $queryRawUnsafe?: (
+        query: string,
+        ...values: unknown[]
+      ) => Promise<unknown>;
+    };
+    if (!client.$queryRawUnsafe) {
+      await runOAuthCleanupQueries(nowMs);
+      return;
+    }
+
+    const lockRows = (await client.$queryRawUnsafe(
+      "SELECT pg_try_advisory_lock($1) AS locked",
+      OAUTH_CLEANUP_LOCK_ID
+    )) as Array<{ locked: boolean }> | undefined;
+    if (!lockRows?.[0]?.locked) {
+      return;
+    }
+
+    try {
+      await runOAuthCleanupQueries(nowMs);
+    } finally {
+      await client.$queryRawUnsafe(
+        "SELECT pg_advisory_unlock($1)",
+        OAUTH_CLEANUP_LOCK_ID
+      );
+    }
+  });
   lastOAuthCleanupMs = nowMs;
+}
+
+async function runOAuthCleanupQueries(nowMs: number): Promise<void> {
   await Promise.allSettled([
     cleanupExpiredAuthorizationCodes(),
     cleanupExpiredRevokedTokens(),
@@ -656,9 +698,10 @@ function sha256Base64Url(input: string): string {
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a, "utf8");
-  const bBuf = Buffer.from(b, "utf8");
-  return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
+  const digestKey = "mcp-constant-time-compare";
+  const aDigest = createHmac("sha256", digestKey).update(a, "utf8").digest();
+  const bDigest = createHmac("sha256", digestKey).update(b, "utf8").digest();
+  return timingSafeEqual(aDigest, bDigest);
 }
 
 function encryptApiKey(apiKey: string, keyId: string): string {
@@ -774,6 +817,9 @@ function parseSignedOAuthAccessToken(
       !payload.apiKeyCiphertext ||
       typeof payload.exp !== "number" ||
       !Array.isArray(payload.scopes) ||
+      !payload.scopes.every(
+        (scope) => typeof scope === "string" && API_KEY_SCOPE_SET.has(scope)
+      ) ||
       typeof payload.userId !== "string" ||
       typeof payload.organizationId !== "string" ||
       payload.exp <= now
@@ -818,6 +864,18 @@ function sendJson(
   res.end(JSON.stringify(body));
 }
 
+function sendOAuthJson(
+  res: import("node:http").ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: Record<string, string>
+): void {
+  sendJson(res, status, body, {
+    ...OAUTH_NO_STORE_HEADERS,
+    ...extraHeaders,
+  });
+}
+
 function isInternalSecretValid(
   req: import("node:http").IncomingMessage
 ): boolean {
@@ -826,13 +884,6 @@ function isInternalSecretValid(
     typeof provided === "string" &&
     timingSafeStringEqual(provided, INTERNAL_AUTH_SECRET)
   );
-}
-
-function createBufferedIncomingRequest(
-  req: import("node:http").IncomingMessage,
-  body: string
-): import("node:http").IncomingMessage {
-  return Object.assign(Readable.from([body], { encoding: "utf8" }), req);
 }
 
 function isInternalRequestAuthorized(
@@ -1063,7 +1114,7 @@ async function handleMcp(
     }
     throw error;
   }
-  const bufferedReq = createBufferedIncomingRequest(req, rawBody);
+  const parsedBody = JSON.parse(rawBody);
 
   const acquiredServer = acquireMcpServer(auth);
   const transport = new StreamableHTTPServerTransport({
@@ -1072,7 +1123,7 @@ async function handleMcp(
 
   try {
     await acquiredServer.server.connect(transport);
-    await transport.handleRequest(bufferedReq, res);
+    await transport.handleRequest(req, res, parsedBody);
   } finally {
     await acquiredServer.server.close();
     acquiredServer.release();
@@ -1290,7 +1341,7 @@ function sendInvalidClient(
   res: import("node:http").ServerResponse,
   description: string
 ): void {
-  sendJson(res, 401, {
+  sendOAuthJson(res, 401, {
     error: "invalid_client",
     error_description: description,
   });
@@ -1323,7 +1374,7 @@ async function handleClientCredentialsGrant(
   const hasInvalidScope = scopes.some((scope) => !keyScopes.includes(scope));
 
   if (hasInvalidScope) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_scope",
       error_description: "Requested scope is not granted for this key",
     });
@@ -1331,7 +1382,7 @@ async function handleClientCredentialsGrant(
   }
 
   const accessToken = issueOAuthAccessToken(apiKey, context, scopes);
-  sendJson(res, 200, {
+  sendOAuthJson(res, 200, {
     access_token: accessToken,
     token_type: "Bearer",
     expires_in: OAUTH_TOKEN_TTL_SECONDS,
@@ -1349,7 +1400,7 @@ async function handleAuthorizationCodeGrant(
   }
 
   if (!(body.code && body.redirect_uri && body.code_verifier)) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_request",
       error_description: "code, redirect_uri, and code_verifier are required",
     });
@@ -1358,7 +1409,7 @@ async function handleAuthorizationCodeGrant(
 
   const codeRecord = await consumeAuthorizationCode(body.code);
   if (!codeRecord) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid or expired authorization code",
     });
@@ -1366,7 +1417,7 @@ async function handleAuthorizationCodeGrant(
   }
 
   if (codeRecord.clientId !== body.client_id) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code was not issued to this client",
     });
@@ -1374,7 +1425,7 @@ async function handleAuthorizationCodeGrant(
   }
 
   if (codeRecord.redirectUri !== body.redirect_uri) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "redirect_uri does not match authorization request",
     });
@@ -1386,7 +1437,7 @@ async function handleAuthorizationCodeGrant(
     codeRecord.codeChallengeMethod !== "S256" ||
     !timingSafeStringEqual(derivedChallenge, codeRecord.codeChallenge)
   ) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid PKCE code_verifier",
     });
@@ -1398,7 +1449,7 @@ async function handleAuthorizationCodeGrant(
     codeRecord.keyId
   );
   if (!codeApiKey) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code is no longer valid",
     });
@@ -1407,7 +1458,7 @@ async function handleAuthorizationCodeGrant(
 
   const context = await verifyApiKey(codeApiKey);
   if (!context) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code is no longer valid",
     });
@@ -1423,7 +1474,7 @@ async function handleAuthorizationCodeGrant(
   const hasInvalidScope = scopes.some((scope) => !codeScopes.includes(scope));
 
   if (hasInvalidScope) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_scope",
       error_description: "Requested scope exceeds the authorization code grant",
     });
@@ -1431,7 +1482,7 @@ async function handleAuthorizationCodeGrant(
   }
 
   const accessToken = issueOAuthAccessToken(codeApiKey, context, scopes);
-  sendJson(res, 200, {
+  sendOAuthJson(res, 200, {
     access_token: accessToken,
     token_type: "Bearer",
     expires_in: OAUTH_TOKEN_TTL_SECONDS,
@@ -1444,14 +1495,14 @@ async function handleOAuthToken(
   res: import("node:http").ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
     return;
   }
 
   await maybeCleanupOAuthSecurityTables();
   const tokenRateLimit = await consumeOAuthRateLimit(req, "token");
   if (tokenRateLimit.limited) {
-    sendJson(
+    sendOAuthJson(
       res,
       429,
       { error: "rate_limited", error_description: "Too many token requests" },
@@ -1462,7 +1513,7 @@ async function handleOAuthToken(
 
   const contentType = req.headers["content-type"] ?? "";
   if (!contentType.includes("application/x-www-form-urlencoded")) {
-    sendJson(res, 415, {
+    sendOAuthJson(res, 415, {
       error:
         "Unsupported Media Type. Expected: application/x-www-form-urlencoded",
     });
@@ -1474,7 +1525,7 @@ async function handleOAuthToken(
     rawBody = await readRequestBody(req);
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
-      sendJson(res, 413, {
+      sendOAuthJson(res, 413, {
         error: "payload_too_large",
         error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
       });
@@ -1494,7 +1545,7 @@ async function handleOAuthToken(
     return;
   }
 
-  sendJson(res, 400, {
+  sendOAuthJson(res, 400, {
     error: "unsupported_grant_type",
     error_description:
       "Supported grant types are client_credentials and authorization_code",
@@ -1510,7 +1561,7 @@ async function handleOAuthIntrospect(
   res: import("node:http").ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
     return;
   }
 
@@ -1525,7 +1576,7 @@ async function handleOAuthIntrospect(
     body = await readJsonBody<InternalTokenBody>(req);
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
-      sendJson(res, 413, {
+      sendOAuthJson(res, 413, {
         error: "payload_too_large",
         error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
       });
@@ -1534,7 +1585,7 @@ async function handleOAuthIntrospect(
     throw error;
   }
   if (!body?.token?.startsWith("mcp_at_")) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_request",
       error_description: "JSON body with token is required",
     });
@@ -1543,23 +1594,23 @@ async function handleOAuthIntrospect(
 
   const payload = parseSignedOAuthAccessToken(body.token);
   if (!payload || (await isAccessTokenRevoked(body.token))) {
-    sendJson(res, 200, { active: false });
+    sendOAuthJson(res, 200, { active: false });
     return;
   }
 
   const plaintextKey = decryptApiKey(payload.apiKeyCiphertext, payload.kid);
   if (!plaintextKey) {
-    sendJson(res, 200, { active: false });
+    sendOAuthJson(res, 200, { active: false });
     return;
   }
 
   const keyContext = await verifyApiKey(plaintextKey);
   if (!keyContext) {
-    sendJson(res, 200, { active: false });
+    sendOAuthJson(res, 200, { active: false });
     return;
   }
 
-  sendJson(res, 200, {
+  sendOAuthJson(res, 200, {
     active: true,
     token_type: "Bearer",
     scope: payload.scopes.join(" "),
@@ -1575,7 +1626,7 @@ async function handleOAuthRevoke(
   res: import("node:http").ServerResponse
 ): Promise<void> {
   if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    sendOAuthJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
     return;
   }
 
@@ -1590,7 +1641,7 @@ async function handleOAuthRevoke(
     body = await readJsonBody<InternalTokenBody>(req);
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
-      sendJson(res, 413, {
+      sendOAuthJson(res, 413, {
         error: "payload_too_large",
         error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
       });
@@ -1599,7 +1650,7 @@ async function handleOAuthRevoke(
     throw error;
   }
   if (!body?.token?.startsWith("mcp_at_")) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_request",
       error_description: "JSON body with token is required",
     });
@@ -1608,7 +1659,7 @@ async function handleOAuthRevoke(
 
   const payload = parseSignedOAuthAccessToken(body.token);
   if (!payload) {
-    sendJson(res, 400, {
+    sendOAuthJson(res, 400, {
       error: "invalid_request",
       error_description: "Invalid token",
     });
@@ -1616,7 +1667,7 @@ async function handleOAuthRevoke(
   }
 
   await revokeAccessToken(body.token, payload.exp * 1000);
-  sendJson(res, 200, {
+  sendOAuthJson(res, 200, {
     revoked: true,
     exp: payload.exp,
   });

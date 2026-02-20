@@ -13,23 +13,36 @@ export function registerCreateArtifact(
 ): void {
   server.tool(
     "create-artifact",
-    "Create a new artifact with the given title, type, project, and content",
+    "Create a new artifact with the given title, type, content, and project/workstream association",
     {
       title: z.string().describe("Title of the artifact"),
       type: z
         .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
         .describe("Type of the artifact"),
-      projectId: z.string().describe("ID of the project to associate with"),
+      projectId: z
+        .string()
+        .optional()
+        .describe("ID of the project to associate with"),
+      workstreamId: z
+        .string()
+        .optional()
+        .describe("ID of the workstream to associate with"),
       content: z.string().describe("Content/body of the artifact"),
     },
-    ({ title, type, projectId, content }) =>
+    ({ title, type, projectId, workstreamId, content }) =>
       withErrorHandling(async () => {
-        const artifact = await apiClient.post<unknown>("/artifacts", {
+        const body: Record<string, string> = {
           title,
           type,
-          projectId,
           content,
-        });
+        };
+        if (projectId !== undefined) {
+          body.projectId = projectId;
+        }
+        if (workstreamId !== undefined) {
+          body.workstreamId = workstreamId;
+        }
+        const artifact = await apiClient.post<unknown>("/artifacts", body);
         return {
           content: [
             {

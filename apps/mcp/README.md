@@ -9,7 +9,24 @@
 ## Required Environment Variables
 
 - `INTERNAL_API_SECRET`
-  - Used to sign and verify MCP OAuth access tokens.
+  - Backward-compat fallback secret.
+  - If `MCP_OAUTH_SIGNING_SECRET` or `MCP_INTERNAL_AUTH_SECRET` are not set, they fall back to this value.
+
+## Security Secrets
+
+- `MCP_OAUTH_SIGNING_SECRET` (recommended)
+  - Primary secret used to sign/verify MCP OAuth access tokens.
+  - If unset, falls back to `INTERNAL_API_SECRET`.
+- `MCP_OAUTH_ENCRYPTION_SECRET` (recommended)
+  - Secret used to derive the API-key encryption key embedded in OAuth tokens.
+  - Keep distinct from signing secret to reduce blast radius.
+  - If unset, falls back to `MCP_OAUTH_SIGNING_SECRET`.
+- `MCP_OAUTH_SIGNING_SECRETS` (optional, comma-separated)
+  - Previous signing secrets accepted for verification during key rotation.
+  - Example: `oldsecret1,oldsecret2`.
+- `MCP_INTERNAL_AUTH_SECRET` (recommended)
+  - Secret required in `X-Internal-Secret` for internal introspection/revocation endpoints.
+  - If unset, falls back to `INTERNAL_API_SECRET`.
 
 ## OAuth Configuration
 
@@ -27,9 +44,21 @@
   - Defaults to `120` requests per window per client IP.
 - `MCP_OAUTH_RATE_LIMIT_TOKEN_MAX` (optional)
   - Defaults to `60` requests per window per client IP.
+- `MCP_OAUTH_CLEANUP_INTERVAL_MS` (optional)
+  - Defaults to `300000` (5 minutes).
+  - Controls background cleanup cadence for expired OAuth security records.
 - `MCP_INTERNAL_ALLOWED_IPS` (comma-separated, exact-match allowlist)
   - Required in stage/prod.
   - Example: `10.0.0.10,10.0.0.11`
+- `MCP_TRUST_PROXY` (optional)
+  - When `true`/`1`/`yes`, trust `X-Forwarded-For` for client IP extraction.
+  - Default is `false` (use direct socket remote address).
+- `MCP_MAX_REQUEST_BODY_BYTES` (optional)
+  - Defaults to `1048576` (1MB).
+  - Applied to OAuth/internal endpoints and `/mcp` request buffering.
+- `MCP_SERVER_CACHE_TTL_MS` (optional)
+  - Defaults to `60000`.
+  - Controls how long idle cached MCP server instances are retained.
 
 ## Redirect URI Policy
 
@@ -53,7 +82,8 @@ For internal endpoints, non-local environments must also set:
 
 ## Internal Security Endpoints
 
-These endpoints require `X-Internal-Secret: <INTERNAL_API_SECRET>`.
+These endpoints require `X-Internal-Secret: <MCP_INTERNAL_AUTH_SECRET>`.
+If `MCP_INTERNAL_AUTH_SECRET` is unset, fallback is `INTERNAL_API_SECRET`.
 They are also IP-filtered by `MCP_INTERNAL_ALLOWED_IPS` in non-local environments.
 
 - `POST /internal/oauth/introspect`
@@ -75,7 +105,7 @@ Revoke token:
 ```bash
 curl -sS -X POST "http://localhost:3010/internal/oauth/revoke" \
   -H "Content-Type: application/json" \
-  -H "X-Internal-Secret: $INTERNAL_API_SECRET" \
+  -H "X-Internal-Secret: $MCP_INTERNAL_AUTH_SECRET" \
   -d '{"token":"mcp_at_..."}'
 ```
 
@@ -84,6 +114,6 @@ Introspect token:
 ```bash
 curl -sS -X POST "http://localhost:3010/internal/oauth/introspect" \
   -H "Content-Type: application/json" \
-  -H "X-Internal-Secret: $INTERNAL_API_SECRET" \
+  -H "X-Internal-Secret: $MCP_INTERNAL_AUTH_SECRET" \
   -d '{"token":"mcp_at_..."}'
 ```

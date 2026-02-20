@@ -51,9 +51,17 @@ describe("hasApiKeyScopes", () => {
     expect(allowed).toBe(false);
   });
 
-  it("treats legacy api keys without scopes as full-access", () => {
+  it("denies access when api key scopes are empty", () => {
     const allowed = hasApiKeyScopes(
       makeContext({ authMethod: "api_key", apiKeyScopes: [] }),
+      ["delete", "admin"]
+    );
+    expect(allowed).toBe(false);
+  });
+
+  it("uses full-access fallback only when scopes are undefined", () => {
+    const allowed = hasApiKeyScopes(
+      makeContext({ authMethod: "api_key", apiKeyScopes: undefined }),
       ["delete", "admin"]
     );
     expect(allowed).toBe(true);

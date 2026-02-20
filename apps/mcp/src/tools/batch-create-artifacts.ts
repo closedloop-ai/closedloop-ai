@@ -8,7 +8,14 @@ const artifactItemSchema = z.object({
   type: z
     .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
     .describe("Type of the artifact"),
-  projectId: z.string().describe("ID of the project to associate with"),
+  projectId: z
+    .string()
+    .optional()
+    .describe("ID of the project to associate with"),
+  workstreamId: z
+    .string()
+    .optional()
+    .describe("ID of the workstream to associate with"),
   content: z.string().describe("Content/body of the artifact"),
 });
 

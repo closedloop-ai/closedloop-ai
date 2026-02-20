@@ -860,6 +860,85 @@ describe("OAuth endpoints", () => {
     expect(activeAfter.active).toBe(false);
   });
 
+  it("returns key scopes when client_credentials omits scope", async () => {
+    const tokenBody = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: "closedloop-mcp",
+      client_secret: "sk_live_valid",
+    }).toString();
+
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+
+    expect(tokenRes.statusCode).toBe(200);
+    const tokenJson = JSON.parse(tokenRes.body) as { scope: string };
+    expect(tokenJson.scope).toBe("read write");
+  });
+
+  it("returns inactive on introspection for malformed token payload", async () => {
+    const introspectReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/introspect",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token: "mcp_at_not-a-valid-payload.signature" }),
+    });
+    const introspectRes = createMockResponse();
+    await handleOAuthIntrospect(introspectReq, asServerResponse(introspectRes));
+
+    expect(introspectRes.statusCode).toBe(200);
+    const body = JSON.parse(introspectRes.body) as { active: boolean };
+    expect(body.active).toBe(false);
+  });
+
+  it("returns inactive on introspection for expired non-revoked token", async () => {
+    const tokenBody = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: "closedloop-mcp",
+      client_secret: "sk_live_valid",
+      scope: "read",
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    expect(tokenRes.statusCode).toBe(200);
+    const token = (JSON.parse(tokenRes.body) as { access_token: string })
+      .access_token;
+
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockReturnValue(Date.now() + 3_700_000);
+    const introspectReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/introspect",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token }),
+    });
+    const introspectRes = createMockResponse();
+    await handleOAuthIntrospect(introspectReq, asServerResponse(introspectRes));
+    nowSpy.mockRestore();
+
+    expect(introspectRes.statusCode).toBe(200);
+    const body = JSON.parse(introspectRes.body) as { active: boolean };
+    expect(body.active).toBe(false);
+  });
+
   it("rejects internal introspect/revoke without internal secret", async () => {
     const introspectReq = createMockRequest({
       method: "POST",
@@ -940,6 +1019,57 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).toBe(413);
     const json = JSON.parse(res.body) as { error: string };
     expect(json.error).toBe("payload_too_large");
+  });
+
+  it("returns 413 when mcp request body exceeds size limit without content-length", async () => {
+    const req = createMockRequest({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer sk_live_valid",
+      },
+      body: `{"x":"${"y".repeat(5000)}"}`,
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(413);
+    const json = JSON.parse(res.body) as { error: string };
+    expect(json.error).toBe("payload_too_large");
+  });
+
+  it("accepts authenticated mcp initialize payload and reaches transport path", async () => {
+    const initializeBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test-client", version: "1.0.0" },
+      },
+    });
+
+    const req = createMockRequest({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: "Bearer sk_live_valid",
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: initializeBody,
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    // In this mocked HTTP harness, MCP transport returns 400 for protocol-level
+    // handshake semantics. This assertion verifies auth/body-limit checks pass and
+    // request reaches transport handling.
+    expect(res.statusCode).not.toBe(401);
+    expect(res.statusCode).not.toBe(413);
   });
 
   it("advertises only code response type in oauth metadata", async () => {

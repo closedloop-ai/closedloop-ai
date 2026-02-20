@@ -5,7 +5,7 @@ import { withErrorHandling } from "./tool-utils.js";
 
 /**
  * Register the list-artifacts tool on the given MCP server.
- * Calls GET /artifacts with optional query filters for projectId, type, status, and workstreamId.
+ * Calls GET /artifacts with optional query filters for projectId, type, and workstreamId.
  */
 export function registerListArtifacts(
   server: McpServer,
@@ -13,7 +13,7 @@ export function registerListArtifacts(
 ): void {
   server.tool(
     "list-artifacts",
-    "List artifacts with optional filters by projectId, type, status, and workstreamId",
+    "List artifacts with optional filters by projectId, type, and workstreamId",
     {
       projectId: z.string().optional().describe("Filter by project ID"),
       workstreamId: z.string().optional().describe("Filter by workstream ID"),
@@ -21,12 +21,8 @@ export function registerListArtifacts(
         .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
         .optional()
         .describe("Filter by artifact type"),
-      status: z
-        .enum(["DRAFT", "REVIEW", "APPROVED", "ARCHIVED"])
-        .optional()
-        .describe("Filter by artifact status"),
     },
-    ({ projectId, workstreamId, type, status }) =>
+    ({ projectId, workstreamId, type }) =>
       withErrorHandling(async () => {
         const query: Record<string, string> = {};
         if (projectId !== undefined) {
@@ -37,9 +33,6 @@ export function registerListArtifacts(
         }
         if (type !== undefined) {
           query.type = type;
-        }
-        if (status !== undefined) {
-          query.status = status;
         }
 
         const artifacts = await apiClient.get<unknown[]>("/artifacts", query);

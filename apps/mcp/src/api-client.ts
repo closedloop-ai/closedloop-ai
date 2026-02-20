@@ -12,18 +12,22 @@ function requireEnv(name: string): string {
 
 const INTERNAL_API_SECRET = requireEnv("INTERNAL_API_SECRET");
 
+async function getResponseErrorMessage(response: Response): Promise<string> {
+  const body = await response.text().catch(() => "");
+  const bodySuffix = body ? ` — ${body}` : "";
+  return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
+}
+
 export class ApiClient {
   private readonly baseUrl: string;
-  private readonly context: VerifiedApiKeyContext;
   private readonly plaintextKey: string;
 
   constructor(
     baseUrl: string,
-    context: VerifiedApiKeyContext,
+    _context: VerifiedApiKeyContext,
     plaintextKey: string
   ) {
     this.baseUrl = baseUrl;
-    this.context = context;
     this.plaintextKey = plaintextKey;
   }
 
@@ -32,8 +36,6 @@ export class ApiClient {
       Authorization: `Bearer ${this.plaintextKey}`,
       "Content-Type": "application/json",
       "X-Internal-Secret": INTERNAL_API_SECRET,
-      "X-User-Id": this.context.userId,
-      "X-Organization-Id": this.context.organizationId,
     };
   }
 
@@ -49,9 +51,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -64,9 +64,7 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -79,9 +77,7 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -93,9 +89,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -120,13 +114,15 @@ export async function verifyApiKey(
   if (!response.ok) {
     // 401 means the key is invalid; 5xx means the server is broken
     if (response.status >= 500) {
-      throw new Error(
-        `API key verification failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return null;
   }
-  return response.json() as Promise<VerifiedApiKeyContext>;
+  const body = (await response.json()) as {
+    success: boolean;
+    data: VerifiedApiKeyContext;
+  };
+  return body.data;
 }
 
 /**

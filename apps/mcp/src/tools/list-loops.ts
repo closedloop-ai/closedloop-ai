@@ -3,6 +3,16 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
 
+const LOOP_STATUS_VALUES = [
+  "PENDING",
+  "CLAIMED",
+  "RUNNING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "TIMED_OUT",
+] as const;
+
 export function registerListLoops(
   server: McpServer,
   apiClient: ApiClient
@@ -12,7 +22,10 @@ export function registerListLoops(
     "List execution loops with optional filters by artifact or status",
     {
       artifactId: z.string().optional().describe("Filter by artifact ID"),
-      status: z.string().optional().describe("Filter by loop status"),
+      status: z
+        .enum(LOOP_STATUS_VALUES)
+        .optional()
+        .describe("Filter by loop status"),
     },
     ({ artifactId, status }) =>
       withErrorHandling(async () => {

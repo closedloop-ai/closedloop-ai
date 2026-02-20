@@ -2,7 +2,7 @@
 /**
  * Seed script for MCP server testing (LOCAL DEVELOPMENT ONLY).
  * Creates:
- * - 1 API key (sk_live_mcp_test_key_...) for MCP authentication
+ * - 2 API keys: full-access + read-only (for scope-filtering tests)
  * - 2 Projects with different priorities
  * - 2 Workstreams across projects
  * - 5 Artifacts (PRD, Plan, Template) with versions
@@ -13,8 +13,9 @@
  *
  * Run: cd packages/database && tsx scripts/seed-mcp.ts
  *
- * After running, use this API key with the MCP server:
- *   sk_live_mcp_test_seed_key_0123456789abcdef
+ * After running, use these API keys with the MCP server:
+ *   Full access:  sk_live_mcp_test_seed_key_0123456789abcdef
+ *   Read-only:    sk_live_mcp_test_readonly_key_abcdef0123
  */
 
 import { createHash } from "node:crypto";
@@ -23,11 +24,17 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import { PrismaClient } from "../generated/client";
 
-// Fixed plaintext key for local dev testing
+// Fixed plaintext keys for local dev testing
 const MCP_TEST_KEY = "sk_live_mcp_test_seed_key_0123456789abcdef";
 const MCP_TEST_KEY_SCOPES = ["read", "write", "delete", "admin"] as const;
 const MCP_TEST_KEY_HASH = createHash("sha256")
   .update(MCP_TEST_KEY)
+  .digest("hex");
+
+const MCP_READONLY_KEY = "sk_live_mcp_test_readonly_key_abcdef0123";
+const MCP_READONLY_KEY_SCOPES = ["read"] as const;
+const MCP_READONLY_KEY_HASH = createHash("sha256")
+  .update(MCP_READONLY_KEY)
   .digest("hex");
 
 function getClient(): InstanceType<typeof PrismaClient> {
@@ -106,11 +113,46 @@ async function main() {
           name: "MCP Test Key",
           scopes: [...MCP_TEST_KEY_SCOPES],
           keyHash: MCP_TEST_KEY_HASH,
-          keyPrefix: MCP_TEST_KEY.slice(0, 12),
+          keyPrefix: "sk_live_",
           expiresAt: null,
         },
       });
-      console.log(`API key created: ${MCP_TEST_KEY.slice(0, 12)}...`);
+      console.log("API key created: sk_live_...");
+    }
+
+    // 2b. Create read-only API key (for scope-filtering tests)
+    console.log("\n--- Read-Only API Key ---");
+    const existingReadonlyKey = await prisma.apiKey.findFirst({
+      where: { keyHash: MCP_READONLY_KEY_HASH },
+    });
+
+    if (existingReadonlyKey) {
+      await prisma.apiKey.update({
+        where: { id: existingReadonlyKey.id },
+        data: {
+          organizationId,
+          userId,
+          revokedAt: null,
+          expiresAt: null,
+          scopes: [...MCP_READONLY_KEY_SCOPES],
+        },
+      });
+      console.log(
+        `Read-only API key exists (reset): ${existingReadonlyKey.keyPrefix}...`
+      );
+    } else {
+      await prisma.apiKey.create({
+        data: {
+          organizationId,
+          userId,
+          name: "MCP Test Key (Read-Only)",
+          scopes: [...MCP_READONLY_KEY_SCOPES],
+          keyHash: MCP_READONLY_KEY_HASH,
+          keyPrefix: "sk_live_",
+          expiresAt: null,
+        },
+      });
+      console.log("Read-only API key created: sk_live_...");
     }
 
     // 3. Create projects
@@ -548,15 +590,16 @@ async function main() {
     console.log("\n===================================");
     console.log("MCP seed completed successfully!");
     console.log("===================================\n");
-    console.log("API Key (use this with MCP server):");
-    console.log(`  ${MCP_TEST_KEY}\n`);
+    console.log("API Keys (use with MCP server):");
+    console.log(`  Full access:  ${MCP_TEST_KEY}`);
+    console.log(`  Read-only:    ${MCP_READONLY_KEY}\n`);
     console.log("Test with curl:");
     console.log("  curl -X POST http://localhost:3010/mcp \\");
     console.log(`    -H "Authorization: Bearer ${MCP_TEST_KEY}" \\`);
     console.log(`    -H "Content-Type: application/json" \\`);
     console.log(`    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'\n`);
     console.log("Summary:");
-    console.log(`  API Key:        ${MCP_TEST_KEY.slice(0, 20)}...`);
+    console.log("  API Keys:       full-access + read-only");
     console.log(`  Projects:       ${project1.id}, ${project2.id}`);
     console.log(`  Workstreams:    ${ws1.id}, ${ws2.id}`);
     console.log(

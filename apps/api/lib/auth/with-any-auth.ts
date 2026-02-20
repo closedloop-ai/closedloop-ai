@@ -42,7 +42,7 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
         options ??
         (request.method === "GET" || request.method === "HEAD"
           ? { requiredScopes: ["read"] as ApiKeyScope[] }
-          : undefined);
+          : { requiredScopes: ["write"] as ApiKeyScope[] });
       return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
         request,
         context as { params: Promise<Record<string, string>> }

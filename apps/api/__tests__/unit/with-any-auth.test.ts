@@ -49,17 +49,16 @@ describe("withAnyAuth", () => {
     });
   });
 
-  it("does not inject read scope defaults for non-read methods", async () => {
+  it("defaults api-key mutation requests to required write scope", async () => {
     const wrapped = withAnyAuth(async () => ({}) as never);
     await wrapped(
       createRequest("POST", "Bearer sk_live_test") as never,
       { params: Promise.resolve({}) } as never
     );
 
-    expect(withApiKeyAuthMock).toHaveBeenCalledWith(
-      expect.any(Function),
-      undefined
-    );
+    expect(withApiKeyAuthMock).toHaveBeenCalledWith(expect.any(Function), {
+      requiredScopes: ["write"],
+    });
   });
 
   it("preserves explicit scope requirements when provided", async () => {

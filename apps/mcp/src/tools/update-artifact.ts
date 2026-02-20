@@ -9,24 +9,20 @@ export function registerUpdateArtifact(
 ): void {
   server.tool(
     "update-artifact",
-    "Update an existing artifact's title, content, or status",
+    "Update an existing artifact's metadata or status. For content changes, use create-artifact-version.",
     {
       artifactId: z.string().describe("ID of the artifact to update"),
       title: z.string().optional().describe("New title for the artifact"),
-      content: z.string().optional().describe("New content for the artifact"),
       status: z
         .enum(["DRAFT", "REVIEW", "APPROVED", "ARCHIVED"])
         .optional()
         .describe("New status for the artifact"),
     },
-    ({ artifactId, title, content, status }) =>
+    ({ artifactId, title, status }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
         if (title !== undefined) {
           body.title = title;
-        }
-        if (content !== undefined) {
-          body.content = content;
         }
         if (status !== undefined) {
           body.status = status;

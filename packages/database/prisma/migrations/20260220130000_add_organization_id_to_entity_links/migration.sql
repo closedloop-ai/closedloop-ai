@@ -45,6 +45,11 @@ WHERE el."target_type" = 'EXTERNAL_LINK'
   AND el."target_id" = ex."id"
   AND el."organization_id" IS NULL;
 
+-- Delete orphaned rows that cannot be backfilled because their source/target
+-- entities no longer exist.
+DELETE FROM "entity_links"
+WHERE "organization_id" IS NULL;
+
 DO $$
 BEGIN
   IF EXISTS (
