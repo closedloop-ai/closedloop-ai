@@ -84,18 +84,20 @@ function migrateLegacyConfig(global: ReposConfig): ReposConfig {
 
   // Deduplicate: only add legacy repos whose path isn't already in global
   const existingPaths = new Set(global.repos.map((r) => expandHome(r.path)));
+  const mergedRepos = [...global.repos];
   let merged = false;
   for (const repo of legacyRepos) {
     if (!existingPaths.has(expandHome(repo.path))) {
-      global.repos.push(repo);
+      mergedRepos.push(repo);
       existingPaths.add(expandHome(repo.path));
       merged = true;
     }
   }
 
   // Merge settings: global wins, legacy fills gaps
+  let mergedSettings = global.settings;
   if (legacy.settings) {
-    global.settings = { ...legacy.settings, ...global.settings };
+    mergedSettings = { ...legacy.settings, ...global.settings };
     merged = true;
   }
 
@@ -106,7 +108,7 @@ function migrateLegacyConfig(global: ReposConfig): ReposConfig {
   }
 
   removeLegacyConfig();
-  return global;
+  return merged ? { repos: mergedRepos, settings: mergedSettings } : global;
 }
 
 function removeLegacyConfig(): void {
@@ -138,21 +140,21 @@ export function loadReposConfig(): ReposConfig {
       const content = readFileSync(REPOS_CONFIG_PATH, "utf-8");
       const parsed = JSON.parse(content) as ReposConfig;
       config = {
-        repos: parsed.repos || DEFAULT_REPOS,
-        settings: parsed.settings || DEFAULT_SETTINGS,
+        repos: [...(parsed.repos ?? DEFAULT_REPOS)],
+        settings: { ...(parsed.settings ?? DEFAULT_SETTINGS) },
       };
     } catch (err) {
       console.error("[repos] Failed to load config:", err);
       config = {
-        repos: DEFAULT_REPOS,
-        settings: DEFAULT_SETTINGS,
+        repos: [...DEFAULT_REPOS],
+        settings: { ...DEFAULT_SETTINGS },
       };
       needsSave = true; // Overwrite corrupt file with healthy defaults
     }
   } else {
     config = {
-      repos: DEFAULT_REPOS,
-      settings: DEFAULT_SETTINGS,
+      repos: [...DEFAULT_REPOS],
+      settings: { ...DEFAULT_SETTINGS },
     };
     needsSave = true; // Create file on first load
   }
