@@ -281,17 +281,12 @@ export const artifactsService = {
                 workstreamId: true,
               },
               orderBy: { createdAt: "desc" },
+              take: 100,
             })
           )
         : [];
 
-    // Build Map keyed by workstreamId (one PR per workstream - most recent)
-    const pullRequestMap = new Map<string, PullRequestInfo>();
-    for (const pr of pullRequestRecords) {
-      if (pr.workstreamId && !pullRequestMap.has(pr.workstreamId)) {
-        pullRequestMap.set(pr.workstreamId, toPullRequestInfo(pr));
-      }
-    }
+    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
 
     return artifacts.map((a) =>
       toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
@@ -462,9 +457,7 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast Prisma enums (GitHubPRState, ReviewDecision) to API enums (PullRequestState, ReviewDecision)
-    // Needed because API types are intentionally independent of database types
-    return pr as PullRequestInfo;
+    return toPullRequestInfo(pr);
   },
 
   /**
@@ -2372,7 +2365,11 @@ Configure the following environment variables to enable plan generation:
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
 
-/** Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type */
+/**
+ * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
+ * Returns null if the record contains invalid enum values (e.g. a new GitHub
+ * state we don't yet map) so a single bad record doesn't break batch listings.
+ */
 function toPullRequestInfo(pr: {
   id: string;
   number: number;
@@ -2383,17 +2380,19 @@ function toPullRequestInfo(pr: {
   baseBranch: string;
   createdAt: Date;
   reviewDecision: string | null;
-}): PullRequestInfo {
+}): PullRequestInfo | null {
   if (!VALID_PR_STATES.has(pr.state)) {
-    throw new Error(`Invalid PR state "${pr.state}" for PR #${pr.number}`);
+    log.warn(`Skipping PR #${pr.number}: invalid state "${pr.state}"`);
+    return null;
   }
   if (
     pr.reviewDecision !== null &&
     !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
   ) {
-    throw new Error(
-      `Invalid review decision "${pr.reviewDecision}" for PR #${pr.number}`
+    log.warn(
+      `Skipping PR #${pr.number}: invalid review decision "${pr.reviewDecision}"`
     );
+    return null;
   }
   return {
     id: pr.id,
@@ -2406,4 +2405,22 @@ function toPullRequestInfo(pr: {
     createdAt: pr.createdAt,
     reviewDecision: pr.reviewDecision as ReviewDecision | null,
   };
+}
+
+/** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
+function buildPullRequestMap(
+  records: (Parameters<typeof toPullRequestInfo>[0] & {
+    workstreamId: string | null;
+  })[]
+): Map<string, PullRequestInfo> {
+  const map = new Map<string, PullRequestInfo>();
+  for (const pr of records) {
+    if (pr.workstreamId && !map.has(pr.workstreamId)) {
+      const mapped = toPullRequestInfo(pr);
+      if (mapped) {
+        map.set(pr.workstreamId, mapped);
+      }
+    }
+  }
+  return map;
 }

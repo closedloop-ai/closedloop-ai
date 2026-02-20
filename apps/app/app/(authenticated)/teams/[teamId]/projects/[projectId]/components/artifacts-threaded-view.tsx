@@ -1,8 +1,10 @@
 "use client";
 
-import type {
-  ArtifactStatus,
-  ArtifactWithWorkstream,
+import {
+  type ArtifactStatus,
+  ArtifactType,
+  type ArtifactWithWorkstream,
+  ReviewDecision,
 } from "@repo/api/src/types/artifact";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { parsePreviewDeploymentMetadata } from "@repo/api/src/types/external-link-utils";
@@ -70,9 +72,9 @@ type WorkstreamGroup = {
 
 /** Defines display order of artifact types within a workstream group. */
 const TYPE_ORDER: Record<string, number> = {
-  PRD: 0,
-  IMPLEMENTATION_PLAN: 1,
-  TEMPLATE: 2,
+  [ArtifactType.Prd]: 0,
+  [ArtifactType.ImplementationPlan]: 1,
+  [ArtifactType.Template]: 2,
 };
 
 function sortArtifactsByType(
@@ -184,7 +186,8 @@ function ArtifactRow({
       }
     : {};
 
-  const isImplementationPlan = artifact.type === "IMPLEMENTATION_PLAN";
+  const isImplementationPlan =
+    artifact.type === ArtifactType.ImplementationPlan;
   const pr = isImplementationPlan ? (artifact.pullRequest ?? null) : null;
   const isPipelineGreen =
     artifact.generationStatus?.status === "SUCCESS" &&
@@ -205,14 +208,14 @@ function ArtifactRow({
         />
         {pr && <StatusBadge colorMap={prStatusColors} status={pr.state} />}
         {pr?.reviewDecision &&
-          (pr.reviewDecision === "APPROVED" ||
-            pr.reviewDecision === "CHANGES_REQUESTED") && (
+          (pr.reviewDecision === ReviewDecision.Approved ||
+            pr.reviewDecision === ReviewDecision.ChangesRequested) && (
             <StatusBadge
               colorMap={prReviewDecisionColors}
               status={pr.reviewDecision}
             />
           )}
-        {artifact.type === "PRD" && siblingPlan != null && (
+        {artifact.type === ArtifactType.Prd && siblingPlan != null && (
           <span
             className={`text-xs ${ARTIFACT_STATUS_COLORS[siblingPlan.status] ?? "text-muted-foreground"}`}
           >
@@ -291,7 +294,8 @@ function WorkstreamSection({
   previewDeploymentState?: string | null;
 }) {
   const siblingPlan =
-    group.artifacts.find((a) => a.type === "IMPLEMENTATION_PLAN") ?? null;
+    group.artifacts.find((a) => a.type === ArtifactType.ImplementationPlan) ??
+    null;
 
   return (
     <Collapsible className="rounded-lg border">
