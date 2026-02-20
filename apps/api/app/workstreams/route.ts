@@ -3,7 +3,6 @@ import type {
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -56,7 +55,7 @@ export const GET = withAnyAuth<Workstream[], "/workstreams">(
   }
 );
 
-export const POST = withAuth<Workstream, "/workstreams">(
+export const POST = withAnyAuth<Workstream, "/workstreams">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

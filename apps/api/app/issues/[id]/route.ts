@@ -1,4 +1,5 @@
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -10,7 +11,7 @@ import {
 import { issuesService } from "../service";
 import { updateIssueValidator } from "../validators";
 
-export const GET = withAuth<IssueWithWorkstream, "/issues/[id]">(
+export const GET = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -28,7 +29,7 @@ export const GET = withAuth<IssueWithWorkstream, "/issues/[id]">(
   }
 );
 
-export const PUT = withAuth<IssueWithWorkstream, "/issues/[id]">(
+export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

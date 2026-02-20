@@ -2,13 +2,13 @@ import { success } from "@repo/api/src/types/common";
 import type { PullRequestRatingSummary } from "@repo/api/src/types/pull-request-rating";
 import { rateLimit } from "@repo/security";
 import { NextResponse } from "next/server";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { PullRequestNotFoundError } from "../../errors";
 import { pullRequestRatingsService } from "../../service";
 import { submitPullRequestRatingSchema } from "./validators";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   PullRequestRatingSummary,
   "/pull-requests/[id]/rating"
 >(async ({ user }, _request, params) => {
@@ -28,7 +28,7 @@ export const GET = withAuth<
   }
 });
 
-export const PUT = withAuth<
+export const PUT = withAnyAuth<
   PullRequestRatingSummary,
   "/pull-requests/[id]/rating"
 >(async ({ user }, request, params) => {

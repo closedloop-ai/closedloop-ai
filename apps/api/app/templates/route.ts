@@ -1,6 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import { ArtifactType } from "@repo/api/src/types/artifact";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { artifactsService } from "../artifacts/service";
 
@@ -8,7 +8,7 @@ import { artifactsService } from "../artifacts/service";
  * GET /templates - List all org-level templates
  * Returns all artifacts where type=TEMPLATE for the authenticated user's organization.
  */
-export const GET = withAuth<Artifact[], "/templates">(
+export const GET = withAnyAuth<Artifact[], "/templates">(
   async ({ user }, _request) => {
     try {
       const templates = await artifactsService.findAll({

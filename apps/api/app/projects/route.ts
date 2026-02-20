@@ -1,7 +1,6 @@
 import type { ProjectWithDetails } from "@repo/api/src/types/organization";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -61,7 +60,7 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
 /**
  * POST /projects - Create a new project
  */
-export const POST = withAuth<ProjectWithDetails, "/projects">(
+export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

@@ -1,4 +1,5 @@
 import type { Artifact, ArtifactDetail } from "@repo/api/src/types/artifact";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -11,7 +12,7 @@ import { artifactVersionService } from "../artifact-version-service";
 import { artifactsService } from "../service";
 import { updateArtifactValidator } from "../validators";
 
-export const GET = withAuth<ArtifactDetail, "/artifacts/[id]">(
+export const GET = withAnyAuth<ArtifactDetail, "/artifacts/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -55,7 +56,7 @@ export const GET = withAuth<ArtifactDetail, "/artifacts/[id]">(
   }
 );
 
-export const PUT = withAuth<Artifact, "/artifacts/[id]">(
+export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

@@ -1,6 +1,6 @@
 import type { Artifact } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
   notFoundResponse,
@@ -12,7 +12,7 @@ import { artifactVersionService } from "../../artifact-version-service";
 import { artifactsService } from "../../service";
 import { newVersionValidator } from "../../validators";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   Pick<
     ArtifactVersion,
     "id" | "artifactId" | "version" | "createdById" | "createdAt"
@@ -38,7 +38,7 @@ export const GET = withAuth<
   }
 });
 
-export const POST = withAuth<Artifact, "/artifacts/[id]/versions">(
+export const POST = withAnyAuth<Artifact, "/artifacts/[id]/versions">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

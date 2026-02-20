@@ -1,4 +1,5 @@
 import type { Workstream } from "@repo/api/src/types/workstream";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -10,7 +11,7 @@ import {
 import { workstreamsService } from "../service";
 import { updateWorkstreamValidator } from "../validators";
 
-export const GET = withAuth<Workstream, "/workstreams/[id]">(
+export const GET = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
@@ -31,7 +32,7 @@ export const GET = withAuth<Workstream, "/workstreams/[id]">(
   }
 );
 
-export const PUT = withAuth<Workstream, "/workstreams/[id]">(
+export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

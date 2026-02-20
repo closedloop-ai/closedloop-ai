@@ -2,6 +2,7 @@ import type {
   CreateLoopResponse,
   LoopWithUser,
 } from "@repo/api/src/types/loop";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
@@ -12,7 +13,7 @@ import {
 import { loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
 
-export const GET = withAuth<LoopWithUser[], "/loops">(
+export const GET = withAnyAuth<LoopWithUser[], "/loops">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;

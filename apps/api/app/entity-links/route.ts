@@ -1,5 +1,5 @@
 import type { EntityLink } from "@repo/api/src/types/entity-link";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -12,7 +12,7 @@ import {
   findEntityLinksQueryValidator,
 } from "./validators";
 
-export const GET = withAuth<EntityLink[], "/entity-links">(
+export const GET = withAnyAuth<EntityLink[], "/entity-links">(
   async (_authContext, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -60,7 +60,7 @@ export const GET = withAuth<EntityLink[], "/entity-links">(
   }
 );
 
-export const POST = withAuth<EntityLink, "/entity-links">(
+export const POST = withAnyAuth<EntityLink, "/entity-links">(
   async (_authContext, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

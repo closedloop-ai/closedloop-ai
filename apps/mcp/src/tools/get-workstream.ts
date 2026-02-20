@@ -3,30 +3,26 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
-/**
- * Register the get-artifact tool on the given MCP server.
- * Calls GET /artifacts/:artifactId to retrieve a single artifact.
- */
-export function registerGetArtifact(
+export function registerGetWorkstream(
   server: McpServer,
   apiClient: ApiClient
 ): void {
   server.tool(
-    "get-artifact",
-    "Retrieve a single artifact by its ID",
+    "get-workstream",
+    "Get a workstream's detail including state and artifacts",
     {
-      artifactId: z.string().describe("ID of the artifact to retrieve"),
+      workstreamId: z.string().describe("ID of the workstream to retrieve"),
     },
-    ({ artifactId }) =>
+    ({ workstreamId }) =>
       withErrorHandling(async () => {
-        const artifact = await apiClient.get<unknown>(
-          `/artifacts/${encodePathSegment(artifactId)}`
+        const workstream = await apiClient.get<unknown>(
+          `/workstreams/${encodePathSegment(workstreamId)}`
         );
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(artifact, null, 2),
+              text: JSON.stringify(workstream, null, 2),
             },
           ],
         };

@@ -1,8 +1,16 @@
 import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
 
-const SYMPHONY_API_URL =
-  process.env.SYMPHONY_API_URL ?? "http://localhost:3002";
-const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET ?? "";
+const CLOSEDLOOP_API_URL =
+  process.env.CLOSEDLOOP_API_URL ?? "http://localhost:3002";
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required but not set`);
+  }
+  return value;
+}
+
+const INTERNAL_API_SECRET = requireEnv("INTERNAL_API_SECRET");
 
 export class ApiClient {
   private readonly baseUrl: string;
@@ -63,6 +71,21 @@ export class ApiClient {
     return response.json() as Promise<T>;
   }
 
+  async put<T>(path: string, body: unknown): Promise<T> {
+    const url = new URL(path, this.baseUrl);
+    const response = await fetch(url.toString(), {
+      method: "PUT",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `API request failed: ${response.status} ${response.statusText}`
+      );
+    }
+    return response.json() as Promise<T>;
+  }
+
   async delete<T>(path: string): Promise<T> {
     const url = new URL(path, this.baseUrl);
     const response = await fetch(url.toString(), {
@@ -85,7 +108,7 @@ export class ApiClient {
 export async function verifyApiKey(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
-  const verifyUrl = new URL("/internal/api-keys/verify", SYMPHONY_API_URL);
+  const verifyUrl = new URL("/internal/api-keys/verify", CLOSEDLOOP_API_URL);
   const response = await fetch(verifyUrl.toString(), {
     method: "POST",
     headers: {
@@ -113,5 +136,22 @@ export function createApiClient(
   context: VerifiedApiKeyContext,
   plaintextKey: string
 ): ApiClient {
-  return new ApiClient(SYMPHONY_API_URL, context, plaintextKey);
+  return new ApiClient(CLOSEDLOOP_API_URL, context, plaintextKey);
+}
+
+/**
+ * Check whether the upstream API server is reachable.
+ * Any HTTP response (even 404) means it's alive; only connection errors mean it's down.
+ */
+export async function checkApiReachable(): Promise<boolean> {
+  try {
+    const url = new URL("/", CLOSEDLOOP_API_URL);
+    await fetch(url.toString(), {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }

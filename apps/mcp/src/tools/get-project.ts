@@ -3,17 +3,13 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
-/**
- * Register the get-project-status tool on the given MCP server.
- * Calls GET /projects/:projectId and returns project details including artifact counts by status.
- */
-export function registerGetProjectStatus(
+export function registerGetProject(
   server: McpServer,
   apiClient: ApiClient
 ): void {
   server.tool(
-    "get-project-status",
-    "Get detailed status of a project including artifact counts by status",
+    "get-project",
+    "Get a project's detail with recent workstreams",
     {
       projectId: z.string().describe("ID of the project to retrieve"),
     },

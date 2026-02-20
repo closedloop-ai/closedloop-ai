@@ -1,5 +1,5 @@
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -9,7 +9,7 @@ import {
 import { issuesService } from "./service";
 import { createIssueValidator, findIssuesQueryValidator } from "./validators";
 
-export const GET = withAuth<IssueWithWorkstream[], "/issues">(
+export const GET = withAnyAuth<IssueWithWorkstream[], "/issues">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -38,7 +38,7 @@ export const GET = withAuth<IssueWithWorkstream[], "/issues">(
   }
 );
 
-export const POST = withAuth<IssueWithWorkstream, "/issues">(
+export const POST = withAnyAuth<IssueWithWorkstream, "/issues">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(

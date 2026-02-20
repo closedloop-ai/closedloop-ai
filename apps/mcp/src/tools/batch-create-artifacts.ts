@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { withErrorHandling } from "./tool-utils.js";
 
 const artifactItemSchema = z.object({
   title: z.string().describe("Title of the artifact"),
@@ -27,18 +28,22 @@ export function registerBatchCreateArtifacts(
         .array(artifactItemSchema)
         .describe("List of artifacts to create"),
     },
-    async ({ items }) => {
-      const result = await apiClient.post<unknown>("/artifacts/batch-create", {
-        items,
-      });
-      return {
-        content: [
+    ({ items }) =>
+      withErrorHandling(async () => {
+        const result = await apiClient.post<unknown>(
+          "/artifacts/batch-create",
           {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    }
+            items,
+          }
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      })
   );
 }

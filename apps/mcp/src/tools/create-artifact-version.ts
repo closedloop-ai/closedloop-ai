@@ -3,25 +3,24 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
-/**
- * Register the generate-plans tool on the given MCP server.
- * Calls POST /projects/:projectId/generate-plans to trigger plan generation.
- */
-export function registerGeneratePlans(
+export function registerCreateArtifactVersion(
   server: McpServer,
   apiClient: ApiClient
 ): void {
   server.tool(
-    "generate-plans",
-    "Trigger AI plan generation for a project",
+    "create-artifact-version",
+    "Create a new version of an artifact. The previous version is preserved in history.",
     {
-      projectId: z.string().describe("ID of the project to generate plans for"),
+      artifactId: z
+        .string()
+        .describe("ID of the artifact to create a new version for"),
+      content: z.string().describe("Content for the new version"),
     },
-    ({ projectId }) =>
+    ({ artifactId, content }) =>
       withErrorHandling(async () => {
         const result = await apiClient.post<unknown>(
-          `/projects/${encodePathSegment(projectId)}/generate-plans`,
-          {}
+          `/artifacts/${encodePathSegment(artifactId)}/versions`,
+          { content }
         );
         return {
           content: [

@@ -1,5 +1,6 @@
 import type { Loop, LoopEvent } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import { loopEventBus } from "@/lib/loop-event-bus";
 import { stopLoopTask } from "@/lib/loop-orchestrator";
@@ -10,7 +11,7 @@ import {
 } from "@/lib/route-utils";
 import { loopsService } from "../service";
 
-export const GET = withAuth<Loop, "/loops/[id]">(
+export const GET = withAnyAuth<Loop, "/loops/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;

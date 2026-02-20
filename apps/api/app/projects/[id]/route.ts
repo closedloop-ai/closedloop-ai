@@ -1,4 +1,5 @@
 import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -13,7 +14,7 @@ import { updateProjectValidator } from "../validators";
 /**
  * GET /projects/:id - Get a single project by ID
  */
-export const GET = withAuth<ProjectWithDetails, "/projects/[id]">(
+export const GET = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -33,7 +34,7 @@ export const GET = withAuth<ProjectWithDetails, "/projects/[id]">(
 /**
  * PUT /projects/:id - Update a project
  */
-export const PUT = withAuth<ProjectWithDetails, "/projects/[id]">(
+export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
