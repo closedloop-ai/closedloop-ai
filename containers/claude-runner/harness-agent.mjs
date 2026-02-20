@@ -1708,6 +1708,15 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
 function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
+  // Grant tool permissions so claude doesn't prompt for approval in headless mode.
+  // Matches the dispatch workflow's claude_args (symphony-dispatch.yml:962-964).
+  args.push(
+    "--allowedTools",
+    "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite",
+    "--max-turns",
+    "200"
+  );
+
   // If resuming from a parent loop, use --resume to continue the session
   if (config.parentSessionId) {
     args.push("--resume", config.parentSessionId);
