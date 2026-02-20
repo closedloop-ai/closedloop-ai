@@ -75,6 +75,7 @@ export type CreateLoopRequest = {
   command: LoopCommand;
   artifactId?: string;
   workstreamId?: string;
+  parentLoopId?: string;
   prompt?: string;
   repo?: {
     fullName: string;

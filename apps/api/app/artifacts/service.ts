@@ -75,7 +75,7 @@ async function validateOwnerInOrg(
  * Used to set committer identity on bot commits so Vercel can
  * match the author to a team member and trigger preview deploys.
  */
-async function getCommitterInfo(
+export async function getCommitterInfo(
   userId: string
 ): Promise<{ committerName: string; committerEmail: string } | undefined> {
   const user = await withDb((db) =>
