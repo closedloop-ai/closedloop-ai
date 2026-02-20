@@ -412,7 +412,9 @@ export async function POST(request: NextRequest) {
           "[Ticket Chat API] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
         claudeProcess = null;
       }
     },

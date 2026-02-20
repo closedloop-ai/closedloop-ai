@@ -396,7 +396,9 @@ function handleClaude(
 
     cancel() {
       if (claudeProcess) {
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
         claudeProcess = null;
       }
     },

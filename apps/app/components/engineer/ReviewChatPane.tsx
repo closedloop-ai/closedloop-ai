@@ -292,11 +292,50 @@ export function ReviewChatPane({
   async function startReview(signal: AbortSignal) {
     reviewStartedAtRef.current = new Date().toISOString();
     setIsReviewing(true);
-    setReviewOutput("");
     setReviewDone(false);
     let accumulatedOutput = "";
 
     try {
+      // Pre-check: if a review already exists on disk, resume instead of POSTing
+      const existing = await checkExistingReview(
+        ticketId,
+        repoPath,
+        config.provider,
+        signal
+      );
+
+      if (existing.kind === "completed" || existing.kind === "terminal") {
+        setReviewOutput(existing.log);
+        setReviewDone(true);
+        setIsReviewing(false);
+        const split = splitReviewOutput(existing.log, config.provider);
+        onReviewCompleteRef.current?.(
+          existing.log,
+          split.findings.length,
+          split.findings
+        );
+        if (split.findings.length > 0) {
+          findingsSavedRef.current = true;
+          saveReviewFindings(
+            ticketId,
+            repoPath,
+            config.provider,
+            config.model,
+            split.findings
+          );
+        }
+        return;
+      }
+
+      if (existing.kind === "running") {
+        setReviewOutput(existing.log);
+        await pollRunningReview(signal);
+        return;
+      }
+
+      // kind === "none" — no existing review, clear output and POST
+      setReviewOutput("");
+
       const response = await fetch(
         `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
         {
@@ -1636,6 +1675,48 @@ function markFindingCommented(
   }).catch((err) =>
     console.warn("[review-findings] Failed to mark commented:", err)
   );
+}
+
+// --- Status pre-check for review resumption ---
+
+type ExistingReviewState =
+  | { kind: "none" }
+  | { kind: "running"; log: string }
+  | { kind: "completed"; log: string }
+  | { kind: "terminal"; log: string };
+
+async function checkExistingReview(
+  ticketId: string,
+  repoPath: string,
+  provider: string,
+  signal: AbortSignal
+): Promise<ExistingReviewState> {
+  try {
+    const url = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+    const res = await fetch(url, { signal });
+    const data = await res.json();
+
+    if (!data.hasReview) {
+      return { kind: "none" };
+    }
+
+    const log: string = data.log || "";
+
+    if (data.status === "completed") {
+      return { kind: "completed", log };
+    }
+    if (data.status === "running") {
+      return { kind: "running", log };
+    }
+    if (data.status === "failed" || data.status === "stopped") {
+      return { kind: "terminal", log };
+    }
+
+    return { kind: "none" };
+  } catch {
+    // Fail-safe: fall through to POST
+    return { kind: "none" };
+  }
 }
 
 // --- Extracted stream reader ---

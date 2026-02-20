@@ -548,7 +548,9 @@ export async function POST(
           "[Finding Chat API] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
         claudeProcess = null;
       }
     },

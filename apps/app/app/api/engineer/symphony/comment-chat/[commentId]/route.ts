@@ -733,7 +733,9 @@ export async function POST(
           "[Comment Chat API] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
 
         // Save partial response so it's not lost
         if (streamStateRef) {

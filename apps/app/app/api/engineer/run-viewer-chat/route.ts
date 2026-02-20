@@ -411,7 +411,9 @@ function spawnClaude(
           "[run-viewer-chat] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
         claudeProcess = null;
       }
     },
