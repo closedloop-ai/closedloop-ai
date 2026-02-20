@@ -189,6 +189,10 @@ export function PRBrowserDialog({
   const [activeCommentChatKey, setActiveCommentChatKey] = useState<
     string | null
   >(null);
+  // Track which comment IDs have an actively streaming assistant response
+  const [streamingCommentIds, setStreamingCommentIds] = useState<Set<string>>(
+    () => new Set()
+  );
   // Ephemeral preview: shown when clicking a comment card body (no persistent card)
   const [previewComment, setPreviewComment] = useState<{
     comment: PRComment;
@@ -518,6 +522,26 @@ export function PRBrowserDialog({
     setCommentStatusKey((k) => k + 1);
   }, []);
 
+  const handleStreamingChange = useCallback(
+    (commentId: string, isStreaming: boolean) => {
+      setStreamingCommentIds((prev) => {
+        const has = prev.has(commentId);
+        if (isStreaming && !has) {
+          const next = new Set(prev);
+          next.add(commentId);
+          return next;
+        }
+        if (!isStreaming && has) {
+          const next = new Set(prev);
+          next.delete(commentId);
+          return next;
+        }
+        return prev;
+      });
+    },
+    []
+  );
+
   const handleClose = () => {
     if (selectedRepo) {
       const selection: SavedPRBrowserSelection = {
@@ -644,11 +668,6 @@ export function PRBrowserDialog({
   const hasAnyReview = reviewEntries.length > 0;
   const commentChatEntries = Object.entries(commentChats);
   const hasAnyCommentChat = commentChatEntries.length > 0;
-  const activeChatCommentIds = useMemo(
-    () => new Set(Object.values(commentChats).map((e) => e.comment.id)),
-    [commentChats]
-  );
-
   /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
   const restoreOrShowSettings = useCallback(async () => {
     if (!(selectedRepo && selectedPR)) {
@@ -1177,6 +1196,9 @@ export function PRBrowserDialog({
               onResolved={() =>
                 handleCommentChatResolved(key, entry.comment.id)
               }
+              onStreamingChange={(streaming) =>
+                handleStreamingChange(entry.comment.id, streaming)
+              }
               prNumber={selectedPR.number}
               replies={entry.replies}
               repoPath={selectedRepo.path}
@@ -1388,7 +1410,7 @@ export function PRBrowserDialog({
                     />
                   ))}
                   <PRCommentsViewer
-                    activeChatCommentIds={activeChatCommentIds}
+                    activeChatCommentIds={streamingCommentIds}
                     key={`${selectedPR.number}-${commentStatusKey}`}
                     onCommentDismissed={handleCommentDismissed}
                     onCommentSelected={handleCommentSelected}

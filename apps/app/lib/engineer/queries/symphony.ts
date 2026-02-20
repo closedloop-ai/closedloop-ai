@@ -187,8 +187,8 @@ export function commentChatHistoryOptions(
     queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
     queryFn: async () => {
       let url = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
-      if (branchName) {
-        url += `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber ?? ""}`;
+      if (branchName && prNumber != null) {
+        url += `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`;
       }
       const response = await fetch(url);
       if (!response.ok) {

@@ -62,6 +62,7 @@ export type CommentChatProps = {
   onResolved?: () => void;
   onDeselect?: () => void;
   onChatCleared?: () => void;
+  onStreamingChange?: (isStreaming: boolean) => void;
   autoStart?: boolean;
   autoProvider?: "claude" | "codex";
   className?: string;
@@ -82,6 +83,7 @@ export function CommentChat({
   onResolved,
   onDeselect,
   onChatCleared,
+  onStreamingChange,
   autoStart = true,
   autoProvider = "claude",
   className,
@@ -148,6 +150,11 @@ export function CommentChat({
     debateClaudeStream.isStreaming ||
     !!debate.codexStream.pendingUserMessage ||
     !!codexChatStream.pendingUserMessage;
+
+  // Notify parent when streaming state changes
+  useEffect(() => {
+    onStreamingChange?.(isAnyStreaming);
+  }, [isAnyStreaming, onStreamingChange]);
 
   // Forward button gating — disable while forwarding
   const [isForwarding, setIsForwarding] = useState(false);
