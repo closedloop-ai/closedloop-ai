@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { join, sep } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import { getWorktreeParentDir } from "@/lib/engineer/repos";
 
@@ -37,7 +37,7 @@ function removeNonWorktree(
 function forceRemoveWorktree(expandedPath: string): WorktreeResult {
   spawnSync("git", ["worktree", "prune"], {
     stdio: "pipe",
-    cwd: dirname(expandedPath),
+    cwd: expandedPath,
   });
   rmSync(expandedPath, { recursive: true, force: true });
   return { success: true, message: "Worktree forcefully removed" };
@@ -83,7 +83,7 @@ function removeWorktree(expandedPath: string, force: boolean): WorktreeResult {
     args.push(expandedPath);
     const result = spawnSync("git", args, {
       stdio: "pipe",
-      cwd: dirname(expandedPath),
+      cwd: expandedPath,
     });
     if (result.status !== 0) {
       throw new Error(
