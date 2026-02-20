@@ -1,5 +1,8 @@
 import { success } from "@repo/api/src/types/common";
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopRequest,
+  CreateLoopResponse,
+} from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
@@ -70,6 +73,12 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         existingRepository?.defaultBranch ??
         "main";
 
+      // Build context refs: include the source PRD so the harness can write prd.md
+      const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
+      if (sourceArtifact) {
+        contextRefs.push({ artifactId: sourceArtifact.id, include: "full" });
+      }
+
       // Create the Loop
       const loopResponse = await loopsService.create(
         user.organizationId,
@@ -80,6 +89,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           workstreamId: workstream?.id,
           prompt: body.prompt,
           repo: { fullName: targetRepo, branch: targetBranch },
+          contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
         }
       );
 
