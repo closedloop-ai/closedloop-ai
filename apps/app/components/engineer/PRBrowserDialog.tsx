@@ -499,19 +499,18 @@ export function PRBrowserDialog({
   }, []);
 
   const handleCommentChatResolved = useCallback(
-    (key: string, commentId: string) => {
+    (key: string, _commentId: string) => {
       setCommentChats((prev) => {
         const next = { ...prev };
         delete next[key];
         return next;
       });
-      // Reset chatStarted so overflow menu re-shows "Fix with Claude/Codex"
-      if (selectedPR) {
-        resetCommentStatus(selectedPR.number, commentId);
-      }
+      // Don't reset comment status here — the hook already wrote the final
+      // status (addressed/responded) before calling onResolved. Resetting
+      // would undo that and make the card flash back to "pending".
       setCommentStatusKey((k) => k + 1);
     },
-    [selectedPR]
+    []
   );
 
   const handlePreviewResolved = useCallback(() => {
@@ -1171,19 +1170,7 @@ export function PRBrowserDialog({
                 // Unconditional: resolved comments are already removed from
                 // commentChats by onResolved, so this only fires for pending chats.
                 if (selectedPR) {
-                  console.log("[PRBrowserDialog] calling resetCommentStatus", {
-                    prNumber: selectedPR.number,
-                    commentId: entry.comment.id,
-                  });
                   resetCommentStatus(selectedPR.number, entry.comment.id);
-                  // Verify it was actually deleted
-                  const afterReset = localStorage.getItem(
-                    "symphony-pr-comment-status"
-                  );
-                  console.log(
-                    "[PRBrowserDialog] localStorage after reset:",
-                    afterReset
-                  );
                 }
                 setCommentStatusKey((k) => k + 1);
               }}
