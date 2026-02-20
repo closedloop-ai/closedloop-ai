@@ -1705,7 +1705,7 @@ function buildRunLoopArgs(runLoopPath, workDir, prdPath) {
   return { cmd: "bash", args };
 }
 
-function buildClaudeDirectArgs(workDir) {
+function buildClaudeDirectArgs(workDir, symphonyWD) {
   const args = [];
 
   // If resuming from a parent loop, use --resume to continue the session
@@ -1715,14 +1715,18 @@ function buildClaudeDirectArgs(workDir) {
 
   switch (config.command) {
     case "REQUEST_CHANGES": {
-      // Use the amend-plan skill
+      // Use the amend-plan skill with --workdir and --message flags
+      // --workdir tells the skill where plan.json lives (the symphony run dir)
+      // --message passes the user's amendment text (required by the skill)
+      // This matches the GitHub Actions dispatch workflow invocation format:
+      //   /experimental:amend-plan --workdir $RUN_DIR --message "$MESSAGE"
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "Please amend the plan based on the requested changes.";
       if (fs.existsSync(promptFile)) {
         prompt = fs.readFileSync(promptFile, "utf-8");
       }
-      args.push("/experimental:amend-plan", prompt);
+      args.push("/experimental:amend-plan", "--workdir", symphonyWD || workDir, "--message", prompt);
       break;
     }
     case "CHAT":
@@ -1991,7 +1995,7 @@ function buildCommand(workDir, symphonyWD, prdPath) {
     }
     return buildRunLoopArgs(runLoopPath, symphonyWD || workDir, prdPath);
   }
-  return buildClaudeDirectArgs(workDir);
+  return buildClaudeDirectArgs(workDir, symphonyWD);
 }
 
 function toHarnessError(err) {
