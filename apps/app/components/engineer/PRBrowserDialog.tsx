@@ -1165,7 +1165,7 @@ export function PRBrowserDialog({
               branchName={selectedPR.headRefName}
               comment={entry.comment}
               commentId={entry.comment.id}
-              key={entry.comment.id}
+              key={key}
               onChatCleared={() => setCommentStatusKey((k) => k + 1)}
               onDeselect={() => {
                 // Remove entry (unmount) — no left-pane card to return to,
