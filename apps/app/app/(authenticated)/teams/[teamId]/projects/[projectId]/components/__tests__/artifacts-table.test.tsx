@@ -140,7 +140,11 @@ describe("ArtifactsTable - Artifact Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     expect(screen.getByText("PRD with feature")).toBeInTheDocument();
@@ -161,7 +165,11 @@ describe("ArtifactsTable - Artifact Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     expect(screen.getByText("PRD Document")).toBeInTheDocument();
@@ -170,7 +178,11 @@ describe("ArtifactsTable - Artifact Display", () => {
 
   test("renders empty state when no artifacts provided", () => {
     renderWithProviders(
-      <ArtifactsTable artifacts={[]} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={[]}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     expect(screen.getByText("No artifacts yet")).toBeInTheDocument();
@@ -210,7 +222,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     expect(
@@ -236,7 +252,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     // Indicator component should render nothing for NONE status
@@ -260,7 +280,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     expect(screen.queryByText("Waiting to start...")).not.toBeInTheDocument();
@@ -287,7 +311,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     const link = screen.getByRole("link", {
@@ -321,7 +349,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     const Wrapper = createTestWrapper();
     const { rerender } = render(
       <Wrapper>
-        <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+        <ArtifactsTable
+          artifacts={artifacts}
+          filterText=""
+          projectId="test-project-id"
+        />
       </Wrapper>
     );
 
@@ -349,6 +381,7 @@ describe("ArtifactsTable - Generation Status Display", () => {
       <Wrapper>
         <ArtifactsTable
           artifacts={updatedArtifacts}
+          filterText=""
           projectId="test-project-id"
         />
       </Wrapper>
@@ -378,7 +411,11 @@ describe("ArtifactsTable - Generation Status Display", () => {
     ];
 
     renderWithProviders(
-      <ArtifactsTable artifacts={artifacts} projectId="test-project-id" />
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
     );
 
     const link = screen.getByRole("link", {
@@ -386,5 +423,176 @@ describe("ArtifactsTable - Generation Status Display", () => {
     });
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("aria-label");
+  });
+});
+
+describe("ArtifactsTable - Filter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseRouter.mockReturnValue({ push: vi.fn() });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("renders all artifacts when filterText is empty", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({ id: "a1", title: "Login Flow", type: "PRD" }),
+      createMockProjectArtifact({
+        id: "a2",
+        title: "Dashboard UI",
+        type: "IMPLEMENTATION_PLAN",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    expect(screen.getByText("Login Flow")).toBeInTheDocument();
+    expect(screen.getByText("Dashboard UI")).toBeInTheDocument();
+  });
+
+  test("filters by artifact title", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({ id: "a1", title: "Login Flow", type: "PRD" }),
+      createMockProjectArtifact({
+        id: "a2",
+        title: "Dashboard UI",
+        type: "PRD",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText="login"
+        projectId="test-project-id"
+      />
+    );
+
+    expect(screen.getByText("Login Flow")).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard UI")).not.toBeInTheDocument();
+  });
+
+  test("filters by snippet content", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "a1",
+        title: "Artifact With Snippet",
+        type: "PRD",
+        snippet: "payment gateway integration",
+      }),
+      createMockProjectArtifact({
+        id: "a2",
+        title: "Artifact Without Snippet",
+        type: "PRD",
+        snippet: null,
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText="payment"
+        projectId="test-project-id"
+      />
+    );
+
+    expect(screen.getByText("Artifact With Snippet")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Artifact Without Snippet")
+    ).not.toBeInTheDocument();
+  });
+
+  test("filters by workstream title", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "a1",
+        title: "PRD Alpha",
+        type: "PRD",
+        workstream: { id: "ws-1", title: "Feature Y", state: "INITIATED" },
+      }),
+      createMockProjectArtifact({
+        id: "a2",
+        title: "PRD Beta",
+        type: "PRD",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText="feature y"
+        projectId="test-project-id"
+      />
+    );
+
+    expect(screen.getByText("PRD Alpha")).toBeInTheDocument();
+    expect(screen.queryByText("PRD Beta")).not.toBeInTheDocument();
+  });
+
+  test("shows no-results EmptyState when filter matches nothing", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "a1",
+        title: "Some Artifact",
+        type: "PRD",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText="zzznomatch"
+        projectId="test-project-id"
+      />
+    );
+
+    expect(screen.getByText("No matching artifacts")).toBeInTheDocument();
+    expect(screen.queryByText("No artifacts yet")).not.toBeInTheDocument();
+  });
+
+  test("re-render with changed filterText updates filtered results", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({ id: "a1", title: "Login Flow", type: "PRD" }),
+      createMockProjectArtifact({
+        id: "a2",
+        title: "Dashboard UI",
+        type: "PRD",
+      }),
+    ];
+
+    const Wrapper = createTestWrapper();
+    const { rerender } = render(
+      <Wrapper>
+        <ArtifactsTable
+          artifacts={artifacts}
+          filterText="login"
+          projectId="test-project-id"
+        />
+      </Wrapper>
+    );
+
+    expect(screen.getByText("Login Flow")).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard UI")).not.toBeInTheDocument();
+
+    rerender(
+      <Wrapper>
+        <ArtifactsTable
+          artifacts={artifacts}
+          filterText="dashboard"
+          projectId="test-project-id"
+        />
+      </Wrapper>
+    );
+
+    expect(screen.queryByText("Login Flow")).not.toBeInTheDocument();
+    expect(screen.getByText("Dashboard UI")).toBeInTheDocument();
   });
 });

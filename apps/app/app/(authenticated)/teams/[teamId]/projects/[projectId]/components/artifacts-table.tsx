@@ -53,6 +53,7 @@ import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
+import { matchesFilter } from "@/lib/artifact-filter";
 import {
   getArtifactRoute,
   isNavigableArtifact,
@@ -72,6 +73,7 @@ import { SortableArtifactRow } from "./sortable-artifact-row";
 type ArtifactsTableProps = {
   artifacts: ArtifactWithWorkstream[];
   projectId: string;
+  filterText: string;
   onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
@@ -366,6 +368,7 @@ function ArtifactSection({
 export function ArtifactsTable({
   artifacts,
   projectId,
+  filterText,
   onStatusChange,
   onDelete,
 }: ArtifactsTableProps) {
@@ -381,13 +384,18 @@ export function ArtifactsTable({
     getId: (artifact: ArtifactWithWorkstream) => artifact.id,
   });
 
+  const filteredArtifacts = useMemo(
+    () => artifacts.filter((a) => matchesFilter(a, filterText)),
+    [artifacts, filterText]
+  );
+
   const sections = useMemo(
     () =>
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
-        artifacts: artifacts.filter((a) => section.types.has(a.type)),
+        artifacts: filteredArtifacts.filter((a) => section.types.has(a.type)),
       })).filter((section) => section.artifacts.length > 0),
-    [artifacts]
+    [filteredArtifacts]
   );
 
   function handleRowClick(artifact: ArtifactWithWorkstream): void {
@@ -406,6 +414,17 @@ export function ArtifactsTable({
         description="Artifacts will appear here as you work on this project."
         icon={FileTextIcon}
         title="No artifacts yet"
+      />
+    );
+  }
+
+  if (filteredArtifacts.length === 0 && filterText) {
+    return (
+      <EmptyState
+        className="rounded-md border"
+        description="Try a different search term."
+        icon={FileTextIcon}
+        title="No matching artifacts"
       />
     );
   }
