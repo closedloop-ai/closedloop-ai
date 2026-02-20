@@ -227,8 +227,10 @@ function setupProcessLifecycle(
 
     childProcess.stdout?.on("data", async (data: Buffer) => {
       const text = data.toString();
-      await appendReviewLog(worktreeDir, provider, text);
 
+      // Parse session ID synchronously BEFORE any await so that
+      // createCodexStream's listener (which reads sessionIdHolder.value
+      // in the same event-loop tick) sees the captured value.
       if (!sessionIdCaptured) {
         startupBuffer += text;
         const match = CODEX_SESSION_ID_REGEX.exec(startupBuffer);
@@ -243,6 +245,8 @@ function setupProcessLifecycle(
           startupBuffer = "";
         }
       }
+
+      await appendReviewLog(worktreeDir, provider, text);
     });
   }
 
