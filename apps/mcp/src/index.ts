@@ -388,6 +388,25 @@ type AuthorizationCodeRecord = {
   expiresAt: Date;
 };
 
+type OAuthCleanupDbClient = {
+  oAuthAuthorizationCode: {
+    deleteMany(args: {
+      where: {
+        OR: Array<{ expiresAt: { lte: Date } } | { consumedAt: { not: null } }>;
+      };
+    }): Promise<unknown>;
+  };
+  oAuthRevokedToken: {
+    deleteMany(args: { where: { expiresAt: { lte: Date } } }): Promise<unknown>;
+  };
+  oAuthRateLimit: {
+    deleteMany(args: {
+      where: { windowExpiresAt: { lte: Date } };
+    }): Promise<unknown>;
+  };
+  $queryRawUnsafe?: (query: string, ...values: unknown[]) => Promise<unknown>;
+};
+
 function effectiveKeyScopes(scopes: string[]): string[] {
   return scopes.length > 0 ? scopes : [...API_KEY_SCOPES];
 }
@@ -405,15 +424,10 @@ async function maybeCleanupOAuthSecurityTables(): Promise<void> {
     return;
   }
 
-  await withDb(async (db) => {
-    const client = db as unknown as {
-      $queryRawUnsafe?: (
-        query: string,
-        ...values: unknown[]
-      ) => Promise<unknown>;
-    };
+  await withDb.tx(async (db) => {
+    const client = db as unknown as OAuthCleanupDbClient;
     if (!client.$queryRawUnsafe) {
-      await runOAuthCleanupQueries(nowMs);
+      await runOAuthCleanupQueries(nowMs, client);
       return;
     }
 
@@ -426,7 +440,7 @@ async function maybeCleanupOAuthSecurityTables(): Promise<void> {
     }
 
     try {
-      await runOAuthCleanupQueries(nowMs);
+      await runOAuthCleanupQueries(nowMs, client);
     } finally {
       await client.$queryRawUnsafe(
         "SELECT pg_advisory_unlock($1)",
@@ -437,26 +451,27 @@ async function maybeCleanupOAuthSecurityTables(): Promise<void> {
   lastOAuthCleanupMs = nowMs;
 }
 
-async function runOAuthCleanupQueries(nowMs: number): Promise<void> {
+async function runOAuthCleanupQueries(
+  nowMs: number,
+  db: OAuthCleanupDbClient
+): Promise<void> {
   await Promise.allSettled([
-    cleanupExpiredAuthorizationCodes(),
-    cleanupExpiredRevokedTokens(),
-    withDb((db) =>
-      db.oAuthRateLimit.deleteMany({
-        where: { windowExpiresAt: { lte: new Date(nowMs) } },
-      })
-    ),
+    cleanupExpiredAuthorizationCodes(db),
+    cleanupExpiredRevokedTokens(db),
+    db.oAuthRateLimit.deleteMany({
+      where: { windowExpiresAt: { lte: new Date(nowMs) } },
+    }),
   ]);
 }
 
-async function cleanupExpiredAuthorizationCodes(): Promise<void> {
-  await withDb((db) =>
-    db.oAuthAuthorizationCode.deleteMany({
-      where: {
-        OR: [{ expiresAt: { lte: new Date() } }, { consumedAt: { not: null } }],
-      },
-    })
-  );
+async function cleanupExpiredAuthorizationCodes(
+  db: OAuthCleanupDbClient
+): Promise<void> {
+  await db.oAuthAuthorizationCode.deleteMany({
+    where: {
+      OR: [{ expiresAt: { lte: new Date() } }, { consumedAt: { not: null } }],
+    },
+  });
 }
 
 async function storeAuthorizationCode(
@@ -521,12 +536,12 @@ function getAccessTokenFingerprint(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-async function cleanupExpiredRevokedTokens(): Promise<void> {
-  await withDb((db) =>
-    db.oAuthRevokedToken.deleteMany({
-      where: { expiresAt: { lte: new Date() } },
-    })
-  );
+async function cleanupExpiredRevokedTokens(
+  db: OAuthCleanupDbClient
+): Promise<void> {
+  await db.oAuthRevokedToken.deleteMany({
+    where: { expiresAt: { lte: new Date() } },
+  });
 }
 
 async function revokeAccessToken(
