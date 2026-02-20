@@ -225,6 +225,8 @@ export function PRBrowserDialog({
     },
   });
   const [reviews, setReviews] = useState<Record<string, ReviewEntry>>({});
+  const reviewsRef = useRef(reviews);
+  reviewsRef.current = reviews;
   const patchReview = useCallback(
     (provider: string, patch: Partial<ReviewEntry>) =>
       setReviews((prev) => {
@@ -890,13 +892,17 @@ export function PRBrowserDialog({
       findingCount: number,
       findings?: ReviewFinding[]
     ) => {
-      setReviews((prev) => {
-        const updated = markReviewDone(prev, provider, output, findingCount);
-        if (findings && findings.length > 0) {
-          scheduleCrossProviderDedup(updated, provider, findings, triggerDedup);
-        }
-        return updated;
-      });
+      setReviews((prev) =>
+        markReviewDone(prev, provider, output, findingCount)
+      );
+      if (findings && findings.length > 0) {
+        scheduleCrossProviderDedup(
+          reviewsRef.current,
+          provider,
+          findings,
+          triggerDedup
+        );
+      }
 
       // Trigger PR comment dedup when findings exist
       if (findings && findings.length > 0) {
@@ -914,10 +920,12 @@ export function PRBrowserDialog({
       if (findings.length > 0) {
         setTimeout(() => triggerPRCommentDedup(provider, findings), 0);
 
-        setReviews((prev) => {
-          scheduleCrossProviderDedup(prev, provider, findings, triggerDedup);
-          return prev;
-        });
+        scheduleCrossProviderDedup(
+          reviewsRef.current,
+          provider,
+          findings,
+          triggerDedup
+        );
       }
     },
     [triggerDedup, triggerPRCommentDedup, patchReview]
