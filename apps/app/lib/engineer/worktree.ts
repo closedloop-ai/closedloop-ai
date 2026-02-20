@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -7,7 +7,7 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 /**
  * Recursively find all .env and .env.local files in a directory.
@@ -209,4 +209,77 @@ export function ensureWorktree(
       }
     }
   }
+}
+
+/**
+ * Parse `git worktree list --porcelain` output into path/branch entries.
+ */
+function parseWorktreeListLocal(
+  output: string
+): { path: string; branch: string | null }[] {
+  const entries: { path: string; branch: string | null }[] = [];
+  let currentPath: string | null = null;
+  let currentBranch: string | null = null;
+
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (currentPath) {
+        entries.push({ path: currentPath, branch: currentBranch });
+      }
+      currentPath = line.slice("worktree ".length);
+      currentBranch = null;
+    } else if (line.startsWith("branch ")) {
+      currentBranch = line.slice("branch ".length);
+    }
+  }
+
+  if (currentPath) {
+    entries.push({ path: currentPath, branch: currentBranch });
+  }
+
+  return entries;
+}
+
+/**
+ * Resolve the effective working directory for a PR branch.
+ *
+ * 1. If the base repo HEAD matches branchName, return repoPath (no worktree needed).
+ * 2. If an existing worktree is checked out on branchName, return its path.
+ * 3. Otherwise create a new worktree via ensureWorktree and return its path.
+ */
+export function resolveWorktreeForPR(
+  repoPath: string,
+  branchName: string,
+  prNumber: number,
+  worktreeParentDir: string
+): string {
+  // 1. Check if the base repo is already on the PR branch
+  const headResult = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (headResult.status === 0 && headResult.stdout.trim() === branchName) {
+    return repoPath;
+  }
+
+  // 2. Scan existing worktrees for one checked out on this branch
+  const listResult = spawnSync("git", ["worktree", "list", "--porcelain"], {
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (listResult.status === 0) {
+    const entries = parseWorktreeListLocal(listResult.stdout);
+    const match = entries.find((e) => e.branch === `refs/heads/${branchName}`);
+    if (match) {
+      return match.path;
+    }
+  }
+
+  // 3. Create a new worktree
+  const repoName = basename(repoPath);
+  const worktreeDir = join(worktreeParentDir, `${repoName}-pr-${prNumber}`);
+  ensureWorktree(repoPath, worktreeDir, branchName);
+  return worktreeDir;
 }

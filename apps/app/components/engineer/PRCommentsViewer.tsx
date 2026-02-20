@@ -45,6 +45,8 @@ type PRCommentsViewerProps = {
   onCommentDismissed?: (commentId: string) => void;
   /** Called when "Review with Codex" is selected from a comment card overflow */
   onReviewCodex?: (commentId: string) => void;
+  /** Comment IDs that have an active chat session (used to derive "analyzing" status) */
+  activeChatCommentIds?: ReadonlySet<string>;
 };
 
 type FilterType = "all" | "pending" | "resolved";
@@ -107,15 +109,18 @@ function buildThreads(comments: PRComment[]): CommentThread[] {
 }
 
 function resolveDisplayStatus(
-  statuses: Record<string, { status: string; chatStarted?: boolean }>,
-  commentId: string
+  statuses: Record<string, { status: string }>,
+  commentId: string,
+  activeChatIds?: ReadonlySet<string>
 ): CommentDisplayStatus {
+  // Derive "analyzing" from live React state, not localStorage's chatStarted
+  // flag (which can become stale across page reloads).
+  if (activeChatIds?.has(commentId)) {
+    return "analyzing";
+  }
   const entry = statuses[commentId];
   if (!entry) {
     return "pending";
-  }
-  if (entry.status === "pending" && entry.chatStarted) {
-    return "analyzing";
   }
   return entry.status as CommentDisplayStatus;
 }
@@ -144,6 +149,7 @@ export function PRCommentsViewer({
   statusRefreshKey = 0,
   onCommentDismissed,
   onReviewCodex,
+  activeChatCommentIds,
 }: Readonly<PRCommentsViewerProps>) {
   const [filter, setFilter] = useState<FilterType>("pending");
   const [addressingComment, setAddressingComment] = useState<PRComment | null>(
@@ -170,12 +176,19 @@ export function PRCommentsViewer({
     staleTime: 10_000, // Consider data stale after 10 seconds
   });
 
-  // Get local status for all comments — re-read from localStorage whenever statusVersion changes
+  // Get local status for all comments — re-read from localStorage whenever
+  // statusVersion (internal dismiss/reopen) or statusRefreshKey (parent signals) changes
   const commentStatuses = useMemo(() => {
-    return getCommentStatuses(prNumber);
-    // statusVersion is intentionally included to force re-read after dismiss/reopen
+    const statuses = getCommentStatuses(prNumber);
+    console.log("[PRCommentsViewer] re-read commentStatuses", {
+      prNumber,
+      statusVersion,
+      statusRefreshKey,
+      statuses,
+    });
+    return statuses;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prNumber, statusVersion]);
+  }, [prNumber, statusVersion, statusRefreshKey]);
 
   // Build threads from flat comments
   const threads = useMemo(() => {
@@ -194,9 +207,8 @@ export function PRCommentsViewer({
       prNumber,
       threads.map((t) => t.root.id)
     );
-    // statusVersion included so counts update after dismiss/reopen
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prNumber, threads, statusVersion]);
+  }, [prNumber, threads, statusVersion, statusRefreshKey]);
 
   // Filter threads based on selected filter, grouped into inline and general
   const filteredThreads = useMemo(() => {
@@ -233,6 +245,10 @@ export function PRCommentsViewer({
     provider?: "codex"
   ) => {
     if (autoStart) {
+      console.log("[PRCommentsViewer] markChatStarted", {
+        prNumber,
+        commentId: comment.id,
+      });
       markChatStarted(prNumber, comment.id);
       setStatusVersion((v) => v + 1);
     }
@@ -245,7 +261,7 @@ export function PRCommentsViewer({
   };
 
   const getStatus = (commentId: string): CommentDisplayStatus =>
-    resolveDisplayStatus(commentStatuses, commentId);
+    resolveDisplayStatus(commentStatuses, commentId, activeChatCommentIds);
 
   if (isLoading) {
     return <CommentsLoadingState />;

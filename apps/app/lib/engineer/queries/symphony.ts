@@ -174,14 +174,23 @@ export function commentChatHistoryOptions(
   ticketId: string,
   commentId: string,
   repoPath: string,
-  commentContext: { author: string; body: string; path?: string; line?: number }
+  commentContext: {
+    author: string;
+    body: string;
+    path?: string;
+    line?: number;
+  },
+  branchName?: string,
+  prNumber?: number
 ) {
   return queryOptions<CommentChatHistory>({
     queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
     queryFn: async () => {
-      const response = await fetch(
-        `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`
-      );
+      let url = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      if (branchName) {
+        url += `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber ?? ""}`;
+      }
+      const response = await fetch(url);
       if (!response.ok) {
         return {
           messages: [],

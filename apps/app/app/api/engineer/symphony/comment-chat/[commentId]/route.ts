@@ -14,6 +14,7 @@ import {
   createStreamState,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
+import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
 type ChatMessage = {
   id: string;
@@ -59,24 +60,49 @@ const ALLOWED_TOOLS = [
 ].join(",");
 
 /**
- * Get work directory paths for a ticket
+ * Get work directory paths for a ticket.
+ *
+ * When branchName and prNumber are provided (PR comment-chat), resolves the
+ * effective working directory via resolveWorktreeForPR (check HEAD, scan
+ * existing worktrees, or create a new one). Otherwise falls back to the
+ * legacy ticketId-based worktree lookup.
  */
-function getWorkPaths(ticketId: string, repoPath: string, commentId: string) {
+function getWorkPaths(
+  ticketId: string,
+  repoPath: string,
+  commentId: string,
+  branchName?: string | null,
+  prNumber?: number | null
+) {
   const expandedRepoPath = expandHome(repoPath);
-
-  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const sanitizedCommentId = commentId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-  const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
-  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 
-  // Use worktree if it exists, otherwise fall back to base repo
-  const effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
+  let effectiveDir: string;
+
+  if (branchName && prNumber) {
+    // PR-aware resolution: HEAD check → existing worktree → create new
+    effectiveDir = resolveWorktreeForPR(
+      expandedRepoPath,
+      branchName,
+      prNumber,
+      worktreeParentDir
+    );
+  } else {
+    // Legacy: ticketId-based worktree lookup
+    const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+    const repoName = basename(expandedRepoPath);
+    const worktreeDir = join(
+      worktreeParentDir,
+      `${repoName}-${sanitizedTicket}`
+    );
+    effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
+  }
+
   const claudeWorkDir = join(effectiveDir, ".claude", "work");
   const commentChatsDir = join(claudeWorkDir, "comment-chats");
 
   return {
-    worktreeDir,
     effectiveDir,
     claudeWorkDir,
     commentChatsDir,
@@ -340,7 +366,15 @@ export async function GET(
     );
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+  const paths = getWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -377,11 +411,14 @@ export async function POST(
   }
 
   const body = await request.json();
-  const { message, displayContent, commentContext } = body as {
-    message: string;
-    displayContent?: string;
-    commentContext?: CommentContext;
-  };
+  const { message, displayContent, commentContext, branchName, prNumber } =
+    body as {
+      message: string;
+      displayContent?: string;
+      commentContext?: CommentContext;
+      branchName?: string;
+      prNumber?: number;
+    };
 
   if (!message || typeof message !== "string") {
     return new Response(JSON.stringify({ error: "message is required" }), {
@@ -390,7 +427,13 @@ export async function POST(
     });
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const paths = getWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branchName,
+    prNumber
+  );
 
   // Check if effective directory exists
   if (!existsSync(paths.effectiveDir)) {
@@ -485,6 +528,16 @@ export async function POST(
               type: "status",
               status: "spawning",
               resuming: isResuming,
+            })}\n`
+          )
+        );
+
+        // Let the client know which directory Claude will operate in
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({
+              type: "worktree_resolved",
+              effectiveDir: paths.effectiveDir,
             })}\n`
           )
         );
@@ -703,7 +756,15 @@ export async function DELETE(
     );
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+  const paths = getWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -754,13 +815,22 @@ export async function PATCH(
     );
   }
 
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+
   const body = await request.json();
   const { message, markResponded } = body as {
     message?: ChatMessage;
     markResponded?: string;
   };
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const paths = getWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,

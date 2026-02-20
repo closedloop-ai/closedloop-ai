@@ -56,10 +56,12 @@ export type CommentChatProps = {
   ticketId: string;
   repoPath: string;
   prNumber: number;
+  branchName?: string;
   comment: PRComment;
   replies?: PRComment[];
   onResolved?: () => void;
   onDeselect?: () => void;
+  onChatCleared?: () => void;
   autoStart?: boolean;
   autoProvider?: "claude" | "codex";
   className?: string;
@@ -74,10 +76,12 @@ export function CommentChat({
   ticketId,
   repoPath,
   prNumber,
+  branchName,
   comment,
   replies = [],
   onResolved,
   onDeselect,
+  onChatCleared,
   autoStart = true,
   autoProvider = "claude",
   className,
@@ -87,11 +91,13 @@ export function CommentChat({
     ticketId,
     repoPath,
     prNumber,
+    branchName,
     comment,
     replies,
     enabled: true,
     autoStart: autoProvider === "codex" ? false : autoStart,
     onResolved,
+    onChatCleared,
   });
 
   const queryClient = useQueryClient();
@@ -99,8 +105,11 @@ export function CommentChat({
   const debateClaudeStream = useChatStream();
   const codexChatStream = useChatStream();
 
-  // Build comment-chat specific URLs
-  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+  // Build comment-chat specific URLs (include branch params when available)
+  const branchSuffix = branchName
+    ? `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`
+    : "";
+  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchSuffix}`;
 
   const debate = useCodexDebate({
     ticketId,

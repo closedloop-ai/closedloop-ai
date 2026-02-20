@@ -9,6 +9,7 @@ import { getWorktreePath, parseLearningsUsed } from "@/lib/engineer/chat-utils";
 import {
   markCommentAddressed,
   markCommentResponded,
+  resetCommentStatus,
 } from "@/lib/engineer/pr-comment-tracker";
 import { gitStatusOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
@@ -22,11 +23,13 @@ export type UseCommentChatOptions = {
   ticketId: string;
   repoPath: string;
   prNumber: number;
+  branchName?: string;
   comment: PRComment;
   replies?: PRComment[];
   enabled?: boolean;
   autoStart?: boolean;
   onResolved?: () => void;
+  onChatCleared?: () => void;
 };
 
 export type UseCommentChatReturn = {
@@ -98,11 +101,13 @@ export function useCommentChat({
   ticketId,
   repoPath,
   prNumber,
+  branchName,
   comment,
   replies,
   enabled = true,
   autoStart = true,
   onResolved,
+  onChatCleared,
 }: UseCommentChatOptions): UseCommentChatReturn {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -136,7 +141,16 @@ export function useCommentChat({
   );
   const queryClient = useQueryClient();
 
-  const worktreePath = getWorktreePath(repoPath, ticketId);
+  // worktreePath starts as a client-side guess; updated by the server's
+  // worktree_resolved event once the actual effective dir is known.
+  const [worktreePath, setWorktreePath] = useState(() =>
+    getWorktreePath(repoPath, ticketId)
+  );
+
+  // Build query-string suffix for branch-aware API calls
+  const branchParams = branchName
+    ? `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`
+    : "";
 
   // Auto-resize textarea when input changes
   useEffect(() => {
@@ -153,12 +167,19 @@ export function useCommentChat({
     isLoading: isLoadingHistory,
     isFetching: isFetchingHistory,
   } = useQuery({
-    ...commentChatHistoryOptions(ticketId, comment.id, repoPath, {
-      author: comment.author,
-      body: comment.body,
-      path: comment.path,
-      line: comment.line,
-    }),
+    ...commentChatHistoryOptions(
+      ticketId,
+      comment.id,
+      repoPath,
+      {
+        author: comment.author,
+        body: comment.body,
+        path: comment.path,
+        line: comment.line,
+      },
+      branchName,
+      prNumber
+    ),
     enabled,
     // Poll while a response may still be generating server-side.
     // - Regular flow: last message is from user → poll until assistant appears
@@ -301,9 +322,14 @@ export function useCommentChat({
       id?: string;
       input?: unknown;
       contextPercent?: number;
+      effectiveDir?: string;
     },
     accumulated: string
   ): string => {
+    if (event.type === "worktree_resolved" && event.effectiveDir) {
+      setWorktreePath(event.effectiveDir);
+      return accumulated;
+    }
     if (event.type === "usage" && event.contextPercent != null) {
       setContextPercent(event.contextPercent);
       return accumulated;
@@ -427,13 +453,15 @@ export function useCommentChat({
 
       try {
         const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               message: messageToSend,
               displayContent,
+              branchName,
+              prNumber,
               commentContext: {
                 author: comment.author,
                 body: comment.body,
@@ -497,6 +525,9 @@ export function useCommentChat({
       replies,
       ticketId,
       repoPath,
+      branchName,
+      branchParams,
+      prNumber,
       readStream,
     ]
   ); // eslint-disable-line react-hooks/exhaustive-deps
@@ -702,7 +733,7 @@ export function useCommentChat({
       setHasResponded(true);
 
       // Persist responded flag on the message so it survives navigation
-      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
       fetch(patchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -773,7 +804,7 @@ export function useCommentChat({
     async (index: number) => {
       try {
         const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}&index=${index}`,
           { method: "DELETE" }
         );
         if (response.ok) {
@@ -789,7 +820,7 @@ export function useCommentChat({
         console.error("Failed to delete message:", err);
       }
     },
-    [comment.id, ticketId, repoPath, queryClient]
+    [comment.id, ticketId, repoPath, branchParams, queryClient]
   );
 
   // Clear entire chat history
@@ -799,12 +830,16 @@ export function useCommentChat({
     }
     try {
       const response = await fetch(
-        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
         { method: "DELETE" }
       );
       if (response.ok) {
         setHasAutoStarted(false);
         setHasAcceptedChanges(false);
+        // Reset chatStarted so the PR comment card overflow menu
+        // re-shows "Fix with Claude/Codex" options.
+        resetCommentStatus(prNumber, comment.id);
+        onChatCleared?.();
         queryClient.invalidateQueries({
           queryKey: queryKeys.commentChatHistory(
             ticketId,
