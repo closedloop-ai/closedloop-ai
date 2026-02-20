@@ -127,7 +127,13 @@ describe("ArtifactsThreadedView - Empty State", () => {
   afterEach(cleanup);
 
   test("renders empty state when no artifacts provided", () => {
-    render(<ArtifactsThreadedView artifacts={[]} projectId="project-1" />);
+    render(
+      <ArtifactsThreadedView
+        artifacts={[]}
+        filterText=""
+        projectId="project-1"
+      />
+    );
 
     expect(screen.getByTestId("empty-state")).toBeDefined();
     expect(screen.getByText("No artifacts yet")).toBeDefined();
@@ -182,7 +188,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("Feature X")).toBeDefined();
@@ -207,7 +217,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("2 artifacts")).toBeDefined();
@@ -224,7 +238,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("1 artifact")).toBeDefined();
@@ -241,7 +259,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("Orphan PRD")).toBeDefined();
@@ -274,7 +296,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // All 3 PRD titles should be visible as group headers (each unassigned PRD forms its own group)
@@ -304,7 +330,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("Unassigned")).toBeDefined();
@@ -336,7 +366,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -364,7 +398,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("In Progress")).toBeDefined();
@@ -404,7 +442,11 @@ describe("ArtifactsThreadedView - Workstream Grouping", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // Only 2 collapsible groups should render: one for ws-shared, one for the unassigned artifact
@@ -437,7 +479,11 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // The trigger should exist but content should be collapsed
@@ -457,7 +503,11 @@ describe("ArtifactsThreadedView - Collapsible Behavior", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature X").closest("button");
@@ -489,7 +539,11 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // Expand the section
@@ -520,7 +574,11 @@ describe("ArtifactsThreadedView - Artifact Display", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -551,7 +609,11 @@ describe("ArtifactsThreadedView - Links", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -586,7 +648,11 @@ describe("ArtifactsThreadedView - Navigation", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -611,7 +677,11 @@ describe("ArtifactsThreadedView - Navigation", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -654,7 +724,11 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Active Workstream").closest("button");
@@ -685,7 +759,11 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -708,7 +786,11 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -740,7 +822,11 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     ];
 
     const { rerender } = render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -771,6 +857,7 @@ describe("ArtifactsThreadedView - Generation Status Indicator", () => {
     rerender(
       <ArtifactsThreadedView
         artifacts={updatedArtifacts}
+        filterText=""
         projectId="project-1"
       />
     );
@@ -804,7 +891,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -826,7 +917,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -848,7 +943,11 @@ describe("ArtifactsThreadedView - PR State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("Feature WS").closest("button");
@@ -885,7 +984,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -910,7 +1013,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -935,7 +1042,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -960,7 +1071,11 @@ describe("ArtifactsThreadedView - Review Decision Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1001,7 +1116,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1023,7 +1142,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1053,7 +1176,11 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1105,7 +1232,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // Deployment state badge (uppercased "READY") should appear in the section header
@@ -1144,7 +1275,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.getByText("BUILDING")).toBeInTheDocument();
@@ -1177,7 +1312,11 @@ describe("ArtifactsThreadedView - Preview Deployment State Badge", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     expect(screen.queryByText("READY")).not.toBeInTheDocument();
@@ -1220,7 +1359,11 @@ describe("ArtifactsThreadedView - Preview Links", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // PreviewLink should be rendered in the trigger section
@@ -1253,7 +1396,11 @@ describe("ArtifactsThreadedView - Preview Links", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     // PreviewLink should not be rendered
@@ -1279,7 +1426,11 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1304,7 +1455,11 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1334,7 +1489,11 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
     ];
 
     render(
-      <ArtifactsThreadedView artifacts={artifacts} projectId="project-1" />
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
     );
 
     const trigger = screen.getByText("WS").closest("button");
@@ -1357,5 +1516,238 @@ describe("ArtifactsThreadedView - Move Artifact", () => {
     expect(
       screen.queryByTestId("move-artifact-dialog")
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ArtifactsThreadedView - Filter", () => {
+  beforeEach(() => {
+    mockUseExternalLinks.mockReturnValue({ data: [] });
+  });
+
+  afterEach(cleanup);
+
+  test("renders all groups when filterText is empty", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "PRD Group A",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Feature A", state: "INITIATED" },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "PRD Group B",
+        workstreamId: "ws-2",
+        workstream: { id: "ws-2", title: "Feature B", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText=""
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("Feature A")).toBeInTheDocument();
+    expect(screen.getByText("Feature B")).toBeInTheDocument();
+  });
+
+  test("filters groups by artifact title", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Login PRD",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Login Feature", state: "INITIATED" },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Dashboard PRD",
+        workstreamId: "ws-2",
+        workstream: {
+          id: "ws-2",
+          title: "Dashboard Feature",
+          state: "INITIATED",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="login prd"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("Login Feature")).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard Feature")).not.toBeInTheDocument();
+  });
+
+  test("filters groups by snippet", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Auth PRD",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Auth Group", state: "INITIATED" },
+        snippet: "authentication module",
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Other PRD",
+        workstreamId: "ws-2",
+        workstream: { id: "ws-2", title: "Other Group", state: "INITIATED" },
+        snippet: null,
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="authentication"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("Auth Group")).toBeInTheDocument();
+    expect(screen.queryByText("Other Group")).not.toBeInTheDocument();
+  });
+
+  test("filters groups by workstream title", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Checkout PRD",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Checkout Feature",
+          state: "INITIATED",
+        },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Other PRD",
+        workstreamId: "ws-2",
+        workstream: { id: "ws-2", title: "Other Feature", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="checkout"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("Checkout Feature")).toBeInTheDocument();
+    expect(screen.queryByText("Other Feature")).not.toBeInTheDocument();
+  });
+
+  test("shows no-results EmptyState when filter matches nothing", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Some PRD",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Some Feature", state: "INITIATED" },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="zzznomatch"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("No matching artifacts")).toBeInTheDocument();
+    expect(screen.queryByText("No artifacts yet")).not.toBeInTheDocument();
+  });
+
+  test("group with partial match retains all artifacts in the group", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Matching PRD",
+        type: "PRD",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Shared Workstream",
+          state: "INITIATED",
+        },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Non-matching Plan",
+        type: "IMPLEMENTATION_PLAN",
+        workstreamId: "ws-1",
+        workstream: {
+          id: "ws-1",
+          title: "Shared Workstream",
+          state: "INITIATED",
+        },
+      }),
+    ];
+
+    render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="matching prd"
+        projectId="project-1"
+      />
+    );
+
+    const trigger = screen.getByText("Shared Workstream").closest("button");
+    fireEvent.click(trigger!);
+
+    // Both artifacts remain visible because the whole group is retained
+    expect(screen.getByText("Matching PRD")).toBeInTheDocument();
+    expect(screen.getByText("Non-matching Plan")).toBeInTheDocument();
+  });
+
+  test("re-render with changed filterText updates filtered groups", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockArtifact({
+        id: "1",
+        title: "Alpha PRD",
+        workstreamId: "ws-1",
+        workstream: { id: "ws-1", title: "Alpha Group", state: "INITIATED" },
+      }),
+      createMockArtifact({
+        id: "2",
+        title: "Beta PRD",
+        workstreamId: "ws-2",
+        workstream: { id: "ws-2", title: "Beta Group", state: "INITIATED" },
+      }),
+    ];
+
+    const { rerender } = render(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="alpha"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.getByText("Alpha Group")).toBeInTheDocument();
+    expect(screen.queryByText("Beta Group")).not.toBeInTheDocument();
+
+    rerender(
+      <ArtifactsThreadedView
+        artifacts={artifacts}
+        filterText="beta"
+        projectId="project-1"
+      />
+    );
+
+    expect(screen.queryByText("Alpha Group")).not.toBeInTheDocument();
+    expect(screen.getByText("Beta Group")).toBeInTheDocument();
   });
 });

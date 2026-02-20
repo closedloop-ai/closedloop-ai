@@ -48,6 +48,7 @@ import {
 } from "@/components/status-badge";
 import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
+import { matchesFilter } from "@/lib/artifact-filter";
 import {
   getArtifactRoute,
   isNavigableArtifact,
@@ -62,6 +63,7 @@ import { ArtifactTypeBadge } from "./artifact-type-badge";
 type ArtifactsThreadedViewProps = {
   artifacts: ArtifactWithWorkstream[];
   projectId: string;
+  filterText: string;
   onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
@@ -363,6 +365,7 @@ function WorkstreamSection({
 export function ArtifactsThreadedView({
   artifacts,
   projectId,
+  filterText,
   onStatusChange: _onStatusChange,
   onDelete,
 }: ArtifactsThreadedViewProps) {
@@ -400,9 +403,15 @@ export function ArtifactsThreadedView({
     return map;
   }, [externalLinks]);
 
+  // Group artifacts by workstream, then drop groups with no matching artifacts.
+  // Filtering is done after grouping so deriveGroupTitle always has the full
+  // group (prevents fallback to "Unassigned" when a group's PRD is filtered out).
   const workstreamGroups = useMemo(
-    () => groupByWorkstream(artifacts),
-    [artifacts]
+    () =>
+      groupByWorkstream(artifacts).filter((group) =>
+        group.artifacts.some((a) => matchesFilter(a, filterText))
+      ),
+    [artifacts, filterText]
   );
 
   // Derive unique branches from artifacts that have pull requests
@@ -440,6 +449,17 @@ export function ArtifactsThreadedView({
         description="Artifacts will appear here as you work on this project."
         icon={FileTextIcon}
         title="No artifacts yet"
+      />
+    );
+  }
+
+  if (workstreamGroups.length === 0 && filterText) {
+    return (
+      <EmptyState
+        className="rounded-md border"
+        description="Try a different search term."
+        icon={FileTextIcon}
+        title="No matching artifacts"
       />
     );
   }

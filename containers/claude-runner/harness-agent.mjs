@@ -2242,6 +2242,217 @@ async function reportFinalStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Fatal error handler (extracted to keep main() complexity under limit)
+// ---------------------------------------------------------------------------
+async function _handleFatalError(err, workDir, output, startTime) {
+  const harnessError = toHarnessError(err);
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  const errorMessage = harnessError.message;
+  const errorStack = err instanceof Error ? err.stack : undefined;
+  log(
+    "error",
+    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+  );
+  if (errorStack) {
+    log("error", redactSensitive(errorStack));
+  }
+
+  // Best-effort: refresh token, safety commit, push, create PR, label
+  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+  // even on fatal errors.
+  try {
+    await refreshGitHubToken();
+  } catch (_) {
+    // ignore
+  }
+  try {
+    attemptSafetyCommit(
+      workDir,
+      "[INCOMPLETE] WIP: Safety commit — harness error"
+    );
+    ensureBranchPushed(workDir);
+  } catch (_) {
+    // ignore — attemptSafetyCommit is already best-effort internally
+  }
+
+  let prInfo = null;
+  try {
+    prInfo = parsePrInfo(workDir, output);
+    prInfo = createPullRequest(workDir, prInfo);
+    if (prInfo?.prNumber) {
+      labelPrIncomplete(workDir, prInfo.prNumber);
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  // Best-effort: write execution-result.json before upload
+  try {
+    writeExecutionResult(workDir, prInfo);
+  } catch (_) {
+    // ignore
+  }
+
+  // Best-effort: upload whatever state we have
+  try {
+    await uploadState(workDir, output);
+  } catch (uploadErr) {
+    log(
+      "error",
+      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+    );
+  }
+
+  // Best-effort: report failure with PR info
+  try {
+    await reportEvent({
+      type: "error",
+      code: harnessError.code,
+      message: redactSensitive(errorMessage),
+      result: {
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+      },
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+  } catch (reportErr) {
+    log(
+      "error",
+      `Failed to report error event: ${redactSensitive(reportErr.message)}`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main execution helpers (extracted to keep main() complexity under limit)
+// ---------------------------------------------------------------------------
+
+function prepareRunDirectory(workDir, contextPack) {
+  // Resolve the symphony run directory.
+  // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
+  // - PLAN (fresh): creates a new run dir
+  // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
+  // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
+  // the same .claude/runs/TIMESTAMP/ directory across all steps.
+  const existing = findExistingRunDir(workDir);
+  if (existing) {
+    log("info", `Reusing parent run directory: ${existing}`);
+    const prdPath = writePrdFile(existing, contextPack);
+    if (config.s3ParentStateKey) {
+      syncPlanFromContextPack(existing, contextPack);
+    }
+    return { runDir: existing, prdPath };
+  }
+  const runTs = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace("T", "-")
+    .slice(0, 15);
+  const loopSuffix = (config.loopId || randomUUID())
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .slice(0, 50);
+  const newDir = path.join(
+    workDir,
+    ".claude",
+    "runs",
+    `${runTs}-loop-${loopSuffix}`
+  );
+  fs.mkdirSync(newDir, { recursive: true });
+  log("info", `Created new run directory: ${newDir}`);
+  const prdPath = writePrdFile(newDir, contextPack);
+  return { runDir: newDir, prdPath };
+}
+
+async function handleFatalError(err, workDir, output, startTime) {
+  const harnessError = toHarnessError(err);
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  const errorMessage = harnessError.message;
+  const errorStack = err instanceof Error ? err.stack : undefined;
+  log(
+    "error",
+    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+  );
+  if (errorStack) {
+    log("error", redactSensitive(errorStack));
+  }
+
+  // Best-effort: refresh token, safety commit, push, create PR, label
+  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+  // even on fatal errors.
+  const shouldCommitAndPush = config.command === "EXECUTE";
+
+  try {
+    await refreshGitHubToken();
+  } catch (_) {
+    // ignore
+  }
+
+  let prInfo = null;
+  if (shouldCommitAndPush) {
+    try {
+      attemptSafetyCommit(
+        workDir,
+        "[INCOMPLETE] WIP: Safety commit — harness error"
+      );
+      ensureBranchPushed(workDir);
+    } catch (_) {
+      // ignore
+    }
+
+    try {
+      prInfo = parsePrInfo(workDir, output);
+      prInfo = createPullRequest(workDir, prInfo);
+      if (prInfo?.prNumber) {
+        labelPrIncomplete(workDir, prInfo.prNumber);
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  // Best-effort: write execution-result.json before upload
+  if (shouldCommitAndPush) {
+    try {
+      writeExecutionResult(symphonyWorkDir || workDir, prInfo);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  // Best-effort: upload whatever state we have
+  try {
+    await uploadState(workDir, output, symphonyWorkDir);
+  } catch (uploadErr) {
+    log(
+      "error",
+      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+    );
+  }
+
+  // Best-effort: report failure with PR info
+  try {
+    await reportEvent({
+      type: "error",
+      code: harnessError.code,
+      message: redactSensitive(errorMessage),
+      result: {
+        ...(prInfo || {}),
+        sessionId: capturedSessionId,
+      },
+      correlationId: config.correlationId,
+      loopId: config.loopId,
+    });
+  } catch (reportErr) {
+    log(
+      "error",
+      `Failed to report error event: ${redactSensitive(reportErr.message)}`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main execution
 // ---------------------------------------------------------------------------
 async function main() {
@@ -2254,7 +2465,6 @@ async function main() {
   log("info", `Loop ID:        ${config.loopId}`);
   log("info", `Command:        ${config.command}`);
   log("info", `Target Repo:    ${config.targetRepo || "(none)"}`);
-
   log("info", `Target Branch:  ${config.targetBranch}`);
   log("info", `Correlation ID: ${config.correlationId}`);
   log("info", `Max Iterations: ${config.maxIterations}`);
@@ -2375,13 +2585,12 @@ async function main() {
 
     // Step 7: Parse token usage
     const tokenUsage = parseTokenUsage(output);
+    const modelNames = tokenUsage.tokensByModel
+      ? Object.keys(tokenUsage.tokensByModel).join(", ")
+      : "unknown";
     log(
       "info",
-      `Token usage: input=${tokenUsage.totalInput}, output=${tokenUsage.totalOutput}, models=${
-        tokenUsage.tokensByModel
-          ? Object.keys(tokenUsage.tokensByModel).join(", ")
-          : "unknown"
-      }`
+      `Token usage: input=${tokenUsage.totalInput}, output=${tokenUsage.totalOutput}, models=${modelNames}`
     );
 
     // Step 8: Report final status + upload
