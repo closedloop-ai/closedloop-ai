@@ -1715,10 +1715,11 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
 
   switch (config.command) {
     case "REQUEST_CHANGES": {
-      // Use the amend-plan skill with --workdir and --message flags
-      // --workdir tells the skill where plan.json lives (the symphony run dir)
-      // --message passes the user's amendment text (required by the skill)
-      // This matches the GitHub Actions dispatch workflow invocation format:
+      // Build the full skill invocation as a SINGLE prompt string.
+      // The claude CLI treats each argv entry after flags as the prompt —
+      // if we pass --workdir / --message as separate argv entries, the CLI
+      // interprets them as its own flags and errors with "unknown option".
+      // The dispatch workflow sends the equivalent as one prompt field:
       //   /experimental:amend-plan --workdir $RUN_DIR --message "$MESSAGE"
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
@@ -1726,7 +1727,10 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       if (fs.existsSync(promptFile)) {
         prompt = fs.readFileSync(promptFile, "utf-8");
       }
-      args.push("/experimental:amend-plan", "--workdir", symphonyWD || workDir, "--message", prompt);
+      // Sanitize prompt to match dispatch's prepare-message step:
+      // collapse newlines to spaces, escape double quotes
+      const sanitized = prompt.replace(/[\n\r]+/g, " ").replace(/\s{2,}/g, " ").replace(/"/g, '\\"');
+      args.push(`/experimental:amend-plan --workdir ${symphonyWD || workDir} --message "${sanitized}"`);
       break;
     }
     case "CHAT":
