@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+export const WHITESPACE_REGEX = /\s+/;
+
 /**
  * Verify a Slack webhook signature using HMAC-SHA256.
  *
@@ -21,9 +23,11 @@ export function slackVerifyWebhookSignature(
   signingSecret: string
 ): boolean {
   // Reject requests older than 5 minutes (300 seconds) to prevent replay attacks
-  const requestAge = Math.abs(
-    Date.now() / 1000 - Number.parseInt(timestamp, 10)
-  );
+  const parsedTimestamp = Number.parseInt(timestamp, 10);
+  if (Number.isNaN(parsedTimestamp)) {
+    return false;
+  }
+  const requestAge = Math.abs(Date.now() / 1000 - parsedTimestamp);
   if (requestAge > 300) {
     return false;
   }

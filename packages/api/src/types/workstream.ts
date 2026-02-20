@@ -55,6 +55,7 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "ASSIGNEE_CHANGED",
   "BLOCKED",
   "UNBLOCKED",
+  "LOOP_COMPLETED",
 ] as const;
 export type WorkstreamEventType =
   (typeof WORKSTREAM_EVENT_TYPE_OPTIONS)[number];

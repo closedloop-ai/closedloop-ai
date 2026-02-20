@@ -6,6 +6,7 @@ import type {
   VerifiedApiKeyContext,
 } from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
 
 /**
  * Map a Prisma ApiKey record to the ApiKey API type (excludes keyHash).
@@ -89,16 +90,23 @@ export const apiKeysService = {
 
   /**
    * Revoke an API key by setting revokedAt to the current time.
+   * Admins can revoke any key in the org; regular users can only revoke their own.
    * Returns false if the key was not found or already revoked.
    */
-  revoke(id: string, organizationId: string): Promise<boolean> {
+  revoke(
+    id: string,
+    organizationId: string,
+    userId: string,
+    orgRole?: string
+  ): Promise<boolean> {
     return withDb(async (db) => {
+      const where =
+        orgRole === "org:admin"
+          ? { id, organizationId, revokedAt: null }
+          : { id, organizationId, userId, revokedAt: null };
+
       const result = await db.apiKey.updateMany({
-        where: {
-          id,
-          organizationId,
-          revokedAt: null,
-        },
+        where,
         data: {
           revokedAt: new Date(),
         },
@@ -136,7 +144,12 @@ export const apiKeysService = {
         where: { id: record.id },
         data: { lastUsedAt: now },
       })
-    ).catch(() => {});
+    ).catch((error: unknown) => {
+      log.error("Failed to update API key lastUsedAt", {
+        apiKeyId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     return {
       userId: record.userId,

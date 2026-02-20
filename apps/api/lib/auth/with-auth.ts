@@ -16,7 +16,7 @@ import { unauthorizedResponse } from "../route-utils";
  * Next.js route context - matches generated type from @/.next/types/routes
  * In App Router, all route params are single strings (not arrays)
  */
-type RouteContext<_TRoute extends string = string> = {
+export type RouteContext<_TRoute extends string = string> = {
   params: Promise<Record<string, string>>;
 };
 

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { env } from "@/env";
@@ -16,7 +17,15 @@ export async function POST(request: Request) {
   // Reject requests when INTERNAL_API_SECRET is not configured or header does not match
   const internalSecret = env.INTERNAL_API_SECRET;
   const headerSecret = request.headers.get("X-Internal-Secret");
-  if (!internalSecret || headerSecret !== internalSecret) {
+  if (!(internalSecret && headerSecret)) {
+    return unauthorizedResponse();
+  }
+  const expectedBuf = Buffer.from(internalSecret, "utf8");
+  const actualBuf = Buffer.from(headerSecret, "utf8");
+  if (
+    expectedBuf.length !== actualBuf.length ||
+    !timingSafeEqual(expectedBuf, actualBuf)
+  ) {
     return unauthorizedResponse();
   }
 

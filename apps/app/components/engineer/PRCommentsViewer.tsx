@@ -106,6 +106,20 @@ function buildThreads(comments: PRComment[]): CommentThread[] {
   );
 }
 
+function resolveDisplayStatus(
+  statuses: Record<string, { status: string; chatStarted?: boolean }>,
+  commentId: string
+): CommentDisplayStatus {
+  const entry = statuses[commentId];
+  if (!entry) {
+    return "pending";
+  }
+  if (entry.status === "pending" && entry.chatStarted) {
+    return "analyzing";
+  }
+  return entry.status as CommentDisplayStatus;
+}
+
 function isThreadVisible(status: string, filter: FilterType): boolean {
   if (filter === "pending") {
     return status === "pending";
@@ -211,98 +225,38 @@ export function PRCommentsViewer({
     setStatusVersion((v) => v + 1);
   };
 
-  // Handler for opening chat to address a comment
+  // Handler for opening chat to address a comment (Claude or Codex)
   const handleProposeFix = (
     comment: PRComment,
     replies: PRComment[] = [],
-    autoStart = true
+    autoStart = true,
+    provider?: "codex"
   ) => {
     if (autoStart) {
       markChatStarted(prNumber, comment.id);
       setStatusVersion((v) => v + 1);
     }
     if (onCommentSelected) {
-      // Callback mode: parent handles the comment chat UI
-      onCommentSelected(comment, replies, autoStart);
+      onCommentSelected(comment, replies, autoStart, provider);
     } else {
-      // Dialog mode: open modal internally
       setAddressingComment(comment);
       setAddressingReplies(replies);
     }
   };
 
-  // Handler for opening Codex chat to address a comment
-  const handleProposeFixCodex = (
-    comment: PRComment,
-    replies: PRComment[] = []
-  ) => {
-    markChatStarted(prNumber, comment.id);
-    setStatusVersion((v) => v + 1);
-    if (onCommentSelected) {
-      onCommentSelected(comment, replies, true, "codex");
-    } else {
-      // Dialog mode: open modal same as Claude (CommentChatDialog doesn't support Codex auto-start)
-      setAddressingComment(comment);
-      setAddressingReplies(replies);
-    }
-  };
+  const getStatus = (commentId: string): CommentDisplayStatus =>
+    resolveDisplayStatus(commentStatuses, commentId);
 
-  // Get status for a comment
-  const getStatus = (commentId: string): CommentDisplayStatus => {
-    const entry = commentStatuses[commentId];
-    if (!entry) {
-      return "pending";
-    }
-    if (entry.status === "pending" && entry.chatStarted) {
-      return "analyzing";
-    }
-    return entry.status;
-  };
-
-  // Loading state
   if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-        <Loader2 className="mb-3 size-8 animate-spin" />
-        <p className="text-sm">Loading PR comments...</p>
-      </div>
-    );
+    return <CommentsLoadingState />;
   }
 
-  // Error state
   if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="mb-3 flex size-12 items-center justify-center rounded-full bg-destructive/10">
-          <MessageSquare className="size-6 text-destructive" />
-        </div>
-        <p className="mb-2 font-medium text-destructive text-sm">
-          Failed to load comments
-        </p>
-        <p className="mb-4 text-muted-foreground text-xs">
-          {error instanceof Error ? error.message : "Unknown error"}
-        </p>
-        <Button onClick={() => refetch()} size="sm" variant="outline">
-          <RefreshCw className="mr-2 size-4" />
-          Retry
-        </Button>
-      </div>
-    );
+    return <CommentsErrorState error={error} onRetry={refetch} />;
   }
 
-  // Empty state
   if (!threads.length) {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="mb-3 flex size-12 items-center justify-center rounded-full bg-muted">
-          <MessageSquare className="size-6 text-muted-foreground" />
-        </div>
-        <p className="mb-1 font-medium text-sm">No comments yet</p>
-        <p className="text-muted-foreground text-xs">
-          Comments on this PR will appear here
-        </p>
-      </div>
-    );
+    return <CommentsEmptyState />;
   }
 
   const pendingCount = statusCounts.pending;
@@ -364,52 +318,19 @@ export function PRCommentsViewer({
 
       {/* Comments list */}
       <div className="flex-1 space-y-3 overflow-y-auto">
-        {filteredThreads.inline.length === 0 &&
-        filteredThreads.general.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-center">
-            <Filter className="mb-2 size-8 text-muted-foreground/50" />
-            <p className="text-muted-foreground text-sm">
-              No {filter === "pending" ? "pending" : "resolved"} comments
-            </p>
-          </div>
-        ) : (
-          <>
-            {filteredThreads.inline.length > 0 && (
-              <CommentSection
-                codexAvailable={codexData?.available}
-                commentStatuses={commentStatuses}
-                getStatus={getStatus}
-                icon={<FileCode className="size-3.5" />}
-                label="Inline Comments"
-                markOverflowSeen={markOverflowSeen}
-                onDismiss={handleDismiss}
-                onProposeFix={handleProposeFix}
-                onProposeFixCodex={handleProposeFixCodex}
-                onReopen={handleReopen}
-                onReviewCodex={codexData?.available ? onReviewCodex : undefined}
-                overflowSeen={overflowSeen}
-                threads={filteredThreads.inline}
-              />
-            )}
-            {filteredThreads.general.length > 0 && (
-              <CommentSection
-                codexAvailable={codexData?.available}
-                commentStatuses={commentStatuses}
-                getStatus={getStatus}
-                icon={<MessageSquare className="size-3.5" />}
-                label="General Comments"
-                markOverflowSeen={markOverflowSeen}
-                onDismiss={handleDismiss}
-                onProposeFix={handleProposeFix}
-                onProposeFixCodex={handleProposeFixCodex}
-                onReopen={handleReopen}
-                onReviewCodex={codexData?.available ? onReviewCodex : undefined}
-                overflowSeen={overflowSeen}
-                threads={filteredThreads.general}
-              />
-            )}
-          </>
-        )}
+        <FilteredComments
+          codexAvailable={codexData?.available}
+          commentStatuses={commentStatuses}
+          filter={filter}
+          filteredThreads={filteredThreads}
+          getStatus={getStatus}
+          markOverflowSeen={markOverflowSeen}
+          onDismiss={handleDismiss}
+          onProposeFix={handleProposeFix}
+          onReopen={handleReopen}
+          onReviewCodex={codexData?.available ? onReviewCodex : undefined}
+          overflowSeen={overflowSeen}
+        />
       </div>
 
       {/* Comment chat dialog - only rendered when not using callback mode */}
@@ -447,7 +368,6 @@ function CommentSection({
   onReviewCodex,
   getStatus,
   onProposeFix,
-  onProposeFixCodex,
   onDismiss,
   onReopen,
 }: Readonly<{
@@ -463,9 +383,9 @@ function CommentSection({
   onProposeFix: (
     comment: PRComment,
     replies: PRComment[],
-    autoStart: boolean
+    autoStart: boolean,
+    provider?: "codex"
   ) => void;
-  onProposeFixCodex: (comment: PRComment, replies: PRComment[]) => void;
   onDismiss: (commentId: string) => void;
   onReopen: (commentId: string) => void;
 }>) {
@@ -489,7 +409,7 @@ function CommentSection({
             onProposeFix={() => onProposeFix(thread.root, thread.replies, true)}
             onProposeFixCodex={
               codexAvailable
-                ? () => onProposeFixCodex(thread.root, thread.replies)
+                ? () => onProposeFix(thread.root, thread.replies, true, "codex")
                 : undefined
             }
             onReopen={() => onReopen(thread.root.id)}
@@ -506,5 +426,131 @@ function CommentSection({
         ))}
       </div>
     </div>
+  );
+}
+
+function CommentsLoadingState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+      <Loader2 className="mb-3 size-8 animate-spin" />
+      <p className="text-sm">Loading PR comments...</p>
+    </div>
+  );
+}
+
+function CommentsErrorState({
+  error,
+  onRetry,
+}: Readonly<{ error: Error; onRetry: () => void }>) {
+  const message = error instanceof Error ? error.message : "Unknown error";
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <div className="mb-3 flex size-12 items-center justify-center rounded-full bg-destructive/10">
+        <MessageSquare className="size-6 text-destructive" />
+      </div>
+      <p className="mb-2 font-medium text-destructive text-sm">
+        Failed to load comments
+      </p>
+      <p className="mb-4 text-muted-foreground text-xs">{message}</p>
+      <Button onClick={onRetry} size="sm" variant="outline">
+        <RefreshCw className="mr-2 size-4" />
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function CommentsEmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <div className="mb-3 flex size-12 items-center justify-center rounded-full bg-muted">
+        <MessageSquare className="size-6 text-muted-foreground" />
+      </div>
+      <p className="mb-1 font-medium text-sm">No comments yet</p>
+      <p className="text-muted-foreground text-xs">
+        Comments on this PR will appear here
+      </p>
+    </div>
+  );
+}
+
+function FilteredComments({
+  filteredThreads,
+  filter,
+  codexAvailable,
+  commentStatuses,
+  getStatus,
+  markOverflowSeen,
+  onDismiss,
+  onProposeFix,
+  onReopen,
+  onReviewCodex,
+  overflowSeen,
+}: Readonly<{
+  filteredThreads: { inline: CommentThread[]; general: CommentThread[] };
+  filter: FilterType;
+  codexAvailable?: boolean;
+  commentStatuses: Record<string, { commitSha?: string }>;
+  getStatus: (id: string) => CommentDisplayStatus;
+  markOverflowSeen: () => void;
+  onDismiss: (commentId: string) => void;
+  onProposeFix: (
+    comment: PRComment,
+    replies: PRComment[],
+    autoStart: boolean,
+    provider?: "codex"
+  ) => void;
+  onReopen: (commentId: string) => void;
+  onReviewCodex?: (commentId: string) => void;
+  overflowSeen: boolean;
+}>) {
+  if (
+    filteredThreads.inline.length === 0 &&
+    filteredThreads.general.length === 0
+  ) {
+    const label = filter === "pending" ? "pending" : "resolved";
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-center">
+        <Filter className="mb-2 size-8 text-muted-foreground/50" />
+        <p className="text-muted-foreground text-sm">No {label} comments</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {filteredThreads.inline.length > 0 && (
+        <CommentSection
+          codexAvailable={codexAvailable}
+          commentStatuses={commentStatuses}
+          getStatus={getStatus}
+          icon={<FileCode className="size-3.5" />}
+          label="Inline Comments"
+          markOverflowSeen={markOverflowSeen}
+          onDismiss={onDismiss}
+          onProposeFix={onProposeFix}
+          onReopen={onReopen}
+          onReviewCodex={onReviewCodex}
+          overflowSeen={overflowSeen}
+          threads={filteredThreads.inline}
+        />
+      )}
+      {filteredThreads.general.length > 0 && (
+        <CommentSection
+          codexAvailable={codexAvailable}
+          commentStatuses={commentStatuses}
+          getStatus={getStatus}
+          icon={<MessageSquare className="size-3.5" />}
+          label="General Comments"
+          markOverflowSeen={markOverflowSeen}
+          onDismiss={onDismiss}
+          onProposeFix={onProposeFix}
+          onReopen={onReopen}
+          onReviewCodex={onReviewCodex}
+          overflowSeen={overflowSeen}
+          threads={filteredThreads.general}
+        />
+      )}
+    </>
   );
 }
