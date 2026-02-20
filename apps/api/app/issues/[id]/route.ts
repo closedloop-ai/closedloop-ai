@@ -1,5 +1,6 @@
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -10,7 +11,7 @@ import {
 import { issuesService } from "../service";
 import { updateIssueValidator } from "../validators";
 
-export const GET = withAuth<IssueWithWorkstream, "/issues/[id]">(
+export const GET = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -28,7 +29,7 @@ export const GET = withAuth<IssueWithWorkstream, "/issues/[id]">(
   }
 );
 
-export const PUT = withAuth<IssueWithWorkstream, "/issues/[id]">(
+export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -46,10 +47,11 @@ export const PUT = withAuth<IssueWithWorkstream, "/issues/[id]">(
     } catch (error) {
       return errorResponse("Failed to update issue", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAuth<{ deleted: true }, "/issues/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/issues/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -58,5 +60,6 @@ export const DELETE = withAuth<{ deleted: true }, "/issues/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete issue", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

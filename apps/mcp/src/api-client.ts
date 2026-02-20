@@ -1,21 +1,33 @@
-import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
+import type { VerifiedApiKeyContext } from "./api-key-contract.js";
 
-const SYMPHONY_API_URL =
-  process.env.SYMPHONY_API_URL ?? "http://localhost:3002";
-const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET ?? "";
+const CLOSEDLOOP_API_URL =
+  process.env.CLOSEDLOOP_API_URL ?? "http://localhost:3002";
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required but not set`);
+  }
+  return value;
+}
+
+const INTERNAL_API_SECRET = requireEnv("INTERNAL_API_SECRET");
+
+async function getResponseErrorMessage(response: Response): Promise<string> {
+  const body = await response.text().catch(() => "");
+  const bodySuffix = body ? ` — ${body}` : "";
+  return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
+}
 
 export class ApiClient {
   private readonly baseUrl: string;
-  private readonly context: VerifiedApiKeyContext;
   private readonly plaintextKey: string;
 
   constructor(
     baseUrl: string,
-    context: VerifiedApiKeyContext,
+    _context: VerifiedApiKeyContext,
     plaintextKey: string
   ) {
     this.baseUrl = baseUrl;
-    this.context = context;
     this.plaintextKey = plaintextKey;
   }
 
@@ -24,8 +36,6 @@ export class ApiClient {
       Authorization: `Bearer ${this.plaintextKey}`,
       "Content-Type": "application/json",
       "X-Internal-Secret": INTERNAL_API_SECRET,
-      "X-User-Id": this.context.userId,
-      "X-Organization-Id": this.context.organizationId,
     };
   }
 
@@ -41,9 +51,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -56,9 +64,20 @@ export class ApiClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
+    }
+    return response.json() as Promise<T>;
+  }
+
+  async put<T>(path: string, body: unknown): Promise<T> {
+    const url = new URL(path, this.baseUrl);
+    const response = await fetch(url.toString(), {
+      method: "PUT",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -70,9 +89,7 @@ export class ApiClient {
       headers: this.buildHeaders(),
     });
     if (!response.ok) {
-      throw new Error(
-        `API request failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return response.json() as Promise<T>;
   }
@@ -85,7 +102,7 @@ export class ApiClient {
 export async function verifyApiKey(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
-  const verifyUrl = new URL("/internal/api-keys/verify", SYMPHONY_API_URL);
+  const verifyUrl = new URL("/internal/api-keys/verify", CLOSEDLOOP_API_URL);
   const response = await fetch(verifyUrl.toString(), {
     method: "POST",
     headers: {
@@ -97,13 +114,15 @@ export async function verifyApiKey(
   if (!response.ok) {
     // 401 means the key is invalid; 5xx means the server is broken
     if (response.status >= 500) {
-      throw new Error(
-        `API key verification failed: ${response.status} ${response.statusText}`
-      );
+      throw new Error(await getResponseErrorMessage(response));
     }
     return null;
   }
-  return response.json() as Promise<VerifiedApiKeyContext>;
+  const body = (await response.json()) as {
+    success: boolean;
+    data: VerifiedApiKeyContext;
+  };
+  return body.data;
 }
 
 /**
@@ -113,5 +132,22 @@ export function createApiClient(
   context: VerifiedApiKeyContext,
   plaintextKey: string
 ): ApiClient {
-  return new ApiClient(SYMPHONY_API_URL, context, plaintextKey);
+  return new ApiClient(CLOSEDLOOP_API_URL, context, plaintextKey);
+}
+
+/**
+ * Check whether the upstream API server is reachable.
+ * Any HTTP response (even 404) means it's alive; only connection errors mean it's down.
+ */
+export async function checkApiReachable(): Promise<boolean> {
+  try {
+    const url = new URL("/", CLOSEDLOOP_API_URL);
+    await fetch(url.toString(), {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -3,7 +3,6 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { withAuth } from "@/lib/auth/with-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -49,7 +48,7 @@ export const GET = withAnyAuth<ArtifactWithWorkstream[], "/artifacts">(
   }
 );
 
-export const POST = withAuth<Artifact, "/artifacts">(
+export const POST = withAnyAuth<Artifact, "/artifacts">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -73,5 +72,6 @@ export const POST = withAuth<Artifact, "/artifacts">(
     } catch (error) {
       return errorResponse("Failed to create artifact", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

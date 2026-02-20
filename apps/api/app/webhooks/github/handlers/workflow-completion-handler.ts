@@ -153,6 +153,7 @@ export async function handleExecutionSuccess(
     // Create EntityLink: plan artifact → PRODUCES → PR external link
     await tx.entityLink.create({
       data: {
+        organizationId: planArtifact.organizationId,
         sourceId: ctx.artifactId,
         sourceType: "ARTIFACT",
         targetId: prLink.id,
@@ -185,6 +186,7 @@ export async function handleExecutionSuccess(
     // Create EntityLink: PR → PRODUCES → preview deployment
     await tx.entityLink.create({
       data: {
+        organizationId: planArtifact.organizationId,
         sourceId: prLink.id,
         sourceType: "EXTERNAL_LINK",
         targetId: previewLink.id,

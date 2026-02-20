@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import { parseError } from "@repo/observability/error";
@@ -7,7 +8,8 @@ import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { usersService } from "@/app/users/service";
-import { unauthorizedResponse } from "../route-utils";
+import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
+import { hasApiKeyScopes } from "./api-key-scopes";
 import type {
   AuthContext,
   AuthenticatedHandler,
@@ -32,7 +34,8 @@ import type {
  * });
  */
 export function withApiKeyAuth<TResponse, TRoute extends string = string>(
-  handler: AuthenticatedHandler<TResponse, TRoute>
+  handler: AuthenticatedHandler<TResponse, TRoute>,
+  options?: { requiredScopes?: ApiKeyScope[] }
 ): (
   request: NextRequest,
   context: RouteContext<TRoute>
@@ -71,7 +74,16 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         clerkUserId: user.clerkId,
         clerkOrgId: keyContext.organizationId,
         orgRole: undefined,
+        authMethod: "api_key",
+        apiKeyScopes: keyContext.scopes,
       };
+
+      if (
+        options?.requiredScopes &&
+        !hasApiKeyScopes(authContext, options.requiredScopes)
+      ) {
+        return forbiddenResponse();
+      }
 
       return handler(authContext, request, routeContext.params);
     } catch (error) {

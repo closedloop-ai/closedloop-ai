@@ -157,6 +157,7 @@ async function createArtifactRecord(
   if (sourceId && sourceType) {
     await tx.entityLink.create({
       data: {
+        organizationId,
         sourceId,
         sourceType,
         sourceVersion,
@@ -221,7 +222,7 @@ export const artifactsService = {
             workflowName: "symphony-dispatch",
           },
           orderBy: { createdAt: "desc" },
-          take: 100,
+          take: uniqueWorkstreamIds.length,
           select: {
             workstreamId: true,
             status: true,
@@ -592,6 +593,7 @@ export const artifactsService = {
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: id, sourceType: "ARTIFACT" },
             { targetId: id, targetType: "ARTIFACT" },
@@ -699,7 +701,7 @@ export const artifactsService = {
         };
 
         // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
-        await entityLinksService.createLink({
+        await entityLinksService.createLink(organizationId, {
           sourceId: matchedArtifact.id,
           sourceType: "ARTIFACT",
           targetId: artifact.id,
@@ -815,6 +817,7 @@ export const artifactsService = {
     >
   ) {
     const sourceLinks = await entityLinksService.findSourceLinks(
+      artifact.organizationId,
       artifact.id,
       "ARTIFACT",
       LinkType.PRODUCES
@@ -2001,6 +2004,7 @@ Please try again or contact support if the issue persists.`
     for (const prd of prds) {
       // Find the implementation plan(s) that this PRD produced via PRODUCES links
       const targetLinks = await entityLinksService.findTargetLinks(
+        organizationId,
         prd.id,
         "ARTIFACT",
         LinkType.PRODUCES
@@ -2120,6 +2124,7 @@ Please try again or contact support if the issue persists.`
       const parentLink = await withDb((db) =>
         db.entityLink.findFirst({
           where: {
+            organizationId,
             targetId: currentId,
             targetType: "ARTIFACT",
             sourceType: "ARTIFACT",
@@ -2157,6 +2162,7 @@ Please try again or contact support if the issue persists.`
       const childLinks = await withDb((db) =>
         db.entityLink.findMany({
           where: {
+            organizationId,
             sourceId: currentId,
             sourceType: "ARTIFACT",
             targetType: "ARTIFACT",
