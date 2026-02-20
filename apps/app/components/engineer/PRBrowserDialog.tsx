@@ -394,18 +394,26 @@ export function PRBrowserDialog({
       setPrFiles([]);
       return;
     }
+    let cancelled = false;
     const encodedRepo = encodeURIComponent(selectedRepo.path);
     fetch(
       `/api/engineer/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
     )
       .then((res) => res.json())
       .then((data) => {
-        if (data.sha) {
+        if (!cancelled && data.sha) {
           setCommitSha(data.sha);
         }
       })
       .catch(() => {});
-    fetchPRFiles(selectedRepo.path, selectedPR.number).then(setPrFiles);
+    fetchPRFiles(selectedRepo.path, selectedPR.number).then((files) => {
+      if (!cancelled) {
+        setPrFiles(files);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRepo, selectedPR]);
 
   const handleCommentSelected = useCallback(
@@ -664,6 +672,10 @@ export function PRBrowserDialog({
   const hasAnyReview = reviewEntries.length > 0;
   const commentChatEntries = Object.entries(commentChats);
   const hasAnyCommentChat = commentChatEntries.length > 0;
+  const activeChatCommentIds = useMemo(
+    () => new Set(Object.values(commentChats).map((e) => e.comment.id)),
+    [commentChats]
+  );
   /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
   const restoreOrShowSettings = useCallback(async () => {
     if (!(selectedRepo && selectedPR)) {
@@ -1381,7 +1393,7 @@ export function PRBrowserDialog({
                     />
                   ))}
                   <PRCommentsViewer
-                    activeChatCommentIds={streamingCommentIds}
+                    activeChatCommentIds={activeChatCommentIds}
                     key={selectedPR.number}
                     onCommentDismissed={handleCommentDismissed}
                     onCommentSelected={handleCommentSelected}
@@ -1393,6 +1405,7 @@ export function PRBrowserDialog({
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
                     statusRefreshKey={commentStatusKey}
+                    streamingCommentIds={streamingCommentIds}
                     ticketId={`pr-${selectedPR.number}`}
                   />
                 </div>

@@ -83,6 +83,7 @@ type PRCommentCardProps = {
   status: CommentDisplayStatus;
   commitSha?: string;
   replies?: PRComment[];
+  isStreaming?: boolean;
   onProposeFix?: () => void;
   onProposeFixCodex?: () => void;
   onReviewCodex?: () => void;
@@ -108,8 +109,7 @@ function getStatusBadge(status: CommentDisplayStatus, commitSha?: string) {
       return {
         icon: MessageSquare,
         label: "Analyzing",
-        className:
-          "bg-blue-500/10 text-blue-700 dark:text-blue-400 animate-pulse",
+        className: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
       };
     case "addressed":
       return {
@@ -194,6 +194,7 @@ export function PRCommentCard({
   status,
   commitSha,
   replies = [],
+  isStreaming = false,
   onProposeFix,
   onProposeFixCodex,
   onReviewCodex,
@@ -338,11 +339,12 @@ export function PRCommentCard({
 
       {/* Footer: Status badge and actions */}
       <div className="flex items-center justify-between gap-2">
-        {/* Status badge (icon-only with tooltip) */}
+        {/* Status badge (icon-only with tooltip) — pulses while streaming */}
         <span
           className={cn(
             "flex size-6 shrink-0 items-center justify-center rounded-full",
-            statusBadge.className
+            statusBadge.className,
+            isStreaming && "animate-pulse"
           )}
           title={statusBadge.label}
         >

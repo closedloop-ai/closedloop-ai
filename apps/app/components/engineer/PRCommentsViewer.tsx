@@ -47,6 +47,8 @@ type PRCommentsViewerProps = {
   onReviewCodex?: (commentId: string) => void;
   /** Comment IDs that have an active chat session (used to derive "analyzing" status) */
   activeChatCommentIds?: ReadonlySet<string>;
+  /** Comment IDs where the assistant is actively streaming (used for pulse animation) */
+  streamingCommentIds?: ReadonlySet<string>;
 };
 
 type FilterType = "all" | "pending" | "resolved";
@@ -150,6 +152,7 @@ export function PRCommentsViewer({
   onCommentDismissed,
   onReviewCodex,
   activeChatCommentIds,
+  streamingCommentIds,
 }: Readonly<PRCommentsViewerProps>) {
   const [filter, setFilter] = useState<FilterType>("pending");
   const [addressingComment, setAddressingComment] = useState<PRComment | null>(
@@ -335,6 +338,7 @@ export function PRCommentsViewer({
           onReopen={handleReopen}
           onReviewCodex={codexData?.available ? onReviewCodex : undefined}
           overflowSeen={overflowSeen}
+          streamingCommentIds={streamingCommentIds}
         />
       </div>
 
@@ -372,6 +376,7 @@ function CommentSection({
   markOverflowSeen,
   onReviewCodex,
   getStatus,
+  streamingCommentIds,
   onProposeFix,
   onDismiss,
   onReopen,
@@ -385,6 +390,7 @@ function CommentSection({
   markOverflowSeen: () => void;
   onReviewCodex?: (commentId: string) => void;
   getStatus: (id: string) => CommentDisplayStatus;
+  streamingCommentIds?: ReadonlySet<string>;
   onProposeFix: (
     comment: PRComment,
     replies: PRComment[],
@@ -408,6 +414,7 @@ function CommentSection({
           <PRCommentCard
             comment={thread.root}
             commitSha={commentStatuses[thread.root.id]?.commitSha}
+            isStreaming={streamingCommentIds?.has(thread.root.id)}
             key={thread.root.id}
             markOverflowSeen={markOverflowSeen}
             onDismiss={() => onDismiss(thread.root.id)}
@@ -491,6 +498,7 @@ function FilteredComments({
   onReopen,
   onReviewCodex,
   overflowSeen,
+  streamingCommentIds,
 }: Readonly<{
   filteredThreads: { inline: CommentThread[]; general: CommentThread[] };
   filter: FilterType;
@@ -508,6 +516,7 @@ function FilteredComments({
   onReopen: (commentId: string) => void;
   onReviewCodex?: (commentId: string) => void;
   overflowSeen: boolean;
+  streamingCommentIds?: ReadonlySet<string>;
 }>) {
   if (
     filteredThreads.inline.length === 0 &&
@@ -537,6 +546,7 @@ function FilteredComments({
           onReopen={onReopen}
           onReviewCodex={onReviewCodex}
           overflowSeen={overflowSeen}
+          streamingCommentIds={streamingCommentIds}
           threads={filteredThreads.inline}
         />
       )}
@@ -553,6 +563,7 @@ function FilteredComments({
           onReopen={onReopen}
           onReviewCodex={onReviewCodex}
           overflowSeen={overflowSeen}
+          streamingCommentIds={streamingCommentIds}
           threads={filteredThreads.general}
         />
       )}
