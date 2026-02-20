@@ -196,6 +196,21 @@ export function PRBrowserDialog({
     activeCommentChatKeyRef.current = activeCommentChatKey;
   }, [activeCommentChatKey]);
 
+  // Guard: track keys whose disk history has already been wiped this PR session
+  // to prevent double-DELETE on rapid double-click (stale-closure in handleCommentSelected).
+  const deletedHistoryKeysRef = useRef(new Set<string>());
+
+  // Prune guard keys when their chat is removed (deselect, dismiss, resolve, evict)
+  // so re-opening the same comment correctly wipes stale disk history.
+  useEffect(() => {
+    const keys = deletedHistoryKeysRef.current;
+    for (const k of keys) {
+      if (!commentChats[k]) {
+        keys.delete(k);
+      }
+    }
+  }, [commentChats]);
+
   // Track which comment IDs have an actively streaming assistant response
   const [streamingCommentIds, setStreamingCommentIds] = useState<Set<string>>(
     () => new Set()
@@ -403,6 +418,7 @@ export function PRBrowserDialog({
     setSelectedPR(null);
     setCommentChats({});
     setActiveCommentChatKey(null);
+    deletedHistoryKeysRef.current.clear();
     setPreviewComment(null);
     setPrState("open");
   };
@@ -413,6 +429,7 @@ export function PRBrowserDialog({
     setSelectedPR(pr);
     setCommentChats({});
     setActiveCommentChatKey(null);
+    deletedHistoryKeysRef.current.clear();
     setPreviewComment(null);
     setReviews({});
     setCommitSha(undefined);
@@ -490,7 +507,14 @@ export function PRBrowserDialog({
 
         // Clear stale history from disk and query cache so the auto-start
         // effect fires fresh instead of seeing old messages.
-        if (isNew && selectedPR && selectedRepo) {
+        // Guard with ref to prevent double-DELETE on rapid double-click.
+        if (
+          isNew &&
+          !deletedHistoryKeysRef.current.has(key) &&
+          selectedPR &&
+          selectedRepo
+        ) {
+          deletedHistoryKeysRef.current.add(key);
           const tid = `pr-${selectedPR.number}`;
           queryClient.removeQueries({
             queryKey: queryKeys.commentChatHistory(
