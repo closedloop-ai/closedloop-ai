@@ -461,9 +461,9 @@ export function PRBrowserDialog({
         // autoStart: create persistent chat entry
         setPreviewComment(null);
 
-        // Track whether the updater actually created a new entry, so we
-        // only wipe disk/cache when genuinely starting fresh (not deduping).
-        const created = { value: false };
+        // Check whether this is a genuinely new entry before the updater
+        // runs, so we only wipe disk/cache when starting fresh (not deduping).
+        const isNew = !commentChats[key];
 
         setCommentChats((prev) => {
           // Dedup: already exists, just switch to it
@@ -471,7 +471,6 @@ export function PRBrowserDialog({
             return prev;
           }
 
-          created.value = true;
           const next = { ...prev };
 
           // Evict oldest non-active slot if at capacity
@@ -491,7 +490,7 @@ export function PRBrowserDialog({
 
         // Clear stale history from disk and query cache so the auto-start
         // effect fires fresh instead of seeing old messages.
-        if (created.value && selectedPR && selectedRepo) {
+        if (isNew && selectedPR && selectedRepo) {
           const tid = `pr-${selectedPR.number}`;
           queryClient.removeQueries({
             queryKey: queryKeys.commentChatHistory(
