@@ -12,7 +12,7 @@ import { MODEL_PRICING } from "@repo/api/src/types/loop";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { artifactsService } from "@/app/artifacts/service";
+import { artifactsService, getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
 import {
   isInvalidStatusTransitionError,
@@ -310,7 +310,8 @@ export async function buildContextPack(
   loop: LoopForContextPack,
   organizationId: string,
   stateKeyPrefix: string,
-  secrets?: { anthropicApiKey: string; githubToken?: string }
+  secrets?: { anthropicApiKey: string; githubToken?: string },
+  committer?: { name: string; email: string }
 ): Promise<string> {
   const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
     await Promise.all([
@@ -328,6 +329,7 @@ export async function buildContextPack(
     repoInfo: loop.repo ?? undefined,
     priorLoopSummaries:
       priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
+    committer,
     secrets,
   };
 
@@ -573,16 +575,26 @@ export async function launchLoop(
       );
     }
 
-    // 4. Build context pack (including secrets) and upload to S3
+    // 4. Resolve committer identity for git attribution on bot commits
+    const committerInfo = await getCommitterInfo(loop.userId);
+    const committer = committerInfo
+      ? {
+          name: committerInfo.committerName,
+          email: committerInfo.committerEmail,
+        }
+      : undefined;
+
+    // 5. Build context pack (including secrets + committer) and upload to S3
     s3StateKey = getStateKeyPrefix(organizationId, loopId);
     const s3ContextKey = await buildContextPack(
       loop,
       organizationId,
       s3StateKey,
-      { anthropicApiKey, githubToken }
+      { anthropicApiKey, githubToken },
+      committer
     );
 
-    // 5. Generate pre-signed GET URL for context pack so the container can
+    // 6. Generate pre-signed GET URL for context pack so the container can
     // download it without direct S3 credentials (multi-tenant isolation).
     // Use a moderate TTL to tolerate ECS startup delays.
     // This limits the exposure window for secrets in the context pack.
@@ -592,12 +604,12 @@ export async function launchLoop(
       CONTEXT_PACK_URL_TTL_SECONDS
     );
 
-    // 6. Resolve parent state info for resume (if this is a child loop)
+    // 7. Resolve parent state info for resume (if this is a child loop)
     const parentInfo = loop.parentLoopId
       ? await resolveParentLoopInfo(loop.parentLoopId, organizationId)
       : undefined;
 
-    // 7. Launch ECS task
+    // 8. Launch ECS task
     // CLOSEDLOOP_AUTH_TOKEN is intentionally passed as an env var, not in the
     // context pack. The harness reads it but the sandboxed child process (Claude)
     // cannot access parent env vars, making this more secure than the context
@@ -621,7 +633,7 @@ export async function launchLoop(
       parentBranchName: parentInfo?.branchName ?? undefined,
     });
 
-    // 7. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
+    // 9. Update loop status to CLAIMED (or persist metadata if runner raced ahead).
     await claimOrPersistRunning(loopId, organizationId, taskArn, s3StateKey);
 
     log.info("[loop-orchestrator] Loop launched successfully", {
