@@ -1,4 +1,4 @@
-import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
+import type { VerifiedApiKeyContext } from "./api-key-contract.js";
 
 const CLOSEDLOOP_API_URL =
   process.env.CLOSEDLOOP_API_URL ?? "http://localhost:3002";

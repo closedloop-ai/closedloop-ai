@@ -66,4 +66,4 @@ ENV MCP_PORT=3010
 
 EXPOSE 3010
 
-CMD ["node", "apps/mcp/dist/apps/mcp/src/index.js"]
+CMD ["pnpm", "--filter", "@repo/mcp", "exec", "tsx", "apps/mcp/dist/apps/mcp/src/index.js"]

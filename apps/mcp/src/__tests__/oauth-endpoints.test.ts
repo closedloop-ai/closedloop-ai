@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
 import {
   afterAll,
   beforeAll,
@@ -10,6 +9,7 @@ import {
   it,
   vi,
 } from "vitest";
+import type { VerifiedApiKeyContext } from "../api-key-contract.js";
 
 const verifyApiKeyMock = vi.fn();
 const checkApiReachableMock = vi.fn();
@@ -1037,6 +1037,24 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).toBe(413);
     const json = JSON.parse(res.body) as { error: string };
     expect(json.error).toBe("payload_too_large");
+  });
+
+  it("returns 400 when mcp request body is malformed json", async () => {
+    const req = createMockRequest({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer sk_live_valid",
+      },
+      body: "{not-json",
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(400);
+    const json = JSON.parse(res.body) as { error: string };
+    expect(json.error).toBe("invalid_request");
   });
 
   it("accepts authenticated mcp initialize payload and reaches transport path", async () => {

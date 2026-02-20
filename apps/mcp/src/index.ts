@@ -10,10 +10,6 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  API_KEY_SCOPES,
-  type VerifiedApiKeyContext,
-} from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
 import {
   type ApiClient,
@@ -21,6 +17,10 @@ import {
   createApiClient,
   verifyApiKey,
 } from "./api-client.js";
+import {
+  API_KEY_SCOPES,
+  type VerifiedApiKeyContext,
+} from "./api-key-contract.js";
 import { registerBatchCreateArtifacts } from "./tools/batch-create-artifacts.js";
 import { registerCreateArtifact } from "./tools/create-artifact.js";
 import { registerCreateArtifactVersion } from "./tools/create-artifact-version.js";
@@ -1114,7 +1114,16 @@ async function handleMcp(
     }
     throw error;
   }
-  const parsedBody = JSON.parse(rawBody);
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(rawBody);
+  } catch {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "Malformed JSON request body",
+    });
+    return;
+  }
 
   const acquiredServer = acquireMcpServer(auth);
   const transport = new StreamableHTTPServerTransport({

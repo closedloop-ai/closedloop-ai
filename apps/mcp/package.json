@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "tsx watch --require ./src/preload.ts --env-file=.env.local src/index.ts",
     "build": "tsc",
-    "start": "node dist/apps/mcp/src/index.js",
+    "start": "tsx dist/apps/mcp/src/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -13,10 +13,10 @@
     "@modelcontextprotocol/sdk": "^1.10.0",
     "@repo/api": "workspace:*",
     "@repo/database": "workspace:*",
+    "tsx": "^4.0.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }
 }
