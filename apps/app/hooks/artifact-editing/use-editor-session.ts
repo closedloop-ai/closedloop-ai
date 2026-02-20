@@ -3,7 +3,7 @@
 import type { ArtifactDetail } from "@repo/api/src/types/artifact";
 import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
 import type { Editor, JSONContent } from "@tiptap/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { mergeCommentMarks } from "@/components/artifact-editor/merge-comment-marks";
 
 type UseEditorSessionConfig = {
@@ -70,21 +70,6 @@ export function useEditorSession(config: UseEditorSessionConfig) {
       ? generateArtifactRoomId(artifact.organizationId, artifact.slug)
       : null;
 
-  // Detect server-side version changes (e.g. loop completion creating a new
-  // artifact version) and force the editor to pick up the new content.
-  // When Liveblocks is active the editor ignores the `value` prop, so the
-  // only way to push new content in is via the contentReset mechanism.
-  const prevVersionRef = useRef(currentVersion);
-  useEffect(() => {
-    if (currentVersion !== prevVersionRef.current) {
-      prevVersionRef.current = currentVersion;
-      if (!isViewingHistorical) {
-        setContentResetValue(artifact.version.content ?? "");
-        setContentResetKey((key) => (key ?? 0) + 1);
-      }
-    }
-  }, [currentVersion, isViewingHistorical, artifact.version.content]);
-
   const exitEditMode = useCallback(() => {
     setIsEditing(false);
     setContentResetKey(undefined);
@@ -143,6 +128,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     // Editing state
     isEditing,
     isViewingHistorical,
+    latestVersion,
     liveblocksRoomId,
     openThreadCount,
 
