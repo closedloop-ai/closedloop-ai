@@ -416,13 +416,6 @@ export function PRBrowserDialog({
       provider: "claude" | "codex" = "claude"
     ) => {
       const key: string = `${comment.id}:${provider}`;
-      console.log("[PRBrowserDialog] handleCommentSelected", {
-        commentId: comment.id,
-        autoStart,
-        provider,
-        key,
-        existingKeys: Object.keys(commentChats),
-      });
 
       if (autoStart) {
         // autoStart: create persistent chat entry
@@ -504,7 +497,6 @@ export function PRBrowserDialog({
 
   const handleCommentChatResolved = useCallback(
     (key: string, _commentId: string) => {
-      console.log("[PRBrowserDialog] handleCommentChatResolved", { key });
       setCommentChats((prev) => {
         const next = { ...prev };
         delete next[key];
@@ -760,8 +752,6 @@ export function PRBrowserDialog({
             otherDups
           )
         );
-
-        console.log(`[pr-browser] Dedup found ${pairs.length} duplicate pairs`);
       } catch (err) {
         console.warn("[pr-browser] Dedup failed:", err);
       }
@@ -828,10 +818,6 @@ export function PRBrowserDialog({
         const dupIndices = new Set(pairs.map((p) => p[0]));
 
         patchReview(provider, { prCommentDupIndices: dupIndices });
-
-        console.log(
-          `[pr-browser] PR comment dedup found ${pairs.length} duplicates for ${provider}`
-        );
       } catch (err) {
         console.warn("[pr-browser] PR comment dedup failed:", err);
       }
@@ -864,9 +850,6 @@ export function PRBrowserDialog({
 
   const handleStructuredFindings = useCallback(
     (provider: string, findings: ReviewFinding[]) => {
-      console.log(
-        `[pr-browser] Received ${findings.length} structured findings for ${provider}`
-      );
       patchReview(provider, { structuredFindings: findings });
 
       // Re-run both dedup checks with structured findings (better file paths)
@@ -1106,13 +1089,6 @@ export function PRBrowserDialog({
       return <CommentEmptyState />;
     }
 
-    console.log("[PRBrowserDialog] renderRightPane", {
-      activeCommentChatKey,
-      previewCommentId: previewComment?.comment.id ?? null,
-      commentChatKeys: Object.keys(commentChats),
-      commentStatusKey,
-    });
-
     const showingComment =
       previewComment !== null || activeCommentChatKey !== null;
 
@@ -1176,12 +1152,6 @@ export function PRBrowserDialog({
               key={entry.comment.id}
               onChatCleared={() => setCommentStatusKey((k) => k + 1)}
               onDeselect={() => {
-                console.log("[PRBrowserDialog] onDeselect fired", {
-                  key,
-                  commentId: entry.comment.id,
-                  prNumber: selectedPR?.number,
-                  commentChatsKeys: Object.keys(commentChats),
-                });
                 // Remove entry (unmount) — no left-pane card to return to,
                 // so keeping it hidden would just orphan a background stream.
                 setCommentChats((prev) => {
@@ -1221,9 +1191,6 @@ export function PRBrowserDialog({
             key={`preview-${previewComment.comment.id}`}
             onChatCleared={() => setCommentStatusKey((k) => k + 1)}
             onDeselect={() => {
-              console.log("[PRBrowserDialog] EPHEMERAL onDeselect fired", {
-                commentId: previewComment.comment.id,
-              });
               setPreviewComment(null);
             }}
             onResolved={handlePreviewResolved}
