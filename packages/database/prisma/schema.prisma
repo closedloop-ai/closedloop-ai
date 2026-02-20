@@ -453,12 +453,13 @@ model Artifact {
   project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  versions     ArtifactVersion[]
-  ratings      ArtifactRating[]
-  evaluations  ArtifactEvaluation[]
-  performances GitHubActionRunPerformance[]
-  pullRequests GitHubPullRequest[]
-  loops        Loop[]
+  versions         ArtifactVersion[]
+  ratings          ArtifactRating[]
+  evaluations      ArtifactEvaluation[]
+  performances     GitHubActionRunPerformance[]
+  pullRequests     GitHubPullRequest[]
+  loops            Loop[]
+  fileAttachments  FileAttachment[]
 
   @@unique([organizationId, slug])
   @@unique([organizationId, templateForType])
@@ -536,6 +537,24 @@ model ArtifactRating {
   @@unique([artifactId, userId, organizationId])
   @@index([artifactId, organizationId])
   @@map("artifact_ratings")
+}
+
+model FileAttachment {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  bucket      String
+  key         String
+  filename    String
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdById String   @map("created_by_id") @db.Uuid
+
+  // Relations
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId])
+  @@map("file_attachments")
 }
 
 model PullRequestRating {
