@@ -102,6 +102,10 @@ export type ContextPack = {
     command: string;
     summary: string;
   }>;
+  committer?: {
+    name: string;
+    email: string;
+  };
   secrets?: {
     anthropicApiKey: string;
     githubToken?: string;

@@ -57,6 +57,8 @@ const config = {
   command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES"
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
+  committerName: null, // Injected from S3 context pack (triggering user's name)
+  committerEmail: null, // Injected from S3 context pack (triggering user's email)
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
   apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
   organizationId: process.env.ORGANIZATION_ID,
@@ -724,6 +726,13 @@ async function downloadContextPack() {
     log("info", "Extracted secrets from context pack");
   }
 
+  // Extract committer identity for git attribution (not a secret — safe to log).
+  if (pack.committer) {
+    config.committerName = pack.committer.name || null;
+    config.committerEmail = pack.committer.email || null;
+    log("info", `Committer: ${config.committerName} <${config.committerEmail}>`);
+  }
+
   return pack;
 }
 
@@ -837,14 +846,33 @@ function findExistingRunDir(workDir) {
 }
 
 /**
- * Write prd.md to the run directory. Used by all commands that have a prompt.
+ * Write prd.md to the run directory.
+ *
+ * Content priority:
+ * 1. contextPack.prompt — explicit user prompt (e.g., request-changes text)
+ * 2. First PRD artifact in contextPack.artifacts — the source PRD passed via contextRefs
+ *
+ * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
 function writePrdFile(targetDir, contextPack) {
-  if (!contextPack?.prompt) {
+  let prdContent = contextPack?.prompt ?? null;
+
+  // Fall back to the first PRD-type artifact from context refs
+  if (!prdContent && Array.isArray(contextPack?.artifacts)) {
+    const prdArtifact = contextPack.artifacts.find(
+      (a) => a.type === "PRD"
+    );
+    if (prdArtifact?.content) {
+      prdContent = prdArtifact.content;
+      log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
+    }
+  }
+
+  if (!prdContent) {
     return null;
   }
   const prdPath = path.join(targetDir, "prd.md");
-  fs.writeFileSync(prdPath, contextPack.prompt);
+  fs.writeFileSync(prdPath, prdContent);
   log("info", `Wrote prd.md to ${prdPath}`);
   return prdPath;
 }
@@ -938,12 +966,17 @@ function cloneRepo(workDir) {
     }
   );
 
-  // Configure git identity for any commits the agent might make
-  execFileSync("git", ["config", "user.name", "Symphony Agent"], {
+  // Configure git identity for any commits the agent might make.
+  // Use committer info from the context pack (triggering user) when available,
+  // falling back to generic identity. This ensures Vercel matches the commit
+  // author to a team member for preview deploy permissions.
+  const gitName = config.committerName || "Symphony Agent";
+  const gitEmail = config.committerEmail || "agent@closedloop.ai";
+  execFileSync("git", ["config", "user.name", gitName], {
     cwd: workDir,
     stdio: "pipe",
   });
-  execFileSync("git", ["config", "user.email", "agent@closedloop.ai"], {
+  execFileSync("git", ["config", "user.email", gitEmail], {
     cwd: workDir,
     stdio: "pipe",
   });
