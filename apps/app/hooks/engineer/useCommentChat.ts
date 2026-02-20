@@ -752,17 +752,25 @@ export function useCommentChat({
           /* best-effort */
         });
 
-      // Refetch git status to get fresh data (user may have committed via ChangedFilesViewer)
-      const freshGitStatus = await queryClient.fetchQuery({
-        ...gitStatusOptions(worktreePath),
-        staleTime: 0,
-      });
-      const stillHasChanges = freshGitStatus
-        ? freshGitStatus.modified.length +
-            freshGitStatus.created.length +
-            freshGitStatus.deleted.length >
-          0
-        : false;
+      // Refetch git status to check for uncommitted changes.
+      // The worktree may not exist (pushback without code fix) or the path
+      // may not be in the allowed repos list yet, so failures are expected.
+      let stillHasChanges = false;
+      try {
+        const freshGitStatus = await queryClient.fetchQuery({
+          ...gitStatusOptions(worktreePath),
+          staleTime: 0,
+        });
+        if (freshGitStatus) {
+          stillHasChanges =
+            freshGitStatus.modified.length +
+              freshGitStatus.created.length +
+              freshGitStatus.deleted.length >
+            0;
+        }
+      } catch {
+        // Worktree doesn't exist or isn't allowed — no pending changes
+      }
 
       if (stillHasChanges) {
         toast.success(

@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -10,19 +11,19 @@ import { basename, join } from "node:path";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
- * Path to the repos config file
+ * Global config directory: ~/.claude/closedloop/
+ * Repos config is stored here so it persists across worktrees and checkouts.
  */
-const CACHE_DIR = join(process.cwd(), ".cache");
-const REPOS_CONFIG_PATH = join(CACHE_DIR, "repos.json");
+const CONFIG_DIR = join(homedir(), ".claude", "closedloop");
+const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
 
 /**
- * Default repos — empty, user must configure manually
+ * Legacy location: {cwd}/.cache/repos.json
+ * Checked on every load for migration, then deleted.
  */
+const LEGACY_CONFIG_PATH = join(process.cwd(), ".cache", "repos.json");
+
 const DEFAULT_REPOS: ConfiguredRepo[] = [];
-
-/**
- * Default settings — empty; user must configure worktreeParentDir via setup dialog
- */
 const DEFAULT_SETTINGS: RepoSettings = {};
 
 /**
@@ -49,56 +50,124 @@ export function contractHome(path: string): string {
   return path;
 }
 
-/**
- * Ensure the cache directory exists
- */
-function ensureCacheDir(): void {
-  if (!existsSync(CACHE_DIR)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
+function ensureConfigDir(): void {
+  if (!existsSync(CONFIG_DIR)) {
+    mkdirSync(CONFIG_DIR, { recursive: true });
   }
 }
 
 /**
- * Load repos configuration from .cache/repos.json
- * Returns defaults on first run
+ * Migrate repos from the legacy {cwd}/.cache/repos.json into the global config.
+ * Merges repos (deduplicates by normalized path), prefers global settings,
+ * then deletes the legacy file.
+ */
+function migrateLegacyConfig(global: ReposConfig): ReposConfig {
+  if (!existsSync(LEGACY_CONFIG_PATH)) {
+    return global;
+  }
+
+  let legacy: ReposConfig;
+  try {
+    const content = readFileSync(LEGACY_CONFIG_PATH, "utf-8");
+    legacy = JSON.parse(content) as ReposConfig;
+  } catch {
+    // Corrupt file — just delete it
+    removeLegacyConfig();
+    return global;
+  }
+
+  const legacyRepos = legacy.repos ?? [];
+  if (legacyRepos.length === 0) {
+    removeLegacyConfig();
+    return global;
+  }
+
+  // Deduplicate: only add legacy repos whose path isn't already in global
+  const existingPaths = new Set(global.repos.map((r) => expandHome(r.path)));
+  let merged = false;
+  for (const repo of legacyRepos) {
+    if (!existingPaths.has(expandHome(repo.path))) {
+      global.repos.push(repo);
+      existingPaths.add(expandHome(repo.path));
+      merged = true;
+    }
+  }
+
+  // Merge settings: global wins, legacy fills gaps
+  if (legacy.settings) {
+    global.settings = { ...legacy.settings, ...global.settings };
+    merged = true;
+  }
+
+  if (merged) {
+    console.log(
+      `[repos] Migrated ${legacyRepos.length} repo(s) from legacy .cache/repos.json`
+    );
+  }
+
+  removeLegacyConfig();
+  return global;
+}
+
+function removeLegacyConfig(): void {
+  try {
+    rmSync(LEGACY_CONFIG_PATH, { force: true });
+    // Clean up .cache dir if empty
+    const cacheDir = join(process.cwd(), ".cache");
+    if (existsSync(cacheDir) && readdirSync(cacheDir).length === 0) {
+      rmSync(cacheDir, { force: true });
+    }
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
+ * Load repos configuration from ~/.claude/closedloop/repos.json.
+ * On every load, checks for a legacy .cache/repos.json in the cwd and
+ * migrates any repos from it before deleting the old file.
  */
 export function loadReposConfig(): ReposConfig {
-  ensureCacheDir();
+  ensureConfigDir();
 
-  if (!existsSync(REPOS_CONFIG_PATH)) {
-    // Return defaults on first run
-    const defaultConfig: ReposConfig = {
-      repos: DEFAULT_REPOS,
-      settings: DEFAULT_SETTINGS,
-    };
-    // Save defaults so they persist
-    saveReposConfig(defaultConfig);
-    return defaultConfig;
-  }
+  let config: ReposConfig;
 
-  try {
-    const content = readFileSync(REPOS_CONFIG_PATH, "utf-8");
-    const config = JSON.parse(content) as ReposConfig;
-
-    // Ensure all required fields exist
-    return {
-      repos: config.repos || DEFAULT_REPOS,
-      settings: config.settings || DEFAULT_SETTINGS,
-    };
-  } catch (err) {
-    console.error("[repos] Failed to load config:", err);
-    return {
+  if (existsSync(REPOS_CONFIG_PATH)) {
+    try {
+      const content = readFileSync(REPOS_CONFIG_PATH, "utf-8");
+      const parsed = JSON.parse(content) as ReposConfig;
+      config = {
+        repos: parsed.repos || DEFAULT_REPOS,
+        settings: parsed.settings || DEFAULT_SETTINGS,
+      };
+    } catch (err) {
+      console.error("[repos] Failed to load config:", err);
+      config = {
+        repos: DEFAULT_REPOS,
+        settings: DEFAULT_SETTINGS,
+      };
+    }
+  } else {
+    config = {
       repos: DEFAULT_REPOS,
       settings: DEFAULT_SETTINGS,
     };
   }
+
+  // Migrate from legacy location on every load
+  config = migrateLegacyConfig(config);
+
+  // Persist so the global file always exists after first load
+  saveReposConfig(config);
+
+  return config;
 }
 
 /**
- * Save repos configuration to .cache/repos.json
+ * Save repos configuration to ~/.claude/closedloop/repos.json
  */
 export function saveReposConfig(config: ReposConfig): void {
-  ensureCacheDir();
+  ensureConfigDir();
 
   try {
     writeFileSync(REPOS_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
@@ -109,15 +178,33 @@ export function saveReposConfig(config: ReposConfig): void {
 }
 
 /**
- * Check if a path is in the configured repos
+ * Check if a path is in the configured repos or is a worktree derived from one.
+ * Worktrees live in the same parent directory and are named {repoName}-{ticketId},
+ * e.g. ~/Source/symphony-alpha-pr-308 is a worktree of ~/Source/symphony-alpha.
  */
 export function isRepoAllowed(path: string): boolean {
   const config = loadReposConfig();
-
-  // Expand both sides to absolute paths so ~/... and /Users/... both match
   const expandedPath = expandHome(path);
 
-  return config.repos.some((repo) => expandHome(repo.path) === expandedPath);
+  return config.repos.some((repo) => {
+    const repoExpanded = expandHome(repo.path);
+    // Exact match
+    if (repoExpanded === expandedPath) {
+      return true;
+    }
+    // Worktree match: same parent dir, path starts with repoName + "-"
+    const repoName = basename(repoExpanded);
+    const repoParent = repoExpanded.slice(
+      0,
+      repoExpanded.length - repoName.length
+    );
+    const pathName = basename(expandedPath);
+    const pathParent = expandedPath.slice(
+      0,
+      expandedPath.length - pathName.length
+    );
+    return pathParent === repoParent && pathName.startsWith(`${repoName}-`);
+  });
 }
 
 /**

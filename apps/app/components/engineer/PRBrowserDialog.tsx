@@ -420,7 +420,50 @@ export function PRBrowserDialog({
         existingKeys: Object.keys(commentChats),
       });
 
-      if (!autoStart) {
+      if (autoStart) {
+        // autoStart: create persistent chat entry
+        setPreviewComment(null);
+
+        // Clear stale history from disk and query cache so the auto-start
+        // effect fires fresh instead of seeing old messages.
+        if (selectedPR && selectedRepo) {
+          const tid = `pr-${selectedPR.number}`;
+          queryClient.removeQueries({
+            queryKey: queryKeys.commentChatHistory(
+              tid,
+              comment.id,
+              selectedRepo.path
+            ),
+          });
+          fetch(
+            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+        }
+
+        setCommentChats((prev) => {
+          // Dedup: already exists, just switch to it
+          if (prev[key]) {
+            return prev;
+          }
+
+          const next = { ...prev };
+
+          // Evict oldest non-active slot if at capacity
+          if (Object.keys(next).length >= MAX_CONCURRENT_COMMENT_CHATS) {
+            const evictKey = findEvictableKey(next, activeCommentChatKey);
+            if (evictKey) {
+              delete next[evictKey];
+            }
+          }
+
+          next[key] = { comment, replies, autoStart, provider };
+          return next;
+        });
+
+        setActiveCommentChatKey(key);
+        setActiveReviewProvider(null);
+      } else {
         // Ephemeral preview — no persistent card in left pane.
         // If there's already a persistent chat for this comment+provider, switch to it instead.
         setCommentChats((prev) => {
@@ -435,51 +478,7 @@ export function PRBrowserDialog({
           }
           return prev;
         });
-        return;
       }
-
-      // autoStart: create persistent chat entry
-      setPreviewComment(null);
-
-      // Clear stale history from disk and query cache so the auto-start
-      // effect fires fresh instead of seeing old messages.
-      if (selectedPR && selectedRepo) {
-        const tid = `pr-${selectedPR.number}`;
-        queryClient.removeQueries({
-          queryKey: queryKeys.commentChatHistory(
-            tid,
-            comment.id,
-            selectedRepo.path
-          ),
-        });
-        fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
-          { method: "DELETE" }
-        ).catch(() => {});
-      }
-
-      setCommentChats((prev) => {
-        // Dedup: already exists, just switch to it
-        if (prev[key]) {
-          return prev;
-        }
-
-        const next = { ...prev };
-
-        // Evict oldest non-active slot if at capacity
-        if (Object.keys(next).length >= MAX_CONCURRENT_COMMENT_CHATS) {
-          const evictKey = findEvictableKey(next, activeCommentChatKey);
-          if (evictKey) {
-            delete next[evictKey];
-          }
-        }
-
-        next[key] = { comment, replies, autoStart, provider };
-        return next;
-      });
-
-      setActiveCommentChatKey(key);
-      setActiveReviewProvider(null);
     },
     [activeCommentChatKey, selectedPR, selectedRepo, queryClient]
   );

@@ -108,7 +108,8 @@ function getStatusBadge(status: CommentDisplayStatus, commitSha?: string) {
       return {
         icon: MessageSquare,
         label: "Analyzing",
-        className: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+        className:
+          "bg-blue-500/10 text-blue-700 dark:text-blue-400 animate-pulse",
       };
     case "addressed":
       return {
