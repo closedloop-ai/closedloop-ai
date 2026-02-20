@@ -24,8 +24,9 @@ COPY packages/api/ packages/api/
 COPY packages/database/ packages/database/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
-# --ignore-scripts: skip root postinstall (prisma generate) which needs packages/database
 RUN pnpm install --frozen-lockfile --filter @repo/mcp... --ignore-scripts
+# Generate Prisma client in clean CI checkouts where generated/ is absent.
+RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./prisma/schema.prisma
 
 # Copy MCP source code
 COPY apps/mcp/src/ apps/mcp/src/

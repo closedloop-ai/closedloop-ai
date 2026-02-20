@@ -24,6 +24,7 @@ vi.mock("@repo/database", () => {
 const ORIGINAL_ENV = { ...process.env };
 
 afterEach(() => {
+  vi.resetModules();
   process.env = { ...ORIGINAL_ENV };
 });
 

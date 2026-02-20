@@ -10,7 +10,10 @@ import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { VerifiedApiKeyContext } from "@repo/api/src/types/api-key";
+import {
+  API_KEY_SCOPES,
+  type VerifiedApiKeyContext,
+} from "@repo/api/src/types/api-key";
 import { withDb } from "@repo/database";
 import {
   checkApiReachable,
@@ -68,7 +71,6 @@ const OAUTH_AUTH_CODE_TTL_SECONDS = Number(
 );
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
-const FULL_SCOPES = ["read", "write", "delete", "admin"] as const;
 const OAUTH_RATE_LIMIT_WINDOW_MS = Number(
   process.env.MCP_OAUTH_RATE_LIMIT_WINDOW_MS ?? 60_000
 );
@@ -78,36 +80,53 @@ const OAUTH_RATE_LIMIT_AUTHORIZE_MAX = Number(
 const OAUTH_RATE_LIMIT_TOKEN_MAX = Number(
   process.env.MCP_OAUTH_RATE_LIMIT_TOKEN_MAX ?? 60
 );
+const OAUTH_CLEANUP_INTERVAL_MS = Number(
+  process.env.MCP_OAUTH_CLEANUP_INTERVAL_MS ?? 300_000
+);
+const MCP_SERVER_CACHE_TTL_MS = Number(
+  process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
+);
+const MAX_REQUEST_BODY_BYTES = Number(
+  process.env.MCP_MAX_REQUEST_BODY_BYTES ?? 1_048_576
+);
+const TRUST_PROXY = ["1", "true", "yes"].includes(
+  (process.env.MCP_TRUST_PROXY ?? "").toLowerCase()
+);
+const OAUTH_REDIRECT_URI_ALLOWLIST = (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const INTERNAL_ENDPOINT_ALLOWLIST = (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("Request body too large");
+  }
+}
 
 function isLocalOauthEnvironment(): boolean {
-  const nodeEnv = process.env.NODE_ENV ?? NODE_ENV;
-  const webappEnv = process.env.WEBAPP_ENV ?? WEBAPP_ENV;
-
   if (
-    nodeEnv === "production" ||
-    webappEnv === "stage" ||
-    webappEnv === "prod"
+    NODE_ENV === "production" ||
+    WEBAPP_ENV === "stage" ||
+    WEBAPP_ENV === "prod"
   ) {
     return false;
   }
 
   return (
-    nodeEnv === "development" || nodeEnv === "test" || webappEnv === "local"
+    NODE_ENV === "development" || NODE_ENV === "test" || WEBAPP_ENV === "local"
   );
 }
 
 function getOAuthRedirectUriAllowlist(): string[] {
-  return (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  return OAUTH_REDIRECT_URI_ALLOWLIST;
 }
 
 function getInternalEndpointAllowlist(): string[] {
-  return (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  return INTERNAL_ENDPOINT_ALLOWLIST;
 }
 
 function requireRedirectAllowlistForEnvironment(): void {
@@ -141,6 +160,37 @@ function requireEnv(name: string): string {
 }
 
 const OAUTH_SIGNING_SECRET = requireEnv("INTERNAL_API_SECRET");
+const OAUTH_PREVIOUS_SIGNING_SECRETS = (
+  process.env.MCP_OAUTH_SIGNING_SECRETS ?? ""
+)
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+type OAuthSigningKeyEntry = {
+  encryptionKey: Buffer;
+  kid: string;
+  signingSecret: string;
+};
+
+function createSigningKeyEntry(secret: string): OAuthSigningKeyEntry {
+  return {
+    kid: createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 16),
+    signingSecret: secret,
+    encryptionKey: createHash("sha256")
+      .update(`${secret}:api-key-encryption`, "utf8")
+      .digest(),
+  };
+}
+
+const OAUTH_SIGNING_KEYS = [
+  createSigningKeyEntry(OAUTH_SIGNING_SECRET),
+  ...OAUTH_PREVIOUS_SIGNING_SECRETS.map(createSigningKeyEntry),
+];
+const OAUTH_CURRENT_SIGNING_KEY = OAUTH_SIGNING_KEYS[0];
+const OAUTH_SIGNING_KEY_BY_KID = new Map(
+  OAUTH_SIGNING_KEYS.map((entry) => [entry.kid, entry] as const)
+);
 
 /**
  * Tool manifest for /.well-known/mcp.json Server Card.
@@ -304,6 +354,7 @@ function extractOAuthToken(authHeader: string | null): string | null {
 
 type OAuthAccessTokenPayload = {
   apiKeyCiphertext: string;
+  kid: string;
   userId: string;
   organizationId: string;
   scopes: string[];
@@ -313,6 +364,7 @@ type OAuthAccessTokenPayload = {
 
 type AuthorizationCodeRecord = {
   encryptedApiKey: string;
+  keyId: string;
   userId: string;
   organizationId: string;
   clientId: string;
@@ -323,16 +375,32 @@ type AuthorizationCodeRecord = {
   expiresAt: Date;
 };
 
-const OAUTH_API_KEY_ENCRYPTION_KEY = createHash("sha256")
-  .update(`${OAUTH_SIGNING_SECRET}:api-key-encryption`, "utf8")
-  .digest();
-
 function effectiveKeyScopes(scopes: string[]): string[] {
-  return scopes.length > 0 ? scopes : [...FULL_SCOPES];
+  return scopes.length > 0 ? scopes : [...API_KEY_SCOPES];
 }
 
 function hasWriteScope(scopes: string[]): boolean {
   return scopes.includes("write");
+}
+
+let lastOAuthCleanupMs = 0;
+
+async function maybeCleanupOAuthSecurityTables(): Promise<void> {
+  const nowMs = Date.now();
+  if (nowMs - lastOAuthCleanupMs < OAUTH_CLEANUP_INTERVAL_MS) {
+    return;
+  }
+
+  lastOAuthCleanupMs = nowMs;
+  await Promise.allSettled([
+    cleanupExpiredAuthorizationCodes(),
+    cleanupExpiredRevokedTokens(),
+    withDb((db) =>
+      db.oAuthRateLimit.deleteMany({
+        where: { windowExpiresAt: { lte: new Date(nowMs) } },
+      })
+    ),
+  ]);
 }
 
 async function cleanupExpiredAuthorizationCodes(): Promise<void> {
@@ -354,6 +422,7 @@ async function storeAuthorizationCode(
       data: {
         code,
         encryptedApiKey: record.encryptedApiKey,
+        keyId: record.keyId,
         userId: record.userId,
         organizationId: record.organizationId,
         clientId: record.clientId,
@@ -389,6 +458,7 @@ function consumeAuthorizationCode(
 
     return {
       encryptedApiKey: record.encryptedApiKey,
+      keyId: record.keyId,
       userId: record.userId,
       organizationId: record.organizationId,
       clientId: record.clientId,
@@ -417,7 +487,6 @@ async function revokeAccessToken(
   token: string,
   expiresAtMs: number
 ): Promise<void> {
-  await cleanupExpiredRevokedTokens();
   const fingerprint = getAccessTokenFingerprint(token);
   await withDb((db) =>
     db.oAuthRevokedToken.upsert({
@@ -435,7 +504,6 @@ async function revokeAccessToken(
 }
 
 async function isAccessTokenRevoked(token: string): Promise<boolean> {
-  await cleanupExpiredRevokedTokens();
   const fingerprint = getAccessTokenFingerprint(token);
   const tokenRecord = await withDb((db) =>
     db.oAuthRevokedToken.findUnique({
@@ -454,7 +522,11 @@ function normalizeAddress(address: string): string {
 
 function getClientAddress(req: import("node:http").IncomingMessage): string {
   const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim().length > 0) {
+  if (
+    TRUST_PROXY &&
+    typeof forwarded === "string" &&
+    forwarded.trim().length > 0
+  ) {
     const first = forwarded.split(",")[0]?.trim();
     if (first) {
       return normalizeAddress(first);
@@ -490,10 +562,6 @@ function consumeOAuthRateLimit(
   const address = getClientAddress(req);
 
   return withDb.tx(async (db) => {
-    await db.oAuthRateLimit.deleteMany({
-      where: { windowExpiresAt: { lte: now } },
-    });
-
     const windowExpiresAt = new Date(
       now.getTime() + OAUTH_RATE_LIMIT_WINDOW_MS
     );
@@ -530,7 +598,14 @@ function consumeOAuthRateLimit(
       return { limited: false, retryAfterSeconds: 0 };
     }
 
-    if (record.requestCount >= limit) {
+    const incrementResult = await db.oAuthRateLimit.updateMany({
+      where: {
+        id: record.id,
+        requestCount: { lt: limit },
+      },
+      data: { requestCount: { increment: 1 } },
+    });
+    if (incrementResult.count === 0) {
       return {
         limited: true,
         retryAfterSeconds: Math.max(
@@ -540,10 +615,6 @@ function consumeOAuthRateLimit(
       };
     }
 
-    await db.oAuthRateLimit.update({
-      where: { id: record.id },
-      data: { requestCount: { increment: 1 } },
-    });
     return { limited: false, retryAfterSeconds: 0 };
   });
 }
@@ -562,8 +633,8 @@ function b64urlDecode(input: string): string {
   return Buffer.from(normalized + padding, "base64").toString("utf8");
 }
 
-function signTokenPayload(payloadB64: string): string {
-  return createHmac("sha256", OAUTH_SIGNING_SECRET)
+function signTokenPayload(payloadB64: string, secret: string): string {
+  return createHmac("sha256", secret)
     .update(payloadB64)
     .digest("base64")
     .replace(/\+/g, "-")
@@ -580,13 +651,20 @@ function sha256Base64Url(input: string): string {
     .replace(/=+$/g, "");
 }
 
-function encryptApiKey(apiKey: string): string {
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  return aBuf.length === bBuf.length && timingSafeEqual(aBuf, bBuf);
+}
+
+function encryptApiKey(apiKey: string, keyId: string): string {
+  const keyEntry = OAUTH_SIGNING_KEY_BY_KID.get(keyId);
+  if (!keyEntry) {
+    throw new Error("Unknown OAuth key id");
+  }
+
   const iv = randomBytes(12);
-  const cipher = createCipheriv(
-    "aes-256-gcm",
-    OAUTH_API_KEY_ENCRYPTION_KEY,
-    iv
-  );
+  const cipher = createCipheriv("aes-256-gcm", keyEntry.encryptionKey, iv);
   const ciphertext = Buffer.concat([
     cipher.update(apiKey, "utf8"),
     cipher.final(),
@@ -595,7 +673,12 @@ function encryptApiKey(apiKey: string): string {
   return `${iv.toString("base64url")}.${authTag.toString("base64url")}.${ciphertext.toString("base64url")}`;
 }
 
-function decryptApiKey(encrypted: string): string | null {
+function decryptApiKey(encrypted: string, keyId: string): string | null {
+  const keyEntry = OAUTH_SIGNING_KEY_BY_KID.get(keyId);
+  if (!keyEntry) {
+    return null;
+  }
+
   const parts = encrypted.split(".");
   if (parts.length !== 3) {
     return null;
@@ -608,7 +691,7 @@ function decryptApiKey(encrypted: string): string | null {
     const ciphertext = Buffer.from(ciphertextPart, "base64url");
     const decipher = createDecipheriv(
       "aes-256-gcm",
-      OAUTH_API_KEY_ENCRYPTION_KEY,
+      keyEntry.encryptionKey,
       iv
     );
     decipher.setAuthTag(authTag);
@@ -628,7 +711,8 @@ function issueOAuthAccessToken(
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const payload: OAuthAccessTokenPayload = {
-    apiKeyCiphertext: encryptApiKey(apiKey),
+    apiKeyCiphertext: encryptApiKey(apiKey, OAUTH_CURRENT_SIGNING_KEY.kid),
+    kid: OAUTH_CURRENT_SIGNING_KEY.kid,
     userId: context.userId,
     organizationId: context.organizationId,
     scopes,
@@ -636,7 +720,10 @@ function issueOAuthAccessToken(
     exp: now + OAUTH_TOKEN_TTL_SECONDS,
   };
   const payloadB64 = b64urlEncode(JSON.stringify(payload));
-  const signature = signTokenPayload(payloadB64);
+  const signature = signTokenPayload(
+    payloadB64,
+    OAUTH_CURRENT_SIGNING_KEY.signingSecret
+  );
   return `mcp_at_${payloadB64}.${signature}`;
 }
 
@@ -649,25 +736,56 @@ function parseSignedOAuthAccessToken(
     return null;
   }
   const [payloadB64, signatureB64] = parts;
-  const expectedSig = signTokenPayload(payloadB64);
-  const actualSigBuf = Buffer.from(signatureB64, "utf8");
-  const expectedSigBuf = Buffer.from(expectedSig, "utf8");
-  if (
-    actualSigBuf.length !== expectedSigBuf.length ||
-    !timingSafeEqual(actualSigBuf, expectedSigBuf)
-  ) {
-    return null;
-  }
-
   try {
     const payload = JSON.parse(
       b64urlDecode(payloadB64)
-    ) as OAuthAccessTokenPayload;
-    const now = Math.floor(Date.now() / 1000);
-    if (!payload.apiKeyCiphertext || payload.exp <= now) {
+    ) as Partial<OAuthAccessTokenPayload>;
+    const keyCandidates =
+      payload.kid && OAUTH_SIGNING_KEY_BY_KID.has(payload.kid)
+        ? [OAUTH_SIGNING_KEY_BY_KID.get(payload.kid)]
+        : OAUTH_SIGNING_KEYS;
+    const actualSigBuf = Buffer.from(signatureB64, "utf8");
+    const matchedEntry =
+      keyCandidates.find((entry) => {
+        if (!entry) {
+          return false;
+        }
+        const expectedSig = signTokenPayload(payloadB64, entry.signingSecret);
+        const expectedSigBuf = Buffer.from(expectedSig, "utf8");
+        return (
+          actualSigBuf.length === expectedSigBuf.length &&
+          timingSafeEqual(actualSigBuf, expectedSigBuf)
+        );
+      }) ?? null;
+    if (!matchedEntry) {
       return null;
     }
-    return payload;
+
+    const resolvedKid =
+      payload.kid && OAUTH_SIGNING_KEY_BY_KID.has(payload.kid)
+        ? payload.kid
+        : matchedEntry.kid;
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      !payload.apiKeyCiphertext ||
+      typeof payload.exp !== "number" ||
+      !Array.isArray(payload.scopes) ||
+      typeof payload.userId !== "string" ||
+      typeof payload.organizationId !== "string" ||
+      payload.exp <= now
+    ) {
+      return null;
+    }
+
+    return {
+      apiKeyCiphertext: payload.apiKeyCiphertext,
+      kid: resolvedKid,
+      userId: payload.userId,
+      organizationId: payload.organizationId,
+      scopes: payload.scopes,
+      iat: typeof payload.iat === "number" ? payload.iat : now,
+      exp: payload.exp,
+    };
   } catch {
     return null;
   }
@@ -676,6 +794,7 @@ function parseSignedOAuthAccessToken(
 async function verifyOAuthAccessToken(
   token: string
 ): Promise<OAuthAccessTokenPayload | null> {
+  await maybeCleanupOAuthSecurityTables();
   if (await isAccessTokenRevoked(token)) {
     return null;
   }
@@ -734,6 +853,86 @@ type ResolvedMcpAuth = {
   grantedScopes: string[];
 };
 
+type CachedMcpServerEntry = {
+  activeRequests: number;
+  expiresAtMs: number;
+  server: McpServer;
+};
+
+const mcpServerCache = new Map<string, CachedMcpServerEntry>();
+
+function getMcpServerCacheKey(auth: ResolvedMcpAuth): string {
+  const keyFingerprint = createHash("sha256")
+    .update(auth.plaintextKey, "utf8")
+    .digest("hex");
+  const sortedScopes = [...auth.grantedScopes].sort().join(",");
+  return `${auth.context.organizationId}:${auth.context.userId}:${keyFingerprint}:${sortedScopes}`;
+}
+
+function cleanupExpiredMcpServerCache(nowMs: number): void {
+  for (const [cacheKey, entry] of mcpServerCache.entries()) {
+    if (entry.activeRequests === 0 && entry.expiresAtMs <= nowMs) {
+      mcpServerCache.delete(cacheKey);
+    }
+  }
+}
+
+function acquireMcpServer(auth: ResolvedMcpAuth): {
+  release: () => void;
+  server: McpServer;
+} {
+  const nowMs = Date.now();
+  cleanupExpiredMcpServerCache(nowMs);
+  const cacheKey = getMcpServerCacheKey(auth);
+  const cachedEntry = mcpServerCache.get(cacheKey);
+
+  if (
+    cachedEntry &&
+    cachedEntry.expiresAtMs > nowMs &&
+    cachedEntry.activeRequests === 0
+  ) {
+    cachedEntry.activeRequests = 1;
+    cachedEntry.expiresAtMs = nowMs + MCP_SERVER_CACHE_TTL_MS;
+    return {
+      server: cachedEntry.server,
+      release: () => {
+        cachedEntry.activeRequests = Math.max(
+          cachedEntry.activeRequests - 1,
+          0
+        );
+        cachedEntry.expiresAtMs = Date.now() + MCP_SERVER_CACHE_TTL_MS;
+      },
+    };
+  }
+
+  const server = createMcpServer(
+    auth.context,
+    auth.plaintextKey,
+    auth.grantedScopes
+  );
+  if (!cachedEntry || cachedEntry.expiresAtMs <= nowMs) {
+    const cacheEntry: CachedMcpServerEntry = {
+      server,
+      activeRequests: 1,
+      expiresAtMs: nowMs + MCP_SERVER_CACHE_TTL_MS,
+    };
+    mcpServerCache.set(cacheKey, cacheEntry);
+    return {
+      server,
+      release: () => {
+        cacheEntry.activeRequests = Math.max(cacheEntry.activeRequests - 1, 0);
+        cacheEntry.expiresAtMs = Date.now() + MCP_SERVER_CACHE_TTL_MS;
+      },
+    };
+  }
+
+  // Existing entry is in use; create an isolated server for concurrent request safety.
+  return {
+    server,
+    release: () => {},
+  };
+}
+
 async function resolveMcpAuth(
   authorizationHeader: string | null
 ): Promise<ResolvedMcpAuth | null> {
@@ -760,7 +959,10 @@ async function resolveMcpAuth(
     return null;
   }
 
-  const plaintextKey = decryptApiKey(tokenPayload.apiKeyCiphertext);
+  const plaintextKey = decryptApiKey(
+    tokenPayload.apiKeyCiphertext,
+    tokenPayload.kid
+  );
   if (!plaintextKey) {
     return null;
   }
@@ -798,6 +1000,18 @@ async function handleMcp(
     });
     return;
   }
+  const contentLengthHeader = req.headers["content-length"];
+  const contentLength = Number(contentLengthHeader ?? 0);
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_REQUEST_BODY_BYTES
+  ) {
+    sendJson(res, 413, {
+      error: "payload_too_large",
+      error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+    });
+    return;
+  }
 
   // Validate MCP-Protocol-Version header (spec requirement)
   const protocolVersion = req.headers["mcp-protocol-version"] as
@@ -822,17 +1036,17 @@ async function handleMcp(
     return;
   }
 
-  const mcpServer = createMcpServer(
-    auth.context,
-    auth.plaintextKey,
-    auth.grantedScopes
-  );
+  const acquiredServer = acquireMcpServer(auth);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
 
-  await mcpServer.connect(transport);
-  await transport.handleRequest(req, res);
+  try {
+    await acquiredServer.server.connect(transport);
+    await transport.handleRequest(req, res);
+  } finally {
+    acquiredServer.release();
+  }
 }
 
 function parseFormUrlEncoded(body: string): Record<string, string> {
@@ -844,8 +1058,16 @@ async function readRequestBody(
   req: import("node:http").IncomingMessage
 ): Promise<string> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    const bufferChunk = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(String(chunk));
+    totalBytes += bufferChunk.length;
+    if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+      throw new RequestBodyTooLargeError();
+    }
+    chunks.push(bufferChunk);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
@@ -925,6 +1147,7 @@ async function handleOAuthAuthorize(
     return;
   }
 
+  await maybeCleanupOAuthSecurityTables();
   const authorizeRateLimit = await consumeOAuthRateLimit(req, "authorize");
   if (authorizeRateLimit.limited) {
     sendJson(
@@ -1014,10 +1237,10 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  await cleanupExpiredAuthorizationCodes();
   const code = `mcp_ac_${randomBytes(24).toString("base64url")}`;
   await storeAuthorizationCode(code, {
-    encryptedApiKey: encryptApiKey(apiKey),
+    encryptedApiKey: encryptApiKey(apiKey, OAUTH_CURRENT_SIGNING_KEY.kid),
+    keyId: OAUTH_CURRENT_SIGNING_KEY.kid,
     userId: context.userId,
     organizationId: context.organizationId,
     clientId,
@@ -1103,7 +1326,6 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  await cleanupExpiredAuthorizationCodes();
   const codeRecord = await consumeAuthorizationCode(body.code);
   if (!codeRecord) {
     sendJson(res, 400, {
@@ -1129,18 +1351,10 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  if (codeRecord.expiresAt.getTime() <= Date.now()) {
-    sendJson(res, 400, {
-      error: "invalid_grant",
-      error_description: "Authorization code has expired",
-    });
-    return;
-  }
-
   const derivedChallenge = sha256Base64Url(body.code_verifier);
   if (
     codeRecord.codeChallengeMethod !== "S256" ||
-    derivedChallenge !== codeRecord.codeChallenge
+    !timingSafeStringEqual(derivedChallenge, codeRecord.codeChallenge)
   ) {
     sendJson(res, 400, {
       error: "invalid_grant",
@@ -1149,7 +1363,10 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const codeApiKey = decryptApiKey(codeRecord.encryptedApiKey);
+  const codeApiKey = decryptApiKey(
+    codeRecord.encryptedApiKey,
+    codeRecord.keyId
+  );
   if (!codeApiKey) {
     sendJson(res, 400, {
       error: "invalid_grant",
@@ -1201,6 +1418,7 @@ async function handleOAuthToken(
     return;
   }
 
+  await maybeCleanupOAuthSecurityTables();
   const tokenRateLimit = await consumeOAuthRateLimit(req, "token");
   if (tokenRateLimit.limited) {
     sendJson(
@@ -1221,7 +1439,19 @@ async function handleOAuthToken(
     return;
   }
 
-  const rawBody = await readRequestBody(req);
+  let rawBody: string;
+  try {
+    rawBody = await readRequestBody(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return;
+    }
+    throw error;
+  }
   const body = parseFormUrlEncoded(rawBody);
 
   if (body.grant_type === "client_credentials") {
@@ -1254,12 +1484,25 @@ async function handleOAuthIntrospect(
     return;
   }
 
+  await maybeCleanupOAuthSecurityTables();
   if (!isInternalRequestAuthorized(req)) {
     sendInternalUnauthorized(res);
     return;
   }
 
-  const body = await readJsonBody<InternalTokenBody>(req);
+  let body: InternalTokenBody | null;
+  try {
+    body = await readJsonBody<InternalTokenBody>(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return;
+    }
+    throw error;
+  }
   if (!body?.token?.startsWith("mcp_at_")) {
     sendJson(res, 400, {
       error: "invalid_request",
@@ -1274,7 +1517,7 @@ async function handleOAuthIntrospect(
     return;
   }
 
-  const plaintextKey = decryptApiKey(payload.apiKeyCiphertext);
+  const plaintextKey = decryptApiKey(payload.apiKeyCiphertext, payload.kid);
   if (!plaintextKey) {
     sendJson(res, 200, { active: false });
     return;
@@ -1306,12 +1549,25 @@ async function handleOAuthRevoke(
     return;
   }
 
+  await maybeCleanupOAuthSecurityTables();
   if (!isInternalRequestAuthorized(req)) {
     sendInternalUnauthorized(res);
     return;
   }
 
-  const body = await readJsonBody<InternalTokenBody>(req);
+  let body: InternalTokenBody | null;
+  try {
+    body = await readJsonBody<InternalTokenBody>(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return;
+    }
+    throw error;
+  }
   if (!body?.token?.startsWith("mcp_at_")) {
     sendJson(res, 400, {
       error: "invalid_request",
@@ -1371,9 +1627,9 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
       revocation_endpoint: `${MCP_SERVER_URL}/internal/oauth/revoke`,
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
       grant_types_supported: ["authorization_code", "client_credentials"],
-      response_types_supported: ["code", "token"],
+      response_types_supported: ["code"],
       code_challenge_methods_supported: ["S256"],
-      scopes_supported: ["read", "write", "delete", "admin"],
+      scopes_supported: [...API_KEY_SCOPES],
     });
   },
   "/.well-known/mcp.json": (_req, res) => {
@@ -1477,11 +1733,15 @@ if (
 }
 
 export const __testables = {
+  dispatchHttpRequest,
   handleOAuthAuthorize,
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
-  resetInMemorySecurityState: () => {},
+  resetInMemorySecurityState: () => {
+    lastOAuthCleanupMs = 0;
+    mcpServerCache.clear();
+  },
 };

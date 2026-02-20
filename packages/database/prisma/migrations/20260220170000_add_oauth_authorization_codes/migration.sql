@@ -3,6 +3,7 @@ CREATE TABLE "oauth_authorization_codes" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
     "code" TEXT NOT NULL,
     "encrypted_api_key" TEXT NOT NULL,
+    "key_id" TEXT NOT NULL,
     "user_id" UUID NOT NULL,
     "organization_id" UUID NOT NULL,
     "client_id" TEXT NOT NULL,

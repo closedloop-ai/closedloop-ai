@@ -1,7 +1,5 @@
-import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import { API_KEY_SCOPES, type ApiKeyScope } from "@repo/api/src/types/api-key";
 import type { AuthContext } from "./with-auth";
-
-const FULL_SCOPES: ApiKeyScope[] = ["read", "write", "delete", "admin"];
 
 /**
  * Backward-compatible scope evaluation:
@@ -19,7 +17,7 @@ export function hasApiKeyScopes(
   const scopes =
     context.apiKeyScopes && context.apiKeyScopes.length > 0
       ? context.apiKeyScopes
-      : FULL_SCOPES;
+      : [...API_KEY_SCOPES];
 
   return required.every((scope) => scopes.includes(scope));
 }

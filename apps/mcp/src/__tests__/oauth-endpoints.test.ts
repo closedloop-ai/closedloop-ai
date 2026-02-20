@@ -31,6 +31,7 @@ const authCodeStore = new Map<
     id: string;
     code: string;
     encryptedApiKey: string;
+    keyId: string;
     userId: string;
     organizationId: string;
     clientId: string;
@@ -155,6 +156,24 @@ vi.mock("@repo/database", () => {
           return next;
         }
       ),
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id: string; requestCount: { lt: number } };
+          data: { requestCount: { increment: number } };
+        }) => {
+          const record = [...rateLimitStore.values()].find(
+            (row) => row.id === where.id
+          );
+          if (!record || record.requestCount >= where.requestCount.lt) {
+            return { count: 0 };
+          }
+          record.requestCount += data.requestCount.increment;
+          return { count: 1 };
+        }
+      ),
       update: vi.fn(
         ({
           where,
@@ -199,6 +218,7 @@ vi.mock("@repo/database", () => {
           data: {
             code: string;
             encryptedApiKey: string;
+            keyId: string;
             userId: string;
             organizationId: string;
             clientId: string;
@@ -213,6 +233,7 @@ vi.mock("@repo/database", () => {
             id: `ac_${Math.random().toString(36).slice(2, 10)}`,
             code: data.code,
             encryptedApiKey: data.encryptedApiKey,
+            keyId: data.keyId,
             userId: data.userId,
             organizationId: data.organizationId,
             clientId: data.clientId,
@@ -295,6 +316,10 @@ let handleOAuthToken: HandlerFn;
 let handleOAuthIntrospect: HandlerFn;
 let handleOAuthRevoke: HandlerFn;
 let resetInMemorySecurityState: () => void;
+let dispatchHttpRequestFn: (
+  req: IncomingMessage,
+  res: ServerResponse
+) => Promise<boolean>;
 
 function createMockRequest(options: {
   method: string;
@@ -376,12 +401,17 @@ beforeAll(async () => {
   process.env.INTERNAL_API_SECRET = "test-internal-secret";
   process.env.MCP_OAUTH_CLIENT_ID = "closedloop-mcp";
   process.env.MCP_OAUTH_REDIRECT_URIS = "http://localhost:7777/callback";
+  process.env.MCP_MAX_REQUEST_BODY_BYTES = "2048";
 
   const mod = await import("../index.js");
   handleOAuthAuthorize = mod.__testables.handleOAuthAuthorize as HandlerFn;
   handleOAuthToken = mod.__testables.handleOAuthToken as HandlerFn;
   handleOAuthIntrospect = mod.__testables.handleOAuthIntrospect as HandlerFn;
   handleOAuthRevoke = mod.__testables.handleOAuthRevoke as HandlerFn;
+  dispatchHttpRequestFn = mod.__testables.dispatchHttpRequest as (
+    req: IncomingMessage,
+    res: ServerResponse
+  ) => Promise<boolean>;
   resetInMemorySecurityState = mod.__testables
     .resetInMemorySecurityState as () => void;
 });
@@ -705,7 +735,11 @@ describe("OAuth endpoints", () => {
     const code = redirect.searchParams.get("code");
     expect(code).toBeTruthy();
 
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 700_000);
+    const storedRecord = authCodeStore.get(code ?? "");
+    expect(storedRecord).toBeTruthy();
+    if (storedRecord) {
+      storedRecord.expiresAt = new Date(Date.now() - 1000);
+    }
     const tokenBody = new URLSearchParams({
       grant_type: "authorization_code",
       client_id: "closedloop-mcp",
@@ -722,7 +756,6 @@ describe("OAuth endpoints", () => {
     });
     const tokenRes = createMockResponse();
     await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
-    nowSpy.mockRestore();
 
     expect(tokenRes.statusCode).toBe(400);
     const tokenJson = JSON.parse(tokenRes.body) as { error: string };
@@ -874,5 +907,51 @@ describe("OAuth endpoints", () => {
     }
 
     expect(lastStatus).toBe(429);
+  });
+
+  it("returns 413 when oauth token request body exceeds size limit", async () => {
+    const oversizedBody = `grant_type=client_credentials&client_id=closedloop-mcp&client_secret=sk_live_valid&scope=${"x".repeat(5000)}`;
+    const req = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: oversizedBody,
+    });
+    const res = createMockResponse();
+    await handleOAuthToken(req, asServerResponse(res));
+    expect(res.statusCode).toBe(413);
+    const json = JSON.parse(res.body) as { error: string };
+    expect(json.error).toBe("payload_too_large");
+  });
+
+  it("returns 413 when mcp request content-length exceeds size limit", async () => {
+    const req = createMockRequest({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        "content-length": "5000",
+      },
+      body: "{}",
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(413);
+    const json = JSON.parse(res.body) as { error: string };
+    expect(json.error).toBe("payload_too_large");
+  });
+
+  it("advertises only code response type in oauth metadata", async () => {
+    const req = createMockRequest({
+      method: "GET",
+      url: "/.well-known/oauth-authorization-server",
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    const json = JSON.parse(res.body) as { response_types_supported: string[] };
+    expect(json.response_types_supported).toEqual(["code"]);
   });
 });

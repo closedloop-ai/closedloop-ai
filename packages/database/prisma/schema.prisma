@@ -1072,6 +1072,7 @@ model OAuthAuthorizationCode {
   id               String    @id @default(uuid(7)) @db.Uuid
   code             String    @unique
   encryptedApiKey  String    @map("encrypted_api_key")
+  keyId            String    @map("key_id")
   userId           String    @map("user_id") @db.Uuid
   organizationId   String    @map("organization_id") @db.Uuid
   clientId         String    @map("client_id")

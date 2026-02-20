@@ -38,7 +38,12 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
       : null;
 
     if (token?.startsWith("sk_live_")) {
-      return withApiKeyAuth<TResponse, TRoute>(handler, options)(
+      const effectiveOptions =
+        options ??
+        (request.method === "GET" || request.method === "HEAD"
+          ? { requiredScopes: ["read"] as ApiKeyScope[] }
+          : undefined);
+      return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
         request,
         context as { params: Promise<Record<string, string>> }
       );
