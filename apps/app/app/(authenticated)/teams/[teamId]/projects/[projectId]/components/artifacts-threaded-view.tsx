@@ -344,7 +344,7 @@ function WorkstreamSection({
               onRequestDelete={onRequestDelete}
               onRequestMove={onRequestMove}
               onRowClick={onRowClick}
-              siblingPlan={artifact.type === "PRD" ? siblingPlan : undefined}
+              siblingPlan={artifact.type === ArtifactType.Prd ? siblingPlan : undefined}
               workstreamPreviewUrl={previewUrl}
             />
           ))}
