@@ -74,8 +74,10 @@ RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/"
 # Standard bwrap can't create user namespaces inside an unprivileged container,
 # which breaks access to system binaries like /usr/bin/python3 that plugins
 # (experimental) depend on. This setting adjusts bwrap for nested execution.
-RUN mkdir -p /home/runner/.claude && \
-    echo '{"sandbox":{"enableWeakerNestedSandbox":true}}' > /home/runner/.claude/settings.json
+# IMPORTANT: Must MERGE into existing settings.json, not overwrite it —
+# claude plugin install writes enabledPlugins there. Overwriting nukes plugin config.
+RUN jq '. + {"sandbox":{"enableWeakerNestedSandbox":true}}' /home/runner/.claude/settings.json > /tmp/settings.json && \
+    mv /tmp/settings.json /home/runner/.claude/settings.json
 
 WORKDIR /workspace
 
