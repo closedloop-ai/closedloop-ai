@@ -57,6 +57,8 @@ const config = {
   command: process.env.COMMAND?.toUpperCase(), // "PLAN" | "EXECUTE" | "CHAT" | "EXPLORE" | "REQUEST_CHANGES"
   anthropicApiKey: null, // Injected from S3 context pack (not env vars)
   githubToken: null, // Injected from S3 context pack (not env vars)
+  committerName: null, // Injected from S3 context pack (triggering user's name)
+  committerEmail: null, // Injected from S3 context pack (triggering user's email)
   authToken: process.env.CLOSEDLOOP_AUTH_TOKEN, // JWT for backend API calls
   apiBaseUrl: process.env.API_BASE_URL, // e.g., "https://api.closedloop.ai"
   organizationId: process.env.ORGANIZATION_ID,
@@ -724,6 +726,13 @@ async function downloadContextPack() {
     log("info", "Extracted secrets from context pack");
   }
 
+  // Extract committer identity for git attribution (not a secret — safe to log).
+  if (pack.committer) {
+    config.committerName = pack.committer.name || null;
+    config.committerEmail = pack.committer.email || null;
+    log("info", `Committer: ${config.committerName} <${config.committerEmail}>`);
+  }
+
   return pack;
 }
 
@@ -955,12 +964,17 @@ function cloneRepo(workDir) {
     }
   );
 
-  // Configure git identity for any commits the agent might make
-  execFileSync("git", ["config", "user.name", "Symphony Agent"], {
+  // Configure git identity for any commits the agent might make.
+  // Use committer info from the context pack (triggering user) when available,
+  // falling back to generic identity. This ensures Vercel matches the commit
+  // author to a team member for preview deploy permissions.
+  const gitName = config.committerName || "Symphony Agent";
+  const gitEmail = config.committerEmail || "agent@closedloop.ai";
+  execFileSync("git", ["config", "user.name", gitName], {
     cwd: workDir,
     stdio: "pipe",
   });
-  execFileSync("git", ["config", "user.email", "agent@closedloop.ai"], {
+  execFileSync("git", ["config", "user.email", gitEmail], {
     cwd: workDir,
     stdio: "pipe",
   });
@@ -2224,89 +2238,6 @@ async function reportFinalStatus(
       loopId: config.loopId,
     });
     log("info", "Reported FAILED event");
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Fatal error handler (extracted to keep main() complexity under limit)
-// ---------------------------------------------------------------------------
-async function handleFatalError(err, workDir, output, startTime) {
-  const harnessError = toHarnessError(err);
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  const errorMessage = harnessError.message;
-  const errorStack = err instanceof Error ? err.stack : undefined;
-  log(
-    "error",
-    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-  );
-  if (errorStack) {
-    log("error", redactSensitive(errorStack));
-  }
-
-  // Best-effort: refresh token, safety commit, push, create PR, label
-  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-  // even on fatal errors.
-  try {
-    await refreshGitHubToken();
-  } catch (_) {
-    // ignore
-  }
-  try {
-    attemptSafetyCommit(
-      workDir,
-      "[INCOMPLETE] WIP: Safety commit — harness error"
-    );
-    ensureBranchPushed(workDir);
-  } catch (_) {
-    // ignore — attemptSafetyCommit is already best-effort internally
-  }
-
-  let prInfo = null;
-  try {
-    prInfo = parsePrInfo(workDir, output);
-    prInfo = createPullRequest(workDir, prInfo);
-    if (prInfo?.prNumber) {
-      labelPrIncomplete(workDir, prInfo.prNumber);
-    }
-  } catch (_) {
-    // ignore
-  }
-
-  // Best-effort: write execution-result.json before upload
-  try {
-    writeExecutionResult(workDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Best-effort: upload whatever state we have
-  try {
-    await uploadState(workDir, output);
-  } catch (uploadErr) {
-    log(
-      "error",
-      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-    );
-  }
-
-  // Best-effort: report failure with PR info
-  try {
-    await reportEvent({
-      type: "error",
-      code: harnessError.code,
-      message: redactSensitive(errorMessage),
-      result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
-      },
-      correlationId: config.correlationId,
-      loopId: config.loopId,
-    });
-  } catch (reportErr) {
-    log(
-      "error",
-      `Failed to report error event: ${redactSensitive(reportErr.message)}`
-    );
   }
 }
 
