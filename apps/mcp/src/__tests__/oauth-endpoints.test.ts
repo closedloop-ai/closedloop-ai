@@ -13,6 +13,7 @@ import type { VerifiedApiKeyContext } from "../api-key-contract.js";
 
 const verifyApiKeyMock = vi.fn();
 const checkApiReachableMock = vi.fn();
+const DYNAMIC_CLIENT_ID_REGEX = /^dyn_[a-f0-9]{32}$/;
 const revokedTokenStore = new Map<string, Date>();
 const rateLimitStore = new Map<
   string,
@@ -768,7 +769,7 @@ describe("OAuth endpoints", () => {
     authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
     authorizeUrl.searchParams.set(
       "redirect_uri",
-      "http://localhost:9999/not-allowed"
+      "https://attacker.example/cb"
     );
     authorizeUrl.searchParams.set("code_challenge", codeChallengeFor("pkce"));
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
@@ -784,6 +785,29 @@ describe("OAuth endpoints", () => {
     expect(authorizeRes.statusCode).toBe(400);
     const json = JSON.parse(authorizeRes.body) as { error: string };
     expect(json.error).toBe("invalid_request");
+  });
+
+  it("renders authorize html form when api key is not provided", async () => {
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor("pkce"));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+
+    expect(authorizeRes.statusCode).toBe(200);
+    expect(authorizeRes.headers["Content-Type"]).toContain("text/html");
+    expect(authorizeRes.body).toContain("Authorize MCP Access");
   });
 
   it("revokes a token and returns inactive on introspection", async () => {
@@ -1090,6 +1114,38 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).not.toBe(413);
   });
 
+  it("falls back to stateless handling when session id is unknown", async () => {
+    const initializeBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test-client", version: "1.0.0" },
+      },
+    });
+
+    const req = createMockRequest({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: "Bearer sk_live_valid",
+        "mcp-protocol-version": "2025-03-26",
+        "mcp-session-id": "missing-session-id",
+      },
+      body: initializeBody,
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).not.toBe(404);
+    expect(res.statusCode).not.toBe(401);
+    expect(res.statusCode).not.toBe(413);
+  });
+
   it("advertises only code response type in oauth metadata", async () => {
     const req = createMockRequest({
       method: "GET",
@@ -1101,5 +1157,31 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).toBe(200);
     const json = JSON.parse(res.body) as { response_types_supported: string[] };
     expect(json.response_types_supported).toEqual(["code"]);
+  });
+
+  it("supports dynamic client registration for loopback redirect URIs", async () => {
+    const registerReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/register",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Claude Code",
+        redirect_uris: ["http://127.0.0.1:40123/callback"],
+      }),
+    });
+    const registerRes = createMockResponse();
+    const registerHandled = await dispatchHttpRequestFn(
+      registerReq,
+      asServerResponse(registerRes)
+    );
+    expect(registerHandled).toBe(true);
+    expect(registerRes.statusCode).toBe(201);
+
+    const registerBody = JSON.parse(registerRes.body) as {
+      client_id: string;
+      token_endpoint_auth_method: string;
+    };
+    expect(registerBody.client_id).toMatch(DYNAMIC_CLIENT_ID_REGEX);
+    expect(registerBody.token_endpoint_auth_method).toBe("none");
   });
 });
