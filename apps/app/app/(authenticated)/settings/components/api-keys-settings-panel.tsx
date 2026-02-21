@@ -1,6 +1,10 @@
 "use client";
 
-import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
+import type {
+  ApiKey,
+  ApiKeyScope,
+  CreateApiKeyResponse,
+} from "@repo/api/src/types/api-key";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -20,6 +24,10 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import {
+  RadioGroup,
+  RadioGroupItem,
+} from "@repo/design-system/components/ui/radio-group";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   Table,
@@ -76,12 +84,16 @@ type CreateApiKeyDialogProps = {
   onCreated: (response: CreateApiKeyResponse) => void;
 };
 
+const READ_ONLY_SCOPES: ApiKeyScope[] = ["read"];
+const READ_WRITE_SCOPES: ApiKeyScope[] = ["read", "write", "delete"];
+
 function CreateApiKeyDialog({
   open,
   onOpenChange,
   onCreated,
 }: Readonly<CreateApiKeyDialogProps>) {
   const [name, setName] = useState("");
+  const [scopePreset, setScopePreset] = useState<"read" | "read-write">("read");
   const createApiKey = useCreatePlatformApiKey();
 
   const handleSubmit = async (e: FormEvent) => {
@@ -90,8 +102,14 @@ function CreateApiKeyDialog({
       return;
     }
     try {
-      const response = await createApiKey.mutateAsync({ name: name.trim() });
+      const scopes =
+        scopePreset === "read-write" ? READ_WRITE_SCOPES : READ_ONLY_SCOPES;
+      const response = await createApiKey.mutateAsync({
+        name: name.trim(),
+        scopes,
+      });
       setName("");
+      setScopePreset("read");
       onOpenChange(false);
       onCreated(response);
     } catch {
@@ -119,6 +137,40 @@ function CreateApiKeyDialog({
                 placeholder="e.g. CI/CD pipeline"
                 value={name}
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Permissions</Label>
+              <RadioGroup
+                onValueChange={(v) =>
+                  setScopePreset(v as "read" | "read-write")
+                }
+                value={scopePreset}
+              >
+                <label
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-[[data-state=checked]]:border-primary"
+                  htmlFor="scope-read"
+                >
+                  <RadioGroupItem id="scope-read" value="read" />
+                  <div>
+                    <p className="font-medium text-sm">Read only</p>
+                    <p className="text-muted-foreground text-xs">
+                      View projects, artifacts, and workstreams
+                    </p>
+                  </div>
+                </label>
+                <label
+                  className="flex cursor-pointer items-center gap-3 rounded-md border p-3 has-[[data-state=checked]]:border-primary"
+                  htmlFor="scope-read-write"
+                >
+                  <RadioGroupItem id="scope-read-write" value="read-write" />
+                  <div>
+                    <p className="font-medium text-sm">Read & Write</p>
+                    <p className="text-muted-foreground text-xs">
+                      Full access: create, update, and delete resources
+                    </p>
+                  </div>
+                </label>
+              </RadioGroup>
             </div>
           </div>
           <DialogFooter className="mt-4">
@@ -180,6 +232,7 @@ function ApiKeysCardContent({
         <TableRow>
           <TableHead>Name</TableHead>
           <TableHead>Prefix</TableHead>
+          <TableHead>Scope</TableHead>
           <TableHead>Created</TableHead>
           <TableHead>Last Used</TableHead>
           <TableHead>Status</TableHead>
@@ -190,11 +243,18 @@ function ApiKeysCardContent({
         {apiKeys.map((key) => {
           const status = getKeyStatus(key);
           const active = isKeyActive(key);
+          const hasWrite =
+            key.scopes.includes("write") || key.scopes.includes("delete");
           return (
             <TableRow key={key.id}>
               <TableCell className="font-medium">{key.name}</TableCell>
               <TableCell className="font-mono text-muted-foreground text-sm">
                 {key.keyPrefix}...
+              </TableCell>
+              <TableCell>
+                <Badge variant={hasWrite ? "default" : "secondary"}>
+                  {hasWrite ? "Read & Write" : "Read only"}
+                </Badge>
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">
                 {formatDate(key.createdAt)}
@@ -223,13 +283,78 @@ function ApiKeysCardContent({
   );
 }
 
+const MCP_TOOL_GROUPS = [
+  {
+    label: "Projects",
+    tools: [
+      "list-projects",
+      "get-project",
+      "create-project",
+      "update-project",
+      "get-project-status",
+    ],
+  },
+  {
+    label: "Artifacts",
+    tools: [
+      "list-artifacts",
+      "get-artifact",
+      "create-artifact",
+      "update-artifact",
+      "batch-create-artifacts",
+      "create-artifact-version",
+      "list-artifact-versions",
+      "get-related-artifacts",
+    ],
+  },
+  {
+    label: "Workstreams",
+    tools: [
+      "list-workstreams",
+      "get-workstream",
+      "create-workstream",
+      "update-workstream",
+    ],
+  },
+  {
+    label: "Issues",
+    tools: ["list-issues", "get-issue", "create-issue", "update-issue"],
+  },
+  {
+    label: "Links",
+    tools: [
+      "list-entity-links",
+      "create-entity-link",
+      "list-external-links",
+      "create-external-link",
+    ],
+  },
+  {
+    label: "Integrations",
+    tools: ["get-github-status", "get-linear-status", "get-google-status"],
+  },
+  {
+    label: "Planning",
+    tools: ["generate-plans", "list-templates"],
+  },
+  {
+    label: "Loops",
+    tools: ["list-loops", "get-loop"],
+  },
+  {
+    label: "Other",
+    tools: ["list-users", "get-dashboard-stats", "ping"],
+  },
+] as const;
+
 function QuickStartGuide() {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Quick Start</CardTitle>
         <CardDescription>
-          Use your API key to access the Symphony API programmatically.
+          Use your API key to connect ClosedLoop to Claude Code, Claude Desktop,
+          or your own scripts.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -248,7 +373,7 @@ function QuickStartGuide() {
             {`// claude_desktop_config.json
 {
   "mcpServers": {
-    "symphony": {
+    "closedloop": {
       "url": "https://mcp.closedloop.ai/mcp",
       "headers": {
         "Authorization": "Bearer sk_live_YOUR_KEY"
@@ -258,26 +383,23 @@ function QuickStartGuide() {
 }`}
           </pre>
         </div>
-        <div className="space-y-1">
-          <p className="font-medium text-sm">Available endpoints</p>
-          <ul className="list-inside list-disc text-muted-foreground text-xs">
-            <li>
-              <code className="text-xs">GET /projects</code> — List projects
-            </li>
-            <li>
-              <code className="text-xs">GET /artifacts</code> — List artifacts
-            </li>
-            <li>
-              <code className="text-xs">GET /artifacts/:id</code> — Get artifact
-            </li>
-            <li>
-              <code className="text-xs">POST /artifacts</code> — Create artifact
-            </li>
-            <li>
-              <code className="text-xs">POST /artifacts/batch-create</code> —
-              Batch create artifacts
-            </li>
-          </ul>
+        <div className="space-y-2">
+          <p className="font-medium text-sm">Available MCP Tools (35)</p>
+          <div className="space-y-1.5">
+            {MCP_TOOL_GROUPS.map((group) => (
+              <div className="text-xs" key={group.label}>
+                <span className="font-medium">{group.label}:</span>{" "}
+                <span className="text-muted-foreground">
+                  {group.tools.map((tool, i) => (
+                    <span key={tool}>
+                      <code className="text-xs">{tool}</code>
+                      {i < group.tools.length - 1 ? ", " : ""}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -313,7 +435,7 @@ export function ApiKeysSettingsPanel() {
           <div>
             <CardTitle>API Keys</CardTitle>
             <CardDescription>
-              Manage API keys for programmatic access to Symphony.
+              Manage API keys for programmatic access to ClosedLoop.
             </CardDescription>
           </div>
           <Button onClick={() => setShowCreateDialog(true)} size="sm">
