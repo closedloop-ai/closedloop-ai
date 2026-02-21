@@ -6,6 +6,30 @@
 - Typecheck: `pnpm --filter @repo/mcp typecheck`
 - Test: `pnpm --filter @repo/mcp test`
 
+## Claude Code CLI Setup
+
+Use these steps to connect Claude Code CLI to ClosedLoop MCP:
+
+1. Run `/mcp` in Claude Code CLI.
+2. Add a server with:
+   - Name: `closedloop`
+   - URL: `https://mcp.closedloop.ai/mcp`
+3. Choose `Authenticate` (or `Re-authenticate`).
+4. Complete browser auth and enter your ClosedLoop API key (`sk_live_...`).
+5. Confirm `/mcp` shows:
+   - `Status: connected`
+   - `Auth: authenticated`
+6. Test with a prompt like: `list my projects`
+
+### Troubleshooting
+
+- If Claude CLI returns `Please run /login`, run `/login` and retry.
+- If connected but tools are missing, run `/mcp` and select `Re-authenticate`.
+- If it still fails, capture:
+  - the exact CLI error text
+  - timestamp of the attempt
+  - `/mcp` panel output
+
 ## Required Environment Variables
 
 - `INTERNAL_API_SECRET`
