@@ -1,6 +1,10 @@
 import { success } from "@repo/api/src/types/common";
-import type { CreateLoopResponse } from "@repo/api/src/types/loop";
+import type {
+  CreateLoopRequest,
+  CreateLoopResponse,
+} from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
@@ -47,11 +51,19 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         return notFoundResponse("Artifact");
       }
 
-      // Resolve repo info from the artifact's workstream/project
-      const workstream = artifact.workstream;
+      // Use findOrCreateWorkstream for robust PRD discovery via entity links,
+      // title matching, and auto-workstream creation — matching the pattern
+      // used by regenerate/requestChanges/executePlan service methods.
+      const { workstream: resolvedWorkstream, sourceArtifact } =
+        await artifactsService.findOrCreateWorkstream(
+          user.organizationId,
+          artifact,
+          user.id
+        );
+
+      const workstream = resolvedWorkstream ?? artifact.workstream;
       const project = workstream?.project;
       const existingRepository = project?.repositories[0];
-      const sourceArtifact = workstream?.artifacts[0];
 
       const targetRepo =
         sourceArtifact?.targetRepo ??
@@ -70,6 +82,24 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         existingRepository?.defaultBranch ??
         "main";
 
+      // Build context refs: include the source PRD so the harness can write prd.md
+      const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
+      if (sourceArtifact) {
+        contextRefs.push({ artifactId: sourceArtifact.id, include: "full" });
+      }
+
+      // Find parent loop for non-PLAN commands
+      // REQUEST_CHANGES needs parent's plan.json state
+      // EXECUTE needs parent's plan.json + branch name for code changes
+      let parentLoopId: string | undefined;
+      if (body.command !== "plan") {
+        const parentLoop = await loopsService.findLatestCompletedForArtifact(
+          artifactId,
+          user.organizationId
+        );
+        parentLoopId = parentLoop?.id;
+      }
+
       // Create the Loop
       const loopResponse = await loopsService.create(
         user.organizationId,
@@ -78,19 +108,27 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           command: COMMAND_MAP[body.command],
           artifactId,
           workstreamId: workstream?.id,
+          parentLoopId,
           prompt: body.prompt,
           repo: { fullName: targetRepo, branch: targetBranch },
+          contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
         }
       );
 
-      // Fire and forget - launch the loop asynchronously
-      launchLoop(loopResponse.loopId, user.organizationId).catch((error) => {
+      // Launch the loop asynchronously. waitUntil() keeps the serverless
+      // function alive after the response is sent so a Vercel deployment
+      // (or idle timeout) doesn't kill the launch mid-flight.
+      const launchPromise = launchLoop(
+        loopResponse.loopId,
+        user.organizationId
+      ).catch((error) => {
         log.error("[run-loop] Failed to launch loop", {
           loopId: loopResponse.loopId,
           artifactId,
           error: error instanceof Error ? error.message : String(error),
         });
       });
+      waitUntil(launchPromise);
 
       return NextResponse.json(success(loopResponse));
     } catch (error) {

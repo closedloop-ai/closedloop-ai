@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { env } from "@/env";
@@ -16,7 +17,17 @@ export async function POST(request: Request) {
   // Reject requests when INTERNAL_API_SECRET is not configured or header does not match
   const internalSecret = env.INTERNAL_API_SECRET;
   const headerSecret = request.headers.get("X-Internal-Secret");
-  if (!internalSecret || headerSecret !== internalSecret) {
+  if (!(internalSecret && headerSecret)) {
+    return unauthorizedResponse();
+  }
+  const digestKey = "api-constant-time-compare";
+  const expectedDigest = createHmac("sha256", digestKey)
+    .update(internalSecret, "utf8")
+    .digest();
+  const actualDigest = createHmac("sha256", digestKey)
+    .update(headerSecret, "utf8")
+    .digest();
+  if (!timingSafeEqual(expectedDigest, actualDigest)) {
     return unauthorizedResponse();
   }
 
@@ -36,6 +47,7 @@ export async function POST(request: Request) {
     return successResponse({
       userId: context.userId,
       organizationId: context.organizationId,
+      scopes: context.scopes,
     });
   } catch (error) {
     return errorResponse("Failed to verify API key", error);

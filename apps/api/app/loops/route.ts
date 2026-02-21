@@ -2,7 +2,8 @@ import type {
   CreateLoopResponse,
   LoopWithUser,
 } from "@repo/api/src/types/loop";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+
 import {
   badRequestResponse,
   errorResponse,
@@ -12,7 +13,7 @@ import {
 import { loopsService } from "./service";
 import { createLoopValidator, listLoopsQueryValidator } from "./validators";
 
-export const GET = withAuth<LoopWithUser[], "/loops">(
+export const GET = withAnyAuth<LoopWithUser[], "/loops">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -42,7 +43,7 @@ export const GET = withAuth<LoopWithUser[], "/loops">(
  * POST /loops — Creates a loop DB record only (status: PENDING).
  * Does NOT launch the loop. To create AND launch, use POST /artifacts/[id]/run-loop.
  */
-export const POST = withAuth<CreateLoopResponse, "/loops">(
+export const POST = withAnyAuth<CreateLoopResponse, "/loops">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -63,5 +64,6 @@ export const POST = withAuth<CreateLoopResponse, "/loops">(
     } catch (error) {
       return errorResponse("Failed to create loop", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

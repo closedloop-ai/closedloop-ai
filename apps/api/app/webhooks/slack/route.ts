@@ -2,19 +2,18 @@ import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
+import { env } from "@/env";
 import {
   handleCreateIdea,
   handleGetStatus,
   type SlackSlashCommandPayload,
 } from "./handlers";
-import { slackVerifyWebhookSignature } from "./webhook-utils";
-
-const WHITESPACE_REGEX = /\s+/;
+import { slackVerifyWebhookSignature, WHITESPACE_REGEX } from "./webhook-utils";
 
 export async function POST(request: Request): Promise<Response> {
   log.info("[webhook/slack] Received webhook request");
 
-  const signingSecret = process.env.SLACK_SIGNING_SECRET;
+  const signingSecret = env.SLACK_SIGNING_SECRET;
 
   if (!signingSecret) {
     log.warn("[webhook/slack] SLACK_SIGNING_SECRET not set, rejecting request");

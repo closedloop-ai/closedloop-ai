@@ -24,6 +24,7 @@ export const LINK_TYPE_OPTIONS = Object.values(LinkType);
 
 export type EntityLink = {
   id: string;
+  organizationId: string;
   sourceId: string;
   sourceType: EntityType;
   sourceVersion: number | null;

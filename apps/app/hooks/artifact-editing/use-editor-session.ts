@@ -128,6 +128,7 @@ export function useEditorSession(config: UseEditorSessionConfig) {
     // Editing state
     isEditing,
     isViewingHistorical,
+    latestVersion,
     liveblocksRoomId,
     openThreadCount,
 

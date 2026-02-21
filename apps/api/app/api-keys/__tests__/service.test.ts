@@ -38,6 +38,7 @@ function makeApiKeyRecord(
     name: string;
     keyPrefix: string;
     keyHash: string;
+    scopes: string[];
     expiresAt: Date | null;
     lastUsedAt: Date | null;
     createdAt: Date;
@@ -51,6 +52,7 @@ function makeApiKeyRecord(
     name: "My Key",
     keyPrefix: "sk_live_xxxx",
     keyHash: "abc123",
+    scopes: ["read"],
     expiresAt: null,
     lastUsedAt: null,
     createdAt: new Date("2024-01-01"),
@@ -127,7 +129,7 @@ describe("apiKeysService.generate", () => {
     expect(storedHash).not.toBe(returnedPlaintext);
   });
 
-  it("stores keyPrefix as the first 12 characters of the plaintext key", async () => {
+  it("stores keyPrefix as static prefix without leaking random key bytes", async () => {
     let storedPrefix: string | undefined;
 
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
@@ -149,8 +151,8 @@ describe("apiKeysService.generate", () => {
     });
     const returnedPlaintext = result.plaintext;
 
-    expect(storedPrefix).toBe(returnedPlaintext.slice(0, 12));
-    // sk_live_ is 8 chars, so prefix always starts with "sk_live_"
+    expect(returnedPlaintext).toMatch(SK_LIVE_REGEX);
+    expect(storedPrefix).toBe("sk_live_");
     expect(storedPrefix).toMatch(SK_LIVE_PREFIX_REGEX);
   });
 
@@ -320,11 +322,12 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    await apiKeysService.revoke("key-1", ORG_ID);
+    await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
 
     expect(capturedArgs?.where).toEqual({
       id: "key-1",
       organizationId: ORG_ID,
+      userId: USER_ID,
       revokedAt: null,
     });
   });
@@ -339,7 +342,7 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    const result = await apiKeysService.revoke("key-1", ORG_ID);
+    const result = await apiKeysService.revoke("key-1", ORG_ID, USER_ID);
 
     expect(result).toBe(true);
   });
@@ -354,7 +357,11 @@ describe("apiKeysService.revoke", () => {
       return callback(mockDb);
     });
 
-    const result = await apiKeysService.revoke("nonexistent-key", ORG_ID);
+    const result = await apiKeysService.revoke(
+      "nonexistent-key",
+      ORG_ID,
+      USER_ID
+    );
 
     expect(result).toBe(false);
   });
@@ -423,6 +430,7 @@ describe("apiKeysService.verifyKey", () => {
     const record = makeApiKeyRecord({
       userId: "user-verified",
       organizationId: "org-verified",
+      scopes: [],
     });
 
     mockWithDb
@@ -444,6 +452,7 @@ describe("apiKeysService.verifyKey", () => {
     expect(result).toEqual({
       userId: "user-verified",
       organizationId: "org-verified",
+      scopes: [],
     });
   });
 

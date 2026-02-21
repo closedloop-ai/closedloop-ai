@@ -184,9 +184,24 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
   const valueToY = (value: number) =>
     plotTop + (1 - (value - yMin) / yRange) * plotHeight;
 
-  const hasHuman = payload.humanMedian !== null;
   const centerX = x + width / 2;
   const halfWidth = width * 0.5;
+
+  // Extract human stats into a typed object only when all fields are present
+  const humanStats =
+    payload.humanMedian !== null &&
+    payload.humanLowerWhisker !== null &&
+    payload.humanLowerBox !== null &&
+    payload.humanUpperBox !== null &&
+    payload.humanUpperWhisker !== null
+      ? {
+          lowerWhisker: payload.humanLowerWhisker,
+          lowerBox: payload.humanLowerBox,
+          median: payload.humanMedian,
+          upperBox: payload.humanUpperBox,
+          upperWhisker: payload.humanUpperWhisker,
+        }
+      : null;
 
   return (
     <g>
@@ -201,16 +216,12 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
         upperWhisker: payload.upperWhisker,
         color: EVAL_COLOR,
       })}
-      {hasHuman &&
+      {humanStats &&
         renderCandlestick({
           centerX,
           halfWidth,
           valueToY,
-          lowerWhisker: payload.humanLowerWhisker!,
-          lowerBox: payload.humanLowerBox!,
-          median: payload.humanMedian!,
-          upperBox: payload.humanUpperBox!,
-          upperWhisker: payload.humanUpperWhisker!,
+          ...humanStats,
           color: HUMAN_COLOR,
         })}
     </g>

@@ -201,6 +201,7 @@ export const loopsService = {
           command: input.command,
           artifactId: input.artifactId ?? null,
           workstreamId: input.workstreamId ?? null,
+          parentLoopId: input.parentLoopId ?? null,
           prompt: input.prompt ?? null,
           repo: input.repo ?? undefined,
           contextRefs: input.contextRefs ?? undefined,
@@ -832,5 +833,36 @@ export const loopsService = {
       totalEstimatedCost: Number(aggregate._sum.estimatedCost ?? 0),
       byCommand,
     };
+  },
+
+  /**
+   * Find the most recent successfully completed loop for a given artifact.
+   * Used to chain PLAN → REQUEST_CHANGES → EXECUTE by linking child loops
+   * to their parent's S3 state, session ID, and branch name.
+   *
+   * Only COMPLETED loops are eligible — FAILED and TIMED_OUT loops have
+   * incomplete or missing state (no plan.json, no branch) and chaining
+   * to them inherits broken context.
+   */
+  async findLatestCompletedForArtifact(
+    artifactId: string,
+    organizationId: string
+  ): Promise<Loop | null> {
+    const loop = await withDb((db) =>
+      db.loop.findFirst({
+        where: {
+          artifactId,
+          organizationId,
+          status: "COMPLETED",
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!loop) {
+      return null;
+    }
+
+    return toLoop(loop);
   },
 };

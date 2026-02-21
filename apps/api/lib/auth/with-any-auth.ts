@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import type { ApiResult } from "@repo/api/src/types/common";
 import type { NextRequest, NextResponse } from "next/server";
 import { withApiKeyAuth } from "./with-api-key-auth";
@@ -21,7 +22,8 @@ import { withAuth } from "./with-auth";
  * });
  */
 export function withAnyAuth<TResponse, TRoute extends string = string>(
-  handler: AuthenticatedHandler<TResponse, TRoute>
+  handler: AuthenticatedHandler<TResponse, TRoute>,
+  options?: { requiredScopes?: ApiKeyScope[] }
 ): (
   request: NextRequest,
   context: { params: Promise<Record<string, string>> }
@@ -36,7 +38,16 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
       : null;
 
     if (token?.startsWith("sk_live_")) {
-      return withApiKeyAuth<TResponse, TRoute>(handler)(
+      let fallbackOptions: { requiredScopes: ApiKeyScope[] };
+      if (request.method === "GET" || request.method === "HEAD") {
+        fallbackOptions = { requiredScopes: ["read"] as ApiKeyScope[] };
+      } else if (request.method === "DELETE") {
+        fallbackOptions = { requiredScopes: ["delete"] as ApiKeyScope[] };
+      } else {
+        fallbackOptions = { requiredScopes: ["write"] as ApiKeyScope[] };
+      }
+      const effectiveOptions = options ?? fallbackOptions;
+      return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
         request,
         context as { params: Promise<Record<string, string>> }
       );

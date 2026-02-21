@@ -2,7 +2,8 @@ import type {
   GoogleDisconnectResponse,
   GoogleIntegrationStatus,
 } from "@repo/api/src/types/google";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { googleService } from "./service";
 
@@ -12,7 +13,7 @@ import { googleService } from "./service";
  * Get the Google integration status for the current organization.
  * Returns connection status and user email.
  */
-export const GET = withAuth<GoogleIntegrationStatus, "/integrations/google">(
+export const GET = withAnyAuth<GoogleIntegrationStatus, "/integrations/google">(
   async ({ user }) => {
     try {
       const result = await googleService.getIntegrationStatus(
@@ -42,14 +43,17 @@ export const GET = withAuth<GoogleIntegrationStatus, "/integrations/google">(
  * Disconnect the Google integration for the current organization.
  * Revokes the access token and deletes the integration record.
  */
-export const DELETE = withAuth<
+export const DELETE = withAnyAuth<
   GoogleDisconnectResponse,
   "/integrations/google"
->(async ({ user }) => {
-  try {
-    await googleService.disconnect(user.organizationId);
-    return successResponse({ disconnected: true });
-  } catch (error) {
-    return errorResponse("Failed to disconnect Google integration", error);
-  }
-});
+>(
+  async ({ user }) => {
+    try {
+      await googleService.disconnect(user.organizationId);
+      return successResponse({ disconnected: true });
+    } catch (error) {
+      return errorResponse("Failed to disconnect Google integration", error);
+    }
+  },
+  { requiredScopes: ["delete"] }
+);

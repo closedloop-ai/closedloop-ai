@@ -7,47 +7,12 @@ import {
   useLiveblocksAvailability,
 } from "@repo/collaboration";
 import { useInboxNotifications } from "@repo/collaboration/hooks";
-import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { InboxIcon } from "lucide-react";
-import type React from "react";
-
-type InboxNotificationKinds = React.ComponentProps<
-  typeof InboxNotification
->["kinds"];
 
 type InboxEmptyStateProps = {
   title: string;
   description: string;
-};
-
-function resolveArtifactHref(roomId: string, href?: string): string {
-  if (href) {
-    return href;
-  }
-  try {
-    const { slug } = parseArtifactRoomId(roomId);
-    return `/artifacts/${slug}`;
-  } catch {
-    return "/inbox";
-  }
-}
-
-const inboxNotificationKinds: InboxNotificationKinds = {
-  thread: ({ inboxNotification, href, ...props }) => (
-    <InboxNotification.Thread
-      {...props}
-      href={resolveArtifactHref(inboxNotification.roomId, href)}
-      inboxNotification={inboxNotification}
-    />
-  ),
-  textMention: ({ inboxNotification, href, ...props }) => (
-    <InboxNotification.TextMention
-      {...props}
-      href={resolveArtifactHref(inboxNotification.roomId, href)}
-      inboxNotification={inboxNotification}
-    />
-  ),
 };
 
 function InboxEmptyState({ title, description }: InboxEmptyStateProps) {
@@ -78,7 +43,6 @@ function InboxContent() {
         <InboxNotification
           inboxNotification={notification}
           key={notification.id}
-          kinds={inboxNotificationKinds}
         />
       ))}
     </InboxNotificationList>

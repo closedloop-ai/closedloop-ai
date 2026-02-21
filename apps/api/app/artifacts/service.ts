@@ -10,6 +10,8 @@ import {
   type FindArtifactsOptions,
   type GenerationStatus,
   type PullRequestInfo,
+  PullRequestState,
+  ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -73,7 +75,7 @@ async function validateOwnerInOrg(
  * Used to set committer identity on bot commits so Vercel can
  * match the author to a team member and trigger preview deploys.
  */
-async function getCommitterInfo(
+export async function getCommitterInfo(
   userId: string
 ): Promise<{ committerName: string; committerEmail: string } | undefined> {
   const user = await withDb((db) =>
@@ -155,6 +157,7 @@ async function createArtifactRecord(
   if (sourceId && sourceType) {
     await tx.entityLink.create({
       data: {
+        organizationId,
         sourceId,
         sourceType,
         sourceVersion,
@@ -200,7 +203,7 @@ export const artifactsService = {
       })
     );
 
-    // Batch-fetch GitHubActionRun records for generation status
+    // Collect unique workstream IDs for batch queries
     const uniqueWorkstreamIds = [
       ...new Set(
         artifacts
@@ -219,7 +222,7 @@ export const artifactsService = {
             workflowName: "symphony-dispatch",
           },
           orderBy: { createdAt: "desc" },
-          take: 100,
+          take: uniqueWorkstreamIds.length,
           select: {
             workstreamId: true,
             status: true,
@@ -260,8 +263,34 @@ export const artifactsService = {
       }
     }
 
+    // Batch-fetch GitHubPullRequest records for each workstream
+    const pullRequestRecords =
+      uniqueWorkstreamIds.length > 0
+        ? await withDb((db) =>
+            db.gitHubPullRequest.findMany({
+              where: { workstreamId: { in: uniqueWorkstreamIds } },
+              select: {
+                id: true,
+                number: true,
+                title: true,
+                htmlUrl: true,
+                state: true,
+                headBranch: true,
+                baseBranch: true,
+                createdAt: true,
+                reviewDecision: true,
+                workstreamId: true,
+              },
+              orderBy: { createdAt: "desc" },
+              take: 100,
+            })
+          )
+        : [];
+
+    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
+
     return artifacts.map((a) =>
-      toArtifactWithWorkstream(a, generationStatusMap)
+      toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
     );
   },
 
@@ -283,7 +312,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -304,7 +333,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -429,9 +458,7 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast Prisma enums (GitHubPRState, ReviewDecision) to API enums (PullRequestState, ReviewDecision)
-    // Needed because API types are intentionally independent of database types
-    return pr as PullRequestInfo;
+    return toPullRequestInfo(pr);
   },
 
   /**
@@ -562,10 +589,12 @@ export const artifactsService = {
       return;
     }
 
-    // Delete entity links referencing this artifact, then delete the artifact
+    // Delete entity links referencing this artifact, then delete the artifact.
+    // Loops are preserved (onDelete: SetNull) to retain execution history.
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: id, sourceType: "ARTIFACT" },
             { targetId: id, targetType: "ARTIFACT" },
@@ -673,7 +702,7 @@ export const artifactsService = {
         };
 
         // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
-        await entityLinksService.createLink({
+        await entityLinksService.createLink(organizationId, {
           sourceId: matchedArtifact.id,
           sourceType: "ARTIFACT",
           targetId: artifact.id,
@@ -789,6 +818,7 @@ export const artifactsService = {
     >
   ) {
     const sourceLinks = await entityLinksService.findSourceLinks(
+      artifact.organizationId,
       artifact.id,
       "ARTIFACT",
       LinkType.PRODUCES
@@ -1976,6 +2006,7 @@ Please try again or contact support if the issue persists.`
     for (const prd of prds) {
       // Find the implementation plan(s) that this PRD produced via PRODUCES links
       const targetLinks = await entityLinksService.findTargetLinks(
+        organizationId,
         prd.id,
         "ARTIFACT",
         LinkType.PRODUCES
@@ -2121,6 +2152,7 @@ Please try again or contact support if the issue persists.`
       const parentLink = await withDb((db) =>
         db.entityLink.findFirst({
           where: {
+            organizationId,
             targetId: currentId,
             targetType: "ARTIFACT",
             sourceType: "ARTIFACT",
@@ -2158,6 +2190,7 @@ Please try again or contact support if the issue persists.`
       const childLinks = await withDb((db) =>
         db.entityLink.findMany({
           where: {
+            organizationId,
             sourceId: currentId,
             sourceType: "ARTIFACT",
             targetType: "ARTIFACT",
@@ -2253,9 +2286,15 @@ function extractContentSnippet(content: string): string | null {
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
-  generationStatusMap?: Map<string, GenerationStatus>
+  maps?: {
+    generationStatusMap?: Map<string, GenerationStatus>;
+    pullRequestMap?: Map<string, PullRequestInfo>;
+  }
 ): ArtifactWithWorkstream {
-  const generationStatus = generationStatusMap?.get(artifact.id);
+  const generationStatus = maps?.generationStatusMap?.get(artifact.id);
+  const pullRequest = artifact.workstreamId
+    ? (maps?.pullRequestMap?.get(artifact.workstreamId) ?? null)
+    : null;
   const rawContent = artifact.versions?.[0]?.content ?? null;
   const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
@@ -2269,6 +2308,10 @@ function toArtifactWithWorkstream(
         }
       : null,
     ...(generationStatus && { generationStatus }),
+    // Three-state contract for pullRequest:
+    //   - maps omitted          → field absent (caller didn't request PR data)
+    //   - maps.pullRequestMap   → field set to PullRequestInfo | null
+    ...(maps && "pullRequestMap" in maps && { pullRequest }),
     ...(snippet !== null && { snippet }),
   };
 }
@@ -2351,4 +2394,67 @@ Configure the following environment variables to enable plan generation:
 - GITHUB_APP_DISPATCH_REPO
 - WEBAPP_ENV
 `;
+}
+
+const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
+const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
+
+/**
+ * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
+ * Returns null if the record contains invalid enum values (e.g. a new GitHub
+ * state we don't yet map) so a single bad record doesn't break batch listings.
+ */
+function toPullRequestInfo(pr: {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  reviewDecision: string | null;
+}): PullRequestInfo | null {
+  if (!VALID_PR_STATES.has(pr.state)) {
+    log.warn(`Skipping PR #${pr.number}: invalid state "${pr.state}"`);
+    return null;
+  }
+  if (
+    pr.reviewDecision !== null &&
+    !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
+  ) {
+    log.warn(
+      `Skipping PR #${pr.number}: invalid review decision "${pr.reviewDecision}"`
+    );
+    return null;
+  }
+  return {
+    id: pr.id,
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.htmlUrl,
+    state: pr.state as PullRequestState,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+    createdAt: pr.createdAt,
+    reviewDecision: pr.reviewDecision as ReviewDecision | null,
+  };
+}
+
+/** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
+function buildPullRequestMap(
+  records: (Parameters<typeof toPullRequestInfo>[0] & {
+    workstreamId: string | null;
+  })[]
+): Map<string, PullRequestInfo> {
+  const map = new Map<string, PullRequestInfo>();
+  for (const pr of records) {
+    if (pr.workstreamId && !map.has(pr.workstreamId)) {
+      const mapped = toPullRequestInfo(pr);
+      if (mapped) {
+        map.set(pr.workstreamId, mapped);
+      }
+    }
+  }
+  return map;
 }

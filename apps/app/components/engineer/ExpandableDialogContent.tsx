@@ -10,7 +10,7 @@ type BaseDialogContentProps = ComponentProps<typeof DialogContent>;
 interface ExpandableDialogContentProps extends BaseDialogContentProps {
   isExpanded?: boolean;
   onToggleExpand?: () => void;
-  overlayClassName?: string;
+  showOverlay?: boolean;
 }
 
 /**
@@ -22,14 +22,7 @@ export const ExpandableDialogContent = forwardRef<
   ExpandableDialogContentProps
 >(
   (
-    {
-      className,
-      children,
-      isExpanded,
-      onToggleExpand,
-      overlayClassName: _overlayClassName,
-      ...props
-    },
+    { className, children, isExpanded, onToggleExpand, showOverlay, ...props },
     ref
   ) => {
     return (
@@ -40,6 +33,7 @@ export const ExpandableDialogContent = forwardRef<
           className
         )}
         ref={ref}
+        showOverlay={showOverlay}
         {...props}
       >
         {children}

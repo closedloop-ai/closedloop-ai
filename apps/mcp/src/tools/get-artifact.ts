@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 /**
  * Register the get-artifact tool on the given MCP server.
@@ -16,16 +17,19 @@ export function registerGetArtifact(
     {
       artifactId: z.string().describe("ID of the artifact to retrieve"),
     },
-    async ({ artifactId }) => {
-      const artifact = await apiClient.get<unknown>(`/artifacts/${artifactId}`);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(artifact, null, 2),
-          },
-        ],
-      };
-    }
+    ({ artifactId }) =>
+      withErrorHandling(async () => {
+        const artifact = await apiClient.get<unknown>(
+          `/artifacts/${encodePathSegment(artifactId)}`
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(artifact, null, 2),
+            },
+          ],
+        };
+      })
   );
 }

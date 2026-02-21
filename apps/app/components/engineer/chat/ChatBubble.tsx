@@ -2,7 +2,7 @@
 
 import { cn } from "@repo/design-system/lib/utils";
 import { Copy, Forward, PlayCircle, Trash2 } from "lucide-react";
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { formatTime, type SuggestedAction } from "@/lib/engineer/chat-utils";
 
 type ChatBubbleProps = {
@@ -153,6 +153,13 @@ export const ChatBubble = memo(
           {children}
         </div>
 
+        {/* Elapsed time while streaming */}
+        {isAssistant && isStreaming && (
+          <div className="px-1">
+            <ElapsedTimer start={timestamp} />
+          </div>
+        )}
+
         {/* Visibility note for Codex messages */}
         {isCodex && !isStreaming && (
           <p className="px-1 text-[10px] text-muted-foreground/50 italic">
@@ -208,3 +215,30 @@ export const ChatBubble = memo(
     prev.contextPercent === next.contextPercent &&
     JSON.stringify(prev.actions) === JSON.stringify(next.actions)
 );
+
+/**
+ * Displays elapsed time since a given start timestamp, updating every second.
+ */
+function ElapsedTimer({ start }: Readonly<{ start: string }>) {
+  const [elapsed, setElapsed] = useState(() =>
+    Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 1000))
+  );
+
+  useEffect(() => {
+    const t0 = new Date(start).getTime();
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Math.floor((Date.now() - t0) / 1000)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [start]);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <span className="font-mono text-[10px] text-muted-foreground/50">
+      · {label}
+    </span>
+  );
+}

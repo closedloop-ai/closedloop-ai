@@ -113,6 +113,13 @@ export type ArtifactWithWorkstream = Artifact & {
   owner?: ProjectOwner | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
+  /**
+   * The pull request associated with this artifact's workstream.
+   * - `undefined`: field was not populated (findById/findBySlug do not batch-fetch PR data)
+   * - `null`: findAll ran and found no PR for this workstream
+   * - `PullRequestInfo`: a PR was found and linked to this workstream
+   */
+  pullRequest?: PullRequestInfo | null;
   /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
   snippet?: string | null;
 };

@@ -74,15 +74,33 @@ export const thingsService = {
 
 ### Authentication
 
-All routes use `withAuth()` wrapper from `@/lib/auth/with-auth`:
+Three authentication wrappers are available in `@/lib/auth/`:
+
+| Wrapper | Import | When to use |
+|---------|--------|-------------|
+| `withAuth` | `@/lib/auth/with-auth` | Clerk session only (browser clients) |
+| `withApiKeyAuth` | `@/lib/auth/with-api-key-auth` | API key only (`sk_live_*` tokens) |
+| `withAnyAuth` | `@/lib/auth/with-any-auth` | Both — tries API key first, falls back to Clerk session |
+
+Use `withAnyAuth` for routes that should accept both programmatic (MCP, CLI) and browser clients:
 
 ```typescript
 import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 
+// Session-only (browser UI routes)
 export const GET = withAuth<ResponseType, "/path/[id]">(
   async ({ user }, request, params) => {
     // user.organizationId is always available
     // user.id is the authenticated user
+  }
+);
+
+// Both API key and session (routes also called by MCP/CLI)
+export const POST = withAnyAuth<ResponseType, "/path">(
+  async ({ user }, request) => {
+    // Same AuthContext shape regardless of auth method
+    // orgRole is undefined for API key sessions
   }
 );
 ```
