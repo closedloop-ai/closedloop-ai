@@ -17,13 +17,11 @@ export function registerListArtifactVersions(
     },
     ({ artifactId }) =>
       withErrorHandling(async () => {
-        const response = await apiClient.get<unknown>(
-          `/artifacts/${encodePathSegment(artifactId)}/versions`
-        );
-        if (!Array.isArray(response)) {
-          throw new Error("Unexpected response format for artifact versions");
-        }
-        const versions = response;
+        const response = await apiClient.get<{
+          success: boolean;
+          data: unknown[];
+        }>(`/artifacts/${encodePathSegment(artifactId)}/versions`);
+        const versions = response.data;
         const text =
           versions.length === 0
             ? "No versions found."
