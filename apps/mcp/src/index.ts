@@ -7,6 +7,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { createServer } from "node:http";
+import { isIPv4 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -60,15 +61,40 @@ const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
 const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
 const OAUTH_TOKEN_PREFIX_REGEX = /^mcp_at_/;
 const SCOPE_SPLIT_REGEX = /\s+/;
+const LEADING_QUESTION_MARK_REGEX = /^\?/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
 const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26"];
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
 const OAUTH_CLIENT_ID = process.env.MCP_OAUTH_CLIENT_ID ?? "closedloop-mcp";
-const OAUTH_TOKEN_TTL_SECONDS = Number(
-  process.env.MCP_OAUTH_TOKEN_TTL_SECONDS ?? 3600
+
+function parsePositiveIntegerEnv(
+  name: string,
+  defaultValue: number,
+  minimumValue = 1
+): number {
+  const rawValue = process.env[name];
+  if (!rawValue) {
+    return defaultValue;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  if (!Number.isFinite(parsedValue) || parsedValue < minimumValue) {
+    console.warn(
+      `${name}="${rawValue}" is invalid. Using default value ${defaultValue}.`
+    );
+    return defaultValue;
+  }
+
+  return parsedValue;
+}
+
+const OAUTH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_TOKEN_TTL_SECONDS",
+  3600
 );
-const OAUTH_AUTH_CODE_TTL_SECONDS = Number(
-  process.env.MCP_OAUTH_AUTH_CODE_TTL_SECONDS ?? 600
+const OAUTH_AUTH_CODE_TTL_SECONDS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_AUTH_CODE_TTL_SECONDS",
+  600
 );
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const WEBAPP_ENV = process.env.WEBAPP_ENV ?? "local";
@@ -131,12 +157,15 @@ function getInternalEndpointAllowlist(): string[] {
 }
 
 function requireRedirectAllowlistForEnvironment(): void {
+  // RFC 8252 loopback redirects are always allowed, so the allowlist is only
+  // required when non-loopback redirect URIs need to be accepted.
+  // Dynamic client registration (Claude Code, etc.) uses loopback only.
   if (
     !isLocalOauthEnvironment() &&
     getOAuthRedirectUriAllowlist().length === 0
   ) {
-    throw new Error(
-      "MCP_OAUTH_REDIRECT_URIS must be set in non-local environments"
+    console.warn(
+      "MCP_OAUTH_REDIRECT_URIS is empty — only loopback redirect URIs will be accepted"
     );
   }
 }
@@ -581,6 +610,41 @@ function normalizeAddress(address: string): string {
     : address;
 }
 
+function ipv4ToNumber(address: string): number | null {
+  if (!isIPv4(address)) {
+    return null;
+  }
+  const octets = address.split(".").map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value))) {
+    return null;
+  }
+  return (
+    octets[0] * 256 ** 3 + octets[1] * 256 ** 2 + octets[2] * 256 + octets[3]
+  );
+}
+
+function isAddressInCidr(address: string, cidr: string): boolean {
+  const [baseAddress, prefixLengthRaw] = cidr.split("/");
+  if (!(baseAddress && prefixLengthRaw)) {
+    return false;
+  }
+  const prefixLength = Number.parseInt(prefixLengthRaw, 10);
+  if (!Number.isFinite(prefixLength) || prefixLength < 0 || prefixLength > 32) {
+    return false;
+  }
+
+  const addressInt = ipv4ToNumber(address);
+  const baseInt = ipv4ToNumber(baseAddress);
+  if (addressInt === null || baseInt === null) {
+    return false;
+  }
+
+  const rangeSize = 2 ** (32 - prefixLength);
+  const rangeStart = Math.floor(baseInt / rangeSize) * rangeSize;
+  const rangeEnd = rangeStart + rangeSize - 1;
+  return addressInt >= rangeStart && addressInt <= rangeEnd;
+}
+
 function getClientAddress(req: import("node:http").IncomingMessage): string {
   const forwarded = req.headers["x-forwarded-for"];
   if (
@@ -599,7 +663,9 @@ function getClientAddress(req: import("node:http").IncomingMessage): string {
 function isInternalAddressAllowed(address: string): boolean {
   const allowlist = getInternalEndpointAllowlist();
   if (allowlist.length > 0) {
-    return allowlist.includes(address);
+    return allowlist.some((entry) =>
+      entry.includes("/") ? isAddressInCidr(address, entry) : entry === address
+    );
   }
 
   if (!isLocalOauthEnvironment()) {
@@ -609,6 +675,19 @@ function isInternalAddressAllowed(address: string): boolean {
   return (
     address === "localhost" || address === "127.0.0.1" || address === "::1"
   );
+}
+
+function logMcpEvent(
+  event: string,
+  details?: Record<string, string | number | boolean | undefined>
+): void {
+  const payload = details
+    ? Object.entries(details)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => `${key}=${String(value)}`)
+        .join(" ")
+    : "";
+  console.log(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
 }
 
 function consumeOAuthRateLimit(
@@ -933,84 +1012,22 @@ type ResolvedMcpAuth = {
   grantedScopes: string[];
 };
 
-type CachedMcpServerEntry = {
-  activeRequests: number;
-  expiresAtMs: number;
+type McpSession = {
+  auth: ResolvedMcpAuth;
+  lastActivityMs: number;
   server: McpServer;
+  transport: StreamableHTTPServerTransport;
 };
 
-const mcpServerCache = new Map<string, CachedMcpServerEntry>();
+const mcpSessions = new Map<string, McpSession>();
 
-function getMcpServerCacheKey(auth: ResolvedMcpAuth): string {
-  const keyFingerprint = createHash("sha256")
-    .update(auth.plaintextKey, "utf8")
-    .digest("hex");
-  const sortedScopes = [...auth.grantedScopes].sort().join(",");
-  return `${auth.context.organizationId}:${auth.context.userId}:${keyFingerprint}:${sortedScopes}`;
-}
-
-function cleanupExpiredMcpServerCache(nowMs: number): void {
-  for (const [cacheKey, entry] of mcpServerCache.entries()) {
-    if (entry.activeRequests === 0 && entry.expiresAtMs <= nowMs) {
-      mcpServerCache.delete(cacheKey);
+function cleanupExpiredMcpSessions(nowMs: number): void {
+  for (const [sessionId, session] of mcpSessions.entries()) {
+    if (nowMs - session.lastActivityMs > MCP_SERVER_CACHE_TTL_MS) {
+      mcpSessions.delete(sessionId);
+      session.server.close().catch(() => {});
     }
   }
-}
-
-function acquireMcpServer(auth: ResolvedMcpAuth): {
-  release: () => void;
-  server: McpServer;
-} {
-  const nowMs = Date.now();
-  cleanupExpiredMcpServerCache(nowMs);
-  const cacheKey = getMcpServerCacheKey(auth);
-  const cachedEntry = mcpServerCache.get(cacheKey);
-
-  if (
-    cachedEntry &&
-    cachedEntry.expiresAtMs > nowMs &&
-    cachedEntry.activeRequests === 0
-  ) {
-    cachedEntry.activeRequests = 1;
-    cachedEntry.expiresAtMs = nowMs + MCP_SERVER_CACHE_TTL_MS;
-    return {
-      server: cachedEntry.server,
-      release: () => {
-        cachedEntry.activeRequests = Math.max(
-          cachedEntry.activeRequests - 1,
-          0
-        );
-        cachedEntry.expiresAtMs = Date.now() + MCP_SERVER_CACHE_TTL_MS;
-      },
-    };
-  }
-
-  const server = createMcpServer(
-    auth.context,
-    auth.plaintextKey,
-    auth.grantedScopes
-  );
-  if (!cachedEntry || cachedEntry.expiresAtMs <= nowMs) {
-    const cacheEntry: CachedMcpServerEntry = {
-      server,
-      activeRequests: 1,
-      expiresAtMs: nowMs + MCP_SERVER_CACHE_TTL_MS,
-    };
-    mcpServerCache.set(cacheKey, cacheEntry);
-    return {
-      server,
-      release: () => {
-        cacheEntry.activeRequests = Math.max(cacheEntry.activeRequests - 1, 0);
-        cacheEntry.expiresAtMs = Date.now() + MCP_SERVER_CACHE_TTL_MS;
-      },
-    };
-  }
-
-  // Existing entry is in use; create an isolated server for concurrent request safety.
-  return {
-    server,
-    release: () => {},
-  };
 }
 
 async function resolveMcpAuth(
@@ -1064,12 +1081,154 @@ async function resolveMcpAuth(
   };
 }
 
+async function handleMcpExistingSession(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  session: McpSession
+): Promise<void> {
+  session.lastActivityMs = Date.now();
+
+  if (req.method === "GET" || req.method === "DELETE") {
+    await session.transport.handleRequest(req, res);
+    return;
+  }
+
+  let rawBody: string;
+  try {
+    rawBody = await readRequestBody(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return;
+    }
+    throw error;
+  }
+
+  let parsedBody: unknown;
+  try {
+    parsedBody = JSON.parse(rawBody);
+  } catch {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "Malformed JSON request body",
+    });
+    return;
+  }
+
+  await session.transport.handleRequest(req, res, parsedBody);
+}
+
+async function parseMcpJsonBody(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<unknown | null> {
+  let rawBody: string;
+  try {
+    rawBody = await readRequestBody(req);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        error: "payload_too_large",
+        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+      });
+      return null;
+    }
+    throw error;
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    sendJson(res, 400, {
+      error: "invalid_request",
+      error_description: "Malformed JSON request body",
+    });
+    return null;
+  }
+}
+
+async function handleMcpStatelessRequest(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  auth: ResolvedMcpAuth,
+  parsedBody: unknown
+): Promise<void> {
+  const server = createMcpServer(
+    auth.context,
+    auth.plaintextKey,
+    auth.grantedScopes
+  );
+  const transport = new StreamableHTTPServerTransport({
+    // Stateless fallback avoids hard session affinity requirements across ECS tasks.
+    sessionIdGenerator: undefined,
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
+  } finally {
+    await server.close();
+  }
+}
+
+async function handleSessionScopedMcpRequest(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  sessionId: string | undefined
+): Promise<{ unknownSessionId: string | null; shouldContinue: boolean }> {
+  if (!sessionId) {
+    return { unknownSessionId: null, shouldContinue: true };
+  }
+
+  const session = mcpSessions.get(sessionId);
+  if (session) {
+    logMcpEvent("session-hit", { method: req.method, sessionId });
+    await handleMcpExistingSession(req, res, session);
+    if (req.method === "DELETE") {
+      mcpSessions.delete(sessionId);
+      await session.server.close();
+      logMcpEvent("session-closed", { sessionId });
+    }
+    return { unknownSessionId: null, shouldContinue: false };
+  }
+
+  // Unknown session can happen behind non-sticky load balancers.
+  // For POST requests we fall back to stateless handling below.
+  if (req.method !== "POST") {
+    logMcpEvent("session-miss", { method: req.method, sessionId });
+    sendJson(res, 404, {
+      error: "Session not found. Please reinitialize.",
+    });
+    return { unknownSessionId: null, shouldContinue: false };
+  }
+
+  return { unknownSessionId: sessionId, shouldContinue: true };
+}
+
 async function handleMcp(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
 ): Promise<void> {
+  const nowMs = Date.now();
+  cleanupExpiredMcpSessions(nowMs);
+
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const sessionState = await handleSessionScopedMcpRequest(req, res, sessionId);
+  if (!sessionState.shouldContinue) {
+    return;
+  }
+
+  // New session — only POST is valid (must be an initialize request)
   if (req.method !== "POST") {
-    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    sendJson(
+      res,
+      400,
+      { error: "Missing Mcp-Session-Id header" },
+      { Allow: "POST" }
+    );
     return;
   }
 
@@ -1093,64 +1252,63 @@ async function handleMcp(
     return;
   }
 
-  // Validate MCP-Protocol-Version header (spec requirement)
-  const protocolVersion = req.headers["mcp-protocol-version"] as
-    | string
-    | undefined;
-  if (
-    protocolVersion &&
-    !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion)
-  ) {
-    sendJson(res, 400, {
-      error: `Unsupported MCP protocol version: ${protocolVersion}. Supported: ${SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
-    });
-    return;
-  }
-
   const auth = await resolveMcpAuth(req.headers.authorization ?? null);
   if (!auth) {
-    sendJson(res, 401, {
-      error:
-        "Missing or invalid Authorization header. Expected Bearer token (sk_live_* or OAuth access token).",
-    });
+    sendJson(
+      res,
+      401,
+      {
+        error:
+          "Missing or invalid Authorization header. Expected Bearer token (sk_live_* or OAuth access token).",
+      },
+      {
+        "WWW-Authenticate": `Bearer resource_metadata="${MCP_SERVER_URL}/.well-known/oauth-protected-resource"`,
+      }
+    );
     return;
   }
 
-  let rawBody: string;
-  try {
-    rawBody = await readRequestBody(req);
-  } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) {
-      sendJson(res, 413, {
-        error: "payload_too_large",
-        error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
-      });
-      return;
-    }
-    throw error;
-  }
-  let parsedBody: unknown;
-  try {
-    parsedBody = JSON.parse(rawBody);
-  } catch {
-    sendJson(res, 400, {
-      error: "invalid_request",
-      error_description: "Malformed JSON request body",
-    });
+  const parsedBody = await parseMcpJsonBody(req, res);
+  if (parsedBody === null) {
     return;
   }
 
-  const acquiredServer = acquireMcpServer(auth);
+  if (sessionState.unknownSessionId) {
+    logMcpEvent("session-fallback-stateless", {
+      method: req.method,
+      sessionId: sessionState.unknownSessionId,
+    });
+    await handleMcpStatelessRequest(req, res, auth, parsedBody);
+    return;
+  }
+
+  logMcpEvent("session-initialize", { method: req.method });
+  const server = createMcpServer(
+    auth.context,
+    auth.plaintextKey,
+    auth.grantedScopes
+  );
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
+    sessionIdGenerator: () => randomBytes(16).toString("hex"),
   });
 
-  try {
-    await acquiredServer.server.connect(transport);
-    await transport.handleRequest(req, res, parsedBody);
-  } finally {
-    await acquiredServer.server.close();
-    acquiredServer.release();
+  await server.connect(transport);
+  await transport.handleRequest(req, res, parsedBody);
+
+  // Store session for subsequent requests
+  const newSessionId = transport.sessionId;
+  if (newSessionId) {
+    mcpSessions.set(newSessionId, {
+      server,
+      transport,
+      auth,
+      lastActivityMs: Date.now(),
+    });
+    logMcpEvent("session-created", { sessionId: newSessionId });
+  } else {
+    // No session created — clean up
+    await server.close();
+    logMcpEvent("session-none");
   }
 }
 
@@ -1195,6 +1353,18 @@ async function readJsonBody<T>(
   }
 }
 
+async function readFormBody(
+  req: import("node:http").IncomingMessage
+): Promise<Record<string, string>> {
+  const raw = await readRequestBody(req);
+  const params = new URLSearchParams(raw);
+  const result: Record<string, string> = {};
+  for (const [key, value] of params) {
+    result[key] = value;
+  }
+  return result;
+}
+
 function redirectWithParams(
   res: import("node:http").ServerResponse,
   redirectUri: string,
@@ -1219,36 +1389,181 @@ function parseScopeParam(scopeParam?: string): string[] {
 
 function isValidRedirectUri(uri: string): boolean {
   try {
-    const allowlist = getOAuthRedirectUriAllowlist();
     const parsed = new URL(uri);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
       return false;
     }
 
+    // RFC 8252 §7.3: Loopback redirects are always allowed with any port.
+    // Native/CLI OAuth clients (e.g. Claude Code) use ephemeral random ports.
+    const isLoopback =
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]";
+    if (isLoopback) {
+      return true;
+    }
+
+    // Non-loopback URIs must appear in the explicit allowlist
+    const allowlist = getOAuthRedirectUriAllowlist();
     if (allowlist.length > 0) {
       return allowlist.includes(uri);
     }
 
-    if (!isLocalOauthEnvironment()) {
-      return false;
-    }
-
-    return (
-      parsed.hostname === "localhost" ||
-      parsed.hostname === "127.0.0.1" ||
-      parsed.hostname === "[::1]"
-    );
+    // No allowlist and not loopback — deny in non-local envs, allow in local
+    return isLocalOauthEnvironment();
   } catch {
     return false;
   }
+}
+
+/**
+ * RFC 7591 Dynamic Client Registration.
+ * Clients POST their metadata and receive a client_id back.
+ * We accept any registration since auth is enforced at the authorize step.
+ */
+async function handleOAuthRegister(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
+    return;
+  }
+
+  let body: Record<string, unknown> | null;
+  try {
+    const parsedBody = await readJsonBody<unknown>(req);
+    body =
+      parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody)
+        ? (parsedBody as Record<string, unknown>)
+        : null;
+  } catch {
+    body = null;
+  }
+  if (!body) {
+    sendJson(res, 400, {
+      error: "invalid_client_metadata",
+      error_description: "Invalid JSON body",
+    });
+    return;
+  }
+
+  const redirectUris = body.redirect_uris;
+  if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
+    sendJson(res, 400, {
+      error: "invalid_client_metadata",
+      error_description: "redirect_uris is required",
+    });
+    return;
+  }
+
+  for (const uri of redirectUris) {
+    if (typeof uri !== "string" || !isValidRedirectUri(uri)) {
+      sendJson(res, 400, {
+        error: "invalid_redirect_uri",
+        error_description: `Invalid redirect_uri: ${uri}`,
+      });
+      return;
+    }
+  }
+
+  const clientId = `dyn_${randomBytes(16).toString("hex")}`;
+  const clientName =
+    typeof body.client_name === "string" ? body.client_name : "MCP Client";
+
+  sendJson(res, 201, {
+    client_id: clientId,
+    client_name: clientName,
+    redirect_uris: redirectUris,
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  });
+}
+
+/**
+ * Build the HTML login page for the OAuth authorize endpoint.
+ * The user pastes their API key and submits the form.
+ */
+function buildAuthorizeHtml(queryString: string, error?: string): string {
+  const errorHtml = error
+    ? `<div style="background:#fee;border:1px solid #c00;padding:12px;border-radius:6px;margin-bottom:16px;color:#900">${error}</div>`
+    : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authorize — ClosedLoop MCP</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); padding: 32px; max-width: 420px; width: 100%; }
+    h1 { font-size: 20px; margin: 0 0 8px; color: #111; }
+    p { color: #666; font-size: 14px; margin: 0 0 24px; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #333; margin-bottom: 6px; }
+    input[type="password"] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; font-family: monospace; box-sizing: border-box; }
+    button { width: 100%; padding: 10px; background: #111; color: #fff; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 16px; }
+    button:hover { background: #333; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorize MCP Access</h1>
+    <p>Enter your ClosedLoop API key to grant access to the MCP client.</p>
+    ${errorHtml}
+    <form method="POST" action="/oauth/authorize?${queryString}">
+      <label for="api_key">API Key</label>
+      <input type="password" id="api_key" name="api_key" placeholder="sk_live_..." required autofocus>
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>`;
+}
+
+function sendAuthorizeHtmlForm(
+  res: import("node:http").ServerResponse,
+  url: URL,
+  error?: string
+): void {
+  const queryString = url.search.replace(LEADING_QUESTION_MARK_REGEX, "");
+  const html = buildAuthorizeHtml(queryString, error);
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(html);
+}
+
+async function extractApiKeyFromRequest(
+  req: import("node:http").IncomingMessage
+): Promise<string | null> {
+  const headerKey = extractApiKey(req.headers.authorization ?? null);
+  if (headerKey) {
+    return headerKey;
+  }
+  if (req.method !== "POST") {
+    return null;
+  }
+  try {
+    const body = await readFormBody(req);
+    const formKey = body.api_key;
+    return formKey?.startsWith("sk_live_") ? formKey : null;
+  } catch {
+    return null;
+  }
+}
+
+function isValidOAuthClientId(clientId: string | null): boolean {
+  return (
+    !!clientId && (clientId.startsWith("dyn_") || clientId === OAUTH_CLIENT_ID)
+  );
 }
 
 async function handleOAuthAuthorize(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  if (req.method !== "GET") {
-    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "GET" });
+  if (req.method !== "GET" && req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" }, { Allow: "GET, POST" });
     return;
   }
 
@@ -1267,32 +1582,36 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  const apiKey = extractApiKey(req.headers.authorization ?? null);
+  const url = new URL(req.url ?? "", MCP_SERVER_URL);
+  const redirectUri = url.searchParams.get("redirect_uri");
+  const state = url.searchParams.get("state") ?? undefined;
+
+  const apiKey = await extractApiKeyFromRequest(req);
   if (!apiKey) {
-    sendJson(res, 401, {
-      error: "invalid_client",
-      error_description: "Missing Bearer API key",
-    });
+    sendAuthorizeHtmlForm(
+      res,
+      url,
+      req.method === "POST" ? "Invalid API key. Please try again." : undefined
+    );
     return;
   }
 
   const context = await verifyApiKey(apiKey);
   if (!context) {
+    if (req.method === "POST") {
+      sendAuthorizeHtmlForm(
+        res,
+        url,
+        "Invalid API key. Please check and try again."
+      );
+      return;
+    }
     sendJson(res, 401, {
       error: "invalid_client",
       error_description: "Invalid API key",
     });
     return;
   }
-
-  const url = new URL(req.url ?? "", MCP_SERVER_URL);
-  const responseType = url.searchParams.get("response_type");
-  const clientId = url.searchParams.get("client_id");
-  const redirectUri = url.searchParams.get("redirect_uri");
-  const state = url.searchParams.get("state") ?? undefined;
-  const codeChallenge = url.searchParams.get("code_challenge");
-  const codeChallengeMethod = url.searchParams.get("code_challenge_method");
-  const requestedScopes = parseScopeParam(url.searchParams.get("scope") ?? "");
 
   if (!(redirectUri && isValidRedirectUri(redirectUri))) {
     sendJson(res, 400, {
@@ -1302,7 +1621,7 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  if (responseType !== "code") {
+  if (url.searchParams.get("response_type") !== "code") {
     redirectWithParams(res, redirectUri, {
       error: "unsupported_response_type",
       error_description: "Only response_type=code is supported",
@@ -1311,7 +1630,7 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  if (!clientId || clientId !== OAUTH_CLIENT_ID) {
+  if (!isValidOAuthClientId(url.searchParams.get("client_id"))) {
     redirectWithParams(res, redirectUri, {
       error: "unauthorized_client",
       error_description: "Invalid client_id",
@@ -1320,7 +1639,11 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  if (!codeChallenge || codeChallengeMethod !== "S256") {
+  const codeChallenge = url.searchParams.get("code_challenge");
+  if (
+    !codeChallenge ||
+    url.searchParams.get("code_challenge_method") !== "S256"
+  ) {
     redirectWithParams(res, redirectUri, {
       error: "invalid_request",
       error_description:
@@ -1330,10 +1653,10 @@ async function handleOAuthAuthorize(
     return;
   }
 
+  const requestedScopes = parseScopeParam(url.searchParams.get("scope") ?? "");
   const keyScopes = effectiveKeyScopes(context.scopes);
   const scopes = requestedScopes.length > 0 ? requestedScopes : keyScopes;
-  const hasInvalidScope = scopes.some((scope) => !keyScopes.includes(scope));
-  if (hasInvalidScope) {
+  if (scopes.some((scope) => !keyScopes.includes(scope))) {
     redirectWithParams(res, redirectUri, {
       error: "invalid_scope",
       error_description: "Requested scope is not granted for this key",
@@ -1348,7 +1671,7 @@ async function handleOAuthAuthorize(
     keyId: OAUTH_CURRENT_SIGNING_KEY.kid,
     userId: context.userId,
     organizationId: context.organizationId,
-    clientId,
+    clientId: url.searchParams.get("client_id") as string,
     redirectUri,
     scopes,
     codeChallenge,
@@ -1375,7 +1698,10 @@ async function handleClientCredentialsGrant(
   body: OAuthTokenBody,
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  if (!body.client_id || body.client_id !== OAUTH_CLIENT_ID) {
+  if (
+    !body.client_id ||
+    (!body.client_id.startsWith("dyn_") && body.client_id !== OAUTH_CLIENT_ID)
+  ) {
     sendInvalidClient(res, "Invalid client credentials");
     return;
   }
@@ -1418,7 +1744,10 @@ async function handleAuthorizationCodeGrant(
   body: OAuthTokenBody,
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  if (!body.client_id || body.client_id !== OAUTH_CLIENT_ID) {
+  if (
+    !body.client_id ||
+    (!body.client_id.startsWith("dyn_") && body.client_id !== OAUTH_CLIENT_ID)
+  ) {
     sendInvalidClient(res, "Invalid client_id");
     return;
   }
@@ -1716,9 +2045,7 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
   "/.well-known/oauth-protected-resource": (_req, res) => {
     sendJson(res, 200, {
       resource: MCP_SERVER_URL,
-      authorization_servers: [
-        `${MCP_SERVER_URL}/.well-known/oauth-authorization-server`,
-      ],
+      authorization_servers: [MCP_SERVER_URL],
       bearer_methods_supported: ["header"],
       resource_documentation: "https://docs.closedloop.ai/mcp",
     });
@@ -1728,6 +2055,7 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
       issuer: MCP_SERVER_URL,
       authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
       token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
+      registration_endpoint: `${MCP_SERVER_URL}/oauth/register`,
       introspection_endpoint: `${MCP_SERVER_URL}/internal/oauth/introspect`,
       revocation_endpoint: `${MCP_SERVER_URL}/internal/oauth/revoke`,
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
@@ -1758,6 +2086,11 @@ async function dispatchHttpRequest(
 ): Promise<boolean> {
   const parsedUrl = new URL(req.url ?? "/", MCP_SERVER_URL);
   const pathname = parsedUrl.pathname;
+
+  if (pathname === "/oauth/register") {
+    await handleOAuthRegister(req, res);
+    return true;
+  }
 
   if (pathname === "/oauth/authorize") {
     await handleOAuthAuthorize(req, res);
@@ -1843,10 +2176,11 @@ export const __testables = {
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
+  isInternalAddressAllowed,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
   resetInMemorySecurityState: () => {
     lastOAuthCleanupMs = 0;
-    mcpServerCache.clear();
+    mcpSessions.clear();
   },
 };

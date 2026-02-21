@@ -34,8 +34,10 @@
   - Defaults to `closedloop-mcp`.
 - `MCP_OAUTH_TOKEN_TTL_SECONDS` (optional)
   - Defaults to `3600`.
+  - Values less than `1` are treated as invalid and fallback to default.
 - `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` (optional)
   - Defaults to `600`.
+  - Values less than `1` are treated as invalid and fallback to default.
 - `MCP_OAUTH_REDIRECT_URIS` (comma-separated, exact-match allowlist)
   - Example: `https://app.example.com/oauth/callback,https://admin.example.com/oauth/callback`
 - `MCP_OAUTH_RATE_LIMIT_WINDOW_MS` (optional)
@@ -49,7 +51,8 @@
   - Controls background cleanup cadence for expired OAuth security records.
 - `MCP_INTERNAL_ALLOWED_IPS` (comma-separated, exact-match allowlist)
   - Required in stage/prod.
-  - Example: `10.0.0.10,10.0.0.11`
+  - Supports exact IPs and IPv4 CIDR ranges.
+  - Example: `10.0.0.10,10.0.0.11,10.0.0.0/16`
 - `MCP_TRUST_PROXY` (optional)
   - When `true`/`1`/`yes`, trust `X-Forwarded-For` for client IP extraction.
   - Default is `false` (use direct socket remote address).
@@ -65,9 +68,9 @@
 - Local/dev behavior:
   - If `MCP_OAUTH_REDIRECT_URIS` is unset, localhost loopback redirects are allowed (`localhost`, `127.0.0.1`, `[::1]`).
 - Stage/prod behavior:
-  - `MCP_OAUTH_REDIRECT_URIS` is required.
-  - Startup will fail if it is missing or empty.
-  - Authorization requests must use an exact URI from the allowlist.
+  - Loopback redirects are allowed without an allowlist (`localhost`, `127.0.0.1`, `[::1]`), which supports native/CLI OAuth clients.
+  - If `MCP_OAUTH_REDIRECT_URIS` is set, non-loopback redirects must exactly match an entry.
+  - If `MCP_OAUTH_REDIRECT_URIS` is empty, only loopback redirects are accepted.
 
 ## Environment Detection For Policy
 
