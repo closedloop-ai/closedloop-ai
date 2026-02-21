@@ -51,7 +51,7 @@ export function truncateString(value: string, maxChars: number): string {
 }
 
 export function buildPaginatedPayload<T>(
-  items: T[],
+  itemsOrPayload: unknown,
   options: {
     limit?: number;
     offset?: number;
@@ -67,6 +67,7 @@ export function buildPaginatedPayload<T>(
   nextOffset: number | null;
   items: unknown[];
 } {
+  const items = extractArrayItems<T>(itemsOrPayload);
   const resolvedOffset = options.offset ?? 0;
   const resolvedLimit =
     options.limit ?? options.defaultLimit ?? DEFAULT_PAGE_LIMIT;
@@ -83,4 +84,15 @@ export function buildPaginatedPayload<T>(
     nextOffset: hasMore ? resolvedOffset + page.length : null,
     items: page,
   };
+}
+
+function extractArrayItems<T>(payload: unknown): T[] {
+  if (Array.isArray(payload)) {
+    return payload as T[];
+  }
+  const record = asRecord(payload);
+  if (Array.isArray(record.data)) {
+    return record.data as T[];
+  }
+  throw new Error("Expected array response or { data: [] } response");
 }
