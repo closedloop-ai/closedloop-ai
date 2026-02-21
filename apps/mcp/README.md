@@ -25,6 +25,7 @@ Use these steps to connect Claude Code CLI to ClosedLoop MCP:
 
 - If Claude CLI returns `Please run /login`, run `/login` and retry.
 - If connected but tools are missing, run `/mcp` and select `Re-authenticate`.
+- For large datasets, use tool pagination params (`limit`, `offset`) to avoid token overflow.
 - If it still fails, capture:
   - the exact CLI error text
   - timestamp of the attempt
