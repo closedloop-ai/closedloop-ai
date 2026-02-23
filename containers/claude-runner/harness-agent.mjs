@@ -1154,7 +1154,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
         "--allowedTools",
         "Bash,Read,Write,Glob,Grep",
         "--max-turns",
-        "15",
+        "50",
         prompt,
       ],
       {
