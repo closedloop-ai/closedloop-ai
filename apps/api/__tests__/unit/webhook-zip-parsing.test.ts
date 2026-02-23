@@ -1,7 +1,7 @@
 /**
  * Unit tests for ZIP parsing logic in GitHub webhook handler.
  *
- * Tests scenarios 1-10 from the testing strategy:
+ * Tests scenarios 1-11 from the testing strategy:
  * 1. ZIP with judges.json is extracted correctly
  * 2. ZIP without judges.json yields null
  * 3. ZIP with perf.jsonl extracts a parsed PerfSummary
@@ -12,6 +12,7 @@
  * 8. Multiple prompt files are accumulated into a single PromptsSnapshot
  * 9. Files in agents-snapshot/judges/ receive PromptType.JUDGE
  * 10. Files outside agents-snapshot/ are not matched by promptsExtractor
+ * 11. mergeFrom accumulates PromptsSnapshot across bags (cross-bag accumulation)
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
@@ -20,6 +21,10 @@ import { parseJudgesReport } from "@/app/webhooks/github/extractors/judges-repor
 import { CONTENT_KEYS } from "@/app/webhooks/github/extractors/keys";
 import { PromptType } from "@/app/webhooks/github/extractors/prompt-types";
 import { parsePromptFile } from "@/app/webhooks/github/extractors/prompts-extractor";
+import {
+  contentKey,
+  ZipContentBag,
+} from "@/app/webhooks/github/extractors/types";
 import { findContentInZip } from "@/app/webhooks/github/zip-parser";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
@@ -397,5 +402,146 @@ describe("prompts extractor", () => {
         "agents-snapshot/real-agent.md"
       );
     });
+
+    it("matches prompt files prefixed with runs/<id>/ and strips the prefix from file_path", () => {
+      const zipBuffer = buildZipWithEntries([
+        {
+          name: "runs/20240223-123456/agents-snapshot/test-agent.md",
+          content: AGENT_FRONTMATTER,
+        },
+        {
+          name: "runs/20240223-123456/agents-snapshot/judges/test-judge.md",
+          content: JUDGE_FRONTMATTER,
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const { bag } = findContentInZip(zip);
+
+      const snapshot = bag.get(CONTENT_KEYS.promptsSnapshot);
+      expect(snapshot?.prompts).toHaveLength(2);
+
+      const agent = snapshot?.prompts.find(
+        (p) => p.promptType === PromptType.AGENT
+      );
+      expect(agent?.file_path).toBe("agents-snapshot/test-agent.md");
+      expect(agent?.name).toBe("test-agent");
+
+      const judge = snapshot?.prompts.find(
+        (p) => p.promptType === PromptType.JUDGE
+      );
+      expect(judge?.file_path).toBe("agents-snapshot/judges/test-judge.md");
+      expect(judge?.name).toBe("test-judge");
+    });
+  });
+});
+
+describe("ZipContentBag.mergeFrom cross-bag accumulation", () => {
+  it("accumulates PromptsSnapshot from two bags via setAccumulating", () => {
+    const key = contentKey<{ items: string[] }>("test-accum");
+    const mergeFn = (a: { items: string[] }, b: { items: string[] }) => ({
+      items: [...a.items, ...b.items],
+    });
+
+    const bagA = new ZipContentBag();
+    bagA.setAccumulating(key, { items: ["a1", "a2"] }, mergeFn);
+
+    const bagB = new ZipContentBag();
+    bagB.setAccumulating(key, { items: ["b1"] }, mergeFn);
+
+    bagA.mergeFrom(bagB);
+
+    expect(bagA.get(key)).toEqual({ items: ["a1", "a2", "b1"] });
+  });
+
+  it("accumulates into an empty bag (no prior value for key)", () => {
+    const key = contentKey<{ items: string[] }>("test-accum-empty");
+    const mergeFn = (a: { items: string[] }, b: { items: string[] }) => ({
+      items: [...a.items, ...b.items],
+    });
+
+    const bagA = new ZipContentBag();
+
+    const bagB = new ZipContentBag();
+    bagB.setAccumulating(key, { items: ["b1"] }, mergeFn);
+
+    bagA.mergeFrom(bagB);
+
+    expect(bagA.get(key)).toEqual({ items: ["b1"] });
+  });
+
+  it("accumulates PromptsSnapshot across two findContentInZip bags", () => {
+    const AdmZip = require("adm-zip");
+
+    const zipBufferA = buildZipWithEntries([
+      { name: "agents-snapshot/agent-one.md", content: AGENT_FRONTMATTER },
+    ]);
+    const zipBufferB = buildZipWithEntries([
+      {
+        name: "agents-snapshot/judges/judge-one.md",
+        content: JUDGE_FRONTMATTER,
+      },
+    ]);
+
+    const { bag: bagA } = findContentInZip(new AdmZip(zipBufferA));
+    const { bag: bagB } = findContentInZip(new AdmZip(zipBufferB));
+
+    bagA.mergeFrom(bagB);
+
+    const snapshot = bagA.get(CONTENT_KEYS.promptsSnapshot);
+    expect(snapshot?.prompts).toHaveLength(2);
+
+    const names = snapshot?.prompts.map((p) => p.name);
+    expect(names).toContain("test-agent");
+    expect(names).toContain("test-judge");
+  });
+
+  it("does not lose first bag prompts when second bag has same key at equal priority", () => {
+    const AdmZip = require("adm-zip");
+
+    const zipBufferA = buildZipWithEntries([
+      { name: "agents-snapshot/agent-one.md", content: AGENT_FRONTMATTER },
+    ]);
+    const zipBufferB = buildZipWithEntries([
+      { name: "agents-snapshot/agent-two.md", content: AGENT_FRONTMATTER },
+    ]);
+
+    const { bag: bagA } = findContentInZip(new AdmZip(zipBufferA));
+    const { bag: bagB } = findContentInZip(new AdmZip(zipBufferB));
+
+    bagA.mergeFrom(bagB);
+
+    const snapshot = bagA.get(CONTENT_KEYS.promptsSnapshot);
+    // Both agents should be present — the bug would have dropped agent-two
+    expect(snapshot?.prompts).toHaveLength(2);
+  });
+
+  it("priority-wins semantics still apply to non-accumulating keys", () => {
+    const key = contentKey<string>("priority-key");
+
+    const bagA = new ZipContentBag();
+    bagA.set(key, "low-priority", 1);
+
+    const bagB = new ZipContentBag();
+    bagB.set(key, "high-priority", 10);
+
+    bagA.mergeFrom(bagB);
+
+    expect(bagA.get(key)).toBe("high-priority");
+  });
+
+  it("lower-priority non-accumulating value does not overwrite higher-priority", () => {
+    const key = contentKey<string>("priority-key-no-overwrite");
+
+    const bagA = new ZipContentBag();
+    bagA.set(key, "high-priority", 10);
+
+    const bagB = new ZipContentBag();
+    bagB.set(key, "low-priority", 1);
+
+    bagA.mergeFrom(bagB);
+
+    expect(bagA.get(key)).toBe("high-priority");
   });
 });

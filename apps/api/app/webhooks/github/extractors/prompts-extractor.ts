@@ -1,5 +1,5 @@
+import { computeGitBlobSha } from "@repo/github/git-blob-sha";
 import { log } from "@repo/observability/log";
-import { computeGitBlobSha } from "@/lib/git-utils";
 import { CONTENT_KEYS } from "./keys";
 import type { PromptInfo, PromptsSnapshot } from "./prompt-types";
 import { PromptType } from "./prompt-types";
@@ -11,6 +11,19 @@ const AGENTS_SNAPSHOT_DIR = "agents-snapshot/";
 
 /** Subfolder within agents-snapshot that contains judge prompt files. */
 const JUDGES_SUBDIR = "agents-snapshot/judges/";
+
+/** Regex to strip runs/<id>/ prefix from entry names */
+const RUNS_PREFIX_REGEX = /^runs\/[^/]+\//;
+
+/**
+ * Strip any leading `runs/<id>/` prefix from a zip entry name so that paths
+ * can be matched uniformly regardless of whether the artifact was zipped from
+ * the repo root (bare `agents-snapshot/…`) or from the runs/ directory
+ * (`runs/20240223-123456/agents-snapshot/…`).
+ */
+function normalizeEntryName(entryName: string): string {
+  return entryName.replace(RUNS_PREFIX_REGEX, "");
+}
 
 /**
  * Parse YAML frontmatter from a markdown file.
@@ -85,12 +98,12 @@ export function parsePromptFile(
           .filter(Boolean)
       : [];
 
-    const promptType = resolvePromptType(entryName);
+    const normalized = normalizeEntryName(entryName);
+    const promptType = resolvePromptType(normalized);
 
-    // Compute file_path relative to the workdir by stripping any leading run
-    // directory prefix. Within the zip the path is already relative to the
-    // artifact root, so we use it as-is (e.g. "agents-snapshot/my-agent.md").
-    const file_path = entryName;
+    // Strip any leading runs/<id>/ prefix so file_path is always relative to
+    // the agents-snapshot directory root (e.g. "agents-snapshot/my-agent.md").
+    const file_path = normalized;
 
     const sha = computeGitBlobSha(data);
 
@@ -132,10 +145,11 @@ export const promptsExtractor: ZipContentExtractor<
   priority: 0,
 
   matches(entryName: string): boolean {
+    const normalized = normalizeEntryName(entryName);
     return (
-      entryName.startsWith(AGENTS_SNAPSHOT_DIR) &&
-      entryName.endsWith(".md") &&
-      !entryName.endsWith("/")
+      normalized.startsWith(AGENTS_SNAPSHOT_DIR) &&
+      normalized.endsWith(".md") &&
+      !normalized.endsWith("/")
     );
   },
 

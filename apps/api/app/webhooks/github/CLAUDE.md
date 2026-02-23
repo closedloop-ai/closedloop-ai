@@ -85,14 +85,9 @@ Event-specific handlers that implement business logic:
   - Updates GitHubActionRun record with runId, status, htmlUrl
 
 - **`workflow-completion-handler.ts`** - Handles completed workflows:
-  - **`processWorkflowCompletion()`** - Entry point, finds GitHubActionRun by correlation ID
-  - **`handleWorkflowSuccess()`** - Downloads artifacts, updates Artifact record:
-    - For `execute` command: delegates to `handleExecutionSuccess()`
-    - For other commands: updates artifact content/status, creates workstream event
-    - Persists judges report if available (via `ArtifactEvaluation` table)
-  - **`handleWorkflowFailure()`** - Creates workstream event (NEVER overwrites artifact content)
-  - **`handleExecutionSuccess()`** - Creates GitHubPullRequest and Artifact (type: PullRequest) records
-  - Uses `withDb.tx()` transaction to ensure artifact content and status update atomically
+  - **`processWorkflowCompletion()`** - Entry point: finds GitHubActionRun, downloads artifacts, resolves the right command handler via `resolveHandler(command, conclusion)`, and runs it inside a `withDb.tx()` transaction
+  - Dispatches to `handlers/commands/` — never references individual command or content logic directly
+  - Uses `withDb.tx()` to ensure artifact content and status update atomically
 
 - **`workflow-artifacts.ts`** - Pure parsing + S3 upload logic (extracted from completion handler):
   - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing, returns `{ bag: ZipContentBag, artifactKeys }`
@@ -137,10 +132,10 @@ Route by action:
     └── completed   → processWorkflowCompletion()
                          ├── Download artifacts via GitHub API
                          ├── Extract content via zip-parser.ts
-                         ├── success → handleWorkflowSuccess()
-                         │              ├── execute → handleExecutionSuccess()
-                         │              └── other   → update Artifact content/status
-                         └── failure → handleWorkflowFailure()
+                         ├── success → resolveHandler(command, "success").handle()
+                         │              ├── execute → execute-handler.ts (PR creation)
+                         │              └── other   → plan-handler.ts (content + CONTENT_TRANSACTION_HANDLERS)
+                         └── failure → failure-handler.ts (event only, content untouched)
 ```
 
 ## Key Patterns
@@ -188,8 +183,9 @@ On success:
 The completion handler uses `withDb.tx()` to ensure atomic updates:
 ```typescript
 await withDb.tx(async (tx) => {
-  // 1. Process result (updates artifact content)
-  await handleWorkflowSuccess(ctx, s3Configured);
+  // 1. Dispatch to command handler (updates artifact content/status via bag)
+  const handler = resolveHandler(ctx.command, conclusion);
+  await handler.handle(tx, ctx, bag);
 
   // 2. Update GitHubActionRun status (done last so frontend sees content first)
   await tx.gitHubActionRun.update({ ... });
@@ -246,7 +242,7 @@ pnpm turbo test --filter=api -- --grep webhook
 
 ## Adding a New Report Type
 
-Steps 1, 2, 4 are purely additive (new files only). Steps 3 and 5 touch existing files (`types.ts` and `registry.ts` respectively). Step 6 is the persistence wiring in the handler.
+Steps 1, 2, 4, and 6a are purely additive (new files only). Steps 3 and 5 touch one existing file each (`extractors/types.ts` and `extractors/registry.ts`). Step 6b adds one entry to `content-handlers/registry.ts`. The completion handler itself never changes for new report types.
 
 ### 1. Define the TypeScript type
 
@@ -330,16 +326,33 @@ export const ZIP_CONTENT_EXTRACTORS: AnyZipContentExtractor[] = [
 ];
 ```
 
-### 6. Consume in handleWorkflowSuccess
+### 6. Wire persistence via a ContentTransactionHandler
+
+Create a handler implementing the `ContentTransactionHandler<T>` protocol and register it in `CONTENT_TRANSACTION_HANDLERS`. The dispatcher in `plan-handler.ts` calls every registered handler automatically — no changes to the completion handler are needed.
 
 ```typescript
-// apps/api/app/webhooks/github/handlers/workflow-completion-handler.ts
+// apps/api/app/webhooks/github/handlers/commands/content-handlers/coverage-handler.ts
+import type { CoverageReport } from "@repo/api/src/types/coverage";
+import { CONTENT_KEYS } from "../../../extractors/keys";
+import type { ContentTransactionHandler } from "./types";
 
-const coverageReport = bag.get(CONTENT_KEYS.coverageReport);
+export const coverageHandler: ContentTransactionHandler<CoverageReport> = {
+  key: CONTENT_KEYS.coverageReport,
+  async handle(tx, ctx, value) {
+    if (!ctx.artifactId) { return; }
+    await tx.artifactCoverage.upsert({ ... });
+  },
+};
+```
 
-if (coverageReport && ctx.actionRunId) {
-  await tx.artifactCoverage.upsert({ ... });
-}
+```typescript
+// apps/api/app/webhooks/github/handlers/commands/content-handlers/registry.ts
+import { coverageHandler } from "./coverage-handler";
+
+export const CONTENT_TRANSACTION_HANDLERS: AnyContentTransactionHandler[] = [
+  // ... existing handlers
+  coverageHandler,
+];
 ```
 
 ---

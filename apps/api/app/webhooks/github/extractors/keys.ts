@@ -1,6 +1,6 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import type { ExecutionResult } from "../zip-parser";
 import type { PromptsSnapshot } from "./prompt-types";
 import { contentKey } from "./types";
 

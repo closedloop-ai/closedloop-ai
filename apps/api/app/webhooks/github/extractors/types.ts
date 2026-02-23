@@ -90,6 +90,10 @@ export type AnyZipContentExtractor =
 export class ZipContentBag {
   private readonly store = new Map<string, unknown>();
   private readonly priorities = new Map<string, number>();
+  private readonly mergeFunctions = new Map<
+    string,
+    (a: unknown, b: unknown) => unknown
+  >();
 
   get<T>(key: ContentKey<T>): T | null {
     return (this.store.get(key) as T) ?? null;
@@ -102,6 +106,23 @@ export class ZipContentBag {
     }
   }
 
+  /**
+   * Store a value for an accumulating key and register its merge function.
+   * Used by extractors that define mergeWith — ensures mergeFrom() can
+   * accumulate across bags rather than applying priority-wins logic.
+   */
+  setAccumulating<T>(
+    key: ContentKey<T>,
+    value: T,
+    mergeFn: (existing: T, next: T) => T
+  ): void {
+    this.store.set(key, value);
+    this.mergeFunctions.set(
+      key,
+      mergeFn as (a: unknown, b: unknown) => unknown
+    );
+  }
+
   has(key: string): boolean {
     return this.store.has(key);
   }
@@ -111,15 +132,35 @@ export class ZipContentBag {
   }
 
   /**
-   * Merge another bag into this one. Highest priority wins per key.
-   * When multiple inner zips are merged, the value with the higher priority
-   * replaces the stored one (e.g. plan.json priority 10 over implementation-plan.md priority 5).
+   * Merge another bag into this one.
+   *
+   * - Accumulating keys (registered via setAccumulating): values are merged
+   *   using the stored merge function so prompts/snapshots from multiple inner
+   *   zips are combined rather than the first-one-wins behaviour of priority logic.
+   * - Priority-based keys: highest priority wins (e.g. plan.json at 10 beats
+   *   implementation-plan.md at 5).
    */
   mergeFrom(other: ZipContentBag): void {
     for (const [key, value] of other.store) {
+      if (value == null) {
+        continue;
+      }
+
+      const mergeFn =
+        this.mergeFunctions.get(key) ?? other.mergeFunctions.get(key);
+      if (mergeFn != null) {
+        const existing = this.store.get(key);
+        const merged = existing != null ? mergeFn(existing, value) : value;
+        this.store.set(key, merged);
+        if (!this.mergeFunctions.has(key)) {
+          this.mergeFunctions.set(key, mergeFn);
+        }
+        continue;
+      }
+
       const incomingPriority = other.priorities.get(key) ?? 0;
       const existingPriority = this.priorities.get(key) ?? -1;
-      if (value != null && incomingPriority > existingPriority) {
+      if (incomingPriority > existingPriority) {
         this.store.set(key, value);
         this.priorities.set(key, incomingPriority);
       }

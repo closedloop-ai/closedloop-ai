@@ -38,7 +38,11 @@ function applyMergingExtractor(
     existing != null
       ? extractor.mergeWith!(existing as never, next as never)
       : next;
-  bag.set(extractor.key as ContentKey<unknown>, merged, extractor.priority);
+  bag.setAccumulating(
+    extractor.key as ContentKey<unknown>,
+    merged,
+    extractor.mergeWith! as (a: unknown, b: unknown) => unknown
+  );
 }
 
 /**
@@ -62,6 +66,12 @@ function applyPriorityExtractor(
 
 /**
  * Run all registered extractors against a single zip entry and update the bag.
+ *
+ * Accumulating extractors (those with mergeWith) do NOT break — all matching
+ * accumulators for a file must run so their results can be merged. Priority-based
+ * extractors break after the first match because the registry is ordered by
+ * descending priority and applyPriorityExtractor already guards against lower-
+ * priority overwrites; continuing would only waste work.
  */
 function processZipEntry(bag: ZipContentBag, data: Buffer, name: string): void {
   for (const extractor of ZIP_CONTENT_EXTRACTORS) {
@@ -72,8 +82,8 @@ function processZipEntry(bag: ZipContentBag, data: Buffer, name: string): void {
       applyMergingExtractor(bag, extractor, data, name);
     } else {
       applyPriorityExtractor(bag, extractor, data, name);
+      break;
     }
-    break;
   }
 }
 

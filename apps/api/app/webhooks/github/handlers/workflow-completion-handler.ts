@@ -64,6 +64,7 @@ export async function processWorkflowCompletion(
     runId,
     actionRunId: actionRun.id,
     htmlUrl: event.workflow_run.html_url,
+    conclusion,
   };
 
   // Use transaction to ensure artifact content and status are updated atomically.

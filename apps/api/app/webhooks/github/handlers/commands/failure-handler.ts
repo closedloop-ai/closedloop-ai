@@ -16,8 +16,15 @@ import type { WorkflowHandler } from "./types";
  */
 export const workflowFailureHandler: WorkflowHandler = {
   async handle(tx, ctx, _bag): Promise<void> {
-    const { correlationId, artifactId, workstreamId, runId, command, htmlUrl } =
-      ctx;
+    const {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      command,
+      htmlUrl,
+      conclusion,
+    } = ctx;
 
     await tx.workstreamEvent.create({
       data: {
@@ -29,16 +36,20 @@ export const workflowFailureHandler: WorkflowHandler = {
           artifactId,
           runId,
           command,
-          conclusion: "failure",
+          conclusion,
           htmlUrl,
         },
       },
     });
 
-    log.error(`Workflow run ${runId} failed for correlation ${correlationId}`, {
-      htmlUrl,
-      artifactId,
-      command,
-    });
+    log.error(
+      `Workflow run ${runId} concluded with "${conclusion}" for correlation ${correlationId}`,
+      {
+        htmlUrl,
+        artifactId,
+        command,
+        conclusion,
+      }
+    );
   },
 };

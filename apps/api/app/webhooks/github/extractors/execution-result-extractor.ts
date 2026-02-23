@@ -1,5 +1,5 @@
+import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import { log } from "@repo/observability/log";
-import type { ExecutionResult } from "../zip-parser";
 import { CONTENT_KEYS } from "./keys";
 import type { ZipContentExtractor } from "./types";
 import { ExtractorOutputType } from "./types";

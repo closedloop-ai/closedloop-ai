@@ -30,10 +30,13 @@ type PrEventMetadata = {
  * Creates a PR record and ExternalLink/EntityLink entries when
  * the execution produced changes. Creates a no-changes event otherwise.
  *
- * NOTE: `tx` (the outer transaction) is intentionally not used here.
- * PR creation is independent — there is no artifact content race condition
- * for execute runs (no existing content is being replaced). Each internal
- * withDb call uses its own connection/transaction.
+ * NOTE: `tx` (the outer transaction) is not explicitly used here.
+ * The handler doesn't need the passed-in tx because all database operations
+ * (withDb() and withDb.tx() calls) automatically participate in the outer
+ * transaction via AsyncLocalStorage propagation — nested withDb calls reuse
+ * the outer tx. PR creation is logically independent (no existing artifact
+ * content is being replaced), but all operations share the same transaction
+ * and will roll back atomically on failure.
  */
 export const executeSuccessHandler: WorkflowHandler = {
   async handle(_tx, ctx, bag): Promise<void> {

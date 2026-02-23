@@ -101,6 +101,7 @@ describe("planSuccessHandler", () => {
       workstreamId,
       runId,
       htmlUrl: "https://github.com/actions/runs/1234567890",
+      conclusion: "success",
       command: "plan",
     };
 
@@ -177,6 +178,7 @@ describe("planSuccessHandler", () => {
       runId,
       actionRunId,
       htmlUrl: "https://github.com/actions/runs/1111111111",
+      conclusion: "success",
     };
 
     const planContent = "# Implementation Plan\n\nWith judges report.";
@@ -271,6 +273,7 @@ describe("planSuccessHandler", () => {
       workstreamId,
       runId,
       htmlUrl: "https://github.com/actions/runs/8888888888",
+      conclusion: "success",
     };
 
     const bag = new ZipContentBag();
@@ -299,6 +302,7 @@ describe("planSuccessHandler", () => {
       workstreamId,
       runId,
       htmlUrl: "https://github.com/actions/runs/9999999999",
+      conclusion: "success",
     };
 
     const bag = new ZipContentBag();
@@ -335,6 +339,7 @@ describe("planSuccessHandler", () => {
       runId,
       actionRunId,
       htmlUrl: "https://github.com/actions/runs/5555555000",
+      conclusion: "success",
     };
 
     const perfSummary = {
@@ -403,6 +408,7 @@ describe("planSuccessHandler", () => {
       workstreamId,
       runId,
       htmlUrl: "https://github.com/actions/runs/5555555001",
+      conclusion: "success",
     };
 
     const bag = new ZipContentBag();
@@ -443,6 +449,7 @@ describe("planSuccessHandler", () => {
       workstreamId: "ws-no-artifact",
       runId: 8_888_888_888,
       htmlUrl: "https://github.com/actions/runs/8888888888",
+      conclusion: "success",
       command: "plan",
     };
 
@@ -484,6 +491,7 @@ describe("executeSuccessHandler", () => {
       repositoryId,
       runId,
       htmlUrl: "https://github.com/actions/runs/5555555555",
+      conclusion: "success",
       command: "execute",
     };
 
@@ -595,6 +603,7 @@ describe("executeSuccessHandler", () => {
       repositoryId: "repo-456",
       runId: 6_666_666_666,
       htmlUrl: "https://github.com/actions/runs/6666666666",
+      conclusion: "success",
     };
 
     const executionResult = {
@@ -656,6 +665,7 @@ describe("executeSuccessHandler", () => {
       repositoryId: "repo-789",
       runId: 7_777_777_777,
       htmlUrl: "https://github.com/actions/runs/7777777777",
+      conclusion: "success",
     };
 
     const executionResult = {
@@ -713,6 +723,7 @@ describe("executeSuccessHandler", () => {
       workstreamId: "ws-no-changes",
       runId: 4_444_444_444,
       htmlUrl: "https://github.com/actions/runs/4444444444",
+      conclusion: "success",
     };
 
     const executionResult = {
@@ -759,6 +770,7 @@ describe("executeSuccessHandler", () => {
       workstreamId: "ws-empty-bag",
       runId: 3_333_333_333,
       htmlUrl: "https://github.com/actions/runs/3333333333",
+      conclusion: "success",
     };
 
     const bag = new ZipContentBag(); // empty — no executionResult
@@ -776,6 +788,7 @@ describe("executeSuccessHandler", () => {
       workstreamId: "ws-no-repo",
       runId: 3_333_333_333,
       htmlUrl: "https://github.com/actions/runs/3333333333",
+      conclusion: "success",
     };
 
     const executionResult = {
@@ -802,6 +815,7 @@ describe("executeSuccessHandler", () => {
       repositoryId: "repo-bad-artifact",
       runId: 2_222_222_222,
       htmlUrl: "https://github.com/actions/runs/2222222222",
+      conclusion: "success",
     };
 
     const executionResult = {
@@ -858,6 +872,7 @@ describe("workflowFailureHandler", () => {
       workstreamId,
       runId,
       htmlUrl,
+      conclusion: "failure",
       command: "plan",
     };
 
@@ -902,6 +917,7 @@ describe("workflowFailureHandler", () => {
       workstreamId,
       runId,
       htmlUrl,
+      conclusion: "failure",
     };
 
     const mockTx = {

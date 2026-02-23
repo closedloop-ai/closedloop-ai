@@ -91,22 +91,30 @@ export const planSuccessHandler: WorkflowHandler = {
         null,
         finalContent
       );
+
+      await tx.artifact.update({
+        where: {
+          id: artifactId,
+          organizationId: existingArtifact.organizationId,
+        },
+        data: {
+          status: "DRAFT",
+        },
+      });
+
+      log.info("[planSuccessHandler] Artifact updated successfully", {
+        artifactId,
+        newContentLength: finalContent.length,
+      });
+    } else {
+      log.warn(
+        "[planSuccessHandler] Workflow succeeded but no plan content found",
+        {
+          artifactId,
+          runId,
+        }
+      );
     }
-
-    await tx.artifact.update({
-      where: {
-        id: artifactId,
-        organizationId: existingArtifact.organizationId,
-      },
-      data: {
-        status: "DRAFT",
-      },
-    });
-
-    log.info("[planSuccessHandler] Artifact updated successfully", {
-      artifactId,
-      newContentLength: finalContent?.length ?? 0,
-    });
 
     const artifactKeys = bag.keys();
 

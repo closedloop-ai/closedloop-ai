@@ -15,7 +15,7 @@ export function parseJudgesReportBuffer(
   try {
     const result = JSON.parse(data.toString("utf-8")) as JudgesReport;
     log.info(
-      `Found ${label}: ${entryName}, report_id: ${result.report_id}, ${result.stats.length} judges`
+      `Found ${label}: ${entryName}, report_id: ${result.report_id}, ${result.stats?.length ?? "?"} judges`
     );
     return result;
   } catch (err) {

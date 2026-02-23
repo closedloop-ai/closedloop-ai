@@ -36,7 +36,7 @@ function makeJudgesReportHandler(
       log.info(`[${label}] Persisted judges report`, {
         artifactId: ctx.artifactId,
         reportId: value.report_id,
-        judgesCount: value.stats.length,
+        judgesCount: value.stats?.length ?? "?",
       });
     },
   };
