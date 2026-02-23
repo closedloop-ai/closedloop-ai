@@ -770,12 +770,27 @@ async function revokeRefreshTokenFamily(familyId: string): Promise<void> {
 function rotateRefreshToken(
   current: RefreshTokenRecord,
   nextScopes: string[]
-): Promise<{ token: string; expiresIn: number }> {
+): Promise<
+  | { status: "rotated"; token: string; expiresIn: number }
+  | { status: "invalidated"; familyId: string }
+> {
   const nextExpiry = new Date(
     Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
   );
   return withDb.tx(async (db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
+    const revoked = await client.oAuthRefreshToken.updateMany({
+      where: { id: current.id, revokedAt: null },
+      data: {
+        revokedAt: new Date(),
+        lastUsedAt: new Date(),
+      },
+    });
+
+    if (revoked.count !== 1) {
+      return { status: "invalidated", familyId: current.familyId };
+    }
+
     const issued = await createRefreshTokenRecord(client, {
       encryptedApiKey: current.encryptedApiKey,
       keyId: current.keyId,
@@ -787,24 +802,16 @@ function rotateRefreshToken(
       expiresAt: nextExpiry,
     });
 
-    const revoked = await client.oAuthRefreshToken.updateMany({
-      where: { id: current.id, revokedAt: null },
-      data: {
-        revokedAt: new Date(),
-        lastUsedAt: new Date(),
-        replacedByTokenId: issued.tokenId,
-      },
+    await client.oAuthRefreshToken.updateMany({
+      where: { id: current.id },
+      data: { replacedByTokenId: issued.tokenId },
     });
 
-    if (revoked.count !== 1) {
-      await client.oAuthRefreshToken.updateMany({
-        where: { familyId: current.familyId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
-      throw new Error("Failed to rotate refresh token");
-    }
-
-    return { token: issued.token, expiresIn: issued.expiresIn };
+    return {
+      status: "rotated",
+      token: issued.token,
+      expiresIn: issued.expiresIn,
+    };
   });
 }
 
@@ -2161,6 +2168,14 @@ async function handleRefreshTokenGrant(
   }
 
   const rotated = await rotateRefreshToken(refreshRecord, scopes);
+  if (rotated.status === "invalidated") {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token is no longer valid",
+    });
+    return;
+  }
+
   const accessToken = issueOAuthAccessToken(plaintextKey, context, scopes);
   sendOAuthJson(res, 200, {
     access_token: accessToken,

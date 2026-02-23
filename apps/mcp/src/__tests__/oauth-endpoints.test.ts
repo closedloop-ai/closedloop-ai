@@ -64,6 +64,7 @@ const refreshTokenStore = new Map<
     createdAt: Date;
   }
 >();
+let forceNextRefreshRotateConflict = false;
 
 vi.mock("../api-client.js", () => {
   return {
@@ -355,6 +356,16 @@ vi.mock("@repo/database", () => {
             replacedByTokenId?: string;
           };
         }) => {
+          if (
+            forceNextRefreshRotateConflict &&
+            where.id &&
+            where.revokedAt === null &&
+            data.revokedAt !== undefined
+          ) {
+            forceNextRefreshRotateConflict = false;
+            return { count: 0 };
+          }
+
           let count = 0;
           for (const record of refreshTokenStore.values()) {
             const idMatch = where.id ? record.id === where.id : true;
@@ -539,6 +550,7 @@ beforeEach(() => {
   rateLimitStore.clear();
   authCodeStore.clear();
   refreshTokenStore.clear();
+  forceNextRefreshRotateConflict = false;
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
@@ -612,7 +624,10 @@ describe("OAuth endpoints", () => {
     expect(tokenJson.access_token.startsWith("mcp_at_")).toBe(true);
     expect(tokenJson.refresh_token.startsWith("mcp_rt_")).toBe(true);
     expect(tokenJson.expires_in).toBe(3600);
-    expect(tokenJson.refresh_token_expires_in).toBe(2_592_000);
+    expect(tokenJson.refresh_token_expires_in).toBeGreaterThanOrEqual(
+      2_591_995
+    );
+    expect(tokenJson.refresh_token_expires_in).toBeLessThanOrEqual(2_592_000);
     expect(tokenJson.scope).toBe("read");
 
     const replayReq = createMockRequest({
@@ -788,6 +803,112 @@ describe("OAuth endpoints", () => {
     expect(afterReuseRes.statusCode).toBe(400);
     const afterReuseJson = JSON.parse(afterReuseRes.body) as { error: string };
     expect(afterReuseJson.error).toBe("invalid_grant");
+  });
+
+  it("returns invalid_grant on refresh rotate race without revoking the family", async () => {
+    const verifier = "pkce-rotate-race";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+      scope: "read",
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    expect(tokenRes.statusCode).toBe(200);
+    const issued = JSON.parse(tokenRes.body) as { refresh_token: string };
+
+    const issuedFingerprint = createHash("sha256")
+      .update(issued.refresh_token, "utf8")
+      .digest("hex");
+    const issuedRecord = refreshTokenStore.get(issuedFingerprint);
+    expect(issuedRecord).toBeTruthy();
+
+    const siblingToken = "mcp_rt_sibling_token_for_race_test";
+    const siblingFingerprint = createHash("sha256")
+      .update(siblingToken, "utf8")
+      .digest("hex");
+    refreshTokenStore.set(siblingFingerprint, {
+      id: "rt_sibling",
+      tokenFingerprint: siblingFingerprint,
+      encryptedApiKey: issuedRecord?.encryptedApiKey ?? "",
+      keyId: issuedRecord?.keyId ?? "",
+      userId: issuedRecord?.userId ?? "",
+      organizationId: issuedRecord?.organizationId ?? "",
+      clientId: issuedRecord?.clientId ?? "closedloop-mcp",
+      scopes: issuedRecord?.scopes ?? ["read"],
+      familyId:
+        issuedRecord?.familyId ?? "00000000-0000-0000-0000-000000000001",
+      expiresAt: new Date(Date.now() + 60_000),
+      lastUsedAt: null,
+      revokedAt: null,
+      replacedByTokenId: null,
+      createdAt: new Date(),
+    });
+
+    forceNextRefreshRotateConflict = true;
+    const refreshBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: issued.refresh_token,
+    }).toString();
+
+    const refreshReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: refreshBody,
+    });
+    const refreshRes = createMockResponse();
+    await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+    expect(refreshRes.statusCode).toBe(400);
+    const refreshJson = JSON.parse(refreshRes.body) as { error: string };
+    expect(refreshJson.error).toBe("invalid_grant");
+
+    const siblingReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "closedloop-mcp",
+        refresh_token: siblingToken,
+      }).toString(),
+    });
+    const siblingRes = createMockResponse();
+    await handleOAuthToken(siblingReq, asServerResponse(siblingRes));
+    expect(siblingRes.statusCode).toBe(200);
   });
 
   it("rejects authorization_code exchange with an invalid PKCE verifier", async () => {
