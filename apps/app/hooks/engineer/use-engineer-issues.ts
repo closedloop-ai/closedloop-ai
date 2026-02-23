@@ -170,13 +170,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         clearTimeout(retryTimer);
       }
     };
-  }, [
-    mcp.isReady,
-    refetchCounter,
-    mcp.getMe,
-    mcp.listIssues,
-    mcp.listArtifacts,
-  ]);
+  }, [mcp.isReady, refetchCounter]);
 
   // Combine issues and artifacts into tickets
   const tickets: EngineerTicket[] = useMemo(() => {
