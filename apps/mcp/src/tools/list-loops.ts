@@ -57,11 +57,6 @@ export function registerListLoops(
         }
 
         const loops = await apiClient.get<unknown[]>("/loops", query);
-        if (loops.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No loops found." }],
-          };
-        }
         const payload = buildPaginatedPayload(loops, {
           limit,
           offset,

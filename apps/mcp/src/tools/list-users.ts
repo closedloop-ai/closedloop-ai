@@ -34,11 +34,6 @@ export function registerListUsers(
     ({ limit, offset }) =>
       withErrorHandling(async () => {
         const users = await apiClient.get<unknown[]>("/users");
-        if (users.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No users found." }],
-          };
-        }
         const payload = buildPaginatedPayload(users, {
           limit,
           offset,
