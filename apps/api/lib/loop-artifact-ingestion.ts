@@ -269,7 +269,7 @@ export async function ingestExecutionArtifacts(
     db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: repoFullName,
-        installation: { organizationId: loop.organizationId },
+        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
       },
       select: { id: true },
     })
