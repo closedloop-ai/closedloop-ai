@@ -55,11 +55,6 @@ export function registerListIssues(
         }
 
         const issues = await apiClient.get<unknown[]>("/issues", query);
-        if (issues.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No issues found." }],
-          };
-        }
         const payload = buildPaginatedPayload(issues, {
           limit,
           offset,

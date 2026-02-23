@@ -73,11 +73,6 @@ export function registerListWorkstreams(
           "/workstreams",
           query
         );
-        if (workstreams.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No workstreams found." }],
-          };
-        }
         const payload = buildPaginatedPayload(workstreams, {
           limit,
           offset,

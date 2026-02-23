@@ -59,12 +59,6 @@ export function registerListArtifacts(
         }
 
         const artifacts = await apiClient.get<unknown[]>("/artifacts", query);
-        if (artifacts.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No artifacts found." }],
-          };
-        }
-
         const payload = buildPaginatedPayload(artifacts, {
           limit,
           offset,
