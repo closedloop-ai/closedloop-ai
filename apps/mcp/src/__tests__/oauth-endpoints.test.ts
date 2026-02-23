@@ -805,7 +805,7 @@ describe("OAuth endpoints", () => {
     expect(afterReuseJson.error).toBe("invalid_grant");
   });
 
-  it("returns invalid_grant on refresh rotate race without revoking the family", async () => {
+  it("revokes refresh token family when rotation conflict is detected", async () => {
     const verifier = "pkce-rotate-race";
     const authorizeUrl = new URL("http://localhost/oauth/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
@@ -908,7 +908,9 @@ describe("OAuth endpoints", () => {
     });
     const siblingRes = createMockResponse();
     await handleOAuthToken(siblingReq, asServerResponse(siblingRes));
-    expect(siblingRes.statusCode).toBe(200);
+    expect(siblingRes.statusCode).toBe(400);
+    const siblingJson = JSON.parse(siblingRes.body) as { error: string };
+    expect(siblingJson.error).toBe("invalid_grant");
   });
 
   it("rejects authorization_code exchange with an invalid PKCE verifier", async () => {

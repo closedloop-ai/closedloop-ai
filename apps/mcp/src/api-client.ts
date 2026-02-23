@@ -1,4 +1,5 @@
 import type { VerifiedApiKeyContext } from "./api-key-contract.js";
+import { asRecord } from "./tools/tool-utils.js";
 
 const CLOSEDLOOP_API_URL =
   process.env.CLOSEDLOOP_API_URL ?? "http://localhost:3002";
@@ -16,12 +17,6 @@ async function getResponseErrorMessage(response: Response): Promise<string> {
   const body = await response.text().catch(() => "");
   const bodySuffix = body ? ` — ${body}` : "";
   return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 /**

@@ -1104,8 +1104,7 @@ model OAuthRefreshToken {
   createdAt        DateTime  @default(now()) @map("created_at")
 
   @@index([expiresAt])
-  @@index([familyId])
-  @@index([revokedAt])
+  @@index([familyId, revokedAt])
   @@map("oauth_refresh_tokens")
 }
 

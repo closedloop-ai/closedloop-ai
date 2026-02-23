@@ -587,11 +587,7 @@ function consumeAuthorizationCode(
   });
 }
 
-function getAccessTokenFingerprint(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
-function getRefreshTokenFingerprint(token: string): string {
+function getTokenFingerprint(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
@@ -619,7 +615,7 @@ async function revokeAccessToken(
   token: string,
   expiresAtMs: number
 ): Promise<void> {
-  const fingerprint = getAccessTokenFingerprint(token);
+  const fingerprint = getTokenFingerprint(token);
   await withDb((db) =>
     db.oAuthRevokedToken.upsert({
       where: { tokenFingerprint: fingerprint },
@@ -636,7 +632,7 @@ async function revokeAccessToken(
 }
 
 async function isAccessTokenRevoked(token: string): Promise<boolean> {
-  const fingerprint = getAccessTokenFingerprint(token);
+  const fingerprint = getTokenFingerprint(token);
   const tokenRecord = await withDb((db) =>
     db.oAuthRevokedToken.findUnique({
       where: { tokenFingerprint: fingerprint },
@@ -695,7 +691,7 @@ async function createRefreshTokenRecord(
   input: CreateRefreshTokenInput
 ): Promise<{ token: string; tokenId: string; expiresIn: number }> {
   const token = issueOAuthRefreshToken();
-  const tokenFingerprint = getRefreshTokenFingerprint(token);
+  const tokenFingerprint = getTokenFingerprint(token);
   const created = await client.oAuthRefreshToken.create({
     data: {
       tokenFingerprint,
@@ -729,31 +725,15 @@ function issueAndStoreRefreshToken(
   });
 }
 
-function consumeRefreshToken(token: string): Promise<{
-  status: "active" | "invalid" | "reuse_detected";
-  record: RefreshTokenRecord | null;
-}> {
-  const tokenFingerprint = getRefreshTokenFingerprint(token);
-  return withDb.tx(async (db) => {
+function loadRefreshTokenRecord(
+  token: string
+): Promise<RefreshTokenRecord | null> {
+  const tokenFingerprint = getTokenFingerprint(token);
+  return withDb((db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
-    const now = new Date();
-    const record = await client.oAuthRefreshToken.findUnique({
+    return client.oAuthRefreshToken.findUnique({
       where: { tokenFingerprint },
     });
-
-    if (!record || record.expiresAt <= now) {
-      return { status: "invalid", record: null };
-    }
-
-    if (record.revokedAt !== null) {
-      await client.oAuthRefreshToken.updateMany({
-        where: { familyId: record.familyId, revokedAt: null },
-        data: { revokedAt: now },
-      });
-      return { status: "reuse_detected", record: null };
-    }
-
-    return { status: "active", record };
   });
 }
 
@@ -768,27 +748,57 @@ async function revokeRefreshTokenFamily(familyId: string): Promise<void> {
 }
 
 function rotateRefreshToken(
-  current: RefreshTokenRecord,
+  token: string,
+  clientId: string,
   nextScopes: string[]
 ): Promise<
   | { status: "rotated"; token: string; expiresIn: number }
-  | { status: "invalidated"; familyId: string }
+  | { status: "invalid" }
+  | { status: "invalid_client" }
+  | { status: "invalid_scope" }
+  | { status: "reuse_detected" }
 > {
+  const tokenFingerprint = getTokenFingerprint(token);
   const nextExpiry = new Date(
     Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
   );
   return withDb.tx(async (db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
+    const now = new Date();
+    const current = await client.oAuthRefreshToken.findUnique({
+      where: { tokenFingerprint },
+    });
+    if (!current || current.expiresAt <= now) {
+      return { status: "invalid" };
+    }
+    if (current.clientId !== clientId) {
+      return { status: "invalid_client" };
+    }
+    if (nextScopes.some((scope) => !current.scopes.includes(scope))) {
+      return { status: "invalid_scope" };
+    }
+    if (current.revokedAt !== null) {
+      await client.oAuthRefreshToken.updateMany({
+        where: { familyId: current.familyId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      return { status: "reuse_detected" };
+    }
+
     const revoked = await client.oAuthRefreshToken.updateMany({
       where: { id: current.id, revokedAt: null },
       data: {
-        revokedAt: new Date(),
-        lastUsedAt: new Date(),
+        revokedAt: now,
+        lastUsedAt: now,
       },
     });
 
     if (revoked.count !== 1) {
-      return { status: "invalidated", familyId: current.familyId };
+      await client.oAuthRefreshToken.updateMany({
+        where: { familyId: current.familyId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      return { status: "reuse_detected" };
     }
 
     const issued = await createRefreshTokenRecord(client, {
@@ -816,7 +826,7 @@ function rotateRefreshToken(
 }
 
 async function revokeRefreshToken(token: string): Promise<void> {
-  const tokenFingerprint = getRefreshTokenFingerprint(token);
+  const tokenFingerprint = getTokenFingerprint(token);
   await withDb.tx(async (db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
     const record = await client.oAuthRefreshToken.findUnique({
@@ -2145,15 +2155,8 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const consumed = await consumeRefreshToken(body.refresh_token);
-  if (consumed.status === "reuse_detected") {
-    sendOAuthJson(res, 400, {
-      error: "invalid_grant",
-      error_description: "Refresh token reuse detected",
-    });
-    return;
-  }
-  if (consumed.status === "invalid" || !consumed.record) {
+  const refreshRecord = await loadRefreshTokenRecord(body.refresh_token);
+  if (!refreshRecord || refreshRecord.expiresAt <= new Date()) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid or expired refresh token",
@@ -2161,7 +2164,15 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const refreshRecord = consumed.record;
+  if (refreshRecord.revokedAt !== null) {
+    await revokeRefreshTokenFamily(refreshRecord.familyId);
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token reuse detected",
+    });
+    return;
+  }
+
   if (refreshRecord.clientId !== body.client_id) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
@@ -2208,11 +2219,36 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const rotated = await rotateRefreshToken(refreshRecord, scopes);
-  if (rotated.status === "invalidated") {
+  const rotated = await rotateRefreshToken(
+    body.refresh_token,
+    body.client_id,
+    scopes
+  );
+  if (rotated.status === "reuse_detected") {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
-      error_description: "Refresh token is no longer valid",
+      error_description: "Refresh token reuse detected",
+    });
+    return;
+  }
+  if (rotated.status === "invalid") {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid or expired refresh token",
+    });
+    return;
+  }
+  if (rotated.status === "invalid_client") {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token was not issued to this client",
+    });
+    return;
+  }
+  if (rotated.status === "invalid_scope") {
+    sendOAuthJson(res, 400, {
+      error: "invalid_scope",
+      error_description: "Requested scope exceeds the refresh token grant",
     });
     return;
   }

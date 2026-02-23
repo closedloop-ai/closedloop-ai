@@ -20,5 +20,4 @@ CREATE TABLE "oauth_refresh_tokens" (
 
 CREATE UNIQUE INDEX "oauth_refresh_tokens_token_fingerprint_key" ON "oauth_refresh_tokens"("token_fingerprint");
 CREATE INDEX "oauth_refresh_tokens_expires_at_idx" ON "oauth_refresh_tokens"("expires_at");
-CREATE INDEX "oauth_refresh_tokens_family_id_idx" ON "oauth_refresh_tokens"("family_id");
-CREATE INDEX "oauth_refresh_tokens_revoked_at_idx" ON "oauth_refresh_tokens"("revoked_at");
+CREATE INDEX "oauth_refresh_tokens_family_id_revoked_at_idx" ON "oauth_refresh_tokens"("family_id", "revoked_at");
