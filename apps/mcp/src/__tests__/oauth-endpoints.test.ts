@@ -45,6 +45,25 @@ const authCodeStore = new Map<
     createdAt: Date;
   }
 >();
+const refreshTokenStore = new Map<
+  string,
+  {
+    id: string;
+    tokenFingerprint: string;
+    encryptedApiKey: string;
+    keyId: string;
+    userId: string;
+    organizationId: string;
+    clientId: string;
+    scopes: string[];
+    familyId: string;
+    expiresAt: Date;
+    lastUsedAt: Date | null;
+    revokedAt: Date | null;
+    replacedByTokenId: string | null;
+    createdAt: Date;
+  }
+>();
 
 vi.mock("../api-client.js", () => {
   return {
@@ -272,6 +291,97 @@ vi.mock("@repo/database", () => {
         }
       ),
     },
+    oAuthRefreshToken: {
+      deleteMany: vi.fn(
+        ({ where }: { where: { expiresAt: { lte: Date } } }) => {
+          for (const [fingerprint, record] of refreshTokenStore.entries()) {
+            if (record.expiresAt <= where.expiresAt.lte) {
+              refreshTokenStore.delete(fingerprint);
+            }
+          }
+          return { count: 0 };
+        }
+      ),
+      create: vi.fn(
+        ({
+          data,
+        }: {
+          data: {
+            tokenFingerprint: string;
+            encryptedApiKey: string;
+            keyId: string;
+            userId: string;
+            organizationId: string;
+            clientId: string;
+            scopes: string[];
+            familyId: string;
+            expiresAt: Date;
+          };
+        }) => {
+          const record = {
+            id: `rt_${Math.random().toString(36).slice(2, 10)}`,
+            tokenFingerprint: data.tokenFingerprint,
+            encryptedApiKey: data.encryptedApiKey,
+            keyId: data.keyId,
+            userId: data.userId,
+            organizationId: data.organizationId,
+            clientId: data.clientId,
+            scopes: data.scopes,
+            familyId: data.familyId,
+            expiresAt: data.expiresAt,
+            lastUsedAt: null,
+            revokedAt: null,
+            replacedByTokenId: null,
+            createdAt: new Date(),
+          };
+          refreshTokenStore.set(data.tokenFingerprint, record);
+          return { id: record.id };
+        }
+      ),
+      findUnique: vi.fn(
+        ({ where }: { where: { tokenFingerprint: string } }) => {
+          return refreshTokenStore.get(where.tokenFingerprint) ?? null;
+        }
+      ),
+      updateMany: vi.fn(
+        ({
+          where,
+          data,
+        }: {
+          where: { id?: string; familyId?: string; revokedAt?: null };
+          data: {
+            lastUsedAt?: Date;
+            revokedAt?: Date;
+            replacedByTokenId?: string;
+          };
+        }) => {
+          let count = 0;
+          for (const record of refreshTokenStore.values()) {
+            const idMatch = where.id ? record.id === where.id : true;
+            const familyMatch = where.familyId
+              ? record.familyId === where.familyId
+              : true;
+            const revokedMatch =
+              where.revokedAt === null ? record.revokedAt === null : true;
+            if (!(idMatch && familyMatch && revokedMatch)) {
+              continue;
+            }
+
+            if (data.lastUsedAt !== undefined) {
+              record.lastUsedAt = data.lastUsedAt;
+            }
+            if (data.revokedAt !== undefined) {
+              record.revokedAt = data.revokedAt;
+            }
+            if (data.replacedByTokenId !== undefined) {
+              record.replacedByTokenId = data.replacedByTokenId;
+            }
+            count += 1;
+          }
+          return { count };
+        }
+      ),
+    },
   };
 
   const withDb = Object.assign(
@@ -401,6 +511,8 @@ function asServerResponse(response: MockResponse): ServerResponse {
 beforeAll(async () => {
   process.env.INTERNAL_API_SECRET = "test-internal-secret";
   process.env.MCP_OAUTH_CLIENT_ID = "closedloop-mcp";
+  process.env.MCP_OAUTH_TOKEN_TTL_SECONDS = "3600";
+  process.env.MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS = "2592000";
   process.env.MCP_OAUTH_REDIRECT_URIS = "http://localhost:7777/callback";
   process.env.MCP_MAX_REQUEST_BODY_BYTES = "2048";
 
@@ -426,6 +538,7 @@ beforeEach(() => {
   revokedTokenStore.clear();
   rateLimitStore.clear();
   authCodeStore.clear();
+  refreshTokenStore.clear();
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
@@ -491,9 +604,15 @@ describe("OAuth endpoints", () => {
     expect(tokenRes.statusCode).toBe(200);
     const tokenJson = JSON.parse(tokenRes.body) as {
       access_token: string;
+      refresh_token: string;
+      expires_in: number;
+      refresh_token_expires_in: number;
       scope: string;
     };
     expect(tokenJson.access_token.startsWith("mcp_at_")).toBe(true);
+    expect(tokenJson.refresh_token.startsWith("mcp_rt_")).toBe(true);
+    expect(tokenJson.expires_in).toBe(3600);
+    expect(tokenJson.refresh_token_expires_in).toBe(2_592_000);
     expect(tokenJson.scope).toBe("read");
 
     const replayReq = createMockRequest({
@@ -507,6 +626,168 @@ describe("OAuth endpoints", () => {
     expect(replayRes.statusCode).toBe(400);
     const replayJson = JSON.parse(replayRes.body) as { error: string };
     expect(replayJson.error).toBe("invalid_grant");
+  });
+
+  it("rotates refresh token via grant_type=refresh_token", async () => {
+    const verifier = "pkce-refresh-verifier";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read write");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const codeExchangeBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+      scope: "read write",
+    }).toString();
+    const codeExchangeReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: codeExchangeBody,
+    });
+    const codeExchangeRes = createMockResponse();
+    await handleOAuthToken(codeExchangeReq, asServerResponse(codeExchangeRes));
+    expect(codeExchangeRes.statusCode).toBe(200);
+    const codeExchangeJson = JSON.parse(codeExchangeRes.body) as {
+      refresh_token: string;
+    };
+
+    const refreshBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: codeExchangeJson.refresh_token,
+      scope: "read",
+    }).toString();
+    const refreshReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: refreshBody,
+    });
+    const refreshRes = createMockResponse();
+    await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+    expect(refreshRes.statusCode).toBe(200);
+    const refreshJson = JSON.parse(refreshRes.body) as {
+      access_token: string;
+      refresh_token: string;
+      scope: string;
+    };
+    expect(refreshJson.access_token.startsWith("mcp_at_")).toBe(true);
+    expect(refreshJson.refresh_token.startsWith("mcp_rt_")).toBe(true);
+    expect(refreshJson.refresh_token).not.toBe(codeExchangeJson.refresh_token);
+    expect(refreshJson.scope).toBe("read");
+  });
+
+  it("detects refresh token reuse and revokes the token family", async () => {
+    const verifier = "pkce-reuse-verifier";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+      scope: "read",
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    expect(tokenRes.statusCode).toBe(200);
+    const first = JSON.parse(tokenRes.body) as { refresh_token: string };
+
+    const rotateBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: first.refresh_token,
+    }).toString();
+    const rotateReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: rotateBody,
+    });
+    const rotateRes = createMockResponse();
+    await handleOAuthToken(rotateReq, asServerResponse(rotateRes));
+    expect(rotateRes.statusCode).toBe(200);
+    const second = JSON.parse(rotateRes.body) as { refresh_token: string };
+
+    const replayReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: rotateBody,
+    });
+    const replayRes = createMockResponse();
+    await handleOAuthToken(replayReq, asServerResponse(replayRes));
+    expect(replayRes.statusCode).toBe(400);
+    const replayJson = JSON.parse(replayRes.body) as { error: string };
+    expect(replayJson.error).toBe("invalid_grant");
+
+    const afterReuseBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: second.refresh_token,
+    }).toString();
+    const afterReuseReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: afterReuseBody,
+    });
+    const afterReuseRes = createMockResponse();
+    await handleOAuthToken(afterReuseReq, asServerResponse(afterReuseRes));
+    expect(afterReuseRes.statusCode).toBe(400);
+    const afterReuseJson = JSON.parse(afterReuseRes.body) as { error: string };
+    expect(afterReuseJson.error).toBe("invalid_grant");
   });
 
   it("rejects authorization_code exchange with an invalid PKCE verifier", async () => {
@@ -882,6 +1163,80 @@ describe("OAuth endpoints", () => {
       active: boolean;
     };
     expect(activeAfter.active).toBe(false);
+  });
+
+  it("revokes refresh token family via internal revoke endpoint", async () => {
+    const verifier = "pkce-refresh-revoke-verifier";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const exchangeBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+    }).toString();
+    const exchangeReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: exchangeBody,
+    });
+    const exchangeRes = createMockResponse();
+    await handleOAuthToken(exchangeReq, asServerResponse(exchangeRes));
+    expect(exchangeRes.statusCode).toBe(200);
+    const issued = JSON.parse(exchangeRes.body) as { refresh_token: string };
+
+    const revokeReq = createMockRequest({
+      method: "POST",
+      url: "/internal/oauth/revoke",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": "test-internal-secret",
+      },
+      body: JSON.stringify({ token: issued.refresh_token }),
+    });
+    const revokeRes = createMockResponse();
+    await handleOAuthRevoke(revokeReq, asServerResponse(revokeRes));
+    expect(revokeRes.statusCode).toBe(200);
+
+    const refreshBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: issued.refresh_token,
+    }).toString();
+    const refreshReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: refreshBody,
+    });
+    const refreshRes = createMockResponse();
+    await handleOAuthToken(refreshReq, asServerResponse(refreshRes));
+    expect(refreshRes.statusCode).toBe(400);
+    const refreshJson = JSON.parse(refreshRes.body) as { error: string };
+    expect(refreshJson.error).toBe("invalid_grant");
   });
 
   it("returns key scopes when client_credentials omits scope", async () => {

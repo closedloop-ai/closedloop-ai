@@ -4,6 +4,7 @@ import {
   createHash,
   createHmac,
   randomBytes,
+  randomUUID,
   timingSafeEqual,
 } from "node:crypto";
 import { createServer } from "node:http";
@@ -60,6 +61,7 @@ import { registerUpdateWorkstream } from "./tools/update-workstream.js";
 const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
 const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
 const OAUTH_TOKEN_PREFIX_REGEX = /^mcp_at_/;
+const OAUTH_REFRESH_TOKEN_PREFIX = "mcp_rt_";
 const SCOPE_SPLIT_REGEX = /\s+/;
 const LEADING_QUESTION_MARK_REGEX = /^\?/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
@@ -90,7 +92,11 @@ function parsePositiveIntegerEnv(
 
 const OAUTH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_TOKEN_TTL_SECONDS",
-  3600
+  604_800
+);
+const OAUTH_REFRESH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
+  "MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
+  2_592_000
 );
 const OAUTH_AUTH_CODE_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_AUTH_CODE_TTL_SECONDS",
@@ -417,6 +423,22 @@ type AuthorizationCodeRecord = {
   expiresAt: Date;
 };
 
+type RefreshTokenRecord = {
+  id: string;
+  tokenFingerprint: string;
+  encryptedApiKey: string;
+  keyId: string;
+  userId: string;
+  organizationId: string;
+  clientId: string;
+  scopes: string[];
+  familyId: string;
+  expiresAt: Date;
+  lastUsedAt: Date | null;
+  revokedAt: Date | null;
+  replacedByTokenId: string | null;
+};
+
 type OAuthCleanupDbClient = {
   oAuthAuthorizationCode: {
     deleteMany(args: {
@@ -432,6 +454,9 @@ type OAuthCleanupDbClient = {
     deleteMany(args: {
       where: { windowExpiresAt: { lte: Date } };
     }): Promise<unknown>;
+  };
+  oAuthRefreshToken: {
+    deleteMany(args: { where: { expiresAt: { lte: Date } } }): Promise<unknown>;
   };
   $queryRawUnsafe?: (query: string, ...values: unknown[]) => Promise<unknown>;
 };
@@ -487,6 +512,7 @@ async function runOAuthCleanupQueries(
   await Promise.allSettled([
     cleanupExpiredAuthorizationCodes(db),
     cleanupExpiredRevokedTokens(db),
+    cleanupExpiredRefreshTokens(db),
     db.oAuthRateLimit.deleteMany({
       where: { windowExpiresAt: { lte: new Date(nowMs) } },
     }),
@@ -565,10 +591,26 @@ function getAccessTokenFingerprint(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
+function getRefreshTokenFingerprint(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+function issueOAuthRefreshToken(): string {
+  return `${OAUTH_REFRESH_TOKEN_PREFIX}${randomBytes(48).toString("base64url")}`;
+}
+
 async function cleanupExpiredRevokedTokens(
   db: OAuthCleanupDbClient
 ): Promise<void> {
   await db.oAuthRevokedToken.deleteMany({
+    where: { expiresAt: { lte: new Date() } },
+  });
+}
+
+async function cleanupExpiredRefreshTokens(
+  db: OAuthCleanupDbClient
+): Promise<void> {
+  await db.oAuthRefreshToken.deleteMany({
     where: { expiresAt: { lte: new Date() } },
   });
 }
@@ -602,6 +644,185 @@ async function isAccessTokenRevoked(token: string): Promise<boolean> {
     })
   );
   return tokenRecord !== null && tokenRecord.expiresAt.getTime() > Date.now();
+}
+
+type OAuthRefreshTokenDbClient = {
+  oAuthRefreshToken: {
+    create(args: {
+      data: {
+        tokenFingerprint: string;
+        encryptedApiKey: string;
+        keyId: string;
+        userId: string;
+        organizationId: string;
+        clientId: string;
+        scopes: string[];
+        familyId: string;
+        expiresAt: Date;
+      };
+    }): Promise<{ id: string }>;
+    findUnique(args: {
+      where: { tokenFingerprint: string };
+    }): Promise<RefreshTokenRecord | null>;
+    updateMany(args: {
+      where: {
+        id?: string;
+        familyId?: string;
+        revokedAt?: null;
+      };
+      data: {
+        lastUsedAt?: Date;
+        revokedAt?: Date;
+        replacedByTokenId?: string;
+      };
+    }): Promise<{ count: number }>;
+  };
+};
+
+type CreateRefreshTokenInput = {
+  encryptedApiKey: string;
+  keyId: string;
+  userId: string;
+  organizationId: string;
+  clientId: string;
+  scopes: string[];
+  familyId: string;
+  expiresAt: Date;
+};
+
+async function createRefreshTokenRecord(
+  client: OAuthRefreshTokenDbClient,
+  input: CreateRefreshTokenInput
+): Promise<{ token: string; tokenId: string; expiresIn: number }> {
+  const token = issueOAuthRefreshToken();
+  const tokenFingerprint = getRefreshTokenFingerprint(token);
+  const created = await client.oAuthRefreshToken.create({
+    data: {
+      tokenFingerprint,
+      encryptedApiKey: input.encryptedApiKey,
+      keyId: input.keyId,
+      userId: input.userId,
+      organizationId: input.organizationId,
+      clientId: input.clientId,
+      scopes: input.scopes,
+      familyId: input.familyId,
+      expiresAt: input.expiresAt,
+    },
+  });
+
+  return {
+    token,
+    tokenId: created.id,
+    expiresIn: Math.max(
+      1,
+      Math.floor((input.expiresAt.getTime() - Date.now()) / 1000)
+    ),
+  };
+}
+
+function issueAndStoreRefreshToken(
+  input: CreateRefreshTokenInput
+): Promise<{ token: string; tokenId: string; expiresIn: number }> {
+  return withDb((db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    return createRefreshTokenRecord(client, input);
+  });
+}
+
+function consumeRefreshToken(token: string): Promise<{
+  status: "active" | "invalid" | "reuse_detected";
+  record: RefreshTokenRecord | null;
+}> {
+  const tokenFingerprint = getRefreshTokenFingerprint(token);
+  return withDb.tx(async (db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    const now = new Date();
+    const record = await client.oAuthRefreshToken.findUnique({
+      where: { tokenFingerprint },
+    });
+
+    if (!record || record.expiresAt <= now) {
+      return { status: "invalid", record: null };
+    }
+
+    if (record.revokedAt !== null) {
+      await client.oAuthRefreshToken.updateMany({
+        where: { familyId: record.familyId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      return { status: "reuse_detected", record: null };
+    }
+
+    return { status: "active", record };
+  });
+}
+
+async function revokeRefreshTokenFamily(familyId: string): Promise<void> {
+  await withDb((db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    return client.oAuthRefreshToken.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  });
+}
+
+function rotateRefreshToken(
+  current: RefreshTokenRecord,
+  nextScopes: string[]
+): Promise<{ token: string; expiresIn: number }> {
+  const nextExpiry = new Date(
+    Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
+  );
+  return withDb.tx(async (db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    const issued = await createRefreshTokenRecord(client, {
+      encryptedApiKey: current.encryptedApiKey,
+      keyId: current.keyId,
+      userId: current.userId,
+      organizationId: current.organizationId,
+      clientId: current.clientId,
+      scopes: nextScopes,
+      familyId: current.familyId,
+      expiresAt: nextExpiry,
+    });
+
+    const revoked = await client.oAuthRefreshToken.updateMany({
+      where: { id: current.id, revokedAt: null },
+      data: {
+        revokedAt: new Date(),
+        lastUsedAt: new Date(),
+        replacedByTokenId: issued.tokenId,
+      },
+    });
+
+    if (revoked.count !== 1) {
+      await client.oAuthRefreshToken.updateMany({
+        where: { familyId: current.familyId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      throw new Error("Failed to rotate refresh token");
+    }
+
+    return { token: issued.token, expiresIn: issued.expiresIn };
+  });
+}
+
+async function revokeRefreshToken(token: string): Promise<void> {
+  const tokenFingerprint = getRefreshTokenFingerprint(token);
+  await withDb.tx(async (db) => {
+    const client = db as unknown as OAuthRefreshTokenDbClient;
+    const record = await client.oAuthRefreshToken.findUnique({
+      where: { tokenFingerprint },
+    });
+    if (!record) {
+      return;
+    }
+    await client.oAuthRefreshToken.updateMany({
+      where: { familyId: record.familyId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  });
 }
 
 function normalizeAddress(address: string): string {
@@ -1476,7 +1697,7 @@ async function handleOAuthRegister(
     client_id: clientId,
     client_name: clientName,
     redirect_uris: redirectUris,
-    grant_types: ["authorization_code"],
+    grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
   });
@@ -1835,10 +2056,118 @@ async function handleAuthorizationCodeGrant(
   }
 
   const accessToken = issueOAuthAccessToken(codeApiKey, context, scopes);
+  const refreshToken = await issueAndStoreRefreshToken({
+    encryptedApiKey: codeRecord.encryptedApiKey,
+    keyId: codeRecord.keyId,
+    userId: context.userId,
+    organizationId: context.organizationId,
+    clientId: codeRecord.clientId,
+    scopes,
+    familyId: randomUUID(),
+    expiresAt: new Date(Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000),
+  });
+
   sendOAuthJson(res, 200, {
     access_token: accessToken,
+    refresh_token: refreshToken.token,
     token_type: "Bearer",
     expires_in: OAUTH_TOKEN_TTL_SECONDS,
+    refresh_token_expires_in: refreshToken.expiresIn,
+    scope: scopes.join(" "),
+  });
+}
+
+async function handleRefreshTokenGrant(
+  body: OAuthTokenBody,
+  res: import("node:http").ServerResponse
+): Promise<void> {
+  if (
+    !body.client_id ||
+    (!body.client_id.startsWith("dyn_") && body.client_id !== OAUTH_CLIENT_ID)
+  ) {
+    sendInvalidClient(res, "Invalid client_id");
+    return;
+  }
+
+  if (!body.refresh_token?.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_request",
+      error_description: "refresh_token is required",
+    });
+    return;
+  }
+
+  const consumed = await consumeRefreshToken(body.refresh_token);
+  if (consumed.status === "reuse_detected") {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token reuse detected",
+    });
+    return;
+  }
+  if (consumed.status === "invalid" || !consumed.record) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid or expired refresh token",
+    });
+    return;
+  }
+
+  const refreshRecord = consumed.record;
+  if (refreshRecord.clientId !== body.client_id) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token was not issued to this client",
+    });
+    return;
+  }
+
+  const plaintextKey = decryptApiKey(
+    refreshRecord.encryptedApiKey,
+    refreshRecord.keyId
+  );
+  if (!plaintextKey) {
+    await revokeRefreshTokenFamily(refreshRecord.familyId);
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token is no longer valid",
+    });
+    return;
+  }
+
+  const context = await verifyApiKey(plaintextKey);
+  if (!context) {
+    await revokeRefreshTokenFamily(refreshRecord.familyId);
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token is no longer valid",
+    });
+    return;
+  }
+
+  const keyScopes = effectiveKeyScopes(context.scopes);
+  const grantScopes = refreshRecord.scopes.filter((scope) =>
+    keyScopes.includes(scope)
+  );
+  const requestedScopes = parseScopeParam(body.scope);
+  const scopes = requestedScopes.length > 0 ? requestedScopes : grantScopes;
+  const hasInvalidScope = scopes.some((scope) => !grantScopes.includes(scope));
+  if (hasInvalidScope) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_scope",
+      error_description: "Requested scope exceeds the refresh token grant",
+    });
+    return;
+  }
+
+  const rotated = await rotateRefreshToken(refreshRecord, scopes);
+  const accessToken = issueOAuthAccessToken(plaintextKey, context, scopes);
+  sendOAuthJson(res, 200, {
+    access_token: accessToken,
+    refresh_token: rotated.token,
+    token_type: "Bearer",
+    expires_in: OAUTH_TOKEN_TTL_SECONDS,
+    refresh_token_expires_in: rotated.expiresIn,
     scope: scopes.join(" "),
   });
 }
@@ -1898,10 +2227,15 @@ async function handleOAuthToken(
     return;
   }
 
+  if (body.grant_type === "refresh_token") {
+    await handleRefreshTokenGrant(body, res);
+    return;
+  }
+
   sendOAuthJson(res, 400, {
     error: "unsupported_grant_type",
     error_description:
-      "Supported grant types are client_credentials and authorization_code",
+      "Supported grant types are client_credentials, authorization_code, and refresh_token",
   });
 }
 
@@ -2002,10 +2336,25 @@ async function handleOAuthRevoke(
     }
     throw error;
   }
-  if (!body?.token?.startsWith("mcp_at_")) {
+  if (
+    !(
+      body?.token &&
+      (body.token.startsWith("mcp_at_") ||
+        body.token.startsWith(OAUTH_REFRESH_TOKEN_PREFIX))
+    )
+  ) {
     sendOAuthJson(res, 400, {
       error: "invalid_request",
-      error_description: "JSON body with token is required",
+      error_description: "JSON body with access or refresh token is required",
+    });
+    return;
+  }
+
+  if (body.token.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)) {
+    await revokeRefreshToken(body.token);
+    sendOAuthJson(res, 200, {
+      revoked: true,
+      token_type: "refresh_token",
     });
     return;
   }
@@ -2022,6 +2371,7 @@ async function handleOAuthRevoke(
   await revokeAccessToken(body.token, payload.exp * 1000);
   sendOAuthJson(res, 200, {
     revoked: true,
+    token_type: "access_token",
     exp: payload.exp,
   });
 }
@@ -2059,7 +2409,11 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
       introspection_endpoint: `${MCP_SERVER_URL}/internal/oauth/introspect`,
       revocation_endpoint: `${MCP_SERVER_URL}/internal/oauth/revoke`,
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-      grant_types_supported: ["authorization_code", "client_credentials"],
+      grant_types_supported: [
+        "authorization_code",
+        "client_credentials",
+        "refresh_token",
+      ],
       response_types_supported: ["code"],
       code_challenge_methods_supported: ["S256"],
       scopes_supported: [...API_KEY_SCOPES],

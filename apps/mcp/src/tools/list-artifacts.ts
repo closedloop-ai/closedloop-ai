@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { withErrorHandling } from "./tool-utils.js";
+import { buildPaginatedPayload, withErrorHandling } from "./tool-utils.js";
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -89,33 +89,20 @@ export function registerListArtifacts(
         }
 
         const artifacts = await apiClient.get<unknown[]>("/artifacts", query);
-        if (artifacts.length === 0) {
+        const payload = buildPaginatedPayload<unknown>(artifacts, {
+          limit,
+          offset,
+          mapItem: toArtifactListItem,
+          defaultLimit: DEFAULT_LIMIT,
+        });
+
+        if (payload.total === 0) {
           return {
             content: [{ type: "text" as const, text: "No artifacts found." }],
           };
         }
 
-        const resolvedOffset = offset ?? 0;
-        const resolvedLimit = limit ?? DEFAULT_LIMIT;
-        const page = artifacts
-          .slice(resolvedOffset, resolvedOffset + resolvedLimit)
-          .map(toArtifactListItem);
-        const hasMore = resolvedOffset + page.length < artifacts.length;
-        const nextOffset = hasMore ? resolvedOffset + page.length : null;
-
-        const text = JSON.stringify(
-          {
-            total: artifacts.length,
-            offset: resolvedOffset,
-            limit: resolvedLimit,
-            returned: page.length,
-            hasMore,
-            nextOffset,
-            items: page,
-          },
-          null,
-          2
-        );
+        const text = JSON.stringify(payload, null, 2);
         return {
           content: [{ type: "text" as const, text }],
         };

@@ -18,6 +18,29 @@ async function getResponseErrorMessage(response: Response): Promise<string> {
   return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * apps/api returns ApiResult<T> for route responses.
+ * Unwrap success envelopes so tools receive the expected payload shape.
+ */
+function unwrapApiResult<T>(body: unknown): T {
+  const record = asRecord(body);
+  const success = record.success;
+  if (typeof success !== "boolean") {
+    return body as T;
+  }
+  if (success) {
+    return record.data as T;
+  }
+  const error = record.error;
+  throw new Error(typeof error === "string" ? error : "API request failed");
+}
+
 export class ApiClient {
   private readonly baseUrl: string;
   private readonly plaintextKey: string;
@@ -53,7 +76,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const body = (await response.json()) as unknown;
+    return unwrapApiResult<T>(body);
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
@@ -66,7 +90,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const responseBody = (await response.json()) as unknown;
+    return unwrapApiResult<T>(responseBody);
   }
 
   async put<T>(path: string, body: unknown): Promise<T> {
@@ -79,7 +104,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const responseBody = (await response.json()) as unknown;
+    return unwrapApiResult<T>(responseBody);
   }
 
   async delete<T>(path: string): Promise<T> {
@@ -91,7 +117,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const body = (await response.json()) as unknown;
+    return unwrapApiResult<T>(body);
   }
 }
 
