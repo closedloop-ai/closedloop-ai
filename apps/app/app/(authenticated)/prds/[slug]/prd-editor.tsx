@@ -101,14 +101,17 @@ export function PRDEditor({
   };
 
   const handleDeepGenerate = () => {
-    deepGenerate.mutate(prd.id, {
-      onSuccess: () => {
-        toast.success("PRD generation started — check the status banner");
-      },
-      onError: (error) => {
-        toast.error(`Failed to start PRD generation: ${error.message}`);
-      },
-    });
+    deepGenerate.mutate(
+      { id: prd.id },
+      {
+        onSuccess: () => {
+          toast.success("PRD generation started — check the status banner");
+        },
+        onError: (error) => {
+          toast.error(`Failed to start PRD generation: ${error.message}`);
+        },
+      }
+    );
   };
 
   // Move dialog state
