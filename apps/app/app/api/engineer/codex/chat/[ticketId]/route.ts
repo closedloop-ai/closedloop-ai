@@ -493,7 +493,17 @@ export async function POST(
     return Response.json({ error: "prompt is required" }, { status: 400 });
   }
 
-  const worktreeDir = getWorktreeDir(repoPath, ticketId, branchName, prNumber);
+  let worktreeDir: string;
+  try {
+    worktreeDir = getWorktreeDir(repoPath, ticketId, branchName, prNumber);
+  } catch (err) {
+    return Response.json(
+      {
+        error: `Failed to resolve worktree: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { status: 500 }
+    );
+  }
   if (!existsSync(worktreeDir)) {
     return Response.json(
       { error: "Work directory not found" },

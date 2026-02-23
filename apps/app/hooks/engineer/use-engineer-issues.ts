@@ -3,13 +3,14 @@
 import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
+import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
 import type {
+  EngineerTicket,
+  EngineerTicketsResult,
   McpArtifact,
   McpIssue,
   McpUser,
-} from "@/hooks/engineer/use-mcp-client";
-import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
-import type { EngineerTicket, EngineerTicketsResult } from "@/types/engineer";
+} from "@/types/engineer";
 import {
   artifactStatusDisplayName,
   artifactTypeToSourceType,
@@ -77,8 +78,8 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
   const [error, setError] = useState<Error | null>(null);
   const [refetchCounter, setRefetchCounter] = useState(0);
 
-  // Holds the resolve callback for a pending refetch() promise
-  const refetchResolverRef = useRef<(() => void) | null>(null);
+  // Holds resolve callbacks for pending refetch() promises
+  const refetchResolversRef = useRef<Array<() => void>>([]);
 
   // Track previous ready state to avoid refetching on every render
   const prevReadyRef = useRef(false);
@@ -156,10 +157,8 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         setIsLoading(false);
         setIsFetching(false);
 
-        // Settle any pending refetch() promise
-        const resolve = refetchResolverRef.current;
-        refetchResolverRef.current = null;
-        resolve?.();
+        // Settle all pending refetch() promises
+        refetchResolversRef.current.splice(0).forEach((r) => r());
       }
     }
 
@@ -169,6 +168,8 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
       if (retryTimer) {
         clearTimeout(retryTimer);
       }
+      // Settle any pending refetch() promises so callers don't hang
+      refetchResolversRef.current.splice(0).forEach((r) => r());
     };
   }, [mcp.isReady, refetchCounter]);
 
@@ -276,11 +277,14 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
 
   // Trigger a refetch — returned promise settles when the fetch completes
   const refetch = useCallback(() => {
+    if (!mcp.isReady) {
+      return Promise.resolve();
+    }
     return new Promise<void>((resolve) => {
-      refetchResolverRef.current = resolve;
+      refetchResolversRef.current.push(resolve);
       setRefetchCounter((c) => c + 1);
     });
-  }, []);
+  }, [mcp.isReady]);
 
   return {
     tickets,

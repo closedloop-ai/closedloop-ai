@@ -9,62 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserOAuthClientProvider } from "use-mcp";
-
-// ---------------------------------------------------------------------------
-// MCP response types (engineer-local, not shared API types)
-// ---------------------------------------------------------------------------
-
-export type McpUser = {
-  id: string;
-  firstName: string | null;
-  lastName: string | null;
-  email: string;
-  avatarUrl: string | null;
-};
-
-export type McpIssue = {
-  id: string;
-  title: string;
-  slug: string;
-  description: string | null;
-  status: string;
-  priority: string;
-  projectId: string | null;
-  workstreamId: string | null;
-  assigneeId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  assignee: {
-    id: string | null;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  project: { name: string | null } | null;
-  workstream: { title: string | null } | null;
-};
-
-export type McpArtifact = {
-  id: string;
-  title: string;
-  slug: string;
-  type: string;
-  status: string;
-  snippet: string | null;
-  projectId: string | null;
-  workstreamId: string | null;
-  ownerId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  owner: {
-    id: string | null;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  project: { name: string | null } | null;
-  workstream: { title: string | null } | null;
-};
+import type { McpArtifact, McpIssue, McpUser } from "@/types/engineer";
 
 type PaginatedResponse<T> = {
   total: number;
@@ -275,139 +220,142 @@ export function useMcpClient(): McpClient {
     setError(undefined);
     setStateAndRef("connecting");
 
-    const previousTransport = transportRef.current;
-    if (previousTransport) {
+    try {
+      const previousTransport = transportRef.current;
+      if (previousTransport) {
+        try {
+          await previousTransport.close();
+        } catch {
+          // Ignore close errors when replacing a stale transport.
+        }
+      }
+      transportRef.current = null;
+      clientRef.current = null;
+
+      let targetUrl: URL;
       try {
-        await previousTransport.close();
+        targetUrl = new URL(MCP_SERVER_URL);
+      } catch (urlError) {
+        failConnection(`Invalid MCP server URL: ${toErrorMessage(urlError)}`);
+        return;
+      }
+
+      // Fetch API key from server-side route (never bundled into client JS)
+      let apiKey = "";
+      try {
+        const res = await fetch("/api/engineer/mcp-auth");
+        if (res.ok) {
+          const data = (await res.json()) as { apiKey: string };
+          apiKey = data.apiKey;
+        }
       } catch {
-        // Ignore close errors when replacing a stale transport.
+        // Fall through to OAuth if fetch fails
       }
-    }
-    transportRef.current = null;
-    clientRef.current = null;
 
-    let targetUrl: URL;
-    try {
-      targetUrl = new URL(MCP_SERVER_URL);
-    } catch (urlError) {
-      failConnection(`Invalid MCP server URL: ${toErrorMessage(urlError)}`);
-      return;
-    }
+      const authProvider = apiKey
+        ? null
+        : new BrowserOAuthClientProvider(MCP_SERVER_URL, {
+            clientName: "symphony-engineer",
+            callbackUrl:
+              globalThis.window !== undefined
+                ? `${globalThis.location.origin}/oauth/callback`
+                : "/oauth/callback",
+          });
+      authProviderRef.current = authProvider;
 
-    // Fetch API key from server-side route (never bundled into client JS)
-    let apiKey = "";
-    try {
-      const res = await fetch("/api/engineer/mcp-auth");
-      if (res.ok) {
-        const data = (await res.json()) as { apiKey: string };
-        apiKey = data.apiKey;
-      }
-    } catch {
-      // Fall through to OAuth if fetch fails
-    }
-
-    const authProvider = apiKey
-      ? null
-      : new BrowserOAuthClientProvider(MCP_SERVER_URL, {
-          clientName: "symphony-engineer",
-          callbackUrl:
-            globalThis.window !== undefined
-              ? `${globalThis.location.origin}/oauth/callback`
-              : "/oauth/callback",
-        });
-    authProviderRef.current = authProvider;
-
-    const transport = new StreamableHTTPClientTransport(targetUrl, {
-      authProvider: authProvider ?? undefined,
-      requestInit: {
-        headers: {
-          Accept: "application/json, text/event-stream",
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      const transport = new StreamableHTTPClientTransport(targetUrl, {
+        authProvider: authProvider ?? undefined,
+        requestInit: {
+          headers: {
+            Accept: "application/json, text/event-stream",
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
         },
-      },
-    });
+      });
 
-    transport.onerror = (transportError) => {
-      if (
-        closingRef.current ||
-        !isMountedRef.current ||
-        isExpectedAbortError(transportError)
-      ) {
-        return;
-      }
-      failConnection(
-        `Transport error (HTTP): ${toErrorMessage(transportError)}`
+      transport.onerror = (transportError) => {
+        if (
+          closingRef.current ||
+          !isMountedRef.current ||
+          isExpectedAbortError(transportError)
+        ) {
+          return;
+        }
+        failConnection(
+          `Transport error (HTTP): ${toErrorMessage(transportError)}`
+        );
+      };
+
+      transport.onclose = () => {
+        if (
+          !isMountedRef.current ||
+          closingRef.current ||
+          connectingRef.current
+        ) {
+          return;
+        }
+
+        if (stateRef.current === "ready") {
+          setStateAndRef("connecting");
+          reconnectTimerRef.current = setTimeout(() => {
+            if (isMountedRef.current) {
+              connect().catch(console.error);
+            }
+          }, RECONNECT_DELAY_MS);
+          return;
+        }
+
+        if (
+          stateRef.current !== "failed" &&
+          stateRef.current !== "authenticating" &&
+          stateRef.current !== "pending_auth"
+        ) {
+          failConnection("Connection closed unexpectedly.");
+        }
+      };
+
+      transportRef.current = transport;
+      const client = new Client(
+        { name: "symphony-engineer", version: "0.1.0" },
+        { capabilities: {} }
       );
-    };
+      clientRef.current = client;
 
-    transport.onclose = () => {
-      if (
-        !isMountedRef.current ||
-        closingRef.current ||
-        connectingRef.current
-      ) {
-        return;
+      try {
+        await client.connect(transport);
+        if (!isMountedRef.current || closingRef.current) {
+          return;
+        }
+
+        setStateAndRef("loading");
+        const toolsResponse = await client.listTools();
+        if (!isMountedRef.current || closingRef.current) {
+          return;
+        }
+
+        setTools(toolsResponse.tools);
+        setStateAndRef("ready");
+      } catch (connectError) {
+        if (
+          closingRef.current ||
+          !isMountedRef.current ||
+          isExpectedAbortError(connectError)
+        ) {
+          return;
+        }
+
+        if (connectError instanceof UnauthorizedError) {
+          const attemptedUrl =
+            authProviderRef.current?.getLastAttemptedAuthUrl();
+          setStateAndRef(attemptedUrl ? "pending_auth" : "authenticating");
+          setError("Authentication required.");
+          return;
+        }
+
+        failConnection(
+          `Failed to connect via HTTP: ${toErrorMessage(connectError)}`
+        );
       }
-
-      if (stateRef.current === "ready") {
-        setStateAndRef("connecting");
-        reconnectTimerRef.current = setTimeout(() => {
-          if (isMountedRef.current) {
-            connect().catch(console.error);
-          }
-        }, RECONNECT_DELAY_MS);
-        return;
-      }
-
-      if (
-        stateRef.current !== "failed" &&
-        stateRef.current !== "authenticating" &&
-        stateRef.current !== "pending_auth"
-      ) {
-        failConnection("Connection closed unexpectedly.");
-      }
-    };
-
-    transportRef.current = transport;
-    const client = new Client(
-      { name: "symphony-engineer", version: "0.1.0" },
-      { capabilities: {} }
-    );
-    clientRef.current = client;
-
-    try {
-      await client.connect(transport);
-      if (!isMountedRef.current || closingRef.current) {
-        return;
-      }
-
-      setStateAndRef("loading");
-      const toolsResponse = await client.listTools();
-      if (!isMountedRef.current || closingRef.current) {
-        return;
-      }
-
-      setTools(toolsResponse.tools);
-      setStateAndRef("ready");
-    } catch (connectError) {
-      if (
-        closingRef.current ||
-        !isMountedRef.current ||
-        isExpectedAbortError(connectError)
-      ) {
-        return;
-      }
-
-      if (connectError instanceof UnauthorizedError) {
-        const attemptedUrl = authProviderRef.current?.getLastAttemptedAuthUrl();
-        setStateAndRef(attemptedUrl ? "pending_auth" : "authenticating");
-        setError("Authentication required.");
-        return;
-      }
-
-      failConnection(
-        `Failed to connect via HTTP: ${toErrorMessage(connectError)}`
-      );
     } finally {
       connectingRef.current = false;
     }
@@ -548,7 +496,12 @@ export function useMcpClient(): McpClient {
       getIssue: async (issueId) => {
         const result = await callTool("get-issue", { issueId });
         const parsed = parseMcpResult<{ data: McpIssue } | McpIssue>(result);
-        if ("data" in parsed && parsed.data) {
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "data" in parsed &&
+          parsed.data
+        ) {
           return parsed.data;
         }
         return parsed as McpIssue;

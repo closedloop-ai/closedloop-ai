@@ -161,3 +161,59 @@ export function artifactTypeToSourceType(type: string): TicketSourceType {
       return "PRD";
   }
 }
+
+// ---------------------------------------------------------------------------
+// MCP response types (engineer-local, not shared API types)
+// ---------------------------------------------------------------------------
+
+export type McpUser = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string;
+  avatarUrl: string | null;
+};
+
+export type McpIssue = {
+  id: string;
+  title: string;
+  slug: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  projectId: string | null;
+  workstreamId: string | null;
+  assigneeId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignee: {
+    id: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  project: { name: string | null } | null;
+  workstream: { title: string | null } | null;
+};
+
+export type McpArtifact = {
+  id: string;
+  title: string;
+  slug: string;
+  type: string;
+  status: string;
+  snippet: string | null;
+  projectId: string | null;
+  workstreamId: string | null;
+  ownerId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  owner: {
+    id: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  project: { name: string | null } | null;
+  workstream: { title: string | null } | null;
+};
