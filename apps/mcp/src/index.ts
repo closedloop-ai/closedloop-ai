@@ -1436,6 +1436,55 @@ async function handleSessionScopedMcpRequest(
   return { unknownSessionId: sessionId, shouldContinue: true };
 }
 
+function sendMcpAuthChallenge(res: import("node:http").ServerResponse): void {
+  sendJson(
+    res,
+    401,
+    {
+      error:
+        "Missing or invalid Authorization header. Expected Bearer token (sk_live_* or OAuth access token).",
+    },
+    {
+      "WWW-Authenticate": `Bearer resource_metadata="${MCP_SERVER_URL}/.well-known/oauth-protected-resource"`,
+    }
+  );
+}
+
+function hasOversizedContentLength(
+  req: import("node:http").IncomingMessage
+): boolean {
+  const contentLengthHeader = req.headers["content-length"];
+  const contentLength = Number(contentLengthHeader ?? 0);
+  return (
+    Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES
+  );
+}
+
+function handleUnauthenticatedMcpProbe(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  sessionId: string | undefined,
+  hasAuthorizationHeader: boolean
+): boolean {
+  if (sessionId || hasAuthorizationHeader) {
+    return false;
+  }
+
+  // OAuth-capable clients may probe /mcp before session initialization.
+  // Return an auth challenge instead of a protocol-level 400 so clients can
+  // start OAuth automatically.
+  if (req.method === "POST" && hasOversizedContentLength(req)) {
+    sendJson(res, 413, {
+      error: "payload_too_large",
+      error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+    });
+    return true;
+  }
+
+  sendMcpAuthChallenge(res);
+  return true;
+}
+
 async function handleMcp(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
@@ -1444,6 +1493,13 @@ async function handleMcp(
   cleanupExpiredMcpSessions(nowMs);
 
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const hasAuthorizationHeader = typeof req.headers.authorization === "string";
+  if (
+    handleUnauthenticatedMcpProbe(req, res, sessionId, hasAuthorizationHeader)
+  ) {
+    return;
+  }
+
   const sessionState = await handleSessionScopedMcpRequest(req, res, sessionId);
   if (!sessionState.shouldContinue) {
     return;
@@ -1467,12 +1523,7 @@ async function handleMcp(
     });
     return;
   }
-  const contentLengthHeader = req.headers["content-length"];
-  const contentLength = Number(contentLengthHeader ?? 0);
-  if (
-    Number.isFinite(contentLength) &&
-    contentLength > MAX_REQUEST_BODY_BYTES
-  ) {
+  if (hasOversizedContentLength(req)) {
     sendJson(res, 413, {
       error: "payload_too_large",
       error_description: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
@@ -1482,17 +1533,7 @@ async function handleMcp(
 
   const auth = await resolveMcpAuth(req.headers.authorization ?? null);
   if (!auth) {
-    sendJson(
-      res,
-      401,
-      {
-        error:
-          "Missing or invalid Authorization header. Expected Bearer token (sk_live_* or OAuth access token).",
-      },
-      {
-        "WWW-Authenticate": `Bearer resource_metadata="${MCP_SERVER_URL}/.well-known/oauth-protected-resource"`,
-      }
-    );
+    sendMcpAuthChallenge(res);
     return;
   }
 

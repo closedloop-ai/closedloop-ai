@@ -1590,6 +1590,19 @@ describe("OAuth endpoints", () => {
     expect(res.statusCode).not.toBe(413);
   });
 
+  it("returns oauth auth challenge for unauthenticated mcp request", async () => {
+    const req = createMockRequest({
+      method: "GET",
+      url: "/mcp",
+      headers: {},
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(401);
+    expect(res.headers["WWW-Authenticate"]).toContain("resource_metadata=");
+  });
+
   it("falls back to stateless handling when session id is unknown", async () => {
     const initializeBody = JSON.stringify({
       jsonrpc: "2.0",
