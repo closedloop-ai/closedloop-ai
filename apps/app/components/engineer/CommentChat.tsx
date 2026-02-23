@@ -1623,7 +1623,7 @@ function ChatInputArea({
 
   return (
     <div className="shrink-0 border-border border-t bg-muted/30 p-4">
-      {hasAcceptedChanges && hasChangedFiles && (
+      {hasChangedFiles && (
         <div className="mb-3">
           <Button
             className="w-full"

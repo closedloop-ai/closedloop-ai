@@ -139,7 +139,6 @@ function parseMcpResult<T>(result: McpCallToolResult): T {
 const MCP_SERVER_URL =
   process.env.NEXT_PUBLIC_MCP_SERVER_URL ?? "https://mcp.closedloop.ai/mcp";
 
-const CLOSEDLOOP_API_KEY = process.env.NEXT_PUBLIC_CLOSEDLOOP_API_KEY ?? "";
 const RECONNECT_DELAY_MS = 5000;
 
 function isExpectedAbortError(error: unknown): boolean {
@@ -293,7 +292,19 @@ export function useMcpClient(): McpClient {
       return;
     }
 
-    const authProvider = CLOSEDLOOP_API_KEY
+    // Fetch API key from server-side route (never bundled into client JS)
+    let apiKey = "";
+    try {
+      const res = await fetch("/api/engineer/mcp-auth");
+      if (res.ok) {
+        const data = (await res.json()) as { apiKey: string };
+        apiKey = data.apiKey;
+      }
+    } catch {
+      // Fall through to OAuth if fetch fails
+    }
+
+    const authProvider = apiKey
       ? null
       : new BrowserOAuthClientProvider(MCP_SERVER_URL, {
           clientName: "symphony-engineer",
@@ -309,9 +320,7 @@ export function useMcpClient(): McpClient {
       requestInit: {
         headers: {
           Accept: "application/json, text/event-stream",
-          ...(CLOSEDLOOP_API_KEY
-            ? { Authorization: `Bearer ${CLOSEDLOOP_API_KEY}` }
-            : {}),
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
       },
     });
@@ -422,11 +431,6 @@ export function useMcpClient(): McpClient {
   }, [connect]);
 
   const authenticate = useCallback(async () => {
-    if (CLOSEDLOOP_API_KEY) {
-      connect().catch(console.error);
-      return;
-    }
-
     let authProvider = authProviderRef.current;
     if (!authProvider) {
       authProvider = new BrowserOAuthClientProvider(MCP_SERVER_URL, {

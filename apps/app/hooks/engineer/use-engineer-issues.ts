@@ -77,6 +77,9 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
   const [error, setError] = useState<Error | null>(null);
   const [refetchCounter, setRefetchCounter] = useState(0);
 
+  // Holds the resolve callback for a pending refetch() promise
+  const refetchResolverRef = useRef<(() => void) | null>(null);
+
   // Track previous ready state to avoid refetching on every render
   const prevReadyRef = useRef(false);
 
@@ -152,6 +155,11 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         }
         setIsLoading(false);
         setIsFetching(false);
+
+        // Settle any pending refetch() promise
+        const resolve = refetchResolverRef.current;
+        refetchResolverRef.current = null;
+        resolve?.();
       }
     }
 
@@ -272,10 +280,12 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
     globalThis.location.href = "/";
   }, [mcp]);
 
-  // Trigger a refetch
+  // Trigger a refetch — returned promise settles when the fetch completes
   const refetch = useCallback(() => {
-    setRefetchCounter((c) => c + 1);
-    return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      refetchResolverRef.current = resolve;
+      setRefetchCounter((c) => c + 1);
+    });
   }, []);
 
   return {
