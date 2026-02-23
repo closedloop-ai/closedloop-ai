@@ -40,17 +40,11 @@ const COLOR_PENDING =
   "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800";
 const COLOR_INACTIVE =
   "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700";
+const COLOR_PURPLE =
+  "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800";
 
 /**
- * PR status colors mapping to PRD requirements for AC3.1.
- * Separate from pullRequestStateColors - this maps specific status strings
- * (OPEN, MERGED, CLOSED) to semantic colors based on PRD acceptance criteria:
- * - OPEN → blue (in progress)
- * - MERGED → green (success)
- * - CLOSED → red (failure/abandoned)
- */
-/**
- * Unified PR status colors per PRD requirements (AC3.1):
+ * PR status colors per PRD requirements (AC3.1):
  * - OPEN → blue (in progress)
  * - MERGED → green (success)
  * - CLOSED → red (failure/abandoned)
@@ -59,6 +53,20 @@ export const prStatusColors: Record<string, string> = {
   OPEN: COLOR_PROGRESS,
   MERGED: COLOR_SUCCESS,
   CLOSED: COLOR_FAILURE,
+};
+
+/**
+ * PR review decision colors per PRD requirements (AC3.2):
+ * - APPROVED → green (success)
+ * - CHANGES_REQUESTED → red (needs work)
+ * - COMMENTED → yellow (feedback provided)
+ * - DISMISSED → gray (inactive/cancelled)
+ */
+export const prReviewDecisionColors: Record<string, string> = {
+  APPROVED: COLOR_SUCCESS,
+  CHANGES_REQUESTED: COLOR_FAILURE,
+  COMMENTED: COLOR_PENDING,
+  DISMISSED: COLOR_INACTIVE,
 };
 
 export const previewDeploymentStateColors: Record<string, string> = {
@@ -282,6 +290,75 @@ export function WorkstreamTypeBadge({ type }: { type: string }) {
       variant="outline"
     >
       {displayType}
+    </Badge>
+  );
+}
+
+// Loop status colors
+export const loopStatusColors: Record<string, string> = {
+  PENDING: COLOR_PENDING,
+  CLAIMED: COLOR_PENDING,
+  RUNNING: COLOR_PROGRESS,
+  COMPLETED: COLOR_SUCCESS,
+  FAILED: COLOR_FAILURE,
+  CANCELLED: COLOR_INACTIVE,
+  TIMED_OUT: COLOR_FAILURE,
+};
+
+const loopStatusLabels: Record<string, string> = {
+  PENDING: "Pending",
+  CLAIMED: "Claimed",
+  RUNNING: "Running",
+  COMPLETED: "Completed",
+  FAILED: "Failed",
+  CANCELLED: "Cancelled",
+  TIMED_OUT: "Timed Out",
+};
+
+export function LoopStatusBadge({ status }: { status: string }) {
+  const displayStatus = loopStatusLabels[status] ?? status;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        loopStatusColors[status] ?? loopStatusColors.PENDING
+      )}
+      variant="outline"
+    >
+      {displayStatus}
+    </Badge>
+  );
+}
+
+// Loop command colors
+export const loopCommandColors: Record<string, string> = {
+  PLAN: COLOR_PURPLE,
+  EXECUTE: COLOR_PROGRESS,
+  CHAT: COLOR_PENDING,
+  EXPLORE:
+    "bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-800",
+  REQUEST_CHANGES: COLOR_PENDING,
+};
+
+const loopCommandLabels: Record<string, string> = {
+  PLAN: "Plan",
+  EXECUTE: "Execute",
+  CHAT: "Chat",
+  EXPLORE: "Explore",
+  REQUEST_CHANGES: "Request Changes",
+};
+
+export function LoopCommandBadge({ command }: { command: string }) {
+  const displayCommand = loopCommandLabels[command] ?? command;
+  return (
+    <Badge
+      className={cn(
+        "font-medium",
+        loopCommandColors[command] ?? loopCommandColors.EXECUTE
+      )}
+      variant="outline"
+    >
+      {displayCommand}
     </Badge>
   );
 }

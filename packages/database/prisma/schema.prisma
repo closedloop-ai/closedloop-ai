@@ -111,6 +111,8 @@ enum WorkstreamEventType {
   GITHUB_PR_CREATED
   GITHUB_PR_MERGED
   GITHUB_PR_CLOSED
+  GITHUB_PR_REVIEW_SUBMITTED
+  GITHUB_PR_COMMENT_ADDED
   GITHUB_ACTION_TRIGGERED
   GITHUB_ACTION_COMPLETED
   SLACK_NOTIFICATION_SENT
@@ -118,6 +120,7 @@ enum WorkstreamEventType {
   ASSIGNEE_CHANGED
   BLOCKED
   UNBLOCKED
+  LOOP_COMPLETED
 }
 
 enum LinearSyncStatus {
@@ -141,6 +144,19 @@ enum GitHubActionStatus {
   CANCELLED
 }
 
+enum ReviewDecision {
+  APPROVED
+  CHANGES_REQUESTED
+  COMMENTED
+  DISMISSED
+}
+
+enum PRReviewCommentState {
+  PENDING
+  ADDRESSED
+  DISMISSED
+}
+
 enum GitHubInstallationStatus {
   PENDING_CLAIM
   ACTIVE
@@ -159,6 +175,24 @@ enum ProjectPriority {
   LOW
   MEDIUM
   HIGH
+}
+
+enum LoopStatus {
+  PENDING
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  TIMED_OUT
+}
+
+enum LoopCommand {
+  PLAN
+  EXECUTE
+  CHAT
+  EXPLORE
+  REQUEST_CHANGES
 }
 
 // =============================================================================
@@ -180,7 +214,10 @@ model Organization {
   active          Boolean  @default(true) @map("active")
   name            String
   slug            String   @unique
-  anthropicApiKey String?  @map("anthropic_api_key")
+  anthropicApiKey String?  @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
+  claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
+  claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
+  claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
   settings        Json     @default("{}")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
@@ -188,42 +225,51 @@ model Organization {
   // Relations
   users              User[]
   teams              Team[]
+  pullRequestRatings PullRequestRating[]
+  pullRequests       GitHubPullRequest[]
   projects           Project[]
   workstreams        Workstream[]
   artifacts          Artifact[]
   issues             Issue[]
   externalLinks      ExternalLink[]
   githubInstallation GitHubInstallation?
+  loops              Loop[]
 
   @@map("organizations")
 }
 
 model User {
-  id             String       @id @default(uuid(7)) @db.Uuid
-  clerkId        String       @map("clerk_id")
-  organizationId String       @map("organization_id") @db.Uuid
-  active         Boolean      @default(true) @map("active")
-  email          String
-  firstName      String?      @map("first_name")
-  lastName       String?      @map("last_name")
-  avatarUrl      String?      @map("avatar_url")
-  phoneNumber    String?      @map("phone_number")
-  role           ApproverRole @default(ENGINEER)
-  linearId       String?      @map("linear_id")
-  slackId        String?      @map("slack_id")
-  githubUsername String?      @map("github_username")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  id              String       @id @default(uuid(7)) @db.Uuid
+  clerkId         String       @map("clerk_id")
+  organizationId  String       @map("organization_id") @db.Uuid
+  active          Boolean      @default(true) @map("active")
+  email           String
+  firstName       String?      @map("first_name")
+  lastName        String?      @map("last_name")
+  avatarUrl       String?      @map("avatar_url")
+  phoneNumber     String?      @map("phone_number")
+  role            ApproverRole @default(ENGINEER)
+  linearId        String?      @map("linear_id")
+  slackId         String?      @map("slack_id")
+  githubUsername  String?      @map("github_username")
+  anthropicApiKey String?      @map("anthropic_api_key") // @deprecated - auto-migrated to claudeApiKeyEncrypted on read (see apiKeyService.resolveApiKey)
+  claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
+  claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
+  claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
   // Relations
-  organization       Organization @relation(fields: [organizationId], references: [id])
+  organization       Organization     @relation(fields: [organizationId], references: [id])
   teamMemberships    TeamMember[]
+  pullRequestRatings PullRequestRating[]
   ownedProjects      Project[]    @relation("ProjectOwner")
   ownedArtifacts     Artifact[]   @relation("ArtifactOwner")
   approvedArtifacts  Artifact[]   @relation("ArtifactApprover")
   assignedIssues     Issue[]      @relation("IssueAssignee")
   createdIssues      Issue[]      @relation("IssueCreator")
   createdWorkstreams Workstream[] @relation("WorkstreamCreatedBy")
+  loops              Loop[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -347,6 +393,8 @@ model Workstream {
   artifacts     Artifact[]
   issues        Issue[]
   externalLinks ExternalLink[]
+  loops         Loop[]
+  pullRequests  GitHubPullRequest[]
 
   @@index([organizationId])
   @@index([organizationId, projectId, state])
@@ -408,7 +456,9 @@ model Artifact {
   versions     ArtifactVersion[]
   ratings      ArtifactRating[]
   evaluations  ArtifactEvaluation[]
+  performances GitHubActionRunPerformance[]
   pullRequests GitHubPullRequest[]
+  loops        Loop[]
 
   @@unique([organizationId, slug])
   @@unique([organizationId, templateForType])
@@ -451,6 +501,23 @@ model ArtifactEvaluation {
   @@map("artifact_evaluations")
 }
 
+// SECURITY: No organizationId column — org isolation is enforced exclusively
+// via the artifact FK. All read-path queries MUST join through Artifact
+// and filter by organizationId. This is an intentional design decision.
+model GitHubActionRunPerformance {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  // Soft reference - no Prisma relation defined intentionally. Query GitHubActionRun separately if needed.
+  actionRunId String   @map("action_run_id") @db.Uuid
+  summaryData Json     @map("summary_data")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, actionRunId])
+  @@map("github_action_run_performances")
+}
+
 model ArtifactRating {
   id              String   @id @default(uuid(7)) @map("id") @db.Uuid
   artifactId      String   @map("artifact_id") @db.Uuid
@@ -469,6 +536,27 @@ model ArtifactRating {
   @@unique([artifactId, userId, organizationId])
   @@index([artifactId, organizationId])
   @@map("artifact_ratings")
+}
+
+model PullRequestRating {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  pullRequestId  String   @map("pull_request_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid // Enforced by check_pull_request_rating_organization_id trigger - must match github_pull_requests.organization_id
+  // Score validation (1-5) enforced at API layer via Zod schema
+  score          Int
+  comment        String   @db.VarChar(500)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  pullRequest  GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([pullRequestId, userId, organizationId])
+  @@index([pullRequestId, organizationId])
+  @@map("pull_request_ratings")
 }
 
 // =============================================================================
@@ -534,6 +622,7 @@ model ExternalLink {
 
 model EntityLink {
   id            String     @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
   sourceId      String     @map("source_id") @db.Uuid
   sourceType    EntityType @map("source_type")
   sourceVersion Int?       @map("source_version")
@@ -544,8 +633,8 @@ model EntityLink {
   metadata      Json?
   createdAt     DateTime   @default(now()) @map("created_at")
 
-  @@index([sourceId, sourceType, linkType])
-  @@index([targetId, targetType, linkType])
+  @@index([organizationId, sourceId, sourceType, linkType])
+  @@index([organizationId, targetId, targetType, linkType])
   @@map("entity_links")
 }
 
@@ -589,6 +678,92 @@ model Comment {
   @@index([authorId])
   @@index([artifactId])
   @@map("comments")
+}
+
+// =============================================================================
+// LOOPS (Runtime v2 - Container-based compute)
+// =============================================================================
+
+model Loop {
+  id             String      @id @default(uuid(7)) @db.Uuid
+  organizationId String      @map("organization_id") @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  status         LoopStatus  @default(PENDING)
+  command        LoopCommand
+
+  // Optional relationships
+  artifactId   String? @map("artifact_id") @db.Uuid
+  workstreamId String? @map("workstream_id") @db.Uuid
+  parentLoopId String? @map("parent_loop_id") @db.Uuid
+
+  // Execution context
+  prompt      String? @db.Text
+  repo        Json? // { fullName: string, branch: string }
+  contextRefs Json?   @map("context_refs") // Array<{ artifactId, include }>
+
+  // Container tracking
+  containerId String? @map("container_id") // ECS task ARN
+  s3StateKey  String? @map("s3_state_key") // S3 prefix for state
+
+  // PR and session tracking (populated by harness agent on completion)
+  prUrl      String? @map("pr_url")
+  prNumber   Int?    @map("pr_number")
+  branchName String? @map("branch_name")
+  sessionId  String? @map("session_id")
+
+  // Cost tracking
+  tokensInput    Int      @default(0) @map("tokens_input")
+  tokensOutput   Int      @default(0) @map("tokens_output")
+  tokensByModel  Json?    @map("tokens_by_model") // { "claude-opus-4": { input, output }, ... }
+  estimatedCost  Decimal? @map("estimated_cost") @db.Decimal(10, 6)
+
+  // Timing
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  // Error info
+  error Json? // { code: string, message: string }
+
+  // Extensible metadata
+  metadata Json @default("{}") @map("metadata")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  childLoops   Loop[]       @relation("LoopParent")
+  events       LoopEvent[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, userId, createdAt])
+  @@index([artifactId])
+  @@index([workstreamId])
+  @@index([parentLoopId])
+  @@map("loops")
+}
+
+model LoopEvent {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  loopId         String   @map("loop_id") @db.Uuid
+  type           String // "started" | "output" | "progress" | "tool_call" | "artifact_created" | "completed" | "error"
+  data           Json     @default("{}")
+  eventSource    String   @default("system") @map("event_source")
+  eventId        String   @map("event_id")
+  runnerTokenJti String?  @map("runner_token_jti")
+  runnerNonce    String?  @map("runner_nonce") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  loop Loop @relation(fields: [loopId], references: [id], onDelete: Cascade)
+
+  @@index([loopId, createdAt])
+  @@index([loopId, type])
+  @@unique([loopId, eventSource, eventId])
+  @@map("loop_events")
 }
 
 // =============================================================================
@@ -724,31 +899,82 @@ model GitHubInstallationRepository {
 model GitHubPullRequest {
   id             String        @id @default(uuid(7)) @db.Uuid
   workstreamId   String        @map("workstream_id") @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid // Denormalized from workstream for defense-in-depth (org-scoped queries)
   repositoryId   String        @map("repository_id") @db.Uuid
   artifactId     String?       @map("artifact_id") @db.Uuid
   githubId       Int           @map("github_id")
   number         Int
   title          String
-  body           String?       @db.Text
-  htmlUrl        String        @map("html_url")
-  headBranch     String        @map("head_branch")
-  baseBranch     String        @map("base_branch")
-  headSha        String?       @map("head_sha")
-  state          GitHubPRState @default(OPEN)
-  isDraft        Boolean       @default(false) @map("is_draft")
-  closedAt       DateTime?     @map("closed_at")
-  mergedAt       DateTime?     @map("merged_at")
-  mergeCommitSha String?       @map("merge_commit_sha")
-  createdAt      DateTime      @default(now()) @map("created_at")
-  updatedAt      DateTime      @updatedAt @map("updated_at")
+  body           String?         @db.Text
+  htmlUrl        String          @map("html_url")
+  headBranch     String          @map("head_branch")
+  baseBranch     String          @map("base_branch")
+  headSha        String?         @map("head_sha")
+  state          GitHubPRState   @default(OPEN)
+  isDraft        Boolean         @default(false) @map("is_draft")
+  reviewDecision ReviewDecision? @map("review_decision")
+  closedAt       DateTime?       @map("closed_at")
+  mergedAt       DateTime?       @map("merged_at")
+  mergeCommitSha String?         @map("merge_commit_sha")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
 
   // Relations
-  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  workstream     Workstream              @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  artifact       Artifact?               @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  ratings        PullRequestRating[]
+  reviewComments GitHubPRReviewComment[]
+  reviews        GitHubPRReview[]
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
+  @@index([organizationId])
   @@index([artifactId])
   @@map("github_pull_requests")
+}
+
+model GitHubPRReviewComment {
+  id              String               @id @default(uuid(7)) @db.Uuid
+  pullRequestId   String               @map("pull_request_id") @db.Uuid
+  githubCommentId BigInt               @unique @map("github_comment_id")
+  reviewId        BigInt?              @map("review_id")
+  body            String               @db.Text
+  path            String?
+  line            Int?
+  authorLogin     String               @map("author_login")
+  authorAvatarUrl String?              @map("author_avatar_url")
+  state           PRReviewCommentState @default(PENDING)
+  htmlUrl         String               @map("html_url")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  // Relations
+  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([pullRequestId, state])
+  @@map("github_pr_review_comments")
+}
+
+model GitHubPRReview {
+  id              String         @id @default(uuid(7)) @db.Uuid
+  pullRequestId   String         @map("pull_request_id") @db.Uuid
+  githubReviewId  BigInt         @unique @map("github_review_id")
+  authorLogin     String         @map("author_login")
+  authorAvatarUrl String?        @map("author_avatar_url")
+  state           ReviewDecision
+  body            String?        @db.Text
+  htmlUrl         String         @map("html_url")
+  submittedAt     DateTime       @map("submitted_at")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([pullRequestId, authorLogin])
+  @@index([pullRequestId])
+  @@map("github_pr_reviews")
 }
 
 model GitHubActionRun {
@@ -792,6 +1018,73 @@ model SlackIntegration {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("slack_integrations")
+}
+
+// =============================================================================
+// API KEYS
+// =============================================================================
+
+model ApiKey {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  name           String
+  scopes         String[]  @default([])
+  keyHash        String    @unique @map("key_hash")
+  keyPrefix      String    @map("key_prefix")
+  expiresAt      DateTime? @map("expires_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  revokedAt      DateTime? @map("revoked_at")
+
+  @@index([organizationId])
+  @@index([keyHash])
+  @@map("api_keys")
+}
+
+model OAuthRevokedToken {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tokenFingerprint String   @unique @map("token_fingerprint")
+  expiresAt        DateTime @map("expires_at")
+  revokedAt        DateTime @default(now()) @map("revoked_at")
+
+  @@index([expiresAt])
+  @@map("oauth_revoked_tokens")
+}
+
+model OAuthRateLimit {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  bucket          String
+  subject         String
+  requestCount    Int      @default(0) @map("request_count")
+  windowStartedAt DateTime @map("window_started_at")
+  windowExpiresAt DateTime @map("window_expires_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([bucket, subject])
+  @@index([windowExpiresAt])
+  @@map("oauth_rate_limits")
+}
+
+model OAuthAuthorizationCode {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  code             String    @unique
+  encryptedApiKey  String    @map("encrypted_api_key")
+  keyId            String    @map("key_id")
+  userId           String    @map("user_id") @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  clientId         String    @map("client_id")
+  redirectUri      String    @map("redirect_uri")
+  scopes           String[]
+  codeChallenge    String    @map("code_challenge")
+  codeChallengeMethod String @map("code_challenge_method")
+  expiresAt        DateTime  @map("expires_at")
+  consumedAt       DateTime? @map("consumed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@map("oauth_authorization_codes")
 }
 
 // =============================================================================

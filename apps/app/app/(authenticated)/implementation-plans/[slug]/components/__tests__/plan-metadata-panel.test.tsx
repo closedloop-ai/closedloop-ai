@@ -23,6 +23,15 @@ vi.mock("@/components/execution-log/execution-log-summary", () => ({
   ),
 }));
 
+// Mock usePerformanceData to avoid query client dependencies
+vi.mock("@/hooks/queries/use-performance", () => ({
+  usePerformanceData: () => ({
+    data: undefined,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Mock the StatusMetadataSection to simplify testing
 vi.mock("@/components/artifact-editor/status-metadata-section", () => ({
   StatusMetadataSection: () => (
@@ -104,6 +113,19 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
     data: null,
     isLoading: false,
     error: null,
+  }),
+}));
+
+// Mock pull request rating hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
+  usePullRequestRating: () => ({
+    data: null,
+    isLoading: false,
+    error: null,
+  }),
+  useSubmitPullRequestRating: () => ({
+    mutate: vi.fn(),
+    isPending: false,
   }),
 }));
 
@@ -293,13 +315,14 @@ describe("PlanMetadataPanel", () => {
   });
 
   describe("Section structure", () => {
-    test("renders all collapsible sections: Properties, Execution Log, Evaluation, and Comments", () => {
+    test("renders all collapsible sections: Properties, Execution Log, Evaluation, Performance, and Comments", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
       // Check for collapsible section headings
       expect(screen.getByText("Properties")).toBeDefined();
       expect(screen.getByText("Execution Log")).toBeDefined();
       expect(screen.getByText("Evaluation")).toBeDefined();
+      expect(screen.getByText("Performance")).toBeDefined();
       expect(screen.getByText("Comments")).toBeDefined();
     });
 

@@ -30,6 +30,8 @@ export function createTestAuthContext(
     user: overrides?.user ?? defaultUser,
     clerkUserId: overrides?.clerkUserId ?? "clerk_test_user",
     clerkOrgId: overrides?.clerkOrgId ?? "org_test",
+    authMethod: overrides?.authMethod ?? "session",
+    apiKeyScopes: overrides?.apiKeyScopes,
   };
 }
 

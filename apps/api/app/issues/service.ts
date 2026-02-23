@@ -115,6 +115,7 @@ export const issuesService = {
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: id, sourceType: "ISSUE" },
             { targetId: id, targetType: "ISSUE" },

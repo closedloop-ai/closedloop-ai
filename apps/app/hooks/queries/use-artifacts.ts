@@ -18,6 +18,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useRef } from "react";
+import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { executionLogKeys } from "./use-execution-log";
@@ -271,33 +273,6 @@ export function useCreateArtifactVersion(artifactId: string) {
   });
 }
 
-/**
- * @deprecated Use useCreateArtifactVersion instead. Kept for backward compatibility
- * during the migration — will be removed when all consumers are updated.
- */
-export function useCreateNewVersion() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({ id, content }: { id: string; content: string }) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/versions`, { content }),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.detail(variables.id),
-      });
-      queryClient.invalidateQueries({
-        queryKey: artifactKeys.versions(variables.id),
-      });
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
-      });
-    },
-  });
-}
-
 export function useRegenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
@@ -358,22 +333,40 @@ export function useRequestPlanChanges() {
 /**
  * Create an artifact and immediately trigger generation workflow.
  * Used for implementation plans generated from a PRD.
+ *
+ * When the organization's compute mode is set to "LOOPS", triggers plan generation via
+ * the run-loop endpoint (ECS Loops) instead of the regenerate endpoint (GitHub Actions).
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
+  const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
+    useIsLoopsEnabled();
 
-  return useMutation({
+  // Use a ref so the mutationFn always reads the latest value,
+  // not the value captured at the render when the mutation was created.
+  const useLoopsRef = useRef(useLoops);
+  useLoopsRef.current = useLoops;
+
+  const mutation = useMutation({
     mutationFn: async (input: CreateArtifactInput) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
+      // Then trigger generation via Loops or GitHub Actions
       try {
+        if (useLoopsRef.current) {
+          await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
+            command: "plan",
+          });
+          return artifact;
+        }
         const regenerated = await apiClient.post<Artifact>(
           `/artifacts/${artifact.id}/regenerate`,
           {}
         );
         return regenerated;
       } catch {
+        // Return original artifact if generation fails - user can still navigate to it
         return artifact;
       }
     },
@@ -384,6 +377,8 @@ export function useCreateAndGenerateArtifact() {
       });
     },
   });
+
+  return { ...mutation, isComputeModeLoading };
 }
 
 type ExecuteResult = {

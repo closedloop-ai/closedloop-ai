@@ -143,6 +143,7 @@ export function PRDEditor({
         <CollaborativeEditor
           contentResetKey={session.contentResetKey}
           contentResetValue={session.contentResetValue}
+          key={session.latestVersion}
           liveblocksRoomId={session.liveblocksRoomId}
           metadataPanel={
             <PRDMetadataPanel

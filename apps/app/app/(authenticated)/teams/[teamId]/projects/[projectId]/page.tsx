@@ -21,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
@@ -32,9 +33,10 @@ import {
   ClipboardListIcon,
   FileTextIcon,
   Loader2Icon,
+  SearchIcon,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
@@ -76,6 +78,7 @@ export default function ProjectDetailPage() {
   const [selectedArtifactType, setSelectedArtifactType] =
     useState<ArtifactType>(ArtifactType.Prd);
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
+  const [filterText, setFilterText] = useState("");
 
   // Queries
   const {
@@ -258,9 +261,26 @@ export default function ProjectDetailPage() {
                 <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
               </ToggleGroup>
             </div>
+            {artifacts.length > 0 && (
+              <div className="mb-4">
+                <div className="relative">
+                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <Input
+                    aria-label="Filter artifacts"
+                    className="pl-9"
+                    onChange={(e) => setFilterText(e.target.value)}
+                    placeholder="Filter artifacts..."
+                    value={filterText}
+                  />
+                </div>
+              </div>
+            )}
             {viewMode === "type" ? (
               <ArtifactsTable
                 artifacts={artifacts}
+                filterText={filterText}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
                 projectId={projectId}
@@ -268,6 +288,7 @@ export default function ProjectDetailPage() {
             ) : (
               <ArtifactsThreadedView
                 artifacts={artifacts}
+                filterText={filterText}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
                 projectId={projectId}

@@ -1,12 +1,17 @@
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
+  type ArtifactTitleMap,
   ArtifactType,
   type ArtifactWithWorkstream,
+  BATCH_META_MAX_SLUGS,
+  type BatchCreateArtifactInput,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
   type PullRequestInfo,
+  PullRequestState,
+  ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -14,10 +19,12 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
 import {
@@ -35,6 +42,7 @@ import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
+  artifactIncludeWithSnippet,
   artifactIncludeWithUser,
   generateSlug,
   parseTriggerData,
@@ -67,7 +75,7 @@ async function validateOwnerInOrg(
  * Used to set committer identity on bot commits so Vercel can
  * match the author to a team member and trigger preview deploys.
  */
-async function getCommitterInfo(
+export async function getCommitterInfo(
   userId: string
 ): Promise<{ committerName: string; committerEmail: string } | undefined> {
   const user = await withDb((db) =>
@@ -86,6 +94,84 @@ async function getCommitterInfo(
   };
 }
 
+/**
+ * Create a single artifact record within an existing transaction.
+ * Does NOT call withDb.tx internally - takes the tx parameter directly.
+ * Used by both create() and batchCreate() to avoid code duplication.
+ *
+ * NOTE: validateOwnerInOrg uses withDb (non-transactional) and opens separate
+ * connections. This matches the behavior of the existing create() method.
+ */
+async function createArtifactRecord(
+  tx: TransactionClient,
+  organizationId: string,
+  userId: string,
+  input: CreateArtifactInput
+): Promise<Artifact | null> {
+  const isTemplate = input.type === ArtifactType.Template;
+
+  // Resolve projectId from workstream if needed (non-templates only)
+  if (!(isTemplate || input.projectId)) {
+    const workstream = await tx.workstream.findUnique({
+      where: { id: input.workstreamId, organizationId },
+    });
+    if (!workstream) {
+      return null;
+    }
+    input.projectId = workstream.projectId;
+  }
+
+  const resolvedOwnerId = input.ownerId ?? userId;
+  await validateOwnerInOrg(resolvedOwnerId, organizationId);
+
+  if (input.approverId) {
+    await validateOwnerInOrg(input.approverId, organizationId);
+  }
+
+  const slug = generateSlug();
+  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+    input;
+
+  const artifact = await tx.artifact.create({
+    data: {
+      ...artifactInput,
+      organizationId,
+      slug,
+      latestVersion: 1,
+      generatedBy: userId,
+      ownerId: resolvedOwnerId,
+    },
+    include: artifactIncludeWithUser,
+  });
+
+  // Create initial artifact version
+  await tx.artifactVersion.create({
+    data: {
+      artifactId: artifact.id,
+      version: 1,
+      content,
+      createdById: userId,
+    },
+  });
+
+  if (sourceId && sourceType) {
+    await tx.entityLink.create({
+      data: {
+        organizationId,
+        sourceId,
+        sourceType,
+        sourceVersion,
+        targetId: artifact.id,
+        targetType: "ARTIFACT",
+        targetVersion: artifact.latestVersion,
+        linkType: LinkType.PRODUCES,
+      },
+    });
+  }
+
+  return artifact;
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -101,7 +187,7 @@ export const artifactsService = {
   async findAll(
     options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
-    const { organizationId, type, workstreamId, projectId } = options;
+    const { organizationId, type, workstreamId, projectId, ownerId } = options;
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -110,13 +196,14 @@ export const artifactsService = {
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(type ? { type } : {}),
+          ...(ownerId ? { ownerId } : {}),
         },
-        include: artifactIncludeWithContext,
+        include: artifactIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
       })
     );
 
-    // Batch-fetch GitHubActionRun records for generation status
+    // Collect unique workstream IDs for batch queries
     const uniqueWorkstreamIds = [
       ...new Set(
         artifacts
@@ -125,6 +212,7 @@ export const artifactsService = {
       ),
     ];
 
+    // Batch-fetch GitHubActionRun records for generation status
     let generationStatusMap: Map<string, GenerationStatus> = new Map();
     if (uniqueWorkstreamIds.length > 0) {
       const actionRuns = await withDb((db) =>
@@ -134,7 +222,7 @@ export const artifactsService = {
             workflowName: "symphony-dispatch",
           },
           orderBy: { createdAt: "desc" },
-          take: 100,
+          take: uniqueWorkstreamIds.length,
           select: {
             workstreamId: true,
             status: true,
@@ -175,8 +263,34 @@ export const artifactsService = {
       }
     }
 
+    // Batch-fetch GitHubPullRequest records for each workstream
+    const pullRequestRecords =
+      uniqueWorkstreamIds.length > 0
+        ? await withDb((db) =>
+            db.gitHubPullRequest.findMany({
+              where: { workstreamId: { in: uniqueWorkstreamIds } },
+              select: {
+                id: true,
+                number: true,
+                title: true,
+                htmlUrl: true,
+                state: true,
+                headBranch: true,
+                baseBranch: true,
+                createdAt: true,
+                reviewDecision: true,
+                workstreamId: true,
+              },
+              orderBy: { createdAt: "desc" },
+              take: 100,
+            })
+          )
+        : [];
+
+    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
+
     return artifacts.map((a) =>
-      toArtifactWithWorkstream(a, generationStatusMap)
+      toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
     );
   },
 
@@ -198,7 +312,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -219,7 +333,7 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -335,6 +449,7 @@ export const artifactsService = {
           headBranch: true,
           baseBranch: true,
           createdAt: true,
+          reviewDecision: true,
         },
       })
     );
@@ -343,8 +458,7 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast state enum to literal union type
-    return pr;
+    return toPullRequestInfo(pr);
   },
 
   /**
@@ -369,67 +483,9 @@ export const artifactsService = {
       );
     }
 
-    const createdArtifact = await withDb.tx(async (tx) => {
-      // Resolve projectId from workstream if needed (non-templates only)
-      if (!(isTemplate || input.projectId)) {
-        const workstream = await tx.workstream.findUnique({
-          where: { id: input.workstreamId, organizationId },
-        });
-        if (!workstream) {
-          return null;
-        }
-        input.projectId = workstream.projectId;
-      }
-
-      const resolvedOwnerId = input.ownerId ?? userId;
-      await validateOwnerInOrg(resolvedOwnerId, organizationId);
-
-      if (input.approverId) {
-        await validateOwnerInOrg(input.approverId, organizationId);
-      }
-
-      const slug = generateSlug();
-      const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
-        input;
-
-      const artifact = await tx.artifact.create({
-        data: {
-          ...artifactInput,
-          organizationId,
-          slug,
-          latestVersion: 1,
-          generatedBy: userId,
-          ownerId: resolvedOwnerId,
-        },
-        include: artifactIncludeWithUser,
-      });
-
-      // Create initial artifact version
-      await tx.artifactVersion.create({
-        data: {
-          artifactId: artifact.id,
-          version: 1,
-          content,
-          createdById: userId,
-        },
-      });
-
-      if (sourceId && sourceType) {
-        await tx.entityLink.create({
-          data: {
-            sourceId,
-            sourceType,
-            sourceVersion,
-            targetId: artifact.id,
-            targetType: "ARTIFACT",
-            targetVersion: artifact.latestVersion,
-            linkType: LinkType.PRODUCES,
-          },
-        });
-      }
-
-      return artifact;
-    });
+    const createdArtifact = await withDb.tx((tx) =>
+      createArtifactRecord(tx, organizationId, userId, input)
+    );
 
     if (createdArtifact) {
       // Create Liveblocks room for all artifacts
@@ -437,6 +493,45 @@ export const artifactsService = {
     }
 
     return createdArtifact;
+  },
+
+  /**
+   * Create multiple artifacts in a single transaction.
+   * All items are created atomically - if any fails, the entire batch is rolled back.
+   * Liveblocks rooms are created after the transaction completes.
+   *
+   * @param organizationId - Organization ID for all artifacts
+   * @param userId - User ID for authorship attribution
+   * @param input - Batch input with array of artifact creation inputs (1-50 items)
+   */
+  async batchCreate(
+    organizationId: string,
+    userId: string,
+    input: BatchCreateArtifactInput
+  ): Promise<Artifact[]> {
+    const createdArtifacts = await withDb.tx(async (tx) => {
+      const results: Artifact[] = [];
+      for (const item of input.items) {
+        const artifact = await createArtifactRecord(
+          tx,
+          organizationId,
+          userId,
+          item
+        );
+        if (!artifact) {
+          throw new Error(
+            `Failed to create artifact: workstream not found for item "${item.title}"`
+          );
+        }
+        results.push(artifact);
+      }
+      return results;
+    });
+
+    // Create Liveblocks rooms after transaction completes
+    await Promise.all(createdArtifacts.map((a) => createArtifactRoom(a)));
+
+    return createdArtifacts;
   },
 
   /**
@@ -494,10 +589,12 @@ export const artifactsService = {
       return;
     }
 
-    // Delete entity links referencing this artifact, then delete the artifact
+    // Delete entity links referencing this artifact, then delete the artifact.
+    // Loops are preserved (onDelete: SetNull) to retain execution history.
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: id, sourceType: "ARTIFACT" },
             { targetId: id, targetType: "ARTIFACT" },
@@ -542,6 +639,162 @@ export const artifactsService = {
   },
 
   /**
+   * Find or create a workstream for the artifact.
+   * If artifact has a workstream, returns it with source PRD looked up via entity links.
+   * If no workstream, finds source PRD (entity links then title fallback),
+   * auto-creates a workstream, and links both artifacts to it.
+   */
+  async findOrCreateWorkstream(
+    organizationId: string,
+    artifact: NonNullable<
+      Awaited<ReturnType<typeof this.findWithRegenerationContext>>
+    >,
+    userId: string
+  ): Promise<{
+    workstream: NonNullable<typeof artifact.workstream> | null;
+    sourceArtifact: {
+      id: string;
+      title: string;
+      targetRepo: string | null;
+      targetBranch: string | null;
+      content: string | null;
+    } | null;
+  }> {
+    // If workstream exists, find source via entity links
+    if (artifact.workstream) {
+      const sourceArtifact = await this.findSourceWithContent(artifact);
+      return {
+        workstream: artifact.workstream,
+        sourceArtifact,
+      };
+    }
+
+    if (!artifact.projectId) {
+      return {
+        workstream: null,
+        sourceArtifact: null,
+      };
+    }
+
+    // Try entity links first
+    let foundSource = await this.findSourceWithContent(artifact);
+
+    // Fallback: title matching (strips "Implementation Plan: " prefix)
+    if (!foundSource?.content) {
+      const titleFallback = artifact.title.replace("Implementation Plan: ", "");
+      const matchedArtifact = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            organizationId,
+            projectId: artifact.projectId,
+            type: PrismaArtifactType.PRD,
+            title: titleFallback,
+          },
+        })
+      );
+      if (matchedArtifact) {
+        const latestVersion = await artifactVersionService.getLatest(
+          matchedArtifact.id
+        );
+        foundSource = {
+          ...matchedArtifact,
+          content: latestVersion?.content ?? null,
+        };
+
+        // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
+        await entityLinksService.createLink(organizationId, {
+          sourceId: matchedArtifact.id,
+          sourceType: "ARTIFACT",
+          targetId: artifact.id,
+          targetType: "ARTIFACT",
+          linkType: LinkType.PRODUCES,
+        });
+      }
+    }
+
+    if (!foundSource?.content) {
+      return {
+        workstream: null,
+        sourceArtifact: foundSource,
+      };
+    }
+
+    // If the source PRD already belongs to a workstream, attach the orphan
+    // artifact to it instead of creating a new workstream (avoids reassigning
+    // the PRD away from its existing workstream and breaking related artifacts).
+    if (foundSource.workstreamId) {
+      return withDb.tx(async (tx) => {
+        await tx.artifact.update({
+          where: { id: artifact.id, organizationId },
+          data: { workstreamId: foundSource.workstreamId },
+        });
+
+        const workstream = await tx.workstream.findUnique({
+          where: { id: foundSource.workstreamId! },
+          include: {
+            project: {
+              include: {
+                repositories: { take: 1 },
+              },
+            },
+            artifacts: {
+              where: { type: PrismaArtifactType.PRD },
+              take: 1,
+            },
+          },
+        });
+
+        return {
+          workstream,
+          sourceArtifact: foundSource,
+        };
+      });
+    }
+
+    // Auto-create workstream and link both artifacts
+    return withDb.tx(async (tx) => {
+      const newWorkstream = await tx.workstream.create({
+        data: {
+          organizationId,
+          projectId: artifact.projectId as string,
+          title: foundSource.title,
+          description: `Auto-created for: ${foundSource.title}`,
+          type: "FEATURE_DELIVERY",
+          createdById: userId,
+        },
+      });
+
+      await tx.artifact.updateMany({
+        where: {
+          id: { in: [foundSource.id, artifact.id] },
+          organizationId,
+        },
+        data: { workstreamId: newWorkstream.id },
+      });
+
+      const workstream = await tx.workstream.findUnique({
+        where: { id: newWorkstream.id },
+        include: {
+          project: {
+            include: {
+              repositories: { take: 1 },
+            },
+          },
+          artifacts: {
+            where: { type: PrismaArtifactType.PRD },
+            take: 1,
+          },
+        },
+      });
+
+      return {
+        workstream,
+        sourceArtifact: foundSource,
+      };
+    });
+  },
+
+  /**
    * Check if a workflow is already running for a workstream
    */
   findPendingWorkflowRun(workstreamId: string, workflowName: string) {
@@ -565,6 +818,7 @@ export const artifactsService = {
     >
   ) {
     const sourceLinks = await entityLinksService.findSourceLinks(
+      artifact.organizationId,
       artifact.id,
       "ARTIFACT",
       LinkType.PRODUCES
@@ -793,7 +1047,14 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    if (!artifact.workstream) {
+    // Find or create workstream + source PRD
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to regenerate",
@@ -801,9 +1062,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD
-    const sourceArtifact = await this.findSourceWithContent(artifact);
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found to generate plan from. Create one first.",
@@ -811,7 +1070,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = artifact.workstream.project;
+    const project = workstream.project;
     const existingRepository = project.repositories[0];
 
     // Source artifact (PRD) target repo/branch take priority, then project default
@@ -854,7 +1113,7 @@ ${initialInstructions.trim()}`;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
-      artifact.workstream.id,
+      workstream.id,
       "symphony-dispatch"
     );
 
@@ -901,7 +1160,7 @@ ${initialInstructions.trim()}`;
     // Create all workflow trigger records
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
-      workstreamId: artifact.workstream.id,
+      workstreamId: workstream.id,
       repositoryId: repository.id,
       artifactId: artifact.id,
       prdId: sourceArtifact.id,
@@ -941,7 +1200,14 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    if (!artifact.workstream) {
+    // Find or create workstream + source PRD
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to request changes",
@@ -949,9 +1215,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD
-    const sourceArtifact = await this.findSourceWithContent(artifact);
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found for this plan. Cannot request changes.",
@@ -959,7 +1223,7 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = artifact.workstream.project;
+    const project = workstream.project;
     const existingRepository = project.repositories[0];
 
     // Source artifact (PRD) target repo/branch take priority, then project default
@@ -1001,7 +1265,7 @@ ${initialInstructions.trim()}`;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
-      artifact.workstream.id,
+      workstream.id,
       "symphony-dispatch"
     );
 
@@ -1018,7 +1282,7 @@ ${initialInstructions.trim()}`;
     // IMPORTANT: Create GitHubActionRun and new artifact version BEFORE triggering workflow
     // This prevents race condition where webhook fires before records exist
     await this.createChatWorkflowTriggerRecords({
-      workstreamId: artifact.workstream.id,
+      workstreamId: workstream.id,
       repositoryId: repository.id,
       artifactId,
       prdId: sourceArtifact.id,
@@ -1247,6 +1511,35 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
+   * Get performance data for an artifact from the GitHubActionRunPerformance table.
+   * Org-scoping is enforced via Prisma relation filter on the artifact FK.
+   * Returns null when no performance data is available for the artifact.
+   */
+  async getPerformanceData(
+    artifactId: string,
+    organizationId: string
+  ): Promise<PerfSummary | null> {
+    // Single query: join through artifact relation to enforce org-scoping
+    const perfRecord = await withDb((db) =>
+      db.gitHubActionRunPerformance.findFirst({
+        where: {
+          artifactId,
+          artifact: { organizationId },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    if (!perfRecord) {
+      return null;
+    }
+
+    // Safe cast: summaryData was stored by parsePerfSummary() which always
+    // produces a valid PerfSummary shape. Schema drift would require a deploy.
+    return perfRecord.summaryData as PerfSummary;
+  },
+
+  /**
    * Execute an approved implementation plan.
    * Triggers the symphony-dispatch workflow with command="execute" to generate code and create a PR.
    */
@@ -1291,7 +1584,14 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    if (!artifact.workstream) {
+    // Find or create workstream + source PRD
+    const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to execute",
@@ -1299,9 +1599,7 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    // Find or create workstream with PRD
-    const sourceArtifact = await this.findSourceWithContent(artifact);
-    if (!sourceArtifact?.content) {
+    if (!(workstream && sourceArtifact?.content)) {
       return {
         success: false,
         error: "No PRD found for this plan. Cannot execute.",
@@ -1309,7 +1607,7 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    const project = artifact.workstream.project;
+    const project = workstream.project;
     const existingRepository = project.repositories[0];
 
     // Source artifact (PRD) target repo/branch take priority, then project default
@@ -1341,7 +1639,7 @@ Please try again or contact support if the issue persists.`
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
-      artifact.workstream.id,
+      workstream.id,
       "symphony-dispatch"
     );
 
@@ -1364,7 +1662,7 @@ Please try again or contact support if the issue persists.`
       await Promise.all([
         db.gitHubActionRun.create({
           data: {
-            workstreamId: artifact.workstream!.id,
+            workstreamId: workstream.id,
             repositoryId: repository.id,
             runId: null, // Will be populated by webhook
             workflowName: "symphony-dispatch",
@@ -1384,7 +1682,7 @@ Please try again or contact support if the issue persists.`
         }),
         db.workstreamEvent.create({
           data: {
-            workstreamId: artifact.workstream!.id,
+            workstreamId: workstream.id,
             type: "GITHUB_ACTION_TRIGGERED",
             actorType: "system",
             data: {
@@ -1669,6 +1967,116 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
+   * Find all approved PRDs for a project (org-scoped).
+   * Used to enumerate PRDs before batch-regenerating implementation plans.
+   */
+  findApprovedPrds(
+    projectId: string,
+    organizationId: string
+  ): Promise<Artifact[]> {
+    return withDb((db) =>
+      db.artifact.findMany({
+        where: {
+          projectId,
+          organizationId,
+          type: PrismaArtifactType.PRD,
+          status: "APPROVED",
+        },
+        include: artifactIncludeWithUser,
+        orderBy: { createdAt: "asc" },
+      })
+    );
+  },
+
+  /**
+   * Batch-regenerate implementation plans for all approved PRDs in a project.
+   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
+   * relationships and calls regenerateImplementationPlan on it.
+   * Returns the count of triggered plans and their artifact IDs.
+   */
+  async batchRegenerateImplementationPlans(
+    projectId: string,
+    organizationId: string,
+    userId: string
+  ): Promise<{ triggered: number; artifactIds: string[] }> {
+    const prds = await this.findApprovedPrds(projectId, organizationId);
+
+    const artifactIds: string[] = [];
+    for (const prd of prds) {
+      // Find the implementation plan(s) that this PRD produced via PRODUCES links
+      const targetLinks = await entityLinksService.findTargetLinks(
+        organizationId,
+        prd.id,
+        "ARTIFACT",
+        LinkType.PRODUCES
+      );
+
+      if (targetLinks.length === 0) {
+        continue;
+      }
+
+      // Look up the linked artifacts and find the IMPLEMENTATION_PLAN
+      const linkedArtifacts = await withDb((db) =>
+        db.artifact.findMany({
+          where: {
+            id: { in: targetLinks.map((l) => l.targetId) },
+            organizationId,
+            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
+          },
+          select: { id: true },
+        })
+      );
+
+      for (const plan of linkedArtifacts) {
+        const result = await this.regenerateImplementationPlan(
+          plan.id,
+          organizationId,
+          userId
+        );
+        if (result.success) {
+          artifactIds.push(result.artifact.id);
+        }
+      }
+    }
+
+    return { triggered: artifactIds.length, artifactIds };
+  },
+
+  /**
+   * Batch fetch artifact titles by slug (org-scoped).
+   * Returns a map of slug -> title for all slugs found in the organization.
+   * Slugs not found are omitted from the result.
+   *
+   * @param organizationId - Organization ID for authorization
+   * @param slugs - Array of artifact slugs to look up (max 50)
+   * @returns Map of slug to artifact title for found artifacts
+   */
+  batchFetchArtifactTitles(
+    organizationId: string,
+    slugs: string[]
+  ): Promise<ArtifactTitleMap> {
+    if (slugs.length === 0) {
+      return Promise.resolve({});
+    }
+    return withDb(async (db) => {
+      if (slugs.length > BATCH_META_MAX_SLUGS) {
+        throw new Error(
+          `batchFetchArtifactTitles: too many slugs (max ${BATCH_META_MAX_SLUGS})`
+        );
+      }
+      const artifacts = await db.artifact.findMany({
+        where: {
+          organizationId,
+          slug: { in: slugs },
+        },
+        select: { slug: true, title: true },
+      });
+
+      return Object.fromEntries(artifacts.map((a) => [a.slug, a.title]));
+    });
+  },
+
+  /**
    * Find all related artifacts by traversing EntityLink relationships.
    * Returns array of artifact IDs including:
    * - All ancestors (traverse up via EntityLink sourceId to find root)
@@ -1717,6 +2125,7 @@ Please try again or contact support if the issue persists.`
       const parentLink = await withDb((db) =>
         db.entityLink.findFirst({
           where: {
+            organizationId,
             targetId: currentId,
             targetType: "ARTIFACT",
             sourceType: "ARTIFACT",
@@ -1754,6 +2163,7 @@ Please try again or contact support if the issue persists.`
       const childLinks = await withDb((db) =>
         db.entityLink.findMany({
           where: {
+            organizationId,
             sourceId: currentId,
             sourceType: "ARTIFACT",
             targetType: "ARTIFACT",
@@ -1800,7 +2210,10 @@ export type RequestChangesResult =
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 // Type for raw Prisma result before transformation.
-// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
+// Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
+// in artifact-utils.ts. versions is optional because findAll uses
+// artifactIncludeWithSnippet (includes versions) while findById/findBySlug use
+// artifactIncludeWithContext (omits versions — they load content via /versions).
 type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1821,14 +2234,42 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
+  versions?: { content: string | null }[];
 };
+
+/**
+ * Extract a plain-text snippet from markdown content for display in list views.
+ * Strips markdown syntax and collapses whitespace to a single line.
+ */
+function extractContentSnippet(content: string): string | null {
+  const stripped = content
+    .replaceAll(/```[\s\S]*?```/g, " ")
+    .replaceAll(/!\[.*?\]\(.*?\)/g, "")
+    .replaceAll(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replaceAll(/^#{1,6}\s+/gm, "")
+    .replaceAll(/[*_`]/g, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  if (!stripped) {
+    return null;
+  }
+  return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
+}
 
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
   artifact: RawArtifactWithContext,
-  generationStatusMap?: Map<string, GenerationStatus>
+  maps?: {
+    generationStatusMap?: Map<string, GenerationStatus>;
+    pullRequestMap?: Map<string, PullRequestInfo>;
+  }
 ): ArtifactWithWorkstream {
-  const generationStatus = generationStatusMap?.get(artifact.id);
+  const generationStatus = maps?.generationStatusMap?.get(artifact.id);
+  const pullRequest = artifact.workstreamId
+    ? (maps?.pullRequestMap?.get(artifact.workstreamId) ?? null)
+    : null;
+  const rawContent = artifact.versions?.[0]?.content ?? null;
+  const snippet = rawContent ? extractContentSnippet(rawContent) : null;
 
   return {
     ...artifact,
@@ -1840,6 +2281,11 @@ function toArtifactWithWorkstream(
         }
       : null,
     ...(generationStatus && { generationStatus }),
+    // Three-state contract for pullRequest:
+    //   - maps omitted          → field absent (caller didn't request PR data)
+    //   - maps.pullRequestMap   → field set to PullRequestInfo | null
+    ...(maps && "pullRequestMap" in maps && { pullRequest }),
+    ...(snippet !== null && { snippet }),
   };
 }
 
@@ -1921,4 +2367,67 @@ Configure the following environment variables to enable plan generation:
 - GITHUB_APP_DISPATCH_REPO
 - WEBAPP_ENV
 `;
+}
+
+const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
+const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
+
+/**
+ * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
+ * Returns null if the record contains invalid enum values (e.g. a new GitHub
+ * state we don't yet map) so a single bad record doesn't break batch listings.
+ */
+function toPullRequestInfo(pr: {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  reviewDecision: string | null;
+}): PullRequestInfo | null {
+  if (!VALID_PR_STATES.has(pr.state)) {
+    log.warn(`Skipping PR #${pr.number}: invalid state "${pr.state}"`);
+    return null;
+  }
+  if (
+    pr.reviewDecision !== null &&
+    !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
+  ) {
+    log.warn(
+      `Skipping PR #${pr.number}: invalid review decision "${pr.reviewDecision}"`
+    );
+    return null;
+  }
+  return {
+    id: pr.id,
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.htmlUrl,
+    state: pr.state as PullRequestState,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+    createdAt: pr.createdAt,
+    reviewDecision: pr.reviewDecision as ReviewDecision | null,
+  };
+}
+
+/** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
+function buildPullRequestMap(
+  records: (Parameters<typeof toPullRequestInfo>[0] & {
+    workstreamId: string | null;
+  })[]
+): Map<string, PullRequestInfo> {
+  const map = new Map<string, PullRequestInfo>();
+  for (const pr of records) {
+    if (pr.workstreamId && !map.has(pr.workstreamId)) {
+      const mapped = toPullRequestInfo(pr);
+      if (mapped) {
+        map.set(pr.workstreamId, mapped);
+      }
+    }
+  }
+  return map;
 }

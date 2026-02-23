@@ -1,5 +1,5 @@
 import type { ExternalLink } from "@repo/api/src/types/external-link";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -12,7 +12,7 @@ import {
   findExternalLinksQueryValidator,
 } from "./validators";
 
-export const GET = withAuth<ExternalLink[], "/external-links">(
+export const GET = withAnyAuth<ExternalLink[], "/external-links">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -42,7 +42,7 @@ export const GET = withAuth<ExternalLink[], "/external-links">(
   }
 );
 
-export const POST = withAuth<ExternalLink, "/external-links">(
+export const POST = withAnyAuth<ExternalLink, "/external-links">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -62,5 +62,6 @@ export const POST = withAuth<ExternalLink, "/external-links">(
     } catch (error) {
       return errorResponse("Failed to create external link", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

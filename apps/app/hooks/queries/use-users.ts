@@ -1,7 +1,12 @@
 "use client";
 
-import type { User } from "@repo/api/src/types/organization";
-import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
+import type { UpdateUserInput, User } from "@repo/api/src/types/organization";
+import {
+  type UseQueryOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
 // Query keys
@@ -35,5 +40,22 @@ export function useOrganizationUsers(
     queryKey: userKeys.organizationUsers(),
     queryFn: () => apiClient.get<User[]>("/users"),
     ...options,
+  });
+}
+
+// Mutations
+export function useUpdateUser() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (input: UpdateUserInput) => {
+      const { id, ...body } = input;
+      return apiClient.put<User>(`/users/${id}`, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: userKeys.organizationUsers() });
+      queryClient.invalidateQueries({ queryKey: userKeys.currentUser() });
+    },
   });
 }
