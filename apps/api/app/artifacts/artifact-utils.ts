@@ -1,3 +1,4 @@
+import { SymphonyCommand } from "@repo/api/src/types/artifact";
 import { nanoid } from "nanoid";
 import { basicUserSelect } from "@/lib/db-utils";
 
@@ -76,7 +77,7 @@ export const artifactIncludeWithSnippet = {
 } as const;
 
 /** Valid command values for GenerationStatus. */
-const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
+const VALID_COMMANDS = new Set<string>(Object.values(SymphonyCommand));
 
 /**
  * Type definition for validated trigger data.
@@ -84,7 +85,7 @@ const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
 export type TriggerData = {
   correlationId: string;
   artifactId: string;
-  command: "plan" | "execute" | "chat";
+  command: SymphonyCommand;
 };
 
 /**
@@ -125,6 +126,6 @@ export function parseTriggerData(triggerData: unknown): TriggerData | null {
   return {
     correlationId: data.correlationId,
     artifactId: data.artifactId,
-    command: data.command as TriggerData["command"],
+    command: data.command as SymphonyCommand,
   };
 }

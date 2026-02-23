@@ -1,11 +1,11 @@
 /**
  * Unit tests for workflow completion handler functions.
  *
- * Tests the following functions from workflow-completion-handler.ts:
- * - processWorkflowCompletion: Main entry point for workflow_run.completed events
- * - handleWorkflowSuccess: Processes successful workflow runs (plan generation)
- * - handleWorkflowFailure: Processes failed workflow runs
- * - handleExecutionSuccess: Processes successful execution workflows (PR creation)
+ * Tests the following from the commands handler registry:
+ * - planSuccessHandler: Processes successful plan/chat/request_changes runs
+ * - executeSuccessHandler: Processes successful execute runs (PR creation)
+ * - workflowFailureHandler: Processes failed workflow runs
+ * - processWorkflowCompletion: Main entry point (integration-level)
  *
  * These are pure unit tests with mocked external dependencies:
  * - @repo/database (Prisma client)
@@ -61,12 +61,12 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
 import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import {
-  handleExecutionSuccess,
-  handleWorkflowFailure,
-  handleWorkflowSuccess,
-  processWorkflowCompletion,
-} from "@/app/webhooks/github/handlers/workflow-completion-handler";
+import { CONTENT_KEYS } from "@/app/webhooks/github/extractors/keys";
+import { ZipContentBag } from "@/app/webhooks/github/extractors/types";
+import { executeSuccessHandler } from "@/app/webhooks/github/handlers/commands/execute-handler";
+import { workflowFailureHandler } from "@/app/webhooks/github/handlers/commands/failure-handler";
+import { planSuccessHandler } from "@/app/webhooks/github/handlers/commands/plan-handler";
+import { processWorkflowCompletion } from "@/app/webhooks/github/handlers/workflow-completion-handler";
 import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
 
@@ -80,12 +80,16 @@ const mockFindActionRunByCorrelationId =
 const mockCreateVersion =
   artifactVersionService.createVersion as unknown as Mock;
 
-describe("handleWorkflowSuccess", () => {
+// ---------------------------------------------------------------------------
+// planSuccessHandler
+// ---------------------------------------------------------------------------
+
+describe("planSuccessHandler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("updates artifact with plan content when S3 is configured", async () => {
+  it("updates artifact with plan content from bag", async () => {
     const correlationId = "test-correlation-123";
     const artifactId = "artifact-123";
     const workstreamId = "ws-123";
@@ -96,30 +100,13 @@ describe("handleWorkflowSuccess", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl: "https://github.com/actions/runs/1234567890",
       command: "plan",
     };
 
     const planContent = "# Implementation Plan\n\nThis is the plan content.";
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: planContent,
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
-
-    mockUploadArtifact.mockResolvedValue(undefined);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, planContent);
 
     const mockDb = {
       workstream: {
@@ -144,14 +131,12 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, true);
+    await planSuccessHandler.handle(asTx(mockDb), ctx, bag);
 
     expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
       where: { id: workstreamId },
       select: { organizationId: true },
     });
-    expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
-    expect(mockUploadArtifact).toHaveBeenCalled();
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
       null,
@@ -178,83 +163,6 @@ describe("handleWorkflowSuccess", () => {
     });
   });
 
-  it("updates artifact without uploading to S3 when S3 is not configured", async () => {
-    const correlationId = "test-correlation-456";
-    const artifactId = "artifact-456";
-    const workstreamId = "ws-456";
-    const runId = 9_876_543_210;
-
-    const ctx: WorkflowContext = {
-      correlationId,
-      artifactId,
-      workstreamId,
-      runId,
-    };
-
-    const planContent = "# Implementation Plan\n\nNo S3 upload.";
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: planContent,
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
-
-    const mockDb = {
-      workstream: {
-        findUnique: vi.fn().mockResolvedValue({
-          id: workstreamId,
-          organizationId: "test-org-id",
-        }),
-      },
-      artifact: {
-        findUnique: vi.fn().mockResolvedValue({
-          id: artifactId,
-          latestVersion: 1,
-          organizationId: "test-org-id",
-        }),
-        update: vi.fn().mockResolvedValue({
-          id: artifactId,
-          status: "DRAFT",
-        }),
-      },
-      workstreamEvent: {
-        create: vi.fn().mockResolvedValue({ id: "event-456" }),
-      },
-    };
-
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
-
-    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
-      where: { id: workstreamId },
-      select: { organizationId: true },
-    });
-    expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
-    expect(mockUploadArtifact).not.toHaveBeenCalled();
-    expect(mockCreateVersion).toHaveBeenCalledWith(
-      artifactId,
-      null,
-      planContent
-    );
-    expect(mockDb.artifact.update).toHaveBeenCalledWith({
-      where: { id: artifactId, organizationId: "test-org-id" },
-      data: {
-        status: "DRAFT",
-      },
-    });
-  });
-
   it("persists judges report when available", async () => {
     const correlationId = "test-correlation-789";
     const artifactId = "artifact-789";
@@ -268,6 +176,7 @@ describe("handleWorkflowSuccess", () => {
       workstreamId,
       runId,
       actionRunId,
+      htmlUrl: "https://github.com/actions/runs/1111111111",
     };
 
     const planContent = "# Implementation Plan\n\nWith judges report.";
@@ -291,25 +200,9 @@ describe("handleWorkflowSuccess", () => {
       ],
     };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: planContent,
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-      { name: "judges.json", content: JSON.stringify(judgesReport) },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, planContent);
+    bag.set(CONTENT_KEYS.judgesReport, judgesReport);
 
     const mockDb = {
       workstream: {
@@ -341,7 +234,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await planSuccessHandler.handle(asTx(mockDb), ctx, bag);
 
     expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
       where: { id: workstreamId },
@@ -377,26 +270,11 @@ describe("handleWorkflowSuccess", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl: "https://github.com/actions/runs/8888888888",
     };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: "# Plan",
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, "# Plan");
 
     const mockDb = {
       workstream: {
@@ -405,10 +283,8 @@ describe("handleWorkflowSuccess", () => {
     };
 
     await expect(
-      handleWorkflowSuccess(asTx(mockDb), ctx, false)
-    ).rejects.toThrow(
-      `Workstream ${workstreamId} not found - cannot update artifact`
-    );
+      planSuccessHandler.handle(asTx(mockDb), ctx, bag)
+    ).rejects.toThrow(`Workstream ${workstreamId} not found`);
   });
 
   it("throws error when artifact does not exist", async () => {
@@ -422,26 +298,11 @@ describe("handleWorkflowSuccess", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl: "https://github.com/actions/runs/9999999999",
     };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: "# Plan",
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, "# Plan");
 
     const mockDb = {
       workstream: {
@@ -456,13 +317,11 @@ describe("handleWorkflowSuccess", () => {
     };
 
     await expect(
-      handleWorkflowSuccess(asTx(mockDb), ctx, false)
-    ).rejects.toThrow(
-      `Artifact ${artifactId} not found in organization - cannot update with workflow results`
-    );
+      planSuccessHandler.handle(asTx(mockDb), ctx, bag)
+    ).rejects.toThrow(`Artifact ${artifactId} not found in organization`);
   });
 
-  it("persists perf summary when perf.jsonl is present in zip", async () => {
+  it("persists perf summary when perf.jsonl is present in bag", async () => {
     const correlationId = "test-correlation-perf";
     const artifactId = "artifact-perf";
     const workstreamId = "ws-perf";
@@ -475,39 +334,19 @@ describe("handleWorkflowSuccess", () => {
       workstreamId,
       runId,
       actionRunId,
+      htmlUrl: "https://github.com/actions/runs/5555555000",
     };
 
-    const planContent = "# Plan with perf";
-    const perfLine = JSON.stringify({
-      event: "iteration",
-      run_id: "run-1",
-      iteration: 1,
-      duration_s: 42.5,
-      status: "success",
-      started_at: "2026-01-01T00:00:00Z",
-      ended_at: "2026-01-01T00:00:42Z",
-      claude_exit_code: 0,
-    });
+    const perfSummary = {
+      totalIterations: 1,
+      totalDurationS: 42.5,
+      agentBreakdown: [],
+      pipelineStepBreakdown: [],
+    };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: planContent,
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-      { name: "perf.jsonl", content: perfLine },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, "# Plan with perf");
+    bag.set(CONTENT_KEYS.perfSummary, perfSummary);
 
     const mockDb = {
       workstream: {
@@ -532,7 +371,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await planSuccessHandler.handle(asTx(mockDb), ctx, bag);
 
     expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
       where: {
@@ -552,7 +391,7 @@ describe("handleWorkflowSuccess", () => {
     });
   });
 
-  it("does not persist perf summary when perf.jsonl is absent", async () => {
+  it("does not persist perf summary when absent from bag", async () => {
     const correlationId = "test-correlation-no-perf";
     const artifactId = "artifact-no-perf";
     const workstreamId = "ws-no-perf";
@@ -563,26 +402,11 @@ describe("handleWorkflowSuccess", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl: "https://github.com/actions/runs/5555555001",
     };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: "# Plan without perf",
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, "# Plan without perf");
 
     const mockDb = {
       workstream: {
@@ -607,56 +431,41 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await planSuccessHandler.handle(asTx(mockDb), ctx, bag);
 
     expect(mockDb.gitHubActionRunPerformance.upsert).not.toHaveBeenCalled();
   });
 
-  it("logs error when artifactId is missing in context", async () => {
-    const correlationId = "test-correlation-no-artifact";
-    const workstreamId = "ws-no-artifact";
-    const runId = 8_888_888_888;
-
+  it("logs error and returns early when artifactId is missing", async () => {
     const ctx: WorkflowContext = {
-      correlationId,
+      correlationId: "test-correlation-no-artifact",
       artifactId: "",
-      workstreamId,
-      runId,
+      workstreamId: "ws-no-artifact",
+      runId: 8_888_888_888,
+      htmlUrl: "https://github.com/actions/runs/8888888888",
       command: "plan",
     };
 
-    const zipBuffer = buildZipWithEntries([
-      {
-        name: "plan.json",
-        content: JSON.stringify({
-          content: "# Plan",
-          acceptanceCriteria: [],
-          pendingTasks: [],
-          completedTasks: [],
-          openQuestions: [],
-          answeredQuestions: [],
-          gaps: [],
-        }),
-      },
-    ]);
-
-    mockDownloadWorkflowArtifacts.mockResolvedValue([
-      { name: "artifact.zip", data: zipBuffer },
-    ]);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.planContent, "# Plan");
 
     const mockTx = {
       workstream: { findUnique: vi.fn() },
       artifact: { findUnique: vi.fn(), update: vi.fn() },
     };
 
-    await handleWorkflowSuccess(asTx(mockTx), ctx, false);
+    await planSuccessHandler.handle(asTx(mockTx), ctx, bag);
 
-    // Should not throw, but should log error and return early without DB calls
+    // Returns early — no DB calls should be made
     expect(mockTx.workstream.findUnique).not.toHaveBeenCalled();
   });
 });
 
-describe("handleExecutionSuccess", () => {
+// ---------------------------------------------------------------------------
+// executeSuccessHandler
+// ---------------------------------------------------------------------------
+
+describe("executeSuccessHandler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -674,6 +483,7 @@ describe("handleExecutionSuccess", () => {
       workstreamId,
       repositoryId,
       runId,
+      htmlUrl: "https://github.com/actions/runs/5555555555",
       command: "execute",
     };
 
@@ -686,6 +496,9 @@ describe("handleExecutionSuccess", () => {
       base_ref: "main",
       github_id: 123_456_789,
     };
+
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
 
     const mockTx = {
       workstream: {
@@ -719,7 +532,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
@@ -781,6 +594,7 @@ describe("handleExecutionSuccess", () => {
       workstreamId: "ws-456",
       repositoryId: "repo-456",
       runId: 6_666_666_666,
+      htmlUrl: "https://github.com/actions/runs/6666666666",
     };
 
     const executionResult = {
@@ -790,6 +604,9 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/another-feature",
       base_ref: "develop",
     };
+
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
 
     const mockTx = {
       workstream: {
@@ -820,7 +637,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -838,6 +655,7 @@ describe("handleExecutionSuccess", () => {
       workstreamId: "ws-789",
       repositoryId: "repo-789",
       runId: 7_777_777_777,
+      htmlUrl: "https://github.com/actions/runs/7777777777",
     };
 
     const executionResult = {
@@ -846,6 +664,9 @@ describe("handleExecutionSuccess", () => {
       pr_number: 10,
       branch_name: "symphony/no-title-feature",
     };
+
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
 
     const mockTx = {
       workstream: {
@@ -876,7 +697,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -891,6 +712,7 @@ describe("handleExecutionSuccess", () => {
       artifactId: "plan-artifact-no-changes",
       workstreamId: "ws-no-changes",
       runId: 4_444_444_444,
+      htmlUrl: "https://github.com/actions/runs/4444444444",
     };
 
     const executionResult = {
@@ -900,6 +722,9 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-changes",
     };
 
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
+
     const mockDb = {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-no-changes" }),
@@ -908,7 +733,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -927,12 +752,30 @@ describe("handleExecutionSuccess", () => {
     });
   });
 
+  it("logs and returns early when execution result is absent from bag", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "exec-correlation-empty-bag",
+      artifactId: "plan-artifact-empty-bag",
+      workstreamId: "ws-empty-bag",
+      runId: 3_333_333_333,
+      htmlUrl: "https://github.com/actions/runs/3333333333",
+    };
+
+    const bag = new ZipContentBag(); // empty — no executionResult
+
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
+
+    // Should return early without any DB calls
+    expect(mockWithDb).not.toHaveBeenCalled();
+  });
+
   it("logs error and returns when repositoryId is missing", async () => {
     const ctx: WorkflowContext = {
       correlationId: "exec-correlation-no-repo",
       artifactId: "plan-artifact-no-repo",
       workstreamId: "ws-no-repo",
       runId: 3_333_333_333,
+      htmlUrl: "https://github.com/actions/runs/3333333333",
     };
 
     const executionResult = {
@@ -942,7 +785,10 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult);
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
+
+    await executeSuccessHandler.handle(asTx({}), ctx, bag);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -955,6 +801,7 @@ describe("handleExecutionSuccess", () => {
       workstreamId: "ws-bad-artifact",
       repositoryId: "repo-bad-artifact",
       runId: 2_222_222_222,
+      htmlUrl: "https://github.com/actions/runs/2222222222",
     };
 
     const executionResult = {
@@ -964,6 +811,9 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/bad-artifact",
       base_ref: "main",
     };
+
+    const bag = new ZipContentBag();
+    bag.set(CONTENT_KEYS.executionResult, executionResult);
 
     const mockTx = {
       workstream: {
@@ -978,13 +828,19 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await expect(handleExecutionSuccess(ctx, executionResult)).rejects.toThrow(
+    await expect(
+      executeSuccessHandler.handle(asTx({}), ctx, bag)
+    ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
     );
   });
 });
 
-describe("handleWorkflowFailure", () => {
+// ---------------------------------------------------------------------------
+// workflowFailureHandler
+// ---------------------------------------------------------------------------
+
+describe("workflowFailureHandler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1001,6 +857,7 @@ describe("handleWorkflowFailure", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl,
       command: "plan",
     };
 
@@ -1010,7 +867,7 @@ describe("handleWorkflowFailure", () => {
       },
     };
 
-    await handleWorkflowFailure(asTx(mockTx), ctx, htmlUrl);
+    await workflowFailureHandler.handle(asTx(mockTx), ctx, new ZipContentBag());
 
     expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -1044,6 +901,7 @@ describe("handleWorkflowFailure", () => {
       artifactId,
       workstreamId,
       runId,
+      htmlUrl,
     };
 
     const mockTx = {
@@ -1052,7 +910,7 @@ describe("handleWorkflowFailure", () => {
       },
     };
 
-    await handleWorkflowFailure(asTx(mockTx), ctx, htmlUrl);
+    await workflowFailureHandler.handle(asTx(mockTx), ctx, new ZipContentBag());
 
     expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -1071,6 +929,10 @@ describe("handleWorkflowFailure", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// processWorkflowCompletion (integration-level)
+// ---------------------------------------------------------------------------
 
 describe("processWorkflowCompletion", () => {
   beforeEach(() => {
@@ -1115,6 +977,7 @@ describe("processWorkflowCompletion", () => {
     mockDownloadWorkflowArtifacts.mockResolvedValue([
       { name: "artifact.zip", data: zipBuffer },
     ]);
+    mockUploadArtifact.mockResolvedValue(undefined);
 
     const event: WorkflowRunCompletedEvent = {
       action: "completed",
@@ -1167,6 +1030,7 @@ describe("processWorkflowCompletion", () => {
       false
     );
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
+    expect(mockUploadArtifact).toHaveBeenCalled();
     expect(mockDb.gitHubActionRun.update).toHaveBeenCalledWith({
       where: { id: mockActionRun.id },
       data: {
@@ -1230,6 +1094,8 @@ describe("processWorkflowCompletion", () => {
       false
     );
 
+    // Failure handler reads htmlUrl from ctx — no artifact download
+    expect(mockDownloadWorkflowArtifacts).not.toHaveBeenCalled();
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
         workstreamId,
@@ -1294,7 +1160,7 @@ describe("processWorkflowCompletion", () => {
     });
   });
 
-  it("delegates to handleExecutionSuccess for execute command", async () => {
+  it("routes execute command to executeSuccessHandler via registry", async () => {
     const correlationId = "proc-correlation-exec";
     const artifactId = "proc-artifact-exec";
     const workstreamId = "proc-ws-exec";

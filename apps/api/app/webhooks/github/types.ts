@@ -3,6 +3,7 @@ import type {
   WorkflowRunInProgressEvent,
   WorkflowRunRequestedEvent,
 } from "@octokit/webhooks-types";
+import type { SymphonyCommand } from "@repo/api/src/types/artifact";
 
 /**
  * Context extracted from GitHub workflow correlation ID and action run data.
@@ -13,7 +14,9 @@ export type WorkflowContext = {
   artifactId: string;
   workstreamId: string;
   runId: number;
-  command?: string;
+  /** GitHub Actions run URL — consumed by failure handlers. */
+  htmlUrl: string;
+  command?: SymphonyCommand;
   repositoryId?: string;
   actionRunId?: string;
 };

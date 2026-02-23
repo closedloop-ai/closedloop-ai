@@ -1,7 +1,12 @@
+import { SymphonyCommand } from "@repo/api/src/types/artifact";
 import { z } from "zod";
 
 export const runLoopSchema = z.object({
-  command: z.enum(["plan", "execute", "request_changes"]),
+  command: z.enum([
+    SymphonyCommand.Plan,
+    SymphonyCommand.Execute,
+    SymphonyCommand.RequestChanges,
+  ]),
   prompt: z.string().optional(),
 });
 

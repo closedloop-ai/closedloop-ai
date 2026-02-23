@@ -1,25 +1,14 @@
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { PerfSummary } from "@repo/api/src/types/performance";
 import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import {
-  type ExecutionResult,
-  findPlanInZip,
-  type ZipContent,
-} from "../zip-parser";
+import { CONTENT_KEYS } from "../extractors/keys";
+import { ZipContentBag } from "../extractors/types";
+import { findContentInZip } from "../zip-parser";
 
-/**
- * Result type returned by processArtifactUploads.
- */
-export type ProcessArtifactResult = {
-  planContent: string | null;
-  questionsContent: string | null;
-  executionResult: ExecutionResult | null;
-  judgesReport: JudgesReport | null;
-  perfSummary: PerfSummary | null;
+export type ProcessArtifactUploadsResult = {
+  bag: ZipContentBag;
   artifactKeys: string[];
 };
 
@@ -46,27 +35,8 @@ export async function uploadEntriesToS3(
 }
 
 /**
- * Merge zip content results, preferring non-null values from new result.
- *
- * Pure function - no side effects, testable.
- */
-export function mergeZipContent(
-  current: Omit<ZipContent, "entries">,
-  result: ZipContent
-): Omit<ZipContent, "entries"> {
-  return {
-    planContent: result.planContent ?? current.planContent,
-    questionsContent: result.questionsContent ?? current.questionsContent,
-    executionResult: result.executionResult ?? current.executionResult,
-    judgesReport: result.judgesReport ?? current.judgesReport,
-    perfSummary: result.perfSummary ?? current.perfSummary,
-  };
-}
-
-/**
  * Process a single artifact zip, handling nested zips.
  *
- * Pure parsing function (extracts and merges content) combined with optional S3 upload.
  * Handles both:
  * - Nested zips (GitHub wraps artifacts, Symphony may also zip)
  * - Direct zip content (fallback)
@@ -76,7 +46,7 @@ export async function processArtifactZip(
   artifactData: Buffer,
   artifactName: string,
   uploadToS3: boolean
-): Promise<ZipContent & { artifactKeys: string[] }> {
+): Promise<ProcessArtifactUploadsResult> {
   const outerZip = new AdmZip(artifactData);
   const artifactKeys: string[] = [];
 
@@ -84,19 +54,13 @@ export async function processArtifactZip(
     `[processArtifactZip] "${artifactName}" contains ${outerZip.getEntries().length} files`
   );
 
-  let content: Omit<ZipContent, "entries"> = {
-    planContent: null,
-    questionsContent: null,
-    executionResult: null,
-    judgesReport: null,
-    perfSummary: null,
-  };
+  const bag = new ZipContentBag();
 
   // Check for nested zips first (Symphony artifact structure)
   const innerZips = extractInnerZips(outerZip);
   for (const innerZip of innerZips) {
-    const result = findPlanInZip(innerZip);
-    content = mergeZipContent(content, result);
+    const result = findContentInZip(innerZip);
+    bag.mergeFrom(result.bag);
 
     if (uploadToS3) {
       const keys = await uploadEntriesToS3(correlationId, result.entries);
@@ -105,10 +69,12 @@ export async function processArtifactZip(
   }
 
   // Also check outer zip directly (in case it's not nested)
-  const needsDirectCheck = !(content.planContent || content.executionResult);
+  const needsDirectCheck = !(
+    bag.has(CONTENT_KEYS.planContent) || bag.has(CONTENT_KEYS.executionResult)
+  );
   if (needsDirectCheck) {
-    const result = findPlanInZip(outerZip);
-    content = mergeZipContent(content, result);
+    const result = findContentInZip(outerZip);
+    bag.mergeFrom(result.bag);
 
     if (uploadToS3) {
       const keys = await uploadEntriesToS3(correlationId, result.entries, true);
@@ -116,7 +82,7 @@ export async function processArtifactZip(
     }
   }
 
-  return { ...content, entries: [], artifactKeys };
+  return { bag, artifactKeys };
 }
 
 /**
@@ -132,17 +98,13 @@ export async function processArtifactUploads(
   correlationId: string,
   runId: number,
   uploadToS3: boolean
-): Promise<ProcessArtifactResult> {
+): Promise<ProcessArtifactUploadsResult> {
   log.info(
     `[processArtifactUploads] Downloading artifacts for run ${runId}, uploadToS3=${uploadToS3}`
   );
 
   const artifacts = await downloadWorkflowArtifacts(runId);
-  let planContent: string | null = null;
-  let questionsContent: string | null = null;
-  let executionResult: ExecutionResult | null = null;
-  let judgesReport: JudgesReport | null = null;
-  let perfSummary: PerfSummary | null = null;
+  const bag = new ZipContentBag();
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -155,30 +117,17 @@ export async function processArtifactUploads(
       uploadToS3
     );
 
-    planContent = result.planContent ?? planContent;
-    questionsContent = result.questionsContent ?? questionsContent;
-    executionResult = result.executionResult ?? executionResult;
-    judgesReport = result.judgesReport ?? judgesReport;
-    perfSummary = result.perfSummary ?? perfSummary;
+    bag.mergeFrom(result.bag);
     artifactKeys.push(...result.artifactKeys);
   }
 
-  if (planContent || questionsContent || executionResult || judgesReport) {
+  if (bag.keys().length > 0) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}`
+      `[processArtifactUploads] Found content keys: ${bag.keys().join(", ")}`
     );
   } else {
-    log.warn(
-      "[processArtifactUploads] No plan, questions, execution result, or judges report found in artifacts"
-    );
+    log.warn("[processArtifactUploads] No content found in artifacts");
   }
 
-  return {
-    planContent,
-    questionsContent,
-    executionResult,
-    judgesReport,
-    perfSummary,
-    artifactKeys,
-  };
+  return { bag, artifactKeys };
 }

@@ -44,11 +44,15 @@ zip-parser.ts (artifact extraction)
   - `validateRequest()` - Extract body, signature, event type from request
   - `findActionRunByCorrelationId()` - Query GitHubActionRun by correlation ID
 
-- **`zip-parser.ts`** - Pure functions for extracting content from workflow artifacts:
-  - `findPlanInZip()` - Searches zip for plan content (plan.json, implementation-plan.md)
-  - `parseExecutionResult()` - Extract PR info from execution-result.json
-  - `parseJudgesReport()` - Extract evaluation report from judges.json
-  - Priority: `plan.json` (experimental plugin) > `implementation-plan.md` (legacy)
+- **`zip-parser.ts`** - Generic zip extraction engine:
+  - `findContentInZip()` - Iterates zip entries through the extractor registry, returns a `ZipContentBag`
+  - Priority system: when two extractors share a key (e.g. `plan.json` vs `implementation-plan.md`), higher priority wins regardless of zip entry order
+
+- **`extractors/`** - Open-Closed extractor registry (see [Adding a New Report Type](#adding-a-new-report-type)):
+  - `types.ts` - `ZipContentExtractor<T>` protocol, `ContentKey<T>` branded type, `ZipContentBag` class
+  - `keys.ts` - `CONTENT_KEYS` constant — typed keys for all known content slots
+  - `registry.ts` - `ZIP_CONTENT_EXTRACTORS` static array — the single place to register extractors
+  - One file per extractor: `plan-extractor.ts`, `questions-extractor.ts`, `execution-result-extractor.ts`, `judges-report-extractor.ts`, `code-judges-report-extractor.ts`, `perf-summary-extractor.ts`
 
 ### Handler Directory (`handlers/`)
 
@@ -91,10 +95,9 @@ Event-specific handlers that implement business logic:
   - Uses `withDb.tx()` transaction to ensure artifact content and status update atomically
 
 - **`workflow-artifacts.ts`** - Pure parsing + S3 upload logic (extracted from completion handler):
-  - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing
-  - **`processArtifactZip()`** - Handles nested zips (GitHub wraps artifacts, Symphony may also zip)
+  - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing, returns `{ bag: ZipContentBag, artifactKeys }`
+  - **`processArtifactZip()`** - Handles nested zips (GitHub wraps artifacts, Symphony may also zip), merges bags via `bag.mergeFrom()`
   - **`uploadEntriesToS3()`** - Uploads extracted files to S3 with `plans/{correlationId}/` prefix
-  - **`mergeZipContent()`** - Pure function to merge zip content results (prefers non-null values)
 
 ## Event Flow
 
@@ -195,29 +198,30 @@ await withDb.tx(async (tx) => {
 
 This prevents race conditions where the frontend sees SUCCESS status before content is ready.
 
-### Zip Parsing Strategy
+### Zip Extraction: Extractor Registry Pattern
 
-GitHub artifacts are double-zipped:
-1. GitHub wraps uploaded artifacts in a zip
-2. Symphony may also zip its output files
+The zip extraction pipeline follows the **Open-Closed Principle** — new content types are added by creating an extractor and registering it, without modifying the engine.
 
-The parser handles both:
+**Core concepts:**
+
+- `ZipContentExtractor<T>` — protocol with `key`, `priority`, `matches(entryName)`, `parse(data, entryName)`
+- `ZipContentBag` — typed heterogeneous result container; use `bag.get(CONTENT_KEYS.xxx)` to retrieve results
+- `ContentKey<T>` — branded string token that carries the result type at compile time
+
+**How extraction works:**
+
 ```typescript
-// 1. Check for nested zips first (Symphony artifact structure)
-for (const entry of outerZip.getEntries()) {
-  if (entry.entryName.endsWith(".zip")) {
-    const innerZip = new AdmZip(entry.getData());
-    const result = findPlanInZip(innerZip);
-    // ...
-  }
-}
+// findContentInZip iterates entries through the registry
+const { bag, entries } = findContentInZip(zip);
 
-// 2. Also check outer zip directly (fallback)
-if (!(content.planContent || content.executionResult)) {
-  const result = findPlanInZip(outerZip);
-  // ...
-}
+// Access results with full type safety
+const plan: string | null = bag.get(CONTENT_KEYS.planContent);
+const judges: JudgesReport | null = bag.get(CONTENT_KEYS.judgesReport);
 ```
+
+**Priority system:** When two extractors share the same key (e.g. `plan.json` priority 10 vs `implementation-plan.md` priority 5), the higher priority wins regardless of zip entry order. This is an improvement over a first-match approach.
+
+**Double-zip handling:** GitHub artifacts are double-zipped (GitHub wraps, Symphony may also zip). `processArtifactZip` in `workflow-artifacts.ts` handles both layers, merging bags via `bag.mergeFrom()` (first non-null wins per key).
 
 ## Testing
 
@@ -239,6 +243,89 @@ Run webhook tests:
 ```bash
 pnpm turbo test --filter=api -- --grep webhook
 ```
+
+## Adding a New Report Type
+
+Steps 1-4 are purely additive (no existing files modified). Step 5 is the only existing-file change — the persistence wiring is unavoidable.
+
+### 1. Define the TypeScript type
+
+```typescript
+// packages/api/src/types/coverage.ts
+export type CoverageReport = {
+  totalCoverage: number;
+  fileCoverage: { file: string; coverage: number }[];
+};
+```
+
+### 2. Add a typed key
+
+```typescript
+// apps/api/app/webhooks/github/extractors/keys.ts
+import type { CoverageReport } from "@repo/api/src/types/coverage";
+
+export const CONTENT_KEYS = {
+  // ... existing keys
+  coverageReport: contentKey<CoverageReport>("coverageReport"),
+} as const;
+```
+
+### 3. Create an extractor file
+
+```typescript
+// apps/api/app/webhooks/github/extractors/coverage-extractor.ts
+import type { CoverageReport } from "@repo/api/src/types/coverage";
+import { log } from "@repo/observability/log";
+import { CONTENT_KEYS } from "./keys";
+import type { ZipContentExtractor } from "./types";
+
+export const coverageExtractor: ZipContentExtractor<CoverageReport> = {
+  key: CONTENT_KEYS.coverageReport,
+  priority: 0,
+
+  matches(entryName: string): boolean {
+    return entryName.endsWith("coverage-report.json");
+  },
+
+  parse(data: Buffer, entryName: string): CoverageReport | null {
+    try {
+      const result = JSON.parse(data.toString("utf-8")) as CoverageReport;
+      log.info(`Found coverage report: ${entryName}`);
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      log.error(`Failed to parse coverage-report.json: ${message}`);
+      return null;
+    }
+  },
+};
+```
+
+### 4. Register the extractor
+
+```typescript
+// apps/api/app/webhooks/github/extractors/registry.ts
+import { coverageExtractor } from "./coverage-extractor";
+
+export const ZIP_CONTENT_EXTRACTORS: ZipContentExtractor<unknown>[] = [
+  // ... existing extractors
+  coverageExtractor,
+];
+```
+
+### 5. Consume in handleWorkflowSuccess
+
+```typescript
+// apps/api/app/webhooks/github/handlers/workflow-completion-handler.ts
+
+const coverageReport = bag.get(CONTENT_KEYS.coverageReport);
+
+if (coverageReport && ctx.actionRunId) {
+  await tx.artifactCoverage.upsert({ ... });
+}
+```
+
+---
 
 ## Adding a New Event Handler
 

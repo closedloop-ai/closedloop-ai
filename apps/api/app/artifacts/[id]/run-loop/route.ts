@@ -1,7 +1,9 @@
+import { SymphonyCommand } from "@repo/api/src/types/artifact";
 import { success } from "@repo/api/src/types/common";
-import type {
-  CreateLoopRequest,
-  CreateLoopResponse,
+import {
+  type CreateLoopRequest,
+  type CreateLoopResponse,
+  LoopCommand,
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
@@ -22,9 +24,9 @@ import { runLoopSchema } from "./validators";
  * Map route body commands to LoopCommand enum values.
  */
 const COMMAND_MAP = {
-  plan: "PLAN",
-  execute: "EXECUTE",
-  request_changes: "REQUEST_CHANGES",
+  [SymphonyCommand.Plan]: LoopCommand.Plan,
+  [SymphonyCommand.Execute]: LoopCommand.Execute,
+  [SymphonyCommand.RequestChanges]: LoopCommand.RequestChanges,
 } as const;
 
 export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
@@ -92,7 +94,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       // REQUEST_CHANGES needs parent's plan.json state
       // EXECUTE needs parent's plan.json + branch name for code changes
       let parentLoopId: string | undefined;
-      if (body.command !== "plan") {
+      if (body.command !== SymphonyCommand.Plan) {
         const parentLoop = await loopsService.findLatestCompletedForArtifact(
           artifactId,
           user.organizationId

@@ -199,10 +199,20 @@ export type PullRequestInfo = {
   reviewDecision: ReviewDecision | null;
 };
 
+// Symphony workflow dispatch command values (lowercase, as sent to GitHub Actions)
+export const SymphonyCommand = {
+  Plan: "plan",
+  Execute: "execute",
+  Chat: "chat",
+  RequestChanges: "request_changes",
+} as const;
+export type SymphonyCommand =
+  (typeof SymphonyCommand)[keyof typeof SymphonyCommand];
+
 // Generation status for artifacts being processed by GitHub Actions
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
+  command: SymphonyCommand | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
