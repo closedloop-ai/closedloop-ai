@@ -76,6 +76,9 @@ export const attachmentsService = {
 
     const key = `attachments/${artifactId}/${createId()}`;
 
+    // Generate presigned URL first — if this fails, no orphaned DB record is created
+    const uploadUrl = await getSignedUploadUrl(key, mimeType, 900);
+
     const created = await withDb((db) =>
       db.fileAttachment.create({
         data: {
@@ -89,8 +92,6 @@ export const attachmentsService = {
         },
       })
     );
-
-    const uploadUrl = await getSignedUploadUrl(key, mimeType, 900);
 
     return { attachmentId: created.id, uploadUrl, key };
   },
@@ -154,19 +155,20 @@ export const attachmentsService = {
   ): Promise<void> {
     await requireArtifact(artifactId, organizationId);
 
-    const attachment = await withDb((db) =>
-      db.fileAttachment.findUnique({
+    // Use transaction to atomically find + delete, avoiding TOCTOU race
+    const attachment = await withDb.tx(async (tx) => {
+      const record = await tx.fileAttachment.findUnique({
         where: { id: attachmentId, artifactId },
-      })
-    );
+        select: { key: true },
+      });
 
-    if (!attachment) {
-      throw new Error("Attachment not found");
-    }
+      if (!record) {
+        throw new Error("Attachment not found");
+      }
 
-    await withDb((db) =>
-      db.fileAttachment.delete({ where: { id: attachmentId } })
-    );
+      await tx.fileAttachment.delete({ where: { id: attachmentId } });
+      return record;
+    });
 
     try {
       await deleteArtifact(attachment.key);

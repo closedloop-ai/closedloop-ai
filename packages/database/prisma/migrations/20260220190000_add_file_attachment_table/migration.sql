@@ -16,5 +16,6 @@ CREATE TABLE "file_attachments" (
 -- CreateIndex
 CREATE INDEX "file_attachments_artifact_id_idx" ON "file_attachments"("artifact_id");
 
--- AddForeignKey
-ALTER TABLE "file_attachments" ADD CONSTRAINT "file_attachments_artifact_id_fkey" FOREIGN KEY ("artifact_id") REFERENCES "artifacts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Note: No DB-level FK constraint. This project uses relationMode = "prisma",
+-- so referential integrity (including cascading deletes) is managed by the
+-- Prisma client, not database constraints.

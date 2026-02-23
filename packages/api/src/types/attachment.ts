@@ -37,4 +37,4 @@ export type AttachmentDownloadResponse = {
  * Runtime MIME type validation and file size limits live in apps/api validators, not here.
  */
 export const ALLOWED_EXTENSIONS =
-  ".html,.pdf,.jpg,.jpeg,.png,.gif,.svg,.webp,.csv,.json,.txt,.md,.doc,.docx,.xls,.xlsx";
+  ".pdf,.jpg,.jpeg,.png,.gif,.webp,.csv,.json,.txt,.md,.doc,.docx,.xls,.xlsx";

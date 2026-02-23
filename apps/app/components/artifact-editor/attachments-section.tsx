@@ -2,11 +2,10 @@
 
 import { ALLOWED_EXTENSIONS } from "@repo/api/src/types/attachment";
 import { Button } from "@repo/design-system/components/ui/button";
-import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { DownloadIcon, Loader2Icon, Trash2Icon } from "lucide-react";
 import { useRef, useState } from "react";
 import {
-  attachmentKeys,
   useAttachments,
   useDeleteAttachment,
   useDownloadAttachment,
@@ -19,7 +18,6 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const queryClient = useQueryClient();
 
   const { data: attachments } = useAttachments(artifactId);
   const requestUpload = useRequestAttachmentUpload();
@@ -34,16 +32,21 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
 
     setIsUploading(true);
     try {
-      const { uploadUrl } = await requestUpload.mutateAsync({
+      const { attachmentId, uploadUrl } = await requestUpload.mutateAsync({
         artifactId,
         filename: file.name,
         mimeType: file.type,
         sizeBytes: file.size,
       });
-      await uploadToS3(uploadUrl, file, file.type);
-      await queryClient.invalidateQueries({
-        queryKey: attachmentKeys.list(artifactId),
-      });
+      try {
+        await uploadToS3(uploadUrl, file, file.type);
+      } catch (uploadError) {
+        // Compensate: delete the orphaned DB record
+        await deleteAttachment.mutateAsync(attachmentId);
+        throw uploadError;
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Upload failed");
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
@@ -81,10 +84,10 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
               <div className="flex shrink-0 gap-1">
                 <Button
                   onClick={() =>
-                    downloadAttachment.mutate({
-                      artifactId,
-                      attachmentId: attachment.id,
-                    })
+                    downloadAttachment.mutate(
+                      { artifactId, attachmentId: attachment.id },
+                      { onError: () => toast.error("Download failed") }
+                    )
                   }
                   size="icon"
                   variant="ghost"
@@ -92,7 +95,11 @@ export function AttachmentsSection({ artifactId }: { artifactId: string }) {
                   <DownloadIcon className="h-4 w-4" />
                 </Button>
                 <Button
-                  onClick={() => deleteAttachment.mutate(attachment.id)}
+                  onClick={() =>
+                    deleteAttachment.mutate(attachment.id, {
+                      onError: () => toast.error("Delete failed"),
+                    })
+                  }
                   size="icon"
                   variant="ghost"
                 >

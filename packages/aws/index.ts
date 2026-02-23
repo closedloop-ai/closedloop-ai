@@ -143,10 +143,13 @@ export async function getSignedDownloadUrlWithDisposition(
     throw new Error("S3_BUCKET_NAME is not configured");
   }
 
+  // Sanitize filename to prevent header injection via quotes, backslashes, or CRLF
+  const safeName = filename.replaceAll(/["\\\r\n]/g, "");
+
   const command = new GetObjectCommand({
     Bucket: config.S3_BUCKET_NAME,
     Key: key,
-    ResponseContentDisposition: `attachment; filename="${filename}"`,
+    ResponseContentDisposition: `attachment; filename="${safeName}"`,
   });
 
   return await s3GetSignedUrl(s3Client, command, { expiresIn });

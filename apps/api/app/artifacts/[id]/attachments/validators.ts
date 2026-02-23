@@ -1,12 +1,10 @@
 import { z } from "zod";
 
 export const ALLOWED_MIME_TYPES: string[] = [
-  "text/html",
   "application/pdf",
   "image/jpeg",
   "image/png",
   "image/gif",
-  "image/svg+xml",
   "image/webp",
   "text/csv",
   "application/json",

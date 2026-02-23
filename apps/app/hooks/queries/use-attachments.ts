@@ -5,18 +5,25 @@ import type {
   CreateAttachmentResponse,
   FileAttachment,
 } from "@repo/api/src/types/attachment";
+import type { UseQueryOptions } from "@tanstack/react-query";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 
 // Query keys
 export const attachmentKeys = {
   all: ["attachments"] as const,
-  list: (artifactId: string) => ["attachments", "list", artifactId] as const,
+  lists: () => [...attachmentKeys.all, "list"] as const,
+  list: (artifactId: string) =>
+    [...attachmentKeys.lists(), artifactId] as const,
+  detail: (id: string) => [...attachmentKeys.all, "detail", id] as const,
 };
 
 // Queries
 
-export function useAttachments(artifactId: string) {
+export function useAttachments(
+  artifactId: string,
+  options?: Omit<UseQueryOptions<FileAttachment[]>, "queryKey" | "queryFn">
+) {
   const apiClient = useApiClient();
 
   return useQuery({
@@ -24,6 +31,7 @@ export function useAttachments(artifactId: string) {
     queryFn: () =>
       apiClient.get<FileAttachment[]>(`/artifacts/${artifactId}/attachments`),
     enabled: !!artifactId,
+    ...options,
   });
 }
 
@@ -31,6 +39,7 @@ export function useAttachments(artifactId: string) {
 
 export function useRequestAttachmentUpload() {
   const apiClient = useApiClient();
+  const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({
@@ -48,6 +57,11 @@ export function useRequestAttachmentUpload() {
         `/artifacts/${artifactId}/attachments`,
         { filename, mimeType, sizeBytes }
       ),
+    onSuccess: (_, { artifactId }) => {
+      queryClient.invalidateQueries({
+        queryKey: attachmentKeys.list(artifactId),
+      });
+    },
   });
 }
 
