@@ -3,10 +3,6 @@
  * Maps Symphony IssueWithWorkstream to the shape closedloop-dev components expect.
  */
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
-import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-
 export type TicketStatusType =
   | "triage"
   | "backlog"
@@ -73,7 +69,7 @@ export function mapIssueStatusToType(status: string): TicketStatusType {
 }
 
 /** Map Symphony IssueStatus to display name */
-function statusDisplayName(status: string): string {
+export function statusDisplayName(status: string): string {
   switch (status) {
     case "TODO":
       return "To Do";
@@ -89,7 +85,7 @@ function statusDisplayName(status: string): string {
 }
 
 /** Map Symphony IssuePriority to numeric value (higher = more urgent) */
-function priorityToNumber(priority: string): number {
+export function priorityToNumber(priority: string): number {
   switch (priority) {
     case "URGENT":
       return 1;
@@ -105,7 +101,7 @@ function priorityToNumber(priority: string): number {
 }
 
 /** Map Symphony IssuePriority to display label */
-function priorityToLabel(priority: string): string {
+export function priorityToLabel(priority: string): string {
   switch (priority) {
     case "URGENT":
       return "Urgent";
@@ -121,7 +117,7 @@ function priorityToLabel(priority: string): string {
 }
 
 /** Map ArtifactStatus to closedloop-dev status type */
-function mapArtifactStatusToType(status: string): TicketStatusType {
+export function mapArtifactStatusToType(status: string): TicketStatusType {
   switch (status) {
     case "DRAFT":
       return "started";
@@ -137,7 +133,7 @@ function mapArtifactStatusToType(status: string): TicketStatusType {
 }
 
 /** Map ArtifactStatus to display name */
-function artifactStatusDisplayName(status: string): string {
+export function artifactStatusDisplayName(status: string): string {
   switch (status) {
     case "DRAFT":
       return "Draft";
@@ -153,7 +149,7 @@ function artifactStatusDisplayName(status: string): string {
 }
 
 /** Map artifact type string to display label */
-function artifactTypeToSourceType(type: string): TicketSourceType {
+export function artifactTypeToSourceType(type: string): TicketSourceType {
   switch (type) {
     case "PRD":
       return "PRD";
@@ -166,80 +162,58 @@ function artifactTypeToSourceType(type: string): TicketSourceType {
   }
 }
 
-/** Convert a Symphony ArtifactWithWorkstream (PRD) to an EngineerTicket */
-export function artifactToEngineerTicket(
-  artifact: ArtifactWithWorkstream
-): EngineerTicket {
-  const owner = artifact.owner
-    ? {
-        id: artifact.owner.id,
-        name: [artifact.owner.firstName, artifact.owner.lastName]
-          .filter(Boolean)
-          .join(" "),
-        email: "",
-        avatarUrl: artifact.owner.avatarUrl ?? undefined,
-      }
-    : undefined;
+// ---------------------------------------------------------------------------
+// MCP response types (engineer-local, not shared API types)
+// ---------------------------------------------------------------------------
 
-  const routePrefix = getRoutePrefixForType(artifact.type) ?? "artifacts";
+export type McpUser = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  email: string;
+  avatarUrl: string | null;
+};
 
-  return {
-    id: artifact.id,
-    identifier: artifact.slug,
-    title: artifact.title,
-    description: artifact.snippet ?? undefined,
-    sourceType: artifactTypeToSourceType(artifact.type),
-    status: {
-      id: artifact.status,
-      name: artifactStatusDisplayName(artifact.status),
-      type: mapArtifactStatusToType(artifact.status),
-    },
-    assignee: owner,
-    priority: 3,
-    priorityLabel: "Medium",
-    createdAt: artifact.createdAt.toString(),
-    updatedAt: artifact.updatedAt.toString(),
-    url: `/${routePrefix}/${artifact.slug}`,
-    issueId: artifact.id,
-    projectName: artifact.project?.name ?? undefined,
-    workstreamTitle: artifact.workstream?.title ?? undefined,
-  };
-}
+export type McpIssue = {
+  id: string;
+  title: string;
+  slug: string;
+  description: string | null;
+  status: string;
+  priority: string;
+  projectId: string | null;
+  workstreamId: string | null;
+  assigneeId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignee: {
+    id: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  project: { name: string | null } | null;
+  workstream: { title: string | null } | null;
+};
 
-/** Convert a Symphony IssueWithWorkstream to an EngineerTicket */
-export function issueToEngineerTicket(
-  issue: IssueWithWorkstream
-): EngineerTicket {
-  const assignee = issue.assignee
-    ? {
-        id: issue.assignee.id,
-        name: [issue.assignee.firstName, issue.assignee.lastName]
-          .filter(Boolean)
-          .join(" "),
-        email: "", // Not available on ProjectOwner type
-        avatarUrl: issue.assignee.avatarUrl ?? undefined,
-      }
-    : undefined;
-
-  return {
-    id: issue.id,
-    identifier: issue.slug,
-    title: issue.title,
-    description: issue.description ?? undefined,
-    sourceType: "Issue",
-    status: {
-      id: issue.status,
-      name: statusDisplayName(issue.status),
-      type: mapIssueStatusToType(issue.status),
-    },
-    assignee,
-    priority: priorityToNumber(issue.priority),
-    priorityLabel: priorityToLabel(issue.priority),
-    createdAt: issue.createdAt.toString(),
-    updatedAt: issue.updatedAt.toString(),
-    url: `/issues/${issue.slug}`,
-    issueId: issue.id,
-    projectName: issue.project?.name ?? undefined,
-    workstreamTitle: issue.workstream?.title ?? undefined,
-  };
-}
+export type McpArtifact = {
+  id: string;
+  title: string;
+  slug: string;
+  type: string;
+  status: string;
+  snippet: string | null;
+  projectId: string | null;
+  workstreamId: string | null;
+  ownerId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  owner: {
+    id: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    avatarUrl: string | null;
+  } | null;
+  project: { name: string | null } | null;
+  workstream: { title: string | null } | null;
+};

@@ -45,11 +45,6 @@ export function registerListArtifactVersions(
           data: unknown[];
         }>(`/artifacts/${encodePathSegment(artifactId)}/versions`);
         const versions = response.data;
-        if (versions.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No versions found." }],
-          };
-        }
         const payload = buildPaginatedPayload(versions, {
           limit,
           offset,

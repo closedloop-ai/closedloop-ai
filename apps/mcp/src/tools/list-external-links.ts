@@ -63,13 +63,6 @@ export function registerListExternalLinks(
         }
 
         const links = await apiClient.get<unknown[]>("/external-links", query);
-        if (links.length === 0) {
-          return {
-            content: [
-              { type: "text" as const, text: "No external links found." },
-            ],
-          };
-        }
         const payload = buildPaginatedPayload(links, {
           limit,
           offset,
