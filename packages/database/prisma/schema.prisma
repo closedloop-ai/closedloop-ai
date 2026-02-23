@@ -218,8 +218,9 @@ model Organization {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  settings        Json     @default("{}")
-  createdAt       DateTime @default(now()) @map("created_at")
+  settings              Json     @default("{}")
+  publicDashboardToken  String?  @unique @map("public_dashboard_token")
+  createdAt             DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   // Relations
@@ -641,6 +642,7 @@ model ExternalLink {
 
 model EntityLink {
   id            String     @id @default(uuid(7)) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
   sourceId      String     @map("source_id") @db.Uuid
   sourceType    EntityType @map("source_type")
   sourceVersion Int?       @map("source_version")
@@ -651,8 +653,8 @@ model EntityLink {
   metadata      Json?
   createdAt     DateTime   @default(now()) @map("created_at")
 
-  @@index([sourceId, sourceType, linkType])
-  @@index([targetId, targetType, linkType])
+  @@index([organizationId, sourceId, sourceType, linkType])
+  @@index([organizationId, targetId, targetType, linkType])
   @@map("entity_links")
 }
 
@@ -751,7 +753,7 @@ model Loop {
   // Relations
   organization Organization @relation(fields: [organizationId], references: [id])
   user         User         @relation(fields: [userId], references: [id])
-  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  artifact     Artifact?    @relation(fields: [artifactId], references: [id], onDelete: SetNull)
   workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   childLoops   Loop[]       @relation("LoopParent")
@@ -1047,6 +1049,7 @@ model ApiKey {
   organizationId String    @map("organization_id") @db.Uuid
   userId         String    @map("user_id") @db.Uuid
   name           String
+  scopes         String[]  @default([])
   keyHash        String    @unique @map("key_hash")
   keyPrefix      String    @map("key_prefix")
   expiresAt      DateTime? @map("expires_at")
@@ -1057,6 +1060,51 @@ model ApiKey {
   @@index([organizationId])
   @@index([keyHash])
   @@map("api_keys")
+}
+
+model OAuthRevokedToken {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  tokenFingerprint String   @unique @map("token_fingerprint")
+  expiresAt        DateTime @map("expires_at")
+  revokedAt        DateTime @default(now()) @map("revoked_at")
+
+  @@index([expiresAt])
+  @@map("oauth_revoked_tokens")
+}
+
+model OAuthRateLimit {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  bucket          String
+  subject         String
+  requestCount    Int      @default(0) @map("request_count")
+  windowStartedAt DateTime @map("window_started_at")
+  windowExpiresAt DateTime @map("window_expires_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([bucket, subject])
+  @@index([windowExpiresAt])
+  @@map("oauth_rate_limits")
+}
+
+model OAuthAuthorizationCode {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  code             String    @unique
+  encryptedApiKey  String    @map("encrypted_api_key")
+  keyId            String    @map("key_id")
+  userId           String    @map("user_id") @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  clientId         String    @map("client_id")
+  redirectUri      String    @map("redirect_uri")
+  scopes           String[]
+  codeChallenge    String    @map("code_challenge")
+  codeChallengeMethod String @map("code_challenge_method")
+  expiresAt        DateTime  @map("expires_at")
+  consumedAt       DateTime? @map("consumed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@map("oauth_authorization_codes")
 }
 
 // =============================================================================

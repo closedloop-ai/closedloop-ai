@@ -1,9 +1,9 @@
 import { success } from "@repo/api/src/types/common";
 import { NextResponse } from "next/server";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { artifactsService } from "../../service";
 
-export const GET = withAuth<string[], "/artifacts/[id]/related">(
+export const GET = withAnyAuth<string[], "/artifacts/[id]/related">(
   async ({ user }, _request, params) => {
     const { id } = await params;
 

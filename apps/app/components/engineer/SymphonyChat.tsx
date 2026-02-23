@@ -956,7 +956,8 @@ export function SymphonyChat({
 
   // Send a message programmatically (for action buttons)
   const sendActionMessage = useCallback(
-    async (messageText: string) => {
+    async (action: SuggestedAction) => {
+      const messageText = action.message;
       // Check if debate hook handles this action
       if (debate.handleAction(messageText)) {
         return;
@@ -2291,7 +2292,7 @@ const MessageBubble = memo(
     isStreaming?: boolean;
     isLastAssistantMessage?: boolean;
     contextPercent?: number | null;
-    onSendAction?: (message: string) => void;
+    onSendAction?: (action: SuggestedAction) => void;
     onCopy?: (index: number) => void;
     onForward?: (index: number) => void;
   }>) {
@@ -2366,7 +2367,7 @@ type ChatMessageItemProps = Readonly<{
   stream: ReturnType<typeof useChatStream>;
   debate: ReturnType<typeof useCodexDebate>;
   codexChatStream: ReturnType<typeof useChatStream>;
-  sendActionMessage: (message: string) => void;
+  sendActionMessage: (action: SuggestedAction) => void;
   handleCopyMessage: (index: number) => void;
   handleForwardMessage: (index: number) => void;
   handleForwardCodexMessage: (index: number) => void;
@@ -3312,7 +3313,7 @@ type ChatMessagesAreaProps = Readonly<{
   stream: ReturnType<typeof useChatStream>;
   debate: ReturnType<typeof useCodexDebate>;
   codexChatStream: ReturnType<typeof useChatStream>;
-  sendActionMessage: (message: string) => void;
+  sendActionMessage: (action: SuggestedAction) => void;
   handleCopyMessage: (index: number) => void;
   handleForwardMessage: (index: number) => void;
   handleForwardCodexMessage: (index: number) => void;

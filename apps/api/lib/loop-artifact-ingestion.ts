@@ -20,6 +20,7 @@ import type { Loop } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
 import { downloadArtifactFile } from "./loop-state";
 
 // ---------------------------------------------------------------------------
@@ -136,12 +137,25 @@ export async function ingestPlanArtifacts(
 
   await artifactVersionService.createVersion(artifactId, null, finalContent);
 
-  await withDb((db) =>
+  const updatedArtifact = await withDb((db) =>
     db.artifact.update({
       where: { id: artifactId, organizationId },
       data: { status: "DRAFT" },
+      select: { slug: true, latestVersion: true },
     })
   );
+
+  // Update the Liveblocks room metadata with the new version number.
+  // The frontend seeding logic compares the editor content with the API
+  // content and re-seeds when they differ, so the room is preserved
+  // (keeping comments) while stale Yjs content gets replaced.
+  if (updatedArtifact.slug) {
+    await updateArtifactRoomVersion(
+      organizationId,
+      updatedArtifact.slug,
+      updatedArtifact.latestVersion
+    );
+  }
 
   // Persist judges report if available (upsert for idempotency)
   if (artifacts.judgesReport) {
@@ -249,21 +263,26 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  const repository = await withDb((db) =>
-    db.repository.findFirst({
+  // Look up via GitHubInstallationRepository (the canonical repo table).
+  // The old Repository table is deprecated and being removed.
+  const installationRepo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: repoFullName,
-        project: { organizationId: loop.organizationId },
+        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
       },
       select: { id: true },
     })
   );
 
-  if (!repository) {
-    log.warn("[loop-artifact-ingestion] Repository not found", {
-      loopId: loop.id,
-      repoFullName,
-    });
+  if (!installationRepo) {
+    log.warn(
+      "[loop-artifact-ingestion] GitHubInstallationRepository not found",
+      {
+        loopId: loop.id,
+        repoFullName,
+      }
+    );
     return;
   }
 
@@ -300,12 +319,35 @@ export async function ingestExecutionArtifacts(
       return;
     }
 
+    const existingPr = await tx.gitHubPullRequest.findUnique({
+      where: {
+        repositoryId_number: {
+          repositoryId: installationRepo.id,
+          number: prNumber,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (existingPr) {
+      log.info(
+        "[loop-artifact-ingestion] PR already exists; skipping replayed execution artifact creates",
+        {
+          loopId: loop.id,
+          repositoryId: installationRepo.id,
+          prNumber,
+          pullRequestId: existingPr.id,
+        }
+      );
+      return;
+    }
+
     // Create GitHubPullRequest record
     await tx.gitHubPullRequest.create({
       data: {
         workstreamId: loop.workstreamId!,
         organizationId: loop.organizationId,
-        repositoryId: repository.id,
+        repositoryId: installationRepo.id,
         artifactId: loop.artifactId!,
         githubId: executionResult.github_id ?? prNumber,
         number: prNumber,
@@ -339,6 +381,7 @@ export async function ingestExecutionArtifacts(
     // Create EntityLink: artifact -> PRODUCES -> PR link
     await tx.entityLink.create({
       data: {
+        organizationId: artifact.organizationId,
         sourceId: loop.artifactId!,
         sourceType: "ARTIFACT",
         targetId: prLink.id,
@@ -370,6 +413,7 @@ export async function ingestExecutionArtifacts(
     // Create EntityLink: PR -> PRODUCES -> preview deployment
     await tx.entityLink.create({
       data: {
+        organizationId: artifact.organizationId,
         sourceId: prLink.id,
         sourceType: "EXTERNAL_LINK",
         targetId: previewLink.id,

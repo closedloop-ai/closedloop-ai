@@ -12,6 +12,7 @@ import type { NextRequest } from "next/server";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -242,14 +243,20 @@ function spawnClaude(
     : `${systemPrompt}\n\n---\n\nUser: ${message}`;
   const hasRunDir = runDir && existsSync(runDir);
 
+  // Hoisted so the cancel callback can kill the process
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
+
   return new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        if (!history.claudeSessionId) {
-          history.claudeSessionId = sessionId;
-          saveChatHistory(history);
-        }
-      });
+      const streamState = createStreamState(
+        (sessionId) => {
+          if (!history.claudeSessionId) {
+            history.claudeSessionId = sessionId;
+            saveChatHistory(history);
+          }
+        },
+        makeResultKillTimer(() => claudeProcess, "run-viewer-chat")
+      );
 
       try {
         controller.enqueue(
@@ -286,6 +293,7 @@ function spawnClaude(
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
+        claudeProcess = claude;
 
         console.log("[run-viewer-chat] Claude PID:", claude.pid);
 
@@ -331,6 +339,7 @@ function spawnClaude(
         });
 
         claude.on("close", (code) => {
+          claudeProcess = null;
           if (stdoutBuffer.trim()) {
             try {
               processStreamEvent(
@@ -374,6 +383,7 @@ function spawnClaude(
         });
 
         claude.on("error", (err) => {
+          claudeProcess = null;
           console.error("[run-viewer-chat] Claude spawn error:", err);
           enqueue(
             JSON.stringify({
@@ -392,6 +402,19 @@ function spawnClaude(
           )
         );
         controller.close();
+      }
+    },
+
+    cancel() {
+      if (claudeProcess) {
+        console.log(
+          "[run-viewer-chat] Client cancelled — killing Claude PID:",
+          claudeProcess.pid
+        );
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
+        claudeProcess = null;
       }
     },
   });

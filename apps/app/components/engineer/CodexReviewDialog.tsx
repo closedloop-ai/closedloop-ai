@@ -13,7 +13,7 @@ import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import { useCodexDebate } from "@/hooks/engineer/use-codex-debate";
 import { useCodexReviewStatus } from "@/hooks/engineer/use-codex-review-status";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
-import type { LearningUsed } from "@/lib/engineer/chat-utils";
+import type { LearningUsed, SuggestedAction } from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -515,7 +515,8 @@ export function CodexReviewDialog({
   }, []);
 
   const handleChatAction = useCallback(
-    (message: string) => {
+    (action: SuggestedAction) => {
+      const message = action.message;
       if (message === "/dismiss") {
         handleDismissAction({
           selectedFindingIndex,

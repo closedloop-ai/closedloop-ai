@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { issueCommentsService } from "./service";
 
@@ -14,7 +14,7 @@ const createCommentValidator = z.object({
  * the comment is stored in the comments table. Otherwise, the request
  * is acknowledged but the comment is not persisted (no workstream context).
  */
-export const POST = withAuth<{ created: boolean }, "/issues/[id]/comments">(
+export const POST = withAnyAuth<{ created: boolean }, "/issues/[id]/comments">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;

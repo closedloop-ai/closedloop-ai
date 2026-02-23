@@ -33,6 +33,7 @@ export const POST = withAuth<CreateApiKeyResponse, "/api-keys">(
       const input = {
         name: body.name,
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : undefined,
+        scopes: body.scopes,
       };
 
       const result = await apiKeysService.generate(

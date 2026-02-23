@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
+import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 /**
  * Register the generate-plans tool on the given MCP server.
@@ -16,19 +17,20 @@ export function registerGeneratePlans(
     {
       projectId: z.string().describe("ID of the project to generate plans for"),
     },
-    async ({ projectId }) => {
-      const result = await apiClient.post<unknown>(
-        `/projects/${projectId}/generate-plans`,
-        {}
-      );
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    }
+    ({ projectId }) =>
+      withErrorHandling(async () => {
+        const result = await apiClient.post<unknown>(
+          `/projects/${encodePathSegment(projectId)}/generate-plans`,
+          {}
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      })
   );
 }

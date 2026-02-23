@@ -234,6 +234,9 @@ importers:
       '@liveblocks/react':
         specifier: ^3.13.5
         version: 3.13.5(@types/json-schema@7.0.15)(@types/react-dom@19.2.3(@types/react@19.2.13))(@types/react@19.2.13)(react@19.2.1)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.26.0
+        version: 1.26.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       '@repo/analytics':
         specifier: workspace:*
         version: link:../../packages/analytics
@@ -348,6 +351,9 @@ importers:
       sonner:
         specifier: ^2.0.7
         version: 2.0.7(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      use-mcp:
+        specifier: ^0.0.21
+        version: 0.0.21(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -449,13 +455,16 @@ importers:
       '@repo/api':
         specifier: workspace:*
         version: link:../../packages/api
+      '@repo/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
       zod:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
-      tsx:
-        specifier: ^4.0.0
-        version: 4.21.0
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -11883,6 +11892,9 @@ packages:
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
+  strict-url-sanitise@0.0.1:
+    resolution: {integrity: sha512-nuFtF539K8jZg3FjaWH/L8eocCR6gegz5RDOsaWxfdbF5Jqr2VXWxZayjTwUzsWJDC91k2EbnJXp6FuWW+Z4hg==}
+
   string-argv@0.3.2:
     resolution: {integrity: sha512-aqD2Q0144Z+/RqG52NeHEkZauTAUWJO8c6yTftGJKO3Tja5tUgIfmIl6kExvhtxSDP7fXB6DvzkfMpCd/F3G+Q==}
     engines: {node: '>=0.6.19'}
@@ -12538,6 +12550,9 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  use-mcp@0.0.21:
+    resolution: {integrity: sha512-mF6WlWEnOWubUphXeNE3sc7/5dvlvN2AsUNla20EHPmwqqrt/LCdRIW0TWY+OgAX6O7HjZ+z2p8sKWG5OiObSg==}
 
   use-sidecar@1.1.3:
     resolution: {integrity: sha512-Fedw0aZvkhynoPYlA5WXrMCAMm+nSWdZt6lzJQ7Ok8S6Q+VsHmHpRWndVRJ8Be0ZbkfPc5LRYH+5XrzXcEeLRQ==}
@@ -25716,6 +25731,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  strict-url-sanitise@0.0.1: {}
+
   string-argv@0.3.2: {}
 
   string-width@4.2.3:
@@ -26350,6 +26367,15 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.13
+
+  use-mcp@0.0.21(@cfworker/json-schema@4.1.1)(zod@4.3.6):
+    dependencies:
+      '@modelcontextprotocol/sdk': 1.26.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
+      strict-url-sanitise: 0.0.1
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - supports-color
+      - zod
 
   use-sidecar@1.1.3(@types/react@19.2.13)(react@19.2.1):
     dependencies:

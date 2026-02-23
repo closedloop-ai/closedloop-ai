@@ -18,7 +18,7 @@ export type RepoSettings = {
 };
 
 /**
- * Complete repos configuration stored in .cache/repos.json
+ * Complete repos configuration stored in ~/.claude/closedloop/repos.json
  */
 export type ReposConfig = {
   repos: ConfiguredRepo[];
