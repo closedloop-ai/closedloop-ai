@@ -104,7 +104,21 @@ export class McpScopeError extends Error {
 
 type McpCallToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
+function findTextContent(result: McpCallToolResult): string | undefined {
+  if (!("content" in result && Array.isArray(result.content))) {
+    return undefined;
+  }
+  return (result.content as Array<{ type: string; text?: string }>).find(
+    (c) => c.type === "text" && typeof c.text === "string"
+  )?.text;
+}
+
 function parseMcpResult<T>(result: McpCallToolResult): T {
+  // Check errors first to avoid silently swallowing them
+  if ("isError" in result && result.isError) {
+    throw new Error(findTextContent(result) ?? "MCP tool error");
+  }
+
   if ("toolResult" in result) {
     const value = result.toolResult;
     if (typeof value === "string") {
@@ -113,23 +127,11 @@ function parseMcpResult<T>(result: McpCallToolResult): T {
     return value as T;
   }
 
-  if ("isError" in result && result.isError) {
-    const errText =
-      result.content.find(
-        (c): c is { type: "text"; text: string } =>
-          c.type === "text" && typeof c.text === "string"
-      )?.text ?? "MCP tool error";
-    throw new Error(errText);
-  }
-
-  const textContent = result.content.find(
-    (content): content is { type: "text"; text: string } =>
-      content.type === "text" && typeof content.text === "string"
-  );
-  if (!textContent) {
+  const text = findTextContent(result);
+  if (text === undefined) {
     throw new Error("Empty MCP tool result");
   }
-  return JSON.parse(textContent.text) as T;
+  return JSON.parse(text) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,8 +438,8 @@ export function useMcpClient(): McpClient {
       authProvider = new BrowserOAuthClientProvider(MCP_SERVER_URL, {
         clientName: "symphony-engineer",
         callbackUrl:
-          typeof window !== "undefined"
-            ? `${window.location.origin}/oauth/callback`
+          globalThis.window !== undefined
+            ? `${globalThis.location.origin}/oauth/callback`
             : "/oauth/callback",
       });
       authProviderRef.current = authProvider;
@@ -453,6 +455,8 @@ export function useMcpClient(): McpClient {
       }
       if (result === "AUTHORIZED") {
         connect().catch(console.error);
+      } else if (result !== "REDIRECT") {
+        failConnection("Authentication did not complete. Please try again.");
       }
     } catch (authError) {
       if (!isMountedRef.current || isExpectedAbortError(authError)) {
@@ -500,7 +504,12 @@ export function useMcpClient(): McpClient {
       getMe: async () => {
         const result = await callTool("get-me", {});
         const parsed = parseMcpResult<{ data: McpUser } | McpUser>(result);
-        if ("data" in parsed && parsed.data) {
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          "data" in parsed &&
+          parsed.data
+        ) {
           return parsed.data;
         }
         return parsed as McpUser;

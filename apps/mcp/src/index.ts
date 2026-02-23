@@ -2197,6 +2197,13 @@ export function createHttpServer(): import("node:http").Server {
       return;
     }
 
+    // Reject cross-origin requests from disallowed origins (prevents blind CSRF)
+    if (req.headers.origin && !corsAllowed) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
     try {
       const handled = await dispatchHttpRequest(req, res);
       if (!handled) {
