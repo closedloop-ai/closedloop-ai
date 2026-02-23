@@ -218,8 +218,9 @@ model Organization {
   claudeApiKeyEncrypted String?   @map("claude_api_key_encrypted")
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
-  settings        Json     @default("{}")
-  createdAt       DateTime @default(now()) @map("created_at")
+  settings              Json     @default("{}")
+  publicDashboardToken  String?  @unique @map("public_dashboard_token")
+  createdAt             DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   // Relations
