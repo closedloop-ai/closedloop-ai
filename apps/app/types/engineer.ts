@@ -3,10 +3,6 @@
  * Maps Symphony IssueWithWorkstream to the shape closedloop-dev components expect.
  */
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
-import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-
 export type TicketStatusType =
   | "triage"
   | "backlog"
@@ -164,82 +160,4 @@ export function artifactTypeToSourceType(type: string): TicketSourceType {
     default:
       return "PRD";
   }
-}
-
-/** Convert a Symphony ArtifactWithWorkstream (PRD) to an EngineerTicket */
-export function artifactToEngineerTicket(
-  artifact: ArtifactWithWorkstream
-): EngineerTicket {
-  const owner = artifact.owner
-    ? {
-        id: artifact.owner.id,
-        name: [artifact.owner.firstName, artifact.owner.lastName]
-          .filter(Boolean)
-          .join(" "),
-        email: "",
-        avatarUrl: artifact.owner.avatarUrl ?? undefined,
-      }
-    : undefined;
-
-  const routePrefix = getRoutePrefixForType(artifact.type) ?? "artifacts";
-
-  return {
-    id: artifact.id,
-    identifier: artifact.slug,
-    title: artifact.title,
-    description: artifact.snippet ?? undefined,
-    sourceType: artifactTypeToSourceType(artifact.type),
-    status: {
-      id: artifact.status,
-      name: artifactStatusDisplayName(artifact.status),
-      type: mapArtifactStatusToType(artifact.status),
-    },
-    assignee: owner,
-    priority: 3,
-    priorityLabel: "Medium",
-    createdAt: artifact.createdAt.toString(),
-    updatedAt: artifact.updatedAt.toString(),
-    url: `/${routePrefix}/${artifact.slug}`,
-    issueId: artifact.id,
-    projectName: artifact.project?.name ?? undefined,
-    workstreamTitle: artifact.workstream?.title ?? undefined,
-  };
-}
-
-/** Convert a Symphony IssueWithWorkstream to an EngineerTicket */
-export function issueToEngineerTicket(
-  issue: IssueWithWorkstream
-): EngineerTicket {
-  const assignee = issue.assignee
-    ? {
-        id: issue.assignee.id,
-        name: [issue.assignee.firstName, issue.assignee.lastName]
-          .filter(Boolean)
-          .join(" "),
-        email: "", // Not available on ProjectOwner type
-        avatarUrl: issue.assignee.avatarUrl ?? undefined,
-      }
-    : undefined;
-
-  return {
-    id: issue.id,
-    identifier: issue.slug,
-    title: issue.title,
-    description: issue.description ?? undefined,
-    sourceType: "Issue",
-    status: {
-      id: issue.status,
-      name: statusDisplayName(issue.status),
-      type: mapIssueStatusToType(issue.status),
-    },
-    assignee,
-    priority: priorityToNumber(issue.priority),
-    priorityLabel: priorityToLabel(issue.priority),
-    createdAt: issue.createdAt.toString(),
-    updatedAt: issue.updatedAt.toString(),
-    url: `/issues/${issue.slug}`,
-    issueId: issue.id,
-    projectName: issue.project?.name ?? undefined,
-    workstreamTitle: issue.workstream?.title ?? undefined,
-  };
 }
