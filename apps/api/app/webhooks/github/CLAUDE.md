@@ -44,15 +44,11 @@ zip-parser.ts (artifact extraction)
   - `validateRequest()` - Extract body, signature, event type from request
   - `findActionRunByCorrelationId()` - Query GitHubActionRun by correlation ID
 
-- **`zip-parser.ts`** - Generic zip extraction engine:
-  - `findContentInZip()` - Iterates zip entries through the extractor registry, returns a `ZipContentBag`
-  - Priority system: when two extractors share a key (e.g. `plan.json` vs `implementation-plan.md`), higher priority wins regardless of zip entry order
-
-- **`extractors/`** - Open-Closed extractor registry (see [Adding a New Report Type](#adding-a-new-report-type)):
-  - `types.ts` - `ZipContentExtractor<T>` protocol, `ContentKey<T>` branded type, `ZipContentBag` class
-  - `keys.ts` - `CONTENT_KEYS` constant — typed keys for all known content slots
-  - `registry.ts` - `ZIP_CONTENT_EXTRACTORS` static array — the single place to register extractors
-  - One file per extractor: `plan-extractor.ts`, `questions-extractor.ts`, `execution-result-extractor.ts`, `judges-report-extractor.ts`, `code-judges-report-extractor.ts`, `perf-summary-extractor.ts`
+- **`zip-parser.ts`** - Pure functions for extracting content from workflow artifacts:
+  - `findPlanInZip()` - Searches zip for plan content (plan.json, implementation-plan.md)
+  - `parseExecutionResult()` - Extract PR info from execution-result.json
+  - `parseJudgesReport()` - Extract evaluation report from judges.json
+  - Priority: `plan.json` (experimental plugin) > `implementation-plan.md` (legacy)
 
 ### Handler Directory (`handlers/`)
 
@@ -85,14 +81,20 @@ Event-specific handlers that implement business logic:
   - Updates GitHubActionRun record with runId, status, htmlUrl
 
 - **`workflow-completion-handler.ts`** - Handles completed workflows:
-  - **`processWorkflowCompletion()`** - Entry point: finds GitHubActionRun, downloads artifacts, resolves the right command handler via `resolveHandler(command, conclusion)`, and runs it inside a `withDb.tx()` transaction
-  - Dispatches to `handlers/commands/` — never references individual command or content logic directly
-  - Uses `withDb.tx()` to ensure artifact content and status update atomically
+  - **`processWorkflowCompletion()`** - Entry point, finds GitHubActionRun by correlation ID
+  - **`handleWorkflowSuccess()`** - Downloads artifacts, updates Artifact record:
+    - For `execute` command: delegates to `handleExecutionSuccess()`
+    - For other commands: updates artifact content/status, creates workstream event
+    - Persists judges report if available (via `ArtifactEvaluation` table)
+  - **`handleWorkflowFailure()`** - Creates workstream event (NEVER overwrites artifact content)
+  - **`handleExecutionSuccess()`** - Creates GitHubPullRequest and Artifact (type: PullRequest) records
+  - Uses `withDb.tx()` transaction to ensure artifact content and status update atomically
 
 - **`workflow-artifacts.ts`** - Pure parsing + S3 upload logic (extracted from completion handler):
-  - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing, returns `{ bag: ZipContentBag, artifactKeys }`
-  - **`processArtifactZip()`** - Handles nested zips (GitHub wraps artifacts, Symphony may also zip), merges bags via `bag.mergeFrom()`
+  - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing
+  - **`processArtifactZip()`** - Handles nested zips (GitHub wraps artifacts, Symphony may also zip)
   - **`uploadEntriesToS3()`** - Uploads extracted files to S3 with `plans/{correlationId}/` prefix
+  - **`mergeZipContent()`** - Pure function to merge zip content results (prefers non-null values)
 
 ## Event Flow
 
@@ -132,10 +134,10 @@ Route by action:
     └── completed   → processWorkflowCompletion()
                          ├── Download artifacts via GitHub API
                          ├── Extract content via zip-parser.ts
-                         ├── success → resolveHandler(command, "success").handle()
-                         │              ├── execute → execute-handler.ts (PR creation)
-                         │              └── other   → plan-handler.ts (content + CONTENT_TRANSACTION_HANDLERS)
-                         └── failure → failure-handler.ts (event only, content untouched)
+                         ├── success → handleWorkflowSuccess()
+                         │              ├── execute → handleExecutionSuccess()
+                         │              └── other   → update Artifact content/status
+                         └── failure → handleWorkflowFailure()
 ```
 
 ## Key Patterns
@@ -183,9 +185,8 @@ On success:
 The completion handler uses `withDb.tx()` to ensure atomic updates:
 ```typescript
 await withDb.tx(async (tx) => {
-  // 1. Dispatch to command handler (updates artifact content/status via bag)
-  const handler = resolveHandler(ctx.command, conclusion);
-  await handler.handle(tx, ctx, bag);
+  // 1. Process result (updates artifact content)
+  await handleWorkflowSuccess(ctx, s3Configured);
 
   // 2. Update GitHubActionRun status (done last so frontend sees content first)
   await tx.gitHubActionRun.update({ ... });
@@ -194,30 +195,29 @@ await withDb.tx(async (tx) => {
 
 This prevents race conditions where the frontend sees SUCCESS status before content is ready.
 
-### Zip Extraction: Extractor Registry Pattern
+### Zip Parsing Strategy
 
-The zip extraction pipeline follows the **Open-Closed Principle** — new content types are added by creating an extractor and registering it, without modifying the engine.
+GitHub artifacts are double-zipped:
+1. GitHub wraps uploaded artifacts in a zip
+2. Symphony may also zip its output files
 
-**Core concepts:**
-
-- `ZipContentExtractor<T>` — protocol with `key`, `priority`, `matches(entryName)`, `parse(data, entryName)`
-- `ZipContentBag` — typed heterogeneous result container; use `bag.get(CONTENT_KEYS.xxx)` to retrieve results
-- `ContentKey<T>` — branded string token that carries the result type at compile time
-
-**How extraction works:**
-
+The parser handles both:
 ```typescript
-// findContentInZip iterates entries through the registry
-const { bag, entries } = findContentInZip(zip);
+// 1. Check for nested zips first (Symphony artifact structure)
+for (const entry of outerZip.getEntries()) {
+  if (entry.entryName.endsWith(".zip")) {
+    const innerZip = new AdmZip(entry.getData());
+    const result = findPlanInZip(innerZip);
+    // ...
+  }
+}
 
-// Access results with full type safety
-const plan: string | null = bag.get(CONTENT_KEYS.planContent);
-const judges: JudgesReport | null = bag.get(CONTENT_KEYS.judgesReport);
+// 2. Also check outer zip directly (fallback)
+if (!(content.planContent || content.executionResult)) {
+  const result = findPlanInZip(outerZip);
+  // ...
+}
 ```
-
-**Priority system:** When two extractors share the same key (e.g. `plan.json` priority 10 vs `implementation-plan.md` priority 5), the higher priority wins regardless of zip entry order. This is an improvement over a first-match approach.
-
-**Double-zip handling:** GitHub artifacts are double-zipped (GitHub wraps, Symphony may also zip). `processArtifactZip` in `workflow-artifacts.ts` handles both layers, merging bags via `bag.mergeFrom()` (highest priority wins per key across inner zips).
 
 ## Testing
 
@@ -239,123 +239,6 @@ Run webhook tests:
 ```bash
 pnpm turbo test --filter=api -- --grep webhook
 ```
-
-## Adding a New Report Type
-
-Steps 1, 2, 4, and 6a are purely additive (new files only). Steps 3 and 5 touch one existing file each (`extractors/types.ts` and `extractors/registry.ts`). Step 6b adds one entry to `content-handlers/registry.ts`. The completion handler itself never changes for new report types.
-
-### 1. Define the TypeScript type
-
-```typescript
-// packages/api/src/types/coverage.ts
-export type CoverageReport = {
-  totalCoverage: number;
-  fileCoverage: { file: string; coverage: number }[];
-};
-```
-
-### 2. Add a typed key
-
-```typescript
-// apps/api/app/webhooks/github/extractors/keys.ts
-import type { CoverageReport } from "@repo/api/src/types/coverage";
-
-export const CONTENT_KEYS = {
-  // ... existing keys
-  coverageReport: contentKey<CoverageReport>("coverageReport"),
-} as const;
-```
-
-### 3. Extend `ExtractorOutputType` and `AnyZipContentExtractor`
-
-```typescript
-// apps/api/app/webhooks/github/extractors/types.ts
-export const ExtractorOutputType = {
-  // ... existing entries
-  CoverageReport: "CoverageReport",
-} as const;
-
-// Add to AnyZipContentExtractor union:
-export type AnyZipContentExtractor =
-  | ZipContentExtractor<CoverageReport, typeof ExtractorOutputType.CoverageReport>
-  | /* ... existing members */;
-```
-
-### 4. Create an extractor file
-
-```typescript
-// apps/api/app/webhooks/github/extractors/coverage-extractor.ts
-import type { CoverageReport } from "@repo/api/src/types/coverage";
-import { log } from "@repo/observability/log";
-import { CONTENT_KEYS } from "./keys";
-import { ExtractorOutputType } from "./types";
-import type { ZipContentExtractor } from "./types";
-
-export const coverageExtractor: ZipContentExtractor<CoverageReport, typeof ExtractorOutputType.CoverageReport> = {
-  key: CONTENT_KEYS.coverageReport,
-  outputType: ExtractorOutputType.CoverageReport,
-  priority: 0,
-
-  matches(entryName: string): boolean {
-    return entryName.endsWith("coverage-report.json");
-  },
-
-  parse(data: Buffer, entryName: string): CoverageReport | null {
-    try {
-      const result = JSON.parse(data.toString("utf-8")) as CoverageReport;
-      log.info(`Found coverage report: ${entryName}`);
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      log.error(`Failed to parse coverage-report.json: ${message}`);
-      return null;
-    }
-  },
-};
-```
-
-### 5. Register the extractor
-
-```typescript
-// apps/api/app/webhooks/github/extractors/registry.ts
-import { coverageExtractor } from "./coverage-extractor";
-
-export const ZIP_CONTENT_EXTRACTORS: AnyZipContentExtractor[] = [
-  // ... existing extractors
-  coverageExtractor,
-];
-```
-
-### 6. Wire persistence via a ContentTransactionHandler
-
-Create a handler implementing the `ContentTransactionHandler<T>` protocol and register it in `CONTENT_TRANSACTION_HANDLERS`. The dispatcher in `plan-handler.ts` calls every registered handler automatically — no changes to the completion handler are needed.
-
-```typescript
-// apps/api/app/webhooks/github/handlers/commands/content-handlers/coverage-handler.ts
-import type { CoverageReport } from "@repo/api/src/types/coverage";
-import { CONTENT_KEYS } from "../../../extractors/keys";
-import type { ContentTransactionHandler } from "./types";
-
-export const coverageHandler: ContentTransactionHandler<CoverageReport> = {
-  key: CONTENT_KEYS.coverageReport,
-  async handle(tx, ctx, value) {
-    if (!ctx.artifactId) { return; }
-    await tx.artifactCoverage.upsert({ ... });
-  },
-};
-```
-
-```typescript
-// apps/api/app/webhooks/github/handlers/commands/content-handlers/registry.ts
-import { coverageHandler } from "./coverage-handler";
-
-export const CONTENT_TRANSACTION_HANDLERS: AnyContentTransactionHandler[] = [
-  // ... existing handlers
-  coverageHandler,
-];
-```
-
----
 
 ## Adding a New Event Handler
 

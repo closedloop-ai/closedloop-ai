@@ -14,10 +14,6 @@ export type WorkflowContext = {
   artifactId: string;
   workstreamId: string;
   runId: number;
-  /** GitHub Actions run URL — consumed by failure handlers. */
-  htmlUrl: string;
-  /** Actual conclusion reported by GitHub (success, failure, cancelled, timed_out, …). */
-  conclusion: string;
   command?: SymphonyCommand;
   repositoryId?: string;
   actionRunId?: string;

@@ -1,10 +1,7 @@
 import { computeGitBlobSha } from "@repo/github/git-blob-sha";
 import { log } from "@repo/observability/log";
-import { CONTENT_KEYS } from "./keys";
-import type { PromptInfo, PromptsSnapshot } from "./prompt-types";
+import type { PromptInfo } from "./prompt-types";
 import { PromptType } from "./prompt-types";
-import type { ZipContentExtractor } from "./types";
-import { ExtractorOutputType } from "./types";
 
 /** Folder that contains all agent prompt files. */
 const AGENTS_SNAPSHOT_DIR = "agents-snapshot/";
@@ -21,7 +18,7 @@ const RUNS_PREFIX_REGEX = /^runs\/[^/]+\//;
  * the repo root (bare `agents-snapshot/…`) or from the runs/ directory
  * (`runs/20240223-123456/agents-snapshot/…`).
  */
-function normalizeEntryName(entryName: string): string {
+export function normalizeEntryName(entryName: string): string {
   return entryName.replace(RUNS_PREFIX_REGEX, "");
 }
 
@@ -75,7 +72,7 @@ function resolvePromptType(entryName: string): PromptType {
 
 /**
  * Parse a single prompt file (Buffer + zip entry name) into a PromptInfo.
- * Returns null when the file cannot be parsed or has no recognisable frontmatter.
+ * Returns null when the file cannot be parsed.
  *
  * Exported for direct use in unit tests.
  */
@@ -100,11 +97,7 @@ export function parsePromptFile(
 
     const normalized = normalizeEntryName(entryName);
     const promptType = resolvePromptType(normalized);
-
-    // Strip any leading runs/<id>/ prefix so file_path is always relative to
-    // the agents-snapshot directory root (e.g. "agents-snapshot/my-agent.md").
     const file_path = normalized;
-
     const sha = computeGitBlobSha(data);
 
     log.info(
@@ -128,40 +121,11 @@ export function parsePromptFile(
   }
 }
 
-/**
- * Accumulating extractor for agent and judge prompt files stored under the
- * `agents-snapshot/` folder inside Symphony run zip artifacts.
- *
- * Because a zip may contain many prompt files, this extractor uses the
- * `mergeWith` hook so that every matching entry is parsed and merged into a
- * single PromptsSnapshot rather than replacing the previous result.
- */
-export const promptsExtractor: ZipContentExtractor<
-  PromptsSnapshot,
-  typeof ExtractorOutputType.PromptsSnapshot
-> = {
-  key: CONTENT_KEYS.promptsSnapshot,
-  outputType: ExtractorOutputType.PromptsSnapshot,
-  priority: 0,
-
-  matches(entryName: string): boolean {
-    const normalized = normalizeEntryName(entryName);
-    return (
-      normalized.startsWith(AGENTS_SNAPSHOT_DIR) &&
-      normalized.endsWith(".md") &&
-      !normalized.endsWith("/")
-    );
-  },
-
-  parse(data: Buffer, entryName: string): PromptsSnapshot | null {
-    const prompt = parsePromptFile(data, entryName);
-    if (prompt === null) {
-      return null;
-    }
-    return { prompts: [prompt] };
-  },
-
-  mergeWith(existing: PromptsSnapshot, next: PromptsSnapshot): PromptsSnapshot {
-    return { prompts: [...existing.prompts, ...next.prompts] };
-  },
-};
+export function isPromptFileEntry(entryName: string): boolean {
+  const normalized = normalizeEntryName(entryName);
+  return (
+    normalized.startsWith(AGENTS_SNAPSHOT_DIR) &&
+    normalized.endsWith(".md") &&
+    !normalized.endsWith("/")
+  );
+}

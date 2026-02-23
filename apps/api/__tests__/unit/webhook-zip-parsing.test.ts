@@ -1,35 +1,33 @@
 /**
  * Unit tests for ZIP parsing logic in GitHub webhook handler.
  *
- * Tests scenarios 1-11 from the testing strategy:
+ * Tests scenarios 1-10 from the testing strategy:
  * 1. ZIP with judges.json is extracted correctly
  * 2. ZIP without judges.json yields null
  * 3. ZIP with perf.jsonl extracts a parsed PerfSummary
  * 4. ZIP without perf.jsonl yields null perfSummary
  * 5. ZIP with code-judges.json is extracted correctly (separate from judges.json)
- * 6. code-judges.json does not match judgesReportExtractor (no cross-contamination)
+ * 6. code-judges.json does not populate judgesReport (no cross-contamination)
  * 7. ZIP with agents-snapshot/ prompt files extracts PromptsSnapshot
  * 8. Multiple prompt files are accumulated into a single PromptsSnapshot
  * 9. Files in agents-snapshot/judges/ receive PromptType.JUDGE
- * 10. Files outside agents-snapshot/ are not matched by promptsExtractor
- * 11. mergeFrom accumulates PromptsSnapshot across bags (cross-bag accumulation)
+ * 10. runs/<id>/agents-snapshot/* paths are normalized correctly
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import { parseCodeJudgesReport } from "@/app/webhooks/github/extractors/code-judges-report-extractor";
-import { parseJudgesReport } from "@/app/webhooks/github/extractors/judges-report-extractor";
-import { CONTENT_KEYS } from "@/app/webhooks/github/extractors/keys";
-import { PromptType } from "@/app/webhooks/github/extractors/prompt-types";
-import { parsePromptFile } from "@/app/webhooks/github/extractors/prompts-extractor";
 import {
-  contentKey,
-  ZipContentBag,
-} from "@/app/webhooks/github/extractors/types";
-import { findContentInZip } from "@/app/webhooks/github/zip-parser";
+  isPromptFileEntry,
+  parsePromptFile,
+} from "@/app/webhooks/github/prompt-parser";
+import { PromptType } from "@/app/webhooks/github/prompt-types";
+import {
+  findPlanInZip,
+  parseJudgesReport,
+} from "@/app/webhooks/github/zip-parser";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
 describe("ZIP parsing for judges.json", () => {
-  describe("findContentInZip", () => {
+  describe("findPlanInZip", () => {
     it("extracts judges.json when present in ZIP", () => {
       const mockJudgesReport: JudgesReport = {
         report_id: "test-report-123",
@@ -58,11 +56,10 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const judgesReport = bag.get(CONTENT_KEYS.judgesReport);
-      expect(judgesReport).not.toBeNull();
-      expect(judgesReport).toEqual(mockJudgesReport);
+      expect(result.judgesReport).not.toBeNull();
+      expect(result.judgesReport).toEqual(mockJudgesReport);
     });
 
     it("returns null for judgesReport when judges.json is not present", () => {
@@ -72,9 +69,9 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      expect(bag.get(CONTENT_KEYS.judgesReport)).toBeNull();
+      expect(result.judgesReport).toBeNull();
     });
 
     it("does not extract code-judges.json into judgesReport slot", () => {
@@ -94,14 +91,12 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
       // code-judges.json must NOT bleed into the judgesReport slot
-      expect(bag.get(CONTENT_KEYS.judgesReport)).toBeNull();
+      expect(result.judgesReport).toBeNull();
       // It must be available in the codeJudgesReport slot
-      expect(bag.get(CONTENT_KEYS.codeJudgesReport)).toEqual(
-        mockCodeJudgesReport
-      );
+      expect(result.codeJudgesReport).toEqual(mockCodeJudgesReport);
     });
 
     it("extracts both judges.json and code-judges.json independently", () => {
@@ -127,12 +122,10 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      expect(bag.get(CONTENT_KEYS.judgesReport)).toEqual(mockJudgesReport);
-      expect(bag.get(CONTENT_KEYS.codeJudgesReport)).toEqual(
-        mockCodeJudgesReport
-      );
+      expect(result.judgesReport).toEqual(mockJudgesReport);
+      expect(result.codeJudgesReport).toEqual(mockCodeJudgesReport);
     });
   });
 
@@ -155,12 +148,10 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const perfSummary = bag.get(CONTENT_KEYS.perfSummary);
-      expect(perfSummary).not.toBeNull();
-
-      const summary = perfSummary as PerfSummary;
+      expect(result.perfSummary).not.toBeNull();
+      const summary = result.perfSummary as PerfSummary;
       expect(summary.totalIterations).toBe(1);
       expect(summary.agentBreakdown).toHaveLength(1);
       expect(summary.agentBreakdown[0]).toMatchObject({
@@ -189,9 +180,9 @@ describe("ZIP parsing for judges.json", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      expect(bag.get(CONTENT_KEYS.perfSummary)).toBeNull();
+      expect(result.perfSummary).toBeNull();
     });
   });
 
@@ -213,46 +204,6 @@ describe("ZIP parsing for judges.json", () => {
     it("returns null for malformed JSON", () => {
       const content = Buffer.from("invalid json", "utf-8");
       const result = parseJudgesReport(content, "judges.json");
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe("parseCodeJudgesReport", () => {
-    it("parses valid code-judges.json content", () => {
-      const mockCodeJudgesReport: JudgesReport = {
-        report_id: "code-judges-report",
-        timestamp: "2026-02-05T00:00:00Z",
-        stats: [
-          {
-            type: "case_score",
-            case_id: "dry-judge",
-            final_status: 1,
-            metrics: [
-              {
-                metric_name: "dry_score",
-                threshold: 0.8,
-                score: 1.0,
-                justification: "No violations detected.",
-              },
-            ],
-          },
-        ],
-      };
-
-      const content = Buffer.from(
-        JSON.stringify(mockCodeJudgesReport),
-        "utf-8"
-      );
-      const result = parseCodeJudgesReport(content, "code-judges.json");
-
-      expect(result).not.toBeNull();
-      expect(result).toEqual(mockCodeJudgesReport);
-    });
-
-    it("returns null for malformed JSON", () => {
-      const content = Buffer.from("invalid json", "utf-8");
-      const result = parseCodeJudgesReport(content, "code-judges.json");
 
       expect(result).toBeNull();
     });
@@ -329,7 +280,7 @@ describe("prompts extractor", () => {
     });
   });
 
-  describe("findContentInZip with agents-snapshot files", () => {
+  describe("findPlanInZip with agents-snapshot files", () => {
     it("extracts a single agent prompt file into PromptsSnapshot", () => {
       const zipBuffer = buildZipWithEntries([
         {
@@ -340,9 +291,9 @@ describe("prompts extractor", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const snapshot = bag.get(CONTENT_KEYS.promptsSnapshot);
+      const snapshot = result.promptsSnapshot;
       expect(snapshot).not.toBeNull();
       expect(snapshot?.prompts).toHaveLength(1);
       expect(snapshot?.prompts[0].name).toBe("test-agent");
@@ -363,9 +314,9 @@ describe("prompts extractor", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const snapshot = bag.get(CONTENT_KEYS.promptsSnapshot);
+      const snapshot = result.promptsSnapshot;
       expect(snapshot).not.toBeNull();
       expect(snapshot?.prompts).toHaveLength(2);
 
@@ -381,9 +332,9 @@ describe("prompts extractor", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      expect(bag.get(CONTENT_KEYS.promptsSnapshot)).toBeNull();
+      expect(result.promptsSnapshot).toBeNull();
     });
 
     it("ignores files outside agents-snapshot/", () => {
@@ -394,9 +345,9 @@ describe("prompts extractor", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const snapshot = bag.get(CONTENT_KEYS.promptsSnapshot);
+      const snapshot = result.promptsSnapshot;
       expect(snapshot?.prompts).toHaveLength(1);
       expect(snapshot?.prompts[0].file_path).toBe(
         "agents-snapshot/real-agent.md"
@@ -417,9 +368,9 @@ describe("prompts extractor", () => {
 
       const AdmZip = require("adm-zip");
       const zip = new AdmZip(zipBuffer);
-      const { bag } = findContentInZip(zip);
+      const result = findPlanInZip(zip);
 
-      const snapshot = bag.get(CONTENT_KEYS.promptsSnapshot);
+      const snapshot = result.promptsSnapshot;
       expect(snapshot?.prompts).toHaveLength(2);
 
       const agent = snapshot?.prompts.find(
@@ -435,113 +386,22 @@ describe("prompts extractor", () => {
       expect(judge?.name).toBe("test-judge");
     });
   });
-});
 
-describe("ZipContentBag.mergeFrom cross-bag accumulation", () => {
-  it("accumulates PromptsSnapshot from two bags via setAccumulating", () => {
-    const key = contentKey<{ items: string[] }>("test-accum");
-    const mergeFn = (a: { items: string[] }, b: { items: string[] }) => ({
-      items: [...a.items, ...b.items],
+  describe("isPromptFileEntry", () => {
+    it("matches entries in agents-snapshot/", () => {
+      expect(isPromptFileEntry("agents-snapshot/agent.md")).toBe(true);
+      expect(isPromptFileEntry("agents-snapshot/judges/judge.md")).toBe(true);
     });
 
-    const bagA = new ZipContentBag();
-    bagA.setAccumulating(key, { items: ["a1", "a2"] }, mergeFn);
-
-    const bagB = new ZipContentBag();
-    bagB.setAccumulating(key, { items: ["b1"] }, mergeFn);
-
-    bagA.mergeFrom(bagB);
-
-    expect(bagA.get(key)).toEqual({ items: ["a1", "a2", "b1"] });
-  });
-
-  it("accumulates into an empty bag (no prior value for key)", () => {
-    const key = contentKey<{ items: string[] }>("test-accum-empty");
-    const mergeFn = (a: { items: string[] }, b: { items: string[] }) => ({
-      items: [...a.items, ...b.items],
+    it("matches entries with runs/<id>/ prefix", () => {
+      expect(
+        isPromptFileEntry("runs/20240223-123456/agents-snapshot/agent.md")
+      ).toBe(true);
     });
 
-    const bagA = new ZipContentBag();
-
-    const bagB = new ZipContentBag();
-    bagB.setAccumulating(key, { items: ["b1"] }, mergeFn);
-
-    bagA.mergeFrom(bagB);
-
-    expect(bagA.get(key)).toEqual({ items: ["b1"] });
-  });
-
-  it("accumulates PromptsSnapshot across two findContentInZip bags", () => {
-    const AdmZip = require("adm-zip");
-
-    const zipBufferA = buildZipWithEntries([
-      { name: "agents-snapshot/agent-one.md", content: AGENT_FRONTMATTER },
-    ]);
-    const zipBufferB = buildZipWithEntries([
-      {
-        name: "agents-snapshot/judges/judge-one.md",
-        content: JUDGE_FRONTMATTER,
-      },
-    ]);
-
-    const { bag: bagA } = findContentInZip(new AdmZip(zipBufferA));
-    const { bag: bagB } = findContentInZip(new AdmZip(zipBufferB));
-
-    bagA.mergeFrom(bagB);
-
-    const snapshot = bagA.get(CONTENT_KEYS.promptsSnapshot);
-    expect(snapshot?.prompts).toHaveLength(2);
-
-    const names = snapshot?.prompts.map((p) => p.name);
-    expect(names).toContain("test-agent");
-    expect(names).toContain("test-judge");
-  });
-
-  it("does not lose first bag prompts when second bag has same key at equal priority", () => {
-    const AdmZip = require("adm-zip");
-
-    const zipBufferA = buildZipWithEntries([
-      { name: "agents-snapshot/agent-one.md", content: AGENT_FRONTMATTER },
-    ]);
-    const zipBufferB = buildZipWithEntries([
-      { name: "agents-snapshot/agent-two.md", content: AGENT_FRONTMATTER },
-    ]);
-
-    const { bag: bagA } = findContentInZip(new AdmZip(zipBufferA));
-    const { bag: bagB } = findContentInZip(new AdmZip(zipBufferB));
-
-    bagA.mergeFrom(bagB);
-
-    const snapshot = bagA.get(CONTENT_KEYS.promptsSnapshot);
-    // Both agents should be present — the bug would have dropped agent-two
-    expect(snapshot?.prompts).toHaveLength(2);
-  });
-
-  it("priority-wins semantics still apply to non-accumulating keys", () => {
-    const key = contentKey<string>("priority-key");
-
-    const bagA = new ZipContentBag();
-    bagA.set(key, "low-priority", 1);
-
-    const bagB = new ZipContentBag();
-    bagB.set(key, "high-priority", 10);
-
-    bagA.mergeFrom(bagB);
-
-    expect(bagA.get(key)).toBe("high-priority");
-  });
-
-  it("lower-priority non-accumulating value does not overwrite higher-priority", () => {
-    const key = contentKey<string>("priority-key-no-overwrite");
-
-    const bagA = new ZipContentBag();
-    bagA.set(key, "high-priority", 10);
-
-    const bagB = new ZipContentBag();
-    bagB.set(key, "low-priority", 1);
-
-    bagA.mergeFrom(bagB);
-
-    expect(bagA.get(key)).toBe("high-priority");
+    it("ignores non-agents-snapshot markdown files", () => {
+      expect(isPromptFileEntry("other/path/agent.md")).toBe(false);
+      expect(isPromptFileEntry("agents-snapshot/not-markdown.txt")).toBe(false);
+    });
   });
 });
