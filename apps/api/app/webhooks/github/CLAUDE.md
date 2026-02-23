@@ -221,7 +221,7 @@ const judges: JudgesReport | null = bag.get(CONTENT_KEYS.judgesReport);
 
 **Priority system:** When two extractors share the same key (e.g. `plan.json` priority 10 vs `implementation-plan.md` priority 5), the higher priority wins regardless of zip entry order. This is an improvement over a first-match approach.
 
-**Double-zip handling:** GitHub artifacts are double-zipped (GitHub wraps, Symphony may also zip). `processArtifactZip` in `workflow-artifacts.ts` handles both layers, merging bags via `bag.mergeFrom()` (first non-null wins per key).
+**Double-zip handling:** GitHub artifacts are double-zipped (GitHub wraps, Symphony may also zip). `processArtifactZip` in `workflow-artifacts.ts` handles both layers, merging bags via `bag.mergeFrom()` (highest priority wins per key across inner zips).
 
 ## Testing
 
@@ -246,7 +246,7 @@ pnpm turbo test --filter=api -- --grep webhook
 
 ## Adding a New Report Type
 
-Steps 1-4 are purely additive (no existing files modified). Step 5 is the only existing-file change — the persistence wiring is unavoidable.
+Steps 1, 2, 4 are purely additive (new files only). Steps 3 and 5 touch existing files (`types.ts` and `registry.ts` respectively). Step 6 is the persistence wiring in the handler.
 
 ### 1. Define the TypeScript type
 
@@ -270,17 +270,34 @@ export const CONTENT_KEYS = {
 } as const;
 ```
 
-### 3. Create an extractor file
+### 3. Extend `ExtractorOutputType` and `AnyZipContentExtractor`
+
+```typescript
+// apps/api/app/webhooks/github/extractors/types.ts
+export const ExtractorOutputType = {
+  // ... existing entries
+  CoverageReport: "CoverageReport",
+} as const;
+
+// Add to AnyZipContentExtractor union:
+export type AnyZipContentExtractor =
+  | ZipContentExtractor<CoverageReport, typeof ExtractorOutputType.CoverageReport>
+  | /* ... existing members */;
+```
+
+### 4. Create an extractor file
 
 ```typescript
 // apps/api/app/webhooks/github/extractors/coverage-extractor.ts
 import type { CoverageReport } from "@repo/api/src/types/coverage";
 import { log } from "@repo/observability/log";
 import { CONTENT_KEYS } from "./keys";
+import { ExtractorOutputType } from "./types";
 import type { ZipContentExtractor } from "./types";
 
-export const coverageExtractor: ZipContentExtractor<CoverageReport> = {
+export const coverageExtractor: ZipContentExtractor<CoverageReport, typeof ExtractorOutputType.CoverageReport> = {
   key: CONTENT_KEYS.coverageReport,
+  outputType: ExtractorOutputType.CoverageReport,
   priority: 0,
 
   matches(entryName: string): boolean {
@@ -301,19 +318,19 @@ export const coverageExtractor: ZipContentExtractor<CoverageReport> = {
 };
 ```
 
-### 4. Register the extractor
+### 5. Register the extractor
 
 ```typescript
 // apps/api/app/webhooks/github/extractors/registry.ts
 import { coverageExtractor } from "./coverage-extractor";
 
-export const ZIP_CONTENT_EXTRACTORS: ZipContentExtractor<unknown>[] = [
+export const ZIP_CONTENT_EXTRACTORS: AnyZipContentExtractor[] = [
   // ... existing extractors
   coverageExtractor,
 ];
 ```
 
-### 5. Consume in handleWorkflowSuccess
+### 6. Consume in handleWorkflowSuccess
 
 ```typescript
 // apps/api/app/webhooks/github/handlers/workflow-completion-handler.ts

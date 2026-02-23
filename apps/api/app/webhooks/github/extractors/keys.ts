@@ -1,7 +1,7 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import type { ExecutionResult } from "../zip-parser";
+import type { PromptsSnapshot } from "./prompt-types";
 import { contentKey } from "./types";
 
 /** Typed keys for all known content slots in zip artifacts. */

@@ -1,8 +1,8 @@
-import type { PromptInfo, PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { PromptType } from "@repo/api/src/types/prompt";
 import { log } from "@repo/observability/log";
 import { computeGitBlobSha } from "@/lib/git-utils";
 import { CONTENT_KEYS } from "./keys";
+import type { PromptInfo, PromptsSnapshot } from "./prompt-types";
+import { PromptType } from "./prompt-types";
 import type { ZipContentExtractor } from "./types";
 import { ExtractorOutputType } from "./types";
 

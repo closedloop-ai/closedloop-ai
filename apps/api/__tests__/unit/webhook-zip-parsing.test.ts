@@ -15,10 +15,10 @@
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import { PromptType } from "@repo/api/src/types/prompt";
 import { parseCodeJudgesReport } from "@/app/webhooks/github/extractors/code-judges-report-extractor";
 import { parseJudgesReport } from "@/app/webhooks/github/extractors/judges-report-extractor";
 import { CONTENT_KEYS } from "@/app/webhooks/github/extractors/keys";
+import { PromptType } from "@/app/webhooks/github/extractors/prompt-types";
 import { parsePromptFile } from "@/app/webhooks/github/extractors/prompts-extractor";
 import { findContentInZip } from "@/app/webhooks/github/zip-parser";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";

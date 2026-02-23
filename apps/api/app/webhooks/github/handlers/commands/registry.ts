@@ -23,6 +23,12 @@ import type {
  *   - New command, custom failure behavior  → add `"newcmd:failure": myHandler`
  *   - New conclusion type                  → add `"*:newtimeout": timeoutHandler`
  *
+ * Lookup order in resolveHandler:
+ *   1. Exact key  — `${command}:${conclusion}`
+ *   2. Wildcard   — `*:${conclusion}`
+ *   3. Catch-all  — `*:*`  (currently routes to workflowFailureHandler)
+ *   4. Noop       — safety net; should never be reached
+ *
  * resolveHandler is never modified — only this map is.
  */
 export const WORKFLOW_HANDLER_MAP: ReadonlyMap<HandlerMapKey, WorkflowHandler> =
@@ -42,6 +48,10 @@ export const WORKFLOW_HANDLER_MAP: ReadonlyMap<HandlerMapKey, WorkflowHandler> =
 
     // Failure: same handler for all commands
     ["*:failure", workflowFailureHandler],
+
+    // Catch-all: treat any unknown conclusion (cancelled, timed_out, action_required, …)
+    // the same as a failure so a workstream event is always created.
+    ["*:*", workflowFailureHandler],
   ]);
 
 /** Safety-net handler — logs a warning when the map has a gap. */
@@ -64,7 +74,8 @@ const noopHandler: WorkflowHandler = {
  * Lookup order:
  *   1. Exact key  — `${command}:${conclusion}` (command-specific override)
  *   2. Wildcard   — `*:${conclusion}` (default for this conclusion)
- *   3. Noop       — safety net; should never be reached with a complete map
+ *   3. Catch-all  — `*:*` (unknown conclusions: cancelled, timed_out, etc.)
+ *   4. Noop       — safety net; should never be reached with a complete map
  *
  * This function never needs to change — extend WORKFLOW_HANDLER_MAP instead.
  */
@@ -79,6 +90,7 @@ export function resolveHandler(
   return (
     (exactKey !== undefined ? WORKFLOW_HANDLER_MAP.get(exactKey) : undefined) ??
     WORKFLOW_HANDLER_MAP.get(`*:${conclusion}`) ??
+    WORKFLOW_HANDLER_MAP.get("*:*") ??
     noopHandler
   );
 }

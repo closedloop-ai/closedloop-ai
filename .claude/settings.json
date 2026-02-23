@@ -1,4 +1,7 @@
 {
+  "permissions": {
+    "allow": ["Bash(pnpm typecheck:*)", "Bash(git add:*)"]
+  },
   "statusLine": {
     "type": "command",
     "command": ".claude/scripts/statusLine.sh"

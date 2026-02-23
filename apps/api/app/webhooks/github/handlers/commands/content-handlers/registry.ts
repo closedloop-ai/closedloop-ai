@@ -1,5 +1,7 @@
-import { codeJudgesReportHandler } from "./code-judges-report-handler";
-import { judgesReportHandler } from "./judges-report-handler";
+import {
+  codeJudgesReportHandler,
+  judgesReportHandler,
+} from "./judges-report-handler";
 import { perfSummaryHandler } from "./perf-summary-handler";
 import type { AnyContentTransactionHandler } from "./types";
 

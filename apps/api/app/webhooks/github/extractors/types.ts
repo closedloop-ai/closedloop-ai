@@ -7,9 +7,9 @@
  */
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
-import type { ExecutionResult } from "../zip-parser";
+import type { PromptsSnapshot } from "./prompt-types";
 
 /** Discriminant for all possible extractor output types. */
 export const ExtractorOutputType = {
@@ -111,13 +111,17 @@ export class ZipContentBag {
   }
 
   /**
-   * Merge another bag into this one. First non-null wins per key.
-   * Mirrors the merge semantics used across nested zip processing.
+   * Merge another bag into this one. Highest priority wins per key.
+   * When multiple inner zips are merged, the value with the higher priority
+   * replaces the stored one (e.g. plan.json priority 10 over implementation-plan.md priority 5).
    */
   mergeFrom(other: ZipContentBag): void {
     for (const [key, value] of other.store) {
-      if (!this.store.has(key) && value != null) {
+      const incomingPriority = other.priorities.get(key) ?? 0;
+      const existingPriority = this.priorities.get(key) ?? -1;
+      if (value != null && incomingPriority > existingPriority) {
         this.store.set(key, value);
+        this.priorities.set(key, incomingPriority);
       }
     }
   }
