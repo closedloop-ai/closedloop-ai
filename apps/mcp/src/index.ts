@@ -92,7 +92,7 @@ function parsePositiveIntegerEnv(
 
 const OAUTH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_TOKEN_TTL_SECONDS",
-  604_800
+  3600
 );
 const OAUTH_REFRESH_TOKEN_TTL_SECONDS = parsePositiveIntegerEnv(
   "MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS",

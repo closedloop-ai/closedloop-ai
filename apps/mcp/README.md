@@ -58,7 +58,7 @@ Use these steps to connect Claude Code CLI to ClosedLoop MCP:
 - `MCP_OAUTH_CLIENT_ID` (optional)
   - Defaults to `closedloop-mcp`.
 - `MCP_OAUTH_TOKEN_TTL_SECONDS` (optional)
-  - Defaults to `604800` (7 days).
+  - Defaults to `3600` (1 hour).
   - Values less than `1` are treated as invalid and fallback to default.
 - `MCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS` (optional)
   - Defaults to `2592000` (30 days).
@@ -129,6 +129,8 @@ They are also IP-filtered by `MCP_INTERNAL_ALLOWED_IPS` in non-local environment
 - OAuth access token revocations are persisted in DB table `oauth_revoked_tokens`.
 - OAuth refresh tokens are persisted in DB table `oauth_refresh_tokens`.
 - OAuth rate-limit counters are persisted in DB table `oauth_rate_limits`.
+- Refresh token scope narrowing is sticky: if a refresh request asks for a narrower
+  scope, subsequent refreshes cannot re-expand beyond that narrowed scope.
 
 ### cURL Examples
 

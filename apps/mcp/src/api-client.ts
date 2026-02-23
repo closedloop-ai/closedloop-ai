@@ -33,7 +33,23 @@ function unwrapApiResult<T>(body: unknown): T {
     return record.data as T;
   }
   const error = record.error;
-  throw new Error(typeof error === "string" ? error : "API request failed");
+  if (typeof error === "string") {
+    throw new Error(error);
+  }
+  const errorRecord = asRecord(error);
+  const message = errorRecord.message;
+  if (typeof message === "string" && message.length > 0) {
+    throw new Error(message);
+  }
+  try {
+    throw new Error(
+      typeof error === "undefined"
+        ? "API request failed"
+        : JSON.stringify(error)
+    );
+  } catch {
+    throw new Error("API request failed");
+  }
 }
 
 export class ApiClient {
