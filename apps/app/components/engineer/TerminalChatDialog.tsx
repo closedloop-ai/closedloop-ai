@@ -260,7 +260,7 @@ export function TerminalChatDialog({
     };
     globalThis.addEventListener("keydown", handler);
     return () => globalThis.removeEventListener("keydown", handler);
-  });
+  }, [open]);
 
   // Reload and validate layout against current viewport each time dialog opens
   useEffect(() => {
@@ -404,6 +404,9 @@ export function TerminalChatDialog({
       if (rafId) {
         cancelAnimationFrame(rafId);
       }
+      // Remove any orphaned ghost divs if component unmounts mid-drag/resize
+      dragStartRef.current?.ghost.remove();
+      resizeStartRef.current?.ghost.remove();
       globalThis.removeEventListener("pointermove", onPointerMove);
       globalThis.removeEventListener("pointerup", onPointerUp);
     };

@@ -12,6 +12,7 @@ import {
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import {
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -493,13 +494,16 @@ export async function POST(
 
   const stream = new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        if (!history.sessionId) {
-          history.sessionId = sessionId;
-          saveChatHistory(paths.historyPath, history);
-          console.log("[Chat API] Persisted session ID early:", sessionId);
-        }
-      });
+      const streamState = createStreamState(
+        (sessionId) => {
+          if (!history.sessionId) {
+            history.sessionId = sessionId;
+            saveChatHistory(paths.historyPath, history);
+            console.log("[Chat API] Persisted session ID early:", sessionId);
+          }
+        },
+        makeResultKillTimer(() => claudeProcess, "Chat API")
+      );
       streamStateRef = streamState;
 
       try {
@@ -683,7 +687,9 @@ export async function POST(
           "[Chat API] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
 
         // Save partial response so it's not lost
         if (streamStateRef) {

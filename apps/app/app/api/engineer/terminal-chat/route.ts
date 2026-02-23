@@ -11,6 +11,7 @@ import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -236,12 +237,15 @@ function handleClaude(
 
   return new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        if (!history.claudeSessionId) {
-          history.claudeSessionId = sessionId;
-          saveChatHistory(history);
-        }
-      });
+      const streamState = createStreamState(
+        (sessionId) => {
+          if (!history.claudeSessionId) {
+            history.claudeSessionId = sessionId;
+            saveChatHistory(history);
+          }
+        },
+        makeResultKillTimer(() => claudeProcess, "terminal-chat")
+      );
 
       try {
         controller.enqueue(
@@ -392,7 +396,9 @@ function handleClaude(
 
     cancel() {
       if (claudeProcess) {
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
         claudeProcess = null;
       }
     },
