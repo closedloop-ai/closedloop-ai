@@ -664,12 +664,16 @@ export function TicketList({
   useEffect(() => {
     const THROTTLE_KEY = "lastWorktreeCleanup";
     const ONE_HOUR = 60 * 60 * 1000;
-    const last = localStorage.getItem(THROTTLE_KEY);
+    const last = globalThis.localStorage?.getItem(THROTTLE_KEY);
     if (last && Date.now() - Number(last) < ONE_HOUR) {
       return;
     }
     fetch("/api/engineer/git/worktree", { method: "POST" })
-      .then(() => localStorage.setItem(THROTTLE_KEY, Date.now().toString()))
+      .then((res) => {
+        if (res.ok) {
+          globalThis.localStorage?.setItem(THROTTLE_KEY, Date.now().toString());
+        }
+      })
       .catch(() => {});
   }, []);
 

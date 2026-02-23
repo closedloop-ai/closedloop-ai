@@ -12,8 +12,10 @@ import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
+import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
 type ChatMessage = {
   id: string;
@@ -59,24 +61,49 @@ const ALLOWED_TOOLS = [
 ].join(",");
 
 /**
- * Get work directory paths for a ticket
+ * Get work directory paths for a ticket.
+ *
+ * When branchName and prNumber are provided (PR comment-chat), resolves the
+ * effective working directory via resolveWorktreeForPR (check HEAD, scan
+ * existing worktrees, or create a new one). Otherwise falls back to the
+ * legacy ticketId-based worktree lookup.
  */
-function getWorkPaths(ticketId: string, repoPath: string, commentId: string) {
+function getWorkPaths(
+  ticketId: string,
+  repoPath: string,
+  commentId: string,
+  branchName?: string | null,
+  prNumber?: number | null
+) {
   const expandedRepoPath = expandHome(repoPath);
-
-  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const sanitizedCommentId = commentId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
-  const repoName = basename(expandedRepoPath);
   const worktreeParentDir = getWorktreeParentDir();
-  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
 
-  // Use worktree if it exists, otherwise fall back to base repo
-  const effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
+  let effectiveDir: string;
+
+  if (branchName && prNumber) {
+    // PR-aware resolution: HEAD check → existing worktree → create new
+    effectiveDir = resolveWorktreeForPR(
+      expandedRepoPath,
+      branchName,
+      prNumber,
+      worktreeParentDir
+    );
+  } else {
+    // Legacy: ticketId-based worktree lookup
+    const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+    const repoName = basename(expandedRepoPath);
+    const worktreeDir = join(
+      worktreeParentDir,
+      `${repoName}-${sanitizedTicket}`
+    );
+    effectiveDir = existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
+  }
+
   const claudeWorkDir = join(effectiveDir, ".claude", "work");
   const commentChatsDir = join(claudeWorkDir, "comment-chats");
 
   return {
-    worktreeDir,
     effectiveDir,
     claudeWorkDir,
     commentChatsDir,
@@ -84,6 +111,25 @@ function getWorkPaths(ticketId: string, repoPath: string, commentId: string) {
     planPath: join(claudeWorkDir, "plan.json"),
     prdPath: join(claudeWorkDir, "prd.md"),
   };
+}
+
+/**
+ * Safe wrapper around getWorkPaths that catches worktree resolution failures
+ * and returns a structured error Response instead of throwing.
+ */
+function safeGetWorkPaths(
+  ...args: Parameters<typeof getWorkPaths>
+): ReturnType<typeof getWorkPaths> | Response {
+  try {
+    return getWorkPaths(...args);
+  } catch (err) {
+    return Response.json(
+      {
+        error: `Worktree resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { status: 500 }
+    );
+  }
 }
 
 /**
@@ -156,6 +202,31 @@ function buildContextPrompt(
 
   // --- Workflow + examples + format + constraints (static) ---
   parts.push(WORKFLOW_PROMPT);
+
+  // --- Suggested action buttons ---
+  parts.push(
+    "\n## ACTION BUTTONS",
+    "Include suggested action buttons at the END of your message when there are logical next steps. Format:",
+    "<suggested-actions>",
+    `<action label="Short Label">Message to send when clicked</action>`,
+    "</suggested-actions>",
+    "",
+    "**Include actions when:**",
+    "- You proposed a diff and the user might want to apply it or request changes",
+    "- You composed a <pr_response> and the user might want to send it or edit it",
+    `- You want to offer follow-up investigation (e.g., "Check related tests", "Look at callers")`,
+    "",
+    "**Skip actions when:**",
+    `- You're just answering a clarifying question with no follow-up needed`,
+    "",
+    `**Guidelines:** 1-3 actions max, short labels (2-4 words), think "what does the user likely want to do next?"`,
+    "",
+    "**IMPORTANT — typed actions for special UI behaviors:**",
+    `- Apply/accept changes: use type="accept-changes". The message should instruct the assistant to also provide a <pr_response> afterward.`,
+    `  <action label="Apply changes" type="accept-changes">Proceed with the proposed changes. After applying, provide a <pr_response> acknowledging the fix so I can reply to the reviewer.</action>`,
+    `- Send PR response: use type="send-response". The UI will extract the <pr_response> content and post it as a GitHub comment.`,
+    `  <action label="Send response" type="send-response">Send the draft response to the reviewer.</action>`
+  );
 
   // --- Dynamic suffixes: org learnings + learning capture ---
   const orgPatterns = getOrgPatternsContext();
@@ -340,7 +411,18 @@ export async function GET(
     );
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+  const paths = safeGetWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -377,11 +459,14 @@ export async function POST(
   }
 
   const body = await request.json();
-  const { message, displayContent, commentContext } = body as {
-    message: string;
-    displayContent?: string;
-    commentContext?: CommentContext;
-  };
+  const { message, displayContent, commentContext, branchName, prNumber } =
+    body as {
+      message: string;
+      displayContent?: string;
+      commentContext?: CommentContext;
+      branchName?: string;
+      prNumber?: number;
+    };
 
   if (!message || typeof message !== "string") {
     return new Response(JSON.stringify({ error: "message is required" }), {
@@ -390,7 +475,16 @@ export async function POST(
     });
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const paths = safeGetWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branchName,
+    prNumber
+  );
+  if (paths instanceof Response) {
+    return paths;
+  }
 
   // Check if effective directory exists
   if (!existsSync(paths.effectiveDir)) {
@@ -442,17 +536,20 @@ export async function POST(
 
   const stream = new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        // Eagerly persist session ID so we can resume if Claude gets killed
-        if (!history.sessionId) {
-          history.sessionId = sessionId;
-          saveCommentChatHistory(paths.historyPath, history);
-          console.log(
-            "[Comment Chat API] Persisted session ID early:",
-            sessionId
-          );
-        }
-      });
+      const streamState = createStreamState(
+        (sessionId) => {
+          // Eagerly persist session ID so we can resume if Claude gets killed
+          if (!history.sessionId) {
+            history.sessionId = sessionId;
+            saveCommentChatHistory(paths.historyPath, history);
+            console.log(
+              "[Comment Chat API] Persisted session ID early:",
+              sessionId
+            );
+          }
+        },
+        makeResultKillTimer(() => claudeProcess, "Comment Chat API")
+      );
       streamStateRef = streamState;
 
       try {
@@ -466,6 +563,16 @@ export async function POST(
               type: "status",
               status: "spawning",
               resuming: isResuming,
+            })}\n`
+          )
+        );
+
+        // Let the client know which directory Claude will operate in
+        controller.enqueue(
+          encoder.encode(
+            `${JSON.stringify({
+              type: "worktree_resolved",
+              effectiveDir: paths.effectiveDir,
             })}\n`
           )
         );
@@ -626,7 +733,9 @@ export async function POST(
           "[Comment Chat API] Client cancelled — killing Claude PID:",
           claudeProcess.pid
         );
-        claudeProcess.kill("SIGTERM");
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
 
         // Save partial response so it's not lost
         if (streamStateRef) {
@@ -684,7 +793,18 @@ export async function DELETE(
     );
   }
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+  const paths = safeGetWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,
@@ -735,13 +855,25 @@ export async function PATCH(
     );
   }
 
+  const branch = searchParams.get("branch");
+  const prNum = searchParams.get("prNumber");
+
   const body = await request.json();
   const { message, markResponded } = body as {
     message?: ChatMessage;
     markResponded?: string;
   };
 
-  const paths = getWorkPaths(ticketId, repoPath, commentId);
+  const paths = safeGetWorkPaths(
+    ticketId,
+    repoPath,
+    commentId,
+    branch,
+    prNum ? Number(prNum) : null
+  );
+  if (paths instanceof Response) {
+    return paths;
+  }
   const history = loadCommentChatHistory(
     paths.historyPath,
     ticketId,

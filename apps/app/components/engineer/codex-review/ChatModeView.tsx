@@ -15,6 +15,7 @@ import {
   Search,
 } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
 import { ChatInput } from "@/components/engineer/chat/ChatInput";
 import { MessageContent } from "@/components/engineer/chat/MessageContent";
@@ -64,7 +65,7 @@ type ChatModeViewProps = {
   // Debate
   debate: ReturnType<typeof useCodexDebate>;
   // Actions
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onClearChat: () => Promise<void>;
   // Learnings
   learningsStatus?: "none" | "processing" | "completed";
@@ -377,7 +378,7 @@ type ChatMessageListProps = {
   chatMessages: ChatMessage[];
   isAnyStreaming: boolean;
   debate: ReturnType<typeof useCodexDebate>;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   contextPercent: number | null;
 };
 
@@ -419,6 +420,14 @@ function ChatMessageList({
             key={msg.id}
             messageRole={effectiveSender === "codex" ? "user" : msg.role}
             onAction={onAction}
+            onCopy={async () => {
+              try {
+                await navigator.clipboard.writeText(contentWithoutActions);
+                toast.success("Copied to clipboard");
+              } catch {
+                toast.error("Failed to copy");
+              }
+            }}
             sender={effectiveSender}
             timestamp={msg.timestamp}
           >

@@ -48,12 +48,18 @@ import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
 import {
   ReviewChatPane,
+  resolveFullPath,
   splitReviewOutput,
   stripWorktreePath,
 } from "@/components/engineer/ReviewChatPane";
 import { useGitHubUser } from "@/hooks/engineer/use-github-user";
+import { useLearnings } from "@/hooks/engineer/use-learnings";
+import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
-import { markChatStarted } from "@/lib/engineer/pr-comment-tracker";
+import {
+  markChatStarted,
+  resetCommentStatus,
+} from "@/lib/engineer/pr-comment-tracker";
 import { type PRListItem, prListOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { addRepo, reposOptions } from "@/lib/engineer/queries/repos";
@@ -66,6 +72,15 @@ type SavedPRBrowserSelection = {
   prState: "open" | "merged";
   prNumber: number; // 0 = no PR was selected
 };
+
+type CommentChatEntry = {
+  comment: PRComment;
+  replies: PRComment[];
+  autoStart: boolean;
+  provider: "claude" | "codex";
+};
+
+const MAX_CONCURRENT_COMMENT_CHATS = 5;
 
 type ReviewEntry = {
   config: ReviewConfig;
@@ -170,10 +185,40 @@ export function PRBrowserDialog({
   const [selectedRepo, setSelectedRepo] = useState<ConfiguredRepo | null>(null);
   const [selectedPR, setSelectedPR] = useState<PRListItem | null>(null);
   const [prState, setPrState] = useState<"open" | "merged">("open");
-  const [selectedComment, setSelectedComment] = useState<{
+  const [commentChats, setCommentChats] = useState<
+    Record<string, CommentChatEntry>
+  >({});
+  const [activeCommentChatKey, setActiveCommentChatKey] = useState<
+    string | null
+  >(null);
+  const activeCommentChatKeyRef = useRef(activeCommentChatKey);
+  useEffect(() => {
+    activeCommentChatKeyRef.current = activeCommentChatKey;
+  }, [activeCommentChatKey]);
+
+  // Guard: track keys whose disk history has already been wiped this PR session
+  // to prevent double-DELETE on rapid double-click (stale-closure in handleCommentSelected).
+  const deletedHistoryKeysRef = useRef(new Set<string>());
+
+  // Prune guard keys when their chat is removed (deselect, dismiss, resolve, evict)
+  // so re-opening the same comment correctly wipes stale disk history.
+  useEffect(() => {
+    const keys = deletedHistoryKeysRef.current;
+    for (const k of keys) {
+      if (!commentChats[k]) {
+        keys.delete(k);
+      }
+    }
+  }, [commentChats]);
+
+  // Track which comment IDs have an actively streaming assistant response
+  const [streamingCommentIds, setStreamingCommentIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  // Ephemeral preview: shown when clicking a comment card body (no persistent card)
+  const [previewComment, setPreviewComment] = useState<{
     comment: PRComment;
     replies: PRComment[];
-    autoStart: boolean;
     provider: "claude" | "codex";
   } | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -195,6 +240,8 @@ export function PRBrowserDialog({
     },
   });
   const [reviews, setReviews] = useState<Record<string, ReviewEntry>>({});
+  const reviewsRef = useRef(reviews);
+  reviewsRef.current = reviews;
   const patchReview = useCallback(
     (provider: string, patch: Partial<ReviewEntry>) =>
       setReviews((prev) => {
@@ -210,6 +257,7 @@ export function PRBrowserDialog({
     string | null
   >(null);
   const [commitSha, setCommitSha] = useState<string | undefined>();
+  const [prFiles, setPrFiles] = useState<string[]>([]);
   const [leftPaneFraction, setLeftPaneFraction] = useState(() => {
     if (globalThis.localStorage === undefined) {
       return 0.45;
@@ -221,6 +269,27 @@ export function PRBrowserDialog({
 
   const { login: githubUser } = useGitHubUser();
   const isOwnPR = selectedPR ? selectedPR.author === githubUser : false;
+
+  const reviewTicketId = selectedPR ? `pr-${selectedPR.number}` : "";
+  const learnings = useLearnings({
+    ticketId: reviewTicketId,
+    repoPath: selectedRepo?.path ?? "",
+  });
+
+  const handleLearningsUsed = useCallback(
+    (used: LearningUsed[]) => {
+      fetch("/api/engineer/symphony/record-learning-use", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ticketId: reviewTicketId,
+          repoPath: selectedRepo?.path ?? "",
+          learnings: used,
+        }),
+      }).catch((err) => console.error("Failed to record learning use:", err));
+    },
+    [reviewTicketId, selectedRepo?.path]
+  );
 
   const restoredRepoRef = useRef(false);
   const restoredPRRef = useRef(false);
@@ -317,38 +386,83 @@ export function PRBrowserDialog({
     }
   }, [open, selectedRepo, prs, prState]);
 
+  /**
+   * Reset chatStarted for pending comments whose chats are being removed,
+   * so the PR comment card re-shows "Fix with Claude/Codex" options.
+   */
+  const resetPendingChats = useCallback(
+    (chats: Record<string, CommentChatEntry>) => {
+      if (!selectedPR) {
+        return;
+      }
+      const seen = new Set<string>();
+      for (const entry of Object.values(chats)) {
+        const cid = entry.comment.id;
+        if (seen.has(cid)) {
+          continue;
+        }
+        seen.add(cid);
+        resetCommentStatus(selectedPR.number, cid);
+      }
+      setCommentStatusKey((k) => k + 1);
+    },
+    [selectedPR]
+  );
+
   // Handlers
   const handleSelectRepo = (repo: ConfiguredRepo) => {
+    learnings.stopPolling();
     restoredPRRef.current = true;
+    resetPendingChats(commentChats);
     setSelectedRepo(repo);
     setSelectedPR(null);
-    setSelectedComment(null);
+    setCommentChats({});
+    setActiveCommentChatKey(null);
+    deletedHistoryKeysRef.current.clear();
+    setPreviewComment(null);
     setPrState("open");
   };
 
   const handleSelectPR = (pr: PRListItem) => {
+    learnings.stopPolling();
+    resetPendingChats(commentChats);
     setSelectedPR(pr);
-    setSelectedComment(null);
+    setCommentChats({});
+    setActiveCommentChatKey(null);
+    deletedHistoryKeysRef.current.clear();
+    setPreviewComment(null);
     setReviews({});
     setCommitSha(undefined);
+    setPrFiles([]);
   };
 
-  // Fetch head commit SHA whenever the selected PR changes (including localStorage restore)
+  // Fetch head commit SHA and changed file list whenever the selected PR changes
   useEffect(() => {
     if (!(selectedRepo && selectedPR)) {
       setCommitSha(undefined);
+      setPrFiles([]);
       return;
     }
+    let cancelled = false;
+    const encodedRepo = encodeURIComponent(selectedRepo.path);
     fetch(
-      `/api/engineer/git/pr/head-sha?repo=${encodeURIComponent(selectedRepo.path)}&pr=${selectedPR.number}`
+      `/api/engineer/git/pr/head-sha?repo=${encodedRepo}&pr=${selectedPR.number}`
     )
       .then((res) => res.json())
       .then((data) => {
-        if (data.sha) {
+        if (!cancelled && data.sha) {
           setCommitSha(data.sha);
         }
       })
       .catch(() => {});
+    fetchPRFiles(selectedRepo.path, selectedPR.number).then((files) => {
+      if (!cancelled) {
+        setPrFiles(files);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRepo, selectedPR]);
 
   const handleCommentSelected = useCallback(
@@ -356,25 +470,140 @@ export function PRBrowserDialog({
       comment: PRComment,
       replies: PRComment[],
       autoStart: boolean,
-      provider?: "claude" | "codex"
+      provider: "claude" | "codex" = "claude"
     ) => {
-      setSelectedComment({
-        comment,
-        replies,
-        autoStart,
-        provider: provider || "claude",
+      const key: string = `${comment.id}:${provider}`;
+
+      if (autoStart) {
+        // autoStart: create persistent chat entry
+        setPreviewComment(null);
+
+        // Check whether this is a genuinely new entry before the updater
+        // runs, so we only wipe disk/cache when starting fresh (not deduping).
+        const isNew = !commentChats[key];
+
+        setCommentChats((prev) => {
+          // Dedup: already exists, just switch to it
+          if (prev[key]) {
+            return prev;
+          }
+
+          const next = { ...prev };
+
+          // Evict oldest non-active slot if at capacity
+          if (Object.keys(next).length >= MAX_CONCURRENT_COMMENT_CHATS) {
+            const evictKey = findEvictableKey(
+              next,
+              activeCommentChatKeyRef.current
+            );
+            if (evictKey) {
+              delete next[evictKey];
+            }
+          }
+
+          next[key] = { comment, replies, autoStart, provider };
+          return next;
+        });
+
+        // Clear stale history from disk and query cache so the auto-start
+        // effect fires fresh instead of seeing old messages.
+        // Guard with ref to prevent double-DELETE on rapid double-click.
+        if (
+          isNew &&
+          !deletedHistoryKeysRef.current.has(key) &&
+          selectedPR &&
+          selectedRepo
+        ) {
+          deletedHistoryKeysRef.current.add(key);
+          const tid = `pr-${selectedPR.number}`;
+          queryClient.removeQueries({
+            queryKey: queryKeys.commentChatHistory(
+              tid,
+              comment.id,
+              selectedRepo.path
+            ),
+          });
+          fetch(
+            `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(tid)}&repo=${encodeURIComponent(selectedRepo.path)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+        }
+
+        setActiveCommentChatKey(key);
+        setActiveReviewProvider(null);
+      } else if (commentChats[key]) {
+        // Ephemeral preview — but persistent chat already exists for this
+        // comment+provider, so switch to it instead.
+        setActiveCommentChatKey(key);
+        setActiveReviewProvider(null);
+        setPreviewComment(null);
+      } else {
+        // Ephemeral preview — no persistent card in left pane.
+        setPreviewComment({ comment, replies, provider });
+        setActiveCommentChatKey(null);
+        setActiveReviewProvider(null);
+      }
+    },
+    [commentChats, selectedPR, selectedRepo, queryClient]
+  );
+
+  const handleCommentDismissed = useCallback((commentId: string) => {
+    setCommentChats((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const k of Object.keys(next)) {
+        if (k.startsWith(`${commentId}:`)) {
+          delete next[k];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setPreviewComment((prev) => (prev?.comment.id === commentId ? null : prev));
+    // Auto-heal effect handles updating activeCommentChatKey
+  }, []);
+
+  const handleCommentChatResolved = useCallback(
+    (key: string, _commentId: string) => {
+      setCommentChats((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
       });
+      // Clear immediately so the right pane doesn't go blank while the
+      // auto-heal effect waits for the next render cycle.
+      setActiveCommentChatKey(null);
+      // Don't reset comment status here — the hook already wrote the final
+      // status (addressed/responded) before calling onResolved. Resetting
+      // would undo that and make the card flash back to "pending".
+      setCommentStatusKey((k) => k + 1);
     },
     []
   );
 
-  const handleCommentDismissed = useCallback(
-    (commentId: string) => {
-      if (selectedComment?.comment.id === commentId) {
-        setSelectedComment(null);
-      }
+  const handlePreviewResolved = useCallback(() => {
+    setPreviewComment(null);
+    setCommentStatusKey((k) => k + 1);
+  }, []);
+
+  const handleStreamingChange = useCallback(
+    (commentId: string, isStreaming: boolean) => {
+      setStreamingCommentIds((prev) => {
+        const has = prev.has(commentId);
+        if (isStreaming && !has) {
+          const next = new Set(prev);
+          next.add(commentId);
+          return next;
+        }
+        if (!isStreaming && has) {
+          const next = new Set(prev);
+          next.delete(commentId);
+          return next;
+        }
+        return prev;
+      });
     },
-    [selectedComment?.comment.id]
+    []
   );
 
   const handleClose = () => {
@@ -386,9 +615,13 @@ export function PRBrowserDialog({
       };
       localStorage.setItem(SELECTION_STORAGE_KEY, JSON.stringify(selection));
     }
+    learnings.handleClose();
+    resetPendingChats(commentChats);
     setSelectedRepo(null);
     setSelectedPR(null);
-    setSelectedComment(null);
+    setCommentChats({});
+    setActiveCommentChatKey(null);
+    setPreviewComment(null);
     setPrState("open");
     onOpenChange(false);
   };
@@ -405,6 +638,16 @@ export function PRBrowserDialog({
       setActiveReviewProvider(null);
     }
   }, [reviews, activeReviewProvider]);
+
+  // Clear active comment chat key when the active entry is removed.
+  // Unlike reviews (which have cards in the left pane), comment chats have
+  // no left-pane card, so auto-selecting a hidden chat would be confusing.
+  useEffect(() => {
+    if (activeCommentChatKey && commentChats[activeCommentChatKey]) {
+      return;
+    }
+    setActiveCommentChatKey(null);
+  }, [commentChats, activeCommentChatKey]);
 
   // Auto-restore existing reviews from disk when a PR is selected (both providers)
   useEffect(() => {
@@ -488,7 +731,23 @@ export function PRBrowserDialog({
 
   const reviewEntries = Object.entries(reviews);
   const hasAnyReview = reviewEntries.length > 0;
-
+  const commentChatEntries = Object.entries(commentChats);
+  const hasAnyCommentChat = commentChatEntries.length > 0;
+  const activeChatCommentIds = useMemo(
+    () => new Set(Object.values(commentChats).map((e) => e.comment.id)),
+    [commentChats]
+  );
+  // Derive the comment ID currently shown in the right pane (for left-pane highlight)
+  const selectedCommentId = useMemo(() => {
+    if (previewComment) {
+      return previewComment.comment.id;
+    }
+    if (activeCommentChatKey) {
+      // Key format is "commentId:provider"
+      return activeCommentChatKey.split(":")[0];
+    }
+    return null;
+  }, [previewComment, activeCommentChatKey]);
   /** Try to restore completed reviews from disk; fall back to showing settings dialog. */
   const restoreOrShowSettings = useCallback(async () => {
     if (!(selectedRepo && selectedPR)) {
@@ -503,12 +762,7 @@ export function PRBrowserDialog({
     try {
       const results = await Promise.all(
         (["claude", "codex"] as const).map((p) =>
-          fetch(
-            `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${p}`
-          )
-            .then((res) => res.json())
-            .then((data) => ({ provider: p, data }))
-            .catch(() => ({ provider: p, data: null }))
+          fetchProviderStatus(selectedRepo.path, ticketId, p)
         )
       );
       for (const { provider, data } of results) {
@@ -516,7 +770,8 @@ export function PRBrowserDialog({
           setReviews((prev) => addReviewEntry(prev, provider, data));
           if (!restored) {
             setActiveReviewProvider(provider);
-            setSelectedComment(null);
+            setActiveCommentChatKey(null);
+            setPreviewComment(null);
             restored = true;
           }
         }
@@ -581,8 +836,6 @@ export function PRBrowserDialog({
             otherDups
           )
         );
-
-        console.log(`[pr-browser] Dedup found ${pairs.length} duplicate pairs`);
       } catch (err) {
         console.warn("[pr-browser] Dedup failed:", err);
       }
@@ -649,10 +902,6 @@ export function PRBrowserDialog({
         const dupIndices = new Set(pairs.map((p) => p[0]));
 
         patchReview(provider, { prCommentDupIndices: dupIndices });
-
-        console.log(
-          `[pr-browser] PR comment dedup found ${pairs.length} duplicates for ${provider}`
-        );
       } catch (err) {
         console.warn("[pr-browser] PR comment dedup failed:", err);
       }
@@ -670,42 +919,42 @@ export function PRBrowserDialog({
       setReviews((prev) =>
         markReviewDone(prev, provider, output, findingCount)
       );
+      if (findings && findings.length > 0) {
+        scheduleCrossProviderDedup(
+          reviewsRef.current,
+          provider,
+          findings,
+          triggerDedup
+        );
+      }
 
-      // Trigger dedup when findings exist
+      // Trigger PR comment dedup when findings exist
       if (findings && findings.length > 0) {
         setTimeout(() => triggerPRCommentDedup(provider, findings), 0);
-        // Trigger cross-provider dedup if both providers are done
-        const otherProvider = provider === "claude" ? "codex" : "claude";
-        setReviews((prev) => {
-          if (prev[otherProvider]?.done) {
-            setTimeout(() => triggerDedup(provider, findings), 0);
-          }
-          return prev;
-        });
+      }
+
+      // Extract learnings from the review log when findings exist
+      if (findings && findings.length > 0) {
+        learnings.triggerExtract(`codex-review-${provider}.log`);
       }
     },
-    [triggerDedup, triggerPRCommentDedup]
+    [triggerDedup, triggerPRCommentDedup, learnings.triggerExtract]
   );
 
   const handleStructuredFindings = useCallback(
     (provider: string, findings: ReviewFinding[]) => {
-      console.log(
-        `[pr-browser] Received ${findings.length} structured findings for ${provider}`
-      );
       patchReview(provider, { structuredFindings: findings });
 
       // Re-run both dedup checks with structured findings (better file paths)
       if (findings.length > 0) {
         setTimeout(() => triggerPRCommentDedup(provider, findings), 0);
 
-        setReviews((prev) => {
-          const otherProvider = provider === "claude" ? "codex" : "claude";
-          const otherEntry = prev[otherProvider];
-          if (otherEntry?.done) {
-            setTimeout(() => triggerDedup(provider, findings), 0);
-          }
-          return prev;
-        });
+        scheduleCrossProviderDedup(
+          reviewsRef.current,
+          provider,
+          findings,
+          triggerDedup
+        );
       }
     },
     [triggerDedup, triggerPRCommentDedup, patchReview]
@@ -929,70 +1178,133 @@ export function PRBrowserDialog({
     ));
   }
 
-  // Right pane: one ReviewChatPane per provider (hidden when not active), comment chat, or empty state
+  // Right pane: one ReviewChatPane per provider (hidden when not active), comment chats, or empty state
   function renderRightPane() {
-    const canShowReview = !!selectedRepo && !!selectedPR;
+    if (!(selectedRepo && selectedPR)) {
+      return <CommentEmptyState />;
+    }
+
+    const showingComment =
+      previewComment !== null || activeCommentChatKey !== null;
 
     return (
       <>
-        {canShowReview &&
-          reviewEntries.map(([provider, entry]) => (
-            <div
-              className={cn(
-                "flex h-full flex-col",
-                (selectedComment || activeReviewProvider !== provider) &&
-                  "hidden"
-              )}
-              key={`review-pane-${provider}`}
-            >
-              <ReviewChatPane
-                branchName={selectedPR.headRefName}
-                commitSha={commitSha}
-                config={entry.config}
-                duplicateIndices={entry.duplicateIndices}
-                initialOutput={entry.initialOutput}
-                isMerged={prState === "merged"}
-                isOwnPR={isOwnPR}
-                key={`review-${selectedPR.number}-${provider}-${entry.initialOutput ? "restored" : "live"}`}
-                onAllCommented={() =>
-                  patchReview(provider, { isCommented: true })
+        {/* Review panes — hidden when any comment (preview or persistent) is active */}
+        {reviewEntries.map(([provider, entry]) => (
+          <div
+            className={cn(
+              "flex h-full flex-col",
+              (showingComment || activeReviewProvider !== provider) && "hidden"
+            )}
+            key={`review-pane-${provider}`}
+          >
+            <ReviewChatPane
+              branchName={selectedPR.headRefName}
+              commitSha={commitSha}
+              config={entry.config}
+              duplicateIndices={entry.duplicateIndices}
+              initialOutput={entry.initialOutput}
+              isMerged={prState === "merged"}
+              isOwnPR={isOwnPR}
+              key={`review-${selectedPR.number}-${provider}-${entry.initialOutput ? "restored" : "live"}`}
+              learningsCount={learnings.count}
+              learningsStatus={learnings.status}
+              onAllCommented={() =>
+                patchReview(provider, { isCommented: true })
+              }
+              onClose={() => setActiveReviewProvider(null)}
+              onLearnings={learnings.poll}
+              onLearningsUsed={handleLearningsUsed}
+              onNewReview={() => {
+                handleDeleteReview(provider);
+                setShowReviewSettings(true);
+              }}
+              onReflect={() =>
+                learnings.triggerExtract(`codex-review-${provider}.log`)
+              }
+              onReviewComplete={(output, count, findings) =>
+                handleReviewComplete(provider, output, count, findings)
+              }
+              onStructuredFindings={(findings) =>
+                handleStructuredFindings(provider, findings)
+              }
+              prCommentDupIndices={entry.prCommentDupIndices}
+              prFiles={prFiles}
+              prNumber={selectedPR.number}
+              repoPath={selectedRepo.path}
+            />
+          </div>
+        ))}
+        {/* Persistent comment chats — hidden when preview is showing or not the active key */}
+        {commentChatEntries.map(([key, entry]) => (
+          <div
+            className={cn(
+              "flex h-full flex-col",
+              (previewComment !== null || activeCommentChatKey !== key) &&
+                "hidden"
+            )}
+            key={`comment-chat-${key}`}
+          >
+            <CommentChat
+              autoProvider={entry.provider}
+              autoStart={entry.autoStart}
+              branchName={selectedPR.headRefName}
+              comment={entry.comment}
+              commentId={entry.comment.id}
+              key={key}
+              onChatCleared={() => setCommentStatusKey((k) => k + 1)}
+              onDeselect={() => {
+                // Remove entry (unmount) — no left-pane card to return to,
+                // so keeping it hidden would just orphan a background stream.
+                setCommentChats((prev) => {
+                  const next = { ...prev };
+                  delete next[key];
+                  return next;
+                });
+                // Reset chatStarted so overflow menu re-shows "Fix with Claude/Codex".
+                // Unconditional: resolved comments are already removed from
+                // commentChats by onResolved, so this only fires for pending chats.
+                if (selectedPR) {
+                  resetCommentStatus(selectedPR.number, entry.comment.id);
                 }
-                onClose={() => setActiveReviewProvider(null)}
-                onNewReview={() => {
-                  handleDeleteReview(provider);
-                  setShowReviewSettings(true);
-                }}
-                onReviewComplete={(output, count, findings) =>
-                  handleReviewComplete(provider, output, count, findings)
-                }
-                onStructuredFindings={(findings) =>
-                  handleStructuredFindings(provider, findings)
-                }
-                prCommentDupIndices={entry.prCommentDupIndices}
-                prNumber={selectedPR.number}
-                repoPath={selectedRepo.path}
-              />
-            </div>
-          ))}
-        {selectedComment && (
+                setCommentStatusKey((k) => k + 1);
+              }}
+              onResolved={() =>
+                handleCommentChatResolved(key, entry.comment.id)
+              }
+              onStreamingChange={(streaming) =>
+                handleStreamingChange(entry.comment.id, streaming)
+              }
+              prNumber={selectedPR.number}
+              replies={entry.replies}
+              repoPath={selectedRepo.path}
+              ticketId={`pr-${selectedPR.number}`}
+            />
+          </div>
+        ))}
+        {/* Ephemeral preview — replaced on each comment click, no persistent card */}
+        {previewComment && (
           <CommentChat
-            autoProvider={selectedComment.provider}
-            autoStart={selectedComment.autoStart}
-            comment={selectedComment.comment}
-            commentId={selectedComment.comment.id}
-            key={selectedComment.comment.id}
-            onDeselect={() => setSelectedComment(null)}
-            onResolved={() => {
-              setSelectedComment(null);
-              setCommentStatusKey((k) => k + 1);
+            autoProvider={previewComment.provider}
+            autoStart={false}
+            branchName={selectedPR.headRefName}
+            comment={previewComment.comment}
+            commentId={previewComment.comment.id}
+            key={`preview-${previewComment.comment.id}`}
+            onChatCleared={() => setCommentStatusKey((k) => k + 1)}
+            onDeselect={() => {
+              setPreviewComment(null);
             }}
-            prNumber={selectedPR!.number}
-            replies={selectedComment.replies}
-            repoPath={selectedRepo!.path}
-            ticketId="standalone"
+            onResolved={handlePreviewResolved}
+            prNumber={selectedPR.number}
+            replies={previewComment.replies}
+            repoPath={selectedRepo.path}
+            ticketId={`pr-${selectedPR.number}`}
           />
         )}
-        {!(hasAnyReview || selectedComment) && <CommentEmptyState />}
+        {!(hasAnyReview || hasAnyCommentChat || previewComment) && (
+          <CommentEmptyState />
+        )}
       </>
     );
   }
@@ -1049,9 +1361,12 @@ export function PRBrowserDialog({
                   )}
                   onClick={() => {
                     restoredPRRef.current = true;
+                    resetPendingChats(commentChats);
                     setPrState("open");
                     setSelectedPR(null);
-                    setSelectedComment(null);
+                    setCommentChats({});
+                    setActiveCommentChatKey(null);
+                    setPreviewComment(null);
                   }}
                 >
                   Open
@@ -1065,9 +1380,12 @@ export function PRBrowserDialog({
                   )}
                   onClick={() => {
                     restoredPRRef.current = true;
+                    resetPendingChats(commentChats);
                     setPrState("merged");
                     setSelectedPR(null);
-                    setSelectedComment(null);
+                    setCommentChats({});
+                    setActiveCommentChatKey(null);
+                    setPreviewComment(null);
                   }}
                 >
                   Merged
@@ -1146,14 +1464,17 @@ export function PRBrowserDialog({
                       isCommented={entry.isCommented}
                       isDone={entry.done}
                       isSelected={
-                        activeReviewProvider === provider && !selectedComment
+                        activeReviewProvider === provider &&
+                        activeCommentChatKey === null &&
+                        previewComment === null
                       }
                       isSubmitting={entry.isSubmitting}
                       key={`card-${provider}`}
                       onDelete={() => handleDeleteReview(provider)}
                       onSelect={() => {
                         setActiveReviewProvider(provider);
-                        setSelectedComment(null);
+                        setActiveCommentChatKey(null);
+                        setPreviewComment(null);
                       }}
                       onSubmitAsComment={() =>
                         handleSubmitReviewAsComment(provider)
@@ -1162,7 +1483,8 @@ export function PRBrowserDialog({
                     />
                   ))}
                   <PRCommentsViewer
-                    key={`${selectedPR.number}-${commentStatusKey}`}
+                    activeChatCommentIds={activeChatCommentIds}
+                    key={selectedPR.number}
                     onCommentDismissed={handleCommentDismissed}
                     onCommentSelected={handleCommentSelected}
                     onReviewCodex={async (commentId) => {
@@ -1172,8 +1494,10 @@ export function PRBrowserDialog({
                     }}
                     prNumber={selectedPR.number}
                     repoPath={selectedRepo.path}
+                    selectedCommentId={selectedCommentId}
                     statusRefreshKey={commentStatusKey}
-                    ticketId="standalone"
+                    streamingCommentIds={streamingCommentIds}
+                    ticketId={`pr-${selectedPR.number}`}
                   />
                 </div>
               ) : (
@@ -1223,7 +1547,8 @@ export function PRBrowserDialog({
             },
           }));
           setActiveReviewProvider(provider);
-          setSelectedComment(null);
+          setActiveCommentChatKey(null);
+          setPreviewComment(null);
           setShowReviewSettings(false);
         }}
         open={showReviewSettings}
@@ -1319,21 +1644,6 @@ async function fetchPRFiles(
   }
 }
 
-function resolveFullPath(shortName: string, prFiles: string[]): string | null {
-  // Exact match first
-  if (prFiles.includes(shortName)) {
-    return shortName;
-  }
-  // Match by suffix (short filename or partial path)
-  const matches = prFiles.filter(
-    (f) => f === shortName || f.endsWith(`/${shortName}`)
-  );
-  if (matches.length === 1) {
-    return matches[0];
-  }
-  return null;
-}
-
 function classifyFindings(
   findings: ReviewFinding[],
   commitSha: string | undefined,
@@ -1351,17 +1661,29 @@ function classifyFindings(
       general.push(finding);
       continue;
     }
+    const shortPath = stripWorktreePath(finding.file);
     if (skipFileResolution) {
+      // Structured findings have full paths — still validate against PR files
+      if (prFiles.length > 0) {
+        const resolved = resolveFullPath(shortPath, prFiles);
+        if (!resolved || resolved === "ambiguous") {
+          continue; // File not in PR or ambiguous — drop the finding
+        }
+      }
       inline.push({ finding, fullPath: finding.file });
       continue;
     }
-    const shortPath = stripWorktreePath(finding.file);
     const fullPath = resolveFullPath(shortPath, prFiles);
-    if (fullPath) {
+    if (fullPath === "ambiguous") {
+      // Multiple PR files match — fall back to general comment
+      general.push(finding);
+    } else if (fullPath) {
       inline.push({ finding, fullPath });
-    } else {
+    } else if (prFiles.length === 0) {
+      // PR file list unavailable (fetch failed) — fall back to general comment
       general.push(finding);
     }
+    // else: file confirmed not in PR, drop the finding
   }
 
   return { inline, general };
@@ -1377,11 +1699,8 @@ async function postReviewFindings(
 ): Promise<{ inlineFailed: number; summary: string }> {
   const providerLabel = provider === "claude" ? "Claude" : "Codex";
 
-  // Fetch PR file list to resolve short filenames to full paths (skip when structured findings have full paths)
-  const prFiles =
-    commitSha && !skipFileResolution
-      ? await fetchPRFiles(repoPath, prNumber)
-      : [];
+  // Fetch PR file list to resolve/validate file paths
+  const prFiles = commitSha ? await fetchPRFiles(repoPath, prNumber) : [];
 
   const { inline: inlineFindings, general: generalFindings } = classifyFindings(
     findings,
@@ -1676,4 +1995,39 @@ async function batchedSettled<T>(
     results.push(...batchResults);
   }
   return results;
+}
+
+function findEvictableKey(
+  chats: Record<string, unknown>,
+  activeKey: string | null
+): string | undefined {
+  return Object.keys(chats).find((k) => k !== activeKey);
+}
+
+function scheduleCrossProviderDedup(
+  reviews: Record<string, ReviewEntry>,
+  provider: string,
+  findings: ReviewFinding[],
+  triggerDedup: (provider: string, findings: ReviewFinding[]) => Promise<void>
+) {
+  const otherProvider = provider === "claude" ? "codex" : "claude";
+  if (reviews[otherProvider]?.done) {
+    setTimeout(() => triggerDedup(provider, findings), 0);
+  }
+}
+
+async function fetchProviderStatus(
+  repoPath: string,
+  ticketId: string,
+  provider: "claude" | "codex"
+) {
+  try {
+    const res = await fetch(
+      `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${provider}`
+    );
+    const data = await res.json();
+    return { provider, data };
+  } catch {
+    return { provider, data: null };
+  }
 }
