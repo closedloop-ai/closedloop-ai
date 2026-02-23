@@ -29,6 +29,7 @@ import { registerCreateArtifactVersion } from "./tools/create-artifact-version.j
 import { registerCreateEntityLink } from "./tools/create-entity-link.js";
 import { registerCreateExternalLink } from "./tools/create-external-link.js";
 import { registerCreateIssue } from "./tools/create-issue.js";
+import { registerCreateIssueComment } from "./tools/create-issue-comment.js";
 import { registerCreateProject } from "./tools/create-project.js";
 import { registerCreateWorkstream } from "./tools/create-workstream.js";
 import { registerGeneratePlans } from "./tools/generate-plans.js";
@@ -39,6 +40,7 @@ import { registerGetGoogleStatus } from "./tools/get-google-status.js";
 import { registerGetIssue } from "./tools/get-issue.js";
 import { registerGetLinearStatus } from "./tools/get-linear-status.js";
 import { registerGetLoop } from "./tools/get-loop.js";
+import { registerGetMe } from "./tools/get-me.js";
 import { registerGetProject } from "./tools/get-project.js";
 import { registerGetProjectStatus } from "./tools/get-project-status.js";
 import { registerGetRelatedArtifacts } from "./tools/get-related-artifacts.js";
@@ -308,6 +310,12 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
     register: registerUpdateIssue,
     requiresWrite: true,
   },
+  {
+    name: "create-issue-comment",
+    register: registerCreateIssueComment,
+    requiresWrite: true,
+  },
+  { name: "get-me", register: registerGetMe },
   { name: "list-workstreams", register: registerListWorkstreams },
   { name: "get-workstream", register: registerGetWorkstream },
   {
@@ -2629,8 +2637,74 @@ async function dispatchHttpRequest(
   return false;
 }
 
+/**
+ * CORS origin allowlist read from MCP_CORS_ORIGINS (comma-separated).
+ * In local environments, all origins are allowed when unset.
+ * A wildcard "*" entry allows any origin.
+ */
+const CORS_ALLOWED_ORIGINS = (process.env.MCP_CORS_ORIGINS ?? "")
+  .split(",")
+  .map((v) => v.trim())
+  .filter(Boolean);
+
+function getCorsOrigin(
+  req: import("node:http").IncomingMessage
+): string | null {
+  const origin = req.headers.origin;
+  if (!origin) {
+    return null;
+  }
+  // Wildcard or explicit match
+  if (
+    CORS_ALLOWED_ORIGINS.includes("*") ||
+    CORS_ALLOWED_ORIGINS.includes(origin)
+  ) {
+    return origin;
+  }
+  // Local dev: allow any origin when no allowlist is configured
+  if (CORS_ALLOWED_ORIGINS.length === 0 && isLocalOauthEnvironment()) {
+    return origin;
+  }
+  return null;
+}
+
+function setCorsHeaders(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse
+): boolean {
+  const allowedOrigin = getCorsOrigin(req);
+  res.setHeader("Vary", "Origin");
+  if (!allowedOrigin) {
+    return false;
+  }
+  res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version"
+  );
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  return true;
+}
+
 export function createHttpServer(): import("node:http").Server {
   return createServer(async (req, res) => {
+    // CORS: set headers on every response, handle preflight
+    const corsAllowed = setCorsHeaders(req, res);
+    if (req.method === "OPTIONS") {
+      res.writeHead(corsAllowed ? 204 : 403);
+      res.end();
+      return;
+    }
+
+    // Reject cross-origin requests from disallowed origins (prevents blind CSRF)
+    if (req.headers.origin && !corsAllowed) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+
     try {
       const handled = await dispatchHttpRequest(req, res);
       if (!handled) {

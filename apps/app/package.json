@@ -15,6 +15,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@liveblocks/react": "^3.13.5",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@repo/analytics": "workspace:*",
     "@repo/api": "workspace:*",
     "@repo/auth": "workspace:*",
@@ -53,6 +54,7 @@
     "require-in-the-middle": "8.0.1",
     "simple-git": "^3.31.1",
     "sonner": "^2.0.7",
+    "use-mcp": "^0.0.21",
     "zod": "^4.3.6"
   },
   "devDependencies": {

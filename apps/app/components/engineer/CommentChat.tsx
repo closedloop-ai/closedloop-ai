@@ -266,6 +266,8 @@ export function CommentChat({
           body: JSON.stringify({
             prompt: codexPrompt,
             repoPath,
+            branchName,
+            prNumber,
             chatHistory: recentHistory,
             activeTab: "comments",
             commentContext: {
@@ -1623,7 +1625,7 @@ function ChatInputArea({
 
   return (
     <div className="shrink-0 border-border border-t bg-muted/30 p-4">
-      {hasAcceptedChanges && hasChangedFiles && (
+      {hasChangedFiles && (
         <div className="mb-3">
           <Button
             className="w-full"

@@ -14,8 +14,10 @@ import { toast } from "sonner";
 import { HeaderOverflowMenu } from "@/components/engineer/HeaderOverflowMenu";
 import { HealthCheckDialog } from "@/components/engineer/HealthCheckDialog";
 import { LearningsDialog } from "@/components/engineer/LearningsDialog";
+import { MCPConnectionStatus } from "@/components/engineer/MCPConnectionStatus";
 import { TerminalChatDialog } from "@/components/engineer/TerminalChatDialog";
 import { TicketList } from "@/components/engineer/TicketList";
+import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { useEngineerIssues } from "@/hooks/engineer/use-engineer-issues";
 import { useFeatureSeen } from "@/hooks/engineer/use-feature-seen";
 import { useTerminalStatus } from "@/hooks/engineer/useTerminalStatus";
@@ -24,6 +26,7 @@ import type { EngineerTicket } from "@/types/engineer";
 
 export function EngineerDashboard() {
   const router = useRouter();
+  const mcp = useEngineerMcp();
   const {
     tickets,
     isLoading,
@@ -35,6 +38,23 @@ export function EngineerDashboard() {
     postComment,
     refetch,
   } = useEngineerIssues();
+
+  // Debounce connection error display — transient SSE disconnects (React strict mode)
+  // shouldn't flash "connection failed" to the user.
+  const [showMcpStatus, setShowMcpStatus] = useState(false);
+  const mcpWasReadyRef = useRef(false);
+  useEffect(() => {
+    if (mcp.isReady) {
+      setShowMcpStatus(false);
+      if (!mcpWasReadyRef.current) {
+        mcpWasReadyRef.current = true;
+        terminalBus.send("mcp connected", { prefix: "ok", typewriter: true });
+      }
+      return;
+    }
+    const timer = setTimeout(() => setShowMcpStatus(true), 2000);
+    return () => clearTimeout(timer);
+  }, [mcp.isReady]);
 
   const [learningsOpen, setLearningsOpen] = useState(false);
   const [terminalChatOpen, setTerminalChatOpen] = useState(false);
@@ -172,6 +192,18 @@ export function EngineerDashboard() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {showMcpStatus && !mcp.isReady && (
+              <MCPConnectionStatus
+                error={mcp.error}
+                onAuthenticate={mcp.authenticate}
+                state={mcp.state}
+              />
+            )}
+            {mcp.isReady && !mcp.hasWriteScope && (
+              <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-500 text-xs">
+                read-only
+              </span>
+            )}
             <Button
               className="gap-2"
               onClick={() => router.push("/")}
