@@ -112,17 +112,21 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
           }
           setMcpUser(user);
 
-          // Step 2: fetch issues and artifacts in parallel
-          const [issuesResult, artifactsResult] = await Promise.all([
-            mcp.listIssues({ assigneeId: user.id }),
-            mcp.listArtifacts({ ownerId: user.id }),
+          // Step 2: fetch all pages of issues and artifacts in parallel
+          const [allIssues, allArtifacts] = await Promise.all([
+            fetchAllMcpPages((offset) =>
+              mcp.listIssues({ assigneeId: user.id, limit: 100, offset })
+            ),
+            fetchAllMcpPages((offset) =>
+              mcp.listArtifacts({ ownerId: user.id, limit: 100, offset })
+            ),
           ]);
           if (cancelled) {
             return;
           }
 
-          setMcpIssues(issuesResult.items);
-          setMcpArtifacts(artifactsResult.items);
+          setMcpIssues(allIssues);
+          setMcpArtifacts(allArtifacts);
           lastError = null;
           break;
         } catch (err) {
@@ -362,4 +366,28 @@ function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
     projectName: artifact.project?.name ?? undefined,
     workstreamTitle: artifact.workstream?.title ?? undefined,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Pagination helper
+// ---------------------------------------------------------------------------
+
+async function fetchAllMcpPages<T>(
+  fetchPage: (offset: number) => Promise<{
+    items: T[];
+    hasMore: boolean;
+    nextOffset: number | null;
+  }>
+): Promise<T[]> {
+  const allItems: T[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await fetchPage(offset);
+    allItems.push(...page.items);
+    if (!page.hasMore || page.nextOffset === null) {
+      break;
+    }
+    offset = page.nextOffset;
+  }
+  return allItems;
 }

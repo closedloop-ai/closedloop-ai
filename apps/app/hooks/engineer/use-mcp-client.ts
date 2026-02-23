@@ -182,9 +182,13 @@ export type McpClient = {
   getMe: () => Promise<McpUser>;
   listIssues: (params?: {
     assigneeId?: string;
+    limit?: number;
+    offset?: number;
   }) => Promise<PaginatedResponse<McpIssue>>;
   listArtifacts: (params?: {
     ownerId?: string;
+    limit?: number;
+    offset?: number;
   }) => Promise<PaginatedResponse<McpArtifact>>;
   getIssue: (issueId: string) => Promise<McpIssue>;
   updateIssue: (
@@ -503,6 +507,12 @@ export function useMcpClient(): McpClient {
         if (params?.assigneeId) {
           args.assigneeId = params.assigneeId;
         }
+        if (params?.limit !== undefined) {
+          args.limit = params.limit;
+        }
+        if (params?.offset !== undefined) {
+          args.offset = params.offset;
+        }
         const result = await callTool("list-issues", args);
         return parseMcpResult<PaginatedResponse<McpIssue>>(result);
       },
@@ -511,6 +521,12 @@ export function useMcpClient(): McpClient {
         const args: Record<string, unknown> = {};
         if (params?.ownerId) {
           args.ownerId = params.ownerId;
+        }
+        if (params?.limit !== undefined) {
+          args.limit = params.limit;
+        }
+        if (params?.offset !== undefined) {
+          args.offset = params.offset;
         }
         const result = await callTool("list-artifacts", args);
         return parseMcpResult<PaginatedResponse<McpArtifact>>(result);
