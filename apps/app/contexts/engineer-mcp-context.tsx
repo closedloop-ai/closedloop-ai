@@ -15,7 +15,6 @@ export function EngineerMcpProvider({
 }) {
   const client = useMcpClient();
   const autoRetryCountRef = useRef(0);
-  const hasConnectedRef = useRef(false);
 
   // Auto-retry transient startup failures.
   // The local SDK hook auto-reconnects once connected ("ready" -> onclose),
@@ -31,8 +30,7 @@ export function EngineerMcpProvider({
       }, 2000);
       return () => clearTimeout(timer);
     }
-    if (client.state === "ready" && !hasConnectedRef.current) {
-      hasConnectedRef.current = true;
+    if (client.state === "ready") {
       autoRetryCountRef.current = 0;
     }
   }, [client.state, client.retry]);
