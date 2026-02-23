@@ -96,6 +96,33 @@ runs:
       shell: bash
       run: |
         if [ -d ".claude/runs" ]; then
+          for RUN_DIR in .claude/runs/*; do
+            if [ ! -d "$RUN_DIR/agents-snapshot" ]; then
+              continue
+            fi
+
+            MANIFEST_PATH="$RUN_DIR/agents-snapshot/prompts-manifest.json"
+            TMP_MANIFEST=$(mktemp)
+            printf '{"prompts":[' > "$TMP_MANIFEST"
+
+            FIRST=1
+            while IFS= read -r FILE_PATH; do
+              REL_PATH="${FILE_PATH#"$RUN_DIR/"}"
+              FILE_SHA=$(git hash-object "$FILE_PATH")
+              ENTRY_JSON=$(jq -cn --arg file_path "$REL_PATH" --arg sha "$FILE_SHA" '{file_path: $file_path, sha: $sha}')
+
+              if [ "$FIRST" -eq 0 ]; then
+                printf ',' >> "$TMP_MANIFEST"
+              fi
+              printf '%s' "$ENTRY_JSON" >> "$TMP_MANIFEST"
+              FIRST=0
+            done < <(rg --files -g "*.md" "$RUN_DIR/agents-snapshot" | sort)
+
+            printf ']}\n' >> "$TMP_MANIFEST"
+            mv "$TMP_MANIFEST" "$MANIFEST_PATH"
+            echo "Wrote prompt manifest: $MANIFEST_PATH"
+          done
+
           cd .claude && zip -r ../symphony-run.zip runs/
         else
           echo "No runs directory found, skipping zip"

@@ -1,4 +1,3 @@
-import { computeGitBlobSha } from "@repo/github/git-blob-sha";
 import { log } from "@repo/observability/log";
 import type { PromptInfo } from "./prompt-types";
 import { PromptType } from "./prompt-types";
@@ -78,7 +77,8 @@ function resolvePromptType(entryName: string): PromptType {
  */
 export function parsePromptFile(
   data: Buffer,
-  entryName: string
+  entryName: string,
+  shaByPath: Map<string, string>
 ): PromptInfo | null {
   try {
     const content = data.toString("utf-8");
@@ -98,7 +98,13 @@ export function parsePromptFile(
     const normalized = normalizeEntryName(entryName);
     const promptType = resolvePromptType(normalized);
     const file_path = normalized;
-    const sha = computeGitBlobSha(data);
+    const sha = shaByPath.get(file_path);
+    if (!sha) {
+      log.warn(
+        `Skipping prompt file without manifest SHA: ${entryName} (normalized=${file_path})`
+      );
+      return null;
+    }
 
     log.info(
       `Found prompt file: ${entryName} (type=${promptType}, name="${name}", sha=${sha})`

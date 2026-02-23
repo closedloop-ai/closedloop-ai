@@ -238,7 +238,11 @@ describe("prompts extractor", () => {
   describe("parsePromptFile", () => {
     it("parses frontmatter fields from an agent prompt file", () => {
       const data = Buffer.from(AGENT_FRONTMATTER, "utf-8");
-      const result = parsePromptFile(data, "agents-snapshot/test-agent.md");
+      const result = parsePromptFile(
+        data,
+        "agents-snapshot/test-agent.md",
+        new Map([["agents-snapshot/test-agent.md", "manifest-sha-1"]])
+      );
 
       expect(result).not.toBeNull();
       expect(result?.name).toBe("test-agent");
@@ -248,20 +252,23 @@ describe("prompts extractor", () => {
       expect(result?.promptType).toBe(PromptType.AGENT);
       expect(result?.file_path).toBe("agents-snapshot/test-agent.md");
       expect(result?.content).toBe(AGENT_FRONTMATTER);
-      expect(result?.sha).toBe("5ff120cd4250ab001ec7156f7a9a04171b058651");
+      expect(result?.sha).toBe("manifest-sha-1");
     });
 
     it("assigns PromptType.JUDGE for files under agents-snapshot/judges/", () => {
       const data = Buffer.from(JUDGE_FRONTMATTER, "utf-8");
       const result = parsePromptFile(
         data,
-        "agents-snapshot/judges/test-judge.md"
+        "agents-snapshot/judges/test-judge.md",
+        new Map([
+          ["agents-snapshot/judges/test-judge.md", "manifest-judge-sha-1"],
+        ])
       );
 
       expect(result?.promptType).toBe(PromptType.JUDGE);
       expect(result?.name).toBe("test-judge");
       expect(result?.tools).toEqual(["Read", "Grep", "Glob"]);
-      expect(result?.sha).toBe("b9e01659b5ac88b7f4b10c1a1635f5312815fcc6");
+      expect(result?.sha).toBe("manifest-judge-sha-1");
     });
 
     it("returns a PromptInfo with empty fields when frontmatter is absent", () => {
@@ -269,14 +276,40 @@ describe("prompts extractor", () => {
         "# No frontmatter here\n\nJust content.",
         "utf-8"
       );
-      const result = parsePromptFile(data, "agents-snapshot/no-meta.md");
+      const result = parsePromptFile(
+        data,
+        "agents-snapshot/no-meta.md",
+        new Map([["agents-snapshot/no-meta.md", "manifest-no-meta-sha"]])
+      );
 
       expect(result).not.toBeNull();
       expect(result?.name).toBe("");
       expect(result?.description).toBe("");
       expect(result?.model).toBe("");
       expect(result?.tools).toEqual([]);
-      expect(result?.sha).toBe("9384236570fbffde6da3c9d35d79d7d23d128082");
+      expect(result?.sha).toBe("manifest-no-meta-sha");
+    });
+
+    it("uses SHA from prompts manifest when present", () => {
+      const data = Buffer.from(AGENT_FRONTMATTER, "utf-8");
+      const result = parsePromptFile(
+        data,
+        "agents-snapshot/test-agent.md",
+        new Map([["agents-snapshot/test-agent.md", "abc123sha"]])
+      );
+
+      expect(result?.sha).toBe("abc123sha");
+    });
+
+    it("returns null when SHA is missing from manifest", () => {
+      const data = Buffer.from(AGENT_FRONTMATTER, "utf-8");
+      const result = parsePromptFile(
+        data,
+        "agents-snapshot/test-agent.md",
+        new Map()
+      );
+
+      expect(result).toBeNull();
     });
   });
 
@@ -286,6 +319,17 @@ describe("prompts extractor", () => {
         {
           name: "agents-snapshot/test-agent.md",
           content: AGENT_FRONTMATTER,
+        },
+        {
+          name: "agents-snapshot/prompts-manifest.json",
+          content: JSON.stringify({
+            prompts: [
+              {
+                file_path: "agents-snapshot/test-agent.md",
+                sha: "manifest-sha-1",
+              },
+            ],
+          }),
         },
       ]);
 
@@ -298,6 +342,7 @@ describe("prompts extractor", () => {
       expect(snapshot?.prompts).toHaveLength(1);
       expect(snapshot?.prompts[0].name).toBe("test-agent");
       expect(snapshot?.prompts[0].promptType).toBe(PromptType.AGENT);
+      expect(snapshot?.prompts[0].sha).toBe("manifest-sha-1");
     });
 
     it("accumulates multiple prompt files into a single PromptsSnapshot", () => {
@@ -309,6 +354,21 @@ describe("prompts extractor", () => {
         {
           name: "agents-snapshot/judges/judge-one.md",
           content: JUDGE_FRONTMATTER,
+        },
+        {
+          name: "agents-snapshot/prompts-manifest.json",
+          content: JSON.stringify({
+            prompts: [
+              {
+                file_path: "agents-snapshot/agent-one.md",
+                sha: "manifest-agent-sha",
+              },
+              {
+                file_path: "agents-snapshot/judges/judge-one.md",
+                sha: "manifest-judge-sha",
+              },
+            ],
+          }),
         },
       ]);
 
@@ -323,6 +383,12 @@ describe("prompts extractor", () => {
       const types = snapshot?.prompts.map((p) => p.promptType);
       expect(types).toContain(PromptType.AGENT);
       expect(types).toContain(PromptType.JUDGE);
+      expect(
+        snapshot?.prompts.find((p) => p.file_path.endsWith("agent-one.md"))?.sha
+      ).toBe("manifest-agent-sha");
+      expect(
+        snapshot?.prompts.find((p) => p.file_path.endsWith("judge-one.md"))?.sha
+      ).toBe("manifest-judge-sha");
     });
 
     it("returns null for promptsSnapshot when no agents-snapshot/ files are present", () => {
@@ -337,10 +403,33 @@ describe("prompts extractor", () => {
       expect(result.promptsSnapshot).toBeNull();
     });
 
+    it("returns null for promptsSnapshot when prompt manifest is missing", () => {
+      const zipBuffer = buildZipWithEntries([
+        { name: "agents-snapshot/test-agent.md", content: AGENT_FRONTMATTER },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      expect(result.promptsSnapshot).toBeNull();
+    });
+
     it("ignores files outside agents-snapshot/", () => {
       const zipBuffer = buildZipWithEntries([
         { name: "some-other-folder/agent.md", content: AGENT_FRONTMATTER },
         { name: "agents-snapshot/real-agent.md", content: AGENT_FRONTMATTER },
+        {
+          name: "agents-snapshot/prompts-manifest.json",
+          content: JSON.stringify({
+            prompts: [
+              {
+                file_path: "agents-snapshot/real-agent.md",
+                sha: "manifest-real-agent-sha",
+              },
+            ],
+          }),
+        },
       ]);
 
       const AdmZip = require("adm-zip");
@@ -352,6 +441,7 @@ describe("prompts extractor", () => {
       expect(snapshot?.prompts[0].file_path).toBe(
         "agents-snapshot/real-agent.md"
       );
+      expect(snapshot?.prompts[0].sha).toBe("manifest-real-agent-sha");
     });
 
     it("matches prompt files prefixed with runs/<id>/ and strips the prefix from file_path", () => {
@@ -363,6 +453,21 @@ describe("prompts extractor", () => {
         {
           name: "runs/20240223-123456/agents-snapshot/judges/test-judge.md",
           content: JUDGE_FRONTMATTER,
+        },
+        {
+          name: "runs/20240223-123456/agents-snapshot/prompts-manifest.json",
+          content: JSON.stringify({
+            prompts: [
+              {
+                file_path: "agents-snapshot/test-agent.md",
+                sha: "manifest-prefixed-agent-sha",
+              },
+              {
+                file_path: "agents-snapshot/judges/test-judge.md",
+                sha: "manifest-prefixed-judge-sha",
+              },
+            ],
+          }),
         },
       ]);
 
@@ -378,12 +483,14 @@ describe("prompts extractor", () => {
       );
       expect(agent?.file_path).toBe("agents-snapshot/test-agent.md");
       expect(agent?.name).toBe("test-agent");
+      expect(agent?.sha).toBe("manifest-prefixed-agent-sha");
 
       const judge = snapshot?.prompts.find(
         (p) => p.promptType === PromptType.JUDGE
       );
       expect(judge?.file_path).toBe("agents-snapshot/judges/test-judge.md");
       expect(judge?.name).toBe("test-judge");
+      expect(judge?.sha).toBe("manifest-prefixed-judge-sha");
     });
   });
 

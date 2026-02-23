@@ -8,6 +8,8 @@ import type AdmZip from "adm-zip";
 import { isPromptFileEntry, parsePromptFile } from "./prompt-parser";
 import type { PromptsSnapshot } from "./prompt-types";
 
+const PROMPTS_MANIFEST_PATH = "agents-snapshot/prompts-manifest.json";
+
 export type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
@@ -88,6 +90,7 @@ function parsePlanJson(content: Buffer, entryName: string): string | null {
  */
 export function findPlanInZip(zip: AdmZip): ZipContent {
   const entries: { name: string; data: Buffer }[] = [];
+  const promptShaByPath = new Map<string, string>();
   let planContent: string | null = null;
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
@@ -104,6 +107,9 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     const data = entry.getData();
     const name = entry.entryName;
     entries.push({ name, data });
+    if (name.endsWith(PROMPTS_MANIFEST_PATH)) {
+      parsePromptShaManifest(data, name, promptShaByPath);
+    }
 
     const contentResult = parseZipEntryContent({
       data,
@@ -121,15 +127,19 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     judgesReport = contentResult.judgesReport;
     codeJudgesReport = contentResult.codeJudgesReport;
     perfSummary = contentResult.perfSummary;
+  }
 
-    if (isPromptFileEntry(name)) {
-      const prompt = parsePromptFile(data, name);
-      if (prompt !== null) {
-        if (promptsSnapshot === null) {
-          promptsSnapshot = { prompts: [prompt] };
-        } else {
-          promptsSnapshot.prompts.push(prompt);
-        }
+  for (const entry of entries) {
+    if (!isPromptFileEntry(entry.name)) {
+      continue;
+    }
+
+    const prompt = parsePromptFile(entry.data, entry.name, promptShaByPath);
+    if (prompt !== null) {
+      if (promptsSnapshot === null) {
+        promptsSnapshot = { prompts: [prompt] };
+      } else {
+        promptsSnapshot.prompts.push(prompt);
       }
     }
   }
@@ -144,6 +154,34 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     promptsSnapshot,
     entries,
   };
+}
+
+type PromptManifest = {
+  prompts: Array<{
+    file_path: string;
+    sha: string;
+  }>;
+};
+
+function parsePromptShaManifest(
+  content: Buffer,
+  entryName: string,
+  promptShaByPath: Map<string, string>
+): void {
+  try {
+    const json = JSON.parse(content.toString("utf-8")) as PromptManifest;
+    for (const prompt of json.prompts) {
+      if (prompt.file_path && prompt.sha) {
+        promptShaByPath.set(prompt.file_path, prompt.sha);
+      }
+    }
+    log.info(
+      `Found prompts manifest: ${entryName} (${promptShaByPath.size} prompt SHAs)`
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error(`Failed to parse prompts manifest ${entryName}: ${message}`);
+  }
 }
 
 type ZipEntryContentArgs = {

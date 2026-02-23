@@ -25,7 +25,7 @@ export type PromptType = (typeof PromptType)[keyof typeof PromptType];
  * - tools: List of tool names available to this agent (from frontmatter `tools`)
  * - file_path: Path relative to the workdir (e.g., "agents-snapshot/my-agent.md")
  * - content: Full raw file content including frontmatter
- * - sha: Git blob SHA-1 of the file content, computed as SHA1("blob " + byteLength + "\0" + content)
+ * - sha: Git blob SHA from the artifact's prompts manifest
  */
 export type PromptInfo = {
   promptType: PromptType;
