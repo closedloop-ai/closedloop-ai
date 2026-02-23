@@ -13,6 +13,7 @@ describe.sequential("ApiClient", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     process.env = { ...ORIGINAL_ENV };
   });
 

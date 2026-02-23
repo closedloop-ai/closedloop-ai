@@ -65,6 +65,7 @@ const refreshTokenStore = new Map<
   }
 >();
 let forceNextRefreshRotateConflict = false;
+let forceNextRefreshCreateFailure = false;
 
 vi.mock("../api-client.js", () => {
   return {
@@ -319,6 +320,10 @@ vi.mock("@repo/database", () => {
             expiresAt: Date;
           };
         }) => {
+          if (forceNextRefreshCreateFailure) {
+            forceNextRefreshCreateFailure = false;
+            throw new Error("Simulated refresh token create failure");
+          }
           const record = {
             id: `rt_${Math.random().toString(36).slice(2, 10)}`,
             tokenFingerprint: data.tokenFingerprint,
@@ -399,8 +404,35 @@ vi.mock("@repo/database", () => {
     async <T>(fn: (db: typeof dbMock) => Promise<T> | T): Promise<T> =>
       fn(dbMock),
     {
-      tx: async <T>(fn: (db: typeof dbMock) => Promise<T>): Promise<T> =>
-        fn(dbMock),
+      tx: async <T>(fn: (db: typeof dbMock) => Promise<T>): Promise<T> => {
+        const snapshot = structuredClone({
+          revokedTokens: [...revokedTokenStore.entries()],
+          rateLimits: [...rateLimitStore.entries()],
+          authCodes: [...authCodeStore.entries()],
+          refreshTokens: [...refreshTokenStore.entries()],
+        });
+        try {
+          return await fn(dbMock);
+        } catch (error) {
+          revokedTokenStore.clear();
+          for (const [key, value] of snapshot.revokedTokens) {
+            revokedTokenStore.set(key, value);
+          }
+          rateLimitStore.clear();
+          for (const [key, value] of snapshot.rateLimits) {
+            rateLimitStore.set(key, value);
+          }
+          authCodeStore.clear();
+          for (const [key, value] of snapshot.authCodes) {
+            authCodeStore.set(key, value);
+          }
+          refreshTokenStore.clear();
+          for (const [key, value] of snapshot.refreshTokens) {
+            refreshTokenStore.set(key, value);
+          }
+          throw error;
+        }
+      },
     }
   );
 
@@ -551,6 +583,7 @@ beforeEach(() => {
   authCodeStore.clear();
   refreshTokenStore.clear();
   forceNextRefreshRotateConflict = false;
+  forceNextRefreshCreateFailure = false;
   verifyApiKeyMock.mockReset();
   checkApiReachableMock.mockReset();
   checkApiReachableMock.mockResolvedValue(true);
@@ -641,6 +674,62 @@ describe("OAuth endpoints", () => {
     expect(replayRes.statusCode).toBe(400);
     const replayJson = JSON.parse(replayRes.body) as { error: string };
     expect(replayJson.error).toBe("invalid_grant");
+  });
+
+  it("does not consume auth code when refresh token persistence fails", async () => {
+    const verifier = "pkce-refresh-insert-failure";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+    }).toString();
+
+    forceNextRefreshCreateFailure = true;
+    const firstReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const firstRes = createMockResponse();
+    await expect(
+      handleOAuthToken(firstReq, asServerResponse(firstRes))
+    ).rejects.toThrow("Simulated refresh token create failure");
+
+    const retryReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const retryRes = createMockResponse();
+    await handleOAuthToken(retryReq, asServerResponse(retryRes));
+    expect(retryRes.statusCode).toBe(200);
   });
 
   it("rotates refresh token via grant_type=refresh_token", async () => {
@@ -1603,6 +1692,8 @@ describe("OAuth endpoints", () => {
     expect(handled).toBe(true);
     expect(res.statusCode).toBe(401);
     expect(res.headers["WWW-Authenticate"]).toContain("resource_metadata=");
+    expect(res.headers["Cache-Control"]).toBe("no-store");
+    expect(res.headers.Pragma).toBe("no-cache");
   });
 
   it("falls back to stateless handling when session id is unknown", async () => {

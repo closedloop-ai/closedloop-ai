@@ -423,6 +423,11 @@ type AuthorizationCodeRecord = {
   expiresAt: Date;
 };
 
+type StoredAuthorizationCodeRecord = AuthorizationCodeRecord & {
+  id: string;
+  consumedAt: Date | null;
+};
+
 type RefreshTokenRecord = {
   id: string;
   tokenFingerprint: string;
@@ -552,27 +557,33 @@ async function storeAuthorizationCode(
   );
 }
 
-function consumeAuthorizationCode(
+function loadAuthorizationCode(
   code: string
-): Promise<AuthorizationCodeRecord | null> {
-  return withDb.tx(async (db) => {
-    const now = new Date();
-    const record = await db.oAuthAuthorizationCode.findUnique({
+): Promise<StoredAuthorizationCodeRecord | null> {
+  return withDb((db) =>
+    db.oAuthAuthorizationCode.findUnique({
       where: { code },
-    });
-    if (!record || record.consumedAt !== null || record.expiresAt <= now) {
+      select: {
+        id: true,
+        encryptedApiKey: true,
+        keyId: true,
+        userId: true,
+        organizationId: true,
+        clientId: true,
+        redirectUri: true,
+        scopes: true,
+        codeChallenge: true,
+        codeChallengeMethod: true,
+        expiresAt: true,
+        consumedAt: true,
+      },
+    })
+  ).then((record) => {
+    if (!record) {
       return null;
     }
-
-    const consumeResult = await db.oAuthAuthorizationCode.updateMany({
-      where: { id: record.id, consumedAt: null },
-      data: { consumedAt: now },
-    });
-    if (consumeResult.count !== 1) {
-      return null;
-    }
-
     return {
+      id: record.id,
       encryptedApiKey: record.encryptedApiKey,
       keyId: record.keyId,
       userId: record.userId,
@@ -583,6 +594,7 @@ function consumeAuthorizationCode(
       codeChallenge: record.codeChallenge,
       codeChallengeMethod: record.codeChallengeMethod as "S256",
       expiresAt: record.expiresAt,
+      consumedAt: record.consumedAt,
     };
   });
 }
@@ -716,15 +728,6 @@ async function createRefreshTokenRecord(
   };
 }
 
-function issueAndStoreRefreshToken(
-  input: CreateRefreshTokenInput
-): Promise<{ token: string; tokenId: string; expiresIn: number }> {
-  return withDb((db) => {
-    const client = db as unknown as OAuthRefreshTokenDbClient;
-    return createRefreshTokenRecord(client, input);
-  });
-}
-
 function loadRefreshTokenRecord(
   token: string
 ): Promise<RefreshTokenRecord | null> {
@@ -771,18 +774,18 @@ function rotateRefreshToken(
     if (!current || current.expiresAt <= now) {
       return { status: "invalid" };
     }
-    if (current.clientId !== clientId) {
-      return { status: "invalid_client" };
-    }
-    if (nextScopes.some((scope) => !current.scopes.includes(scope))) {
-      return { status: "invalid_scope" };
-    }
     if (current.revokedAt !== null) {
       await client.oAuthRefreshToken.updateMany({
         where: { familyId: current.familyId, revokedAt: null },
         data: { revokedAt: now },
       });
       return { status: "reuse_detected" };
+    }
+    if (current.clientId !== clientId) {
+      return { status: "invalid_client" };
+    }
+    if (nextScopes.some((scope) => !current.scopes.includes(scope))) {
+      return { status: "invalid_scope" };
     }
 
     const revoked = await client.oAuthRefreshToken.updateMany({
@@ -1447,7 +1450,7 @@ async function handleSessionScopedMcpRequest(
 }
 
 function sendMcpAuthChallenge(res: import("node:http").ServerResponse): void {
-  sendJson(
+  sendOAuthJson(
     res,
     401,
     {
@@ -2039,8 +2042,12 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const codeRecord = await consumeAuthorizationCode(body.code);
-  if (!codeRecord) {
+  const codeRecord = await loadAuthorizationCode(body.code);
+  if (
+    !codeRecord ||
+    codeRecord.consumedAt !== null ||
+    codeRecord.expiresAt <= new Date()
+  ) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Invalid or expired authorization code",
@@ -2113,17 +2120,62 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const accessToken = issueOAuthAccessToken(codeApiKey, context, scopes);
-  const refreshToken = await issueAndStoreRefreshToken({
-    encryptedApiKey: codeRecord.encryptedApiKey,
-    keyId: codeRecord.keyId,
-    userId: context.userId,
-    organizationId: context.organizationId,
-    clientId: codeRecord.clientId,
-    scopes,
-    familyId: randomUUID(),
-    expiresAt: new Date(Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000),
+  const refreshToken = await withDb.tx(async (db) => {
+    const currentCode = await db.oAuthAuthorizationCode.findUnique({
+      where: { code: body.code },
+      select: {
+        id: true,
+        consumedAt: true,
+        expiresAt: true,
+        clientId: true,
+        redirectUri: true,
+      },
+    });
+    const now = new Date();
+    if (
+      !currentCode ||
+      currentCode.id !== codeRecord.id ||
+      currentCode.consumedAt !== null ||
+      currentCode.expiresAt <= now ||
+      currentCode.clientId !== body.client_id ||
+      currentCode.redirectUri !== body.redirect_uri
+    ) {
+      return null;
+    }
+
+    const consumeResult = await db.oAuthAuthorizationCode.updateMany({
+      where: { id: currentCode.id, consumedAt: null },
+      data: { consumedAt: now },
+    });
+    if (consumeResult.count !== 1) {
+      return null;
+    }
+
+    return createRefreshTokenRecord(
+      db as unknown as OAuthRefreshTokenDbClient,
+      {
+        encryptedApiKey: codeRecord.encryptedApiKey,
+        keyId: codeRecord.keyId,
+        userId: context.userId,
+        organizationId: context.organizationId,
+        clientId: codeRecord.clientId,
+        scopes,
+        familyId: randomUUID(),
+        expiresAt: new Date(
+          Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
+        ),
+      }
+    );
   });
+  if (!refreshToken) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Invalid or expired authorization code",
+    });
+    return;
+  }
+
+  const accessToken = issueOAuthAccessToken(codeApiKey, context, scopes);
 
   sendOAuthJson(res, 200, {
     access_token: accessToken,
@@ -2155,6 +2207,8 @@ async function handleRefreshTokenGrant(
     return;
   }
 
+  // Best-effort pre-check for clearer OAuth errors; rotateRefreshToken below
+  // revalidates token state transactionally as the authoritative gate.
   const refreshRecord = await loadRefreshTokenRecord(body.refresh_token);
   if (!refreshRecord || refreshRecord.expiresAt <= new Date()) {
     sendOAuthJson(res, 400, {
@@ -2246,6 +2300,7 @@ async function handleRefreshTokenGrant(
     return;
   }
   if (rotated.status === "invalid_scope") {
+    // Defensive fallback: scope validation currently happens before rotate call.
     sendOAuthJson(res, 400, {
       error: "invalid_scope",
       error_description: "Requested scope exceeds the refresh token grant",

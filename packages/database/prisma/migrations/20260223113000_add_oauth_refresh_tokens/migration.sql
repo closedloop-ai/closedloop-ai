@@ -1,13 +1,13 @@
 -- Persist OAuth refresh tokens for silent token renewal and rotation.
 CREATE TABLE "oauth_refresh_tokens" (
-    "id" UUID NOT NULL,
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
     "token_fingerprint" TEXT NOT NULL,
     "encrypted_api_key" TEXT NOT NULL,
     "key_id" TEXT NOT NULL,
     "user_id" UUID NOT NULL,
     "organization_id" UUID NOT NULL,
     "client_id" TEXT NOT NULL,
-    "scopes" TEXT[] NOT NULL,
+    "scopes" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     "family_id" UUID NOT NULL,
     "expires_at" TIMESTAMP(3) NOT NULL,
     "last_used_at" TIMESTAMP(3),
