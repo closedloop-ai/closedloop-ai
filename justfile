@@ -4,7 +4,7 @@ default:
 
 # Start the main app and API
 dev:
-    pnpm turbo dev --filter=app --filter=api -- -p 3010
+    pnpm turbo dev --filter=app --filter=api
 
 # Start all apps (may fail if mintlify/stripe not installed)
 dev-all:
@@ -22,6 +22,12 @@ db-push:
 
 db-generate:
     cd packages/database && pnpm prisma generate
+
+db-migrate name="":
+    cd packages/database && pnpm prisma migrate dev {{ if name != "" { "--name " + name } else { "" } }}
+
+db-migrate-reset:
+    cd packages/database && pnpm prisma migrate reset
 
 # Build and check
 build:
