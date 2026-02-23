@@ -12,9 +12,11 @@
  */
 import { type Mock, vi } from "vitest";
 
-vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
-}));
+vi.mock("@repo/database", () => {
+  const tx = vi.fn();
+  const withDbFn = Object.assign(vi.fn(), { tx });
+  return { withDb: withDbFn };
+});
 
 vi.mock("@repo/aws", () => ({
   deleteArtifact: vi.fn(),
@@ -35,7 +37,8 @@ import {
 import { withDb } from "@repo/database";
 import { attachmentsService } from "../attachments-service";
 
-const mockWithDb = withDb as unknown as Mock;
+const mockWithDb = withDb as unknown as Mock & { tx: Mock };
+const mockWithDbTx = mockWithDb.tx;
 const mockGetSignedUploadUrl = getSignedUploadUrl as unknown as Mock;
 const mockGetSignedDownloadUrlWithDisposition =
   getSignedDownloadUrlWithDisposition as unknown as Mock;
@@ -335,26 +338,25 @@ describe("attachmentsService.deleteAttachment", () => {
       return Promise.resolve();
     });
 
-    mockWithDb
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
+    // requireArtifact uses withDb
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+      })
+    );
+
+    // deleteAttachment uses withDb.tx for atomic find + delete
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
             findUnique: vi.fn().mockResolvedValue(record),
+            delete: mockDbDelete,
           },
         })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          fileAttachment: { delete: mockDbDelete },
-        })
-      );
+    );
 
     await attachmentsService.deleteAttachment(
       ARTIFACT_ID,
@@ -369,28 +371,23 @@ describe("attachmentsService.deleteAttachment", () => {
     const record = makeAttachmentRecord();
     mockDeleteArtifact.mockRejectedValue(new Error("S3 unavailable"));
 
-    mockWithDb
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
             findUnique: vi.fn().mockResolvedValue(record),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          fileAttachment: {
             delete: vi.fn().mockResolvedValue(record),
           },
         })
-      );
+    );
 
     await expect(
       attachmentsService.deleteAttachment(ARTIFACT_ID, ORG_ID, ATTACHMENT_ID)
@@ -401,28 +398,23 @@ describe("attachmentsService.deleteAttachment", () => {
     const expectedKey = `attachments/${ARTIFACT_ID}/specific-key`;
     const record = makeAttachmentRecord({ key: expectedKey });
 
-    mockWithDb
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
             findUnique: vi.fn().mockResolvedValue(record),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          fileAttachment: {
             delete: vi.fn().mockResolvedValue(record),
           },
         })
-      );
+    );
 
     await attachmentsService.deleteAttachment(
       ARTIFACT_ID,
@@ -452,21 +444,22 @@ describe("attachmentsService.deleteAttachment", () => {
   });
 
   it("throws 'Attachment not found' when attachment lookup returns null", async () => {
-    mockWithDb
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
-        callback({
-          artifact: {
-            findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
-          },
-        })
-      )
-      .mockImplementationOnce((callback: (db: unknown) => unknown) =>
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) =>
+      callback({
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ id: ARTIFACT_ID }),
+        },
+      })
+    );
+
+    mockWithDbTx.mockImplementationOnce(
+      async (callback: (tx: unknown) => unknown) =>
         callback({
           fileAttachment: {
             findUnique: vi.fn().mockResolvedValue(null),
           },
         })
-      );
+    );
 
     await expect(
       attachmentsService.deleteAttachment(
