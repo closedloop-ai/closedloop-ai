@@ -266,6 +266,8 @@ export function CommentChat({
           body: JSON.stringify({
             prompt: codexPrompt,
             repoPath,
+            branchName,
+            prNumber,
             chatHistory: recentHistory,
             activeTab: "comments",
             commentContext: {

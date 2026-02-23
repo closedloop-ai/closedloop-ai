@@ -10,6 +10,7 @@ import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
+import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -33,6 +34,8 @@ type ChatRequest = {
   prompt: string;
   chatHistory?: ChatHistoryMessage[];
   repoPath: string;
+  branchName?: string;
+  prNumber?: number;
   activeTab?: string;
   contextRepoPaths?: string[];
   commentContext?: CommentContext;
@@ -43,12 +46,30 @@ type CodexChatState = {
   messageCount: number;
 };
 
-function getWorktreeDir(repoPath: string, ticketId: string): string {
+function getWorktreeDir(
+  repoPath: string,
+  ticketId: string,
+  branchName?: string,
+  prNumber?: number
+): string {
   const expandedRepoPath = expandHome(repoPath);
+  const worktreeParentDir = getWorktreeParentDir();
+
+  if (branchName && prNumber) {
+    // PR-aware resolution: base repo HEAD check → existing worktree → create
+    return resolveWorktreeForPR(
+      expandedRepoPath,
+      branchName,
+      prNumber,
+      worktreeParentDir
+    );
+  }
+
+  // Legacy: ticketId-based worktree lookup, fall back to base repo
   const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
   const repoName = basename(expandedRepoPath);
-  const worktreeParentDir = getWorktreeParentDir();
-  return join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+  const worktreeDir = join(worktreeParentDir, `${repoName}-${sanitizedTicket}`);
+  return existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
 }
 
 function getWorkPaths(worktreeDir: string) {
@@ -453,6 +474,8 @@ export async function POST(
     prompt,
     chatHistory,
     repoPath: bodyRepoPath,
+    branchName,
+    prNumber,
     activeTab,
     contextRepoPaths,
     commentContext,
@@ -470,7 +493,7 @@ export async function POST(
     return Response.json({ error: "prompt is required" }, { status: 400 });
   }
 
-  const worktreeDir = getWorktreeDir(repoPath, ticketId);
+  const worktreeDir = getWorktreeDir(repoPath, ticketId, branchName, prNumber);
   if (!existsSync(worktreeDir)) {
     return Response.json(
       { error: "Work directory not found" },
