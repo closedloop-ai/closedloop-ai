@@ -87,6 +87,7 @@ export const externalLinksService = {
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
         where: {
+          organizationId,
           OR: [
             { sourceId: id, sourceType: "EXTERNAL_LINK" },
             { targetId: id, targetType: "EXTERNAL_LINK" },

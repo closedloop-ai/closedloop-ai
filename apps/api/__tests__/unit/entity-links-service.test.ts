@@ -8,6 +8,8 @@ vi.mock("@repo/database", () => ({
 
 import { entityLinksService } from "@/app/entity-links/service";
 
+const ORG_ID = "org-1";
+
 describe("entityLinksService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -19,13 +21,16 @@ describe("entityLinksService", () => {
       { label: "undefined", metadata: undefined },
     ])("uses DbNull when metadata is $label", async ({ metadata }) => {
       const mockDb = {
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue({ id: "a-1" }),
+        },
         entityLink: {
           create: vi.fn().mockResolvedValue({ id: "el-1" }),
         },
       };
       mockWithDbCall(mockDb);
 
-      await entityLinksService.createLink({
+      await entityLinksService.createLink(ORG_ID, {
         sourceId: "a-1",
         sourceType: "ARTIFACT" as const,
         targetId: "a-2",
@@ -36,6 +41,7 @@ describe("entityLinksService", () => {
 
       expect(mockDb.entityLink.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
+          organizationId: ORG_ID,
           metadata: "DbNull",
         }),
       });
@@ -55,10 +61,11 @@ describe("entityLinksService", () => {
     });
 
     it("queries both source and target sides", async () => {
-      await entityLinksService.findLinks("artifact-1", "ARTIFACT");
+      await entityLinksService.findLinks(ORG_ID, "artifact-1", "ARTIFACT");
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
+          organizationId: ORG_ID,
           OR: [
             { sourceId: "artifact-1", sourceType: "ARTIFACT" },
             { targetId: "artifact-1", targetType: "ARTIFACT" },
@@ -69,10 +76,16 @@ describe("entityLinksService", () => {
     });
 
     it("adds linkType filter to both OR branches", async () => {
-      await entityLinksService.findLinks("artifact-1", "ARTIFACT", "PRODUCES");
+      await entityLinksService.findLinks(
+        ORG_ID,
+        "artifact-1",
+        "ARTIFACT",
+        "PRODUCES"
+      );
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
+          organizationId: ORG_ID,
           OR: [
             {
               sourceId: "artifact-1",
@@ -104,10 +117,15 @@ describe("entityLinksService", () => {
     });
 
     it("findSourceLinks queries by targetId (incoming links)", async () => {
-      await entityLinksService.findSourceLinks("artifact-1", "ARTIFACT");
+      await entityLinksService.findSourceLinks(
+        ORG_ID,
+        "artifact-1",
+        "ARTIFACT"
+      );
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
+          organizationId: ORG_ID,
           targetId: "artifact-1",
           targetType: "ARTIFACT",
         },
@@ -116,10 +134,15 @@ describe("entityLinksService", () => {
     });
 
     it("findTargetLinks queries by sourceId (outgoing links)", async () => {
-      await entityLinksService.findTargetLinks("artifact-1", "ARTIFACT");
+      await entityLinksService.findTargetLinks(
+        ORG_ID,
+        "artifact-1",
+        "ARTIFACT"
+      );
 
       expect(mockDb.entityLink.findMany).toHaveBeenCalledWith({
         where: {
+          organizationId: ORG_ID,
           sourceId: "artifact-1",
           sourceType: "ARTIFACT",
         },
@@ -138,11 +161,15 @@ describe("entityLinksService", () => {
       };
       mockWithDbCall(mockDb);
 
-      const result = await entityLinksService.resolveEntity("a-1", "ARTIFACT");
+      const result = await entityLinksService.resolveEntity(
+        ORG_ID,
+        "a-1",
+        "ARTIFACT"
+      );
 
       expect(result).toEqual({ type: "ARTIFACT", entity: mockArtifact });
       expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
-        where: { id: "a-1" },
+        where: { id: "a-1", organizationId: ORG_ID },
         include: {
           owner: {
             select: {
@@ -173,11 +200,15 @@ describe("entityLinksService", () => {
       };
       mockWithDbCall(mockDb);
 
-      const result = await entityLinksService.resolveEntity("i-1", "ISSUE");
+      const result = await entityLinksService.resolveEntity(
+        ORG_ID,
+        "i-1",
+        "ISSUE"
+      );
 
       expect(result).toEqual({ type: "ISSUE", entity: mockIssue });
       expect(mockDb.issue.findUnique).toHaveBeenCalledWith({
-        where: { id: "i-1" },
+        where: { id: "i-1", organizationId: ORG_ID },
         include: {
           assignee: {
             select: {
@@ -209,13 +240,14 @@ describe("entityLinksService", () => {
       mockWithDbCall(mockDb);
 
       const result = await entityLinksService.resolveEntity(
+        ORG_ID,
         "el-1",
         "EXTERNAL_LINK"
       );
 
       expect(result).toEqual({ type: "EXTERNAL_LINK", entity: mockLink });
       expect(mockDb.externalLink.findUnique).toHaveBeenCalledWith({
-        where: { id: "el-1" },
+        where: { id: "el-1", organizationId: ORG_ID },
       });
     });
 
@@ -228,6 +260,7 @@ describe("entityLinksService", () => {
       mockWithDbCall(mockDb);
 
       const result = await entityLinksService.resolveEntity(
+        ORG_ID,
         "nonexistent",
         "ARTIFACT"
       );
@@ -240,6 +273,7 @@ describe("entityLinksService", () => {
       mockWithDbCall(mockDb);
 
       const result = await entityLinksService.resolveEntity(
+        ORG_ID,
         "x-1",
         "UNKNOWN" as any
       );

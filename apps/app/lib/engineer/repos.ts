@@ -3,26 +3,27 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
- * Path to the repos config file
+ * Global config directory: ~/.claude/closedloop/
+ * Repos config is stored here so it persists across worktrees and checkouts.
  */
-const CACHE_DIR = join(process.cwd(), ".cache");
-const REPOS_CONFIG_PATH = join(CACHE_DIR, "repos.json");
+const CONFIG_DIR = join(homedir(), ".claude", "closedloop");
+const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
 
 /**
- * Default repos — empty, user must configure manually
+ * Legacy location: {cwd}/.cache/repos.json
+ * Checked on every load for migration, then deleted.
  */
+const LEGACY_CONFIG_PATH = join(process.cwd(), ".cache", "repos.json");
+
 const DEFAULT_REPOS: ConfiguredRepo[] = [];
-
-/**
- * Default settings — empty; user must configure worktreeParentDir via setup dialog
- */
 const DEFAULT_SETTINGS: RepoSettings = {};
 
 /**
@@ -49,56 +50,133 @@ export function contractHome(path: string): string {
   return path;
 }
 
-/**
- * Ensure the cache directory exists
- */
-function ensureCacheDir(): void {
-  if (!existsSync(CACHE_DIR)) {
-    mkdirSync(CACHE_DIR, { recursive: true });
+function ensureConfigDir(): void {
+  if (!existsSync(CONFIG_DIR)) {
+    mkdirSync(CONFIG_DIR, { recursive: true });
   }
 }
 
 /**
- * Load repos configuration from .cache/repos.json
- * Returns defaults on first run
+ * Migrate repos from the legacy {cwd}/.cache/repos.json into the global config.
+ * Merges repos (deduplicates by normalized path), prefers global settings,
+ * then deletes the legacy file.
+ */
+function migrateLegacyConfig(global: ReposConfig): ReposConfig {
+  if (!existsSync(LEGACY_CONFIG_PATH)) {
+    return global;
+  }
+
+  let legacy: ReposConfig;
+  try {
+    const content = readFileSync(LEGACY_CONFIG_PATH, "utf-8");
+    legacy = JSON.parse(content) as ReposConfig;
+  } catch {
+    // Corrupt file — just delete it
+    removeLegacyConfig();
+    return global;
+  }
+
+  const legacyRepos = legacy.repos ?? [];
+  if (legacyRepos.length === 0) {
+    removeLegacyConfig();
+    return global;
+  }
+
+  // Deduplicate: only add legacy repos whose path isn't already in global
+  const existingPaths = new Set(global.repos.map((r) => expandHome(r.path)));
+  const mergedRepos = [...global.repos];
+  let merged = false;
+  for (const repo of legacyRepos) {
+    if (!existingPaths.has(expandHome(repo.path))) {
+      mergedRepos.push(repo);
+      existingPaths.add(expandHome(repo.path));
+      merged = true;
+    }
+  }
+
+  // Merge settings: global wins, legacy fills gaps
+  let mergedSettings = global.settings;
+  if (legacy.settings) {
+    mergedSettings = { ...legacy.settings, ...global.settings };
+    merged = true;
+  }
+
+  if (merged) {
+    console.log(
+      `[repos] Migrated ${legacyRepos.length} repo(s) from legacy .cache/repos.json`
+    );
+  }
+
+  removeLegacyConfig();
+  return merged ? { repos: mergedRepos, settings: mergedSettings } : global;
+}
+
+function removeLegacyConfig(): void {
+  try {
+    rmSync(LEGACY_CONFIG_PATH, { force: true });
+    // Clean up .cache dir if empty
+    const cacheDir = join(process.cwd(), ".cache");
+    if (existsSync(cacheDir) && readdirSync(cacheDir).length === 0) {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
+ * Load repos configuration from ~/.claude/closedloop/repos.json.
+ * On every load, checks for a legacy .cache/repos.json in the cwd and
+ * migrates any repos from it before deleting the old file.
  */
 export function loadReposConfig(): ReposConfig {
-  ensureCacheDir();
+  ensureConfigDir();
 
-  if (!existsSync(REPOS_CONFIG_PATH)) {
-    // Return defaults on first run
-    const defaultConfig: ReposConfig = {
-      repos: DEFAULT_REPOS,
-      settings: DEFAULT_SETTINGS,
+  let config: ReposConfig;
+  let needsSave = false;
+
+  if (existsSync(REPOS_CONFIG_PATH)) {
+    try {
+      const content = readFileSync(REPOS_CONFIG_PATH, "utf-8");
+      const parsed = JSON.parse(content) as ReposConfig;
+      config = {
+        repos: [...(parsed.repos ?? DEFAULT_REPOS)],
+        settings: { ...(parsed.settings ?? DEFAULT_SETTINGS) },
+      };
+    } catch (err) {
+      console.error("[repos] Failed to load config:", err);
+      config = {
+        repos: [...DEFAULT_REPOS],
+        settings: { ...DEFAULT_SETTINGS },
+      };
+      needsSave = true; // Overwrite corrupt file with healthy defaults
+    }
+  } else {
+    config = {
+      repos: [...DEFAULT_REPOS],
+      settings: { ...DEFAULT_SETTINGS },
     };
-    // Save defaults so they persist
-    saveReposConfig(defaultConfig);
-    return defaultConfig;
+    needsSave = true; // Create file on first load
   }
 
-  try {
-    const content = readFileSync(REPOS_CONFIG_PATH, "utf-8");
-    const config = JSON.parse(content) as ReposConfig;
+  // Check for legacy file before migration (migration deletes it)
+  const hadLegacyConfig = existsSync(LEGACY_CONFIG_PATH);
+  config = migrateLegacyConfig(config);
+  needsSave = needsSave || hadLegacyConfig;
 
-    // Ensure all required fields exist
-    return {
-      repos: config.repos || DEFAULT_REPOS,
-      settings: config.settings || DEFAULT_SETTINGS,
-    };
-  } catch (err) {
-    console.error("[repos] Failed to load config:", err);
-    return {
-      repos: DEFAULT_REPOS,
-      settings: DEFAULT_SETTINGS,
-    };
+  // Only write when something actually changed
+  if (needsSave) {
+    saveReposConfig(config);
   }
+
+  return config;
 }
 
 /**
- * Save repos configuration to .cache/repos.json
+ * Save repos configuration to ~/.claude/closedloop/repos.json
  */
 export function saveReposConfig(config: ReposConfig): void {
-  ensureCacheDir();
+  ensureConfigDir();
 
   try {
     writeFileSync(REPOS_CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
@@ -109,15 +187,53 @@ export function saveReposConfig(config: ReposConfig): void {
 }
 
 /**
- * Check if a path is in the configured repos
+ * Check if candidatePath is a git worktree whose .git pointer resolves
+ * under repoPath/.git/worktrees/. This proves actual git ownership,
+ * not just a naming convention match.
+ */
+function isWorktreeOf(candidatePath: string, repoPath: string): boolean {
+  try {
+    const content = readFileSync(join(candidatePath, ".git"), "utf-8").trim();
+    const match = /^gitdir:\s*(.+)$/.exec(content);
+    if (!match) {
+      return false;
+    }
+    const gitdir = resolve(candidatePath, match[1]);
+    return gitdir.startsWith(`${join(repoPath, ".git", "worktrees")}/`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if a path is in the configured repos or is a worktree derived from one.
+ * Validates worktrees by checking the .git pointer file links back to the
+ * allowed repo, not just by directory naming convention.
  */
 export function isRepoAllowed(path: string): boolean {
   const config = loadReposConfig();
-
-  // Expand both sides to absolute paths so ~/... and /Users/... both match
   const expandedPath = expandHome(path);
 
-  return config.repos.some((repo) => expandHome(repo.path) === expandedPath);
+  return config.repos.some((repo) => {
+    const repoExpanded = expandHome(repo.path);
+    const repoName = basename(repoExpanded);
+    const repoParent = dirname(repoExpanded);
+    const pathName = basename(expandedPath);
+    const pathParent = dirname(expandedPath);
+
+    // Exact match (dirname/basename normalizes trailing slashes)
+    if (repoName === pathName && repoParent === pathParent) {
+      return true;
+    }
+
+    // Worktree match: same parent dir, name prefix filter, then validate
+    // actual git worktree linkage via .git pointer file
+    return (
+      pathParent === repoParent &&
+      pathName.startsWith(`${repoName}-`) &&
+      isWorktreeOf(expandedPath, repoExpanded)
+    );
+  });
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { formatToolResultContent } from "@/lib/engineer/chat-utils";
 
 export type ContentBlock = {
@@ -28,6 +29,8 @@ type ClaudeStreamEvent = {
   sessionId?: string;
   session_id?: string;
   subtype?: string;
+  is_error?: boolean;
+  result?: unknown;
   message?: { content: ClaudeBlock[] };
   delta?: { type: string; text?: string };
   usage?: {
@@ -46,10 +49,12 @@ export type StreamState = {
   usedEditTools: boolean;
   contextPercent: number | null;
   onSessionId?: (sessionId: string) => void;
+  onResultEvent?: () => void;
 };
 
 export function createStreamState(
-  onSessionId?: (sessionId: string) => void
+  onSessionId?: (sessionId: string) => void,
+  onResultEvent?: () => void
 ): StreamState {
   return {
     assistantContent: "",
@@ -58,6 +63,31 @@ export function createStreamState(
     usedEditTools: false,
     contextPercent: null,
     onSessionId,
+    onResultEvent,
+  };
+}
+
+export function makeResultKillTimer(
+  getProcess: () => ChildProcess | null,
+  label: string
+): () => void {
+  return () => {
+    const proc = getProcess();
+    if (!proc) {
+      return;
+    }
+    const killTimer = setTimeout(() => {
+      console.warn(`[${label}] Kill timeout: SIGTERM after result event`);
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }, 5000);
+    }, 30_000);
+    proc.once("close", () => clearTimeout(killTimer));
   };
 }
 
@@ -204,23 +234,44 @@ export function processStreamEvent(
     return;
   }
 
-  if (event.type === "result" && event.subtype === "success") {
+  if (event.type === "result") {
+    // Always capture session ID first (even for errors)
     if (!state.capturedSessionId && event.session_id) {
       state.capturedSessionId = event.session_id;
       state.onSessionId?.(event.session_id);
     }
-    if (event.usage) {
-      const total =
-        (event.usage.input_tokens ?? 0) +
-        (event.usage.output_tokens ?? 0) +
-        (event.usage.cache_creation_input_tokens ?? 0) +
-        (event.usage.cache_read_input_tokens ?? 0);
-      const contextWindow = event.context_window ?? 200_000;
-      const percent =
-        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
-      state.contextPercent = percent;
-      enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
+
+    // Detect context limit / error results (e.g. "Prompt is too long")
+    if (event.is_error) {
+      const errorText =
+        typeof event.result === "string"
+          ? event.result
+          : "Claude encountered an error";
+      enqueue(JSON.stringify({ type: "error", error: errorText }));
+      state.onResultEvent?.();
+      return;
     }
-    enqueue(JSON.stringify({ type: "result", success: true }));
+
+    if (event.subtype === "success") {
+      if (event.usage) {
+        const total =
+          (event.usage.input_tokens ?? 0) +
+          (event.usage.output_tokens ?? 0) +
+          (event.usage.cache_creation_input_tokens ?? 0) +
+          (event.usage.cache_read_input_tokens ?? 0);
+        const contextWindow = event.context_window ?? 200_000;
+        const percent =
+          contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+        state.contextPercent = percent;
+        enqueue(JSON.stringify({ type: "usage", contextPercent: percent }));
+      }
+      enqueue(JSON.stringify({ type: "result", success: true }));
+    } else {
+      console.warn(
+        `[stream-events] Unrecognized result subtype: ${event.subtype}`
+      );
+      enqueue(JSON.stringify({ type: "result", success: false }));
+    }
+    state.onResultEvent?.();
   }
 }

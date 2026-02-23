@@ -449,13 +449,16 @@ importers:
       '@repo/api':
         specifier: workspace:*
         version: link:../../packages/api
+      '@repo/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
       zod:
         specifier: ^3.23.0
         version: 3.25.76
     devDependencies:
-      tsx:
-        specifier: ^4.0.0
-        version: 4.21.0
       typescript:
         specifier: ^5.0.0
         version: 5.9.3

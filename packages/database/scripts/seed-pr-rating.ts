@@ -263,6 +263,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
     // 9. EntityLink: PRD PRODUCES Plan
     const existingLink = await prisma.entityLink.findFirst({
       where: {
+        organizationId,
         sourceId: prdArtifact.id,
         sourceType: "ARTIFACT",
         targetId: planArtifact.id,
@@ -275,6 +276,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
     } else {
       await prisma.entityLink.create({
         data: {
+          organizationId,
           sourceId: prdArtifact.id,
           sourceType: "ARTIFACT",
           sourceVersion: 1,

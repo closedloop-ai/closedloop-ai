@@ -31,7 +31,7 @@ export const env = createEnv({
     rateLimit(),
   ],
   server: {
-    INTERNAL_API_SECRET: z.string().optional(),
+    INTERNAL_API_SECRET: z.string().min(1),
     SLACK_SIGNING_SECRET: z.string().optional(),
   },
   client: {},

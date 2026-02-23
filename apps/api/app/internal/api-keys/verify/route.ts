@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { env } from "@/env";
@@ -20,12 +20,14 @@ export async function POST(request: Request) {
   if (!(internalSecret && headerSecret)) {
     return unauthorizedResponse();
   }
-  const expectedBuf = Buffer.from(internalSecret, "utf8");
-  const actualBuf = Buffer.from(headerSecret, "utf8");
-  if (
-    expectedBuf.length !== actualBuf.length ||
-    !timingSafeEqual(expectedBuf, actualBuf)
-  ) {
+  const digestKey = "api-constant-time-compare";
+  const expectedDigest = createHmac("sha256", digestKey)
+    .update(internalSecret, "utf8")
+    .digest();
+  const actualDigest = createHmac("sha256", digestKey)
+    .update(headerSecret, "utf8")
+    .digest();
+  if (!timingSafeEqual(expectedDigest, actualDigest)) {
     return unauthorizedResponse();
   }
 
@@ -45,6 +47,7 @@ export async function POST(request: Request) {
     return successResponse({
       userId: context.userId,
       organizationId: context.organizationId,
+      scopes: context.scopes,
     });
   } catch (error) {
     return errorResponse("Failed to verify API key", error);

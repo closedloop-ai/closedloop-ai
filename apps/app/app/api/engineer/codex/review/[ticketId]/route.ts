@@ -31,6 +31,7 @@ export const maxDuration = 300; // 5 minutes max for long reviews
 
 const PR_PREFIX_REGEX = /^pr-/;
 const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
+const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
 
 type ReviewRequest = {
   instructions?: string;
@@ -117,7 +118,7 @@ function spawnCodexReview(
   reasoningEffort: string,
   reviewMode: "uncommitted" | "base",
   baseBranch: string,
-  instructions?: string
+  _instructions?: string
 ): ChildProcess {
   const args: string[] = ["review"];
 
@@ -127,22 +128,20 @@ function spawnCodexReview(
     args.push("--base", baseBranch);
   }
 
-  const fullInstructions = instructions
-    ? `Review only. Do not make any code changes. Analyze the code and report findings.\n\n${instructions}`
-    : undefined;
   args.push(
     "-c",
-    `model="${model}"`,
+    `model=${model}`,
     "-c",
-    `model_reasoning_effort="${reasoningEffort}"`
+    `model_reasoning_effort=${reasoningEffort}`
   );
-  if (fullInstructions) {
-    args.push(fullInstructions);
-  }
+
+  // codex review v0.104+ doesn't allow [PROMPT] with --base/--uncommitted.
+  // Custom instructions cannot be passed as a positional arg or via stdin.
+  // The contextPreamble and user instructions are dropped — codex uses its
+  // own built-in review prompt which produces good results without them.
 
   return spawn("codex", args, {
     cwd,
-    shell: true,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
@@ -153,6 +152,9 @@ function spawnCodexReview(
 }
 
 const REVIEW_SYSTEM_PROMPT = [
+  "IMPORTANT: Before flagging any change, examine the surrounding context — commit messages, PR description, related changes in other files, and code comments — to understand WHY the change was made.",
+  "Only report findings where the issue is clearly unintentional. Skip patterns that appear to be deliberate design decisions, intentional trade-offs, or conscious simplifications.",
+  "If a change looks unusual but is consistent with the overall PR intent, do not flag it.",
   "At the very end of your review, include a ```json fenced code block containing ALL findings as a JSON array.",
   'Each element must have: {"severity": "critical"|"high"|"medium"|"low",',
   '"file": "full/repo-relative/path.ts", "line": <number or null>,',
@@ -193,7 +195,7 @@ function setupProcessLifecycle(
   worktreeDir: string,
   initialState: ReviewState,
   pidPath: string,
-  sessionIdHolder?: { value: string | null }
+  sessionIdHolder: { value: string | null }
 ) {
   const provider = initialState.provider;
 
@@ -219,8 +221,33 @@ function setupProcessLifecycle(
       }
     });
   } else {
+    // Buffer the first ~2KB of Codex stdout to capture the session ID from its startup banner.
+    // Once found (or buffer limit hit), stop scanning but keep appending to the review log.
+    let startupBuffer = "";
+    let sessionIdCaptured = false;
+
     childProcess.stdout?.on("data", async (data: Buffer) => {
-      await appendReviewLog(worktreeDir, provider, data.toString());
+      const text = data.toString();
+
+      // Parse session ID synchronously BEFORE any await so that
+      // createCodexStream's listener (which reads sessionIdHolder.value
+      // in the same event-loop tick) sees the captured value.
+      if (!sessionIdCaptured) {
+        startupBuffer += text;
+        const match = CODEX_SESSION_ID_REGEX.exec(startupBuffer);
+        if (match) {
+          sessionIdHolder.value = match[1];
+          sessionIdCaptured = true;
+          startupBuffer = "";
+          console.log(`[codex-review] Codex session ID captured: ${match[1]}`);
+        } else if (startupBuffer.length > 2048) {
+          // Stop scanning after 2KB — session ID should appear in the first few lines
+          sessionIdCaptured = true;
+          startupBuffer = "";
+        }
+      }
+
+      await appendReviewLog(worktreeDir, provider, text);
     });
   }
 
@@ -237,11 +264,33 @@ function setupProcessLifecycle(
       status: code === 0 ? "completed" : "failed",
       completedAt: new Date().toISOString(),
       exitCode: code ?? 1,
-      sessionId: sessionIdHolder?.value ?? initialState.sessionId,
+      sessionId: sessionIdHolder.value ?? initialState.sessionId,
     };
     await writeReviewState(worktreeDir, provider, finalState);
     if (existsSync(pidPath)) {
       await unlink(pidPath).catch(() => {});
+    }
+
+    // Persist Codex session ID to codex-chat.json so the chat route can resume it
+    if (provider === "codex" && sessionIdHolder.value) {
+      const chatStatePath = join(
+        worktreeDir,
+        ".claude",
+        "work",
+        "codex-chat.json"
+      );
+      await mkdir(join(worktreeDir, ".claude", "work"), { recursive: true });
+      await writeFile(
+        chatStatePath,
+        JSON.stringify(
+          { sessionId: sessionIdHolder.value, messageCount: 0 },
+          null,
+          2
+        )
+      );
+      console.log(
+        `[codex-review] Wrote codex-chat.json with session ${sessionIdHolder.value}`
+      );
     }
   });
 
@@ -259,12 +308,16 @@ function setupProcessLifecycle(
   childProcess.unref();
 }
 
-function createCodexStream(childProcess: ChildProcess): ReadableStream {
+function createCodexStream(
+  childProcess: ChildProcess,
+  sessionIdHolder: { value: string | null }
+): ReadableStream {
   const encoder = new TextEncoder();
   let eventCount = 0;
   return new ReadableStream({
     start(controller) {
       let controllerClosed = false;
+      let sessionIdEmitted = false;
       console.log(
         `[codex-stream] ReadableStream started for pid ${childProcess.pid}`
       );
@@ -281,6 +334,7 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
         type: string;
         content?: string;
         exitCode?: number;
+        sessionId?: string;
       }) => {
         if (controllerClosed) {
           return;
@@ -298,6 +352,11 @@ function createCodexStream(childProcess: ChildProcess): ReadableStream {
 
       childProcess.stdout?.on("data", (data: Buffer) => {
         console.log(`[codex-stream] stdout data: ${data.length} bytes`);
+        // Emit sessionId event once when setupProcessLifecycle has captured it
+        if (!sessionIdEmitted && sessionIdHolder.value) {
+          sessionIdEmitted = true;
+          sendEvent({ type: "sessionId", sessionId: sessionIdHolder.value });
+        }
         sendEvent({ type: "output", content: data.toString() });
       });
 
@@ -370,6 +429,9 @@ function createClaudeStream(
         sendEvent({ type: "reviewCommand", reviewCommand });
       }
 
+      // Track whether we've started the kill timer after a result event
+      let resultKillTimerSet = false;
+
       childProcess.stdout?.on("data", (data: Buffer) => {
         buffer += data.toString();
         const lines = buffer.split("\n");
@@ -381,7 +443,28 @@ function createClaudeStream(
           if (!trimmed) {
             continue;
           }
-          processClaudeStreamLine(trimmed, sessionIdHolder, sendEvent);
+          const isResult = processClaudeStreamLine(
+            trimmed,
+            sessionIdHolder,
+            sendEvent
+          );
+
+          // Start kill timer once we see a result event (Claude CLI may hang)
+          if (isResult && !resultKillTimerSet) {
+            resultKillTimerSet = true;
+            const killTimer = setTimeout(() => {
+              console.warn("[codex-review] Kill timeout after result: SIGTERM");
+              try {
+                childProcess.kill("SIGTERM");
+              } catch {}
+              setTimeout(() => {
+                try {
+                  childProcess.kill("SIGKILL");
+                } catch {}
+              }, 5000);
+            }, 30_000);
+            childProcess.once("close", () => clearTimeout(killTimer));
+          }
         }
       });
 
@@ -680,9 +763,9 @@ export async function POST(
     await writeFile(pidPath, String(pid));
   }
 
-  // Session ID holder — populated by createClaudeStream, saved by setupProcessLifecycle
-  const sessionIdHolder =
-    provider === "claude" ? { value: null as string | null } : undefined;
+  // Session ID holder — populated by stream handlers, saved by setupProcessLifecycle.
+  // Universal: Claude extracts from stream-json events, Codex parses from startup banner.
+  const sessionIdHolder: { value: string | null } = { value: null };
 
   // Set up lifecycle handlers (log capture, state updates on close/error)
   setupProcessLifecycle(
@@ -697,7 +780,7 @@ export async function POST(
   const stream =
     provider === "claude"
       ? createClaudeStream(childProcess, sessionIdHolder, reviewCommand)
-      : createCodexStream(childProcess);
+      : createCodexStream(childProcess, sessionIdHolder);
 
   console.log(
     `[codex-review] Returning streaming response for ${provider}, pid ${pid}`
@@ -783,11 +866,12 @@ function resolveEffectiveReviewMode(
     const headSha = execSync("git rev-parse HEAD", {
       cwd: worktreeDir,
       encoding: "utf-8",
+      timeout: 10_000,
     }).trim();
     const mergeBaseResult = spawnSync(
       "git",
       ["merge-base", "HEAD", `origin/${baseBranch}`],
-      { cwd: worktreeDir, encoding: "utf-8" }
+      { cwd: worktreeDir, encoding: "utf-8", timeout: 10_000 }
     );
     const mergeBase = (mergeBaseResult.stdout as string).trim();
     if (mergeBase !== headSha) {
@@ -819,6 +903,7 @@ function applyMergedPrDiff(
     cwd: worktreeDir,
     encoding: "utf-8",
     maxBuffer: 10 * 1024 * 1024,
+    timeout: 30_000,
   });
   const diff = (diffResult.stdout as string) ?? "";
 
@@ -832,19 +917,38 @@ function applyMergedPrDiff(
   const mergeOidResult = spawnSync(
     "gh",
     ["pr", "view", prNum, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
-    { cwd: worktreeDir, encoding: "utf-8" }
+    { cwd: worktreeDir, encoding: "utf-8", timeout: 30_000 }
   );
   const mergeOid = (mergeOidResult.stdout as string).trim();
   if (mergeOid) {
     const baseCommitResult = spawnSync("git", ["rev-parse", `${mergeOid}^1`], {
       cwd: worktreeDir,
       encoding: "utf-8",
+      timeout: 10_000,
     });
     const baseCommit = (baseCommitResult.stdout as string).trim();
-    spawnSync("git", ["checkout", "--detach", baseCommit], {
-      cwd: worktreeDir,
-      stdio: "pipe",
-    });
+    if (!baseCommit || baseCommitResult.status !== 0) {
+      console.warn(
+        "[codex-review] Failed to resolve base commit for merged PR"
+      );
+      return "base";
+    }
+    const checkoutResult = spawnSync(
+      "git",
+      ["checkout", "--detach", baseCommit],
+      {
+        cwd: worktreeDir,
+        stdio: "pipe",
+        timeout: 10_000,
+      }
+    );
+    if (checkoutResult.status !== 0) {
+      console.warn(
+        "[codex-review] Failed to checkout base commit:",
+        baseCommit
+      );
+      return "base";
+    }
   }
 
   const patchPath = join(worktreeDir, ".pr-review-diff.patch");
@@ -862,12 +966,12 @@ async function processClaudeLogLine(
   trimmed: string,
   worktreeDir: string,
   provider: "claude" | "codex",
-  sessionIdHolder?: { value: string | null }
+  sessionIdHolder: { value: string | null }
 ): Promise<void> {
   try {
     const event = JSON.parse(trimmed);
     const sid = extractClaudeSessionId(event);
-    if (sid && sessionIdHolder) {
+    if (sid) {
       sessionIdHolder.value = sid;
     }
     const text = extractClaudeText(event);
@@ -891,7 +995,7 @@ function processClaudeStreamLine(
     reviewCommand?: string;
     contextPercent?: number;
   }) => void
-): void {
+): boolean {
   try {
     const event = JSON.parse(trimmed);
     const sid = extractClaudeSessionId(event);
@@ -901,17 +1005,30 @@ function processClaudeStreamLine(
       sendEvent({ type: "sessionId", sessionId: sid });
     }
 
-    // Extract context usage from result events
-    if (event.type === "result" && event.subtype === "success" && event.usage) {
-      const total =
-        (event.usage.input_tokens ?? 0) +
-        (event.usage.output_tokens ?? 0) +
-        (event.usage.cache_creation_input_tokens ?? 0) +
-        (event.usage.cache_read_input_tokens ?? 0);
-      const contextWindow = event.context_window ?? 200_000;
-      const percent =
-        contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
-      sendEvent({ type: "usage", contextPercent: percent });
+    // Detect context limit / error results (e.g. "Prompt is too long")
+    if (event.type === "result" && event.is_error) {
+      const errorText =
+        typeof event.result === "string"
+          ? event.result
+          : "Claude encountered an error";
+      console.warn(`[codex-review] Claude result error: ${errorText}`);
+      sendEvent({ type: "error", content: errorText });
+      return true;
+    }
+
+    if (event.type === "result") {
+      if (event.subtype === "success" && event.usage) {
+        const total =
+          (event.usage.input_tokens ?? 0) +
+          (event.usage.output_tokens ?? 0) +
+          (event.usage.cache_creation_input_tokens ?? 0) +
+          (event.usage.cache_read_input_tokens ?? 0);
+        const contextWindow = event.context_window ?? 200_000;
+        const percent =
+          contextWindow > 0 ? Math.round((total * 100) / contextWindow) : 0;
+        sendEvent({ type: "usage", contextPercent: percent });
+      }
+      return true;
     }
 
     const text = extractClaudeText(event);
@@ -931,4 +1048,5 @@ function processClaudeStreamLine(
     );
     sendEvent({ type: "output", content: `${trimmed}\n` });
   }
+  return false;
 }

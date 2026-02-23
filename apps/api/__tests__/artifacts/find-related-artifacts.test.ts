@@ -85,6 +85,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: prd.id,
             sourceType: "ARTIFACT",
             targetId: plan.id,
@@ -112,6 +113,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: plan.id,
             sourceType: "ARTIFACT",
             targetId: strategy.id,
@@ -181,6 +183,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: root.id,
             sourceType: "ARTIFACT",
             targetId: child1.id,
@@ -207,6 +210,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: root.id,
             sourceType: "ARTIFACT",
             targetId: child2.id,
@@ -234,6 +238,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: child1.id,
             sourceType: "ARTIFACT",
             targetId: grandchild1.id,
@@ -260,6 +265,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
       await withDb((db) =>
         db.entityLink.create({
           data: {
+            organizationId: orgId,
             sourceId: child2.id,
             sourceType: "ARTIFACT",
             targetId: grandchild2.id,
