@@ -1060,7 +1060,7 @@ function attemptSafetyCommit(
  * Returns PR info if Claude created a PR, or null otherwise.
  * Best-effort — failures fall through to attemptSafetyCommit.
  */
-function attemptLlmCommit(workDir) {
+function attemptLlmCommit(workDir, resultFilePath) {
   if (!(config.targetRepo && config.githubToken && config.anthropicApiKey)) {
     return null;
   }
@@ -1115,12 +1115,26 @@ function attemptLlmCommit(workDir) {
     "     - Write a descriptive title based on the actual changes",
     "     - Include a summary of what was changed in the body",
     '     - Add label: symphony',
-    "   - If a PR already exists, skip creation",
+    "   - If a PR already exists, get its URL with: gh pr view --json url -q .url",
+    "7. ONLY after a successful commit AND push, write this EXACT JSON file:",
+    `   File path: ${resultFilePath}`,
+    "   ```json",
+    "   {",
+    '     "has_changes": true,',
+    '     "pr_url": "<full GitHub PR URL or empty string if no PR>",',
+    '     "pr_number": <PR number as integer, or 0 if no PR>,',
+    `     "branch_name": "${branchName}",`,
+    `     "base_ref": "${config.targetBranch}",`,
+    '     "commit_sha": "<output of git rev-parse HEAD>"',
+    "   }",
+    "   ```",
+    "   Run `git rev-parse HEAD` to get the commit SHA.",
     "",
     "RULES:",
     "- NEVER stage or commit the .claude/ directory",
     "- Do NOT modify any source code except to fix pre-commit hook failures (formatting, lint)",
-    "- Keep it quick — commit, push, PR, done",
+    "- Do NOT write execution-result.json unless you successfully committed AND pushed",
+    "- Keep it quick — commit, push, PR, write result file, done",
   ].join("\n");
 
   // Build env: git auth + API key + gh token
@@ -1138,7 +1152,7 @@ function attemptLlmCommit(workDir) {
       [
         "-p",
         "--allowedTools",
-        "Bash,Read,Glob,Grep",
+        "Bash,Read,Write,Glob,Grep",
         "--max-turns",
         "15",
         prompt,
@@ -1173,7 +1187,31 @@ function attemptLlmCommit(workDir) {
       log("info", `LLM commit stderr (tail): ${redactSensitive(tail)}`);
     }
 
-    // Detect PR URL from output
+    // Read execution-result.json written by the LLM (preferred over stdout parsing)
+    if (fs.existsSync(resultFilePath)) {
+      try {
+        const resultData = JSON.parse(
+          fs.readFileSync(resultFilePath, "utf-8")
+        );
+        log(
+          "info",
+          `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
+        );
+        return {
+          prUrl: resultData.pr_url || null,
+          prNumber: resultData.pr_number || null,
+          branchName: resultData.branch_name || branchName,
+          commitSha: resultData.commit_sha || null,
+        };
+      } catch (parseErr) {
+        log(
+          "error",
+          `Failed to parse LLM execution-result.json: ${parseErr.message}`
+        );
+      }
+    }
+
+    // Fallback: detect PR URL from output (if LLM didn't write the file)
     const combined = stdout + stderr;
     const prMatch = combined.match(RE_GITHUB_PR_URL);
     if (prMatch) {
@@ -2250,6 +2288,15 @@ function getHeadCommitSha(workDir) {
  */
 function writeExecutionResult(workDir, prInfo) {
   try {
+    const filePath = path.join(workDir, "execution-result.json");
+
+    // Don't overwrite if the LLM commit step already wrote it —
+    // the LLM's version has first-hand PR/commit info from its own operations.
+    if (fs.existsSync(filePath)) {
+      log("info", "execution-result.json already exists (written by LLM commit), skipping");
+      return;
+    }
+
     const hasChanges = !!prInfo?.prUrl;
     const commitSha = getHeadCommitSha(workDir);
 
@@ -2262,7 +2309,6 @@ function writeExecutionResult(workDir, prInfo) {
       commit_sha: commitSha,
     };
 
-    const filePath = path.join(workDir, "execution-result.json");
     fs.writeFileSync(filePath, JSON.stringify(result, null, 2));
     log("info", `Wrote execution-result.json (has_changes=${hasChanges})`);
   } catch (err) {
@@ -2292,26 +2338,37 @@ async function reportFinalStatus(
   let prInfo = null;
 
   if (shouldCommitAndPush) {
+    const resultFilePath = path.join(swDir || workDir, "execution-result.json");
+
     // Step 1: LLM-assisted commit — standalone Claude call that reviews
-    // changes, writes a good commit message, pushes, and creates a PR.
-    // This is the primary commit path; safety commit is the fallback.
-    const llmPrInfo = attemptLlmCommit(workDir);
+    // changes, writes a good commit message, pushes, creates a PR, and
+    // writes execution-result.json directly with first-hand info.
+    // The LLM ONLY writes execution-result.json on successful commit+push.
+    const llmPrInfo = attemptLlmCommit(workDir, resultFilePath);
 
-    // Step 2: Safety commit for any leftover changes the LLM didn't handle.
-    // Uses --no-verify to guarantee success regardless of repo hooks.
-    attemptSafetyCommit(workDir, safetyCommitMsg);
-    ensureBranchPushed(workDir);
+    // Step 2: Check if the LLM handled everything.
+    // execution-result.json exists = LLM committed + pushed successfully.
+    // No need for safety commit, branch push, or mechanical PR creation.
+    if (llmPrInfo && fs.existsSync(resultFilePath)) {
+      log("info", "LLM commit handled everything — skipping safety commit");
+      prInfo = llmPrInfo;
+    } else {
+      // Fallback: safety commit + push + mechanical PR creation
+      log("info", "LLM commit did not produce execution-result.json — running safety fallback");
+      attemptSafetyCommit(workDir, safetyCommitMsg);
+      ensureBranchPushed(workDir);
 
-    // Step 3: Detect branch/PR info — check LLM output, execution output, and git
-    prInfo = parsePrInfo(workDir, output);
-    if (llmPrInfo?.prUrl) {
-      prInfo = { ...(prInfo || {}), ...llmPrInfo };
+      prInfo = parsePrInfo(workDir, output);
+      if (llmPrInfo?.prUrl) {
+        prInfo = { ...(prInfo || {}), ...llmPrInfo };
+      }
+      prInfo = createPullRequest(workDir, prInfo);
+
+      // Write execution-result.json ourselves since the LLM didn't
+      writeExecutionResult(swDir || workDir, prInfo);
     }
 
-    // Step 4: Create PR if neither LLM nor execution created one
-    prInfo = createPullRequest(workDir, prInfo);
-
-    // Step 5: Label incomplete PRs
+    // Label incomplete PRs regardless of which path created the PR
     if (isIncomplete && prInfo?.prNumber) {
       labelPrIncomplete(workDir, prInfo.prNumber);
     }
@@ -2325,12 +2382,6 @@ async function reportFinalStatus(
   }
   if (capturedSessionId) {
     log("info", `Session ID: ${capturedSessionId}`);
-  }
-
-  // Step 5: Write execution-result.json to the run directory so it's
-  // included in the artifacts/ upload to S3.
-  if (shouldCommitAndPush) {
-    writeExecutionResult(swDir || workDir, prInfo);
   }
 
   // Step 6: Upload state + metadata
@@ -2643,45 +2694,56 @@ async function main() {
 
     let prInfo = null;
     if (shouldCommitAndPush) {
-      // Try LLM commit first (good messages, can fix hook issues)
+      const errorResultPath = path.join(symphonyWorkDir || workDir, "execution-result.json");
+
+      // Try LLM commit first (writes execution-result.json on success)
       let llmPrInfo = null;
       try {
-        llmPrInfo = attemptLlmCommit(workDir);
+        llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
       } catch (_) {
         // ignore
       }
 
-      // Safety commit for leftovers (--no-verify guaranteed)
-      try {
-        attemptSafetyCommit(
-          workDir,
-          "[INCOMPLETE] WIP: Safety commit — harness error"
-        );
-        ensureBranchPushed(workDir);
-      } catch (_) {
-        // ignore
-      }
-
-      try {
-        prInfo = parsePrInfo(workDir, output);
-        if (llmPrInfo?.prUrl) {
-          prInfo = { ...(prInfo || {}), ...llmPrInfo };
+      // Check if LLM handled everything
+      if (llmPrInfo && fs.existsSync(errorResultPath)) {
+        prInfo = llmPrInfo;
+      } else {
+        // Fallback: safety commit + push + mechanical PR
+        try {
+          attemptSafetyCommit(
+            workDir,
+            "[INCOMPLETE] WIP: Safety commit — harness error"
+          );
+          ensureBranchPushed(workDir);
+        } catch (_) {
+          // ignore
         }
-        prInfo = createPullRequest(workDir, prInfo);
-        if (prInfo?.prNumber) {
+
+        try {
+          prInfo = parsePrInfo(workDir, output);
+          if (llmPrInfo?.prUrl) {
+            prInfo = { ...(prInfo || {}), ...llmPrInfo };
+          }
+          prInfo = createPullRequest(workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+
+        // Write execution-result.json ourselves since LLM didn't
+        try {
+          writeExecutionResult(symphonyWorkDir || workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      // Label incomplete PRs regardless of path
+      if (prInfo?.prNumber) {
+        try {
           labelPrIncomplete(workDir, prInfo.prNumber);
+        } catch (_) {
+          // ignore
         }
-      } catch (_) {
-        // ignore
-      }
-    }
-
-    // Best-effort: write execution-result.json before upload
-    if (shouldCommitAndPush) {
-      try {
-        writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-      } catch (_) {
-        // ignore
       }
     }
 
