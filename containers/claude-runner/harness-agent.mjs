@@ -15,7 +15,7 @@
  * 9. Reports final status (COMPLETED / FAILED / CANCELLED)
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -979,7 +979,7 @@ function cloneRepo(workDir) {
 }
 
 // ---------------------------------------------------------------------------
-// Safety commit (best-effort on any exit path)
+// Safety commit (best-effort fallback — uses --no-verify to guarantee success)
 // ---------------------------------------------------------------------------
 function attemptSafetyCommit(
   workDir,
@@ -1008,7 +1008,10 @@ function attemptSafetyCommit(
       // Exit non-zero means there are staged changes — proceed
     }
 
-    execFileSync("git", ["commit", "-m", commitMessage], {
+    // --no-verify: bypass pre-commit hooks — this is a safety net, not a
+    // development commit. Hooks (lint, test, etc.) can fail on partial work
+    // and would prevent us from preserving the code changes.
+    execFileSync("git", ["commit", "--no-verify", "-m", commitMessage], {
       cwd: workDir,
       stdio: "pipe",
     });
@@ -1033,7 +1036,8 @@ function attemptSafetyCommit(
       return;
     }
 
-    execFileSync("git", ["push", "origin", "HEAD"], {
+    // --no-verify: bypass pre-push hooks for the same reason as above.
+    execFileSync("git", ["push", "--no-verify", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
       env: buildGitAuthEnv(),
@@ -1042,6 +1046,156 @@ function attemptSafetyCommit(
     log("info", "Safety commit pushed successfully");
   } catch (err) {
     log("error", `Safety commit failed (best-effort): ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LLM-assisted commit (standalone Claude call for quality commits + PR)
+// ---------------------------------------------------------------------------
+/**
+ * Spawn a standalone Claude CLI call to review changes, create a proper
+ * commit, push, and open a PR. This produces much better commit messages
+ * and PR descriptions than the mechanical safety commit.
+ *
+ * Returns PR info if Claude created a PR, or null otherwise.
+ * Best-effort — failures fall through to attemptSafetyCommit.
+ */
+function attemptLlmCommit(workDir) {
+  if (!(config.targetRepo && config.githubToken && config.anthropicApiKey)) {
+    return null;
+  }
+
+  const branchName = detectBranchName(workDir);
+  if (!branchName) {
+    log("info", "LLM commit: on target branch, skipping");
+    return null;
+  }
+
+  // Quick check: are there any uncommitted changes?
+  try {
+    execFileSync("git", ["diff", "--quiet", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+    });
+    // No tracked changes — also check for untracked files
+    const untracked = execFileSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "--exclude", ".claude"],
+      { cwd: workDir, stdio: "pipe" }
+    )
+      .toString()
+      .trim();
+    if (!untracked) {
+      log("info", "LLM commit: no uncommitted changes");
+      return null;
+    }
+  } catch {
+    // git diff --quiet exits non-zero when there ARE changes — proceed
+  }
+
+  const prompt = [
+    `You are a commit assistant finalizing work from a Symphony ${config.command} loop.`,
+    "",
+    "Review all uncommitted changes in this repository and create a proper commit, push it, and create a pull request.",
+    "",
+    "STEPS:",
+    "1. Run `git status` and `git diff --stat` to understand what changed",
+    "2. Stage all changed/new files EXCEPT the .claude/ directory:",
+    "   git add -A -- ':!.claude'",
+    "3. Write a clear, descriptive commit message based on the actual code changes",
+    "   - Summarize WHAT changed and WHY (not just 'Symphony loop output')",
+    "   - Use conventional commit style if the changes have a clear category",
+    "4. Try `git commit` first. If pre-commit hooks fail:",
+    "   - Attempt to fix the issue (e.g., run the linter/formatter if the error message tells you how)",
+    "   - If you can't quickly fix it, use `git commit --no-verify`",
+    "5. Push to origin. If pre-push hooks fail, use `git push --no-verify origin HEAD`",
+    `6. Check if a PR already exists for this branch: gh pr list --head ${branchName}`,
+    "   - If NO PR exists, create one with `gh pr create`:",
+    `     - Base branch: ${config.targetBranch}`,
+    "     - Write a descriptive title based on the actual changes",
+    "     - Include a summary of what was changed in the body",
+    '     - Add label: symphony',
+    "   - If a PR already exists, skip creation",
+    "",
+    "RULES:",
+    "- NEVER stage or commit the .claude/ directory",
+    "- Do NOT modify any source code except to fix pre-commit hook failures (formatting, lint)",
+    "- Keep it quick — commit, push, PR, done",
+  ].join("\n");
+
+  // Build env: git auth + API key + gh token
+  const llmEnv = {
+    ...buildGitAuthEnv(),
+    ANTHROPIC_API_KEY: config.anthropicApiKey,
+    GH_TOKEN: config.githubToken,
+    LANG: process.env.LANG || "C.UTF-8",
+  };
+
+  try {
+    log("info", "Attempting LLM-assisted commit...");
+    const result = spawnSync(
+      "claude",
+      [
+        "-p",
+        "--allowedTools",
+        "Bash,Read,Glob,Grep",
+        "--max-turns",
+        "15",
+        prompt,
+      ],
+      {
+        cwd: workDir,
+        env: llmEnv,
+        stdio: "pipe",
+        maxBuffer: 10 * 1024 * 1024, // 10MB
+      }
+    );
+
+    const stdout = result.stdout?.toString() || "";
+    const stderr = result.stderr?.toString() || "";
+
+    if (result.status !== 0) {
+      log(
+        "error",
+        `LLM commit exited with code ${result.status} (best-effort, falling through to safety commit)`
+      );
+    } else {
+      log("info", "LLM commit completed successfully");
+    }
+
+    // Log tail of output for debugging
+    if (stdout) {
+      const tail = stdout.slice(-2000);
+      log("info", `LLM commit stdout (tail): ${redactSensitive(tail)}`);
+    }
+    if (stderr) {
+      const tail = stderr.slice(-1000);
+      log("info", `LLM commit stderr (tail): ${redactSensitive(tail)}`);
+    }
+
+    // Detect PR URL from output
+    const combined = stdout + stderr;
+    const prMatch = combined.match(RE_GITHUB_PR_URL);
+    if (prMatch) {
+      const prNumberMatch = PR_NUMBER_REGEX.exec(prMatch[0]);
+      log("info", `LLM commit created PR: ${prMatch[0]}`);
+      return {
+        prUrl: prMatch[0],
+        prNumber: prNumberMatch
+          ? Number.parseInt(prNumberMatch[1], 10)
+          : null,
+        branchName,
+        commitSha: null,
+      };
+    }
+
+    return null;
+  } catch (err) {
+    log(
+      "error",
+      `LLM commit failed (best-effort): ${redactSensitive(err.message)}`
+    );
+    return null;
   }
 }
 
@@ -1057,7 +1211,8 @@ function ensureBranchPushed(workDir) {
     return; // on target branch, don't push
   }
   try {
-    execFileSync("git", ["push", "origin", "HEAD"], {
+    // --no-verify: bypass pre-push hooks in CI (same rationale as safety commit)
+    execFileSync("git", ["push", "--no-verify", "origin", "HEAD"], {
       cwd: workDir,
       stdio: "pipe",
       env: buildGitAuthEnv(),
@@ -2123,33 +2278,40 @@ async function reportFinalStatus(
   output,
   { timedOut, exitCode, signal, duration, tokenUsage, startTime, symphonyWorkDir: swDir }
 ) {
-  // Step 0: Refresh GitHub token before safety commit (token may have expired
-  // during the 55-minute run window)
+  // Step 0: Refresh GitHub token before commit/push (token may have expired
+  // during the run)
   await refreshGitHubToken();
 
   const shouldCommitAndPush = config.command === "EXECUTE";
 
-  // Step 1: Safety commit + push only for commands that produce code changes
   const isIncomplete = timedOut || exitCode !== 0;
-  const commitMsg = timedOut
-    ? "[INCOMPLETE] WIP: Safety commit — loop timed out"
-    : exitCode !== 0
-      ? "[INCOMPLETE] WIP: Safety commit — process failed"
-      : "Post-run: uncommitted changes from loop execution";
+  const safetyCommitMsg = isIncomplete
+    ? "[INCOMPLETE] WIP: Safety commit — leftover changes"
+    : "Post-run: uncommitted changes from loop execution";
 
   let prInfo = null;
 
   if (shouldCommitAndPush) {
-    attemptSafetyCommit(workDir, commitMsg);
+    // Step 1: LLM-assisted commit — standalone Claude call that reviews
+    // changes, writes a good commit message, pushes, and creates a PR.
+    // This is the primary commit path; safety commit is the fallback.
+    const llmPrInfo = attemptLlmCommit(workDir);
+
+    // Step 2: Safety commit for any leftover changes the LLM didn't handle.
+    // Uses --no-verify to guarantee success regardless of repo hooks.
+    attemptSafetyCommit(workDir, safetyCommitMsg);
     ensureBranchPushed(workDir);
 
-    // Step 2: Detect branch info and any PR Claude may have created during execution
+    // Step 3: Detect branch/PR info — check LLM output, execution output, and git
     prInfo = parsePrInfo(workDir, output);
+    if (llmPrInfo?.prUrl) {
+      prInfo = { ...(prInfo || {}), ...llmPrInfo };
+    }
 
-    // Step 3: Create PR (harness owns PR creation, not run-loop — mirrors dispatch workflow)
+    // Step 4: Create PR if neither LLM nor execution created one
     prInfo = createPullRequest(workDir, prInfo);
 
-    // Step 4: Label incomplete PRs
+    // Step 5: Label incomplete PRs
     if (isIncomplete && prInfo?.prNumber) {
       labelPrIncomplete(workDir, prInfo.prNumber);
     }
@@ -2468,7 +2630,7 @@ async function main() {
       log("error", redactSensitive(errorStack));
     }
 
-    // Best-effort: refresh token, safety commit, push, create PR, label
+    // Best-effort: refresh token, LLM commit, safety commit, push, create PR
     // Mirrors dispatch workflow's `if: always()` pattern — preserve work
     // even on fatal errors.
     const shouldCommitAndPush = config.command === "EXECUTE";
@@ -2481,6 +2643,15 @@ async function main() {
 
     let prInfo = null;
     if (shouldCommitAndPush) {
+      // Try LLM commit first (good messages, can fix hook issues)
+      let llmPrInfo = null;
+      try {
+        llmPrInfo = attemptLlmCommit(workDir);
+      } catch (_) {
+        // ignore
+      }
+
+      // Safety commit for leftovers (--no-verify guaranteed)
       try {
         attemptSafetyCommit(
           workDir,
@@ -2493,6 +2664,9 @@ async function main() {
 
       try {
         prInfo = parsePrInfo(workDir, output);
+        if (llmPrInfo?.prUrl) {
+          prInfo = { ...(prInfo || {}), ...llmPrInfo };
+        }
         prInfo = createPullRequest(workDir, prInfo);
         if (prInfo?.prNumber) {
           labelPrIncomplete(workDir, prInfo.prNumber);
