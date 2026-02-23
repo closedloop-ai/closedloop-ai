@@ -41,15 +41,15 @@ function unwrapApiResult<T>(body: unknown): T {
   if (typeof message === "string" && message.length > 0) {
     throw new Error(message);
   }
-  try {
-    throw new Error(
-      typeof error === "undefined"
-        ? "API request failed"
-        : JSON.stringify(error)
-    );
-  } catch {
-    throw new Error("API request failed");
+  let msg = "API request failed";
+  if (typeof error !== "undefined") {
+    try {
+      msg = JSON.stringify(error);
+    } catch {
+      /* keep default */
+    }
   }
+  throw new Error(msg);
 }
 
 export class ApiClient {
