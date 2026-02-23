@@ -28,10 +28,8 @@ export function useGeneratePublicDashboardToken() {
         "/dashboard/public-token",
         {}
       ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: publicDashboardTokenKeys.all,
-      });
+    onSuccess: (data) => {
+      queryClient.setQueryData(publicDashboardTokenKeys.all, data);
     },
   });
 }
@@ -44,8 +42,9 @@ export function useRevokePublicDashboardToken() {
     mutationFn: () =>
       apiClient.delete<{ deleted: true }>("/dashboard/public-token"),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: publicDashboardTokenKeys.all,
+      queryClient.setQueryData(publicDashboardTokenKeys.all, {
+        token: null,
+        url: null,
       });
     },
   });

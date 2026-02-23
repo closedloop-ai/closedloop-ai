@@ -1,5 +1,6 @@
 import type { PublicDashboardTokenResponse } from "@repo/api/src/types/dashboard";
 import { env } from "@/env";
+import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -9,8 +10,6 @@ import {
 } from "@/lib/route-utils";
 import { publicDashboardTokenService } from "../public-token-service";
 
-const ADMIN_ROLES = new Set(["org:admin", "org:owner"]);
-
 function buildPublicUrl(token: string): string {
   return `${env.NEXT_PUBLIC_APP_URL}/d/${token}`;
 }
@@ -18,8 +17,8 @@ function buildPublicUrl(token: string): string {
 export const GET = withAuth<
   PublicDashboardTokenResponse,
   "/dashboard/public-token"
->(async ({ user, orgRole }) => {
-  if (!(orgRole && ADMIN_ROLES.has(orgRole))) {
+>(async ({ user, clerkOrgId, clerkUserId }) => {
+  if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
     return forbiddenResponse();
   }
   try {
@@ -38,8 +37,8 @@ export const GET = withAuth<
 export const POST = withAuth<
   PublicDashboardTokenResponse,
   "/dashboard/public-token"
->(async ({ user, orgRole }) => {
-  if (!(orgRole && ADMIN_ROLES.has(orgRole))) {
+>(async ({ user, clerkOrgId, clerkUserId }) => {
+  if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
     return forbiddenResponse();
   }
   try {
@@ -56,8 +55,8 @@ export const POST = withAuth<
 });
 
 export const DELETE = withAuth<{ deleted: true }, "/dashboard/public-token">(
-  async ({ user, orgRole }) => {
-    if (!(orgRole && ADMIN_ROLES.has(orgRole))) {
+  async ({ user, clerkOrgId, clerkUserId }) => {
+    if (!(await isOrgAdmin(clerkOrgId, clerkUserId))) {
       return forbiddenResponse();
     }
     try {

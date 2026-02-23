@@ -30,16 +30,21 @@ export function PublicDashboardCard() {
 
   const handleCopy = async () => {
     if (data?.url) {
-      await navigator.clipboard.writeText(data.url);
-      toast.success("URL copied to clipboard");
+      try {
+        await navigator.clipboard.writeText(data.url);
+        toast.success("URL copied to clipboard");
+      } catch {
+        toast.error("Failed to copy URL");
+      }
     }
   };
 
   const handleGenerate = async () => {
+    const isRegenerate = !!data?.token;
     try {
       await generate.mutateAsync();
       toast.success(
-        data?.token ? "Dashboard URL regenerated" : "Dashboard URL created"
+        isRegenerate ? "Dashboard URL regenerated" : "Dashboard URL created"
       );
     } catch {
       toast.error("Failed to generate dashboard URL");

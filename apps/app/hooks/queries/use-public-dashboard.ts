@@ -16,6 +16,9 @@ export function usePublicDashboard(token: string) {
     queryFn: async (): Promise<PublicDashboardResponse> => {
       const url = `${resolveApiUrl()}/public/dashboard/${token}`;
       const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
       const result: ApiResult<PublicDashboardResponse> = await response.json();
       if (!result.success) {
         throw new Error(result.error);
