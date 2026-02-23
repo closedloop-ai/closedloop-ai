@@ -1,4 +1,5 @@
 import { SymphonyCommand } from "@repo/api/src/types/artifact";
+import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
@@ -6,7 +7,6 @@ import {
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { CONTENT_KEYS } from "../../extractors/keys";
-import type { ExecutionResult } from "../../zip-parser";
 import type { WorkflowHandler } from "./types";
 
 /**

@@ -730,7 +730,10 @@ async function downloadContextPack() {
   if (pack.committer) {
     config.committerName = pack.committer.name || null;
     config.committerEmail = pack.committer.email || null;
-    log("info", `Committer: ${config.committerName} <${config.committerEmail}>`);
+    log(
+      "info",
+      `Committer: ${config.committerName} <${config.committerEmail}>`
+    );
   }
 
   return pack;
@@ -859,9 +862,7 @@ function writePrdFile(targetDir, contextPack) {
 
   // Fall back to the first PRD-type artifact from context refs
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
-    const prdArtifact = contextPack.artifacts.find(
-      (a) => a.type === "PRD"
-    );
+    const prdArtifact = contextPack.artifacts.find((a) => a.type === "PRD");
     if (prdArtifact?.content) {
       prdContent = prdArtifact.content;
       log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
@@ -903,7 +904,10 @@ function syncPlanFromContextPack(runDir, contextPack) {
   // (pendingTasks, openQuestions, etc.). If it doesn't exist, the parent
   // may not have produced one yet (edge case) — skip.
   if (!fs.existsSync(planJsonPath)) {
-    log("info", "No existing plan.json in run dir — skipping context pack sync");
+    log(
+      "info",
+      "No existing plan.json in run dir — skipping context pack sync"
+    );
     return;
   }
 
@@ -911,7 +915,10 @@ function syncPlanFromContextPack(runDir, contextPack) {
     const existing = JSON.parse(fs.readFileSync(planJsonPath, "utf-8"));
     existing.content = primaryArtifact.content;
     fs.writeFileSync(planJsonPath, JSON.stringify(existing, null, 2));
-    log("info", `Synced plan.json with latest artifact content (${primaryArtifact.content.length} chars)`);
+    log(
+      "info",
+      `Synced plan.json with latest artifact content (${primaryArtifact.content.length} chars)`
+    );
   } catch (err) {
     log("error", `Failed to sync plan.json from context pack: ${err.message}`);
   }
@@ -1114,7 +1121,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     `     - Base branch: ${config.targetBranch}`,
     "     - Write a descriptive title based on the actual changes",
     "     - Include a summary of what was changed in the body",
-    '     - Add label: symphony',
+    "     - Add label: symphony",
     "   - If a PR already exists, get its URL with: gh pr view --json url -q .url",
     "7. ONLY after a successful commit AND push, write this EXACT JSON file:",
     `   File path: ${resultFilePath}`,
@@ -1190,9 +1197,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     // Read execution-result.json written by the LLM (preferred over stdout parsing)
     if (fs.existsSync(resultFilePath)) {
       try {
-        const resultData = JSON.parse(
-          fs.readFileSync(resultFilePath, "utf-8")
-        );
+        const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
         log(
           "info",
           `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
@@ -1219,9 +1224,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
       log("info", `LLM commit created PR: ${prMatch[0]}`);
       return {
         prUrl: prMatch[0],
-        prNumber: prNumberMatch
-          ? Number.parseInt(prNumberMatch[1], 10)
-          : null,
+        prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
         branchName,
         commitSha: null,
       };
@@ -1922,8 +1925,13 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       }
       // Sanitize prompt to match dispatch's prepare-message step:
       // collapse newlines to spaces, escape double quotes
-      const sanitized = prompt.replace(/[\n\r]+/g, " ").replace(/\s{2,}/g, " ").replace(/"/g, '\\"');
-      args.push(`/experimental:amend-plan --workdir ${symphonyWD || workDir} --message "${sanitized}"`);
+      const sanitized = prompt
+        .replace(/[\n\r]+/g, " ")
+        .replace(/\s{2,}/g, " ")
+        .replace(/"/g, '\\"');
+      args.push(
+        `/experimental:amend-plan --workdir ${symphonyWD || workDir} --message "${sanitized}"`
+      );
       break;
     }
     case "CHAT":
@@ -2293,7 +2301,10 @@ function writeExecutionResult(workDir, prInfo) {
     // Don't overwrite if the LLM commit step already wrote it —
     // the LLM's version has first-hand PR/commit info from its own operations.
     if (fs.existsSync(filePath)) {
-      log("info", "execution-result.json already exists (written by LLM commit), skipping");
+      log(
+        "info",
+        "execution-result.json already exists (written by LLM commit), skipping"
+      );
       return;
     }
 
@@ -2322,7 +2333,15 @@ function writeExecutionResult(workDir, prInfo) {
 async function reportFinalStatus(
   workDir,
   output,
-  { timedOut, exitCode, signal, duration, tokenUsage, startTime, symphonyWorkDir: swDir }
+  {
+    timedOut,
+    exitCode,
+    signal,
+    duration,
+    tokenUsage,
+    startTime,
+    symphonyWorkDir: swDir,
+  }
 ) {
   // Step 0: Refresh GitHub token before commit/push (token may have expired
   // during the run)
@@ -2354,7 +2373,10 @@ async function reportFinalStatus(
       prInfo = llmPrInfo;
     } else {
       // Fallback: safety commit + push + mechanical PR creation
-      log("info", "LLM commit did not produce execution-result.json — running safety fallback");
+      log(
+        "info",
+        "LLM commit did not produce execution-result.json — running safety fallback"
+      );
       attemptSafetyCommit(workDir, safetyCommitMsg);
       ensureBranchPushed(workDir);
 
@@ -2590,15 +2612,27 @@ async function main() {
     if (symphonyWorkDir) {
       log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
     } else {
-      const runTs = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-      const loopSuffix = (config.loopId || randomUUID()).toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 50);
-      symphonyWorkDir = path.join(workDir, ".claude", "runs", `${runTs}-loop-${loopSuffix}`);
+      const runTs = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID())
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      symphonyWorkDir = path.join(
+        workDir,
+        ".claude",
+        "runs",
+        `${runTs}-loop-${loopSuffix}`
+      );
       fs.mkdirSync(symphonyWorkDir, { recursive: true });
       log("info", `Created new run directory: ${symphonyWorkDir}`);
     }
 
     // Write PRD to the run directory (all commands that have a prompt)
-    let prdPath = writePrdFile(symphonyWorkDir, contextPack);
+    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
 
     // For child loops: write the latest plan content from the context pack to
     // plan.json in the run dir. This picks up manual edits the user made in
@@ -2694,7 +2728,10 @@ async function main() {
 
     let prInfo = null;
     if (shouldCommitAndPush) {
-      const errorResultPath = path.join(symphonyWorkDir || workDir, "execution-result.json");
+      const errorResultPath = path.join(
+        symphonyWorkDir || workDir,
+        "execution-result.json"
+      );
 
       // Try LLM commit first (writes execution-result.json on success)
       let llmPrInfo = null;

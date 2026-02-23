@@ -2,18 +2,6 @@ import type AdmZip from "adm-zip";
 import { ZIP_CONTENT_EXTRACTORS } from "./extractors/registry";
 import { type ContentKey, ZipContentBag } from "./extractors/types";
 
-export type ExecutionResult = {
-  has_changes: boolean;
-  pr_url: string;
-  pr_number: string | number; // GitHub Actions outputs as string
-  pr_title?: string; // Optional - may not be in workflow output
-  branch_name: string;
-  base_ref?: string; // Workflow uses base_ref, not base_branch
-  base_branch?: string; // Legacy/alternative field name
-  github_id?: number;
-  commit_sha?: string;
-};
-
 export type ZipContentResult = {
   bag: ZipContentBag;
   entries: { name: string; data: Buffer }[];
@@ -82,7 +70,6 @@ function processZipEntry(bag: ZipContentBag, data: Buffer, name: string): void {
       applyMergingExtractor(bag, extractor, data, name);
     } else {
       applyPriorityExtractor(bag, extractor, data, name);
-      break;
     }
   }
 }

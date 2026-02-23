@@ -9,6 +9,7 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import { log } from "@repo/observability/log";
 import type { PromptsSnapshot } from "./prompt-types";
 
 /** Discriminant for all possible extractor output types. */
@@ -84,6 +85,14 @@ export type AnyZipContentExtractor =
     >;
 
 /**
+ * Keys that use mergeWith in the extractor registry.
+ * Used to warn when they fall through to the priority path due to a missing mergeFn
+ * (e.g. when a bag is constructed independently and merged into another).
+ * Keep in sync when adding new accumulating extractors.
+ */
+const ACCUMULATING_KEYS = new Set(["promptsSnapshot"]);
+
+/**
  * Container for heterogeneous extractor results.
  * Provides typed access via ContentKey<T> tokens.
  */
@@ -156,6 +165,13 @@ export class ZipContentBag {
           this.mergeFunctions.set(key, mergeFn);
         }
         continue;
+      }
+
+      if (ACCUMULATING_KEYS.has(key)) {
+        log.warn(
+          "[ZipContentBag.mergeFrom] Accumulating key fell through to priority branch due to missing mergeFn; value will be overwritten instead of merged",
+          { key }
+        );
       }
 
       const incomingPriority = other.priorities.get(key) ?? 0;
