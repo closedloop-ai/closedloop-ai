@@ -932,8 +932,13 @@ export function PRBrowserDialog({
       if (findings && findings.length > 0) {
         setTimeout(() => triggerPRCommentDedup(provider, findings), 0);
       }
+
+      // Extract learnings from the review log when findings exist
+      if (findings && findings.length > 0) {
+        learnings.triggerExtract(`codex-review-${provider}.log`);
+      }
     },
-    [triggerDedup, triggerPRCommentDedup]
+    [triggerDedup, triggerPRCommentDedup, learnings.triggerExtract]
   );
 
   const handleStructuredFindings = useCallback(
@@ -1214,7 +1219,9 @@ export function PRBrowserDialog({
                 handleDeleteReview(provider);
                 setShowReviewSettings(true);
               }}
-              onReflect={learnings.triggerExtract}
+              onReflect={() =>
+                learnings.triggerExtract(`codex-review-${provider}.log`)
+              }
               onReviewComplete={(output, count, findings) =>
                 handleReviewComplete(provider, output, count, findings)
               }

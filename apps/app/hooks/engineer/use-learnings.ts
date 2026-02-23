@@ -13,7 +13,7 @@ type UseLearningsReturn = {
   status: "none" | "processing" | "completed";
   count: number;
   poll: () => void;
-  triggerExtract: () => void;
+  triggerExtract: (chatFile?: string) => void;
   handleClose: () => void;
   stopPolling: () => void;
 };
@@ -66,23 +66,28 @@ export function useLearnings({
     }, 120_000);
   }, [ticketId, repoPath, stopPolling]);
 
-  const triggerExtract = useCallback(() => {
-    setStatus("processing");
-    toast("Collecting learnings for this ticket...", { description: ticketId });
-    fetch("/api/engineer/symphony/extract-learnings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticketId, repoPath, activeTab }),
-    })
-      .then(() => {
-        poll();
-      })
-      .catch((err) => {
-        console.error("Failed to trigger learning extraction:", err);
-        setStatus("none");
-        toast.error("Failed to extract learnings");
+  const triggerExtract = useCallback(
+    (chatFile?: string) => {
+      setStatus("processing");
+      toast("Collecting learnings for this ticket...", {
+        description: ticketId,
       });
-  }, [ticketId, repoPath, activeTab, poll]);
+      fetch("/api/engineer/symphony/extract-learnings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId, repoPath, activeTab, chatFile }),
+      })
+        .then(() => {
+          poll();
+        })
+        .catch((err) => {
+          console.error("Failed to trigger learning extraction:", err);
+          setStatus("none");
+          toast.error("Failed to extract learnings");
+        });
+    },
+    [ticketId, repoPath, activeTab, poll]
+  );
 
   const handleClose = useCallback(() => {
     stopPolling();

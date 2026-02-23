@@ -118,7 +118,7 @@ function spawnCodexReview(
   reasoningEffort: string,
   reviewMode: "uncommitted" | "base",
   baseBranch: string,
-  instructions?: string
+  _instructions?: string
 ): ChildProcess {
   const args: string[] = ["review"];
 
@@ -128,30 +128,20 @@ function spawnCodexReview(
     args.push("--base", baseBranch);
   }
 
-  const contextPreamble = [
-    "Review only. Do not make any code changes. Analyze the code and report findings.",
-    "",
-    "IMPORTANT: Before flagging any change, examine the surrounding context — commit messages, PR description, related changes in other files, and code comments — to understand WHY the change was made.",
-    "Only report findings where the issue is clearly unintentional. Skip patterns that appear to be deliberate design decisions, intentional trade-offs, or conscious simplifications.",
-    "If a change looks unusual but is consistent with the overall PR intent, do not flag it.",
-  ].join("\n");
-
-  const fullInstructions = instructions
-    ? `${contextPreamble}\n\n${instructions}`
-    : contextPreamble;
   args.push(
     "-c",
-    `model="${model}"`,
+    `model=${model}`,
     "-c",
-    `model_reasoning_effort="${reasoningEffort}"`
+    `model_reasoning_effort=${reasoningEffort}`
   );
-  if (fullInstructions) {
-    args.push(fullInstructions);
-  }
+
+  // codex review v0.104+ doesn't allow [PROMPT] with --base/--uncommitted.
+  // Custom instructions cannot be passed as a positional arg or via stdin.
+  // The contextPreamble and user instructions are dropped — codex uses its
+  // own built-in review prompt which produces good results without them.
 
   return spawn("codex", args, {
     cwd,
-    shell: true,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
