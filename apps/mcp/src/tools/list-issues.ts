@@ -65,14 +65,35 @@ export function registerListIssues(
           offset,
           mapItem: (value) => {
             const row = asRecord(value);
+            const assigneeRaw = asRecord(row.assignee);
+            const projectRaw = asRecord(row.project);
+            const workstreamRaw = asRecord(row.workstream);
             return {
               id: readString(row.id),
               title: readString(row.title),
+              slug: readString(row.slug),
+              description: readString(row.description),
               status: readString(row.status),
+              priority: readString(row.priority),
               projectId: readString(row.projectId),
               workstreamId: readString(row.workstreamId),
               assigneeId: readString(row.assigneeId),
+              createdAt: readString(row.createdAt),
               updatedAt: readString(row.updatedAt),
+              assignee: row.assignee
+                ? {
+                    id: readString(assigneeRaw.id),
+                    firstName: readString(assigneeRaw.firstName),
+                    lastName: readString(assigneeRaw.lastName),
+                    avatarUrl: readString(assigneeRaw.avatarUrl),
+                  }
+                : null,
+              project: row.project
+                ? { name: readString(projectRaw.name) }
+                : null,
+              workstream: row.workstream
+                ? { title: readString(workstreamRaw.title) }
+                : null,
             };
           },
         });

@@ -1,16 +1,23 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo } from "react";
-import { useArtifacts } from "@/hooks/queries/use-artifacts";
-import { useIssues, useUpdateIssue } from "@/hooks/queries/use-issues";
-import { useCurrentUser } from "@/hooks/queries/use-users";
-import { useApiClient } from "@/hooks/use-api-client";
+import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
+import type {
+  McpArtifact,
+  McpIssue,
+  McpUser,
+} from "@/hooks/engineer/use-mcp-client";
+import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
+import type { EngineerTicket, EngineerTicketsResult } from "@/types/engineer";
 import {
-  artifactToEngineerTicket,
-  type EngineerTicket,
-  type EngineerTicketsResult,
-  issueToEngineerTicket,
+  artifactStatusDisplayName,
+  artifactTypeToSourceType,
+  mapArtifactStatusToType,
+  mapIssueStatusToType,
+  priorityToLabel,
+  priorityToNumber,
+  statusDisplayName,
 } from "@/types/engineer";
 
 export type FullTicketDetails = {
@@ -56,64 +63,126 @@ function mapToSymphonyStatus(
 }
 
 /**
- * Hook to fetch Symphony issues and PRDs assigned to/owned by the current user.
- * Drop-in replacement for useEngineerTickets — same return shape.
+ * Hook to fetch Symphony issues and PRDs assigned to/owned by the current user
+ * via the MCP server. Drop-in replacement — same return shape as before.
  */
 export function useEngineerIssues(): EngineerIssuesResultWithUser {
-  const { data: currentUser, isLoading: isUserLoading } = useCurrentUser();
-  const apiClient = useApiClient();
-  const queryClient = useQueryClient();
-  const updateIssueMutation = useUpdateIssue();
+  const mcp = useEngineerMcp();
 
-  // Fetch issues assigned to the current user
-  const {
-    data: issues = [],
-    isLoading: isIssuesLoading,
-    isFetching: isIssuesFetching,
-    error: issuesError,
-    refetch: refetchIssues,
-  } = useIssues(
-    { assigneeId: currentUser?.id },
-    { enabled: !!currentUser?.id }
-  );
+  const [mcpUser, setMcpUser] = useState<McpUser | null>(null);
+  const [mcpIssues, setMcpIssues] = useState<McpIssue[]>([]);
+  const [mcpArtifacts, setMcpArtifacts] = useState<McpArtifact[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isFetching, setIsFetching] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [refetchCounter, setRefetchCounter] = useState(0);
 
-  // Fetch PRDs owned by the current user
-  const {
-    data: artifacts = [],
-    isLoading: isArtifactsLoading,
-    isFetching: isArtifactsFetching,
-    error: artifactsError,
-    refetch: refetchArtifacts,
-  } = useArtifacts(
-    { ownerId: currentUser?.id },
-    { enabled: !!currentUser?.id }
-  );
+  // Track previous ready state to avoid refetching on every render
+  const prevReadyRef = useRef(false);
 
-  // Combine issues and PRDs into a single tickets list
+  // Fetch data when MCP becomes ready or refetchCounter changes
+  useEffect(() => {
+    if (!mcp.isReady) {
+      // Reset loading state when MCP disconnects
+      if (prevReadyRef.current) {
+        setIsLoading(true);
+        prevReadyRef.current = false;
+      }
+      return;
+    }
+    prevReadyRef.current = true;
+
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function fetchAll() {
+      setIsFetching(true);
+      setError(null);
+      let lastError: Error | null = null;
+
+      for (let attempt = 0; attempt <= 2; attempt++) {
+        if (cancelled) {
+          return;
+        }
+        try {
+          // Step 1: fetch current user
+          const user = await mcp.getMe();
+          if (cancelled) {
+            return;
+          }
+          setMcpUser(user);
+
+          // Step 2: fetch issues and artifacts in parallel
+          const [issuesResult, artifactsResult] = await Promise.all([
+            mcp.listIssues({ assigneeId: user.id }),
+            mcp.listArtifacts({ ownerId: user.id }),
+          ]);
+          if (cancelled) {
+            return;
+          }
+
+          setMcpIssues(issuesResult.items);
+          setMcpArtifacts(artifactsResult.items);
+          lastError = null;
+          break;
+        } catch (err) {
+          if (cancelled) {
+            return;
+          }
+          const msg = err instanceof Error ? err.message : "";
+          if (attempt < 2 && msg.includes("not ready")) {
+            await new Promise<void>((resolve) => {
+              retryTimer = setTimeout(resolve, 500);
+            });
+            continue;
+          }
+          lastError =
+            err instanceof Error ? err : new Error("Failed to fetch data");
+          break;
+        }
+      }
+
+      if (!cancelled) {
+        if (lastError) {
+          setError(lastError);
+        }
+        setIsLoading(false);
+        setIsFetching(false);
+      }
+    }
+
+    fetchAll();
+    return () => {
+      cancelled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }, [
+    mcp.isReady,
+    refetchCounter,
+    mcp.getMe,
+    mcp.listIssues,
+    mcp.listArtifacts,
+  ]);
+
+  // Combine issues and artifacts into tickets
   const tickets: EngineerTicket[] = useMemo(() => {
-    const issueTickets = issues.map(issueToEngineerTicket);
-    const artifactTickets = artifacts.map(artifactToEngineerTicket);
+    const issueTickets = mcpIssues.map(mcpIssueToEngineerTicket);
+    const artifactTickets = mcpArtifacts.map(mcpArtifactToEngineerTicket);
     return [...issueTickets, ...artifactTickets];
-  }, [issues, artifacts]);
+  }, [mcpIssues, mcpArtifacts]);
 
-  const isLoading = isUserLoading || isIssuesLoading || isArtifactsLoading;
-  const isFetching = isIssuesFetching || isArtifactsFetching;
-  const error =
-    (issuesError instanceof Error ? issuesError : null) ??
-    (artifactsError instanceof Error ? artifactsError : null);
-
-  const user = currentUser
+  const user = mcpUser
     ? {
-        id: currentUser.id,
-        name: [currentUser.firstName, currentUser.lastName]
-          .filter(Boolean)
-          .join(" "),
-        email: currentUser.email,
-        avatarUrl: currentUser.avatarUrl ?? undefined,
+        id: mcpUser.id,
+        name: [mcpUser.firstName, mcpUser.lastName].filter(Boolean).join(" "),
+        email: mcpUser.email,
+        avatarUrl: mcpUser.avatarUrl ?? undefined,
       }
     : null;
 
-  // Update issue status in Symphony
+  // Update issue status via MCP
   const updateTicketStatus = useCallback(
     async (ticketIdentifier: string, status: string) => {
       const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
@@ -122,15 +191,22 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
       }
 
       const symphonyStatus = mapToSymphonyStatus(status);
-      await updateIssueMutation.mutateAsync({
-        id: ticket.issueId,
-        status: symphonyStatus,
-      });
+      try {
+        await mcp.updateIssue(ticket.issueId, { status: symphonyStatus });
+      } catch (err) {
+        if (err instanceof McpScopeError) {
+          console.warn(
+            "[updateTicketStatus] Write not available (read-only key), skipping"
+          );
+          return;
+        }
+        throw err;
+      }
     },
-    [tickets, updateIssueMutation]
+    [tickets, mcp]
   );
 
-  // Get full ticket details
+  // Get full ticket details — check local state first, fall back to MCP
   const getFullTicket = useCallback(
     async (ticketId: string): Promise<FullTicketDetails> => {
       const ticket = tickets.find(
@@ -145,14 +221,8 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         };
       }
 
-      // Fetch from API if not in local cache
-      const issue = await apiClient.get<{
-        id: string;
-        slug: string;
-        title: string;
-        description: string | null;
-      }>(`/issues/${ticketId}`);
-
+      // Fetch from MCP if not in local cache
+      const issue = await mcp.getIssue(ticketId);
       return {
         identifier: issue.slug,
         title: issue.title,
@@ -160,10 +230,10 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         url: `/issues/${issue.slug}`,
       };
     },
-    [tickets, apiClient]
+    [tickets, mcp]
   );
 
-  // Post a comment on an issue (fire-and-forget)
+  // Post a comment via MCP
   const postComment = useCallback(
     async (ticketIdentifier: string, body: string) => {
       const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
@@ -175,35 +245,121 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
       }
 
       try {
-        await apiClient.post(`/issues/${ticket.issueId}/comments`, { body });
+        await mcp.createIssueComment(ticket.issueId, body);
       } catch (err) {
+        if (err instanceof McpScopeError) {
+          console.warn(
+            "[postComment] Write not available (read-only key), skipping"
+          );
+          return;
+        }
         console.error(
           `[postComment] Failed to post comment on ${ticketIdentifier}:`,
           err
         );
       }
     },
-    [tickets, apiClient]
+    [tickets, mcp]
   );
 
-  // Logout is a no-op since we use Clerk auth
+  // Disconnect MCP and navigate home
   const logout = useCallback(() => {
-    queryClient.clear();
+    mcp.disconnect();
     globalThis.location.href = "/";
-  }, [queryClient]);
+  }, [mcp]);
+
+  // Trigger a refetch
+  const refetch = useCallback(() => {
+    setRefetchCounter((c) => c + 1);
+    return Promise.resolve();
+  }, []);
 
   return {
     tickets,
-    isLoading,
+    isLoading: isLoading || !mcp.isReady,
     isFetching,
     error,
-    refetch: async () => {
-      await Promise.all([refetchIssues(), refetchArtifacts()]);
-    },
+    refetch,
     user,
     logout,
     updateTicketStatus,
     getFullTicket,
     postComment,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MCP → EngineerTicket mapping functions
+// ---------------------------------------------------------------------------
+
+function mcpIssueToEngineerTicket(issue: McpIssue): EngineerTicket {
+  const assignee = issue.assignee
+    ? {
+        id: issue.assignee.id ?? "",
+        name: [issue.assignee.firstName, issue.assignee.lastName]
+          .filter(Boolean)
+          .join(" "),
+        email: "",
+        avatarUrl: issue.assignee.avatarUrl ?? undefined,
+      }
+    : undefined;
+
+  return {
+    id: issue.id,
+    identifier: issue.slug,
+    title: issue.title,
+    description: issue.description ?? undefined,
+    sourceType: "Issue",
+    status: {
+      id: issue.status,
+      name: statusDisplayName(issue.status),
+      type: mapIssueStatusToType(issue.status),
+    },
+    assignee,
+    priority: priorityToNumber(issue.priority),
+    priorityLabel: priorityToLabel(issue.priority),
+    createdAt: issue.createdAt,
+    updatedAt: issue.updatedAt,
+    url: `/issues/${issue.slug}`,
+    issueId: issue.id,
+    projectName: issue.project?.name ?? undefined,
+    workstreamTitle: issue.workstream?.title ?? undefined,
+  };
+}
+
+function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
+  const owner = artifact.owner
+    ? {
+        id: artifact.owner.id ?? "",
+        name: [artifact.owner.firstName, artifact.owner.lastName]
+          .filter(Boolean)
+          .join(" "),
+        email: "",
+        avatarUrl: artifact.owner.avatarUrl ?? undefined,
+      }
+    : undefined;
+
+  const routePrefix = getRoutePrefixForType(artifact.type) ?? "artifacts";
+
+  return {
+    id: artifact.id,
+    identifier: artifact.slug,
+    title: artifact.title,
+    description: artifact.snippet ?? undefined,
+    sourceType: artifactTypeToSourceType(artifact.type),
+    status: {
+      id: artifact.status,
+      name: artifactStatusDisplayName(artifact.status),
+      type: mapArtifactStatusToType(artifact.status),
+    },
+    assignee: owner,
+    priority: 3,
+    priorityLabel: "Medium",
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    url: `/${routePrefix}/${artifact.slug}`,
+    issueId: artifact.id,
+    projectName: artifact.project?.name ?? undefined,
+    workstreamTitle: artifact.workstream?.title ?? undefined,
   };
 }

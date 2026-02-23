@@ -73,7 +73,7 @@ export function mapIssueStatusToType(status: string): TicketStatusType {
 }
 
 /** Map Symphony IssueStatus to display name */
-function statusDisplayName(status: string): string {
+export function statusDisplayName(status: string): string {
   switch (status) {
     case "TODO":
       return "To Do";
@@ -89,7 +89,7 @@ function statusDisplayName(status: string): string {
 }
 
 /** Map Symphony IssuePriority to numeric value (higher = more urgent) */
-function priorityToNumber(priority: string): number {
+export function priorityToNumber(priority: string): number {
   switch (priority) {
     case "URGENT":
       return 1;
@@ -105,7 +105,7 @@ function priorityToNumber(priority: string): number {
 }
 
 /** Map Symphony IssuePriority to display label */
-function priorityToLabel(priority: string): string {
+export function priorityToLabel(priority: string): string {
   switch (priority) {
     case "URGENT":
       return "Urgent";
@@ -121,7 +121,7 @@ function priorityToLabel(priority: string): string {
 }
 
 /** Map ArtifactStatus to closedloop-dev status type */
-function mapArtifactStatusToType(status: string): TicketStatusType {
+export function mapArtifactStatusToType(status: string): TicketStatusType {
   switch (status) {
     case "DRAFT":
       return "started";
@@ -137,7 +137,7 @@ function mapArtifactStatusToType(status: string): TicketStatusType {
 }
 
 /** Map ArtifactStatus to display name */
-function artifactStatusDisplayName(status: string): string {
+export function artifactStatusDisplayName(status: string): string {
   switch (status) {
     case "DRAFT":
       return "Draft";
@@ -153,7 +153,7 @@ function artifactStatusDisplayName(status: string): string {
 }
 
 /** Map artifact type string to display label */
-function artifactTypeToSourceType(type: string): TicketSourceType {
+export function artifactTypeToSourceType(type: string): TicketSourceType {
   switch (type) {
     case "PRD":
       return "PRD";

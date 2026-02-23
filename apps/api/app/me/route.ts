@@ -1,5 +1,5 @@
 import type { User } from "@repo/api/src/types/organization";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
   notFoundResponse,
@@ -7,7 +7,7 @@ import {
 } from "@/lib/route-utils";
 import { usersService } from "../users/service";
 
-export const GET = withAuth<User>(async ({ user }) => {
+export const GET = withAnyAuth<User>(async ({ user }) => {
   try {
     const found = await usersService.findById(user.id, user.organizationId);
     if (!found) {

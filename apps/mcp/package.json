@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "tsx watch --require ./src/preload.ts --env-file=.env.local src/index.ts",
+    "dev": "tsx watch --require ./src/preload.cjs --env-file=.env.local src/index.ts",
     "build": "tsc && cp src/server-only-noop.cjs dist/apps/mcp/src/server-only-noop.cjs",
     "start": "tsx --require ./dist/apps/mcp/src/preload.js dist/apps/mcp/src/index.js",
     "typecheck": "tsc --noEmit",
