@@ -83,6 +83,9 @@ type PRCommentCardProps = {
   status: CommentDisplayStatus;
   commitSha?: string;
   replies?: PRComment[];
+  isStreaming?: boolean;
+  /** Whether this comment's chat is currently visible in the right pane */
+  isSelected?: boolean;
   onProposeFix?: () => void;
   onProposeFixCodex?: () => void;
   onReviewCodex?: () => void;
@@ -193,6 +196,8 @@ export function PRCommentCard({
   status,
   commitSha,
   replies = [],
+  isStreaming = false,
+  isSelected = false,
   onProposeFix,
   onProposeFixCodex,
   onReviewCodex,
@@ -217,8 +222,9 @@ export function PRCommentCard({
     <div
       className={cn(
         "group cursor-pointer rounded-lg border bg-card p-4 transition-all duration-200",
-        isPending && "hover:border-primary/30 hover:shadow-sm",
-        !isPending && "opacity-75 hover:opacity-100"
+        isSelected && "border-l-[3px] border-l-blue-500 bg-blue-500/[0.04]",
+        !isSelected && isPending && "hover:border-primary/30 hover:shadow-sm",
+        !(isSelected || isPending) && "opacity-75 hover:opacity-100"
       )}
       onClick={onViewChat}
     >
@@ -337,11 +343,12 @@ export function PRCommentCard({
 
       {/* Footer: Status badge and actions */}
       <div className="flex items-center justify-between gap-2">
-        {/* Status badge (icon-only with tooltip) */}
+        {/* Status badge (icon-only with tooltip) — pulses while streaming */}
         <span
           className={cn(
             "flex size-6 shrink-0 items-center justify-center rounded-full",
-            statusBadge.className
+            statusBadge.className,
+            isStreaming && "animate-pulse"
           )}
           title={statusBadge.label}
         >

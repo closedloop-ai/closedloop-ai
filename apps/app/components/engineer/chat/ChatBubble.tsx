@@ -14,7 +14,7 @@ type ChatBubbleProps = {
   onDelete?: () => void;
   children: React.ReactNode;
   actions?: SuggestedAction[];
-  onAction?: (message: string) => void;
+  onAction?: (action: SuggestedAction) => void;
   index?: number;
   bubbleClassName?: string;
   roleClassName?: string;
@@ -97,6 +97,17 @@ export const ChatBubble = memo(
       >
         {/* Role indicator with action buttons */}
         <div className="flex items-center gap-2 px-1">
+          {/* Action icons before label for right-aligned (Codex/user) messages */}
+          {(isCodex || isUser) && (
+            <RoleBarActions
+              forwardLabel={forwardLabel}
+              isStreaming={isStreaming}
+              onCopy={onCopy}
+              onDelete={onDelete}
+              onForward={onForward}
+              reverseForward
+            />
+          )}
           <span
             className={cn(
               "font-mono text-[10px] uppercase tracking-wider",
@@ -113,32 +124,15 @@ export const ChatBubble = memo(
               · {contextPercent}%
             </span>
           )}
-          {onDelete && !isStreaming && (
-            <button
-              className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
-              onClick={onDelete}
-              title="Delete message"
-            >
-              <Trash2 className="size-3" />
-            </button>
-          )}
-          {onCopy && !isStreaming && (
-            <button
-              className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-foreground active:scale-95 group-hover:opacity-100"
-              onClick={onCopy}
-              title="Copy message"
-            >
-              <Copy className="size-3 transition-transform hover:-rotate-6" />
-            </button>
-          )}
-          {onForward && !isStreaming && (
-            <button
-              className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-primary active:scale-95 group-hover:opacity-100"
-              onClick={onForward}
-              title={forwardLabel ?? "Forward message"}
-            >
-              <Forward className="size-3 transition-transform hover:translate-x-0.5" />
-            </button>
+          {/* Action icons after label for left-aligned (assistant) messages */}
+          {!(isCodex || isUser) && (
+            <RoleBarActions
+              forwardLabel={forwardLabel}
+              isStreaming={isStreaming}
+              onCopy={onCopy}
+              onDelete={onDelete}
+              onForward={onForward}
+            />
           )}
         </div>
 
@@ -182,7 +176,8 @@ export const ChatBubble = memo(
                     "cursor-pointer transition-colors hover:border-primary/30 hover:bg-primary/20"
                   )}
                   key={action.label}
-                  onClick={() => onAction(action.message)}
+                  onClick={() => onAction(action)}
+                  title={action.message}
                 >
                   <PlayCircle className="size-3" />
                   {action.label}
@@ -240,5 +235,64 @@ function ElapsedTimer({ start }: Readonly<{ start: string }>) {
     <span className="font-mono text-[10px] text-muted-foreground/50">
       · {label}
     </span>
+  );
+}
+
+/**
+ * Action icons (delete, copy, forward) for the role bar.
+ * Extracted so they can be placed before or after the label depending on alignment.
+ */
+function RoleBarActions({
+  onDelete,
+  onCopy,
+  onForward,
+  forwardLabel,
+  isStreaming,
+  reverseForward,
+}: Readonly<{
+  onDelete?: () => void;
+  onCopy?: () => void;
+  onForward?: () => void;
+  forwardLabel?: string;
+  isStreaming?: boolean;
+  reverseForward?: boolean;
+}>) {
+  return (
+    <>
+      {onDelete && !isStreaming && (
+        <button
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
+          onClick={onDelete}
+          title="Delete message"
+        >
+          <Trash2 className="size-3" />
+        </button>
+      )}
+      {onCopy && !isStreaming && (
+        <button
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-foreground active:scale-95 group-hover:opacity-100"
+          onClick={onCopy}
+          title="Copy message"
+        >
+          <Copy className="size-3 transition-transform hover:-rotate-6" />
+        </button>
+      )}
+      {onForward && !isStreaming && (
+        <button
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-primary active:scale-95 group-hover:opacity-100"
+          onClick={onForward}
+          title={forwardLabel ?? "Forward message"}
+        >
+          <Forward
+            className={cn(
+              "size-3 transition-transform",
+              reverseForward
+                ? "-scale-x-100 hover:-translate-x-0.5"
+                : "hover:translate-x-0.5"
+            )}
+          />
+        </button>
+      )}
+    </>
   );
 }
