@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/organization";
@@ -16,7 +17,7 @@ import { unauthorizedResponse } from "../route-utils";
  * Next.js route context - matches generated type from @/.next/types/routes
  * In App Router, all route params are single strings (not arrays)
  */
-type RouteContext<_TRoute extends string = string> = {
+export type RouteContext<_TRoute extends string = string> = {
   params: Promise<Record<string, string>>;
 };
 
@@ -27,6 +28,9 @@ export type AuthContext = {
   user: User;
   clerkUserId: string;
   clerkOrgId: string;
+  orgRole?: string;
+  authMethod: "session" | "api_key";
+  apiKeyScopes?: ApiKeyScope[];
 };
 
 /**
@@ -81,7 +85,7 @@ export function withAuth<TResponse, TRoute extends string = string>(
     routeContext: RouteContext<TRoute>
   ): Promise<NextResponse<ApiResult<TResponse>>> => {
     try {
-      const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
+      const { userId: clerkUserId, orgId: clerkOrgId, orgRole } = await auth();
 
       if (!(clerkUserId && clerkOrgId)) {
         return unauthorizedResponse();
@@ -93,7 +97,14 @@ export function withAuth<TResponse, TRoute extends string = string>(
         return unauthorizedResponse();
       }
 
-      const authContext: AuthContext = { user, clerkUserId, clerkOrgId };
+      const authContext: AuthContext = {
+        user,
+        clerkUserId,
+        clerkOrgId,
+        orgRole: orgRole ?? undefined,
+        authMethod: "session",
+        apiKeyScopes: undefined,
+      };
 
       return handler(authContext, request, routeContext.params);
     } catch (error) {

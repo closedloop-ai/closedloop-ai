@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DashboardStatsGrid } from "./components/dashboard-stats-grid";
+import { EngineerRedirect } from "./components/engineer-redirect";
 import { Header } from "./components/header";
 import { InProgressWorkstreamsTable } from "./components/in-progress-workstreams-table";
 
@@ -14,6 +15,7 @@ export const metadata: Metadata = {
 export default async function App() {
   return (
     <>
+      <EngineerRedirect />
       <Header page="Dashboard" pages={["Home"]} />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
         <div className="space-y-8">

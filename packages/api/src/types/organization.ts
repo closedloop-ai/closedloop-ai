@@ -10,7 +10,6 @@ export type Organization = {
   name: string;
   slug: string;
   active: boolean;
-  anthropicApiKey: string | null;
   settings: JsonObject;
   createdAt: Date;
   updatedAt: Date;
@@ -20,14 +19,12 @@ export type CreateOrganizationInput = {
   clerkId: string;
   name: string;
   slug: string;
-  anthropicApiKey?: string | null;
 };
 
 export type UpdateOrganizationInput = {
   id: string;
   name?: string;
   slug?: string;
-  anthropicApiKey?: string | null;
   settings?: JsonObject;
   active?: boolean;
 };

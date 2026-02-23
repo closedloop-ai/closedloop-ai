@@ -113,6 +113,15 @@ export type ArtifactWithWorkstream = Artifact & {
   owner?: ProjectOwner | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
+  /**
+   * The pull request associated with this artifact's workstream.
+   * - `undefined`: field was not populated (findById/findBySlug do not batch-fetch PR data)
+   * - `null`: findAll ran and found no PR for this workstream
+   * - `PullRequestInfo`: a PR was found and linked to this workstream
+   */
+  pullRequest?: PullRequestInfo | null;
+  /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
+  snippet?: string | null;
 };
 
 /** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */
@@ -124,6 +133,7 @@ export type FindArtifactsOptions = {
   type?: ArtifactType;
   workstreamId?: string;
   projectId?: string;
+  ownerId?: string;
 };
 
 export type CreateArtifactInput = {
@@ -157,16 +167,36 @@ export type UpdateArtifactInput = {
   sortOrder?: number | null;
 };
 
+// Pull Request State
+export const PullRequestState = {
+  Open: "OPEN",
+  Merged: "MERGED",
+  Closed: "CLOSED",
+} as const;
+export type PullRequestState =
+  (typeof PullRequestState)[keyof typeof PullRequestState];
+
+// Review Decision
+export const ReviewDecision = {
+  Approved: "APPROVED",
+  ChangesRequested: "CHANGES_REQUESTED",
+  Commented: "COMMENTED",
+  Dismissed: "DISMISSED",
+} as const;
+export type ReviewDecision =
+  (typeof ReviewDecision)[keyof typeof ReviewDecision];
+
 // Pull Request info returned when an implementation plan is executed
 export type PullRequestInfo = {
   id: string;
   number: number;
   title: string;
   htmlUrl: string;
-  state: "OPEN" | "MERGED" | "CLOSED";
+  state: PullRequestState;
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  reviewDecision: ReviewDecision | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions
@@ -236,3 +266,17 @@ export type PlanJson = {
   gaps: PlanGap[];
   manualTasks?: PlanTask[];
 };
+
+export type BatchCreateArtifactInput = {
+  items: CreateArtifactInput[];
+};
+
+/**
+ * Map of artifact slug to artifact title.
+ * Returned by the batch-meta endpoint for lightweight name lookups.
+ * Slugs not found in the org are omitted.
+ */
+export type ArtifactTitleMap = Record<string, string>;
+
+/** Maximum number of slugs accepted by GET /artifacts/batch-meta */
+export const BATCH_META_MAX_SLUGS = 50;

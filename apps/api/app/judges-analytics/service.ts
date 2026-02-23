@@ -183,13 +183,13 @@ export async function getHumanCountsByType(
   const humanRatingsByType = new Map<ArtifactType, number>();
   const humanCommentsByType = new Map<ArtifactType, number>();
 
+  if (types.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
   for (const type of types) {
     humanRatingsByType.set(type, 0);
     humanCommentsByType.set(type, 0);
-  }
-
-  if (types.length === 0) {
-    return { humanRatingsByType, humanCommentsByType };
   }
 
   const artifacts = await withDb((db) =>
@@ -212,6 +212,7 @@ export async function getHumanCountsByType(
   const ratings = await withDb((db) =>
     db.artifactRating.findMany({
       where: {
+        organizationId,
         artifactId: { in: orgArtifactIds },
         createdAt: { gte: startDate, lte: endDate },
       },
@@ -230,6 +231,130 @@ export async function getHumanCountsByType(
   }
 
   return { humanRatingsByType, humanCommentsByType };
+}
+
+/**
+ * Fetches human ratings and returns all normalized scores (0-1) per artifact.
+ * Each score is raw_score / 5. Multiple ratings per artifact are preserved as an array.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getHumanRatingsByArtifact(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactIds: string[]
+): Promise<Map<string, number[]>> {
+  if (artifactIds.length === 0) {
+    return new Map();
+  }
+
+  const ratings = await withDb((db) =>
+    db.artifactRating.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { artifactId: true, score: true },
+    })
+  );
+
+  const scoresByArtifact = new Map<string, number[]>();
+  for (const r of ratings) {
+    const scores = scoresByArtifact.get(r.artifactId) ?? [];
+    scores.push(r.score / 5);
+    scoresByArtifact.set(r.artifactId, scores);
+  }
+
+  return scoresByArtifact;
+}
+
+/** Collects all unique artifact IDs from the aggregator across all types and judges. */
+function collectAllArtifactIds(
+  aggregator: Map<
+    ArtifactType,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  >
+): string[] {
+  const allIds = new Set<string>();
+  for (const judgeMap of aggregator.values()) {
+    for (const judgeData of judgeMap.values()) {
+      for (const id of judgeData.artifactIds) {
+        allIds.add(id);
+      }
+    }
+  }
+  return Array.from(allIds);
+}
+
+/** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
+function computeJudgeStats(
+  judgeName: string,
+  judgeData: { scores: number[]; artifactIds: Set<string> },
+  humanRatingsByArtifact: Map<string, number[]>
+): JudgeAggregateStats | null {
+  const scores = judgeData.scores;
+  const count = scores.length;
+
+  if (count === 0) {
+    return null;
+  }
+
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const sum = scores.reduce((acc, score) => acc + score, 0);
+  const mean = sum / count;
+
+  const variance =
+    scores.reduce((acc, score) => acc + (score - mean) ** 2, 0) / count;
+  const stdDev = Math.sqrt(variance);
+
+  // Pool all human scores across this judge's artifacts
+  const judgeHumanScores: number[] = [];
+  for (const artifactId of judgeData.artifactIds) {
+    const artifactScores = humanRatingsByArtifact.get(artifactId);
+    if (artifactScores) {
+      judgeHumanScores.push(...artifactScores);
+    }
+  }
+
+  return {
+    judgeName,
+    artifactsEvaluated: judgeData.artifactIds.size,
+    min,
+    mean,
+    max,
+    stdDev,
+    ...computeHumanStats(judgeHumanScores),
+  };
+}
+
+/** Computes human rating stats from pooled normalized scores. Returns all-null when no scores. */
+function computeHumanStats(scores: number[]): {
+  humanMin: number | null;
+  humanMax: number | null;
+  humanMean: number | null;
+  humanStdDev: number | null;
+} {
+  if (scores.length === 0) {
+    return {
+      humanMin: null,
+      humanMax: null,
+      humanMean: null,
+      humanStdDev: null,
+    };
+  }
+
+  const humanMin = Math.min(...scores);
+  const humanMax = Math.max(...scores);
+  const humanSum = scores.reduce((acc, s) => acc + s, 0);
+  const humanMean = humanSum / scores.length;
+  const humanVariance =
+    scores.reduce((acc, s) => acc + (s - humanMean) ** 2, 0) / scores.length;
+  const humanStdDev = Math.sqrt(humanVariance);
+
+  return { humanMin, humanMax, humanMean, humanStdDev };
 }
 
 /**
@@ -291,6 +416,14 @@ export const judgesAnalyticsService = {
     const { humanRatingsByType, humanCommentsByType } =
       await getHumanCountsByType(organizationId, startDate, endDate, types);
 
+    // Fetch per-artifact human ratings (all normalized 0-1 scores)
+    const humanRatingsByArtifact = await getHumanRatingsByArtifact(
+      organizationId,
+      startDate,
+      endDate,
+      collectAllArtifactIds(aggregator)
+    );
+
     // Compute statistics for each judge within each artifact type
     const groups: ArtifactTypeGroup[] = [];
 
@@ -298,32 +431,14 @@ export const judgesAnalyticsService = {
       const judges: JudgeAggregateStats[] = [];
 
       for (const [judgeName, judgeData] of judgeMap) {
-        const scores = judgeData.scores;
-        const count = scores.length;
-        const artifactsEvaluated = judgeData.artifactIds.size;
-
-        if (count === 0) {
-          continue;
-        }
-
-        const min = Math.min(...scores);
-        const max = Math.max(...scores);
-        const sum = scores.reduce((acc, score) => acc + score, 0);
-        const mean = sum / count;
-
-        // Compute standard deviation
-        const variance =
-          scores.reduce((acc, score) => acc + (score - mean) ** 2, 0) / count;
-        const stdDev = Math.sqrt(variance);
-
-        judges.push({
+        const stats = computeJudgeStats(
           judgeName,
-          artifactsEvaluated,
-          min,
-          mean,
-          max,
-          stdDev,
-        });
+          judgeData,
+          humanRatingsByArtifact
+        );
+        if (stats) {
+          judges.push(stats);
+        }
       }
 
       // Sort judges by mean score in descending order (highest mean first)

@@ -133,7 +133,8 @@ export function PlanEditor({
     actions.isDeleting ||
     planActions.isApproving ||
     planActions.isRegenerating ||
-    planActions.isExecuting;
+    planActions.isExecuting ||
+    planActions.isComputeModeLoading;
 
   // Create version display component for header
   const versionDisplay = (
@@ -203,6 +204,7 @@ export function PlanEditor({
         <CollaborativeEditor
           contentResetKey={session.contentResetKey}
           contentResetValue={session.contentResetValue}
+          key={session.latestVersion}
           liveblocksRoomId={session.liveblocksRoomId}
           metadataPanel={
             <PlanMetadataPanel

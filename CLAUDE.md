@@ -118,6 +118,27 @@ apps/app (frontend)
 
 This separation ensures the frontend never has direct database access and keeps routes thin.
 
+### Background Work in API Routes (CRITICAL)
+
+**Never fire-and-forget a promise in a Vercel serverless function.** Vercel can kill the function the instant the HTTP response is sent — or mid-execution during a deployment. Any un-awaited async work (launching ECS tasks, uploading to S3, sending webhooks) will be silently terminated with zero error logs.
+
+**Always use `waitUntil()` from `@vercel/functions`:**
+
+```typescript
+import { waitUntil } from "@vercel/functions";
+
+// ❌ BAD - Vercel can kill this at any time after the response is sent
+launchLoop(loopId, orgId).catch((err) => log.error(err));
+return NextResponse.json(success(result));
+
+// ✅ GOOD - waitUntil() keeps the function alive until the promise settles
+const launchPromise = launchLoop(loopId, orgId).catch((err) => log.error(err));
+waitUntil(launchPromise);
+return NextResponse.json(success(result));
+```
+
+This applies to **any** async work that happens after the response, not just loop launches. If you see a fire-and-forget `.catch()` pattern without `waitUntil()`, it's a bug.
+
 ### Type Definitions (IMPORTANT)
 
 **Never duplicate type definitions.** If a type is used in more than one file, it must live in one canonical location and be imported everywhere else.
@@ -157,6 +178,28 @@ type GenerationStatus = { status: "NONE" | "PENDING" | ... };
 // (Zod validators and route params don't belong in the shared package)
 ```
 
+### Engineer Feature — Architectural Exception (SECURITY CRITICAL)
+
+The Engineer feature intentionally deviates from the standard data access pattern described above.
+
+**Location:** `apps/app/app/api/engineer/` (frontend app, NOT `apps/api`)
+
+**Why it's different:** These routes spawn local CLI processes (Claude CLI, git, codex), access the
+local filesystem, and execute shell commands. This requires the server process to be running on the
+same machine as the developer's tools — impossible in a deployed environment.
+
+**Security boundary:** The feature is **localhost-only**. Two independent guards enforce this:
+
+1. **`EngineerGuard` component** (`apps/app/app/(authenticated)/engineer/engineer-guard.tsx`) — blocks the UI when `appEnvironment !== "local"`. This is a UX guard, NOT a security boundary.
+2. **Next.js middleware** (`apps/app/middleware.ts`) — rejects all `/api/engineer/*` requests with HTTP 403 when the `Host` header is not `localhost` or `127.0.0.1`. This is the actual security enforcement.
+
+**CRITICAL:** Do NOT remove or weaken the middleware guard. Exposing these routes in a deployed
+environment would allow arbitrary command execution on the server.
+
+**Do NOT "fix" this to conform to the standard `apps/api` pattern.** The filesystem and process
+spawning requirements make that impossible — the `apps/api` server runs separately and has no
+access to the developer's local CLI tools.
+
 ## Self-Improving CLAUDE.md
 
 When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
@@ -176,6 +219,25 @@ When responding to PR review comments, never use phrases like "you're right", "g
 - `turbo.json` - Turborepo task configuration
 - `biome.jsonc` - Linting/formatting config (extends ultracite)
 - `packages/*/keys.ts` - Environment variable validation schemas (t3-env)
+
+## Code Style
+
+- Use `RegExp.exec(str)` instead of `str.match(regex)` (SonarQube S6594)
+- Use `String#replaceAll()` instead of `String#replace()` with global regex (SonarQube S7781)
+- Use `globalThis` instead of `window` (SonarQube S7764). For SSR guards (`typeof window === "undefined"`), replace with `globalThis.window === undefined` — but first verify the function is only called from `"use client"` components. If it could run in a server context (API routes, RSC, middleware), keep the `typeof` check since `globalThis.window` may not exist.
+- Prefer `Image` from `next/image` over `<img>` elements
+- Never place JSX comments (`{/* */}`) between `(` and the root JSX element — use regular JS comments above the assignment instead
+- Use a single `Array#push()` call with multiple arguments instead of consecutive calls — `parts.push(a, b, c)` not `parts.push(a); parts.push(b); parts.push(c)` (SonarQube S7778)
+- Use `String.raw` for literal backslash sequences — `` String.raw`\n` `` not `"\\n"` (Sonar80)
+- Keep function Cognitive Complexity under 15 (SonarQube S3776). Extract helper functions to flatten deeply nested if/else or loop branches rather than inlining everything.
+- Do not use nested ternary operators (SonarQube S3358). Use `if/else if/else` or extract a helper function instead.
+- In if/else blocks, put the positive condition first — `if (x === null)` not `if (x !== null)` (SonarQube S7735)
+- Double quotes, semicolons, trailing commas (ES5), 100 char print width (see `.prettierrc.json`)
+- Add new functions, types, constants, and helpers at the bottom of the file, not the top
+
+## Git Commits
+
+When creating a git commit, read `.gitmessage` first and follow its format for the commit message.
 
 ## Background
 
@@ -210,8 +272,16 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 
 ### Debugging
 - **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
+- **[insight]**: `codex review` outputs a `session id:` in its startup banner. Capture it and save to `codex-chat.json` so `codex exec resume` can continue the review session in chat. The review route parses the session ID from plain-text stdout (not JSON events like Claude). (context: codex|session-management|review-vs-exec)
+- **[pattern]**: In this codebase's Claude CLI stream handlers (`processStreamEvent`, `processClaudeStreamLine`), result events must: (1) capture session_id for ALL results including errors, (2) check `is_error` independently before `subtype`, (3) fire `onResultEvent` for ALL result types (success and error), (4) enqueue a client-side terminal event (`type: 'result'` or `type: 'error'`) in EVERY result code path — `onResultEvent` alone starts the kill timer but the client stream hangs 30s without a terminal event. Include an else branch for unrecognized subtypes with `console.warn`. Reference implementation is in the codex review route. (context: claude-cli|stream-events|control-flow|processStreamEvent|terminal-events|paired-side-effects)
+- **[mistake]**: In the codex review route's stdout data handler, `sessionIdHolder.value` and the session ID regex must be assigned BEFORE any `await` (e.g., `await appendReviewLog`). The `createCodexStream` synchronous data handler reads `sessionIdHolder.value` on the same event tick — if the async handler suspends first, the sync handler sees null and the session ID event is never emitted. (context: codex|async-await|event-loop|race-condition|session-id|engineer-feature)
+- **[pattern]**: In ReviewChatPane's reviewSplit filter, `resolveFullPath` returns `string | 'ambiguous' | null`. Findings with no file (`\!f.file`) should be kept (no location specified), but ambiguous findings must be excluded — `classifyFindings` routes ambiguous paths to general comments, so the display filter must match. Check for both `\!== null` AND `\!== 'ambiguous'`; cache the result in a local variable to avoid calling `resolveFullPath` twice. (context: engineer-feature|code-review|resolveFullPath|filter-alignment|null-vs-ambiguous|ReviewChatPane)
+- **[insight]**: When Codex proposes a more complex alternative fix (e.g., fix at submit time vs filter time), investigate the full call chain before deciding. In the ambiguous-path case, fixing at the submit handler would waste GitHub API calls per ambiguous finding AND require threading `prFiles` into callbacks — the filter-level fix was simpler and equally correct. (context: codex|cross-model-debate|code-review|fix-location|engineer-feature)
+- **[insight]**: In engineer chat routes, `claudeProcess` is set to null before buffered stdout fully flushes. `processStreamEvent` on a late-flushed chunk still calls `onResultEvent` after the process is gone. The `if (!proc) return` guard in `makeResultKillTimer` is a correctness requirement — without it, a useless 30s SIGTERM timer with no process to kill and no `close` listener to cancel it would be created. (context: engineer-feature|kill-timer|makeResultKillTimer|null-guard|stdout-flush|process-lifecycle)
+- **[insight]**: When clearing stale history before auto-starting a chat (e.g., removeQueries + DELETE fetch), ensure the cleanup actually executes. If the guard condition is broken (like a boxed flag that never becomes true), the auto-start effect in `useCommentChat.ts` sees old messages and skips initialization — it guards on `history?.messages?.length === 0`. (context: engineer-feature|comment-chat|auto-start|history|cache-invalidation|PRBrowserDialog)
 
 ### Prisma & Database
+- **[mistake]**: When `pnpm typecheck` fails with "Property does not exist on type" for Prisma model fields or `TransactionClient`, do NOT dismiss these as "pre-existing" without checking. Run: (1) `pnpm install` (missing dependencies like `jose`, `@aws-sdk/*`), (2) `just db-generate` or `cd packages/database && pnpm prisma generate` (stale generated client). These two commands fix the vast majority of typecheck failures after rebasing or pulling new code. Verify the fields exist in `schema.prisma` first — if they do, the generated client is just stale. (context: prisma|typecheck|generated-client|stale-types|debugging)
 - **[convention]**: When using Prisma enums, always verify valid values in `packages/database/prisma/schema.prisma` - don't assume names (e.g., GitHubActionStatus uses `SUCCESS` not `COMPLETED`). (context: prisma|enums|schema)
 - **[pattern]**: To filter Prisma `Json` fields by nested property, use `{ path: ['key'], equals: value }` syntax - not dot notation or direct equality. (context: prisma|json-filter)
 - **[pattern]**: When filtering Prisma `Json` fields, always scope through indexed fields first (e.g., workstreamId + status) before applying JSON path filters. JSON path filters cause sequential scans without index narrowing. (context: prisma|json-filter|performance|indexes)
@@ -245,6 +315,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: The /artifacts/:id/regenerate endpoint is type-agnostic at route level but type-specific at service level. Extend route handler with type-based dispatch rather than creating new endpoints. (context: artifacts|regenerate|type-dispatch|service-layer)
 - **[pattern]**: Always check regenerateImplementationPlan() as the reference implementation for artifact service methods - it demonstrates the canonical pattern for artifact lookup, repository extraction, and workflow triggering. (context: artifacts|service-layer|reference-implementation|regenerate)
 - **[pattern]**: For routes that handle multiple entity types: use parseBody() from route-utils, look up entity first to determine type, then use if/else with PrismaArtifactType enum for type-based routing. (context: api-routes|multi-type|type-dispatch|prisma)
+- **[mistake]**: When throttling periodic operations (cleanup, sync) via localStorage timestamps, write the timestamp AFTER the operation succeeds (in `.then()`), not before. Writing before prevents retry on failure for the entire throttle duration. (context: throttling|async|error-recovery|side-effects)
 
 ### TanStack Query
 - **[pattern]**: New hooks in `apps/app/hooks/queries/` must follow: queryKey + queryFn + enabled + `...options` spread. Export a `queryKeys` factory with `.all` and `.detail(id)`. Add cache invalidation to related mutations (e.g., `useRegenerateArtifact`, `useRequestPlanChanges`). Only `staleTime` is acceptable as a default; omit gcTime, refetchOnMount, refetchOnWindowFocus. (context: tanstack-query|hooks|patterns)
@@ -252,6 +323,10 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: When reviewing queryClient.clear() calls in organization switching code, verify the entire auth chain: (1) API routes use withAuth() extracting orgId from JWT, (2) service methods filter by organizationId, (3) frontend queries use authenticated API client. If all three hold, queryClient.clear() is the correct approach for org switching. (context: tanstack-query|org-switching|auth|cache-invalidation)
 
 - **[pattern]**: When extending TanStack Query mutation hooks with optional parameters, use object destructuring in mutationFn signature and ensure onSuccess callback also destructures correctly. (context: tanstack-query|mutation|optional-parameters|destructuring)
+
+### Tables & Sorting
+- **[pattern]**: When sorting by nested object fields using SortConfig in this codebase, use the accessor function to extract the comparable value (e.g., `accessor: (p) => p.owner ? getUserDisplayName(p.owner) : null`). The `sortItems()` utility handles nulls with nulls-last policy automatically. (context: tables|sorting|SortConfig|accessor|nested-objects)
+- **[pattern]**: When rendering multiple sortable tables on the same page, each `useSortParams` call must use a unique `paramPrefix` to prevent URL sort param collision. Derive the prefix from a unique identifier (e.g., artifact type or section name). (context: tables|sorting|useSortParams|paramPrefix|url-params)
 
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) for existing GitHub API functions before implementing new ones. (context: packages/github|reuse)
@@ -261,14 +336,20 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[insight]**: Monorepo packages using @repo/* imports (e.g., @repo/auth/client) are internal dependencies, not cross-repo needs. Only external peer repos count as cross-repo dependencies when analyzing plan.json for cross-repo coordination. (context: monorepo|cross-repo|internal-packages)
 - **[insight]**: `@repo/observability/log` exports `console` directly and does not import `server-only`, so it is safe to use in client components despite `server-only` being a package-level dependency of `@repo/observability`. (context: observability|client-components|server-only|module-resolution)
 - **[pattern]**: When shared mappings (e.g., artifact subtype-to-route prefix) are needed by both server packages (`packages/collaboration`) and frontend code (`apps/app`), place them in `packages/api/src/types/` since server packages cannot import from `apps/app/lib/`. (context: monorepo|code-organization|shared-types|cross-package-dependencies)
+- **[pattern]**: The kill-timer `onResultEvent` callback (SIGTERM after 30s, then SIGKILL after 5s, cancelled on close) has been extracted into `makeResultKillTimer(getProcess, label)` in `apps/app/lib/engineer/stream-events.ts`. New engineer chat routes should use this factory instead of inlining the escalation logic. Uses a getter `() => claudeProcess` to avoid stale closure over the mutable `let` variable. The `codex/review` route uses a structurally different inline pattern (guarded by `resultKillTimerSet` boolean, uses `childProcess` not `claudeProcess`) and is NOT covered by the factory. (context: engineer-feature|DRY|kill-timer|stream-events|factory-pattern|closure|makeResultKillTimer)
 
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 - **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)
 - **[pattern]**: For generation status polling, use `useArtifactGenerationStatus` hook with `refetchInterval` for 2s polling during active generation. See `plan-editor.tsx` and `generation-status-banner.tsx` for reference. (context: react|components|generation-feedback|polling)
+- **[pattern]**: Radix Dialog with `modal={false}` still fires `onInteractOutside`/`onPointerDownOutside` on outside clicks. Non-modal floating panels must call `e.preventDefault()` on both events to stay open. (context: radix-ui|dialog|modal|floating-panels)
+- **[pattern]**: When a component supports multiple AI providers (e.g., Claude vs Codex), context injection must be provider-aware. Client-side prompt formatting designed for one provider should be skipped for others — use server-side injection that reads the provider's own output instead. (context: multi-provider|context-injection|provider-routing)
+- **[convention]**: The established pattern for async cancellation in useEffect is `let cancelled = false` + cleanup return, NOT AbortController or useRef. When one effect in a component uses this pattern correctly, check other effects in the same file for the same async-without-cleanup anti-pattern. (context: react|useEffect|cancelled-flag|code-review|consistency)
+- **[convention]**: This codebase uses `let cancelled = false` flag pattern for async cancellation in useEffect (not AbortController). When one effect in a file follows this convention, check all other effects for consistent usage. (context: react|useEffect|cancelled-flag|cleanup|code-consistency)
 
 ### Testing
 - **[pattern]**: After adding required props to a component, run typecheck to find test files with outdated mock/defaultProps objects. Test fixtures must be kept in sync with component prop types. Run lint:fix after making prop changes to ensure consistent formatting. (context: testing|react|component-props|test-fixtures|typecheck)
+- **[mistake]**: When mocking `next/navigation` in Vitest, always provide all three navigation hooks: `useRouter`, `usePathname`, and `useSearchParams`. Missing any one causes failures when utility hooks depending on multiple navigation APIs are introduced. (context: testing|vitest|next/navigation|mocking|hooks)
 
 ### Linting & Formatting
 - **[convention]**: After modifying React components in `apps/app`, run `pnpm lint:fix` to auto-fix Biome ordering rules (imports, CSS classes, JSX attributes). (context: biome|lint|components)
@@ -277,6 +358,11 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
 - **[mistake]**: Do not mark service methods as `async` if they only `return withDb(...)` or `return withDb.tx(...)` without any `await` in the function body. Biome's `useAwait` rule flags `async` functions that lack `await` expressions. Only use `async` when the function body itself needs to `await` something before returning. (context: biome|useAwait|async|service-layer|withDb)
 - **[pattern]**: When importing multiple named exports in Next.js App Router routes, Biome requires alphabetical order: constants/types first (UPPERCASE), then functions (camelCase). Run pnpm lint:fix to auto-fix import ordering. (context: biome|import-order|next.js|api-routes)
+- **[mistake]**: Biome's `useBlockStatements` rule requires braces on ALL `if` statement bodies, including single-line early-returns like `if (closed) return;`. Write `if (closed) { return; }` instead. These are flagged as "unsafe fixes" by Biome so `pnpm lint:fix` won't auto-fix them — run `npx biome check --write --unsafe <file>` to apply. (context: biome|useBlockStatements|if-statements|early-return)
+
+### CSS & Animations
+- **[mistake]**: Tailwind v4 compiles `translate-x-[-50%]` / `translate-y-[-50%]` to the individual CSS `translate` property, NOT the `transform` shorthand. The individual `translate`, `rotate`, `scale` properties compose with `transform` (translate applies first, then transform on top). When animating with the Web Animations API, do NOT put translate values in the `transform` keyframes — they will double-up with the existing `translate` property. Instead, compute pixel deltas via `getBoundingClientRect()` and use `transform: translate(${dx}px, ${dy}px) scale(...)` so the animation is relative to the current position. (context: tailwind-v4|css-transforms|waapi|individual-properties|translate)
+- **[pattern]**: When targeting a specific on-screen element as an animation destination (e.g., genie minimize to a button), query the target element with `document.querySelector` and use `getBoundingClientRect()` for its position — never hardcode pixel offsets from viewport edges. (context: css-animations|waapi|dom-position|robust-targeting)
 
 ### OAuth Integrations
 - **[pattern]**: OAuth integrations in this Next.js app follow a consistent three-part architecture: (1) Frontend OAuth routes in apps/app/app/api/integrations/{provider}/ handle PKCE generation, state cookies, and provider redirect, (2) Callback route validates state with timing-safe comparison and calls API endpoint for token storage, (3) TanStack Query hooks provide status/disconnect/action mutations with proper cache invalidation. Always follow the Linear integration as the reference implementation. (context: oauth|architecture|integration-patterns|pkce|state-validation)

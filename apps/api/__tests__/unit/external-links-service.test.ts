@@ -147,6 +147,7 @@ describe("externalLinksService", () => {
 
       expect(mockTx.entityLink.deleteMany).toHaveBeenCalledWith({
         where: {
+          organizationId: "org-1",
           OR: [
             { sourceId: "link-1", sourceType: "EXTERNAL_LINK" },
             { targetId: "link-1", targetType: "EXTERNAL_LINK" },

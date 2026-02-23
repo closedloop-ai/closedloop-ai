@@ -516,20 +516,12 @@ export function CreateArtifactModal({
       return;
     }
 
-    createAndDeepGenerate.mutate(
-      {
-        input: prdInput,
-        generateBody: reverseSynthesisLink.trim()
-          ? { reverseSynthesisLink: reverseSynthesisLink.trim() }
-          : undefined,
+    createAndDeepGenerate.mutate(prdInput, {
+      onSuccess: (artifact) => {
+        handleClose();
+        onSuccess?.(artifact);
       },
-      {
-        onSuccess: (artifact) => {
-          handleClose();
-          onSuccess?.(artifact);
-        },
-      }
-    );
+    });
   };
 
   const isGenerating =

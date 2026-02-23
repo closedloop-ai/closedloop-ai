@@ -25,6 +25,7 @@
     "clean": "git clean -xdf node_modules",
     "prepare": "husky",
     "start-apps": "turbo dev --filter=app --filter=api",
+    "dev:engineer": "NEXT_PUBLIC_API_URL=https://api.closedloop-stage.ai turbo dev --filter=app",
     "check-deps": "npx check-dependency-version-consistency"
   },
   "devDependencies": {

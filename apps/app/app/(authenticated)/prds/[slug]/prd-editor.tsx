@@ -101,17 +101,14 @@ export function PRDEditor({
   };
 
   const handleDeepGenerate = () => {
-    deepGenerate.mutate(
-      { id: prd.id },
-      {
-        onSuccess: () => {
-          toast.success("PRD generation started — check the status banner");
-        },
-        onError: (error) => {
-          toast.error(`Failed to start PRD generation: ${error.message}`);
-        },
-      }
-    );
+    deepGenerate.mutate(prd.id, {
+      onSuccess: () => {
+        toast.success("PRD generation started — check the status banner");
+      },
+      onError: (error) => {
+        toast.error(`Failed to start PRD generation: ${error.message}`);
+      },
+    });
   };
 
   // Move dialog state
@@ -187,6 +184,7 @@ export function PRDEditor({
         <CollaborativeEditor
           contentResetKey={session.contentResetKey}
           contentResetValue={session.contentResetValue}
+          key={session.latestVersion}
           liveblocksRoomId={session.liveblocksRoomId}
           metadataPanel={
             <PRDMetadataPanel

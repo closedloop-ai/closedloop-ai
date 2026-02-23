@@ -11,6 +11,7 @@ import { resolveSchemaName } from "./schema-utils";
 
 // biome-ignore lint/performance/noBarrelFile: re-exporting Prisma client types
 export * from "./generated/client";
+export type { TransactionClient } from "./generated/internal/prismaNamespace";
 
 /**
  * Execute a database operation with an initialized Prisma client.
@@ -203,26 +204,18 @@ async function getPool(): Promise<pg.Pool> {
   const searchPath =
     schema && schema.length > 0 ? formatSearchPath(schema) : null;
 
-  // Determine if using local DATABASE_URL or remote IAM auth
-  const isLocalhost = env.DATABASE_URL
-    ? (() => {
-        try {
-          const url = new URL(env.DATABASE_URL);
-          return url.hostname === "localhost" || url.hostname === "127.0.0.1";
-        } catch {
-          return false;
-        }
-      })()
-    : false;
-
-  if (isLocalhost) {
-    // Local development with DATABASE_URL
-    const url = new URL(env.DATABASE_URL as string);
+  if (env.DATABASE_URL) {
+    // Password auth via DATABASE_URL (local dev or remote ECS tasks)
+    const url = new URL(env.DATABASE_URL);
+    const isLocalhost =
+      url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    // Strip sslmode from connection string — we provide explicit ssl config
+    // to the Pool. Keeping both can cause driver/adapter conflicts.
     url.searchParams.delete("sslmode");
 
     globalForPrisma.pool = new pg.Pool({
       connectionString: url.toString(),
-      ssl: false,
+      ssl: isLocalhost ? false : { rejectUnauthorized: false },
       ...(searchPath ? { options: `-c search_path=${searchPath}` } : {}),
     });
   } else {

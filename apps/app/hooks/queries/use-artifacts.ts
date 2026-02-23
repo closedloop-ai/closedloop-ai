@@ -18,6 +18,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useRef } from "react";
+import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
 import { executionLogKeys } from "./use-execution-log";
@@ -335,29 +337,41 @@ export function useRequestPlanChanges() {
 
 /**
  * Create an artifact and immediately trigger generation workflow.
- * Used for implementation plans generated from a PRD and for PRD generation.
+ * Used for implementation plans generated from a PRD.
+ *
+ * When the organization's compute mode is set to "LOOPS", triggers plan generation via
+ * the run-loop endpoint (ECS Loops) instead of the regenerate endpoint (GitHub Actions).
  */
 export function useCreateAndGenerateArtifact() {
   const queryClient = useQueryClient();
   const apiClient = useApiClient();
+  const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
+    useIsLoopsEnabled();
 
-  return useMutation({
-    mutationFn: async ({
-      input,
-      generateBody,
-    }: {
-      input: CreateArtifactInput;
-      generateBody?: { reverseSynthesisLink?: string };
-    }) => {
+  // Use a ref so the mutationFn always reads the latest value,
+  // not the value captured at the render when the mutation was created.
+  const useLoopsRef = useRef(useLoops);
+  useLoopsRef.current = useLoops;
+
+  const mutation = useMutation({
+    mutationFn: async (input: CreateArtifactInput) => {
       const artifact = await apiClient.post<Artifact>("/artifacts", input);
 
+      // Then trigger generation via Loops or GitHub Actions
       try {
+        if (useLoopsRef.current) {
+          await apiClient.post(`/artifacts/${artifact.id}/run-loop`, {
+            command: "plan",
+          });
+          return artifact;
+        }
         const regenerated = await apiClient.post<Artifact>(
           `/artifacts/${artifact.id}/regenerate`,
-          generateBody ?? {}
+          {}
         );
         return regenerated;
       } catch {
+        // Return original artifact if generation fails - user can still navigate to it
         return artifact;
       }
     },
@@ -368,6 +382,8 @@ export function useCreateAndGenerateArtifact() {
       });
     },
   });
+
+  return { ...mutation, isComputeModeLoading };
 }
 
 /**
