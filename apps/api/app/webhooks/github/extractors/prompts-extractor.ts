@@ -125,7 +125,7 @@ export function parsePromptFile(
  */
 export const promptsExtractor: ZipContentExtractor<
   PromptsSnapshot,
-  ExtractorOutputType.PromptsSnapshot
+  typeof ExtractorOutputType.PromptsSnapshot
 > = {
   key: CONTENT_KEYS.promptsSnapshot,
   outputType: ExtractorOutputType.PromptsSnapshot,

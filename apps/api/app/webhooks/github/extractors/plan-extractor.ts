@@ -7,7 +7,7 @@ import { ExtractorOutputType } from "./types";
 /** Extract plan content from plan.json (experimental plugin artifact). */
 export const planJsonExtractor: ZipContentExtractor<
   string,
-  ExtractorOutputType.String
+  typeof ExtractorOutputType.String
 > = {
   key: CONTENT_KEYS.planContent,
   outputType: ExtractorOutputType.String,
@@ -35,7 +35,7 @@ export const planJsonExtractor: ZipContentExtractor<
 /** Extract plan content from implementation-plan.md (legacy fallback). */
 export const implementationPlanExtractor: ZipContentExtractor<
   string,
-  ExtractorOutputType.String
+  typeof ExtractorOutputType.String
 > = {
   key: CONTENT_KEYS.planContent,
   outputType: ExtractorOutputType.String,

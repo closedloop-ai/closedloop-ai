@@ -25,7 +25,7 @@ export function parseJudgesReport(
 /** Extract judges evaluation report from judges.json. */
 export const judgesReportExtractor: ZipContentExtractor<
   JudgesReport,
-  ExtractorOutputType.JudgesReport
+  typeof ExtractorOutputType.JudgesReport
 > = {
   key: CONTENT_KEYS.judgesReport,
   outputType: ExtractorOutputType.JudgesReport,

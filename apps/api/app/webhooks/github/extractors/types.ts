@@ -71,11 +71,17 @@ export type ZipContentExtractor<
 
 /** Discriminated union of all registered extractor types. */
 export type AnyZipContentExtractor =
-  | ZipContentExtractor<string, ExtractorOutputType.String>
-  | ZipContentExtractor<ExecutionResult, ExtractorOutputType.ExecutionResult>
-  | ZipContentExtractor<JudgesReport, ExtractorOutputType.JudgesReport>
-  | ZipContentExtractor<PerfSummary, ExtractorOutputType.PerfSummary>
-  | ZipContentExtractor<PromptsSnapshot, ExtractorOutputType.PromptsSnapshot>;
+  | ZipContentExtractor<string, typeof ExtractorOutputType.String>
+  | ZipContentExtractor<
+      ExecutionResult,
+      typeof ExtractorOutputType.ExecutionResult
+    >
+  | ZipContentExtractor<JudgesReport, typeof ExtractorOutputType.JudgesReport>
+  | ZipContentExtractor<PerfSummary, typeof ExtractorOutputType.PerfSummary>
+  | ZipContentExtractor<
+      PromptsSnapshot,
+      typeof ExtractorOutputType.PromptsSnapshot
+    >;
 
 /**
  * Container for heterogeneous extractor results.

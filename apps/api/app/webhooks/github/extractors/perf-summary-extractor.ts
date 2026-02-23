@@ -8,7 +8,7 @@ import { ExtractorOutputType } from "./types";
 /** Extract performance summary from perf.jsonl. */
 export const perfSummaryExtractor: ZipContentExtractor<
   PerfSummary,
-  ExtractorOutputType.PerfSummary
+  typeof ExtractorOutputType.PerfSummary
 > = {
   key: CONTENT_KEYS.perfSummary,
   outputType: ExtractorOutputType.PerfSummary,

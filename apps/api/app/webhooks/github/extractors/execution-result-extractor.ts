@@ -7,7 +7,7 @@ import { ExtractorOutputType } from "./types";
 /** Extract execution result JSON (PR metadata from execute runs). */
 export const executionResultExtractor: ZipContentExtractor<
   ExecutionResult,
-  ExtractorOutputType.ExecutionResult
+  typeof ExtractorOutputType.ExecutionResult
 > = {
   key: CONTENT_KEYS.executionResult,
   outputType: ExtractorOutputType.ExecutionResult,

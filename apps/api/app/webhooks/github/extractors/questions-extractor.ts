@@ -6,7 +6,7 @@ import { ExtractorOutputType } from "./types";
 /** Extract investigation/open questions markdown. */
 export const questionsExtractor: ZipContentExtractor<
   string,
-  ExtractorOutputType.String
+  typeof ExtractorOutputType.String
 > = {
   key: CONTENT_KEYS.questionsContent,
   outputType: ExtractorOutputType.String,
