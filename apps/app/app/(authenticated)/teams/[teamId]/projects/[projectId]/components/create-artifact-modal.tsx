@@ -30,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
@@ -497,9 +498,12 @@ export function CreateArtifactModal({
         reverseSynthesisLink: reverseSynthesisLink.trim() || undefined,
       },
       {
-        onSuccess: (artifact) => {
+        onSuccess: ({ artifact, generationError }) => {
           handleClose();
           onSuccess?.(artifact);
+          if (generationError) {
+            toast.error(`Quick PRD generation failed: ${generationError}`);
+          }
         },
       }
     );
