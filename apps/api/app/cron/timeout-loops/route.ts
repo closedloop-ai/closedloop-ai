@@ -22,9 +22,9 @@ type StuckLoop = {
  * Returns true if the loop was actually timed out.
  *
  * NOTE: If stopLoopTask fails, the loop is still marked TIMED_OUT in the DB
- * but the ECS task may continue running as an orphan. This is acceptable for
- * V1 — ECS tasks self-terminate via the harness 55-minute timeout, and orphaned
- * tasks are bounded by ECS task-level stopTimeout configuration.
+ * but the ECS task may continue running as an orphan. This is acceptable —
+ * ECS tasks self-terminate via the harness timeout (24h) and are bounded by
+ * ECS task-level stopTimeout configuration.
  */
 async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
   if (loop.containerId) {
@@ -99,18 +99,22 @@ async function timeoutLoop(loop: StuckLoop, now: Date): Promise<boolean> {
 }
 
 /**
- * Cron safety net for stuck loops (Layer 2 of timeout enforcement).
+ * Cron safety net for stuck loops.
  *
- * Runs every 5 minutes. Finds loops in non-terminal status that have exceeded
- * their maximum allowed age and transitions them to TIMED_OUT.
+ * Runs every 5 minutes. Finds loops in non-terminal status that appear stuck
+ * and transitions them to TIMED_OUT.
  *
  * Protected by CRON_SECRET bearer token — must be set in environment and
  * passed via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).
  *
- * Thresholds:
- * - RUNNING + startedAt > 70 minutes ago (55m harness timeout + 15m buffer)
- * - CLAIMED + createdAt > 90 minutes ago
- * - PENDING + createdAt > 30 minutes ago
+ * Detection strategy:
+ * - RUNNING: Activity-based — only reap if the loop has had NO events in the
+ *   last 75 minutes. The harness reports output events every ~5s, so 75
+ *   minutes of silence means the container is dead. Active loops are never
+ *   reaped regardless of how long they've been running (6+ hours is normal).
+ *   A single recent event = alive, don't touch it.
+ * - CLAIMED: createdAt > 90 minutes ago (container never reported "started")
+ * - PENDING: createdAt > 30 minutes ago (never picked up by a container)
  */
 export const GET = async (request: Request) => {
   const cronSecret = process.env.CRON_SECRET;
@@ -130,24 +134,32 @@ export const GET = async (request: Request) => {
 
   const now = new Date();
 
-  // 70 minutes for RUNNING loops (55m harness timeout + 15m cleanup buffer)
-  const runningCutoff = new Date(now.getTime() - 70 * 60 * 1000);
+  // RUNNING loops: activity-based detection.
+  // The harness reports output events every ~5s. If a RUNNING loop has had
+  // zero events in the last 75 minutes, the container is dead. One single
+  // recent event = alive, don't touch it. No age cutoff needed — a loop
+  // running for 6+ hours with active events is healthy and should never
+  // be reaped.
+  const activityCutoff = new Date(now.getTime() - 75 * 60 * 1000);
+
   // 90 minutes for CLAIMED loops (container may have never reported started)
   const claimedCutoff = new Date(now.getTime() - 90 * 60 * 1000);
   // 30 minutes for PENDING loops (should have been claimed quickly)
   const pendingCutoff = new Date(now.getTime() - 30 * 60 * 1000);
 
-  // Find stuck loops across all three categories
+  // Find stuck loops across all three categories.
+  // For RUNNING: purely activity-based — no events in 75 min = dead container.
   const stuckLoops = await withDb((db) =>
     db.loop.findMany({
       where: {
         OR: [
           {
             status: "RUNNING",
-            OR: [
-              { startedAt: { lt: runningCutoff } },
-              { startedAt: null, createdAt: { lt: runningCutoff } },
-            ],
+            events: {
+              none: {
+                createdAt: { gte: activityCutoff },
+              },
+            },
           },
           { status: "CLAIMED", createdAt: { lt: claimedCutoff } },
           { status: "PENDING", createdAt: { lt: pendingCutoff } },
@@ -170,6 +182,7 @@ export const GET = async (request: Request) => {
   log.info("[timeout-loops] Found stuck loops", {
     count: stuckLoops.length,
     ids: stuckLoops.map((l) => l.id),
+    statuses: stuckLoops.map((l) => l.status),
   });
 
   let timedOutCount = 0;
