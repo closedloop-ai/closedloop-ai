@@ -770,12 +770,12 @@ function rotateRefreshToken(
   | { status: "reuse_detected" }
 > {
   const tokenFingerprint = getTokenFingerprint(token);
-  const nextExpiry = new Date(
-    Date.now() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
-  );
   return withDb.tx(async (db) => {
     const client = db as unknown as OAuthRefreshTokenDbClient;
     const now = new Date();
+    const nextExpiry = new Date(
+      now.getTime() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000
+    );
     const current = await client.oAuthRefreshToken.findUnique({
       where: { tokenFingerprint },
     });
@@ -2226,19 +2226,19 @@ async function handleRefreshTokenGrant(
     return;
   }
 
+  if (refreshRecord.clientId !== body.client_id) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_grant",
+      error_description: "Refresh token was not issued to this client",
+    });
+    return;
+  }
+
   if (refreshRecord.revokedAt !== null) {
     await revokeRefreshTokenFamily(refreshRecord.familyId);
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token reuse detected",
-    });
-    return;
-  }
-
-  if (refreshRecord.clientId !== body.client_id) {
-    sendOAuthJson(res, 400, {
-      error: "invalid_grant",
-      error_description: "Refresh token was not issued to this client",
     });
     return;
   }

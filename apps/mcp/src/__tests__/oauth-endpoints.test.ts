@@ -894,6 +894,110 @@ describe("OAuth endpoints", () => {
     expect(afterReuseJson.error).toBe("invalid_grant");
   });
 
+  it("does not revoke refresh token family for revoked token with wrong client_id", async () => {
+    const verifier = "pkce-revoked-wrong-client";
+    const authorizeUrl = new URL("http://localhost/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "closedloop-mcp");
+    authorizeUrl.searchParams.set(
+      "redirect_uri",
+      "http://localhost:7777/callback"
+    );
+    authorizeUrl.searchParams.set("scope", "read");
+    authorizeUrl.searchParams.set("code_challenge", codeChallengeFor(verifier));
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    const authorizeReq = createMockRequest({
+      method: "GET",
+      url: `${authorizeUrl.pathname}${authorizeUrl.search}`,
+      headers: { authorization: "Bearer sk_live_valid" },
+    });
+    const authorizeRes = createMockResponse();
+    await handleOAuthAuthorize(authorizeReq, asServerResponse(authorizeRes));
+    const code = new URL(authorizeRes.headers.Location).searchParams.get(
+      "code"
+    );
+    expect(code).toBeTruthy();
+
+    const tokenBody = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: "closedloop-mcp",
+      code: code ?? "",
+      redirect_uri: "http://localhost:7777/callback",
+      code_verifier: verifier,
+    }).toString();
+    const tokenReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    const tokenRes = createMockResponse();
+    await handleOAuthToken(tokenReq, asServerResponse(tokenRes));
+    expect(tokenRes.statusCode).toBe(200);
+    const issued = JSON.parse(tokenRes.body) as { refresh_token: string };
+
+    const rotateBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: issued.refresh_token,
+    }).toString();
+    const rotateReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: rotateBody,
+    });
+    const rotateRes = createMockResponse();
+    await handleOAuthToken(rotateReq, asServerResponse(rotateRes));
+    expect(rotateRes.statusCode).toBe(200);
+    const rotated = JSON.parse(rotateRes.body) as { refresh_token: string };
+
+    const wrongClientReplayBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "dyn_deadbeefdeadbeefdeadbeefdeadbeef",
+      refresh_token: issued.refresh_token,
+    }).toString();
+    const wrongClientReplayReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: wrongClientReplayBody,
+    });
+    const wrongClientReplayRes = createMockResponse();
+    await handleOAuthToken(
+      wrongClientReplayReq,
+      asServerResponse(wrongClientReplayRes)
+    );
+    expect(wrongClientReplayRes.statusCode).toBe(400);
+    const wrongClientReplayJson = JSON.parse(wrongClientReplayRes.body) as {
+      error: string;
+      error_description: string;
+    };
+    expect(wrongClientReplayJson.error).toBe("invalid_grant");
+    expect(wrongClientReplayJson.error_description).toContain(
+      "issued to this client"
+    );
+
+    const siblingRefreshBody = new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: "closedloop-mcp",
+      refresh_token: rotated.refresh_token,
+    }).toString();
+    const siblingRefreshReq = createMockRequest({
+      method: "POST",
+      url: "/oauth/token",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: siblingRefreshBody,
+    });
+    const siblingRefreshRes = createMockResponse();
+    await handleOAuthToken(
+      siblingRefreshReq,
+      asServerResponse(siblingRefreshRes)
+    );
+    expect(siblingRefreshRes.statusCode).toBe(200);
+  });
+
   it("revokes refresh token family when rotation conflict is detected", async () => {
     const verifier = "pkce-rotate-race";
     const authorizeUrl = new URL("http://localhost/oauth/authorize");
