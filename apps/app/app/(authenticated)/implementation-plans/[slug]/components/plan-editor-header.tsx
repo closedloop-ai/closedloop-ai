@@ -14,6 +14,7 @@ import {
   CopyIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  FolderIcon,
   GitPullRequestIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
@@ -96,6 +97,10 @@ type PlanEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when copy markdown menu item is clicked
    */
   onCopyMarkdown: () => void;
@@ -103,6 +108,10 @@ type PlanEditorHeaderProps = {
    * Callback when export markdown menu item is clicked
    */
   onExportMarkdown: () => void;
+  /**
+   * Callback when move menu item is clicked
+   */
+  onMove: () => void;
   /**
    * Callback when export to Linear menu item is clicked
    */
@@ -131,7 +140,29 @@ type PlanEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
+
+function ThreadCountBadge({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick?: () => void;
+}) {
+  if (count <= 0) {
+    return null;
+  }
+  return (
+    <Button onClick={onClick} size="sm" title="View comments" variant="ghost">
+      <MessageSquareIcon className="mr-1 h-4 w-4" />
+      {count}
+    </Button>
+  );
+}
 
 export function PlanEditorHeader({
   plan,
@@ -146,6 +177,7 @@ export function PlanEditorHeader({
   pullRequest,
   isExecuting,
   onToggleMetadataPanel,
+  onDiscard,
   onEdit,
   onApprove,
   onRequestChanges,
@@ -154,10 +186,12 @@ export function PlanEditorHeader({
   onCopyMarkdown,
   onExportMarkdown,
   onExportToLinear,
+  onMove,
   onRegenerate,
   onDelete,
   showRestore = false,
   onRestoreVersion,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PlanEditorHeaderProps) {
@@ -174,11 +208,23 @@ export function PlanEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
+          <ThreadCountBadge count={openThreadCount} onClick={onEdit} />
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"
@@ -277,6 +323,10 @@ export function PlanEditorHeader({
           <DropdownMenuItem onClick={onCopyMarkdown}>
             <CopyIcon className="mr-2 h-4 w-4" />
             Copy Markdown
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

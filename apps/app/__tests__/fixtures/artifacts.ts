@@ -14,10 +14,10 @@ export const createMockArtifact = (
   ({
     id: "artifact-123",
     title: "Test Artifact",
-    type: "DOCUMENT",
-    subtype: "PRD",
-    version: 1,
-    documentSlug: "test-artifact",
+    type: "PRD",
+    slug: "test-artifact",
+    latestVersion: 1,
+    status: "DRAFT",
     createdAt: "2024-01-15T10:00:00Z",
     updatedAt: "2024-01-16T10:00:00Z",
     ...overrides,
@@ -58,6 +58,7 @@ export const createMockPullRequest = (
     headBranch: "feature-branch",
     baseBranch: "main",
     createdAt: new Date("2024-01-15T10:00:00Z"),
+    reviewDecision: null,
     ...overrides,
   };
 };

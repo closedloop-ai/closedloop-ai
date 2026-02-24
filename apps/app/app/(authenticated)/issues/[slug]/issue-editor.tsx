@@ -1,132 +1,121 @@
 "use client";
 
-import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
-} from "@repo/api/src/types/artifact";
-import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
-import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
+import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
-import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
-import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
-import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
-import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useDeleteIssue, useUpdateIssue } from "@/hooks/queries/use-issues";
 import { IssueEditorHeader } from "./components/issue-editor-header";
 import { IssueMetadataPanel } from "./components/issue-metadata-panel";
 
 type IssueEditorProps = {
-  issue: ArtifactWithWorkstream;
-  currentVersion: number;
-  latestVersion: number;
-  onVersionChange: (version: number) => void;
+  issue: IssueWithWorkstream;
 };
 
-export function IssueEditor({
-  issue,
-  currentVersion,
-  latestVersion,
-  onVersionChange,
-}: IssueEditorProps) {
-  const content = useArtifactContent({
-    artifact: issue,
-  });
+export function IssueEditor({ issue }: Readonly<IssueEditorProps>) {
+  const router = useRouter();
+  const updateIssue = useUpdateIssue();
+  const deleteIssue = useDeleteIssue();
 
-  const metadata = useArtifactMetadata({
-    artifact: issue,
-  });
+  // Description content state
+  const [description, setDescription] = useState(issue.description ?? "");
+  const [lastSaved, setLastSaved] = useState<Date>(issue.updatedAt);
 
-  const actions = useArtifactActions({
-    artifact: issue,
-    redirectPath: issue.project?.teams?.[0]?.id
+  // Sync description when issue changes (e.g., after mutation invalidation)
+  useEffect(() => {
+    setDescription(issue.description ?? "");
+    setLastSaved(issue.updatedAt);
+  }, [issue.description, issue.updatedAt]);
+
+  const hasUnsavedChanges = description !== (issue.description ?? "");
+
+  // UI state
+  const [showMetadataPanel, setShowMetadataPanel] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showRenameDialog, setShowRenameDialog] = useState(false);
+
+  const isPending = updateIssue.isPending || deleteIssue.isPending;
+
+  const saveDescription = useCallback(() => {
+    if (!hasUnsavedChanges) {
+      toast.info("No changes to save");
+      return;
+    }
+
+    updateIssue.mutate(
+      { id: issue.id, description },
+      {
+        onSuccess: () => {
+          toast.success("Issue saved");
+          setLastSaved(new Date());
+        },
+      }
+    );
+  }, [description, hasUnsavedChanges, issue.id, updateIssue]);
+
+  const handleDelete = useCallback(async (): Promise<boolean> => {
+    const redirectPath = issue.project?.teams?.[0]?.id
       ? `/teams/${issue.project.teams[0].id}/projects/${issue.project.id}`
-      : "/",
-  });
+      : "/";
 
-  const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.Issue,
-  });
+    const result = await deleteIssue.mutateAsync(issue.id, {
+      onSuccess: () => {
+        toast.success("Issue deleted");
+        router.push(redirectPath);
+      },
+    });
+    return !!result;
+  }, [deleteIssue, issue.id, issue.project, router]);
 
-  // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch
-  const {
-    showRenameDialog,
-    setShowRenameDialog,
-    openRenameDialog,
-    showGeneratePlanModal,
-    setShowGeneratePlanModal,
-    openGeneratePlanModal,
-  } = uiState as Extract<
-    ReturnType<typeof useArtifactUIState>,
-    { showGeneratePlanModal: boolean }
-  >;
-
-  const isPending =
-    content.isSaving ||
-    metadata.isUpdating ||
-    actions.isDeleting ||
-    actions.isRenaming;
-
-  const versionDisplay = (
-    <VersionSelector
-      currentVersion={currentVersion}
-      latestVersion={latestVersion}
-      onVersionChange={onVersionChange}
-    />
+  const handleRename = useCallback(
+    async (title: string): Promise<boolean> => {
+      const result = await updateIssue.mutateAsync(
+        { id: issue.id, title },
+        {
+          onSuccess: () => {
+            toast.success("Issue renamed");
+          },
+        }
+      );
+      return !!result;
+    },
+    [issue.id, updateIssue]
   );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <IssueEditorHeader
         isPending={isPending}
-        isSaving={content.isSaving}
+        isSaving={updateIssue.isPending}
         issue={issue}
-        lastSaved={content.lastSaved}
-        onDelete={uiState.openDeleteDialog}
-        onExport={actions.handleDownload}
-        onGeneratePlan={openGeneratePlanModal}
-        onRename={openRenameDialog}
-        onSave={content.saveContent}
-        onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        showMetadataPanel={uiState.showMetadataPanel}
-        status={metadata.status}
-        versionDisplay={versionDisplay}
+        lastSaved={lastSaved}
+        onDelete={() => setShowDeleteDialog(true)}
+        onRename={() => setShowRenameDialog(true)}
+        onSave={saveDescription}
+        onToggleMetadataPanel={() => setShowMetadataPanel((prev) => !prev)}
+        showMetadataPanel={showMetadataPanel}
       />
 
       <div className="flex min-h-0 flex-1">
         <EditorContent
-          onChange={content.updateContent}
-          placeholder="Start writing your issue..."
-          value={content.content}
+          onChange={setDescription}
+          placeholder="Describe the issue..."
+          value={description}
         />
 
-        {uiState.showMetadataPanel ? (
-          <IssueMetadataPanel
-            approver={metadata.approver}
-            issue={issue}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            owner={metadata.owner}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
-        ) : null}
+        {showMetadataPanel ? <IssueMetadataPanel issue={issue} /> : null}
       </div>
 
       <RenameDialog
-        currentFileName={issue.fileName ?? ""}
+        currentFileName=""
         currentTitle={issue.title}
-        description="Update the title and file name for this issue."
+        description="Update the title for this issue."
         isPending={isPending}
         onOpenChange={setShowRenameDialog}
-        onRename={actions.handleRename}
+        onRename={(title) => handleRename(title)}
         open={showRenameDialog}
         title="Rename Issue"
       />
@@ -134,16 +123,10 @@ export function IssueEditor({
       <DeleteConfirmationDialog
         isPending={isPending}
         itemName={issue.title}
-        onConfirm={actions.handleDelete}
-        onOpenChange={uiState.setShowDeleteDialog}
-        open={uiState.showDeleteDialog}
+        onConfirm={handleDelete}
+        onOpenChange={setShowDeleteDialog}
+        open={showDeleteDialog}
         title="Issue"
-      />
-
-      <NewPlanModal
-        onOpenChange={setShowGeneratePlanModal}
-        open={showGeneratePlanModal}
-        sourceArtifact={issue}
       />
     </div>
   );

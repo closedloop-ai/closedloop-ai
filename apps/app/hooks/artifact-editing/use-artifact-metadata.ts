@@ -159,26 +159,38 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   /**
    * Handle target repository blur event.
    * Saves to server only if value has changed.
+   * Accepts optional override value to avoid stale closure when called
+   * immediately after a state setter in the same event handler.
    */
-  const handleTargetRepoBlur = useCallback(() => {
-    if (targetRepo !== (artifact.targetRepo ?? "")) {
-      handleMetadataUpdate({
-        targetRepo: targetRepo.trim() === "" ? null : targetRepo,
-      });
-    }
-  }, [targetRepo, artifact.targetRepo, handleMetadataUpdate]);
+  const handleTargetRepoBlur = useCallback(
+    (overrideValue?: string) => {
+      const value = overrideValue ?? targetRepo;
+      if (value !== (artifact.targetRepo ?? "")) {
+        handleMetadataUpdate({
+          targetRepo: value.trim() === "" ? null : value,
+        });
+      }
+    },
+    [targetRepo, artifact.targetRepo, handleMetadataUpdate]
+  );
 
   /**
    * Handle target branch blur event.
    * Saves to server only if value has changed.
+   * Accepts optional override value to avoid stale closure when called
+   * immediately after a state setter in the same event handler.
    */
-  const handleTargetBranchBlur = useCallback(() => {
-    if (targetBranch !== (artifact.targetBranch ?? "main")) {
-      handleMetadataUpdate({
-        targetBranch: targetBranch.trim() === "" ? null : targetBranch,
-      });
-    }
-  }, [targetBranch, artifact.targetBranch, handleMetadataUpdate]);
+  const handleTargetBranchBlur = useCallback(
+    (overrideValue?: string) => {
+      const value = overrideValue ?? targetBranch;
+      if (value !== (artifact.targetBranch ?? "main")) {
+        handleMetadataUpdate({
+          targetBranch: value.trim() === "" ? null : value,
+        });
+      }
+    },
+    [targetBranch, artifact.targetBranch, handleMetadataUpdate]
+  );
 
   /**
    * Handle parent artifact change.

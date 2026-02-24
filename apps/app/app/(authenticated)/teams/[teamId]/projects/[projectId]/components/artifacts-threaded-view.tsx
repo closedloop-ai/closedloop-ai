@@ -1,6 +1,14 @@
 "use client";
 
-import { Badge } from "@repo/design-system/components/ui/badge";
+import {
+  type ArtifactStatus,
+  ArtifactType,
+  type ArtifactWithWorkstream,
+  type PullRequestInfo,
+  ReviewDecision,
+} from "@repo/api/src/types/artifact";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
+import { parsePreviewDeploymentMetadata } from "@repo/api/src/types/external-link-utils";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -13,169 +21,133 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { cn } from "@repo/design-system/lib/utils";
 import {
+  ArrowRightIcon,
   ChevronDown,
   ExternalLinkIcon,
   FileTextIcon,
+  FolderIcon,
+  GitPullRequestIcon,
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { PreviewLink } from "@/components/preview-link";
-import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
+import {
+  previewDeploymentStateColors,
+  prReviewDecisionColors,
+  prStatusColors,
+  StatusBadge,
+  WorkstreamStateBadge,
+} from "@/components/status-badge";
+import { useExternalLinks } from "@/hooks/queries/use-external-links";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
+import { matchesFilter } from "@/lib/artifact-filter";
 import {
   getArtifactRoute,
-  isExternalLink,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
-  ARTIFACT_SUBTYPE_ICONS,
+  ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
-import type { ArtifactDisplayStatus, ProjectArtifact } from "@/types/teams";
-import { ArtifactSubtypeBadge } from "./artifact-subtype-badge";
+import { ArtifactTypeBadge } from "./artifact-type-badge";
 
 type ArtifactsThreadedViewProps = {
-  artifacts: ProjectArtifact[];
-  onStatusChange?: (artifactId: string, status: ArtifactDisplayStatus) => void;
+  artifacts: ArtifactWithWorkstream[];
+  projectId: string;
+  filterText: string;
+  onStatusChange?: (artifactId: string, status: ArtifactStatus) => void;
   onDelete?: (artifactId: string) => Promise<boolean>;
 };
 
-const WORKSTREAM_STATE_LABELS: Record<string, string> = {
-  INITIATED: "Initiated",
-  REQUIREMENTS_GENERATING: "Generating Requirements",
-  REQUIREMENTS_PENDING_APPROVAL: "Requirements Review",
-  DESIGN_IN_PROGRESS: "Designing",
-  DESIGN_PENDING_APPROVAL: "Design Review",
-  IMPLEMENTATION_PLANNING: "Planning",
-  IMPLEMENTATION_IN_PROGRESS: "Implementing",
-  IMPLEMENTATION_PENDING_REVIEW: "Implementation Review",
-  CODE_REVIEW_RUNNING: "Code Review",
-  CODE_REVIEW_PENDING_APPROVAL: "Code Review Approval",
-  VISUAL_QA_RUNNING: "Visual QA",
-  VISUAL_QA_PENDING_APPROVAL: "Visual QA Approval",
-  MERGING: "Merging",
-  DEPLOYED: "Deployed",
-  COMPLETED: "Completed",
-  BLOCKED: "Blocked",
-  CANCELLED: "Cancelled",
-};
-
-function getWorkstreamStateBadgeVariant(
-  state: string
-): "default" | "secondary" | "destructive" | "outline" {
-  switch (state) {
-    case "COMPLETED":
-    case "DEPLOYED":
-      return "default";
-    case "BLOCKED":
-    case "CANCELLED":
-      return "destructive";
-    case "INITIATED":
-      return "outline";
-    default:
-      return "secondary";
-  }
-}
-
 type WorkstreamGroup = {
   id: string | null;
+  groupKey: string;
   title: string;
   state: string | null;
-  artifacts: ProjectArtifact[];
-  /** Raw workstream title from API, used during group construction. */
-  _workstreamTitle?: string | null;
+  artifacts: ArtifactWithWorkstream[];
 };
 
-/** Defines display order of artifact subtypes within a workstream group. */
-const SUBTYPE_ORDER: Record<string, number> = {
-  PRD: 0,
-  IMPLEMENTATION_PLAN: 1,
-  IMPLEMENTATION_STRATEGY: 2,
-  ISSUE: 3,
-  BUG: 4,
-  BRANCH: 5,
-  DESIGNS: 6,
-  PROJECT_BRIEF: 7,
-  TEMPLATE: 8,
+/** Defines display order of artifact types within a workstream group. */
+const TYPE_ORDER: Record<string, number> = {
+  [ArtifactType.Prd]: 0,
+  [ArtifactType.ImplementationPlan]: 1,
+  [ArtifactType.Template]: 2,
 };
 
-function sortArtifactsBySubtype(
-  artifacts: ProjectArtifact[]
-): ProjectArtifact[] {
+const UNASSIGNED_KEY_PREFIX = "unassigned:" as const;
+
+function sortArtifactsByType(
+  artifacts: ArtifactWithWorkstream[]
+): ArtifactWithWorkstream[] {
   return [...artifacts].sort(
-    (a, b) =>
-      (SUBTYPE_ORDER[a.subtype] ?? 99) - (SUBTYPE_ORDER[b.subtype] ?? 99)
+    (a, b) => (TYPE_ORDER[a.type] ?? 99) - (TYPE_ORDER[b.type] ?? 99)
   );
 }
 
 /**
  * Derive a group title. For groups with a workstream title, use it directly.
- * For unassigned groups, use the PRD artifact's name if one exists.
+ * For unassigned groups, use the PRD artifact's title if one exists.
  */
 function deriveGroupTitle(
   workstreamTitle: string | null | undefined,
-  artifacts: ProjectArtifact[]
+  artifacts: ArtifactWithWorkstream[]
 ): string {
   if (workstreamTitle) {
     return workstreamTitle;
   }
-  const prd = artifacts.find((a) => a.subtype === "PRD");
-  return prd?.name ?? "Unassigned";
+  const prd = artifacts.find((a) => a.type === "PRD");
+  return prd?.title ?? "Unassigned";
 }
 
-/**
- * Aggregates PR states across multiple artifacts to determine the workstream's visual state.
- * Priority: OPEN > MERGED > null (no PR state indicator).
- * CLOSED PRs intentionally return null — abandoned/closed-without-merge PRs
- * don't warrant a visual indicator, same as workstreams with no PRs.
- */
-function getWorkstreamPrState(
-  artifacts: ProjectArtifact[]
-): "OPEN" | "MERGED" | null {
-  const states = artifacts.map((a) => a.pullRequest?.state).filter(Boolean);
-  if (states.includes("OPEN")) {
-    return "OPEN";
-  }
-  if (states.includes("MERGED")) {
-    return "MERGED";
-  }
-  return null;
-}
-
-function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
-  const groups = new Map<string | null, WorkstreamGroup>();
+function groupByWorkstream(
+  artifacts: ArtifactWithWorkstream[]
+): WorkstreamGroup[] {
+  const groups = new Map<string, WorkstreamGroup>();
+  const workstreamTitles = new Map<string, string | null | undefined>();
 
   for (const artifact of artifacts) {
-    const key = artifact.workstreamId ?? null;
+    // PRDs without a workstream get their own group (each PRD is a standalone thread).
+    // All other unassigned artifact types share a single "Unassigned" group.
+    const key =
+      artifact.workstreamId ??
+      (artifact.type === "PRD"
+        ? `${UNASSIGNED_KEY_PREFIX}${artifact.id}`
+        : `${UNASSIGNED_KEY_PREFIX}shared`);
 
     if (!groups.has(key)) {
       groups.set(key, {
-        id: key,
-        title: "", // resolved after all artifacts are collected
-        state: artifact.workstreamState ?? null,
+        id: artifact.workstreamId,
+        groupKey: key,
+        title: "",
+        state: artifact.workstream?.state ?? null,
         artifacts: [],
-        _workstreamTitle: artifact.workstreamTitle,
       });
+      workstreamTitles.set(key, artifact.workstream?.title);
     }
-    groups.get(key)!.artifacts.push(artifact);
+    const group = groups.get(key);
+    if (group) {
+      group.artifacts.push(artifact);
+    }
   }
 
-  // Resolve titles and sort artifacts within each group
-  for (const group of groups.values()) {
-    group.title = deriveGroupTitle(group._workstreamTitle, group.artifacts);
-    group.artifacts = sortArtifactsBySubtype(group.artifacts);
+  for (const [key, group] of groups) {
+    group.title = deriveGroupTitle(workstreamTitles.get(key), group.artifacts);
+    group.artifacts = sortArtifactsByType(group.artifacts);
   }
 
-  // Sort: workstreams with IDs first (by title), unassigned last
   const sorted = [...groups.values()].sort((a, b) => {
+    if (a.id === null && b.id === null) {
+      return a.title.localeCompare(b.title);
+    }
     if (a.id === null) {
       return 1;
     }
@@ -188,24 +160,10 @@ function groupByWorkstream(artifacts: ProjectArtifact[]): WorkstreamGroup[] {
   return sorted;
 }
 
-function ArtifactLink({ artifact }: { artifact: ProjectArtifact }) {
+function ArtifactLink({ artifact }: { artifact: ArtifactWithWorkstream }) {
   const route = getArtifactRoute(artifact);
   if (!route) {
     return null;
-  }
-  if (isExternalLink(artifact)) {
-    return (
-      <a
-        className="inline-flex items-center gap-1 text-primary text-xs hover:underline"
-        href={route}
-        onClick={(e) => e.stopPropagation()}
-        rel="noopener noreferrer"
-        target="_blank"
-      >
-        View
-        <ExternalLinkIcon className="h-3 w-3" />
-      </a>
-    );
   }
   return (
     <Link
@@ -222,12 +180,18 @@ function ArtifactRow({
   artifact,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
+  workstreamPreviewUrl,
+  siblingPlan,
 }: {
-  artifact: ProjectArtifact;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
+  artifact: ArtifactWithWorkstream;
+  onRowClick: (artifact: ArtifactWithWorkstream) => void;
+  onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
+  workstreamPreviewUrl?: string | null;
+  siblingPlan?: ArtifactWithWorkstream | null;
 }) {
-  const Icon = ARTIFACT_SUBTYPE_ICONS[artifact.subtype] || FileTextIcon;
+  const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
   const isClickable = isNavigableArtifact(artifact);
 
   const interactiveProps = isClickable
@@ -244,6 +208,13 @@ function ArtifactRow({
       }
     : {};
 
+  const isImplementationPlan =
+    artifact.type === ArtifactType.ImplementationPlan;
+  const pr = isImplementationPlan ? (artifact.pullRequest ?? null) : null;
+  const isPipelineGreen =
+    artifact.generationStatus?.status === "SUCCESS" &&
+    artifact.generationStatus?.command === "execute";
+
   return (
     <div
       {...interactiveProps}
@@ -253,12 +224,38 @@ function ArtifactRow({
     >
       <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-sm">{artifact.name}</span>
-        {artifact.pullRequest && (
-          <PullRequestStatusBadge pullRequest={artifact.pullRequest} />
+        <span className="truncate text-sm">{artifact.title}</span>
+        <GenerationStatusIndicator
+          generationStatus={artifact.generationStatus}
+        />
+        {pr && <StatusBadge colorMap={prStatusColors} status={pr.state} />}
+        {pr?.reviewDecision &&
+          (pr.reviewDecision === ReviewDecision.Approved ||
+            pr.reviewDecision === ReviewDecision.ChangesRequested) && (
+            <StatusBadge
+              colorMap={prReviewDecisionColors}
+              status={pr.reviewDecision}
+            />
+          )}
+        {artifact.type === ArtifactType.Prd && siblingPlan != null && (
+          <span
+            className={`text-xs ${ARTIFACT_STATUS_COLORS[siblingPlan.status] ?? "text-muted-foreground"}`}
+          >
+            Plan:{" "}
+            {ARTIFACT_STATUS_LABELS[siblingPlan.status] ?? siblingPlan.status}
+          </span>
+        )}
+        {isImplementationPlan && isPipelineGreen && workstreamPreviewUrl && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            role="none"
+          >
+            <PreviewLink url={workstreamPreviewUrl} />
+          </div>
         )}
       </div>
-      <ArtifactSubtypeBadge subtype={artifact.subtype} />
+      <ArtifactTypeBadge type={artifact.type} />
       <span
         className={`text-xs ${ARTIFACT_STATUS_COLORS[artifact.status] ?? "text-muted-foreground"}`}
       >
@@ -270,7 +267,6 @@ function ArtifactRow({
         onKeyDown={(e) => e.stopPropagation()}
         role="none"
       >
-        <PreviewLink url={artifact.previewUrl} />
         <ArtifactLink artifact={artifact} />
       </div>
       <div
@@ -286,6 +282,10 @@ function ArtifactRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onRequestMove(artifact)}>
+              <FolderIcon className="mr-2 h-4 w-4" />
+              Move to project
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => onRequestDelete(artifact)}
@@ -304,21 +304,23 @@ function WorkstreamSection({
   group,
   onRowClick,
   onRequestDelete,
+  onRequestMove,
+  previewUrl,
+  previewDeploymentState,
 }: {
   group: WorkstreamGroup;
-  onRowClick: (artifact: ProjectArtifact) => void;
-  onRequestDelete: (artifact: ProjectArtifact) => void;
+  onRowClick: (artifact: ArtifactWithWorkstream) => void;
+  onRequestDelete: (artifact: ArtifactWithWorkstream) => void;
+  onRequestMove: (artifact: ArtifactWithWorkstream) => void;
+  previewUrl?: string | null;
+  previewDeploymentState?: string | null;
 }) {
-  const prState = getWorkstreamPrState(group.artifacts);
+  const siblingPlan =
+    group.artifacts.find((a) => a.type === ArtifactType.ImplementationPlan) ??
+    null;
 
   return (
-    <Collapsible
-      className={cn(
-        "rounded-lg border",
-        prState === "OPEN" && "border-l-[3px] border-l-blue-500",
-        prState === "MERGED" && "border-l-[3px] border-l-green-500"
-      )}
-    >
+    <Collapsible className="rounded-lg border">
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
         <span className="min-w-0 flex-1 truncate font-medium text-sm">
@@ -328,11 +330,16 @@ function WorkstreamSection({
           {group.artifacts.length}{" "}
           {group.artifacts.length === 1 ? "artifact" : "artifacts"}
         </span>
-        {group.state && (
-          <Badge variant={getWorkstreamStateBadgeVariant(group.state)}>
-            {WORKSTREAM_STATE_LABELS[group.state] ?? group.state}
-          </Badge>
+        {group.state && <WorkstreamStateBadge state={group.state} />}
+        {previewDeploymentState && (
+          <StatusBadge
+            className="px-1.5 py-0 text-xs"
+            colorMap={previewDeploymentStateColors}
+            defaultStyle="bg-muted text-muted-foreground border-muted"
+            status={previewDeploymentState.toUpperCase()}
+          />
         )}
+        {previewUrl && <PreviewLink url={previewUrl} />}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="border-t px-1 py-1">
@@ -341,7 +348,12 @@ function WorkstreamSection({
               artifact={artifact}
               key={artifact.id}
               onRequestDelete={onRequestDelete}
+              onRequestMove={onRequestMove}
               onRowClick={onRowClick}
+              siblingPlan={
+                artifact.type === ArtifactType.Prd ? siblingPlan : undefined
+              }
+              workstreamPreviewUrl={previewUrl}
             />
           ))}
         </div>
@@ -352,27 +364,82 @@ function WorkstreamSection({
 
 export function ArtifactsThreadedView({
   artifacts,
+  projectId,
+  filterText,
   onStatusChange: _onStatusChange,
   onDelete,
 }: ArtifactsThreadedViewProps) {
   const router = useRouter();
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
-    getId: (artifact: ProjectArtifact) => artifact.id,
+    getId: (artifact: ArtifactWithWorkstream) => artifact.id,
   });
 
+  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [selectedArtifact, setSelectedArtifact] =
+    useState<ArtifactWithWorkstream | null>(null);
+
+  // Fetch preview deployment links for this project
+  const { data: externalLinks = [] } = useExternalLinks({
+    projectId,
+    type: ExternalLinkType.PreviewDeployment,
+  });
+
+  // Build workstreamId -> { url, deploymentState } map
+  const previewUrlsByWorkstream = useMemo(() => {
+    const map = new Map<
+      string,
+      { url: string; deploymentState: string | null }
+    >();
+    for (const link of externalLinks) {
+      if (link.workstreamId) {
+        const parsed = parsePreviewDeploymentMetadata(link.metadata);
+        map.set(link.workstreamId, {
+          url: link.externalUrl,
+          deploymentState: parsed?.state ?? null,
+        });
+      }
+    }
+    return map;
+  }, [externalLinks]);
+
+  // Group artifacts by workstream, then drop groups with no matching artifacts.
+  // Filtering is done after grouping so deriveGroupTitle always has the full
+  // group (prevents fallback to "Unassigned" when a group's PRD is filtered out).
   const workstreamGroups = useMemo(
-    () => groupByWorkstream(artifacts),
-    [artifacts]
+    () =>
+      groupByWorkstream(artifacts).filter((group) =>
+        group.artifacts.some((a) => matchesFilter(a, filterText))
+      ),
+    [artifacts, filterText]
   );
 
-  function handleRowClick(artifact: ProjectArtifact): void {
+  // Derive unique branches from artifacts that have pull requests
+  const branches = useMemo(() => {
+    const seen = new Set<string>();
+    const result: { artifact: ArtifactWithWorkstream; pr: PullRequestInfo }[] =
+      [];
+    for (const a of artifacts) {
+      if (a.pullRequest && !seen.has(a.pullRequest.headBranch)) {
+        seen.add(a.pullRequest.headBranch);
+        result.push({ artifact: a, pr: a.pullRequest });
+      }
+    }
+    return result;
+  }, [artifacts]);
+
+  function handleRowClick(artifact: ArtifactWithWorkstream): void {
     if (isNavigableArtifact(artifact)) {
       const route = getArtifactRoute(artifact);
       if (route) {
         router.push(route);
       }
     }
+  }
+
+  function handleRequestMove(artifact: ArtifactWithWorkstream): void {
+    setSelectedArtifact(artifact);
+    setMoveDialogOpen(true);
   }
 
   if (artifacts.length === 0) {
@@ -386,25 +453,120 @@ export function ArtifactsThreadedView({
     );
   }
 
+  if (workstreamGroups.length === 0 && filterText) {
+    return (
+      <EmptyState
+        className="rounded-md border"
+        description="Try a different search term."
+        icon={FileTextIcon}
+        title="No matching artifacts"
+      />
+    );
+  }
+
   return (
     <div className="space-y-3">
-      {workstreamGroups.map((group) => (
-        <WorkstreamSection
-          group={group}
-          key={group.id ?? "unassigned"}
-          onRequestDelete={deleteConfirmation.requestDelete}
-          onRowClick={handleRowClick}
-        />
-      ))}
+      {workstreamGroups.map((group) => {
+        const preview = group.id
+          ? previewUrlsByWorkstream.get(group.id)
+          : undefined;
+        return (
+          <WorkstreamSection
+            group={group}
+            key={group.groupKey}
+            onRequestDelete={deleteConfirmation.requestDelete}
+            onRequestMove={handleRequestMove}
+            onRowClick={handleRowClick}
+            previewDeploymentState={preview?.deploymentState ?? null}
+            previewUrl={preview?.url ?? null}
+          />
+        );
+      })}
+
+      {branches.length > 0 && <BranchesSection branches={branches} />}
 
       <DeleteConfirmationDialog
         isPending={deleteConfirmation.isPending}
-        itemName={deleteConfirmation.itemToDelete?.name ?? ""}
+        itemName={deleteConfirmation.itemToDelete?.title ?? ""}
         onConfirm={deleteConfirmation.confirmDelete}
         onOpenChange={deleteConfirmation.setOpen}
         open={deleteConfirmation.isOpen}
         title="Artifact"
       />
+
+      {selectedArtifact && (
+        <MoveArtifactDialog
+          artifact={selectedArtifact}
+          currentProjectId={projectId}
+          onOpenChange={setMoveDialogOpen}
+          open={moveDialogOpen}
+        />
+      )}
     </div>
+  );
+}
+
+type BranchEntry = {
+  artifact: ArtifactWithWorkstream;
+  pr: PullRequestInfo;
+};
+
+function BranchRow({ pr }: { pr: PullRequestInfo }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md px-3 py-2">
+      <GitPullRequestIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate font-mono text-xs">{pr.headBranch}</span>
+        <ArrowRightIcon className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+        <span className="truncate font-mono text-muted-foreground text-xs">
+          {pr.baseBranch}
+        </span>
+        <StatusBadge colorMap={prStatusColors} status={pr.state} />
+        {pr.reviewDecision &&
+          (pr.reviewDecision === ReviewDecision.Approved ||
+            pr.reviewDecision === ReviewDecision.ChangesRequested) && (
+            <StatusBadge
+              colorMap={prReviewDecisionColors}
+              status={pr.reviewDecision}
+            />
+          )}
+      </div>
+      <span className="text-muted-foreground text-xs">
+        #{pr.number} {pr.title}
+      </span>
+      <a
+        aria-label={`Open PR #${pr.number} on GitHub`}
+        className="text-muted-foreground transition-colors hover:text-primary"
+        href={pr.htmlUrl}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        <ExternalLinkIcon className="h-3.5 w-3.5" />
+      </a>
+    </div>
+  );
+}
+
+function BranchesSection({ branches }: { branches: BranchEntry[] }) {
+  return (
+    <Collapsible className="rounded-lg border">
+      <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
+        <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+        <GitPullRequestIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-medium text-sm">
+          Branches
+        </span>
+        <span className="text-muted-foreground text-xs">
+          {branches.length} {branches.length === 1 ? "branch" : "branches"}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t px-1 py-1">
+          {branches.map((entry) => (
+            <BranchRow key={entry.pr.headBranch} pr={entry.pr} />
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

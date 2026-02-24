@@ -14,18 +14,25 @@
  * - @repo/observability/log (logging)
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import {
-  ArtifactStatus,
-  ArtifactSubtype,
-  ArtifactType,
-} from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
+import {
+  asTx,
+  getMockWithDb,
+  mockWithDbCall,
+  mockWithDbTx,
+} from "../utils/db-helpers";
 
 // Mock all external dependencies before importing
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  EvaluationReportType: {
+    PLAN: "PLAN",
+    CODE: "CODE",
+  },
 }));
 
 vi.mock("@repo/github", () => ({
@@ -49,10 +56,16 @@ vi.mock("@/app/webhooks/github/webhook-service", () => ({
   findActionRunByCorrelationId: vi.fn(),
 }));
 
+vi.mock("@/app/artifacts/artifact-version-service", () => ({
+  artifactVersionService: {
+    createVersion: vi.fn().mockResolvedValue({ id: "version-1", version: 2 }),
+  },
+}));
+
 // Import after mocking
 import { uploadArtifact } from "@repo/aws";
-import { withDb } from "@repo/database";
 import { downloadWorkflowArtifacts } from "@repo/github";
+import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
   handleExecutionSuccess,
   handleWorkflowFailure,
@@ -63,12 +76,14 @@ import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
 
 // Type aliases for mocked functions
-const mockWithDb = withDb as unknown as Mock;
+const mockWithDb = getMockWithDb();
 const mockDownloadWorkflowArtifacts =
   downloadWorkflowArtifacts as unknown as Mock;
 const mockUploadArtifact = uploadArtifact as unknown as Mock;
 const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
+const mockCreateVersion =
+  artifactVersionService.createVersion as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -112,15 +127,21 @@ describe("handleWorkflowSuccess", () => {
     mockUploadArtifact.mockResolvedValue(undefined);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -128,18 +149,24 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    await handleWorkflowSuccess(asTx(mockDb), ctx, true);
 
-    await handleWorkflowSuccess(ctx, true);
-
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).toHaveBeenCalled();
+    expect(mockCreateVersion).toHaveBeenCalledWith(
+      artifactId,
+      null,
+      planContent
+    );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
-      where: { id: artifactId },
-      data: expect.objectContaining({
+      where: { id: artifactId, organizationId: "test-org-id" },
+      data: {
         status: "DRAFT",
-        content: planContent,
-      }),
+      },
     });
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -190,15 +217,21 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -206,18 +239,24 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
 
-    await handleWorkflowSuccess(ctx, false);
-
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
     expect(mockUploadArtifact).not.toHaveBeenCalled();
+    expect(mockCreateVersion).toHaveBeenCalledWith(
+      artifactId,
+      null,
+      planContent
+    );
     expect(mockDb.artifact.update).toHaveBeenCalledWith({
-      where: { id: artifactId },
-      data: expect.objectContaining({
+      where: { id: artifactId, organizationId: "test-org-id" },
+      data: {
         status: "DRAFT",
-        content: planContent,
-      }),
+      },
     });
   });
 
@@ -278,15 +317,21 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -301,10 +346,12 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
 
-    await handleWorkflowSuccess(ctx, false);
-
+    expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
+      where: { id: workstreamId },
+      select: { organizationId: true },
+    });
     expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
       where: {
         artifactId_reportId: {
@@ -315,13 +362,60 @@ describe("handleWorkflowSuccess", () => {
       create: {
         artifactId,
         actionRunId,
+        reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
     });
+  });
+
+  it("throws error when workstream does not exist", async () => {
+    const correlationId = "test-correlation-no-workstream";
+    const artifactId = "artifact-no-workstream";
+    const workstreamId = "ws-no-workstream";
+    const runId = 8_888_888_888;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    };
+
+    await expect(
+      handleWorkflowSuccess(asTx(mockDb), ctx, false)
+    ).rejects.toThrow(
+      `Workstream ${workstreamId} not found - cannot update artifact`
+    );
   });
 
   it("throws error when artifact does not exist", async () => {
@@ -357,16 +451,172 @@ describe("handleWorkflowSuccess", () => {
     ]);
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
-
-    await expect(handleWorkflowSuccess(ctx, false)).rejects.toThrow(
-      `Artifact ${artifactId} not found`
+    await expect(
+      handleWorkflowSuccess(asTx(mockDb), ctx, false)
+    ).rejects.toThrow(
+      `Artifact ${artifactId} not found in organization - cannot update with workflow results`
     );
+  });
+
+  it("persists perf summary when perf.jsonl is present in zip", async () => {
+    const correlationId = "test-correlation-perf";
+    const artifactId = "artifact-perf";
+    const workstreamId = "ws-perf";
+    const runId = 5_555_555_000;
+    const actionRunId = "action-run-perf";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const planContent = "# Plan with perf";
+    const perfLine = JSON.stringify({
+      event: "iteration",
+      run_id: "run-1",
+      iteration: 1,
+      duration_s: 42.5,
+      status: "success",
+      started_at: "2026-01-01T00:00:00Z",
+      ended_at: "2026-01-01T00:00:42Z",
+      claude_exit_code: 0,
+    });
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: planContent,
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "perf.jsonl", content: perfLine },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "test-org-id",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-perf" }),
+      },
+      gitHubActionRunPerformance: {
+        upsert: vi.fn().mockResolvedValue({ id: "perf-record-1" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+
+    expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
+      where: {
+        artifactId_actionRunId: {
+          artifactId,
+          actionRunId,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId,
+        summaryData: expect.objectContaining({ totalIterations: 1 }),
+      },
+      update: {
+        summaryData: expect.objectContaining({ totalIterations: 1 }),
+      },
+    });
+  });
+
+  it("does not persist perf summary when perf.jsonl is absent", async () => {
+    const correlationId = "test-correlation-no-perf";
+    const artifactId = "artifact-no-perf";
+    const workstreamId = "ws-no-perf";
+    const runId = 5_555_555_001;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan without perf",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "test-org-id",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-no-perf" }),
+      },
+      gitHubActionRunPerformance: {
+        upsert: vi.fn(),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+
+    expect(mockDb.gitHubActionRunPerformance.upsert).not.toHaveBeenCalled();
   });
 
   it("logs error when artifactId is missing in context", async () => {
@@ -401,10 +651,15 @@ describe("handleWorkflowSuccess", () => {
       { name: "artifact.zip", data: zipBuffer },
     ]);
 
-    await handleWorkflowSuccess(ctx, false);
+    const mockTx = {
+      workstream: { findUnique: vi.fn() },
+      artifact: { findUnique: vi.fn(), update: vi.fn() },
+    };
 
-    // Should not throw, but should log error and return early
-    expect(mockWithDb).not.toHaveBeenCalled();
+    await handleWorkflowSuccess(asTx(mockTx), ctx, false);
+
+    // Should not throw, but should log error and return early without DB calls
+    expect(mockTx.workstream.findUnique).not.toHaveBeenCalled();
   });
 });
 
@@ -440,20 +695,16 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-123" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "org-123",
           projectId: "project-123",
           generatedBy: "user-123",
-        }),
-        create: vi.fn().mockResolvedValue({
-          id: "pr-artifact-123",
-          type: ArtifactType.Branch,
-          subtype: ArtifactSubtype.PullRequest,
-          title: executionResult.pr_title,
-          externalUrl: executionResult.pr_url,
-          status: ArtifactStatus.Review,
+          slug: undefined,
         }),
       },
       gitHubPullRequest: {
@@ -462,24 +713,25 @@ describe("handleExecutionSuccess", () => {
           number: 42,
         }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-123" }),
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-123" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-123" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-123" }),
       },
     };
 
-    // Mock withDb.tx to call the callback directly with mockTx
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
         workstreamId,
+        organizationId: "org-123",
         repositoryId,
         artifactId: "plan-artifact-123",
         githubId: executionResult.github_id,
@@ -492,17 +744,21 @@ describe("handleExecutionSuccess", () => {
       },
     });
 
-    expect(mockTx.artifact.create).toHaveBeenCalledWith({
+    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: {
         organizationId: "org-123",
         workstreamId,
         projectId: "project-123",
-        type: ArtifactType.Branch,
-        subtype: ArtifactSubtype.PullRequest,
+        type: ExternalLinkType.PullRequest,
         title: executionResult.pr_title,
         externalUrl: executionResult.pr_url,
-        status: ArtifactStatus.Review,
-        generatedBy: "user-123",
+        metadata: {
+          number: 42,
+          githubId: executionResult.github_id,
+          headBranch: executionResult.branch_name,
+          baseBranch: executionResult.base_ref,
+          state: "OPEN",
+        },
       },
     });
 
@@ -519,7 +775,7 @@ describe("handleExecutionSuccess", () => {
           prTitle: executionResult.pr_title,
           branch: executionResult.branch_name,
           runId,
-          documentSlug: undefined,
+          slug: undefined,
         },
       },
     });
@@ -543,34 +799,39 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-456" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
           organizationId: "org-456",
           projectId: "project-456",
           generatedBy: "user-456",
+          slug: undefined,
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-456" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-456" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-456" }),
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-456" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-456" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-456" }),
       },
     };
 
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        organizationId: "org-456",
         number: 99, // Converted to number
         githubId: 99,
       }),
@@ -594,33 +855,37 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({ organizationId: "org-789" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: ctx.artifactId,
           organizationId: "org-789",
           projectId: "project-789",
           generatedBy: "user-789",
+          slug: undefined,
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-789" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-789" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-789" }),
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-789" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-789" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec-789" }),
       },
     };
 
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
-    expect(mockTx.artifact.create).toHaveBeenCalledWith({
+    expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         title: "Symphony: symphony/no-title-feature",
       }),
@@ -648,9 +913,9 @@ describe("handleExecutionSuccess", () => {
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -684,7 +949,7 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -708,16 +973,21 @@ describe("handleExecutionSuccess", () => {
     };
 
     const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-bad-artifact" }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
     };
 
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation((callback: any) => callback(mockTx));
+    mockWithDbTx(mockTx);
 
-    await expect(handleExecutionSuccess(ctx, executionResult)).rejects.toThrow(
+    await expect(
+      handleExecutionSuccess(ctx, executionResult, null)
+    ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
     );
   });
@@ -743,17 +1013,15 @@ describe("handleWorkflowFailure", () => {
       command: "plan",
     };
 
-    const mockDb = {
+    const mockTx = {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-fail-123" }),
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    await handleWorkflowFailure(asTx(mockTx), ctx, htmlUrl);
 
-    await handleWorkflowFailure(ctx, htmlUrl);
-
-    expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
+    expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
         workstreamId,
         type: "GITHUB_ACTION_COMPLETED",
@@ -770,7 +1038,7 @@ describe("handleWorkflowFailure", () => {
     });
 
     // Verify artifact is NOT updated
-    expect(mockDb).not.toHaveProperty("artifact");
+    expect(mockTx).not.toHaveProperty("artifact");
   });
 
   it("handles failure without command in context", async () => {
@@ -787,17 +1055,15 @@ describe("handleWorkflowFailure", () => {
       runId,
     };
 
-    const mockDb = {
+    const mockTx = {
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-fail-456" }),
       },
     };
 
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
+    await handleWorkflowFailure(asTx(mockTx), ctx, htmlUrl);
 
-    await handleWorkflowFailure(ctx, htmlUrl);
-
-    expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
+    expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
         workstreamId,
         type: "GITHUB_ACTION_COMPLETED",
@@ -869,15 +1135,21 @@ describe("processWorkflowCompletion", () => {
     } as WorkflowRunCompletedEvent;
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "test-org-id",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
-          content: null,
+          latestVersion: 1,
+          organizationId: "test-org-id",
         }),
         update: vi.fn().mockResolvedValue({
           id: artifactId,
           status: "DRAFT",
-          content: planContent,
         }),
       },
       workstreamEvent: {
@@ -891,14 +1163,7 @@ describe("processWorkflowCompletion", () => {
       },
     };
 
-    // Mock both withDb (used by handleWorkflowSuccess) and withDb.tx (used by processWorkflowCompletion)
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation(async (callback: any) => {
-        // The transaction callback passes tx, but handleWorkflowSuccess will call withDb again
-        await callback(mockDb);
-      });
+    mockWithDbTx(mockDb);
 
     const response = await processWorkflowCompletion(
       event,
@@ -966,13 +1231,7 @@ describe("processWorkflowCompletion", () => {
       },
     };
 
-    // Mock both withDb (used by handleWorkflowFailure) and withDb.tx (used by processWorkflowCompletion)
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation(async (callback: any) => {
-        await callback(mockDb);
-      });
+    mockWithDbTx(mockDb);
 
     const response = await processWorkflowCompletion(
       event,
@@ -1093,20 +1352,29 @@ describe("processWorkflowCompletion", () => {
     } as WorkflowRunCompletedEvent;
 
     const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-exec",
+        }),
+      },
       artifact: {
         findUnique: vi.fn().mockResolvedValue({
           id: artifactId,
           organizationId: "org-exec",
           projectId: "project-exec",
           generatedBy: "user-exec",
+          slug: undefined,
         }),
-        create: vi.fn().mockResolvedValue({ id: "pr-artifact-exec" }),
       },
       gitHubPullRequest: {
         create: vi.fn().mockResolvedValue({ id: "pr-exec" }),
       },
-      previewDeployment: {
-        upsert: vi.fn().mockResolvedValue({ id: "preview-exec" }),
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-exec" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-exec" }),
       },
       workstreamEvent: {
         create: vi.fn().mockResolvedValue({ id: "event-exec" }),
@@ -1119,13 +1387,7 @@ describe("processWorkflowCompletion", () => {
       },
     };
 
-    // Mock both withDb (potentially used) and withDb.tx (used by both handlers)
-    mockWithDb.mockImplementation((callback: any) => callback(mockDb));
-    (mockWithDb as any).tx = vi
-      .fn()
-      .mockImplementation(async (callback: any) => {
-        await callback(mockDb);
-      });
+    mockWithDbTx(mockDb);
 
     const response = await processWorkflowCompletion(
       event,
@@ -1134,11 +1396,9 @@ describe("processWorkflowCompletion", () => {
     );
 
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
-    expect(mockDb.artifact.create).toHaveBeenCalledWith({
+    expect(mockDb.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        type: ArtifactType.Branch,
-        subtype: ArtifactSubtype.PullRequest,
-        status: ArtifactStatus.Review,
+        type: ExternalLinkType.PullRequest,
       }),
     });
 

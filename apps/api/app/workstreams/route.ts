@@ -2,7 +2,7 @@ import type {
   Workstream,
   WorkstreamState,
 } from "@repo/api/src/types/workstream";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -14,7 +14,11 @@ import { projectsService } from "../projects/service";
 import { workstreamsService } from "./service";
 import { createWorkstreamValidator } from "./validators";
 
-export const GET = withAuth<Workstream[], "/workstreams">(
+/**
+ * GET /workstreams - List workstreams for a project
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
+ */
+export const GET = withAnyAuth<Workstream[], "/workstreams">(
   async ({ user }, request) => {
     try {
       const { searchParams } = new URL(request.url);
@@ -51,7 +55,7 @@ export const GET = withAuth<Workstream[], "/workstreams">(
   }
 );
 
-export const POST = withAuth<Workstream, "/workstreams">(
+export const POST = withAnyAuth<Workstream, "/workstreams">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -81,5 +85,6 @@ export const POST = withAuth<Workstream, "/workstreams">(
     } catch (error) {
       return errorResponse("Failed to create workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -10,46 +10,36 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
-  DownloadIcon,
   MoreHorizontalIcon,
   PencilIcon,
   SettingsIcon,
-  SparklesIcon,
   TrashIcon,
 } from "lucide-react";
 import { EditorHeader } from "@/components/artifact-editor/editor-header";
 
 type IssueEditorHeaderProps = {
-  issue: ArtifactWithWorkstream;
-  status: string;
+  issue: IssueWithWorkstream;
   isSaving: boolean;
   lastSaved: Date;
   showMetadataPanel: boolean;
   onToggleMetadataPanel: () => void;
-  onGeneratePlan: () => void;
   onSave: () => void;
   onRename: () => void;
-  onExport: () => void;
   onDelete: () => void;
-  versionDisplay?: React.ReactNode;
   isPending?: boolean;
 };
 
 export function IssueEditorHeader({
   issue,
-  status,
   isSaving,
   lastSaved,
   showMetadataPanel,
   onToggleMetadataPanel,
-  onGeneratePlan,
   onSave,
   onRename,
-  onExport,
   onDelete,
-  versionDisplay,
   isPending = false,
-}: IssueEditorHeaderProps) {
+}: Readonly<IssueEditorHeaderProps>) {
   const hasProject = Boolean(issue.project?.teams?.[0]?.id);
   const backHref = hasProject
     ? `/teams/${issue.project?.teams?.[0]?.id}/projects/${issue.project?.id}`
@@ -67,11 +57,6 @@ export function IssueEditorHeader({
         Details
       </Button>
 
-      <Button onClick={onGeneratePlan} size="sm" variant="default">
-        <SparklesIcon className="mr-2 h-4 w-4" />
-        Generate Plan
-      </Button>
-
       <Button disabled={isPending} onClick={onSave}>
         {isSaving ? "Saving..." : "Save"}
       </Button>
@@ -86,10 +71,6 @@ export function IssueEditorHeader({
           <DropdownMenuItem onClick={onRename}>
             <PencilIcon className="mr-2 h-4 w-4" />
             Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={onExport}>
-            <DownloadIcon className="mr-2 h-4 w-4" />
-            Export .md
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -111,9 +92,8 @@ export function IssueEditorHeader({
       isSaving={isSaving}
       lastSaved={lastSaved}
       rightActions={rightActions}
-      status={status}
-      title={issue.fileName ?? issue.title}
-      versionDisplay={versionDisplay}
+      status={issue.status}
+      title={issue.title}
     />
   );
 }

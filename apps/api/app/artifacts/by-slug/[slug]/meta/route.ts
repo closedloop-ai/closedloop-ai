@@ -4,17 +4,15 @@ import { NextResponse } from "next/server";
 type RouteParams = { params: Promise<{ slug: string }> };
 
 /**
- * Public endpoint returning only artifact title and type for a given documentSlug.
- * No authentication required — the slug is a random nanoid(14) that acts as a
- * share token. Used by generateMetadata() so link previews (Slack, social media)
- * show the actual artifact title instead of generic branding.
+ * Public endpoint returning only artifact title and type for a given artifact slug.
+ * No authentication required.
  */
-export async function GET(_request: Request, { params }: RouteParams) {
+export async function GET(_: Request, { params }: RouteParams) {
   const { slug } = await params;
 
   const artifact = await withDb((db) =>
     db.artifact.findFirst({
-      where: { documentSlug: slug, isLatest: true },
+      where: { slug },
       select: { title: true, type: true },
     })
   );

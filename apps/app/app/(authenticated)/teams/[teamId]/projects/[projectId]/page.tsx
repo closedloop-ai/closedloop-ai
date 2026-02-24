@@ -1,6 +1,10 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
+import {
+  type ArtifactStatus,
+  ArtifactType,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
@@ -17,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
@@ -24,15 +29,15 @@ import {
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
-  AlertCircleIcon,
-  BugIcon,
   ChevronDownIcon,
+  ClipboardListIcon,
   FileTextIcon,
-  ListTodoIcon,
   Loader2Icon,
+  SearchIcon,
 } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
   useArtifactsByProject,
@@ -47,15 +52,6 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
-import {
-  mapArtifactStatusToDisplay,
-  mapDisplayStatusToArtifact,
-} from "@/lib/project-constants";
-import type {
-  ArtifactDisplayStatus,
-  ProjectArtifact,
-  ProjectArtifactSubtype,
-} from "@/types/teams";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
@@ -73,26 +69,16 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
   "MERGING",
 ]);
 
-/**
- * Map backend ArtifactSubtype to frontend ProjectArtifactSubtype.
- * PULL_REQUEST artifacts are displayed under the BRANCH section.
- */
-function toProjectArtifactSubtype(subtype: string): ProjectArtifactSubtype {
-  if (subtype === "PULL_REQUEST") {
-    return "BRANCH";
-  }
-  return subtype as ProjectArtifactSubtype;
-}
-
 export default function ProjectDetailPage() {
   const params = useParams();
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [selectedArtifactSubtype, setSelectedArtifactSubtype] =
-    useState<ArtifactSubtype>(ArtifactSubtype.Prd);
+  const [selectedArtifactType, setSelectedArtifactType] =
+    useState<ArtifactType>(ArtifactType.Prd);
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
+  const [filterText, setFilterText] = useState("");
 
   // Queries
   const {
@@ -112,47 +98,27 @@ export default function ProjectDetailPage() {
   useMergeNotification(activityData, projectId, teamId);
 
   // Poll artifacts when any workstream is actively running (e.g., execution in progress).
-  // This ensures webhook-created artifacts (like PRs) appear without a manual refresh.
-  // Uses TanStack Query's function form of refetchInterval to access query data directly,
-  // avoiding a circular dependency between the memo and the query declaration.
-  const { data: artifactsData = [], isLoading: loadingArtifacts } =
-    useArtifactsByProject(projectId, true, {
+  const { data: artifacts = [], isLoading: loadingArtifacts } =
+    useArtifactsByProject(projectId, {
+      staleTime: 4000,
       refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        const hasActive = data.some(
+        const data = query.state.data ?? [];
+        const hasActiveWorkstream = data.some(
           (a) =>
             a.workstream?.state &&
             ACTIVE_WORKSTREAM_STATES.has(a.workstream.state)
         );
-        return hasActive ? 5000 : false;
+        const hasActiveGeneration = data.some(
+          (a) =>
+            a.generationStatus &&
+            isActiveGenerationStatus(a.generationStatus.status)
+        );
+        return hasActiveWorkstream || hasActiveGeneration ? 5000 : false;
       },
     });
 
   const team = teamData ? { id: teamData.id, name: teamData.name } : null;
   const activities = activityData?.activities ?? [];
-
-  // Map API artifacts to ProjectArtifact format
-  const artifacts: ProjectArtifact[] = useMemo(
-    () =>
-      artifactsData.map((artifact) => ({
-        id: artifact.id,
-        documentSlug: artifact.documentSlug,
-        name: artifact.title,
-        subtype: toProjectArtifactSubtype(artifact.subtype),
-        status: mapArtifactStatusToDisplay(artifact.status),
-        parentId: artifact.parentId,
-        link: artifact.externalUrl || undefined,
-        previewUrl: artifact.previewDeployment?.url ?? undefined,
-        pullRequest: artifact.pullRequest ?? null,
-        workstreamId: artifact.workstreamId,
-        workstreamTitle: artifact.workstream?.title,
-        workstreamState: artifact.workstream?.state,
-      })),
-    [artifactsData]
-  );
 
   const loading =
     loadingTeam || loadingProject || loadingActivity || loadingArtifacts;
@@ -169,7 +135,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updatePriorityMutation.mutate({ projectId: project.id, priority });
   };
 
@@ -177,7 +142,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updateOwnerMutation.mutate({ projectId: project.id, ownerId });
   };
 
@@ -185,7 +149,6 @@ export default function ProjectDetailPage() {
     if (!project) {
       return;
     }
-
     updateTargetDateMutation.mutate({
       projectId: project.id,
       targetDate: date,
@@ -194,17 +157,13 @@ export default function ProjectDetailPage() {
 
   const handleArtifactStatusChange = (
     artifactId: string,
-    status: ArtifactDisplayStatus
+    status: ArtifactStatus
   ) => {
-    const apiStatus = mapDisplayStatusToArtifact(status);
-    updateArtifactMutation.mutate({
-      id: artifactId,
-      status: apiStatus as "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED",
-    });
+    updateArtifactMutation.mutate({ id: artifactId, status });
   };
 
-  const handleCreateArtifact = (subtype: ArtifactSubtype) => {
-    setSelectedArtifactSubtype(subtype);
+  const handleCreateArtifact = (type: ArtifactType) => {
+    setSelectedArtifactType(type);
     setCreateModalOpen(true);
   };
 
@@ -257,38 +216,18 @@ export default function ProjectDetailPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Prd)}
+                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
               >
                 <FileTextIcon className="mr-2 h-4 w-4" />
                 PRD
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() =>
-                  handleCreateArtifact(ArtifactSubtype.ImplementationPlan)
+                  handleCreateArtifact(ArtifactType.ImplementationPlan)
                 }
               >
-                <ListTodoIcon className="mr-2 h-4 w-4" />
+                <ClipboardListIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() =>
-                  handleCreateArtifact(ArtifactSubtype.ImplementationStrategy)
-                }
-              >
-                <ListTodoIcon className="mr-2 h-4 w-4" />
-                Implementation Strategy
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Issue)}
-              >
-                <AlertCircleIcon className="mr-2 h-4 w-4" />
-                Issue
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactSubtype.Bug)}
-              >
-                <BugIcon className="mr-2 h-4 w-4" />
-                Bug
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -303,11 +242,10 @@ export default function ProjectDetailPage() {
                 initialTitle={project.name}
                 projectId={project.id}
               />
-              {project.description ? (
-                <p className="mt-1 text-muted-foreground">
-                  {project.description}
-                </p>
-              ) : null}
+              <EditableProjectDescription
+                initialDescription={project.description ?? ""}
+                projectId={project.id}
+              />
             </div>
             <div className="mb-4 flex items-center justify-end">
               <ToggleGroup
@@ -323,23 +261,43 @@ export default function ProjectDetailPage() {
                 <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
               </ToggleGroup>
             </div>
+            {artifacts.length > 0 && (
+              <div className="mb-4">
+                <div className="relative">
+                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <Input
+                    aria-label="Filter artifacts"
+                    className="pl-9"
+                    onChange={(e) => setFilterText(e.target.value)}
+                    placeholder="Filter artifacts..."
+                    value={filterText}
+                  />
+                </div>
+              </div>
+            )}
             {viewMode === "type" ? (
               <ArtifactsTable
                 artifacts={artifacts}
+                filterText={filterText}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             ) : (
               <ArtifactsThreadedView
                 artifacts={artifacts}
+                filterText={filterText}
                 onDelete={handleDeleteArtifact}
                 onStatusChange={handleArtifactStatusChange}
+                projectId={projectId}
               />
             )}
           </div>
 
           {/* Right Sidebar */}
-          <div className="w-[300px] space-y-4 overflow-y-auto border-l p-4">
+          <div className="w-[300px] space-y-4 border-l p-4">
             <PropertiesPanel
               onUpdateOwner={handleUpdateOwner}
               onUpdatePriority={handleUpdatePriority}
@@ -352,7 +310,7 @@ export default function ProjectDetailPage() {
         </div>
       </main>
       <CreateArtifactModal
-        artifactSubtype={selectedArtifactSubtype}
+        artifactType={selectedArtifactType}
         onOpenChange={setCreateModalOpen}
         open={createModalOpen}
         projectId={projectId}

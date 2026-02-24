@@ -215,6 +215,43 @@ describe("createResolveRoomsInfo", () => {
       expect(result[0]?.name).toBe("my-document");
     });
 
+    it("falls back to slug when server returns name matching slug (null auth token scenario)", async () => {
+      const roomId = `${organizationId}:artifact:my-document`;
+      // When the server cannot enrich names (e.g., null auth token causes fetchBatchMeta to
+      // return {}, so no title is available), the server returns the room with name equal to
+      // the slug. The client should surface this slug-based name as-is.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            { roomId, name: "my-document", url: "/artifacts/my-document" },
+          ]),
+      });
+
+      const resolver = createResolveRoomsInfo(organizationId);
+      const result = await resolver({ roomIds: [roomId] });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toBe("my-document");
+      expect(result[0]?.url).toBe("/artifacts/my-document");
+    });
+
+    it("converts null url from server response to undefined in RoomInfo (Q-002)", async () => {
+      const roomId = `${organizationId}:artifact:my-doc`;
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve([{ roomId, name: "My Doc", url: null }]),
+      });
+
+      const resolver = createResolveRoomsInfo(organizationId);
+      const result = await resolver({ roomIds: [roomId] });
+
+      expect(result).toHaveLength(1);
+      expect(result[0]?.name).toBe("My Doc");
+      // null from server must be coerced to undefined, not kept as null
+      expect(result[0]?.url).toBeUndefined();
+    });
+
     it("deduplicates room IDs in server request", async () => {
       const roomId = `${organizationId}:artifact:same-doc`;
       mockFetch.mockResolvedValueOnce({

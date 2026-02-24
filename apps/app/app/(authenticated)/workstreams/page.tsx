@@ -5,7 +5,7 @@ export default function WorkstreamsPage() {
   return (
     <>
       <Header page="Workstreams" pages={["Workstreams"]} />
-      <main className="flex flex-1 flex-col gap-4 p-4 pt-0">
+      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="font-bold text-2xl">Workstreams</h1>

@@ -1,25 +1,18 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PerfSummary } from "@repo/api/src/types/performance";
+import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
-
-export type ExecutionResult = {
-  has_changes: boolean;
-  pr_url: string;
-  pr_number: string | number; // GitHub Actions outputs as string
-  pr_title?: string; // Optional - may not be in workflow output
-  branch_name: string;
-  base_ref?: string; // Workflow uses base_ref, not base_branch
-  base_branch?: string; // Legacy/alternative field name
-  github_id?: number;
-  commit_sha?: string;
-};
+import type { ExecutionResult } from "./types";
 
 export type ZipContent = {
   planContent: string | null;
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
+  perfSummary: PerfSummary | null;
   entries: { name: string; data: Buffer }[];
 };
 
@@ -96,45 +89,34 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
   let judgesReport: JudgesReport | null = null;
+  let codeJudgesReport: JudgesReport | null = null;
+  let perfSummary: PerfSummary | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
       continue;
     }
 
-    const content = entry.getData();
+    const data = entry.getData();
     const name = entry.entryName;
-    entries.push({ name, data: content });
+    entries.push({ name, data });
 
-    // Priority 1: plan.json from experimental plugin
-    if (name.endsWith("plan.json") && !planContent) {
-      planContent = parsePlanJson(content, name);
-    }
-    // Priority 2: implementation-plan.md (legacy, only if plan.json not found)
-    else if (name.endsWith("implementation-plan.md") && !planContent) {
-      planContent = content.toString("utf-8");
-      log.info(
-        `Found implementation plan: ${name} (${planContent.length} chars)`
-      );
-    }
-    // Check for questions files (both old and new names)
-    else if (
-      name.endsWith("open-questions.md") ||
-      name.endsWith("investigation-questions.md")
-    ) {
-      questionsContent = content.toString("utf-8");
-      log.info(
-        `Found questions file: ${name} (${questionsContent.length} chars)`
-      );
-    }
-    // Check for execution result
-    else if (name.endsWith("execution-result.json")) {
-      executionResult = parseExecutionResult(content, name);
-    }
-    // Check for judges report
-    else if (name.endsWith("judges.json")) {
-      judgesReport = parseJudgesReport(content, name);
-    }
+    const contentResult = parseZipEntryContent({
+      data,
+      name,
+      planContent,
+      questionsContent,
+      executionResult,
+      judgesReport,
+      codeJudgesReport,
+      perfSummary,
+    });
+    planContent = contentResult.planContent;
+    questionsContent = contentResult.questionsContent;
+    executionResult = contentResult.executionResult;
+    judgesReport = contentResult.judgesReport;
+    codeJudgesReport = contentResult.codeJudgesReport;
+    perfSummary = contentResult.perfSummary;
   }
 
   return {
@@ -142,6 +124,89 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     questionsContent,
     executionResult,
     judgesReport,
+    codeJudgesReport,
+    perfSummary,
     entries,
+  };
+}
+
+type ZipEntryContentArgs = {
+  data: Buffer;
+  name: string;
+  planContent: string | null;
+  questionsContent: string | null;
+  executionResult: ExecutionResult | null;
+  judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
+  perfSummary: PerfSummary | null;
+};
+
+function parseZipEntryContent(
+  args: ZipEntryContentArgs
+): Omit<ZipContent, "entries"> {
+  const {
+    data,
+    name,
+    planContent: currentPlan,
+    questionsContent: currentQuestions,
+    executionResult: currentExecutionResult,
+    judgesReport: currentJudgesReport,
+    codeJudgesReport: currentCodeJudgesReport,
+    perfSummary: currentPerfSummary,
+  } = args;
+
+  let planContent = currentPlan;
+  let questionsContent = currentQuestions;
+  let executionResult = currentExecutionResult;
+  let judgesReport = currentJudgesReport;
+  let codeJudgesReport = currentCodeJudgesReport;
+  let perfSummary = currentPerfSummary;
+
+  // Priority 1: plan.json from experimental plugin
+  if (name.endsWith("plan.json") && !planContent) {
+    planContent = parsePlanJson(data, name);
+  }
+  // Priority 2: implementation-plan.md (legacy, only if plan.json not found)
+  else if (name.endsWith("implementation-plan.md") && !planContent) {
+    planContent = data.toString("utf-8");
+    log.info(
+      `Found implementation plan: ${name} (${planContent.length} chars)`
+    );
+  }
+  // Check for questions files (both old and new names)
+  else if (
+    name.endsWith("open-questions.md") ||
+    name.endsWith("investigation-questions.md")
+  ) {
+    questionsContent = data.toString("utf-8");
+    log.info(
+      `Found questions file: ${name} (${questionsContent.length} chars)`
+    );
+  }
+  // Check for execution result
+  else if (name.endsWith("execution-result.json")) {
+    executionResult = parseExecutionResult(data, name);
+  }
+  // Check for code judges report (must come before generic judges.json)
+  else if (name.endsWith("code-judges.json")) {
+    codeJudgesReport = parseJudgesReport(data, name);
+  }
+  // Check for judges report
+  else if (name.endsWith("judges.json")) {
+    judgesReport = parseJudgesReport(data, name);
+  }
+  // Check for perf summary
+  else if (name.endsWith("perf.jsonl")) {
+    perfSummary = parsePerfSummary(data);
+    log.info(`Found perf.jsonl: ${name}`);
+  }
+
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    codeJudgesReport,
+    perfSummary,
   };
 }

@@ -1,3 +1,4 @@
+import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
 import {
   differenceInDays,
   differenceInHours,
@@ -5,9 +6,6 @@ import {
   format,
   parseISO,
 } from "date-fns";
-
-// Regex for date-only strings (YYYY-MM-DD)
-const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * Parse a date string as a local date (no timezone shift).
