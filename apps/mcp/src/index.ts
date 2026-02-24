@@ -482,6 +482,22 @@ function hasWriteScope(scopes: string[]): boolean {
   return scopes.includes("write");
 }
 
+/**
+ * OAuth 2.1: resolve the effective scope set by intersecting the requested
+ * scopes with the scopes available on the API key.  Returns `null` when no
+ * overlap exists (the caller should reject with `invalid_scope`).
+ */
+function resolveGrantedScopes(
+  requestedScopes: string[],
+  keyScopes: string[]
+): string[] | null {
+  if (requestedScopes.length === 0) {
+    return keyScopes;
+  }
+  const intersection = requestedScopes.filter((s) => keyScopes.includes(s));
+  return intersection.length > 0 ? intersection : null;
+}
+
 let lastOAuthCleanupMs = 0;
 const OAUTH_CLEANUP_LOCK_ID = 8_173_421;
 
@@ -1607,6 +1623,19 @@ function parseFormUrlEncoded(body: string): Record<string, string> {
   return Object.fromEntries(params.entries());
 }
 
+function normalizeOAuthTokenBody(input: unknown): OAuthTokenBody | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return null;
+  }
+  const result: OAuthTokenBody = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 async function readRequestBody(
   req: import("node:http").IncomingMessage
 ): Promise<string> {
@@ -1996,11 +2025,12 @@ async function handleOAuthAuthorize(
 
   const requestedScopes = parseScopeParam(url.searchParams.get("scope") ?? "");
   const keyScopes = effectiveKeyScopes(context.scopes);
-  const scopes = requestedScopes.length > 0 ? requestedScopes : keyScopes;
-  if (scopes.some((scope) => !keyScopes.includes(scope))) {
+  const scopes = resolveGrantedScopes(requestedScopes, keyScopes);
+  if (scopes === null) {
     redirectWithParams(res, redirectUri, {
       error: "invalid_scope",
-      error_description: "Requested scope is not granted for this key",
+      error_description:
+        "None of the requested scopes are granted for this key",
       state,
     });
     return;
@@ -2061,13 +2091,12 @@ async function handleClientCredentialsGrant(
 
   const keyScopes = effectiveKeyScopes(context.scopes);
   const requestedScopes = parseScopeParam(body.scope);
-  const scopes = requestedScopes.length > 0 ? requestedScopes : keyScopes;
-  const hasInvalidScope = scopes.some((scope) => !keyScopes.includes(scope));
-
-  if (hasInvalidScope) {
+  const scopes = resolveGrantedScopes(requestedScopes, keyScopes);
+  if (scopes === null) {
     sendOAuthJson(res, 400, {
       error: "invalid_scope",
-      error_description: "Requested scope is not granted for this key",
+      error_description:
+        "None of the requested scopes are granted for this key",
     });
     return;
   }
@@ -2085,18 +2114,10 @@ async function handleAuthorizationCodeGrant(
   body: OAuthTokenBody,
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  if (
-    !body.client_id ||
-    (!body.client_id.startsWith("dyn_") && body.client_id !== OAUTH_CLIENT_ID)
-  ) {
-    sendInvalidClient(res, "Invalid client_id");
-    return;
-  }
-
-  if (!(body.code && body.redirect_uri && body.code_verifier)) {
+  if (!(body.code && body.code_verifier)) {
     sendOAuthJson(res, 400, {
       error: "invalid_request",
-      error_description: "code, redirect_uri, and code_verifier are required",
+      error_description: "code and code_verifier are required",
     });
     return;
   }
@@ -2114,7 +2135,15 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  if (codeRecord.clientId !== body.client_id) {
+  const clientId = body.client_id ?? codeRecord.clientId;
+  if (
+    !clientId ||
+    (!clientId.startsWith("dyn_") && clientId !== OAUTH_CLIENT_ID)
+  ) {
+    sendInvalidClient(res, "Invalid client_id");
+    return;
+  }
+  if (codeRecord.clientId !== clientId) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code was not issued to this client",
@@ -2122,7 +2151,8 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  if (codeRecord.redirectUri !== body.redirect_uri) {
+  const redirectUri = body.redirect_uri ?? codeRecord.redirectUri;
+  if (codeRecord.redirectUri !== redirectUri) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "redirect_uri does not match authorization request",
@@ -2196,8 +2226,8 @@ async function handleAuthorizationCodeGrant(
       currentCode.id !== codeRecord.id ||
       currentCode.consumedAt !== null ||
       currentCode.expiresAt <= now ||
-      currentCode.clientId !== body.client_id ||
-      currentCode.redirectUri !== body.redirect_uri
+      currentCode.clientId !== clientId ||
+      currentCode.redirectUri !== redirectUri
     ) {
       return null;
     }
@@ -2250,14 +2280,6 @@ async function handleRefreshTokenGrant(
   body: OAuthTokenBody,
   res: import("node:http").ServerResponse
 ): Promise<void> {
-  if (
-    !body.client_id ||
-    (!body.client_id.startsWith("dyn_") && body.client_id !== OAUTH_CLIENT_ID)
-  ) {
-    sendInvalidClient(res, "Invalid client_id");
-    return;
-  }
-
   if (!body.refresh_token?.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)) {
     sendOAuthJson(res, 400, {
       error: "invalid_request",
@@ -2277,7 +2299,15 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  if (refreshRecord.clientId !== body.client_id) {
+  const clientId = body.client_id ?? refreshRecord.clientId;
+  if (
+    !clientId ||
+    (!clientId.startsWith("dyn_") && clientId !== OAUTH_CLIENT_ID)
+  ) {
+    sendInvalidClient(res, "Invalid client_id");
+    return;
+  }
+  if (refreshRecord.clientId !== clientId) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Refresh token was not issued to this client",
@@ -2338,7 +2368,7 @@ async function handleRefreshTokenGrant(
 
   const rotated = await rotateRefreshToken(
     body.refresh_token,
-    body.client_id,
+    clientId,
     scopes
   );
   if (rotated.status === "reuse_detected") {
@@ -2404,17 +2434,35 @@ async function handleOAuthToken(
   }
 
   const contentType = req.headers["content-type"] ?? "";
-  if (!contentType.includes("application/x-www-form-urlencoded")) {
+  const isFormEncoded = contentType.includes(
+    "application/x-www-form-urlencoded"
+  );
+  const isJson = contentType.includes("application/json");
+  if (!(isFormEncoded || isJson)) {
     sendOAuthJson(res, 415, {
       error:
-        "Unsupported Media Type. Expected: application/x-www-form-urlencoded",
+        "Unsupported Media Type. Expected: application/x-www-form-urlencoded or application/json",
     });
     return;
   }
 
-  let rawBody: string;
+  let body: OAuthTokenBody;
   try {
-    rawBody = await readRequestBody(req);
+    if (isFormEncoded) {
+      const rawBody = await readRequestBody(req);
+      body = parseFormUrlEncoded(rawBody);
+    } else {
+      const parsedBody = await readJsonBody<unknown>(req);
+      const normalized = normalizeOAuthTokenBody(parsedBody);
+      if (!normalized) {
+        sendOAuthJson(res, 400, {
+          error: "invalid_request",
+          error_description: "Malformed JSON request body",
+        });
+        return;
+      }
+      body = normalized;
+    }
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
       sendOAuthJson(res, 413, {
@@ -2425,7 +2473,6 @@ async function handleOAuthToken(
     }
     throw error;
   }
-  const body = parseFormUrlEncoded(rawBody);
 
   if (body.grant_type === "client_credentials") {
     await handleClientCredentialsGrant(body, res);
@@ -2606,6 +2653,7 @@ const GET_ROUTES: Record<string, HttpRouteHandler> = {
     sendJson(res, 200, {
       resource: MCP_SERVER_URL,
       authorization_servers: [MCP_SERVER_URL],
+      scopes_supported: [...API_KEY_SCOPES],
       bearer_methods_supported: ["header"],
       resource_documentation: "https://docs.closedloop.ai/mcp",
     });
@@ -2650,6 +2698,15 @@ async function dispatchHttpRequest(
 ): Promise<boolean> {
   const parsedUrl = new URL(req.url ?? "/", MCP_SERVER_URL);
   const pathname = parsedUrl.pathname;
+  if (
+    pathname === "/mcp" ||
+    pathname.startsWith("/oauth/") ||
+    pathname.startsWith("/.well-known/oauth-")
+  ) {
+    console.log(
+      `[http] method=${req.method ?? ""} path=${pathname} origin=${req.headers.origin ?? ""} host=${req.headers.host ?? ""}`
+    );
+  }
 
   if (pathname === "/oauth/register") {
     await handleOAuthRegister(req, res);
@@ -2755,6 +2812,9 @@ export function createHttpServer(): import("node:http").Server {
 
     // Reject cross-origin requests from disallowed origins (prevents blind CSRF)
     if (req.headers.origin && !corsAllowed) {
+      console.warn(
+        `[mcp] cors-blocked origin=${req.headers.origin} host=${req.headers.host ?? ""} method=${req.method ?? ""} path=${req.url ?? ""}`
+      );
       res.writeHead(403);
       res.end();
       return;
