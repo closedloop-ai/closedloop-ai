@@ -336,6 +336,7 @@ export function useUnfavoriteProject() {
 }
 
 export function useToggleFavorite() {
+  const queryClient = useQueryClient();
   const favorite = useFavoriteProject();
   const unfavorite = useUnfavoriteProject();
 
@@ -351,6 +352,9 @@ export function useToggleFavorite() {
         return unfavorite.mutateAsync(projectId);
       }
       return favorite.mutateAsync(projectId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
   });
 }

@@ -10,9 +10,11 @@ vi.mock("@/hooks/queries/use-projects", () => ({
   useFavoriteProjects: () => mockUseFavoriteProjects(),
 }));
 
-// Mock next/navigation
+// Mock next/navigation — must include all three hooks per CLAUDE.md convention
 vi.mock("next/navigation", () => ({
   usePathname: () => "/teams/team-1/projects/project-1",
+  useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
 }));
 
 // Mock sidebar components
@@ -140,6 +142,6 @@ describe("SidebarFavorites", () => {
     render(<SidebarFavorites />);
 
     const link = screen.getByText("Orphan Project").closest("a");
-    expect(link?.getAttribute("href")).toBe("/projects/project-orphan");
+    expect(link?.getAttribute("href")).toBe("/projects");
   });
 });

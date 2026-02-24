@@ -44,7 +44,7 @@ export function SidebarFavorites() {
               const teamId = project.teams[0]?.id;
               const href = teamId
                 ? `/teams/${teamId}/projects/${project.id}`
-                : `/projects/${project.id}`;
+                : "/projects";
               const isActive = pathname === href;
 
               return (

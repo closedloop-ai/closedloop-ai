@@ -32,6 +32,7 @@ export function ProjectRowActions({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuItem
+          disabled={toggleFavorite.isPending}
           onClick={() => toggleFavorite.mutate({ projectId, isFavorite })}
         >
           <StarIcon

@@ -379,6 +379,7 @@ model FavoriteProject {
 
   @@unique([userId, projectId])
   @@index([userId])
+  @@index([projectId])
   @@map("favorite_projects")
 }
 

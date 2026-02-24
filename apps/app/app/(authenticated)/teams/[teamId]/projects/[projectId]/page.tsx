@@ -221,6 +221,7 @@ export default function ProjectDetailPage() {
         </Breadcrumb>
         <Button
           className="ml-1 h-6 w-6"
+          disabled={toggleFavorite.isPending}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -249,6 +250,7 @@ export default function ProjectDetailPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem
+                disabled={toggleFavorite.isPending}
                 onClick={() =>
                   toggleFavorite.mutate({
                     projectId: project.id,
