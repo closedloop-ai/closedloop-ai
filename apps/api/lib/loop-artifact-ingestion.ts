@@ -171,11 +171,13 @@ export async function ingestPlanArtifacts(
         },
         create: {
           artifactId,
+          loopId: loop.id,
           reportType: PrismaEvaluationReportType.PLAN,
           reportId: artifacts.judgesReport!.report_id,
           reportData: artifacts.judgesReport!,
         },
         update: {
+          loopId: loop.id,
           reportType: PrismaEvaluationReportType.PLAN,
           reportData: artifacts.judgesReport!,
         },
