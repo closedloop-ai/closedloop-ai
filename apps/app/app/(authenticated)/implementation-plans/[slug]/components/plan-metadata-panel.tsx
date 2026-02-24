@@ -13,6 +13,7 @@ import type { User } from "@repo/design-system/components/ui/user-select-popover
 import { ExternalLinkIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import {
@@ -193,6 +194,8 @@ export function PlanMetadataPanel({
           </CollapsibleSection>
 
           <CommentsSection artifactId={plan.id} />
+
+          <AttachmentsSection artifactId={plan.id} />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog
