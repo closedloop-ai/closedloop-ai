@@ -33,10 +33,14 @@ import {
   ClipboardListIcon,
   FileTextIcon,
   Loader2Icon,
+  MoreHorizontalIcon,
   SearchIcon,
+  StarIcon,
+  TrashIcon,
 } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
+import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
@@ -45,8 +49,11 @@ import {
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import {
+  useDeleteProject,
+  useIsFavorite,
   useProject,
   useProjectActivity,
+  useToggleFavorite,
   useUpdateProjectOwner,
   useUpdateProjectPriority,
   useUpdateProjectTargetDate,
@@ -79,6 +86,12 @@ export default function ProjectDetailPage() {
     useState<ArtifactType>(ArtifactType.Prd);
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
   const [filterText, setFilterText] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  const router = useRouter();
+  const isFavorite = useIsFavorite(projectId);
+  const toggleFavorite = useToggleFavorite();
+  const deleteProjectMutation = useDeleteProject();
 
   // Queries
   const {
@@ -206,7 +219,57 @@ export default function ProjectDetailPage() {
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
-        <div className="ml-auto">
+        <Button
+          className="ml-1 h-6 w-6"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleFavorite.mutate({
+              projectId: project.id,
+              isFavorite,
+            });
+          }}
+          size="icon"
+          variant="ghost"
+        >
+          <StarIcon
+            className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
+          />
+          <span className="sr-only">
+            {isFavorite ? "Remove from favorites" : "Add to favorites"}
+          </span>
+        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="ghost">
+                <MoreHorizontalIcon className="h-4 w-4" />
+                <span className="sr-only">Actions</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() =>
+                  toggleFavorite.mutate({
+                    projectId: project.id,
+                    isFavorite,
+                  })
+                }
+              >
+                <StarIcon
+                  className={`mr-2 h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
+                />
+                {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                onClick={() => setDeleteDialogOpen(true)}
+              >
+                <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button>
@@ -314,6 +377,18 @@ export default function ProjectDetailPage() {
         onOpenChange={setCreateModalOpen}
         open={createModalOpen}
         projectId={projectId}
+      />
+      <DeleteConfirmationDialog
+        isPending={deleteProjectMutation.isPending}
+        itemName={project.name}
+        onConfirm={async () => {
+          await deleteProjectMutation.mutateAsync(project.id);
+          router.push(`/teams/${teamId}/projects`);
+          return true;
+        }}
+        onOpenChange={setDeleteDialogOpen}
+        open={deleteDialogOpen}
+        title="Project"
       />
     </>
   );

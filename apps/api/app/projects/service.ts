@@ -198,6 +198,64 @@ export const projectsService = {
   },
 
   /**
+   * Add a project to the user's favorites (idempotent).
+   */
+  addFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.upsert({
+        where: { userId_projectId: { userId, projectId } },
+        create: { userId, projectId },
+        update: {},
+      });
+      return { favorited: true };
+    });
+  },
+
+  /**
+   * Remove a project from the user's favorites.
+   */
+  removeFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.deleteMany({
+        where: { userId, projectId },
+      });
+      return { favorited: false };
+    });
+  },
+
+  /**
+   * Find all favorite projects for a user within an organization.
+   */
+  findFavoritesByUser(userId: string, organizationId: string) {
+    return withDb((db) =>
+      db.project.findMany({
+        where: {
+          organizationId,
+          favoritedBy: { some: { userId } },
+        },
+        include: PROJECT_DETAIL_INCLUDE,
+        orderBy: { updatedAt: "desc" },
+      })
+    );
+  },
+
+  /**
    * Calculate project status based on artifact completion
    */
   calculateStatus(artifacts: Array<{ status: string }>): number {

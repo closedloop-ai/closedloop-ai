@@ -48,6 +48,7 @@ import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
 import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
+import { SidebarFavorites } from "./sidebar-favorites";
 import { SidebarTeams } from "./sidebar-teams";
 
 const orgSwitcherAppearance = {
@@ -307,6 +308,8 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
               ))}
             </SidebarMenu>
           </SidebarGroup>
+
+          <SidebarFavorites />
 
           <SidebarTeams />
 

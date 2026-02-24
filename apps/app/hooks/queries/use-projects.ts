@@ -26,6 +26,7 @@ export const projectKeys = {
   activity: (id: string, page: number, pageSize: number) =>
     [...projectKeys.detail(id), "activity", { page, pageSize }] as const,
   recent: (teamId: string) => [...projectKeys.all, "recent", teamId] as const,
+  favorites: () => [...projectKeys.all, "favorites"] as const,
 };
 
 // Queries
@@ -281,5 +282,75 @@ export function useUploadCodebaseSummary() {
         codebaseSummary: markdownContent,
         lastIndexedAt: new Date(),
       }),
+  });
+}
+
+// Favorites
+
+export function useFavoriteProjects(
+  options?: Omit<UseQueryOptions<ProjectWithDetails[]>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: projectKeys.favorites(),
+    queryFn: () => apiClient.get<ProjectWithDetails[]>("/projects/favorites"),
+    ...options,
+  });
+}
+
+export function useIsFavorite(projectId: string): boolean {
+  const { data: favorites } = useFavoriteProjects();
+  return favorites?.some((f) => f.id === projectId) ?? false;
+}
+
+export function useFavoriteProject() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      apiClient.post<{ favorited: boolean }>(
+        `/projects/${projectId}/favorite`,
+        {}
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
+    },
+  });
+}
+
+export function useUnfavoriteProject() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      apiClient.delete<{ favorited: boolean }>(
+        `/projects/${projectId}/favorite`
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
+    },
+  });
+}
+
+export function useToggleFavorite() {
+  const favorite = useFavoriteProject();
+  const unfavorite = useUnfavoriteProject();
+
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      isFavorite,
+    }: {
+      projectId: string;
+      isFavorite: boolean;
+    }) => {
+      if (isFavorite) {
+        return unfavorite.mutateAsync(projectId);
+      }
+      return favorite.mutateAsync(projectId);
+    },
   });
 }
