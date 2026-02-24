@@ -6,7 +6,6 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
-import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
@@ -251,26 +250,34 @@ function GenerationSection({
 
 /** Small inline badge for loop status display in the metadata sidebar. */
 function LoopStatusBadge({ status }: { status: GenerationStatus["status"] }) {
-  const isActive = isActiveGenerationStatus(status);
-  const isSuccess = status === "SUCCESS";
-
-  if (isActive) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-blue-700 text-xs dark:bg-blue-900/30 dark:text-blue-300">
-        Running
-      </span>
-    );
+  if (status === "NONE") {
+    return null;
   }
-  if (isSuccess) {
+  if (status === "SUCCESS") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-green-700 text-xs dark:bg-green-900/30 dark:text-green-300">
         Completed
       </span>
     );
   }
+  if (status === "FAILURE") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700 text-xs dark:bg-red-900/30 dark:text-red-300">
+        Failed
+      </span>
+    );
+  }
+  if (status === "RUNNING") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-blue-700 text-xs dark:bg-blue-900/30 dark:text-blue-300">
+        Running
+      </span>
+    );
+  }
+  // PENDING or QUEUED
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700 text-xs dark:bg-red-900/30 dark:text-red-300">
-      Failed
+    <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
+      Queued
     </span>
   );
 }

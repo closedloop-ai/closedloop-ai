@@ -215,7 +215,6 @@ export type GenerationStatus = {
   initiatedBy?: {
     firstName: string | null;
     lastName: string | null;
-    avatarUrl: string | null;
   } | null;
 };
 

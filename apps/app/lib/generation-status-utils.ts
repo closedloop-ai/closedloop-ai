@@ -1,5 +1,26 @@
 import type { GenerationStatus } from "@repo/api/src/types/artifact";
 
+export function getStatusMessage(
+  status: GenerationStatus["status"],
+  command: GenerationStatus["command"],
+  initiatedBy?: GenerationStatus["initiatedBy"]
+): string {
+  const initiatorName = getInitiatorName(initiatedBy);
+
+  switch (status) {
+    case "PENDING":
+      return "Waiting to start...";
+    case "QUEUED":
+      return getQueuedMessage(command);
+    case "RUNNING":
+      return getRunningMessage(command, initiatorName);
+    case "FAILURE":
+      return getFailureMessage(command);
+    default:
+      return "";
+  }
+}
+
 /**
  * Get the display name from initiatedBy user info.
  * Returns null if no user info is available.
@@ -16,24 +37,45 @@ function getInitiatorName(
   return name || null;
 }
 
+/** Build a queued message for the given command. */
+function getQueuedMessage(command: GenerationStatus["command"]): string {
+  switch (command) {
+    case "execute":
+      return "Queued for execution...";
+    case "request_changes":
+      return "Queued for change request...";
+    case "explore":
+      return "Queued for exploration...";
+    default:
+      return "Queued for generation...";
+  }
+}
+
 /** Build a running/active message for the given command, optionally prefixed with initiator name. */
 function getRunningMessage(
   command: GenerationStatus["command"],
   initiatorName: string | null
 ): string {
-  const prefix = initiatorName ? `${initiatorName} is ` : "";
+  const verb = getRunningVerb(command);
+  if (initiatorName) {
+    return `${initiatorName} is ${verb.charAt(0).toLowerCase()}${verb.slice(1)}`;
+  }
+  return verb;
+}
 
+/** Get the running verb phrase for a command. */
+function getRunningVerb(command: GenerationStatus["command"]): string {
   switch (command) {
     case "execute":
-      return `${prefix}${initiatorName ? "e" : "E"}xecuting plan and creating PR...`;
+      return "Executing plan and creating PR...";
     case "request_changes":
-      return `${prefix}${initiatorName ? "a" : "A"}pplying requested changes...`;
+      return "Applying requested changes...";
     case "explore":
-      return `${prefix}${initiatorName ? "e" : "E"}xploring codebase...`;
+      return "Exploring codebase...";
     case "chat":
-      return `${prefix}${initiatorName ? "p" : "P"}rocessing chat request...`;
+      return "Processing chat request...";
     default:
-      return `${prefix}${initiatorName ? "g" : "G"}enerating implementation plan...`;
+      return "Generating implementation plan...";
   }
 }
 
@@ -50,30 +92,5 @@ function getFailureMessage(command: GenerationStatus["command"]): string {
       return "Chat request failed";
     default:
       return "Plan generation failed";
-  }
-}
-
-export function getStatusMessage(
-  status: GenerationStatus["status"],
-  command: GenerationStatus["command"],
-  initiatedBy?: GenerationStatus["initiatedBy"]
-): string {
-  const initiatorName = getInitiatorName(initiatedBy);
-
-  switch (status) {
-    case "PENDING":
-      return "Waiting to start...";
-    case "QUEUED": {
-      if (command === "execute") {
-        return "Queued for execution...";
-      }
-      return "Queued for generation...";
-    }
-    case "RUNNING":
-      return getRunningMessage(command, initiatorName);
-    case "FAILURE":
-      return getFailureMessage(command);
-    default:
-      return "";
   }
 }

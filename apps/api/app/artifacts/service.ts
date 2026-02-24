@@ -9,7 +9,6 @@ import {
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
-  isActiveGenerationStatus,
   type PullRequestInfo,
   PullRequestState,
   ReviewDecision,
@@ -39,6 +38,11 @@ import {
 } from "@repo/github/execution-log-parser";
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
+import {
+  mapLoopCommand,
+  mapLoopStatus,
+  pickBestStatus,
+} from "@/lib/loop-status-utils";
 import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
@@ -2205,6 +2209,36 @@ Please try again or contact support if the issue persists.`
 
     return Array.from(relatedIds);
   },
+
+  /**
+   * Get the generation status for a single artifact by checking both
+   * GitHub Actions runs and Loop records. Returns null if the artifact
+   * is not found in the org.
+   */
+  async getGenerationStatus(
+    artifactId: string,
+    organizationId: string
+  ): Promise<GenerationStatus | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true, workstreamId: true },
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    const [ghStatus, loopStatus] = await Promise.all([
+      artifact.workstreamId
+        ? fetchGitHubActionsStatus(artifact.workstreamId, artifact.id)
+        : Promise.resolve(null),
+      fetchLoopStatus(artifact.id),
+    ]);
+
+    return pickBestStatus(ghStatus, loopStatus);
+  },
 };
 
 export type ExecuteResult =
@@ -2464,7 +2498,7 @@ async function mergeLoopStatuses(
         startedAt: true,
         completedAt: true,
         user: {
-          select: { firstName: true, lastName: true, avatarUrl: true },
+          select: { firstName: true, lastName: true },
         },
       },
     })
@@ -2492,62 +2526,90 @@ async function mergeLoopStatuses(
       initiatedBy: loop.user,
     };
 
-    const existing = generationStatusMap.get(loop.artifactId);
-    if (!existing) {
-      generationStatusMap.set(loop.artifactId, loopGenStatus);
-      continue;
-    }
-
-    // Prefer active status from either source, then most recent
-    const existingActive = isActiveGenerationStatus(existing.status);
-    const loopActive = isActiveGenerationStatus(loopGenStatus.status);
-    if (loopActive && !existingActive) {
-      generationStatusMap.set(loop.artifactId, loopGenStatus);
-    } else if (!(existingActive || loopActive)) {
-      // Both terminal — prefer most recent
-      const existingTime = existing.startedAt?.getTime() ?? 0;
-      const loopTime = loopGenStatus.startedAt?.getTime() ?? 0;
-      if (loopTime > existingTime) {
-        generationStatusMap.set(loop.artifactId, loopGenStatus);
-      }
-    }
+    const existing = generationStatusMap.get(loop.artifactId) ?? null;
+    generationStatusMap.set(
+      loop.artifactId,
+      pickBestStatus(existing, loopGenStatus)
+    );
   }
 }
 
-/** Map LoopStatus (Prisma enum) to GenerationStatus status field. */
-function mapLoopStatus(loopStatus: string): GenerationStatus["status"] | null {
-  switch (loopStatus) {
-    case "PENDING":
-      return "PENDING";
-    case "CLAIMED":
-      return "QUEUED";
-    case "RUNNING":
-      return "RUNNING";
-    case "COMPLETED":
-      return "SUCCESS";
-    case "FAILED":
-    case "CANCELLED":
-    case "TIMED_OUT":
-      return "FAILURE";
-    default:
-      return null;
+/** Fetch the latest GitHub Actions generation status for an artifact. */
+async function fetchGitHubActionsStatus(
+  workstreamId: string,
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  const actionRun = await withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: { workstreamId, workflowName: "symphony-dispatch" },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  if (!actionRun) {
+    return null;
   }
+
+  const triggerData = actionRun.triggerData as {
+    correlationId?: string;
+    artifactId?: string;
+    command?: "plan" | "execute" | "chat";
+  } | null;
+
+  if (triggerData?.artifactId !== artifactId) {
+    return null;
+  }
+
+  return {
+    status: actionRun.status as GenerationStatus["status"],
+    command: triggerData?.command ?? null,
+    htmlUrl: actionRun.htmlUrl || null,
+    startedAt: actionRun.startedAt,
+    completedAt: actionRun.completedAt,
+    correlationId: triggerData?.correlationId ?? null,
+    source: "github_actions",
+  };
 }
 
-/** Map LoopCommand (Prisma enum, UPPER_CASE) to GenerationStatus command (lowercase). */
-function mapLoopCommand(command: string): GenerationStatus["command"] {
-  switch (command) {
-    case "PLAN":
-      return "plan";
-    case "EXECUTE":
-      return "execute";
-    case "CHAT":
-      return "chat";
-    case "EXPLORE":
-      return "explore";
-    case "REQUEST_CHANGES":
-      return "request_changes";
-    default:
-      return null;
+/** Fetch the latest Loop generation status for an artifact. */
+async function fetchLoopStatus(
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  const loop = await withDb((db) =>
+    db.loop.findFirst({
+      where: { artifactId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  if (!loop) {
+    return null;
   }
+
+  const mappedStatus = mapLoopStatus(loop.status);
+  if (!mappedStatus) {
+    return null;
+  }
+
+  return {
+    status: mappedStatus,
+    command: mapLoopCommand(loop.command),
+    htmlUrl: null,
+    startedAt: loop.startedAt,
+    completedAt: loop.completedAt,
+    correlationId: null,
+    source: "loop",
+    loopId: loop.id,
+    initiatedBy: loop.user,
+  };
 }
