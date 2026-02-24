@@ -21,6 +21,7 @@ import type {
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
+import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
@@ -2440,6 +2441,70 @@ Please try again or contact support if the issue persists.`
 
     return Array.from(relatedIds);
   },
+
+  /**
+   * Resolve the canonical execution backend for an artifact based on its
+   * execution history. Returns null when neither Loops nor GH Actions have
+   * been used — caller should fall back to the org's compute mode.
+   *
+   * The first backend used for planning is canonical — state cannot migrate
+   * between Loops and GH Actions.
+   */
+  async resolveExecutionBackend(
+    artifactId: string,
+    organizationId: string,
+    workstreamId: string | null
+  ): Promise<ExecutionBackendResponse | null> {
+    const earliestLoop = await findEarliestCompletedLoop(
+      artifactId,
+      organizationId
+    );
+    const earliestGhAction = await findEarliestGhActionRun(
+      artifactId,
+      workstreamId
+    );
+    return resolveBackend(earliestLoop, earliestGhAction);
+  },
+
+  /**
+   * Assert that launching a Loop is allowed for this artifact.
+   * Throws a descriptive string when the artifact was originally planned
+   * via GH Actions (caller should return conflictResponse).
+   * Returns silently when Loops are allowed.
+   */
+  async assertLoopBackendAllowed(
+    artifactId: string,
+    organizationId: string,
+    workstreamId: string | null
+  ): Promise<string | null> {
+    const earliestGhAction = await findEarliestGhActionRun(
+      artifactId,
+      workstreamId
+    );
+
+    if (!earliestGhAction) {
+      return null;
+    }
+
+    // Check if a loop was created at the same time or earlier (artifact started on Loops)
+    const earlierLoop = await withDb((db) =>
+      db.loop.findFirst({
+        where: {
+          artifactId,
+          organizationId,
+          status: "COMPLETED",
+          createdAt: { lte: earliestGhAction.createdAt },
+        },
+        select: { id: true },
+      })
+    );
+
+    if (earlierLoop) {
+      return null;
+    }
+
+    return "This artifact was originally planned via GitHub Actions. Use the GitHub Actions path for subsequent operations to maintain state continuity.";
+  },
 };
 
 export type ExecuteResult =
@@ -2671,4 +2736,85 @@ function buildPullRequestMap(
     }
   }
   return map;
+}
+
+type EarliestRecord = { id: string; createdAt: Date } | null;
+
+/** Find the earliest completed Loop for an artifact (org-scoped). */
+function findEarliestCompletedLoop(
+  artifactId: string,
+  organizationId: string
+): Promise<EarliestRecord> {
+  return withDb((db) =>
+    db.loop.findFirst({
+      where: {
+        artifactId,
+        organizationId,
+        status: "COMPLETED",
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, createdAt: true },
+    })
+  );
+}
+
+/**
+ * Find the earliest GH Action run for an artifact.
+ * GitHubActionRun links to artifacts via triggerData JSON, not a direct FK.
+ * Includes PENDING/QUEUED/RUNNING/SUCCESS — any initiated run counts,
+ * because even an in-flight plan locks the artifact to GH Actions.
+ */
+function findEarliestGhActionRun(
+  artifactId: string,
+  workstreamId: string | null
+): Promise<EarliestRecord> {
+  if (!workstreamId) {
+    return Promise.resolve(null);
+  }
+  return withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: {
+        workstreamId,
+        status: {
+          in: ["PENDING", "QUEUED", "RUNNING", "SUCCESS"],
+        },
+        triggerData: { path: ["artifactId"], equals: artifactId },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, createdAt: true },
+    })
+  );
+}
+
+/**
+ * Pick the backend that was used first for this artifact.
+ * State cannot migrate between Loops and GH Actions, so the original
+ * planning backend is canonical for all subsequent operations.
+ * Returns null when neither record exists (caller should fall back to org default).
+ */
+function resolveBackend(
+  earliestLoop: EarliestRecord,
+  earliestGhActionRun: EarliestRecord
+): ExecutionBackendResponse | null {
+  if (!(earliestLoop || earliestGhActionRun)) {
+    return null;
+  }
+
+  if (earliestLoop && !earliestGhActionRun) {
+    return { backend: "LOOPS", reason: "loop_history" };
+  }
+
+  if (!earliestLoop && earliestGhActionRun) {
+    return { backend: "GITHUB_ACTIONS", reason: "github_action_history" };
+  }
+
+  // Both exist — whichever was created first is the original backend
+  const loopTime = earliestLoop!.createdAt.getTime();
+  const ghActionTime = earliestGhActionRun!.createdAt.getTime();
+
+  if (loopTime <= ghActionTime) {
+    return { backend: "LOOPS", reason: "loop_history" };
+  }
+
+  return { backend: "GITHUB_ACTIONS", reason: "github_action_history" };
 }

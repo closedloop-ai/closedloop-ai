@@ -3,7 +3,6 @@ import type {
   CreateLoopRequest,
   CreateLoopResponse,
 } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
@@ -55,46 +54,17 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
 
       // Guard: prevent launching a loop for artifacts originally planned via
       // GH Actions. State cannot migrate between backends, so the earliest
-      // execution determines the canonical backend — even if loops were
-      // accidentally run in the meantime.
+      // execution determines the canonical backend.
       // "plan" is exempt: re-planning generates fresh state, so switching
       // backends at plan time is safe.
       if (body.command !== "plan") {
-        const earliestGhAction = artifact.workstreamId
-          ? await withDb((db) =>
-              db.gitHubActionRun.findFirst({
-                where: {
-                  workstreamId: artifact.workstreamId!,
-                  status: {
-                    in: ["PENDING", "QUEUED", "RUNNING", "SUCCESS"],
-                  },
-                  triggerData: { path: ["artifactId"], equals: artifactId },
-                },
-                orderBy: { createdAt: "asc" },
-                select: { id: true, createdAt: true },
-              })
-            )
-          : null;
-
-        if (earliestGhAction) {
-          // Check if a loop was created even earlier (artifact started on Loops)
-          const earlierLoop = await withDb((db) =>
-            db.loop.findFirst({
-              where: {
-                artifactId,
-                organizationId: user.organizationId,
-                status: "COMPLETED",
-                createdAt: { lt: earliestGhAction.createdAt },
-              },
-              select: { id: true },
-            })
-          );
-
-          if (!earlierLoop) {
-            return conflictResponse(
-              "This artifact was originally planned via GitHub Actions. Use the GitHub Actions path for subsequent operations to maintain state continuity."
-            );
-          }
+        const rejection = await artifactsService.assertLoopBackendAllowed(
+          artifactId,
+          user.organizationId,
+          artifact.workstreamId
+        );
+        if (rejection) {
+          return conflictResponse(rejection);
         }
       }
 
