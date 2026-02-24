@@ -3,13 +3,13 @@
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
 import { useIssueBySlug } from "@/hooks/queries/use-issues";
-import { IssueEditor } from "./issue-editor";
+import { FeaturePage } from "./feature-page";
 
-type IssueEditorContainerProps = {
+type FeaturePageContainerProps = {
   slug: string;
 };
 
-export function IssueEditorContainer({ slug }: IssueEditorContainerProps) {
+export function FeaturePageContainer({ slug }: FeaturePageContainerProps) {
   const { data: issue, isLoading, error } = useIssueBySlug(slug);
 
   if (isLoading) {
@@ -24,5 +24,5 @@ export function IssueEditorContainer({ slug }: IssueEditorContainerProps) {
     notFound();
   }
 
-  return <IssueEditor issue={issue} />;
+  return <FeaturePage issue={issue} />;
 }

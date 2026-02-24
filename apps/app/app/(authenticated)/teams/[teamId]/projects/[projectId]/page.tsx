@@ -25,17 +25,24 @@ import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@repo/design-system/components/ui/tabs";
+import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
   ChevronDownIcon,
+  CircleDotIcon,
   ClipboardListIcon,
   FileTextIcon,
   Loader2Icon,
   SearchIcon,
 } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
@@ -44,6 +51,7 @@ import {
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useCreateIssue } from "@/hooks/queries/use-issues";
 import {
   useProject,
   useProjectActivity,
@@ -71,9 +79,11 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
 
 export default function ProjectDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
+  const [activeTab, setActiveTab] = useState("documents");
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
     useState<ArtifactType>(ArtifactType.Prd);
@@ -130,6 +140,7 @@ export default function ProjectDetailPage() {
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updateArtifactMutation = useUpdateArtifact();
   const deleteArtifactMutation = useDeleteArtifact();
+  const createIssueMutation = useCreateIssue();
 
   const handleUpdatePriority = (priority: ProjectPriority) => {
     if (!project) {
@@ -229,6 +240,23 @@ export default function ProjectDetailPage() {
                 <ClipboardListIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={createIssueMutation.isPending}
+                onClick={() => {
+                  // TODO: Add feature creation modal
+                  createIssueMutation.mutate(
+                    { title: "Untitled Feature", projectId },
+                    {
+                      onSuccess: (issue) => {
+                        router.push(`/issues/${issue.slug}`);
+                      },
+                    }
+                  );
+                }}
+              >
+                <CircleDotIcon className="mr-2 h-4 w-4" />
+                Feature
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -236,65 +264,114 @@ export default function ProjectDetailPage() {
       <main className="flex-1 overflow-auto">
         <div className="flex h-full">
           {/* Main Content Area */}
-          <div className="flex-1 p-6">
-            <div className="mb-6">
-              <EditableProjectTitle
-                initialTitle={project.name}
-                projectId={project.id}
-              />
-              <EditableProjectDescription
-                initialDescription={project.description ?? ""}
-                projectId={project.id}
-              />
-            </div>
-            <div className="mb-4 flex items-center justify-end">
-              <ToggleGroup
-                onValueChange={(value) => {
-                  if (value) {
-                    setViewMode(value as "type" | "threaded");
-                  }
-                }}
-                type="single"
-                value={viewMode}
+          <Tabs
+            className="flex-1"
+            onValueChange={setActiveTab}
+            value={activeTab}
+          >
+            <TabsList className="h-auto w-full justify-start gap-0 rounded-none border-border border-b bg-transparent p-0 px-4 pt-2">
+              <TabsTrigger
+                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                value="documents"
               >
-                <ToggleGroupItem value="type">Type</ToggleGroupItem>
-                <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
-              </ToggleGroup>
-            </div>
-            {artifacts.length > 0 && (
-              <div className="mb-4">
-                <div className="relative">
-                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <Input
-                    aria-label="Filter artifacts"
-                    className="pl-9"
-                    onChange={(e) => setFilterText(e.target.value)}
-                    placeholder="Filter artifacts..."
-                    value={filterText}
+                Documents
+              </TabsTrigger>
+              <TabsTrigger
+                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                value="features"
+              >
+                Features
+              </TabsTrigger>
+              <TabsTrigger
+                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                value="workflows"
+              >
+                Workflows
+              </TabsTrigger>
+              <TabsTrigger
+                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                value="branches"
+              >
+                Branches
+              </TabsTrigger>
+            </TabsList>
+            <div className="p-6">
+              <TabsContent className="mt-0" value="documents">
+                <div className="mb-6">
+                  <EditableProjectTitle
+                    initialTitle={project.name}
+                    projectId={project.id}
+                  />
+                  <EditableProjectDescription
+                    initialDescription={project.description ?? ""}
+                    projectId={project.id}
                   />
                 </div>
-              </div>
-            )}
-            {viewMode === "type" ? (
-              <ArtifactsTable
-                artifacts={artifacts}
-                filterText={filterText}
-                onDelete={handleDeleteArtifact}
-                onStatusChange={handleArtifactStatusChange}
-                projectId={projectId}
-              />
-            ) : (
-              <ArtifactsThreadedView
-                artifacts={artifacts}
-                filterText={filterText}
-                onDelete={handleDeleteArtifact}
-                onStatusChange={handleArtifactStatusChange}
-                projectId={projectId}
-              />
-            )}
-          </div>
+                <div className="mb-4 flex items-center justify-end">
+                  <ToggleGroup
+                    onValueChange={(value) => {
+                      if (value) {
+                        setViewMode(value as "type" | "threaded");
+                      }
+                    }}
+                    type="single"
+                    value={viewMode}
+                  >
+                    <ToggleGroupItem value="type">Type</ToggleGroupItem>
+                    <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+                {artifacts.length > 0 && (
+                  <div className="mb-4">
+                    <div className="relative">
+                      <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                        <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                      <Input
+                        aria-label="Filter artifacts"
+                        className="pl-9"
+                        onChange={(e) => setFilterText(e.target.value)}
+                        placeholder="Filter artifacts..."
+                        value={filterText}
+                      />
+                    </div>
+                  </div>
+                )}
+                {viewMode === "type" ? (
+                  <ArtifactsTable
+                    artifacts={artifacts}
+                    filterText={filterText}
+                    onDelete={handleDeleteArtifact}
+                    onStatusChange={handleArtifactStatusChange}
+                    projectId={projectId}
+                  />
+                ) : (
+                  <ArtifactsThreadedView
+                    artifacts={artifacts}
+                    filterText={filterText}
+                    onDelete={handleDeleteArtifact}
+                    onStatusChange={handleArtifactStatusChange}
+                    projectId={projectId}
+                  />
+                )}
+              </TabsContent>
+              <TabsContent className="mt-0" value="features">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Features coming soon
+                </div>
+              </TabsContent>
+              <TabsContent className="mt-0" value="workflows">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Workflows coming soon
+                </div>
+              </TabsContent>
+              <TabsContent className="mt-0" value="branches">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Branches coming soon
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
 
           {/* Right Sidebar */}
           <div className="w-[300px] space-y-4 border-l p-4">
