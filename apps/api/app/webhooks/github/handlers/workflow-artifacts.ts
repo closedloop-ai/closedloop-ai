@@ -6,7 +6,6 @@ import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import type { PromptsSnapshot } from "../prompt-types";
 import { findPlanInZip, type ZipContent } from "../zip-parser";
 
 /**
@@ -19,7 +18,6 @@ export type ProcessArtifactResult = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
-  promptsSnapshot: PromptsSnapshot | null;
   artifactKeys: string[];
 };
 
@@ -61,7 +59,6 @@ export function mergeZipContent(
     judgesReport: result.judgesReport ?? current.judgesReport,
     codeJudgesReport: result.codeJudgesReport ?? current.codeJudgesReport,
     perfSummary: result.perfSummary ?? current.perfSummary,
-    promptsSnapshot: result.promptsSnapshot ?? current.promptsSnapshot,
   };
 }
 
@@ -93,7 +90,6 @@ export async function processArtifactZip(
     judgesReport: null,
     codeJudgesReport: null,
     perfSummary: null,
-    promptsSnapshot: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
@@ -148,7 +144,6 @@ export async function processArtifactUploads(
   let judgesReport: JudgesReport | null = null;
   let codeJudgesReport: JudgesReport | null = null;
   let perfSummary: PerfSummary | null = null;
-  let promptsSnapshot: PromptsSnapshot | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -167,7 +162,6 @@ export async function processArtifactUploads(
     judgesReport = result.judgesReport ?? judgesReport;
     codeJudgesReport = result.codeJudgesReport ?? codeJudgesReport;
     perfSummary = result.perfSummary ?? perfSummary;
-    promptsSnapshot = result.promptsSnapshot ?? promptsSnapshot;
     artifactKeys.push(...result.artifactKeys);
   }
 
@@ -176,15 +170,14 @@ export async function processArtifactUploads(
     questionsContent ||
     executionResult ||
     judgesReport ||
-    codeJudgesReport ||
-    promptsSnapshot
+    codeJudgesReport
   ) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}, codeJudges=${!!codeJudgesReport}, prompts=${!!promptsSnapshot}`
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}, codeJudges=${!!codeJudgesReport}`
     );
   } else {
     log.warn(
-      "[processArtifactUploads] No plan, questions, execution result, judges reports, or prompts found in artifacts"
+      "[processArtifactUploads] No plan, questions, execution result, or judges reports found in artifacts"
     );
   }
 
@@ -195,7 +188,6 @@ export async function processArtifactUploads(
     judgesReport,
     codeJudgesReport,
     perfSummary,
-    promptsSnapshot,
     artifactKeys,
   };
 }

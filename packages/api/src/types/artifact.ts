@@ -202,7 +202,7 @@ export type PullRequestInfo = {
 // Generation status for artifacts being processed by GitHub Actions
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: SymphonyCommand | null;
+  command: "plan" | "execute" | "chat" | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -280,13 +280,3 @@ export type ArtifactTitleMap = Record<string, string>;
 
 /** Maximum number of slugs accepted by GET /artifacts/batch-meta */
 export const BATCH_META_MAX_SLUGS = 50;
-
-// Symphony workflow dispatch command values (lowercase, as sent to GitHub Actions)
-export const SymphonyCommand = {
-  Plan: "plan",
-  Execute: "execute",
-  Chat: "chat",
-  RequestChanges: "request_changes",
-} as const;
-export type SymphonyCommand =
-  (typeof SymphonyCommand)[keyof typeof SymphonyCommand];

@@ -1,5 +1,4 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
-import { SymphonyCommand } from "@repo/api/src/types/artifact";
 import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
@@ -54,7 +53,7 @@ export async function handleExecutionSuccess(
           data: {
             correlationId,
             runId,
-            command: SymphonyCommand.Execute,
+            command: "execute",
             conclusion: "success",
             hasChanges: false,
             message: "Execution completed - no changes to commit",
@@ -244,14 +243,13 @@ export async function handleWorkflowSuccess(
     judgesReport,
     codeJudgesReport,
     perfSummary,
-    promptsSnapshot: _promptsSnapshot,
     artifactKeys,
   } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact.
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
-  if (command === SymphonyCommand.Execute && executionResult) {
+  if (command === "execute" && executionResult) {
     await handleExecutionSuccess(ctx, executionResult);
     return;
   }
@@ -490,7 +488,7 @@ export async function processWorkflowCompletion(
   const triggerData = actionRun.triggerData as {
     correlationId: string;
     artifactId: string;
-    command?: SymphonyCommand;
+    command?: string;
   };
 
   log.info("[webhook/github] Found matching GitHubActionRun", {

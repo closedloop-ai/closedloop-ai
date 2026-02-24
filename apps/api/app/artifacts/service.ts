@@ -12,7 +12,6 @@ import {
   type PullRequestInfo,
   PullRequestState,
   ReviewDecision,
-  SymphonyCommand,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -928,7 +927,7 @@ ${initialInstructions.trim()}`;
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
               prdId,
-              command: SymphonyCommand.Plan,
+              command: "plan",
             },
             sessionId: prdId,
             jobType: "generate",
@@ -950,7 +949,7 @@ ${initialInstructions.trim()}`;
             actorType: "system",
             data: {
               workflowName: "symphony-dispatch",
-              command: SymphonyCommand.Plan,
+              command: "plan",
               correlationId,
               artifactId,
               prdId,
@@ -1143,7 +1142,7 @@ ${initialInstructions.trim()}`;
     const result = await triggerWorkflowDispatch({
       targetRepo,
       ref: targetBranch,
-      command: SymphonyCommand.Plan,
+      command: "plan",
       context,
       correlationId,
       sessionId: sourceArtifact.id,
@@ -1305,7 +1304,7 @@ ${changes}`;
     const result = await triggerWorkflowDispatch({
       targetRepo,
       ref: targetBranch,
-      command: SymphonyCommand.Chat,
+      command: "chat",
       context,
       correlationId,
       sessionId: sourceArtifact.id, // Same session for artifact continuity
@@ -1386,7 +1385,7 @@ Please try again or contact support if the issue persists.`
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
               prdId,
-              command: SymphonyCommand.Chat,
+              command: "chat",
             },
             sessionId: prdId,
             jobType: "amend",
@@ -1400,7 +1399,7 @@ Please try again or contact support if the issue persists.`
             actorType: "system",
             data: {
               workflowName: "symphony-dispatch",
-              command: SymphonyCommand.Chat,
+              command: "chat",
               correlationId,
               artifactId,
               prdId,
@@ -1674,7 +1673,7 @@ Please try again or contact support if the issue persists.`
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
               artifactId,
               prdId: sourceArtifact.id,
-              command: SymphonyCommand.Execute,
+              command: "execute",
             },
             sessionId: sourceArtifact.id,
             jobType: "execute",
@@ -1688,7 +1687,7 @@ Please try again or contact support if the issue persists.`
             actorType: "system",
             data: {
               workflowName: "symphony-dispatch",
-              command: SymphonyCommand.Execute,
+              command: "execute",
               correlationId,
               artifactId,
               prdId: sourceArtifact.id,
@@ -1707,7 +1706,7 @@ Please try again or contact support if the issue persists.`
     const result = await triggerWorkflowDispatch({
       targetRepo,
       ref: targetBranch,
-      command: SymphonyCommand.Execute,
+      command: "execute",
       context,
       correlationId,
       sessionId: sourceArtifact.id,

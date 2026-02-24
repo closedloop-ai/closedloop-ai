@@ -1,7 +1,4 @@
-import type {
-  GenerationStatus,
-  SymphonyCommand,
-} from "@repo/api/src/types/artifact";
+import type { GenerationStatus } from "@repo/api/src/types/artifact";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure, success } from "@repo/api/src/types/common";
 import { withDb } from "@repo/database";
@@ -79,7 +76,7 @@ export const GET = withAuth<
       const triggerData = actionRun.triggerData as {
         correlationId?: string;
         artifactId?: string;
-        command?: SymphonyCommand;
+        command?: "plan" | "execute" | "chat";
       } | null;
 
       // Only return status if this run is for the requested artifact
