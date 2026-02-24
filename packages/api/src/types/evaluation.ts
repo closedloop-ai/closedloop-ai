@@ -18,6 +18,17 @@ export const EvalStatus = {
 export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
 
 /**
+ * Evaluation report type discriminator persisted with ArtifactEvaluation rows.
+ */
+export const EvaluationReportType = {
+  Plan: "PLAN",
+  Code: "CODE",
+} as const;
+
+export type EvaluationReportType =
+  (typeof EvaluationReportType)[keyof typeof EvaluationReportType];
+
+/**
  * Statistics for a single metric (judge score).
  *
  * Attributes:

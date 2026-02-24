@@ -9,18 +9,22 @@
  * helpers once both paths are stable and well-tested independently.
  * See: workflow-completion-handler.ts handleWorkflowSuccess / handleExecutionSuccess
  */
+
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
+import {
+  EvaluationReportType as PrismaEvaluationReportType,
+  withDb,
+} from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import type { ExecutionResult } from "../app/webhooks/github/types";
 import { downloadArtifactFile } from "./loop-state";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +37,7 @@ export type LoopArtifacts = {
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
   // NOTE: perf.jsonl is uploaded to S3 but not ingested here.
   // GitHubActionRunPerformance requires a non-nullable actionRunId
   // (loops don't have action runs). Needs a schema change to support
@@ -49,58 +54,55 @@ export type LoopArtifacts = {
 export async function downloadLoopArtifacts(
   stateKeyPrefix: string
 ): Promise<LoopArtifacts> {
-  const [planJsonBuf, questionsBuf, executionResultBuf, judgesReportBuf] =
-    await Promise.all([
-      downloadArtifactFile(stateKeyPrefix, "plan.json"),
-      downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
-      downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
-      downloadArtifactFile(stateKeyPrefix, "judges.json"),
-    ]);
+  const [
+    planJsonBuf,
+    questionsBuf,
+    executionResultBuf,
+    codeJudgesReportBuf,
+    judgesReportBuf,
+  ] = await Promise.all([
+    downloadArtifactFile(stateKeyPrefix, "plan.json"),
+    downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
+    downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
+    downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
+    downloadArtifactFile(stateKeyPrefix, "judges.json"),
+  ]);
 
-  let planContent: string | null = null;
-  if (planJsonBuf) {
-    try {
-      const planJson = JSON.parse(planJsonBuf.toString("utf-8")) as PlanJson;
-      planContent = planJson.content;
-    } catch (err) {
-      log.warn("[loop-artifact-ingestion] Failed to parse plan.json", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const planContent = parseJsonArtifact<PlanJson>(
+    planJsonBuf,
+    "plan.json",
+    (p) => p.content
+  ) as string | null;
 
   // Fall back to open-questions.md if plan.json has no content
   // (mirrors zip-parser.ts questionsContent fallback)
   const questionsContent = questionsBuf ? questionsBuf.toString("utf-8") : null;
 
-  let executionResult: ExecutionResult | null = null;
-  if (executionResultBuf) {
-    try {
-      executionResult = JSON.parse(
-        executionResultBuf.toString("utf-8")
-      ) as ExecutionResult;
-    } catch (err) {
-      log.warn(
-        "[loop-artifact-ingestion] Failed to parse execution-result.json",
-        { error: err instanceof Error ? err.message : String(err) }
-      );
-    }
-  }
+  const executionResult = parseJsonArtifact<ExecutionResult>(
+    executionResultBuf,
+    "execution-result.json",
+    (p) => p
+  ) as ExecutionResult | null;
 
-  let judgesReport: JudgesReport | null = null;
-  if (judgesReportBuf) {
-    try {
-      judgesReport = JSON.parse(
-        judgesReportBuf.toString("utf-8")
-      ) as JudgesReport;
-    } catch (err) {
-      log.warn("[loop-artifact-ingestion] Failed to parse judges.json", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const judgesReport = parseJsonArtifact<JudgesReport>(
+    judgesReportBuf,
+    "judges.json",
+    (p) => p
+  ) as JudgesReport | null;
 
-  return { planContent, questionsContent, executionResult, judgesReport };
+  const codeJudgesReport = parseJsonArtifact<JudgesReport>(
+    codeJudgesReportBuf,
+    "code-judges.json",
+    (p) => p
+  ) as JudgesReport | null;
+
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    codeJudgesReport,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -169,10 +171,14 @@ export async function ingestPlanArtifacts(
         },
         create: {
           artifactId,
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.PLAN,
           reportId: artifacts.judgesReport!.report_id,
           reportData: artifacts.judgesReport!,
         },
         update: {
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.PLAN,
           reportData: artifacts.judgesReport!,
         },
       })
@@ -263,21 +269,26 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  const repository = await withDb((db) =>
-    db.repository.findFirst({
+  // Look up via GitHubInstallationRepository (the canonical repo table).
+  // The old Repository table is deprecated and being removed.
+  const installationRepo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: repoFullName,
-        project: { organizationId: loop.organizationId },
+        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
       },
       select: { id: true },
     })
   );
 
-  if (!repository) {
-    log.warn("[loop-artifact-ingestion] Repository not found", {
-      loopId: loop.id,
-      repoFullName,
-    });
+  if (!installationRepo) {
+    log.warn(
+      "[loop-artifact-ingestion] GitHubInstallationRepository not found",
+      {
+        loopId: loop.id,
+        repoFullName,
+      }
+    );
     return;
   }
 
@@ -314,10 +325,40 @@ export async function ingestExecutionArtifacts(
       return;
     }
 
+    if (artifacts.codeJudgesReport) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: loop.artifactId!,
+            reportId: artifacts.codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: loop.artifactId!,
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportId: artifacts.codeJudgesReport.report_id,
+          reportData: artifacts.codeJudgesReport,
+        },
+        update: {
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportData: artifacts.codeJudgesReport,
+        },
+      });
+
+      log.info("[loop-artifact-ingestion] Persisted code judges report", {
+        artifactId: loop.artifactId,
+        loopId: loop.id,
+        reportId: artifacts.codeJudgesReport.report_id,
+        judgesCount: artifacts.codeJudgesReport.stats.length,
+      });
+    }
+
     const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
-          repositoryId: repository.id,
+          repositoryId: installationRepo.id,
           number: prNumber,
         },
       },
@@ -329,7 +370,7 @@ export async function ingestExecutionArtifacts(
         "[loop-artifact-ingestion] PR already exists; skipping replayed execution artifact creates",
         {
           loopId: loop.id,
-          repositoryId: repository.id,
+          repositoryId: installationRepo.id,
           prNumber,
           pullRequestId: existingPr.id,
         }
@@ -342,7 +383,7 @@ export async function ingestExecutionArtifacts(
       data: {
         workstreamId: loop.workstreamId!,
         organizationId: loop.organizationId,
-        repositoryId: repository.id,
+        repositoryId: installationRepo.id,
         artifactId: loop.artifactId!,
         githubId: executionResult.github_id ?? prNumber,
         number: prNumber,
@@ -441,4 +482,23 @@ export async function ingestExecutionArtifacts(
     prUrl: executionResult.pr_url,
     prNumber,
   });
+}
+
+function parseJsonArtifact<T>(
+  buf: Buffer | null,
+  artifactName: string,
+  extract: (parsed: T) => unknown
+): unknown {
+  if (!buf) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(buf.toString("utf-8")) as T;
+    return extract(parsed);
+  } catch (err) {
+    log.warn(`[loop-artifact-ingestion] Failed to parse ${artifactName}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }

@@ -15,6 +15,7 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -28,6 +29,10 @@ import {
 // Mock all external dependencies before importing
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  EvaluationReportType: {
+    PLAN: "PLAN",
+    CODE: "CODE",
+  },
 }));
 
 vi.mock("@repo/github", () => ({
@@ -357,10 +362,12 @@ describe("handleWorkflowSuccess", () => {
       create: {
         artifactId,
         actionRunId,
+        reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
     });
@@ -719,7 +726,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
@@ -820,7 +827,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -876,7 +883,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -908,7 +915,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -942,7 +949,7 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -978,7 +985,9 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await expect(handleExecutionSuccess(ctx, executionResult)).rejects.toThrow(
+    await expect(
+      handleExecutionSuccess(ctx, executionResult, null)
+    ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
     );
   });

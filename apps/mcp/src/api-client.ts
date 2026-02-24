@@ -1,4 +1,5 @@
 import type { VerifiedApiKeyContext } from "./api-key-contract.js";
+import { asRecord } from "./tools/tool-utils.js";
 
 const CLOSEDLOOP_API_URL =
   process.env.CLOSEDLOOP_API_URL ?? "http://localhost:3002";
@@ -16,6 +17,42 @@ async function getResponseErrorMessage(response: Response): Promise<string> {
   const body = await response.text().catch(() => "");
   const bodySuffix = body ? ` — ${body}` : "";
   return `API request failed: ${response.status} ${response.statusText}${bodySuffix}`;
+}
+
+/**
+ * apps/api returns ApiResult<T> for route responses.
+ * Unwrap success envelopes so tools receive the expected payload shape.
+ */
+function unwrapApiResult<T>(body: unknown): T {
+  const record = asRecord(body);
+  const success = record.success;
+  if (typeof success !== "boolean") {
+    return body as T;
+  }
+  if (success) {
+    if (record.data === undefined) {
+      throw new Error("API returned success without data");
+    }
+    return record.data as T;
+  }
+  const error = record.error;
+  if (typeof error === "string") {
+    throw new Error(error);
+  }
+  const errorRecord = asRecord(error);
+  const message = errorRecord.message;
+  if (typeof message === "string" && message.length > 0) {
+    throw new Error(message);
+  }
+  let msg = "API request failed";
+  if (typeof error !== "undefined") {
+    try {
+      msg = JSON.stringify(error);
+    } catch {
+      /* keep default */
+    }
+  }
+  throw new Error(msg);
 }
 
 export class ApiClient {
@@ -53,7 +90,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const body = (await response.json()) as unknown;
+    return unwrapApiResult<T>(body);
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {
@@ -66,7 +104,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const responseBody = (await response.json()) as unknown;
+    return unwrapApiResult<T>(responseBody);
   }
 
   async put<T>(path: string, body: unknown): Promise<T> {
@@ -79,7 +118,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const responseBody = (await response.json()) as unknown;
+    return unwrapApiResult<T>(responseBody);
   }
 
   async delete<T>(path: string): Promise<T> {
@@ -91,7 +131,8 @@ export class ApiClient {
     if (!response.ok) {
       throw new Error(await getResponseErrorMessage(response));
     }
-    return response.json() as Promise<T>;
+    const body = (await response.json()) as unknown;
+    return unwrapApiResult<T>(body);
   }
 }
 

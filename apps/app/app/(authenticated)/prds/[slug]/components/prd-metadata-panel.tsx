@@ -7,6 +7,7 @@ import type {
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
@@ -164,6 +165,8 @@ export function PRDMetadataPanel({
           </CollapsibleSection>
 
           <CommentsSection artifactId={prd.id} />
+
+          <AttachmentsSection artifactId={prd.id} />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog

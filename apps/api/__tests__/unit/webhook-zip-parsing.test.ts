@@ -1,11 +1,13 @@
 /**
  * Unit tests for ZIP parsing logic in GitHub webhook handler.
  *
- * Tests scenarios 1-4 from the testing strategy:
+ * Tests scenarios 1-6 from the testing strategy:
  * 1. ZIP with judges.json is extracted correctly
  * 2. ZIP without judges.json yields null
  * 3. ZIP with perf.jsonl extracts a parsed PerfSummary
  * 4. ZIP without perf.jsonl yields null perfSummary
+ * 5. ZIP with code-judges.json is extracted correctly (separate from judges.json)
+ * 6. code-judges.json does not populate judgesReport (no cross-contamination)
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
@@ -62,6 +64,60 @@ describe("ZIP parsing for judges.json", () => {
 
       expect(result.judgesReport).toBeNull();
     });
+
+    it("does not extract code-judges.json into judgesReport slot", () => {
+      const mockCodeJudgesReport: JudgesReport = {
+        report_id: "code-judges-report-123",
+        timestamp: "2026-02-05T00:00:00Z",
+        stats: [],
+      };
+
+      const zipBuffer = buildZipWithEntries([
+        { name: "plan.json", content: '{"content": "# Plan"}' },
+        {
+          name: "code-judges.json",
+          content: JSON.stringify(mockCodeJudgesReport),
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      // code-judges.json must NOT bleed into the judgesReport slot
+      expect(result.judgesReport).toBeNull();
+      // It must be available in the codeJudgesReport slot
+      expect(result.codeJudgesReport).toEqual(mockCodeJudgesReport);
+    });
+
+    it("extracts both judges.json and code-judges.json independently", () => {
+      const mockJudgesReport: JudgesReport = {
+        report_id: "plan-judges-report",
+        timestamp: "2026-02-05T00:00:00Z",
+        stats: [],
+      };
+      const mockCodeJudgesReport: JudgesReport = {
+        report_id: "code-judges-report",
+        timestamp: "2026-02-05T00:01:00Z",
+        stats: [],
+      };
+
+      const zipBuffer = buildZipWithEntries([
+        { name: "plan.json", content: '{"content": "# Plan"}' },
+        { name: "judges.json", content: JSON.stringify(mockJudgesReport) },
+        {
+          name: "code-judges.json",
+          content: JSON.stringify(mockCodeJudgesReport),
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      expect(result.judgesReport).toEqual(mockJudgesReport);
+      expect(result.codeJudgesReport).toEqual(mockCodeJudgesReport);
+    });
   });
 
   describe("perf.jsonl extraction", () => {
@@ -86,7 +142,6 @@ describe("ZIP parsing for judges.json", () => {
       const result = findPlanInZip(zip);
 
       expect(result.perfSummary).not.toBeNull();
-
       const summary = result.perfSummary as PerfSummary;
       expect(summary.totalIterations).toBe(1);
       expect(summary.agentBreakdown).toHaveLength(1);
