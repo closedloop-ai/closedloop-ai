@@ -9,8 +9,14 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
 import { useMemo } from "react";
 import { useSortParams } from "@/hooks/use-sort-params";
+import judgeDescriptions from "@/lib/judge-descriptions.json";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 
@@ -88,8 +94,25 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
       <TableBody>
         {sortedData.map((judge: JudgeAggregateStats) => (
           <TableRow key={judge.judgeName}>
-            <TableCell className="break-words" title={judge.judgeName}>
-              {judge.judgeName}
+            <TableCell className="break-words">
+              {judgeDescriptions[
+                judge.judgeName as keyof typeof judgeDescriptions
+              ] ? (
+                <Tooltip>
+                  <TooltipTrigger className="cursor-help underline decoration-dotted">
+                    {judge.judgeName}
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {
+                      judgeDescriptions[
+                        judge.judgeName as keyof typeof judgeDescriptions
+                      ]
+                    }
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                judge.judgeName
+              )}
             </TableCell>
             <TableCell>{judge.artifactsEvaluated}</TableCell>
             <TableCell>{judge.min.toFixed(2)}</TableCell>
