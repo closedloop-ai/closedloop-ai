@@ -1,4 +1,5 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
@@ -34,7 +35,8 @@ type PrEventMetadata = {
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
-  executionResult: ExecutionResult
+  executionResult: ExecutionResult,
+  codeJudgesReport: JudgesReport | null
 ): Promise<void> {
   const { correlationId, workstreamId, repositoryId, runId } = ctx;
 
@@ -213,6 +215,32 @@ export async function handleExecutionSuccess(
         } as PrEventMetadata,
       },
     });
+
+    if (codeJudgesReport && ctx.actionRunId) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: ctx.artifactId,
+            reportId: codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: ctx.artifactId,
+          actionRunId: ctx.actionRunId,
+          reportId: codeJudgesReport.report_id,
+          reportData: codeJudgesReport,
+        },
+        update: {
+          reportData: codeJudgesReport,
+        },
+      });
+
+      log.info("[handleExecutionSuccess] Persisted code judges report", {
+        artifactId: ctx.artifactId,
+        reportId: codeJudgesReport.report_id,
+        judgesCount: codeJudgesReport.stats.length,
+      });
+    }
   });
 
   log.info(
@@ -250,7 +278,7 @@ export async function handleWorkflowSuccess(
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
     return;
   }
 
@@ -363,32 +391,6 @@ export async function handleWorkflowSuccess(
       artifactId,
       reportId: judgesReport.report_id,
       judgesCount: judgesReport.stats.length,
-    });
-  }
-
-  if (codeJudgesReport && ctx.actionRunId) {
-    await tx.artifactEvaluation.upsert({
-      where: {
-        artifactId_reportId: {
-          artifactId,
-          reportId: codeJudgesReport.report_id,
-        },
-      },
-      create: {
-        artifactId,
-        actionRunId: ctx.actionRunId,
-        reportId: codeJudgesReport.report_id,
-        reportData: codeJudgesReport,
-      },
-      update: {
-        reportData: codeJudgesReport,
-      },
-    });
-
-    log.info("[handleWorkflowSuccess] Persisted code judges report", {
-      artifactId,
-      reportId: codeJudgesReport.report_id,
-      judgesCount: codeJudgesReport.stats.length,
     });
   }
 
