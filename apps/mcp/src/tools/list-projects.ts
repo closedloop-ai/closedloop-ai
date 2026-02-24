@@ -38,11 +38,6 @@ export function registerListProjects(
     ({ limit, offset }) =>
       withErrorHandling(async () => {
         const projects = await apiClient.get<unknown[]>("/projects");
-        if (projects.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No projects found." }],
-          };
-        }
         const payload = buildPaginatedPayload(projects, {
           limit,
           offset,

@@ -38,3 +38,19 @@ export type DashboardStats = {
   /** Number of active leaderboards (placeholder) */
   leaderboardsCount?: number;
 };
+
+/**
+ * Response for the public (unauthenticated) dashboard endpoint.
+ */
+export type PublicDashboardResponse = {
+  organizationName: string;
+  stats: DashboardStats;
+};
+
+/**
+ * Response for admin public dashboard token management.
+ */
+export type PublicDashboardTokenResponse = {
+  token: string | null;
+  url: string | null;
+};
