@@ -1121,7 +1121,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     `     - Base branch: ${config.targetBranch}`,
     "     - Write a descriptive title based on the actual changes",
     "     - Include a summary of what was changed in the body",
-    '     - Add label: symphony',
+    "     - Add label: symphony",
     "   - If a PR already exists, get its URL with: gh pr view --json url -q .url",
     "7. ONLY after a successful commit AND push, write this EXACT JSON file:",
     `   File path: ${resultFilePath}`,
@@ -1197,9 +1197,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     // Read execution-result.json written by the LLM (preferred over stdout parsing)
     if (fs.existsSync(resultFilePath)) {
       try {
-        const resultData = JSON.parse(
-          fs.readFileSync(resultFilePath, "utf-8")
-        );
+        const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
         log(
           "info",
           `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
@@ -1226,9 +1224,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
       log("info", `LLM commit created PR: ${prMatch[0]}`);
       return {
         prUrl: prMatch[0],
-        prNumber: prNumberMatch
-          ? Number.parseInt(prNumberMatch[1], 10)
-          : null,
+        prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
         branchName,
         commitSha: null,
       };
@@ -2305,7 +2301,10 @@ function writeExecutionResult(workDir, prInfo) {
     // Don't overwrite if the LLM commit step already wrote it —
     // the LLM's version has first-hand PR/commit info from its own operations.
     if (fs.existsSync(filePath)) {
-      log("info", "execution-result.json already exists (written by LLM commit), skipping");
+      log(
+        "info",
+        "execution-result.json already exists (written by LLM commit), skipping"
+      );
       return;
     }
 
@@ -2374,7 +2373,10 @@ async function reportFinalStatus(
       prInfo = llmPrInfo;
     } else {
       // Fallback: safety commit + push + mechanical PR creation
-      log("info", "LLM commit did not produce execution-result.json — running safety fallback");
+      log(
+        "info",
+        "LLM commit did not produce execution-result.json — running safety fallback"
+      );
       attemptSafetyCommit(workDir, safetyCommitMsg);
       ensureBranchPushed(workDir);
 
@@ -2726,7 +2728,10 @@ async function main() {
 
     let prInfo = null;
     if (shouldCommitAndPush) {
-      const errorResultPath = path.join(symphonyWorkDir || workDir, "execution-result.json");
+      const errorResultPath = path.join(
+        symphonyWorkDir || workDir,
+        "execution-result.json"
+      );
 
       // Try LLM commit first (writes execution-result.json on success)
       let llmPrInfo = null;
