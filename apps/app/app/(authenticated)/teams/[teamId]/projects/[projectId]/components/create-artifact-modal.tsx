@@ -15,6 +15,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import {
@@ -24,12 +30,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import {
   type User,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { LoaderIcon, UploadIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  LoaderIcon,
+  SparklesIcon,
+  UploadIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HiddenFileInput,
@@ -38,6 +50,8 @@ import {
 import {
   useArtifact,
   useArtifactsByProject,
+  useCreateAndGenerateArtifact,
+  useCreateAndInlineGeneratePRD,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import {
@@ -131,6 +145,106 @@ function populateFieldsFromPrd(
   };
 }
 
+function CreateArtifactFooter({
+  isPrd,
+  isSubmitting,
+  isSaving,
+  isGenerating,
+  canSubmit,
+  typeLabel,
+  onSubmit,
+  onQuickGenerate,
+  onDeepGenerate,
+  onCancel,
+}: {
+  isPrd: boolean;
+  isSubmitting: boolean;
+  isSaving: boolean;
+  isGenerating: boolean;
+  canSubmit: boolean;
+  typeLabel: string;
+  onSubmit: () => void;
+  onQuickGenerate: () => void;
+  onDeepGenerate: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <DialogFooter>
+      <Button onClick={onCancel} type="button" variant="outline">
+        Cancel
+      </Button>
+      {isPrd ? (
+        <>
+          <Button
+            disabled={isSubmitting || !canSubmit}
+            onClick={onSubmit}
+            variant="outline"
+          >
+            {isSaving ? (
+              <>
+                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save"
+            )}
+          </Button>
+          {isGenerating ? (
+            <Button disabled>
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Generating...
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button disabled={isSubmitting || !canSubmit}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Generate
+                  <ChevronDownIcon className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onQuickGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Quick PRD
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDeepGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Deep PRD
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </>
+      ) : (
+        <Button disabled={isSubmitting || !canSubmit} onClick={onSubmit}>
+          {isSaving ? (
+            <>
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Creating...
+            </>
+          ) : (
+            `Create ${typeLabel}`
+          )}
+        </Button>
+      )}
+    </DialogFooter>
+  );
+}
+
+function getBranchPlaceholder(
+  selectedRepoId: string,
+  isLoadingBranches: boolean
+) {
+  if (!selectedRepoId) {
+    return "Select a repository first";
+  }
+  if (isLoadingBranches) {
+    return "Loading branches...";
+  }
+  return "Select a branch";
+}
+
 type CreateArtifactModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -139,6 +253,7 @@ type CreateArtifactModalProps = {
   onSuccess?: (artifact: Artifact) => void;
 };
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: complex form with multiple submission paths (save, quick generate, deep generate)
 export function CreateArtifactModal({
   open,
   onOpenChange,
@@ -159,6 +274,7 @@ export function CreateArtifactModal({
   const [targetRepo, setTargetRepo] = useState("");
   const [targetBranch, setTargetBranch] = useState("main");
   const [selectedRepoId, setSelectedRepoId] = useState<string>("");
+  const [reverseSynthesisLink, setReverseSynthesisLink] = useState("");
 
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
@@ -215,8 +331,10 @@ export function CreateArtifactModal({
     [orgUsers]
   );
 
-  // Create artifact mutation
+  // Create artifact mutations
   const createArtifact = useCreateArtifact();
+  const createAndInlineGenerate = useCreateAndInlineGeneratePRD();
+  const createAndDeepGenerate = useCreateAndGenerateArtifact();
 
   // Auto-select default branch only when no branch is selected yet
   useEffect(() => {
@@ -264,16 +382,10 @@ export function CreateArtifactModal({
     }
   }, [templateDetail]);
 
-  // Compute branch placeholder based on state
-  const getBranchPlaceholder = () => {
-    if (!selectedRepoId) {
-      return "Select a repository first";
-    }
-    if (isLoadingBranches) {
-      return "Loading branches...";
-    }
-    return "Select a branch";
-  };
+  const branchPlaceholder = getBranchPlaceholder(
+    selectedRepoId,
+    isLoadingBranches
+  );
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -308,6 +420,7 @@ export function CreateArtifactModal({
     setTargetBranch("main");
     setSelectedRepoId("");
     setSelectedPrdId("");
+    setReverseSynthesisLink("");
     setError(null);
     fileInputRef.current?.reset();
   };
@@ -327,7 +440,6 @@ export function CreateArtifactModal({
 
   const handleSubmit = () => {
     setError(null);
-
     if (!title.trim()) {
       setError("Please enter a title");
       return;
@@ -360,6 +472,61 @@ export function CreateArtifactModal({
       }
     );
   };
+
+  const prdInput = {
+    projectId,
+    type: artifactType,
+    title: title.trim(),
+    fileName: fileName.trim() || undefined,
+    content: content.trim(),
+    approverId: selectedApprover?.id ?? undefined,
+    status,
+    targetRepo: targetRepo.trim() || undefined,
+    targetBranch: targetBranch.trim() || undefined,
+  };
+
+  const handleQuickGenerate = () => {
+    setError(null);
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+
+    createAndInlineGenerate.mutate(
+      {
+        input: prdInput,
+        reverseSynthesisLink: reverseSynthesisLink.trim() || undefined,
+      },
+      {
+        onSuccess: ({ artifact, generationError }) => {
+          handleClose();
+          onSuccess?.(artifact);
+          if (generationError) {
+            toast.error(`Quick PRD generation failed: ${generationError}`);
+          }
+        },
+      }
+    );
+  };
+
+  const handleDeepGenerate = () => {
+    setError(null);
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+
+    createAndDeepGenerate.mutate(prdInput, {
+      onSuccess: (artifact) => {
+        handleClose();
+        onSuccess?.(artifact);
+      },
+    });
+  };
+
+  const isGenerating =
+    createAndInlineGenerate.isPending || createAndDeepGenerate.isPending;
+  const isSubmitting = createArtifact.isPending || isGenerating;
 
   return (
     <Dialog
@@ -490,7 +657,7 @@ export function CreateArtifactModal({
               value={targetBranch}
             >
               <SelectTrigger id="artifact-target-branch">
-                <SelectValue placeholder={getBranchPlaceholder()} />
+                <SelectValue placeholder={branchPlaceholder} />
               </SelectTrigger>
               <SelectContent>
                 {branchesData?.branches.map((branch) => (
@@ -524,60 +691,74 @@ export function CreateArtifactModal({
           </div>
 
           {isPrd && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="artifact-content">
-                  Content{" "}
+            <>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="artifact-content">
+                    Content{" "}
+                    <span className="text-muted-foreground text-xs">
+                      (optional)
+                    </span>
+                  </Label>
+                  <Button
+                    onClick={() => fileInputRef.current?.open()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <UploadIcon className="mr-2 h-4 w-4" />
+                    Upload .md
+                  </Button>
+                </div>
+                <HiddenFileInput
+                  accept=".md"
+                  aria-label="Upload markdown file for artifact content"
+                  onError={setError}
+                  onFileRead={handleFileRead}
+                  ref={fileInputRef}
+                />
+                <Textarea
+                  className="min-h-[120px] font-mono text-sm"
+                  id="artifact-content"
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder="Paste markdown content or a prompt for AI generation..."
+                  value={content}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="reverse-synthesis-url">
+                  Source URL{" "}
                   <span className="text-muted-foreground text-xs">
                     (optional)
                   </span>
                 </Label>
-                <Button
-                  onClick={() => fileInputRef.current?.open()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <UploadIcon className="mr-2 h-4 w-4" />
-                  Upload .md
-                </Button>
+                <Input
+                  id="reverse-synthesis-url"
+                  onChange={(e) => setReverseSynthesisLink(e.target.value)}
+                  placeholder="https://github.com/org/repo or documentation URL"
+                  value={reverseSynthesisLink}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Provide a URL for the AI to reference when generating the PRD.
+                </p>
               </div>
-              <HiddenFileInput
-                accept=".md"
-                aria-label="Upload markdown file for artifact content"
-                onError={setError}
-                onFileRead={handleFileRead}
-                ref={fileInputRef}
-              />
-              <Textarea
-                className="min-h-[120px] font-mono text-sm"
-                id="artifact-content"
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Paste markdown content here..."
-                value={content}
-              />
-            </div>
+            </>
           )}
         </div>
 
-        <DialogFooter>
-          <Button onClick={handleClose} type="button" variant="outline">
-            Cancel
-          </Button>
-          <Button
-            disabled={createArtifact.isPending || !title.trim()}
-            onClick={handleSubmit}
-          >
-            {createArtifact.isPending ? (
-              <>
-                <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              `Create ${typeLabel}`
-            )}
-          </Button>
-        </DialogFooter>
+        <CreateArtifactFooter
+          canSubmit={!!title.trim()}
+          isGenerating={isGenerating}
+          isPrd={isPrd}
+          isSaving={createArtifact.isPending}
+          isSubmitting={isSubmitting}
+          onCancel={handleClose}
+          onDeepGenerate={handleDeepGenerate}
+          onQuickGenerate={handleQuickGenerate}
+          onSubmit={handleSubmit}
+          typeLabel={typeLabel}
+        />
       </DialogContent>
     </Dialog>
   );

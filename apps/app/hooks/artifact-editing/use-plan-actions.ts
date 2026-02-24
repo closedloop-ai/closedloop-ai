@@ -97,9 +97,12 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     } else {
-      regenerateArtifact.mutate(artifact.id, {
-        onSuccess: () => toast.success("Plan regeneration started"),
-      });
+      regenerateArtifact.mutate(
+        { id: artifact.id },
+        {
+          onSuccess: () => toast.success("Plan regeneration started"),
+        }
+      );
     }
   }, [artifact.id, useLoops, runLoop, regenerateArtifact]);
 
