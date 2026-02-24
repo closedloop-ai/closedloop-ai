@@ -7,6 +7,7 @@ import type {
   CreateArtifactInput,
   FindArtifactsOptions,
   GenerationStatus,
+  MergeArtifactsInput,
   PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
@@ -532,6 +533,29 @@ export function useBatchMoveArtifacts() {
       queryClient.invalidateQueries({
         queryKey: projectKeys.detail(targetProjectId),
       });
+    },
+  });
+}
+
+/**
+ * Merge two artifacts into one, keeping the primary and deleting the secondary.
+ */
+export function useMergeArtifacts() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      primaryArtifactId,
+      secondaryArtifactId,
+    }: MergeArtifactsInput) =>
+      apiClient.post<Artifact>("/artifacts/merge", {
+        primaryArtifactId,
+        secondaryArtifactId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
