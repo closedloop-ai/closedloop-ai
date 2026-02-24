@@ -9,6 +9,7 @@ import { getWorktreePath, parseLearningsUsed } from "@/lib/engineer/chat-utils";
 import {
   markCommentAddressed,
   markCommentResponded,
+  resetCommentStatus,
 } from "@/lib/engineer/pr-comment-tracker";
 import { gitStatusOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
@@ -22,11 +23,13 @@ export type UseCommentChatOptions = {
   ticketId: string;
   repoPath: string;
   prNumber: number;
+  branchName?: string;
   comment: PRComment;
   replies?: PRComment[];
   enabled?: boolean;
   autoStart?: boolean;
   onResolved?: () => void;
+  onChatCleared?: () => void;
 };
 
 export type UseCommentChatReturn = {
@@ -70,6 +73,7 @@ export type UseCommentChatReturn = {
   handleStop: () => void;
   handleSend: () => void;
   handleAcceptChanges: () => void;
+  markChangesAccepted: () => void;
   handleCommitAndResolve: () => Promise<void>;
   handleSendResponse: (
     responseText: string,
@@ -98,11 +102,13 @@ export function useCommentChat({
   ticketId,
   repoPath,
   prNumber,
+  branchName,
   comment,
   replies,
   enabled = true,
   autoStart = true,
   onResolved,
+  onChatCleared,
 }: UseCommentChatOptions): UseCommentChatReturn {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -136,7 +142,20 @@ export function useCommentChat({
   );
   const queryClient = useQueryClient();
 
-  const worktreePath = getWorktreePath(repoPath, ticketId);
+  // worktreePath starts as a client-side guess; updated by the server's
+  // worktree_resolved event once the actual effective dir is known.
+  const [worktreePath, setWorktreePath] = useState(() =>
+    getWorktreePath(repoPath, ticketId)
+  );
+  // Ref mirror so stale closures (e.g. memoized CommentMessageBubble
+  // onSendResponse) always read the latest resolved path.
+  const worktreePathRef = useRef(worktreePath);
+  worktreePathRef.current = worktreePath;
+
+  // Build query-string suffix for branch-aware API calls
+  const branchParams = branchName
+    ? `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`
+    : "";
 
   // Auto-resize textarea when input changes
   useEffect(() => {
@@ -153,12 +172,19 @@ export function useCommentChat({
     isLoading: isLoadingHistory,
     isFetching: isFetchingHistory,
   } = useQuery({
-    ...commentChatHistoryOptions(ticketId, comment.id, repoPath, {
-      author: comment.author,
-      body: comment.body,
-      path: comment.path,
-      line: comment.line,
-    }),
+    ...commentChatHistoryOptions(
+      ticketId,
+      comment.id,
+      repoPath,
+      {
+        author: comment.author,
+        body: comment.body,
+        path: comment.path,
+        line: comment.line,
+      },
+      branchName,
+      prNumber
+    ),
     enabled,
     // Poll while a response may still be generating server-side.
     // - Regular flow: last message is from user → poll until assistant appears
@@ -281,12 +307,10 @@ export function useCommentChat({
     }, 120_000);
   }, [ticketId, repoPath, stopLearningsPolling]);
 
-  // Abort in-flight stream on unmount
-  useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort();
-    };
-  }, []);
+  // NOTE: no abort on unmount — intentionally let the server-side Claude/Codex
+  // process continue when the dialog closes or the component unmounts.
+  // The explicit Stop button (handleStop) is the only way to abort.
+  // This matches ReviewChatPane's design where streams survive unmount.
 
   // Cleanup polling on unmount
   useEffect(() => stopLearningsPolling, [stopLearningsPolling]);
@@ -301,9 +325,14 @@ export function useCommentChat({
       id?: string;
       input?: unknown;
       contextPercent?: number;
+      effectiveDir?: string;
     },
     accumulated: string
   ): string => {
+    if (event.type === "worktree_resolved" && event.effectiveDir) {
+      setWorktreePath(event.effectiveDir);
+      return accumulated;
+    }
     if (event.type === "usage" && event.contextPercent != null) {
       setContextPercent(event.contextPercent);
       return accumulated;
@@ -427,13 +456,15 @@ export function useCommentChat({
 
       try {
         const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               message: messageToSend,
               displayContent,
+              branchName,
+              prNumber,
               commentContext: {
                 author: comment.author,
                 body: comment.body,
@@ -497,6 +528,9 @@ export function useCommentChat({
       replies,
       ticketId,
       repoPath,
+      branchName,
+      branchParams,
+      prNumber,
       readStream,
     ]
   ); // eslint-disable-line react-hooks/exhaustive-deps
@@ -583,13 +617,13 @@ export function useCommentChat({
   const handleCommitAndResolve = async () => {
     setIsCommitting(true);
     try {
-      // 1. Commit changes
+      // 1. Commit changes (must succeed before we can resolve)
       const commitResponse = await fetch("/api/engineer/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "commit",
-          repoPath: worktreePath,
+          repoPath: worktreePathRef.current,
           message: `Address PR feedback: ${comment.body.slice(0, 50)}${comment.body.length > 50 ? "..." : ""}\n\nAddresses: ${comment.url}`,
         }),
       });
@@ -600,62 +634,31 @@ export function useCommentChat({
       }
       const commitSha = commitData.commit?.slice(0, 7) || "unknown";
 
-      // 2. Push changes
-      const pushResponse = await fetch("/api/engineer/git", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "push",
-          repoPath: worktreePath,
-        }),
-      });
-
-      if (!pushResponse.ok) {
-        const data = await pushResponse.json();
-        throw new Error(data.error || "Failed to push");
-      }
-
-      // 3. Reply to the PR comment thread (use base repoPath for git remote lookup)
-      //    Skip @mention for bot authors (e.g. codex connector) to avoid triggering them.
-      const replyToId =
-        comment.databaseId && comment.databaseId > 0
-          ? comment.databaseId
-          : undefined;
-      if (replyToId) {
-        const isBot = comment.author.endsWith("[bot]");
-        const replyBody = isBot
-          ? `Issue addressed in ${commitSha} ✓`
-          : `@${comment.author} Issue addressed in ${commitSha} ✓`;
-        await fetch("/api/engineer/git/pr/reply", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            repoPath,
-            commentId: replyToId,
-            prNumber,
-            body: replyBody,
-          }),
-        });
-      }
-
-      // 4. Update local status
+      // 2. Update local status and close the chat immediately — don't
+      //    block on push + GitHub reply which are slow network calls.
       markCommentAddressed(prNumber, comment.id, commitSha);
-
-      // 5. Reset state and refresh git status + PR comments
       setHasAcceptedChanges(false);
+      toast.success("Comment addressed!", {
+        description: `Changes committed (${commitSha}) — pushing in background...`,
+      });
+      onResolved?.();
+      triggerLearningsExtraction();
+
+      // 3. Push + reply in the background (best-effort, errors shown as toasts)
+      pushAndReply(
+        worktreePathRef.current,
+        repoPath,
+        prNumber,
+        comment,
+        commitSha
+      );
+
       queryClient.invalidateQueries({
-        queryKey: queryKeys.gitStatus(worktreePath),
+        queryKey: queryKeys.gitStatus(worktreePathRef.current),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.prComments(prNumber, repoPath),
       });
-
-      toast.success("Comment addressed!", {
-        description: `Changes committed and pushed (${commitSha})`,
-      });
-
-      triggerLearningsExtraction();
-      onResolved?.();
     } catch (err) {
       console.error("Commit error:", err);
       toast.error("Failed to commit", {
@@ -702,7 +705,7 @@ export function useCommentChat({
       setHasResponded(true);
 
       // Persist responded flag on the message so it survives navigation
-      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+      const patchUrl = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
       fetch(patchUrl, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -721,17 +724,27 @@ export function useCommentChat({
           /* best-effort */
         });
 
-      // Refetch git status to get fresh data (user may have committed via ChangedFilesViewer)
-      const freshGitStatus = await queryClient.fetchQuery({
-        ...gitStatusOptions(worktreePath),
-        staleTime: 0,
-      });
-      const stillHasChanges = freshGitStatus
-        ? freshGitStatus.modified.length +
-            freshGitStatus.created.length +
-            freshGitStatus.deleted.length >
-          0
-        : false;
+      // Refetch git status to check for uncommitted changes.
+      // Use worktreePathRef to avoid stale closure from memoized message bubble.
+      let stillHasChanges = false;
+      try {
+        const freshGitStatus = await queryClient.fetchQuery({
+          ...gitStatusOptions(worktreePathRef.current),
+          staleTime: 0,
+        });
+        if (freshGitStatus) {
+          stillHasChanges =
+            freshGitStatus.modified.length +
+              freshGitStatus.created.length +
+              freshGitStatus.deleted.length >
+            0;
+        }
+      } catch {
+        // Fresh fetch failed — fall back to last known state from polling.
+        // hadChangesRef latches true once changes are detected, preventing
+        // auto-dismiss when the git status API is unreachable.
+        stillHasChanges = hadChangesRef.current;
+      }
 
       if (stillHasChanges) {
         toast.success(
@@ -773,7 +786,7 @@ export function useCommentChat({
     async (index: number) => {
       try {
         const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}&index=${index}`,
+          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}&index=${index}`,
           { method: "DELETE" }
         );
         if (response.ok) {
@@ -789,7 +802,7 @@ export function useCommentChat({
         console.error("Failed to delete message:", err);
       }
     },
-    [comment.id, ticketId, repoPath, queryClient]
+    [comment.id, ticketId, repoPath, branchParams, queryClient]
   );
 
   // Clear entire chat history
@@ -799,12 +812,16 @@ export function useCommentChat({
     }
     try {
       const response = await fetch(
-        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`,
+        `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
         { method: "DELETE" }
       );
       if (response.ok) {
         setHasAutoStarted(false);
         setHasAcceptedChanges(false);
+        // Reset chatStarted so the PR comment card overflow menu
+        // re-shows "Fix with Claude/Codex" options.
+        resetCommentStatus(prNumber, comment.id);
+        onChatCleared?.();
         queryClient.invalidateQueries({
           queryKey: queryKeys.commentChatHistory(
             ticketId,
@@ -879,6 +896,7 @@ export function useCommentChat({
     handleStop,
     handleSend,
     handleAcceptChanges,
+    markChangesAccepted: useCallback(() => setHasAcceptedChanges(true), []),
     handleCommitAndResolve,
     handleSendResponse,
     handleDeleteMessage,
@@ -895,4 +913,58 @@ export function useCommentChat({
     learningsCount,
     pollLearningsStatus,
   };
+}
+
+/**
+ * Fire-and-forget: push committed changes and reply to the PR comment thread.
+ * Errors are shown as toasts but don't block the resolved UI state.
+ */
+async function pushAndReply(
+  worktreePath: string,
+  repoPath: string,
+  prNumber: number,
+  comment: PRComment,
+  commitSha: string
+): Promise<void> {
+  try {
+    const pushResponse = await fetch("/api/engineer/git", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "push", repoPath: worktreePath }),
+    });
+    if (!pushResponse.ok) {
+      const data = await pushResponse.json();
+      toast.error("Push failed", {
+        description: data.error || "Failed to push changes",
+      });
+      return;
+    }
+  } catch {
+    toast.error("Push failed", { description: "Network error" });
+    return;
+  }
+
+  // Reply to the PR comment thread (best-effort)
+  const replyToId =
+    comment.databaseId && comment.databaseId > 0
+      ? comment.databaseId
+      : undefined;
+  if (replyToId) {
+    const isBot = comment.author.endsWith("[bot]");
+    const replyBody = isBot
+      ? `Issue addressed in ${commitSha}`
+      : `@${comment.author} Issue addressed in ${commitSha}`;
+    fetch("/api/engineer/git/pr/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        repoPath,
+        commentId: replyToId,
+        prNumber,
+        body: replyBody,
+      }),
+    }).catch(() => {
+      // Best-effort — don't toast for reply failures
+    });
+  }
 }

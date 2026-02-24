@@ -1,16 +1,20 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import { type Prisma, withDb } from "@repo/database";
+import {
+  type Prisma,
+  EvaluationReportType as PrismaEvaluationReportType,
+  withDb,
+} from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import type { WorkflowContext } from "../types";
+import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
-import type { ExecutionResult } from "../zip-parser";
 import { processArtifactUploads } from "./workflow-artifacts";
 
 /**
@@ -34,7 +38,8 @@ type PrEventMetadata = {
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
-  executionResult: ExecutionResult
+  executionResult: ExecutionResult,
+  codeJudgesReport: JudgesReport | null
 ): Promise<void> {
   const { correlationId, workstreamId, repositoryId, runId } = ctx;
 
@@ -65,6 +70,14 @@ export async function handleExecutionSuccess(
   }
 
   if (!repositoryId) {
+    if (codeJudgesReport) {
+      log.warn(
+        "[handleExecutionSuccess] Dropping codeJudgesReport — no repositoryId in context",
+        {
+          reportId: codeJudgesReport.report_id,
+        }
+      );
+    }
     log.error(
       `[handleExecutionSuccess] No repositoryId in context for correlation ${correlationId}`
     );
@@ -213,6 +226,34 @@ export async function handleExecutionSuccess(
         } as PrEventMetadata,
       },
     });
+
+    if (codeJudgesReport && ctx.actionRunId) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: ctx.artifactId,
+            reportId: codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: ctx.artifactId,
+          actionRunId: ctx.actionRunId,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportId: codeJudgesReport.report_id,
+          reportData: codeJudgesReport,
+        },
+        update: {
+          reportType: PrismaEvaluationReportType.CODE,
+          reportData: codeJudgesReport,
+        },
+      });
+
+      log.info("[handleExecutionSuccess] Persisted code judges report", {
+        artifactId: ctx.artifactId,
+        reportId: codeJudgesReport.report_id,
+        judgesCount: codeJudgesReport.stats.length,
+      });
+    }
   });
 
   log.info(
@@ -241,6 +282,7 @@ export async function handleWorkflowSuccess(
     questionsContent,
     executionResult,
     judgesReport,
+    codeJudgesReport,
     perfSummary,
     artifactKeys,
   } = result;
@@ -249,7 +291,7 @@ export async function handleWorkflowSuccess(
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
     return;
   }
 
@@ -350,10 +392,12 @@ export async function handleWorkflowSuccess(
       create: {
         artifactId,
         actionRunId: ctx.actionRunId,
+        reportType: PrismaEvaluationReportType.PLAN,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: PrismaEvaluationReportType.PLAN,
         reportData: judgesReport,
       },
     });

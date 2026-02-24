@@ -9,7 +9,8 @@ import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import { parseLearningsUsed, readChatStream } from "@/lib/engineer/chat-utils";
 
 export type UseChatStreamCallbacks = {
-  onComplete?: () => void | Promise<void>;
+  /** Called when streaming completes. Receives the accumulated assistant text. */
+  onComplete?: (accumulatedText: string) => void | Promise<void>;
   onPid?: (pid: number) => void;
   onLearnings?: () => void;
   onLearningsUsed?: (learnings: LearningUsed[]) => void;
@@ -169,7 +170,7 @@ export function useChatStream(): UseChatStreamReturn {
           if (learnings.length > 0) {
             callbacks?.onLearningsUsed?.(learnings);
           }
-          await callbacks?.onComplete?.();
+          await callbacks?.onComplete?.(latestTextRef.current);
         }
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {

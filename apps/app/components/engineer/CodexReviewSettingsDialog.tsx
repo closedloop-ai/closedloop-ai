@@ -15,7 +15,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { cn } from "@repo/design-system/lib/utils";
 import { Search } from "lucide-react";
 import { useState } from "react";
@@ -58,7 +57,6 @@ export function CodexReviewSettingsDialog({
         | "codex") || "claude"
     );
   });
-  const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState(() => {
     if (globalThis.window === undefined) {
       return "claude-opus-4-6";
@@ -94,7 +92,7 @@ export function CodexReviewSettingsDialog({
       localStorage.setItem(LOCAL_STORAGE_KEYS.provider, provider);
     }
     onStartReview({
-      instructions: instructions.trim(),
+      instructions: "",
       model,
       reasoningEffort,
       reviewMode,
@@ -142,21 +140,6 @@ export function CodexReviewSettingsDialog({
               </button>
             </div>
           </div>
-
-          {provider === "codex" && (
-            <div className="space-y-2">
-              <Label htmlFor="review-instructions">
-                Instructions (optional)
-              </Label>
-              <Textarea
-                id="review-instructions"
-                onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Focus on security issues and error handling..."
-                rows={3}
-                value={instructions}
-              />
-            </div>
-          )}
 
           <div className="space-y-2">
             <Label>Review Mode</Label>

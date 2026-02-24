@@ -45,6 +45,12 @@ type PRCommentsViewerProps = {
   onCommentDismissed?: (commentId: string) => void;
   /** Called when "Review with Codex" is selected from a comment card overflow */
   onReviewCodex?: (commentId: string) => void;
+  /** Comment IDs that have an active chat session (used to derive "analyzing" status) */
+  activeChatCommentIds?: ReadonlySet<string>;
+  /** Comment IDs where the assistant is actively streaming (used for pulse animation) */
+  streamingCommentIds?: ReadonlySet<string>;
+  /** Comment ID currently displayed in the right pane (for selection highlight) */
+  selectedCommentId?: string | null;
 };
 
 type FilterType = "all" | "pending" | "resolved";
@@ -107,15 +113,18 @@ function buildThreads(comments: PRComment[]): CommentThread[] {
 }
 
 function resolveDisplayStatus(
-  statuses: Record<string, { status: string; chatStarted?: boolean }>,
-  commentId: string
+  statuses: Record<string, { status: string }>,
+  commentId: string,
+  activeChatIds?: ReadonlySet<string>
 ): CommentDisplayStatus {
+  // Derive "analyzing" from live React state, not localStorage's chatStarted
+  // flag (which can become stale across page reloads).
+  if (activeChatIds?.has(commentId)) {
+    return "analyzing";
+  }
   const entry = statuses[commentId];
   if (!entry) {
     return "pending";
-  }
-  if (entry.status === "pending" && entry.chatStarted) {
-    return "analyzing";
   }
   return entry.status as CommentDisplayStatus;
 }
@@ -144,6 +153,9 @@ export function PRCommentsViewer({
   statusRefreshKey = 0,
   onCommentDismissed,
   onReviewCodex,
+  activeChatCommentIds,
+  streamingCommentIds,
+  selectedCommentId,
 }: Readonly<PRCommentsViewerProps>) {
   const [filter, setFilter] = useState<FilterType>("pending");
   const [addressingComment, setAddressingComment] = useState<PRComment | null>(
@@ -170,12 +182,12 @@ export function PRCommentsViewer({
     staleTime: 10_000, // Consider data stale after 10 seconds
   });
 
-  // Get local status for all comments — re-read from localStorage whenever statusVersion changes
+  // Get local status for all comments — re-read from localStorage whenever
+  // statusVersion (internal dismiss/reopen) or statusRefreshKey (parent signals) changes
   const commentStatuses = useMemo(() => {
     return getCommentStatuses(prNumber);
-    // statusVersion is intentionally included to force re-read after dismiss/reopen
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prNumber, statusVersion]);
+  }, [prNumber, statusVersion, statusRefreshKey]);
 
   // Build threads from flat comments
   const threads = useMemo(() => {
@@ -194,9 +206,8 @@ export function PRCommentsViewer({
       prNumber,
       threads.map((t) => t.root.id)
     );
-    // statusVersion included so counts update after dismiss/reopen
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prNumber, threads, statusVersion]);
+  }, [prNumber, threads, statusVersion, statusRefreshKey]);
 
   // Filter threads based on selected filter, grouped into inline and general
   const filteredThreads = useMemo(() => {
@@ -245,7 +256,7 @@ export function PRCommentsViewer({
   };
 
   const getStatus = (commentId: string): CommentDisplayStatus =>
-    resolveDisplayStatus(commentStatuses, commentId);
+    resolveDisplayStatus(commentStatuses, commentId, activeChatCommentIds);
 
   if (isLoading) {
     return <CommentsLoadingState />;
@@ -330,6 +341,8 @@ export function PRCommentsViewer({
           onReopen={handleReopen}
           onReviewCodex={codexData?.available ? onReviewCodex : undefined}
           overflowSeen={overflowSeen}
+          selectedCommentId={selectedCommentId}
+          streamingCommentIds={streamingCommentIds}
         />
       </div>
 
@@ -367,6 +380,8 @@ function CommentSection({
   markOverflowSeen,
   onReviewCodex,
   getStatus,
+  selectedCommentId,
+  streamingCommentIds,
   onProposeFix,
   onDismiss,
   onReopen,
@@ -380,6 +395,8 @@ function CommentSection({
   markOverflowSeen: () => void;
   onReviewCodex?: (commentId: string) => void;
   getStatus: (id: string) => CommentDisplayStatus;
+  selectedCommentId?: string | null;
+  streamingCommentIds?: ReadonlySet<string>;
   onProposeFix: (
     comment: PRComment,
     replies: PRComment[],
@@ -403,6 +420,8 @@ function CommentSection({
           <PRCommentCard
             comment={thread.root}
             commitSha={commentStatuses[thread.root.id]?.commitSha}
+            isSelected={thread.root.id === selectedCommentId}
+            isStreaming={streamingCommentIds?.has(thread.root.id)}
             key={thread.root.id}
             markOverflowSeen={markOverflowSeen}
             onDismiss={() => onDismiss(thread.root.id)}
@@ -486,6 +505,8 @@ function FilteredComments({
   onReopen,
   onReviewCodex,
   overflowSeen,
+  selectedCommentId,
+  streamingCommentIds,
 }: Readonly<{
   filteredThreads: { inline: CommentThread[]; general: CommentThread[] };
   filter: FilterType;
@@ -503,6 +524,8 @@ function FilteredComments({
   onReopen: (commentId: string) => void;
   onReviewCodex?: (commentId: string) => void;
   overflowSeen: boolean;
+  selectedCommentId?: string | null;
+  streamingCommentIds?: ReadonlySet<string>;
 }>) {
   if (
     filteredThreads.inline.length === 0 &&
@@ -532,6 +555,8 @@ function FilteredComments({
           onReopen={onReopen}
           onReviewCodex={onReviewCodex}
           overflowSeen={overflowSeen}
+          selectedCommentId={selectedCommentId}
+          streamingCommentIds={streamingCommentIds}
           threads={filteredThreads.inline}
         />
       )}
@@ -548,6 +573,8 @@ function FilteredComments({
           onReopen={onReopen}
           onReviewCodex={onReviewCodex}
           overflowSeen={overflowSeen}
+          selectedCommentId={selectedCommentId}
+          streamingCommentIds={streamingCommentIds}
           threads={filteredThreads.general}
         />
       )}

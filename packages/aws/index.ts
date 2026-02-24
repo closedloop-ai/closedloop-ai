@@ -131,6 +131,31 @@ export async function getSignedUploadUrl(
 }
 
 /**
+ * Generate a presigned URL for downloading a file with a forced download disposition.
+ * The browser will prompt the user to save the file using the provided filename.
+ */
+export async function getSignedDownloadUrlWithDisposition(
+  key: string,
+  filename: string,
+  expiresIn = 3600
+): Promise<string> {
+  if (!config.S3_BUCKET_NAME) {
+    throw new Error("S3_BUCKET_NAME is not configured");
+  }
+
+  // Sanitize filename to prevent header injection via quotes, backslashes, or CRLF
+  const safeName = filename.replaceAll(/["\\\r\n]/g, "");
+
+  const command = new GetObjectCommand({
+    Bucket: config.S3_BUCKET_NAME,
+    Key: key,
+    ResponseContentDisposition: `attachment; filename="${safeName}"`,
+  });
+
+  return await s3GetSignedUrl(s3Client, command, { expiresIn });
+}
+
+/**
  * Generate the full S3 URL for an artifact.
  */
 export function getArtifactUrl(key: string): string {

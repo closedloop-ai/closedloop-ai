@@ -1,4 +1,8 @@
-import type { DailyTrend, DashboardStats } from "@repo/api/src/types/dashboard";
+import type {
+  DailyTrend,
+  DashboardStats,
+  PublicDashboardResponse,
+} from "@repo/api/src/types/dashboard";
 import {
   ArtifactType,
   GitHubActionStatus,
@@ -171,6 +175,28 @@ export const dashboardService = {
       });
       throw error;
     }
+  },
+
+  /**
+   * Look up an organization by its public dashboard token and return stats.
+   * Returns null if the token is invalid or the org is inactive.
+   */
+  async getPublicDashboardByToken(
+    token: string
+  ): Promise<PublicDashboardResponse | null> {
+    const org = await withDb((db) =>
+      db.organization.findUnique({
+        where: { publicDashboardToken: token },
+        select: { id: true, name: true, active: true },
+      })
+    );
+
+    if (!org?.active) {
+      return null;
+    }
+
+    const stats = await dashboardService.getDashboardStats(org.id);
+    return { organizationName: org.name, stats };
   },
 };
 
