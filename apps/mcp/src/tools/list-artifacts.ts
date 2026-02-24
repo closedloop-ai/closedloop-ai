@@ -96,9 +96,10 @@ export function registerListArtifacts(
             };
           },
         });
-        const text = JSON.stringify(payload, null, 2);
         return {
-          content: [{ type: "text" as const, text }],
+          content: [
+            { type: "text" as const, text: JSON.stringify(payload, null, 2) },
+          ],
         };
       })
   );
