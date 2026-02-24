@@ -33,10 +33,8 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   CodeIcon,
-  FileTextIcon,
   InboxIcon,
   LifeBuoyIcon,
-  LightbulbIcon,
   RotateCcwIcon,
   SendIcon,
   SettingsIcon,
@@ -118,18 +116,6 @@ const baseWorkspaceItems: NavItem[] = [
     url: "/inbox",
     icon: InboxIcon,
     disabled: false,
-  },
-  {
-    title: "Initiatives",
-    url: "/initiatives",
-    icon: LightbulbIcon,
-    disabled: true,
-  },
-  {
-    title: "My Documents",
-    url: "/my-documents",
-    icon: FileTextIcon,
-    disabled: true,
   },
   {
     title: "Loops",
@@ -292,7 +278,7 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                   >
                     {item.disabled ? (
                       <span className="flex items-center gap-2">
-                        <item.icon />
+                        <item.icon className="size-4" />
                         <span>{item.title}</span>
                       </span>
                     ) : (
@@ -325,7 +311,7 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                     >
                       {item.disabled ? (
                         <span className="flex items-center gap-2">
-                          <item.icon />
+                          <item.icon className="size-4" />
                           <span>{item.title}</span>
                         </span>
                       ) : (
