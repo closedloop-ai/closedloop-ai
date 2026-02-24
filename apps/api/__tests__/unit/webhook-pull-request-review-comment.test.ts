@@ -250,7 +250,7 @@ describe("handlePullRequestReviewComment", () => {
       } as any;
 
       // Mock repository lookup
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
@@ -271,8 +271,10 @@ describe("handlePullRequestReviewComment", () => {
       await handlePullRequestReviewComment(event);
 
       // Verify repository lookup
-      expect(mockTx.repository.findUnique).toHaveBeenCalledWith({
-        where: { githubId: 789 },
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith({
+        where: { githubRepoId: 789 },
         select: { id: true },
       });
 
@@ -362,7 +364,9 @@ describe("handlePullRequestReviewComment", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({ id: "repo-uuid" });
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid",
+      });
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid",
         workstreamId: "ws-uuid",
@@ -411,7 +415,7 @@ describe("handlePullRequestReviewComment", () => {
         },
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-456",
       });
 
@@ -462,7 +466,7 @@ describe("handlePullRequestReviewComment", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-delete",
       });
 
@@ -509,7 +513,7 @@ describe("handlePullRequestReviewComment", () => {
       } as any;
 
       // Mock repository not found
-      mockTx.repository.findUnique.mockResolvedValue(null);
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
       await handlePullRequestReviewComment(event);
 
@@ -541,7 +545,7 @@ describe("handlePullRequestReviewComment", () => {
       } as any;
 
       // Repository exists
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
       });
 
@@ -580,7 +584,9 @@ describe("handlePullRequestReviewComment", () => {
       await handlePullRequestReviewComment(event);
 
       // Should not query DB at all
-      expect(mockTx.repository.findUnique).not.toHaveBeenCalled();
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.upsert).not.toHaveBeenCalled();
       expect(mockTx.gitHubPRReviewComment.updateMany).not.toHaveBeenCalled();
