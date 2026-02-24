@@ -40,7 +40,7 @@ export type EngineerTicket = {
   updatedAt: string;
   url: string; // Link to the issue in Symphony
   // Symphony-specific fields
-  issueId: string; // The actual Symphony issue UUID
+  issueId?: string; // The actual Symphony issue UUID (only set for Issue-sourced tickets)
   projectName?: string;
   workstreamTitle?: string;
 };
@@ -216,4 +216,24 @@ export type McpArtifact = {
   } | null;
   project: { name: string | null } | null;
   workstream: { title: string | null } | null;
+};
+
+export type McpArtifactDetail = {
+  id: string;
+  title: string;
+  slug: string;
+  type: string;
+  status: string;
+  projectId: string | null;
+  workstreamId: string | null;
+  latestVersion: number | null;
+  updatedAt: string;
+  version: {
+    id: string;
+    version: number | null;
+    createdAt: string;
+    createdById: string | null;
+    contentLength: number;
+    content?: string;
+  };
 };

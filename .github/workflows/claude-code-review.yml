@@ -103,10 +103,47 @@ jobs:
 
           claude_args: |
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
-            --allowedTools "Read,Write,Task,TodoWrite,Skill,Grep,Glob,mcp__github_inline_comment__create_inline_comment,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(mkdir:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
+            --allowedTools "Read,Write,Task,TodoWrite,Skill,Grep,Glob,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(mkdir:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
 
           # Sticky comments disabled - was causing streaming mode errors
           use_sticky_comment: false
+
+      - name: Resolve outdated review threads
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+        shell: bash
+        run: |
+          THREADS_FILE=".claude/code-review-threads.json"
+          if [ ! -f "$THREADS_FILE" ]; then
+            echo "No threads file — skipping."
+            exit 0
+          fi
+          HELPERS=$(find .claude -name "code_review_helpers.py" -path "*/experimental/*" 2>/dev/null | head -1)
+          if [ -z "$HELPERS" ]; then
+            echo "Warning: helpers not found — skipping."
+            exit 0
+          fi
+          python3 "$HELPERS" resolve-threads --threads "$THREADS_FILE"
+
+      - name: Post inline review comments
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.generate_token.outputs.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          FINDINGS_FILE=".claude/code-review-findings.json"
+          if [ ! -f "$FINDINGS_FILE" ]; then
+            echo "No findings file — skipping."
+            exit 0
+          fi
+          HELPERS=$(find .claude -name "code_review_helpers.py" -path "*/experimental/*" 2>/dev/null | head -1)
+          if [ -z "$HELPERS" ]; then
+            echo "Warning: helpers not found — skipping."
+            exit 0
+          fi
+          python3 "$HELPERS" post-comments --findings "$FINDINGS_FILE"
 
       - name: Post code review summary
         id: post-summary

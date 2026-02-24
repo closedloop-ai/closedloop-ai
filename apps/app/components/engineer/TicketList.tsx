@@ -50,7 +50,7 @@ type TicketListProps = {
   onUpdateTicketStatus?: (
     ticketIdentifier: string,
     status: string
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   getFullTicket: (ticketId: string) => Promise<FullTicketDetails>;
   onPostComment?: (ticketIdentifier: string, body: string) => Promise<void>;
   onRefresh?: () => void;
@@ -876,8 +876,13 @@ export function TicketList({
     // Update ticket status to "In Progress" if not already
     if (ticket && ticket.status.type !== "started" && onUpdateTicketStatus) {
       try {
-        await onUpdateTicketStatus(ticketIdentifier, "In Progress");
-        toast.success("Ticket moved to In Progress");
+        const updated = await onUpdateTicketStatus(
+          ticketIdentifier,
+          "In Progress"
+        );
+        if (updated) {
+          toast.success("Ticket moved to In Progress");
+        }
       } catch (err) {
         console.error("Failed to update ticket status:", err);
       }
