@@ -1,4 +1,5 @@
 import { generateText, models } from "@repo/ai/server";
+import { ArtifactType as PrismaArtifactType } from "@repo/database";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
@@ -54,6 +55,14 @@ export const POST = withAuth<
     );
     if (!artifact) {
       return notFoundResponse("Artifact");
+    }
+
+    // Only PRDs can be generated with this endpoint
+    if (artifact.type !== PrismaArtifactType.PRD) {
+      return NextResponse.json(
+        { success: false, error: "Only PRD artifacts can use this endpoint" },
+        { status: 400 }
+      );
     }
 
     // Get latest version content as input context

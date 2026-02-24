@@ -280,7 +280,7 @@ describe("NewPlanModal", () => {
         targetBranch: "main",
       });
 
-      mockCreateAndGenerateMutate.mockImplementation(({ input }, options) => {
+      mockCreateAndGenerateMutate.mockImplementation((input, options) => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",

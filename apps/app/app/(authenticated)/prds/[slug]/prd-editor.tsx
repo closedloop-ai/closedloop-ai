@@ -142,7 +142,7 @@ export function PRDEditor({
       <PRDEditorHeader
         canEdit={!session.isViewingHistorical}
         isEditing={session.isEditing}
-        isGenerating={inlineGenerate.isPending}
+        isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
