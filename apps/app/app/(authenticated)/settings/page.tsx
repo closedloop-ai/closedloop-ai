@@ -31,6 +31,7 @@ import { ComputeModeCard } from "./components/compute-mode-card";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
 import { GoogleIntegrationCard } from "./components/google-integration-card";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
+import { PublicDashboardCard } from "./components/public-dashboard-card";
 
 /**
  * Error code to user-friendly message mapping for GitHub.
@@ -192,21 +193,7 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Advanced Organization Management</CardTitle>
-                <CardDescription>
-                  Admin-only controls for organization configuration.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-muted-foreground text-sm">
-                  Additional admin controls can be added here in the future. For
-                  now, use the Organization tab to manage members, roles, and
-                  settings.
-                </p>
-              </CardContent>
-            </Card>
+            <PublicDashboardCard />
           </Protect>
         </TabsContent>
 

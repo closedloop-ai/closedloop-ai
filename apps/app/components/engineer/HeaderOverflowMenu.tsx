@@ -15,7 +15,7 @@ import {
   MoreVertical,
   Sun,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PRBrowserDialog } from "@/components/engineer/PRBrowserDialog";
 import { RunViewerDialog } from "@/components/engineer/run-viewer/RunViewerDialog";
 import { useThemeContext } from "@/components/engineer/ThemeProvider";
@@ -35,6 +35,22 @@ export function HeaderOverflowMenu({
     useFeatureSeen("pr-browser");
   const [runViewerOpen, setRunViewerOpen] = useState(false);
   const [prBrowserOpen, setPRBrowserOpen] = useState(false);
+
+  // Hydration guard — Radix generates different IDs on server vs client
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  if (!mounted) {
+    return (
+      <button
+        aria-label="More options"
+        className="relative flex size-10 cursor-pointer items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-300 ease-out hover:scale-105 hover:border-primary/30 hover:text-primary hover:shadow-md focus:outline-none focus-visible:border-transparent focus-visible:ring-[3px] focus-visible:ring-primary/50 active:scale-95"
+        type="button"
+      >
+        <MoreVertical className="size-[18px]" strokeWidth={1.5} />
+      </button>
+    );
+  }
 
   return (
     <>

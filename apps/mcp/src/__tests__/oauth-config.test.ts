@@ -29,14 +29,19 @@ afterEach(() => {
 });
 
 describe.sequential("OAuth config", () => {
-  it("requires redirect allowlist in production", async () => {
+  it("allows startup in production without redirect allowlist (loopback-only)", async () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     process.env.WEBAPP_ENV = "stage";
     process.env.MCP_OAUTH_REDIRECT_URIS = "";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await import("../index.js");
     expect(() =>
       mod.__testables.requireRedirectAllowlistForEnvironment()
-    ).toThrow("MCP_OAUTH_REDIRECT_URIS must be set in non-local environments");
+    ).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("MCP_OAUTH_REDIRECT_URIS is empty")
+    );
+    warnSpy.mockRestore();
   });
 
   it("allows startup in production when redirect allowlist is set", async () => {
@@ -58,5 +63,19 @@ describe.sequential("OAuth config", () => {
     expect(() =>
       mod.__testables.requireInternalAllowlistForEnvironment()
     ).toThrow("MCP_INTERNAL_ALLOWED_IPS must be set in non-local environments");
+  });
+
+  it("supports exact IP and CIDR entries in internal allowlist", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.WEBAPP_ENV = "stage";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/16,192.168.1.10";
+    const mod = await import("../index.js");
+
+    expect(mod.__testables.isInternalAddressAllowed("10.0.5.20")).toBe(true);
+    expect(mod.__testables.isInternalAddressAllowed("192.168.1.10")).toBe(true);
+    expect(mod.__testables.isInternalAddressAllowed("10.1.0.1")).toBe(false);
+    expect(mod.__testables.isInternalAddressAllowed("192.168.1.11")).toBe(
+      false
+    );
   });
 });

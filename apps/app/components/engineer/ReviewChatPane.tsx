@@ -7,6 +7,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
+  Brain,
   Check,
   ChevronRight,
   FileCode,
@@ -27,10 +28,16 @@ import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDial
 import {
   ChatBubble,
   MessageContent,
+  SlashCommandDropdown,
   UserMessageContent,
 } from "@/components/engineer/chat";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import {
+  type SlashCommand,
+  useSlashCommands,
+} from "@/hooks/engineer/use-slash-commands";
 import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
+import type { LearningUsed } from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -68,10 +75,22 @@ type ReviewChatPaneProps = {
   duplicateIndices?: Set<number>;
   /** Indices of findings flagged as duplicates of existing PR comments */
   prCommentDupIndices?: Set<number>;
+  /** Files changed in the PR — findings outside this list are filtered out */
+  prFiles?: string[];
   /** Whether the PR has been merged (shows a visual indicator) */
   isMerged?: boolean;
   /** Called when all findings have been individually commented */
   onAllCommented?: () => void;
+  /** Called when the server emits a learnings event during chat */
+  onLearnings?: () => void;
+  /** Called when the assistant cites org patterns */
+  onLearningsUsed?: (learnings: LearningUsed[]) => void;
+  /** Called when the user types /reflect */
+  onReflect?: () => void;
+  /** Current learnings extraction status */
+  learningsStatus?: "none" | "processing" | "completed";
+  /** Number of learnings extracted */
+  learningsCount?: number;
 };
 
 export function ReviewChatPane({
@@ -88,8 +107,14 @@ export function ReviewChatPane({
   onStructuredFindings,
   duplicateIndices,
   prCommentDupIndices,
+  prFiles,
   isMerged,
   onAllCommented,
+  onLearnings,
+  onLearningsUsed,
+  onReflect,
+  learningsStatus,
+  learningsCount,
 }: Readonly<ReviewChatPaneProps>) {
   const ticketId = `pr-${prNumber}`;
 
@@ -179,13 +204,33 @@ export function ReviewChatPane({
     return base;
   }, [chatHistory?.messages, stream.pendingUserMessage]);
 
-  // Split completed review output into thinking (process log) + findings
+  // Split completed review output into thinking (process log) + findings,
+  // filtering out findings for files not in the PR diff.
   const reviewSplit = useMemo(() => {
     if (!(reviewDone && reviewOutput)) {
       return null;
     }
-    return splitReviewOutput(reviewOutput, config.provider);
-  }, [reviewDone, reviewOutput, config.provider]);
+    const split = splitReviewOutput(reviewOutput, config.provider);
+    // Annotate each finding with its original (unfiltered) index so that
+    // external lookups (duplicateIndices, persistence) remain correct
+    // after prFiles filtering removes entries.
+    const annotated = split.findings.map((f, i) => ({
+      ...f,
+      originalIndex: i,
+    }));
+    const filtered =
+      prFiles && prFiles.length > 0
+        ? annotated.filter((f) => {
+            if (!f.file) {
+              return true;
+            }
+            const short = stripWorktreePath(f.file);
+            const resolved = resolveFullPath(short, prFiles);
+            return resolved !== null && resolved !== "ambiguous";
+          })
+        : annotated;
+    return { processLog: split.processLog, findings: filtered };
+  }, [reviewDone, reviewOutput, config.provider, prFiles]);
 
   // Notify parent when all findings have been individually commented (fire once)
   const allCommentedFiredRef = useRef(false);
@@ -194,7 +239,9 @@ export function ReviewChatPane({
       return;
     }
     if (
-      submittedFindings.size >= reviewSplit.findings.length &&
+      reviewSplit.findings.every((f) =>
+        submittedFindings.has(f.originalIndex)
+      ) &&
       !allCommentedFiredRef.current
     ) {
       allCommentedFiredRef.current = true;
@@ -245,10 +292,50 @@ export function ReviewChatPane({
   async function startReview(signal: AbortSignal) {
     reviewStartedAtRef.current = new Date().toISOString();
     setIsReviewing(true);
-    setReviewOutput("");
     setReviewDone(false);
+    let accumulatedOutput = "";
 
     try {
+      // Pre-check: if a review already exists on disk, resume instead of POSTing
+      const existing = await checkExistingReview(
+        ticketId,
+        repoPath,
+        config.provider,
+        signal
+      );
+
+      if (existing.kind === "completed" || existing.kind === "terminal") {
+        setReviewOutput(existing.log);
+        setReviewDone(true);
+        setIsReviewing(false);
+        const split = splitReviewOutput(existing.log, config.provider);
+        onReviewCompleteRef.current?.(
+          existing.log,
+          split.findings.length,
+          split.findings
+        );
+        if (split.findings.length > 0) {
+          findingsSavedRef.current = true;
+          saveReviewFindings(
+            ticketId,
+            repoPath,
+            config.provider,
+            config.model,
+            split.findings
+          );
+        }
+        return;
+      }
+
+      if (existing.kind === "running") {
+        setReviewOutput(existing.log);
+        await pollRunningReview(signal);
+        return;
+      }
+
+      // kind === "none" — no existing review, clear output and POST
+      setReviewOutput("");
+
       const response = await fetch(
         `/api/engineer/codex/review/${encodeURIComponent(ticketId)}`,
         {
@@ -298,7 +385,10 @@ export function ReviewChatPane({
       console.log("[review-stream] Starting stream read");
       const { text: accumulated, completed } = await streamReviewOutput(
         reader,
-        setReviewOutput,
+        (text) => {
+          accumulatedOutput = text;
+          setReviewOutput(text);
+        },
         (sid) => {
           sessionIdRef.current = sid;
         },
@@ -343,8 +433,8 @@ export function ReviewChatPane({
         );
       }
 
-      // Seed the review session ID into chat history so follow-up chats
-      // resume the same Claude session (full review context preserved).
+      // Claude: seed session ID into chat-history.json (Claude chat route reads it).
+      // Codex: codex-chat.json is written server-side in the review route's close handler.
       if (config.provider === "claude" && sessionIdRef.current) {
         fetch(
           `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
@@ -371,7 +461,7 @@ export function ReviewChatPane({
       // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
         setReviewDone(true);
-        onReviewCompleteRef.current?.(reviewOutput, 0);
+        onReviewCompleteRef.current?.(accumulatedOutput, 0);
         return;
       }
       console.error("Review error:", err);
@@ -379,7 +469,7 @@ export function ReviewChatPane({
         description: err instanceof Error ? err.message : "Unknown error",
       });
       setReviewDone(true);
-      onReviewCompleteRef.current?.(reviewOutput, 0);
+      onReviewCompleteRef.current?.(accumulatedOutput, 0);
     } finally {
       setIsReviewing(false);
       abortRef.current = null;
@@ -492,11 +582,19 @@ export function ReviewChatPane({
   const buildChatRequest = useCallback(
     (message: string): { url: string; body: Record<string, unknown> } => {
       if (config.provider === "codex") {
+        // Pass last 10 messages so Codex has conversation context (matching SymphonyChat pattern)
+        const recentHistory = (chatHistory?.messages || [])
+          .slice(-10)
+          .map((m) => ({
+            role: m.role,
+            content: m.content,
+            sender: m.sender,
+          }));
         return {
           url: `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
           body: {
             prompt: message,
-            chatHistory: [],
+            chatHistory: recentHistory,
             repoPath,
             activeTab: "plan",
           },
@@ -511,7 +609,29 @@ export function ReviewChatPane({
         },
       };
     },
-    [config.provider, config.model, ticketId, repoPath]
+    [config.provider, config.model, ticketId, repoPath, chatHistory?.messages]
+  );
+
+  // Persist a message to chat-history.json so it survives after streaming state clears
+  const persistMessage = useCallback(
+    (message: {
+      id: string;
+      role: string;
+      content: string;
+      timestamp: string;
+      sender?: string;
+    }) =>
+      fetch(
+        `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message }),
+        }
+      ).catch(() => {
+        // Non-critical — messages still show from streaming/query
+      }),
+    [ticketId, repoPath]
   );
 
   // Send initial chat message when review completes (with review context)
@@ -538,12 +658,17 @@ export function ReviewChatPane({
         );
       }
 
-      stream.setPendingUserMessage({
+      const userMsg = {
         id: crypto.randomUUID(),
-        role: "user",
+        role: "user" as const,
         content: userMessage,
         timestamp: new Date().toISOString(),
-      });
+      };
+      stream.setPendingUserMessage(userMsg);
+      // Claude route persists messages server-side; only persist client-side for codex
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
 
       const { url, body } = buildChatRequest(actualMessage);
       // For Claude path with context, pass displayContent so chat history stores
@@ -552,10 +677,22 @@ export function ReviewChatPane({
         (body as Record<string, unknown>).displayContent = userMessage;
       }
       stream.sendMessage(url, body, {
-        onComplete: () =>
-          queryClient.invalidateQueries({
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText && config.provider !== "claude") {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: "codex",
+            });
+          }
+          await queryClient.invalidateQueries({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-          }),
+          });
+        },
+        onLearnings,
+        onLearningsUsed,
       });
     },
     [
@@ -568,6 +705,9 @@ export function ReviewChatPane({
       repoPath,
       queryClient,
       buildChatRequest,
+      persistMessage,
+      onLearnings,
+      onLearningsUsed,
     ]
   );
 
@@ -584,19 +724,36 @@ export function ReviewChatPane({
       return;
     }
 
-    stream.setPendingUserMessage({
+    const userMsg = {
       id: crypto.randomUUID(),
-      role: "user",
+      role: "user" as const,
       content: trimmed,
       timestamp: new Date().toISOString(),
-    });
+    };
+    stream.setPendingUserMessage(userMsg);
+    // Claude route persists messages server-side; only persist client-side for codex
+    if (config.provider !== "claude") {
+      persistMessage(userMsg);
+    }
 
     const { url, body } = buildChatRequest(trimmed);
     stream.sendMessage(url, body, {
-      onComplete: () =>
-        queryClient.invalidateQueries({
+      onComplete: async (accumulatedText) => {
+        if (accumulatedText && config.provider !== "claude") {
+          await persistMessage({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: accumulatedText,
+            timestamp: new Date().toISOString(),
+            sender: "codex",
+          });
+        }
+        await queryClient.invalidateQueries({
           queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-        }),
+        });
+      },
+      onLearnings,
+      onLearningsUsed,
     });
   }, [
     chatInput,
@@ -607,16 +764,30 @@ export function ReviewChatPane({
     repoPath,
     queryClient,
     buildChatRequest,
+    persistMessage,
+    config.provider,
+    onLearnings,
+    onLearningsUsed,
   ]);
+
+  const slash = useSlashCommands(REVIEW_SLASH_COMMANDS, (command) => {
+    if (command === "/reflect") {
+      setChatInput("");
+      onReflect?.();
+    }
+  });
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (slash.handleKeyDown(e)) {
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSendChat();
       }
     },
-    [handleSendChat]
+    [handleSendChat, slash]
   );
 
   const handleSubmitComment = useCallback(
@@ -629,8 +800,12 @@ export function ReviewChatPane({
       const [title, ...descParts] = finding.message.split("\n");
       const description = descParts.join("\n").trim();
       const priorityLabel = finding.priority || "P3";
-      const filePath =
+      const shortPath =
         finding.file && commitSha ? stripWorktreePath(finding.file) : undefined;
+      const resolved =
+        shortPath && prFiles ? resolveFullPath(shortPath, prFiles) : null;
+      const filePath =
+        resolved && resolved !== "ambiguous" ? resolved : undefined;
       const isInline = !!filePath;
 
       // Only include file:line in body when not posting as inline comment
@@ -692,6 +867,7 @@ export function ReviewChatPane({
       config.provider,
       duplicateIndices,
       prCommentDupIndices,
+      prFiles,
     ]
   );
 
@@ -759,12 +935,17 @@ export function ReviewChatPane({
             config.model
           );
 
-      stream.setPendingUserMessage({
+      const userMsg = {
         id: crypto.randomUUID(),
-        role: "user",
+        role: "user" as const,
         content: userFacingMessage,
         timestamp: new Date().toISOString(),
-      });
+      };
+      stream.setPendingUserMessage(userMsg);
+      // Claude route persists messages server-side; only persist client-side for codex
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
 
       setHasSentInitial(true);
       const { url, body } = buildChatRequest(actualMessage);
@@ -773,10 +954,22 @@ export function ReviewChatPane({
         (body as Record<string, unknown>).displayContent = userFacingMessage;
       }
       stream.sendMessage(url, body, {
-        onComplete: () =>
-          queryClient.invalidateQueries({
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText && config.provider !== "claude") {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: "codex",
+            });
+          }
+          await queryClient.invalidateQueries({
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-          }),
+          });
+        },
+        onLearnings,
+        onLearningsUsed,
       });
     },
     [
@@ -788,6 +981,9 @@ export function ReviewChatPane({
       repoPath,
       queryClient,
       buildChatRequest,
+      persistMessage,
+      onLearnings,
+      onLearningsUsed,
     ]
   );
 
@@ -795,7 +991,7 @@ export function ReviewChatPane({
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="shrink-0 border-border border-b bg-muted/30 px-5 py-3 pr-10">
-        <div className="flex items-center gap-3">
+        <div className="relative flex items-center gap-3">
           <button
             className="-ml-1.5 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             onClick={onClose}
@@ -826,6 +1022,15 @@ export function ReviewChatPane({
             >
               <RotateCcw className="size-4" />
             </button>
+          )}
+          {learningsStatus === "processing" && (
+            <Brain className="size-4 animate-pulse text-violet-500" />
+          )}
+          {learningsStatus === "completed" && (learningsCount ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 text-violet-500">
+              <Brain className="size-4" />
+              <span className="font-mono text-[10px]">{learningsCount}</span>
+            </span>
           )}
         </div>
       </div>
@@ -881,19 +1086,20 @@ export function ReviewChatPane({
             </ChatBubble>
             {reviewSplit.findings.length > 0 && (
               <div className="space-y-2 pl-2">
-                {reviewSplit.findings.map((finding, i) => {
-                  const isProviderDup = duplicateIndices?.has(i) ?? false;
-                  const isPRCommentDup = prCommentDupIndices?.has(i) ?? false;
+                {reviewSplit.findings.map((finding) => {
+                  const idx = finding.originalIndex;
+                  const isProviderDup = duplicateIndices?.has(idx) ?? false;
+                  const isPRCommentDup = prCommentDupIndices?.has(idx) ?? false;
                   return (
                     <FindingCard
                       duplicateLabel={isPRCommentDup ? "In PR" : "Dup"}
                       finding={finding}
-                      index={i}
+                      index={idx}
                       isDuplicate={isProviderDup || isPRCommentDup}
                       isOwnPR={isOwnPR}
-                      isSubmitted={submittedFindings.has(i)}
-                      isSubmitting={submittingFindings.has(i)}
-                      key={`finding-${i}`}
+                      isSubmitted={submittedFindings.has(idx)}
+                      isSubmitting={submittingFindings.has(idx)}
+                      key={`finding-${idx}`}
                       onChat={handleChatAboutFinding}
                       onSubmitComment={handleSubmitComment}
                     />
@@ -1020,6 +1226,13 @@ export function ReviewChatPane({
                 {">"}
               </span>
               <div className="relative flex-1">
+                {slash.slashState?.isOpen && (
+                  <SlashCommandDropdown
+                    commands={slash.filteredCommands}
+                    onSelect={slash.selectCommand}
+                    selectedIndex={slash.slashState.selectedIndex}
+                  />
+                )}
                 <textarea
                   className={cn(
                     "w-full resize-none bg-transparent text-sm placeholder:text-muted-foreground",
@@ -1028,7 +1241,13 @@ export function ReviewChatPane({
                     "disabled:cursor-not-allowed disabled:opacity-50"
                   )}
                   disabled={stream.isStreaming}
-                  onChange={(e) => setChatInput(e.target.value)}
+                  onChange={(e) => {
+                    setChatInput(e.target.value);
+                    slash.detectSlash(
+                      e.target.value,
+                      e.target.selectionStart ?? e.target.value.length
+                    );
+                  }}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about the review findings..."
                   rows={1}
@@ -1083,6 +1302,13 @@ export function ReviewChatPane({
     </div>
   );
 }
+
+const REVIEW_SLASH_COMMANDS: SlashCommand[] = [
+  {
+    command: "/reflect",
+    description: "Extract learnings from this conversation",
+  },
+];
 
 // --- Review findings split + card ---
 
@@ -1291,18 +1517,14 @@ function FindingCard({
       )}
     >
       <div className="flex items-start gap-2.5">
-        <button
+        <div
           className={cn(
-            "mt-0.5 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors",
-            "hover:ring-2 hover:ring-foreground/10",
+            "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full",
             style.badge
           )}
-          onClick={() => setCollapsed(true)}
-          title="Collapse"
-          type="button"
         >
           <Icon className={cn("size-3.5", style.text)} />
-        </button>
+        </div>
         <div className="min-w-0 flex-1 space-y-1">
           {finding.priority && (
             <span
@@ -1329,6 +1551,14 @@ function FindingCard({
             </div>
           )}
         </div>
+        <button
+          className="mt-0.5 shrink-0 cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/[0.08] hover:text-foreground"
+          onClick={() => setCollapsed(true)}
+          title="Collapse"
+          type="button"
+        >
+          <ChevronRight className="size-3.5 rotate-90" />
+        </button>
       </div>
       <div className="pl-[34px] text-[12px] text-foreground/90 leading-relaxed">
         <ReactMarkdown
@@ -1349,21 +1579,28 @@ function FindingCard({
           </button>
         )}
         {showCommentButton && (
-          <button
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-[11px] transition-colors",
-              commentButtonStyle(isSubmitted, isSubmitting, isDuplicate)
+          <>
+            <button
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-[11px] transition-colors",
+                commentButtonStyle(isSubmitting, isDuplicate)
+              )}
+              disabled={isSubmitting || isDuplicate}
+              onClick={() => onSubmitComment(index, finding)}
+            >
+              <CommentButtonContent
+                duplicateLabel={duplicateLabel}
+                isDuplicate={isDuplicate}
+                isSubmitting={isSubmitting}
+              />
+            </button>
+            {isSubmitted && (
+              <span className="inline-flex items-center gap-1 font-medium text-[11px] text-emerald-600 dark:text-emerald-400">
+                <Check className="size-3" />
+                Commented
+              </span>
             )}
-            disabled={isSubmitted || isSubmitting || isDuplicate}
-            onClick={() => onSubmitComment(index, finding)}
-          >
-            <CommentButtonContent
-              duplicateLabel={duplicateLabel}
-              isDuplicate={isDuplicate}
-              isSubmitted={isSubmitted}
-              isSubmitting={isSubmitting}
-            />
-          </button>
+          </>
         )}
       </div>
     </div>
@@ -1382,6 +1619,29 @@ export function stripWorktreePath(filePath: string): string {
     return sourceMatch[1];
   }
   return filePath;
+}
+
+/**
+ * Resolve a short/relative file path against the PR's changed file list.
+ * Returns the full repo-relative path if found, "ambiguous" if multiple matches, or null if not in the PR.
+ */
+export function resolveFullPath(
+  shortName: string,
+  prFiles: string[]
+): string | "ambiguous" | null {
+  if (prFiles.includes(shortName)) {
+    return shortName;
+  }
+  const matches = prFiles.filter(
+    (f) => f === shortName || f.endsWith(`/${shortName}`)
+  );
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    return "ambiguous";
+  }
+  return null;
 }
 
 // --- Findings persistence helpers ---
@@ -1415,6 +1675,48 @@ function markFindingCommented(
   }).catch((err) =>
     console.warn("[review-findings] Failed to mark commented:", err)
   );
+}
+
+// --- Status pre-check for review resumption ---
+
+type ExistingReviewState =
+  | { kind: "none" }
+  | { kind: "running"; log: string }
+  | { kind: "completed"; log: string }
+  | { kind: "terminal"; log: string };
+
+async function checkExistingReview(
+  ticketId: string,
+  repoPath: string,
+  provider: string,
+  signal: AbortSignal
+): Promise<ExistingReviewState> {
+  try {
+    const url = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+    const res = await fetch(url, { signal });
+    const data = await res.json();
+
+    if (!data.hasReview) {
+      return { kind: "none" };
+    }
+
+    const log: string = data.log || "";
+
+    if (data.status === "completed") {
+      return { kind: "completed", log };
+    }
+    if (data.status === "running") {
+      return { kind: "running", log };
+    }
+    if (data.status === "failed" || data.status === "stopped") {
+      return { kind: "terminal", log };
+    }
+
+    return { kind: "none" };
+  } catch {
+    // Fail-safe: fall through to POST
+    return { kind: "none" };
+  }
 }
 
 // --- Extracted stream reader ---
@@ -1482,13 +1784,9 @@ async function streamReviewOutput(
 // --- Comment button helpers (avoids nested ternaries — SonarQube S3358) ---
 
 function commentButtonStyle(
-  isSubmitted: boolean,
   isSubmitting: boolean,
   isDuplicate: boolean
 ): string {
-  if (isSubmitted) {
-    return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 cursor-default";
-  }
   if (isDuplicate) {
     return "bg-amber-500/10 text-amber-600 dark:text-amber-400 cursor-default";
   }
@@ -1499,24 +1797,14 @@ function commentButtonStyle(
 }
 
 function CommentButtonContent({
-  isSubmitted,
   isSubmitting,
   isDuplicate,
   duplicateLabel,
 }: Readonly<{
-  isSubmitted: boolean;
   isSubmitting: boolean;
   isDuplicate: boolean;
   duplicateLabel?: string;
 }>) {
-  if (isSubmitted) {
-    return (
-      <>
-        <Check className="size-3" />
-        Commented
-      </>
-    );
-  }
   if (isDuplicate) {
     return (
       <>

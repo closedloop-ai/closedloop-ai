@@ -1,3 +1,4 @@
+"use strict";
 // CJS preload — intercepts "server-only" imports in non-Next.js context.
 // This must be .cjs (not compiled by tsc) because --require only loads CJS.
 const Module = require("node:module");

@@ -263,21 +263,26 @@ export async function ingestExecutionArtifacts(
     return;
   }
 
-  const repository = await withDb((db) =>
-    db.repository.findFirst({
+  // Look up via GitHubInstallationRepository (the canonical repo table).
+  // The old Repository table is deprecated and being removed.
+  const installationRepo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
       where: {
         fullName: repoFullName,
-        project: { organizationId: loop.organizationId },
+        installation: { organizationId: loop.organizationId, status: "ACTIVE" },
       },
       select: { id: true },
     })
   );
 
-  if (!repository) {
-    log.warn("[loop-artifact-ingestion] Repository not found", {
-      loopId: loop.id,
-      repoFullName,
-    });
+  if (!installationRepo) {
+    log.warn(
+      "[loop-artifact-ingestion] GitHubInstallationRepository not found",
+      {
+        loopId: loop.id,
+        repoFullName,
+      }
+    );
     return;
   }
 
@@ -317,7 +322,7 @@ export async function ingestExecutionArtifacts(
     const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
-          repositoryId: repository.id,
+          repositoryId: installationRepo.id,
           number: prNumber,
         },
       },
@@ -329,7 +334,7 @@ export async function ingestExecutionArtifacts(
         "[loop-artifact-ingestion] PR already exists; skipping replayed execution artifact creates",
         {
           loopId: loop.id,
-          repositoryId: repository.id,
+          repositoryId: installationRepo.id,
           prNumber,
           pullRequestId: existingPr.id,
         }
@@ -342,7 +347,7 @@ export async function ingestExecutionArtifacts(
       data: {
         workstreamId: loop.workstreamId!,
         organizationId: loop.organizationId,
-        repositoryId: repository.id,
+        repositoryId: installationRepo.id,
         artifactId: loop.artifactId!,
         githubId: executionResult.github_id ?? prNumber,
         number: prNumber,

@@ -209,9 +209,9 @@ async function getPool(): Promise<pg.Pool> {
     const url = new URL(env.DATABASE_URL);
     const isLocalhost =
       url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    if (isLocalhost) {
-      url.searchParams.delete("sslmode");
-    }
+    // Strip sslmode from connection string — we provide explicit ssl config
+    // to the Pool. Keeping both can cause driver/adapter conflicts.
+    url.searchParams.delete("sslmode");
 
     globalForPrisma.pool = new pg.Pool({
       connectionString: url.toString(),

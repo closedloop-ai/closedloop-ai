@@ -56,10 +56,13 @@ export type CommentChatProps = {
   ticketId: string;
   repoPath: string;
   prNumber: number;
+  branchName?: string;
   comment: PRComment;
   replies?: PRComment[];
   onResolved?: () => void;
   onDeselect?: () => void;
+  onChatCleared?: () => void;
+  onStreamingChange?: (isStreaming: boolean) => void;
   autoStart?: boolean;
   autoProvider?: "claude" | "codex";
   className?: string;
@@ -74,10 +77,13 @@ export function CommentChat({
   ticketId,
   repoPath,
   prNumber,
+  branchName,
   comment,
   replies = [],
   onResolved,
   onDeselect,
+  onChatCleared,
+  onStreamingChange,
   autoStart = true,
   autoProvider = "claude",
   className,
@@ -87,11 +93,13 @@ export function CommentChat({
     ticketId,
     repoPath,
     prNumber,
+    branchName,
     comment,
     replies,
     enabled: true,
     autoStart: autoProvider === "codex" ? false : autoStart,
     onResolved,
+    onChatCleared,
   });
 
   const queryClient = useQueryClient();
@@ -99,8 +107,11 @@ export function CommentChat({
   const debateClaudeStream = useChatStream();
   const codexChatStream = useChatStream();
 
-  // Build comment-chat specific URLs
-  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}`;
+  // Build comment-chat specific URLs (include branch params when available)
+  const branchSuffix = branchName
+    ? `&branch=${encodeURIComponent(branchName)}&prNumber=${prNumber}`
+    : "";
+  const commentApiBase = `/api/engineer/symphony/comment-chat/${encodeURIComponent(commentId)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchSuffix}`;
 
   const debate = useCodexDebate({
     ticketId,
@@ -139,6 +150,11 @@ export function CommentChat({
     debateClaudeStream.isStreaming ||
     !!debate.codexStream.pendingUserMessage ||
     !!codexChatStream.pendingUserMessage;
+
+  // Notify parent when streaming state changes
+  useEffect(() => {
+    onStreamingChange?.(isAnyStreaming);
+  }, [isAnyStreaming, onStreamingChange]);
 
   // Forward button gating — disable while forwarding
   const [isForwarding, setIsForwarding] = useState(false);
@@ -250,6 +266,8 @@ export function CommentChat({
           body: JSON.stringify({
             prompt: codexPrompt,
             repoPath,
+            branchName,
+            prNumber,
             chatHistory: recentHistory,
             activeTab: "comments",
             commentContext: {
@@ -376,9 +394,23 @@ export function CommentChat({
       const { contentWithoutActions } = parseSuggestedActions(msg.content);
       const cleanContent = stripContextBlocks(contentWithoutActions);
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nPlease review and provide your perspective.`;
+      // Scroll after the next render (query invalidation inside sendToCodex
+      // adds the forwarded message, then React re-renders).
+      const scrollAfterRender = () =>
+        requestAnimationFrame(() =>
+          chat.messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+        );
+      // Fire once the PATCH + invalidation lands (before stream completes)
+      setTimeout(scrollAfterRender, 300);
       await sendToCodex(codexPrompt, "__forwarded_to_codex__");
     },
-    [chat.messages, isAnyStreaming, codexData?.available, sendToCodex]
+    [
+      chat.messages,
+      chat.messagesEndRef,
+      isAnyStreaming,
+      codexData?.available,
+      sendToCodex,
+    ]
   );
 
   // Forward a Codex message to Claude (by index)
@@ -393,14 +425,17 @@ export function CommentChat({
     [chat.messages, forwardMessageToClaude]
   );
 
-  // Action message handler (for debate action buttons)
+  // Action message handler (for suggested action and debate action buttons)
   const sendActionMessage = useCallback(
-    async (messageText: string) => {
-      if (debate.handleAction(messageText)) {
+    async (action: SuggestedAction) => {
+      if (debate.handleAction(action.message)) {
         return;
       }
-      // Fall through to normal send
-      await chat.sendMessage(messageText);
+      // Structured type check — the LLM tags accept-changes actions via type attribute
+      if (action.type === "accept-changes") {
+        chat.markChangesAccepted();
+      }
+      await chat.sendMessage(action.message);
     },
     [debate, chat]
   );
@@ -920,7 +955,7 @@ type MessageRenderContext = {
   debateMode: boolean;
   isAnyStreaming: boolean;
   canForward: boolean;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onForwardMessage: (index: number) => void;
   onForwardCodexMessage: (index: number) => void;
   onAcceptChanges: () => void;
@@ -950,6 +985,14 @@ function renderSenderBubble(
       key={msg.id}
       messageRole={isCodex ? "user" : msg.role}
       onAction={debateActions.length > 0 ? ctx.onAction : undefined}
+      onCopy={async () => {
+        try {
+          await navigator.clipboard.writeText(contentWithoutActions);
+          toast.success("Copied to clipboard");
+        } catch {
+          toast.error("Failed to copy");
+        }
+      }}
       onForward={
         ctx.canForward && msg.role === "assistant"
           ? () => forwardHandler(idx)
@@ -1010,6 +1053,7 @@ function renderChatMessage(
       key={msg.id}
       message={msg}
       onAcceptChanges={ctx.onAcceptChanges}
+      onAction={ctx.onAction}
       onForward={
         ctx.canForward && msg.role === "assistant"
           ? () => ctx.onForwardMessage(idx)
@@ -1074,7 +1118,7 @@ function ChatMessagesArea({
   debate: DebateHandle;
   isAnyStreaming: boolean;
   canForward: boolean;
-  onAction: (message: string) => void;
+  onAction: (action: SuggestedAction) => void;
   onCopy: undefined;
   onForwardMessage: (index: number) => void;
   onForwardCodexMessage: (index: number) => void;
@@ -1093,6 +1137,8 @@ function ChatMessagesArea({
   const [showNewMessage, setShowNewMessage] = useState(false);
   const lastScrollTopRef = useRef(0);
   const prevMessageCountRef = useRef(messages.length);
+  const pendingScrollRef = useRef(false);
+  const prevHeightRef = useRef(0);
 
   const isNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -1117,7 +1163,12 @@ function ChatMessagesArea({
   // Detect new messages arriving
   useEffect(() => {
     if (messages.length > prevMessageCountRef.current) {
-      if (isNearBottom()) {
+      const el = scrollContainerRef.current;
+      // When hidden (display:none), clientHeight is 0 and scrollIntoView is a
+      // no-op. Defer the scroll to the ResizeObserver recovery.
+      if (el && el.clientHeight === 0) {
+        pendingScrollRef.current = true;
+      } else if (isNearBottom()) {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
       } else {
         setShowNewMessage(true); // eslint-disable-line react-hooks/set-state-in-effect
@@ -1126,10 +1177,16 @@ function ChatMessagesArea({
     prevMessageCountRef.current = messages.length;
   }, [messages.length, isNearBottom, messagesEndRef]);
 
-  // Auto-scroll during streaming when near bottom, show pill when scrolled away
+  // Auto-scroll during streaming when near bottom, show pill when scrolled away.
+  // Watches all streaming sources: Claude main, debate Claude, Codex freeform, debate Codex.
   const wasStreamingRef = useRef(false);
+  const codexContent = codexChatPending?.content || debateCodexPending?.content;
   useEffect(() => {
-    const hasStream = !!(streamingContent || debateClaudeContent);
+    const hasStream = !!(
+      streamingContent ||
+      debateClaudeContent ||
+      codexContent
+    );
     if (hasStream) {
       if (isNearBottom()) {
         const el = scrollContainerRef.current;
@@ -1142,7 +1199,44 @@ function ChatMessagesArea({
       }
     }
     wasStreamingRef.current = hasStream;
-  }, [streamingContent, debateClaudeContent, isNearBottom]);
+  }, [streamingContent, debateClaudeContent, codexContent, isNearBottom]);
+
+  // Recovery scroll: when the container transitions from hidden (display:none)
+  // to visible, scroll to bottom if there's active streaming or new messages
+  // arrived while hidden (scrollIntoView is a no-op on hidden elements).
+  const hasAnyStreamRef = useRef(false);
+  hasAnyStreamRef.current = !!(
+    streamingContent ||
+    debateClaudeContent ||
+    codexChatPending ||
+    debateCodexPending ||
+    isWaitingForResponse
+  );
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      const { height } = entry.contentRect;
+      // Container just became visible (height 0 → positive)
+      if (
+        height > 0 &&
+        prevHeightRef.current === 0 &&
+        (hasAnyStreamRef.current || pendingScrollRef.current)
+      ) {
+        el.scrollTop = el.scrollHeight;
+        pendingScrollRef.current = false;
+      }
+      prevHeightRef.current = height;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []); // stable — uses refs for mutable state
 
   const scrollToBottomAndDismiss = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1531,7 +1625,7 @@ function ChatInputArea({
 
   return (
     <div className="shrink-0 border-border border-t bg-muted/30 p-4">
-      {hasAcceptedChanges && hasChangedFiles && (
+      {hasChangedFiles && (
         <div className="mb-3">
           <Button
             className="w-full"
@@ -1629,13 +1723,7 @@ function ChatInputArea({
             disabled={isStreaming}
             onChange={handleInputChange}
             onKeyDown={handleKeyDownWithMention}
-            placeholder={
-              messageCount === 0
-                ? 'Type "Fix this" or provide guidance...'
-                : autoProvider === "codex"
-                  ? "@claude to use Claude..."
-                  : "Continue the conversation..."
-            }
+            placeholder={chatInputPlaceholder(messageCount, autoProvider)}
             ref={inputRef}
             rows={1}
             style={{
@@ -1733,6 +1821,7 @@ const CommentMessageBubble = memo(
     index,
     isStreaming = false,
     onAcceptChanges,
+    onAction,
     onSendResponse,
     hasAcceptedChanges,
     onForward,
@@ -1743,6 +1832,7 @@ const CommentMessageBubble = memo(
     index: number;
     isStreaming?: boolean;
     onAcceptChanges?: () => void;
+    onAction?: (action: SuggestedAction) => void;
     onSendResponse?: (text: string, messageId: string) => void;
     hasAcceptedChanges?: boolean;
     onForward?: () => void;
@@ -1751,6 +1841,18 @@ const CommentMessageBubble = memo(
   }>) {
     const isUser = message.role === "user";
     const contentLower = message.content.toLowerCase();
+
+    // Parse suggested actions from assistant messages
+    const { actions: suggestedActions } = useMemo(
+      () =>
+        isUser || isStreaming
+          ? {
+              actions: [] as SuggestedAction[],
+              contentWithoutActions: message.content,
+            }
+          : parseSuggestedActions(message.content),
+      [message.content, isUser, isStreaming]
+    );
 
     // Detect if this is a "pushback" response (declining to make changes, suggesting a reply instead)
     const isPushbackResponse =
@@ -1766,9 +1868,11 @@ const CommentMessageBubble = memo(
         (contentLower.includes("no code change") &&
           contentLower.includes("response")));
 
-    // Detect if this message contains actual code changes (not just inline code)
+    // Detect if this message contains actual code changes (not just inline code).
+    // A message can have both code changes AND a pushback response (e.g., AI made
+    // changes and also drafted a PR reply) — allow both buttons to coexist.
     const hasCodeChanges =
-      !(isUser || isStreaming || isPushbackResponse) &&
+      !(isUser || isStreaming) &&
       (message.content.includes("```diff") ||
         (message.content.includes("```") &&
           (contentLower.includes("proposed change") ||
@@ -1787,8 +1891,29 @@ const CommentMessageBubble = memo(
       }
     }, [message.content]);
 
+    // Intercept typed actions that need special handling before falling through
+    const handleAction = useCallback(
+      (action: SuggestedAction) => {
+        if (action.type === "send-response" && onSendResponse) {
+          const tagMatch = /<pr_response>([\s\S]*?)<\/pr_response>/.exec(
+            message.content
+          );
+          const responseText = tagMatch ? tagMatch[1].trim() : "";
+          if (responseText) {
+            onSendResponse(responseText, message.id);
+          } else {
+            toast.error("Could not extract response from message");
+          }
+          return;
+        }
+        onAction?.(action);
+      },
+      [message.content, message.id, onAction, onSendResponse]
+    );
+
     return (
       <ChatBubble
+        actions={suggestedActions.length > 0 ? suggestedActions : undefined}
         bubbleClassName={cn(
           isUser
             ? "border border-blue-500/20 bg-blue-500/10 text-blue-900 dark:bg-blue-500/10 dark:text-blue-100"
@@ -1797,7 +1922,9 @@ const CommentMessageBubble = memo(
         )}
         contextPercent={contextPercent}
         extraActions={
-          !(isUser || isStreaming) && (hasCodeChanges || isPushbackResponse) ? (
+          !(isUser || isStreaming) &&
+          suggestedActions.length === 0 &&
+          (hasCodeChanges || isPushbackResponse) ? (
             <div className="mt-2 flex items-center gap-2 px-1">
               {hasCodeChanges && onAcceptChanges && !hasAcceptedChanges && (
                 <Button
@@ -1862,6 +1989,7 @@ const CommentMessageBubble = memo(
         index={index}
         isStreaming={isStreaming}
         messageRole={message.role}
+        onAction={suggestedActions.length > 0 ? handleAction : undefined}
         onCopy={isStreaming ? undefined : handleCopy}
         onForward={isUser || isStreaming ? undefined : onForward}
         roleClassName={
@@ -1892,6 +2020,7 @@ const CommentMessageBubble = memo(
     prev.isStreaming === next.isStreaming &&
     prev.hasAcceptedChanges === next.hasAcceptedChanges &&
     (prev.onAcceptChanges == null) === (next.onAcceptChanges == null) &&
+    (prev.onAction == null) === (next.onAction == null) &&
     (prev.onSendResponse == null) === (next.onSendResponse == null) &&
     (prev.onForward == null) === (next.onForward == null) &&
     prev.forwardLabel === next.forwardLabel &&
@@ -1911,10 +2040,16 @@ function CommentAssistantContent({
   blocks?: ContentBlock[];
   isStreaming?: boolean;
 }>) {
+  // Strip suggested-actions tags from content (they're rendered as buttons by ChatBubble)
+  const { contentWithoutActions } = useMemo(
+    () => parseSuggestedActions(content),
+    [content]
+  );
+
   // Parse learnings from content (clean content + extracted learnings)
   const { cleanContent, learnings } = useMemo(
-    () => parseLearningsUsed(content),
-    [content]
+    () => parseLearningsUsed(contentWithoutActions),
+    [contentWithoutActions]
   );
 
   // Check if content has pr_response tags
@@ -1980,7 +2115,7 @@ function CommentAssistantContent({
   return (
     <MessageContent
       blocks={blocks}
-      content={content}
+      content={contentWithoutActions}
       isStreaming={isStreaming}
       markdownComponents={commentBubbleMarkdownComponents}
     />
@@ -2004,4 +2139,17 @@ export function CommentEmptyState() {
       </p>
     </div>
   );
+}
+
+function chatInputPlaceholder(
+  messageCount: number,
+  autoProvider: string | undefined
+): string {
+  if (messageCount === 0) {
+    return 'Type "Fix this" or provide guidance...';
+  }
+  if (autoProvider === "codex") {
+    return "@claude to use Claude...";
+  }
+  return "Continue the conversation...";
 }

@@ -11,6 +11,7 @@ import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
   createStreamState,
+  makeResultKillTimer,
   processStreamEvent,
 } from "@/lib/engineer/stream-events";
 
@@ -336,19 +337,25 @@ export async function POST(
   // Create streaming response
   const encoder = new TextEncoder();
 
+  // Hoisted so the cancel callback can kill the process
+  let claudeProcess: ReturnType<typeof spawn> | null = null;
+
   const stream = new ReadableStream({
     start(controller) {
-      const streamState = createStreamState((sessionId) => {
-        // Eagerly persist session ID so we can resume if Claude gets killed
-        if (!history.sessionId) {
-          history.sessionId = sessionId;
-          saveFindingChatHistory(paths.historyPath, history);
-          console.log(
-            "[Finding Chat API] Persisted session ID early:",
-            sessionId
-          );
-        }
-      });
+      const streamState = createStreamState(
+        (sessionId) => {
+          // Eagerly persist session ID so we can resume if Claude gets killed
+          if (!history.sessionId) {
+            history.sessionId = sessionId;
+            saveFindingChatHistory(paths.historyPath, history);
+            console.log(
+              "[Finding Chat API] Persisted session ID early:",
+              sessionId
+            );
+          }
+        },
+        makeResultKillTimer(() => claudeProcess, "Finding Chat API")
+      );
 
       try {
         console.log("[Finding Chat API] Spawning Claude...");
@@ -388,6 +395,7 @@ export async function POST(
           },
           stdio: ["pipe", "pipe", "pipe"],
         });
+        claudeProcess = claude;
 
         console.log("[Finding Chat API] Claude PID:", claude.pid);
 
@@ -441,6 +449,7 @@ export async function POST(
         });
 
         claude.on("close", (code) => {
+          claudeProcess = null;
           // Flush any remaining buffered stdout
           if (stdoutBuffer.trim()) {
             try {
@@ -507,6 +516,7 @@ export async function POST(
         });
 
         claude.on("error", (err) => {
+          claudeProcess = null;
           console.error("[Finding Chat API] Claude spawn error:", err);
           enqueue(
             JSON.stringify({
@@ -529,6 +539,19 @@ export async function POST(
           )
         );
         controller.close();
+      }
+    },
+
+    cancel() {
+      if (claudeProcess) {
+        console.log(
+          "[Finding Chat API] Client cancelled — killing Claude PID:",
+          claudeProcess.pid
+        );
+        try {
+          claudeProcess.kill("SIGTERM");
+        } catch {}
+        claudeProcess = null;
       }
     },
   });
