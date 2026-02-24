@@ -6,11 +6,13 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
+import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
@@ -126,22 +128,7 @@ export function PlanMetadataPanel({
 
             <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
 
-            {generationStatus?.htmlUrl ? (
-              <MetadataSection separator>
-                <Label className="text-muted-foreground text-xs">
-                  Generation
-                </Label>
-                <a
-                  className="flex items-center gap-1 text-primary text-sm hover:underline"
-                  href={generationStatus.htmlUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  View GitHub Workflow
-                  <ExternalLinkIcon className="h-3 w-3" />
-                </a>
-              </MetadataSection>
-            ) : null}
+            <GenerationSection generationStatus={generationStatus} />
 
             {pullRequest ? (
               <PullRequestSection pullRequest={pullRequest} />
@@ -202,5 +189,88 @@ export function PlanMetadataPanel({
         trace={dialogTrace}
       />
     </>
+  );
+}
+
+/** Renders loop or GitHub Actions generation info in the metadata sidebar. */
+function GenerationSection({
+  generationStatus,
+}: {
+  generationStatus: GenerationStatus | null;
+}) {
+  if (generationStatus?.source === "loop" && generationStatus.loopId) {
+    return (
+      <MetadataSection separator>
+        <Label className="text-muted-foreground text-xs">Loop</Label>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Status:</span>
+            <LoopStatusBadge status={generationStatus.status} />
+          </div>
+          {generationStatus.initiatedBy ? (
+            <p className="text-muted-foreground text-sm">
+              Initiated by{" "}
+              {[
+                generationStatus.initiatedBy.firstName,
+                generationStatus.initiatedBy.lastName,
+              ]
+                .filter(Boolean)
+                .join(" ") || "Unknown"}
+            </p>
+          ) : null}
+          <Link
+            className="flex items-center gap-1 text-primary text-sm hover:underline"
+            href={`/loops/${generationStatus.loopId}`}
+          >
+            View loop details
+          </Link>
+        </div>
+      </MetadataSection>
+    );
+  }
+
+  if (generationStatus?.htmlUrl) {
+    return (
+      <MetadataSection separator>
+        <Label className="text-muted-foreground text-xs">Generation</Label>
+        <a
+          className="flex items-center gap-1 text-primary text-sm hover:underline"
+          href={generationStatus.htmlUrl}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          View GitHub Workflow
+          <ExternalLinkIcon className="h-3 w-3" />
+        </a>
+      </MetadataSection>
+    );
+  }
+
+  return null;
+}
+
+/** Small inline badge for loop status display in the metadata sidebar. */
+function LoopStatusBadge({ status }: { status: GenerationStatus["status"] }) {
+  const isActive = isActiveGenerationStatus(status);
+  const isSuccess = status === "SUCCESS";
+
+  if (isActive) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-blue-700 text-xs dark:bg-blue-900/30 dark:text-blue-300">
+        Running
+      </span>
+    );
+  }
+  if (isSuccess) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-green-700 text-xs dark:bg-green-900/30 dark:text-green-300">
+        Completed
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700 text-xs dark:bg-red-900/30 dark:text-red-300">
+      Failed
+    </span>
   );
 }

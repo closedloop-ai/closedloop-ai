@@ -9,6 +9,7 @@ import {
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
+  isActiveGenerationStatus,
   type PullRequestInfo,
   PullRequestState,
   ReviewDecision,
@@ -213,7 +214,7 @@ export const artifactsService = {
     ];
 
     // Batch-fetch GitHubActionRun records for generation status
-    let generationStatusMap: Map<string, GenerationStatus> = new Map();
+    const generationStatusMap = new Map<string, GenerationStatus>();
     if (uniqueWorkstreamIds.length > 0) {
       const actionRuns = await withDb((db) =>
         db.gitHubActionRun.findMany({
@@ -234,8 +235,6 @@ export const artifactsService = {
         })
       );
 
-      // Build map: artifactId -> most recent GenerationStatus
-      generationStatusMap = new Map<string, GenerationStatus>();
       for (const run of actionRuns) {
         const triggerData = parseTriggerData(run.triggerData);
         if (!triggerData) {
@@ -258,10 +257,17 @@ export const artifactsService = {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             correlationId: triggerData.correlationId,
+            source: "github_actions",
           });
         }
       }
     }
+
+    // Batch-fetch Loop records and merge into generation status map
+    await mergeLoopStatuses(
+      artifacts.map((a) => a.id),
+      generationStatusMap
+    );
 
     // Batch-fetch GitHubPullRequest records for each workstream
     const pullRequestRecords =
@@ -2430,4 +2436,118 @@ function buildPullRequestMap(
     }
   }
   return map;
+}
+
+/**
+ * Batch-fetch Loop records for the given artifact IDs and merge into the
+ * generation status map, preferring active statuses over terminal ones
+ * and most recent when both are terminal.
+ */
+async function mergeLoopStatuses(
+  artifactIds: string[],
+  generationStatusMap: Map<string, GenerationStatus>
+): Promise<void> {
+  if (artifactIds.length === 0) {
+    return;
+  }
+
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId: { in: artifactIds } },
+      orderBy: { createdAt: "desc" },
+      distinct: ["artifactId"],
+      select: {
+        id: true,
+        artifactId: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true, avatarUrl: true },
+        },
+      },
+    })
+  );
+
+  for (const loop of loops) {
+    if (!loop.artifactId) {
+      continue;
+    }
+
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (!mappedStatus) {
+      continue;
+    }
+
+    const loopGenStatus: GenerationStatus = {
+      status: mappedStatus,
+      command: mapLoopCommand(loop.command),
+      htmlUrl: null,
+      startedAt: loop.startedAt,
+      completedAt: loop.completedAt,
+      correlationId: null,
+      source: "loop",
+      loopId: loop.id,
+      initiatedBy: loop.user,
+    };
+
+    const existing = generationStatusMap.get(loop.artifactId);
+    if (!existing) {
+      generationStatusMap.set(loop.artifactId, loopGenStatus);
+      continue;
+    }
+
+    // Prefer active status from either source, then most recent
+    const existingActive = isActiveGenerationStatus(existing.status);
+    const loopActive = isActiveGenerationStatus(loopGenStatus.status);
+    if (loopActive && !existingActive) {
+      generationStatusMap.set(loop.artifactId, loopGenStatus);
+    } else if (!(existingActive || loopActive)) {
+      // Both terminal — prefer most recent
+      const existingTime = existing.startedAt?.getTime() ?? 0;
+      const loopTime = loopGenStatus.startedAt?.getTime() ?? 0;
+      if (loopTime > existingTime) {
+        generationStatusMap.set(loop.artifactId, loopGenStatus);
+      }
+    }
+  }
+}
+
+/** Map LoopStatus (Prisma enum) to GenerationStatus status field. */
+function mapLoopStatus(loopStatus: string): GenerationStatus["status"] | null {
+  switch (loopStatus) {
+    case "PENDING":
+      return "PENDING";
+    case "CLAIMED":
+      return "QUEUED";
+    case "RUNNING":
+      return "RUNNING";
+    case "COMPLETED":
+      return "SUCCESS";
+    case "FAILED":
+    case "CANCELLED":
+    case "TIMED_OUT":
+      return "FAILURE";
+    default:
+      return null;
+  }
+}
+
+/** Map LoopCommand (Prisma enum, UPPER_CASE) to GenerationStatus command (lowercase). */
+function mapLoopCommand(command: string): GenerationStatus["command"] {
+  switch (command) {
+    case "PLAN":
+      return "plan";
+    case "EXECUTE":
+      return "execute";
+    case "CHAT":
+      return "chat";
+    case "EXPLORE":
+      return "explore";
+    case "REQUEST_CHANGES":
+      return "request_changes";
+    default:
+      return null;
+  }
 }
