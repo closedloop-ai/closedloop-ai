@@ -189,8 +189,8 @@ describe("handlePullRequestReview", () => {
 
     // Set up transaction mock
     mockTx = {
-      repository: {
-        findUnique: vi.fn(),
+      gitHubInstallationRepository: {
+        findFirst: vi.fn(),
       },
       gitHubPullRequest: {
         findUnique: vi.fn(),
