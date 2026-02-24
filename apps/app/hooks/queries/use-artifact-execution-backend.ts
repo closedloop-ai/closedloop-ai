@@ -41,17 +41,26 @@ export function useIsLoopsEnabledForArtifact(artifactId: string): {
   isLoopsEnabled: boolean;
   isLoading: boolean;
 } {
-  const { data, isLoading: isBackendLoading } =
-    useArtifactExecutionBackend(artifactId);
+  const {
+    data,
+    isLoading: isBackendLoading,
+    isError,
+  } = useArtifactExecutionBackend(artifactId);
   const { isLoopsEnabled: orgDefault, isLoading: isOrgLoading } =
     useIsLoopsEnabled();
 
+  // Per-artifact query still in-flight — report loading until it resolves
   if (isBackendLoading) {
+    return { isLoopsEnabled: orgDefault, isLoading: true };
+  }
+
+  // Per-artifact query failed — fall back to org default
+  if (isError || !data) {
     return { isLoopsEnabled: orgDefault, isLoading: isOrgLoading };
   }
 
   return {
-    isLoopsEnabled: data?.backend === "LOOPS",
+    isLoopsEnabled: data.backend === "LOOPS",
     isLoading: false,
   };
 }
