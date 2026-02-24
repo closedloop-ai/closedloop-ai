@@ -11,13 +11,13 @@ Handles all database operations and external service integrations. Port 3002.
 
 No database operations in routes — delegate to services.
 
-## Auth Wrappers (`@/lib/auth/`)
+## Auth Wrappers
 
-| Wrapper | When to use |
-|---------|-------------|
-| `withAuth` | Clerk session only (browser clients) |
-| `withApiKeyAuth` | API key only (`sk_live_*`) |
-| `withAnyAuth` | Both — tries API key first, falls back to Clerk |
+| Wrapper | Import | When to use |
+|---------|--------|-------------|
+| `withAuth` | `@/lib/auth/with-auth` | Clerk session only (browser clients) |
+| `withApiKeyAuth` | `@/lib/auth/with-api-key-auth` | API key only (`sk_live_*`) |
+| `withAnyAuth` | `@/lib/auth/with-any-auth` | Both — tries API key first, falls back to Clerk |
 
 Use `withAnyAuth` for routes accepting both programmatic (MCP, CLI) and browser clients.
 

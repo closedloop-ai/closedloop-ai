@@ -55,7 +55,7 @@ Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/gen
 `packages/api/src/types/` only for types used by BOTH apps. Never define same type in multiple files.
 
 ### Engineer Feature (SECURITY CRITICAL)
-Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: middleware (`apps/app/middleware.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the middleware guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
+Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
 
 ## Self-Improving CLAUDE.md
 Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
