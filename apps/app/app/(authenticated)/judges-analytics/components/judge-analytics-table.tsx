@@ -12,6 +12,7 @@ import {
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import { useMemo } from "react";
@@ -96,25 +97,25 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
           <TableRow key={judge.judgeName}>
             <TableCell className="break-words">
               {(() => {
-                const description = judgeDescriptions[judge.judgeName as keyof typeof judgeDescriptions];
+                const description =
+                  judgeDescriptions[
+                    judge.judgeName as keyof typeof judgeDescriptions
+                  ];
                 return description ? (
-                judge.judgeName as keyof typeof judgeDescriptions
-              ] ? (
-                <Tooltip>
-                  <TooltipTrigger asChild><span className="cursor-help underline decoration-dotted">
-                    {judge.judgeName}
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {
-                      judgeDescriptions[
-                        judge.judgeName as keyof typeof judgeDescriptions
-                      ]
-                    }
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                judge.judgeName
-              )}
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="cursor-help underline decoration-dotted">
+                          {judge.judgeName}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{description}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : (
+                  judge.judgeName
+                );
+              })()}
             </TableCell>
             <TableCell>{judge.artifactsEvaluated}</TableCell>
             <TableCell>{judge.min.toFixed(2)}</TableCell>
