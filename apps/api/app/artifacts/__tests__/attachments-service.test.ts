@@ -76,7 +76,7 @@ function makeAttachmentRecord(
     sizeBytes: 4096,
     createdAt: new Date("2026-01-15T12:00:00.000Z"),
     createdById: USER_ID,
-    key: `attachments/${ARTIFACT_ID}/${MOCK_CUID}`,
+    key: `attachments/${ORG_ID}/${ARTIFACT_ID}/${MOCK_CUID}`,
     bucket: "test-bucket",
     ...overrides,
   };
@@ -89,10 +89,15 @@ function makeAttachmentRecord(
 describe("attachmentsService.requestUpload", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.FILE_ATTACHMENTS_BUCKET = "test-bucket";
     mockCreateId.mockReturnValue(MOCK_CUID);
     mockGetSignedUploadUrl.mockResolvedValue(
       "https://s3.example.com/upload-url"
     );
+  });
+
+  afterEach(() => {
+    process.env.FILE_ATTACHMENTS_BUCKET = undefined;
   });
 
   it("calls getSignedUploadUrl with expiresIn=900 (not the default 3600)", async () => {
@@ -126,12 +131,13 @@ describe("attachmentsService.requestUpload", () => {
     expect(mockGetSignedUploadUrl).toHaveBeenCalledWith(
       expect.any(String),
       "application/pdf",
-      900
+      900,
+      "test-bucket"
     );
   });
 
-  it("uses S3 key pattern attachments/<artifactId>/<cuid>", async () => {
-    const expectedKey = `attachments/${ARTIFACT_ID}/${MOCK_CUID}`;
+  it("uses S3 key pattern attachments/<orgId>/<artifactId>/<cuid>", async () => {
+    const expectedKey = `attachments/${ORG_ID}/${ARTIFACT_ID}/${MOCK_CUID}`;
     const createdRecord = makeAttachmentRecord({
       id: "new-attach-2",
       key: expectedKey,
@@ -165,12 +171,13 @@ describe("attachmentsService.requestUpload", () => {
     expect(mockGetSignedUploadUrl).toHaveBeenCalledWith(
       expectedKey,
       expect.any(String),
-      expect.any(Number)
+      expect.any(Number),
+      "test-bucket"
     );
   });
 
   it("returns attachmentId, uploadUrl, and key", async () => {
-    const expectedKey = `attachments/${ARTIFACT_ID}/${MOCK_CUID}`;
+    const expectedKey = `attachments/${ORG_ID}/${ARTIFACT_ID}/${MOCK_CUID}`;
     const uploadUrl = "https://s3.example.com/presigned-put";
     mockGetSignedUploadUrl.mockResolvedValue(uploadUrl);
 
@@ -422,7 +429,7 @@ describe("attachmentsService.deleteAttachment", () => {
       ATTACHMENT_ID
     );
 
-    expect(mockDeleteArtifact).toHaveBeenCalledWith(expectedKey);
+    expect(mockDeleteArtifact).toHaveBeenCalledWith(expectedKey, "test-bucket");
   });
 
   it("throws 'Artifact not found' when artifact ownership check returns null", async () => {
@@ -509,7 +516,9 @@ describe("attachmentsService.getDownloadUrl", () => {
 
     expect(mockGetSignedDownloadUrlWithDisposition).toHaveBeenCalledWith(
       record.key,
-      record.filename
+      record.filename,
+      3600,
+      record.bucket
     );
   });
 

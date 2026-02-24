@@ -371,7 +371,7 @@ GITHUB_APP_DISPATCH_REPO="owner/repo"
 # Optional: S3 Storage (for artifact uploads)
 AWS_ACCESS_KEY_ID="AKIA..."
 AWS_SECRET_ACCESS_KEY="..."
-S3_BUCKET_NAME="bucket-name"
+FILE_ATTACHMENTS_BUCKET="bucket-name"
 ```
 
 If GitHub is not configured, the webhook endpoint returns early with `{ ok: false, message: "GitHub not configured" }`.

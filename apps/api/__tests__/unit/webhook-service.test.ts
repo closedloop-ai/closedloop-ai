@@ -138,7 +138,7 @@ describe("isS3Configured", () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY =
       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = "my-bucket";
+    process.env.FILE_ATTACHMENTS_BUCKET = "my-bucket";
 
     const result = isS3Configured();
 
@@ -149,7 +149,7 @@ describe("isS3Configured", () => {
     process.env.AWS_ACCESS_KEY_ID = undefined;
     process.env.AWS_SECRET_ACCESS_KEY =
       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = "my-bucket";
+    process.env.FILE_ATTACHMENTS_BUCKET = "my-bucket";
 
     const result = isS3Configured();
 
@@ -159,18 +159,18 @@ describe("isS3Configured", () => {
   it("returns false when AWS_SECRET_ACCESS_KEY is missing", () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY = undefined;
-    process.env.S3_BUCKET_NAME = "my-bucket";
+    process.env.FILE_ATTACHMENTS_BUCKET = "my-bucket";
 
     const result = isS3Configured();
 
     expect(result).toBe(false);
   });
 
-  it("returns false when S3_BUCKET_NAME is missing", () => {
+  it("returns false when FILE_ATTACHMENTS_BUCKET is missing", () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY =
       "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = undefined;
+    process.env.FILE_ATTACHMENTS_BUCKET = undefined;
 
     const result = isS3Configured();
 
@@ -180,7 +180,7 @@ describe("isS3Configured", () => {
   it("returns false when all env vars are missing", () => {
     process.env.AWS_ACCESS_KEY_ID = undefined;
     process.env.AWS_SECRET_ACCESS_KEY = undefined;
-    process.env.S3_BUCKET_NAME = undefined;
+    process.env.FILE_ATTACHMENTS_BUCKET = undefined;
 
     const result = isS3Configured();
 
@@ -190,7 +190,7 @@ describe("isS3Configured", () => {
   it("returns false when env vars are empty strings", () => {
     process.env.AWS_ACCESS_KEY_ID = "";
     process.env.AWS_SECRET_ACCESS_KEY = "";
-    process.env.S3_BUCKET_NAME = "";
+    process.env.FILE_ATTACHMENTS_BUCKET = "";
 
     const result = isS3Configured();
 

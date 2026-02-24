@@ -72,18 +72,23 @@ export const attachmentsService = {
     mimeType: string,
     sizeBytes: number
   ): Promise<CreateAttachmentResponse> {
+    const bucket = process.env.FILE_ATTACHMENTS_BUCKET;
+    if (!bucket) {
+      throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+    }
+
     await requireArtifact(artifactId, organizationId);
 
-    const key = `attachments/${artifactId}/${createId()}`;
+    const key = `attachments/${organizationId}/${artifactId}/${createId()}`;
 
     // Generate presigned URL first — if this fails, no orphaned DB record is created
-    const uploadUrl = await getSignedUploadUrl(key, mimeType, 900);
+    const uploadUrl = await getSignedUploadUrl(key, mimeType, 900, bucket);
 
     const created = await withDb((db) =>
       db.fileAttachment.create({
         data: {
           artifactId,
-          bucket: process.env.S3_BUCKET_NAME ?? "",
+          bucket,
           key,
           filename,
           mimeType,
@@ -138,7 +143,9 @@ export const attachmentsService = {
 
     const downloadUrl = await getSignedDownloadUrlWithDisposition(
       attachment.key,
-      attachment.filename
+      attachment.filename,
+      3600,
+      attachment.bucket
     );
 
     return { downloadUrl };
@@ -159,7 +166,7 @@ export const attachmentsService = {
     const attachment = await withDb.tx(async (tx) => {
       const record = await tx.fileAttachment.findUnique({
         where: { id: attachmentId, artifactId },
-        select: { key: true },
+        select: { bucket: true, key: true },
       });
 
       if (!record) {
@@ -171,7 +178,7 @@ export const attachmentsService = {
     });
 
     try {
-      await deleteArtifact(attachment.key);
+      await deleteArtifact(attachment.key, attachment.bucket);
     } catch (error) {
       log.error("[attachments-service] Failed to delete S3 object", {
         key: attachment.key,

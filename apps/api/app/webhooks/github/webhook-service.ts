@@ -22,7 +22,7 @@ export function isS3Configured(): boolean {
   return Boolean(
     process.env.AWS_ACCESS_KEY_ID &&
       process.env.AWS_SECRET_ACCESS_KEY &&
-      process.env.S3_BUCKET_NAME
+      process.env.FILE_ATTACHMENTS_BUCKET
   );
 }
 
