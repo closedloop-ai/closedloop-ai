@@ -4,11 +4,13 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
@@ -16,6 +18,10 @@ import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-conten
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
 import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import {
+  useInlineGeneratePRD,
+  useRegenerateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -76,6 +82,38 @@ export function PRDEditor({
     { showGeneratePlanModal: boolean }
   >;
 
+  // PRD generation mutations
+  const inlineGenerate = useInlineGeneratePRD();
+  const deepGenerate = useRegenerateArtifact();
+
+  const handleQuickGenerate = () => {
+    inlineGenerate.mutate(
+      { artifactId: prd.id },
+      {
+        onSuccess: () => {
+          toast.success("PRD generated successfully");
+        },
+        onError: (error) => {
+          toast.error(`PRD generation failed: ${error.message}`);
+        },
+      }
+    );
+  };
+
+  const handleDeepGenerate = () => {
+    deepGenerate.mutate(
+      { id: prd.id },
+      {
+        onSuccess: () => {
+          toast.success("PRD generation started — check the status banner");
+        },
+        onError: (error) => {
+          toast.error(`Failed to start PRD generation: ${error.message}`);
+        },
+      }
+    );
+  };
+
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
 
@@ -104,15 +142,18 @@ export function PRDEditor({
       <PRDEditorHeader
         canEdit={!session.isViewingHistorical}
         isEditing={session.isEditing}
+        isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
+        onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
         onDiscard={session.handleDiscard}
         onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onMove={() => setShowMoveDialog(true)}
+        onQuickGenerate={handleQuickGenerate}
         onRename={openRenameDialog}
         onRestoreVersion={session.handleRestoreVersion}
         onSave={session.handlePublish}
@@ -124,6 +165,9 @@ export function PRDEditor({
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
+
+      {/* Generation Status Banner */}
+      <GenerationStatusBanner artifactId={prd.id} />
 
       {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}

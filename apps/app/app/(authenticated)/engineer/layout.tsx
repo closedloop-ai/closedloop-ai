@@ -1,4 +1,5 @@
 import "./engineer-theme.css";
+import { EngineerMcpProvider } from "@/contexts/engineer-mcp-context";
 import { EngineerThemeProvider } from "./engineer-theme-provider";
 
 export default function EngineerLayout({
@@ -6,5 +7,9 @@ export default function EngineerLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <EngineerThemeProvider>{children}</EngineerThemeProvider>;
+  return (
+    <EngineerThemeProvider>
+      <EngineerMcpProvider>{children}</EngineerMcpProvider>
+    </EngineerThemeProvider>
+  );
 }

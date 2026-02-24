@@ -12,6 +12,8 @@ import { CreateArtifactModal } from "../create-artifact-modal";
 
 // Mock the hooks
 const mockUseCreateArtifact = vi.fn();
+const mockUseCreateAndInlineGeneratePRD = vi.fn();
+const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
 const mockUseOrganizationUsers = vi.fn();
@@ -25,6 +27,8 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   return {
     ...actual,
     useCreateArtifact: () => mockUseCreateArtifact(),
+    useCreateAndInlineGeneratePRD: () => mockUseCreateAndInlineGeneratePRD(),
+    useCreateAndGenerateArtifact: () => mockUseCreateAndGenerateArtifact(),
     useArtifact: (...args: unknown[]) => mockUseArtifact(...args),
     useArtifactsByProject: (...args: unknown[]) =>
       mockUseArtifactsByProject(...args),
@@ -60,8 +64,9 @@ const TARGET_BRANCH_REGEX = /target branch/i;
 const _STATUS_REGEX = /^status$/i;
 const CANCEL_REGEX = /cancel/i;
 const CREATE_IMPL_PLAN_REGEX = /create implementation plan/i;
-const CREATE_PRD_REGEX = /create prd/i;
-const PASTE_MARKDOWN_CONTENT_REGEX = /paste markdown content here/i;
+const SAVE_REGEX = /^save$/i;
+const GENERATE_REGEX = /^generate$/i;
+const PASTE_MARKDOWN_CONTENT_REGEX = /paste markdown content/i;
 const CONNECT_GITHUB_REGEX = /connect github to select a repository/i;
 const CREATING_REGEX = /creating\.\.\./i;
 const NO_PRDS_REGEX = /no prds in this project/i;
@@ -77,6 +82,16 @@ describe("CreateArtifactModal", () => {
     // Default mocks
     mockUseCreateArtifact.mockReturnValue({
       mutate: mockMutate,
+      isPending: false,
+    });
+
+    mockUseCreateAndInlineGeneratePRD.mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    });
+
+    mockUseCreateAndGenerateArtifact.mockReturnValue({
+      mutate: vi.fn(),
       isPending: false,
     });
 
@@ -385,7 +400,7 @@ describe("CreateArtifactModal", () => {
       expect(dialog).toHaveTextContent("Create PRD");
     });
 
-    it("should render correct submit button text for PRD", () => {
+    it("should render Save and Generate dropdown buttons for PRD", () => {
       render(
         <CreateArtifactModal
           artifactType={ArtifactType.Prd}
@@ -395,10 +410,15 @@ describe("CreateArtifactModal", () => {
         />
       );
 
-      const submitButton = screen.getByRole("button", {
-        name: CREATE_PRD_REGEX,
+      const saveButton = screen.getByRole("button", {
+        name: SAVE_REGEX,
       });
-      expect(submitButton).toBeInTheDocument();
+      expect(saveButton).toBeInTheDocument();
+
+      const generateButton = screen.getByRole("button", {
+        name: GENERATE_REGEX,
+      });
+      expect(generateButton).toBeInTheDocument();
     });
   });
 

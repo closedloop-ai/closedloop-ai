@@ -36,11 +36,6 @@ export function registerListTemplates(
     ({ limit, offset }) =>
       withErrorHandling(async () => {
         const templates = await apiClient.get<unknown[]>("/templates");
-        if (templates.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: "No templates found." }],
-          };
-        }
         const payload = buildPaginatedPayload(templates, {
           limit,
           offset,

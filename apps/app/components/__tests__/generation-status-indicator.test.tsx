@@ -93,9 +93,7 @@ describe("GenerationStatusIndicator", () => {
       correlationId: "test-123",
     };
     render(<GenerationStatusIndicator generationStatus={generationStatus} />);
-    expect(
-      screen.getByText("Generating implementation plan...")
-    ).toBeInTheDocument();
+    expect(screen.getByText("Generating...")).toBeInTheDocument();
   });
 
   test("renders CheckCircle icon for SUCCESS", () => {
@@ -144,7 +142,7 @@ describe("GenerationStatusIndicator", () => {
       correlationId: "test-123",
     };
     render(<GenerationStatusIndicator generationStatus={generationStatus} />);
-    expect(screen.getByText("Plan generation failed")).toBeInTheDocument();
+    expect(screen.getByText("Generation failed")).toBeInTheDocument();
   });
 
   test("creates clickable link when htmlUrl is provided", () => {
@@ -223,7 +221,7 @@ describe("GenerationStatusIndicator", () => {
       {
         status: "RUNNING",
         command: "plan",
-        expectedMessage: "Generating implementation plan...",
+        expectedMessage: "Generating...",
       },
       {
         status: "FAILURE",
@@ -233,7 +231,7 @@ describe("GenerationStatusIndicator", () => {
       {
         status: "FAILURE",
         command: "plan",
-        expectedMessage: "Plan generation failed",
+        expectedMessage: "Generation failed",
       },
     ];
 

@@ -147,6 +147,10 @@ export function useCommentChat({
   const [worktreePath, setWorktreePath] = useState(() =>
     getWorktreePath(repoPath, ticketId)
   );
+  // Ref mirror so stale closures (e.g. memoized CommentMessageBubble
+  // onSendResponse) always read the latest resolved path.
+  const worktreePathRef = useRef(worktreePath);
+  worktreePathRef.current = worktreePath;
 
   // Build query-string suffix for branch-aware API calls
   const branchParams = branchName
@@ -619,7 +623,7 @@ export function useCommentChat({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "commit",
-          repoPath: worktreePath,
+          repoPath: worktreePathRef.current,
           message: `Address PR feedback: ${comment.body.slice(0, 50)}${comment.body.length > 50 ? "..." : ""}\n\nAddresses: ${comment.url}`,
         }),
       });
@@ -641,10 +645,16 @@ export function useCommentChat({
       triggerLearningsExtraction();
 
       // 3. Push + reply in the background (best-effort, errors shown as toasts)
-      pushAndReply(worktreePath, repoPath, prNumber, comment, commitSha);
+      pushAndReply(
+        worktreePathRef.current,
+        repoPath,
+        prNumber,
+        comment,
+        commitSha
+      );
 
       queryClient.invalidateQueries({
-        queryKey: queryKeys.gitStatus(worktreePath),
+        queryKey: queryKeys.gitStatus(worktreePathRef.current),
       });
       queryClient.invalidateQueries({
         queryKey: queryKeys.prComments(prNumber, repoPath),
@@ -715,12 +725,11 @@ export function useCommentChat({
         });
 
       // Refetch git status to check for uncommitted changes.
-      // The worktree may not exist (pushback without code fix) or the path
-      // may not be in the allowed repos list yet, so failures are expected.
+      // Use worktreePathRef to avoid stale closure from memoized message bubble.
       let stillHasChanges = false;
       try {
         const freshGitStatus = await queryClient.fetchQuery({
-          ...gitStatusOptions(worktreePath),
+          ...gitStatusOptions(worktreePathRef.current),
           staleTime: 0,
         });
         if (freshGitStatus) {
@@ -731,7 +740,10 @@ export function useCommentChat({
             0;
         }
       } catch {
-        // Worktree doesn't exist or isn't allowed — no pending changes
+        // Fresh fetch failed — fall back to last known state from polling.
+        // hadChangesRef latches true once changes are detected, preventing
+        // auto-dismiss when the git status API is unreachable.
+        stillHasChanges = hadChangesRef.current;
       }
 
       if (stillHasChanges) {

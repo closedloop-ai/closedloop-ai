@@ -57,13 +57,6 @@ export function registerListEntityLinks(
         }
 
         const links = await apiClient.get<unknown[]>("/entity-links", query);
-        if (links.length === 0) {
-          return {
-            content: [
-              { type: "text" as const, text: "No entity links found." },
-            ],
-          };
-        }
         const payload = buildPaginatedPayload(links, {
           limit,
           offset,
