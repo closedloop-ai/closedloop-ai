@@ -1127,7 +1127,7 @@ Analyze the content at this link and identify capabilities or features that coul
     }
 
     const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
-    const targetBranch = sourceArtifact.targetBranch ?? "main";
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1287,7 +1287,7 @@ Analyze the content at this link and identify capabilities or features that coul
     }
 
     const targetRepo = artifact.targetRepo;
-    const targetBranch = artifact.targetBranch ?? "main";
+    const targetBranch = artifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1435,7 +1435,7 @@ Analyze the content at this link and identify capabilities or features that coul
     }
 
     const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
-    const targetBranch = sourceArtifact.targetBranch ?? "main";
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1844,7 +1844,7 @@ Please try again or contact support if the issue persists.`
     }
 
     const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
-    const targetBranch = sourceArtifact.targetBranch ?? "main";
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -2550,6 +2550,7 @@ Configure the following environment variables to enable plan generation:
 `;
 }
 
+const DEFAULT_BRANCH = "main";
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
 
