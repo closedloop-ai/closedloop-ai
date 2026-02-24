@@ -1,4 +1,5 @@
 import type { GenerationStatus } from "@repo/api/src/types/artifact";
+import { getUserDisplayName } from "@/lib/user-utils";
 
 export function getStatusMessage(
   status: GenerationStatus["status"],
@@ -31,10 +32,8 @@ function getInitiatorName(
   if (!initiatedBy) {
     return null;
   }
-  const name = [initiatedBy.firstName, initiatedBy.lastName]
-    .filter(Boolean)
-    .join(" ");
-  return name || null;
+  const name = getUserDisplayName(initiatedBy);
+  return name === "Unknown" ? null : name;
 }
 
 /** Build a queued message for the given command. */

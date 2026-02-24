@@ -2485,11 +2485,12 @@ async function mergeLoopStatuses(
     return;
   }
 
+  // Fetch all recent loops (not just one per artifact) so pickBestStatus
+  // can prefer an active loop over a newer-but-terminal one.
   const loops = await withDb((db) =>
     db.loop.findMany({
       where: { artifactId: { in: artifactIds } },
       orderBy: { createdAt: "desc" },
-      distinct: ["artifactId"],
       select: {
         id: true,
         artifactId: true,
@@ -2564,12 +2565,14 @@ async function fetchGitHubActionsStatus(
   };
 }
 
-/** Fetch the latest Loop generation status for an artifact. */
+/** Fetch the best Loop generation status for an artifact. */
 async function fetchLoopStatus(
   artifactId: string
 ): Promise<GenerationStatus | null> {
-  const loop = await withDb((db) =>
-    db.loop.findFirst({
+  // Fetch recent loops (not just one) so pickBestStatus can prefer an
+  // active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
       where: { artifactId },
       orderBy: { createdAt: "desc" },
       select: {
@@ -2585,16 +2588,14 @@ async function fetchLoopStatus(
     })
   );
 
-  if (!loop) {
-    return null;
+  let best: GenerationStatus | null = null;
+  for (const loop of loops) {
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (mappedStatus) {
+      best = pickBestStatus(best, toLoopGenerationStatus(loop, mappedStatus));
+    }
   }
-
-  const mappedStatus = mapLoopStatus(loop.status);
-  if (!mappedStatus) {
-    return null;
-  }
-
-  return toLoopGenerationStatus(loop, mappedStatus);
+  return best;
 }
 
 /** Convert a Prisma Loop record into a GenerationStatus. */

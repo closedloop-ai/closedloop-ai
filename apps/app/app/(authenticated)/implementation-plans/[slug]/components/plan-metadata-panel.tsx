@@ -26,7 +26,10 @@ import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dia
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import { transformApiUserToSelectUser } from "@/lib/user-utils";
+import {
+  getUserDisplayName,
+  transformApiUserToSelectUser,
+} from "@/lib/user-utils";
 import { EvaluationSection } from "./evaluation-section";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
@@ -208,13 +211,7 @@ function GenerationSection({
           </div>
           {generationStatus.initiatedBy ? (
             <p className="text-muted-foreground text-sm">
-              Initiated by{" "}
-              {[
-                generationStatus.initiatedBy.firstName,
-                generationStatus.initiatedBy.lastName,
-              ]
-                .filter(Boolean)
-                .join(" ") || "Unknown"}
+              Initiated by {getUserDisplayName(generationStatus.initiatedBy)}
             </p>
           ) : null}
           <Link
