@@ -1156,8 +1156,10 @@ export function TicketList({
             "[TicketList] Updating ticket status to In Review:",
             ticketId
           );
-          await onUpdateTicketStatus(ticketId, "In Review");
-          console.log("[TicketList] Ticket status updated successfully");
+          const updated = await onUpdateTicketStatus(ticketId, "In Review");
+          if (updated) {
+            console.log("[TicketList] Ticket status updated successfully");
+          }
         } catch (err) {
           console.error("[TicketList] Failed to update ticket status:", err);
           // Don't fail the whole operation if status update fails
