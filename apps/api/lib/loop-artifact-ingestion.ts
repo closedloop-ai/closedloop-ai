@@ -48,25 +48,6 @@ export type LoopArtifacts = {
 // Download helpers
 // ---------------------------------------------------------------------------
 
-function parseJsonArtifact<T>(
-  buf: Buffer | null,
-  artifactName: string,
-  extract: (parsed: T) => unknown
-): unknown {
-  if (!buf) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(buf.toString("utf-8")) as T;
-    return extract(parsed);
-  } catch (err) {
-    log.warn(`[loop-artifact-ingestion] Failed to parse ${artifactName}`, {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
-
 /**
  * Download and parse key artifact files from a loop's S3 state.
  */
@@ -499,4 +480,23 @@ export async function ingestExecutionArtifacts(
     prUrl: executionResult.pr_url,
     prNumber,
   });
+}
+
+function parseJsonArtifact<T>(
+  buf: Buffer | null,
+  artifactName: string,
+  extract: (parsed: T) => unknown
+): unknown {
+  if (!buf) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(buf.toString("utf-8")) as T;
+    return extract(parsed);
+  } catch (err) {
+    log.warn(`[loop-artifact-ingestion] Failed to parse ${artifactName}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }
