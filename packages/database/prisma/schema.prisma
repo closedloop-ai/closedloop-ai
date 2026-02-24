@@ -89,6 +89,11 @@ enum ArtifactType {
   TEMPLATE
 }
 
+enum EvaluationReportType {
+  PLAN
+  CODE
+}
+
 enum ApproverRole {
   PM
   DESIGNER
@@ -493,6 +498,7 @@ model ArtifactEvaluation {
   artifactId  String   @map("artifact_id") @db.Uuid
   actionRunId String?  @map("action_run_id") @db.Uuid
   loopId      String?  @map("loop_id") @db.Uuid
+  reportType  EvaluationReportType @map("report_type")
   reportId    String   @map("report_id")
   reportData  Json     @map("report_data")
   createdAt   DateTime @default(now()) @map("created_at")

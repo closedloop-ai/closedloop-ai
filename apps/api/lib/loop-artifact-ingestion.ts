@@ -16,7 +16,10 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
+import {
+  EvaluationReportType as PrismaEvaluationReportType,
+  withDb,
+} from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
@@ -186,10 +189,12 @@ export async function ingestPlanArtifacts(
         },
         create: {
           artifactId,
+          reportType: PrismaEvaluationReportType.PLAN,
           reportId: artifacts.judgesReport!.report_id,
           reportData: artifacts.judgesReport!,
         },
         update: {
+          reportType: PrismaEvaluationReportType.PLAN,
           reportData: artifacts.judgesReport!,
         },
       })
@@ -468,11 +473,13 @@ export async function ingestExecutionArtifacts(
         create: {
           artifactId: loop.artifactId!,
           loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
           reportId: artifacts.codeJudgesReport.report_id,
           reportData: artifacts.codeJudgesReport,
         },
         update: {
           loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
           reportData: artifacts.codeJudgesReport,
         },
       });

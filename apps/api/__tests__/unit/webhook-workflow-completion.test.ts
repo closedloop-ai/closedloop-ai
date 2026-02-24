@@ -15,6 +15,7 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -28,6 +29,10 @@ import {
 // Mock all external dependencies before importing
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  EvaluationReportType: {
+    PLAN: "PLAN",
+    CODE: "CODE",
+  },
 }));
 
 vi.mock("@repo/github", () => ({
@@ -357,10 +362,12 @@ describe("handleWorkflowSuccess", () => {
       create: {
         artifactId,
         actionRunId,
+        reportType: EvaluationReportType.Plan,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: EvaluationReportType.Plan,
         reportData: judgesReport,
       },
     });

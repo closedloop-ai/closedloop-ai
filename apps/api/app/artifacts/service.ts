@@ -24,6 +24,7 @@ import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
+  EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
@@ -1488,7 +1489,7 @@ Please try again or contact support if the issue persists.`
       // Query evaluation from database
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId, actionRunId: null, loopId: null },
+          where: { artifactId, reportType: PrismaEvaluationReportType.PLAN },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1527,10 +1528,7 @@ Please try again or contact support if the issue persists.`
 
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: {
-            artifactId,
-            OR: [{ actionRunId: { not: null } }, { loopId: { not: null } }],
-          },
+          where: { artifactId, reportType: PrismaEvaluationReportType.CODE },
           orderBy: { createdAt: "desc" },
         })
       );

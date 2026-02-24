@@ -1,9 +1,13 @@
 import type {
   CaseScore,
+  EvaluationReportType,
   JudgesReport,
   MetricStatistics,
 } from "@repo/api/src/types/evaluation";
-import { EvalStatus } from "@repo/api/src/types/evaluation";
+import {
+  EvalStatus,
+  EvaluationReportType as EvaluationReportTypeValue,
+} from "@repo/api/src/types/evaluation";
 
 /** Regex pattern to match and remove the "-judge" suffix from case IDs. */
 const JUDGE_SUFFIX_PATTERN = /-judge$/;
@@ -65,6 +69,7 @@ export function createMockEvaluationRow(overrides?: {
   id?: string;
   artifactId?: string;
   actionRunId?: string;
+  reportType?: EvaluationReportType;
   reportId?: string;
   reportData?: JudgesReport;
   createdAt?: Date;
@@ -79,6 +84,7 @@ export function createMockEvaluationRow(overrides?: {
     id: "eval-123",
     artifactId: "artifact-123",
     actionRunId: "action-run-123",
+    reportType: EvaluationReportTypeValue.Code,
     reportId: "test-report",
     reportData: defaultReport,
     createdAt: new Date(),

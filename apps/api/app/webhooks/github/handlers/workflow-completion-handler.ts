@@ -4,7 +4,11 @@ import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import { type Prisma, withDb } from "@repo/database";
+import {
+  type Prisma,
+  EvaluationReportType as PrismaEvaluationReportType,
+  withDb,
+} from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -226,10 +230,12 @@ export async function handleExecutionSuccess(
         create: {
           artifactId: ctx.artifactId,
           actionRunId: ctx.actionRunId,
+          reportType: PrismaEvaluationReportType.CODE,
           reportId: codeJudgesReport.report_id,
           reportData: codeJudgesReport,
         },
         update: {
+          reportType: PrismaEvaluationReportType.CODE,
           reportData: codeJudgesReport,
         },
       });
@@ -378,10 +384,12 @@ export async function handleWorkflowSuccess(
       create: {
         artifactId,
         actionRunId: ctx.actionRunId,
+        reportType: PrismaEvaluationReportType.PLAN,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: PrismaEvaluationReportType.PLAN,
         reportData: judgesReport,
       },
     });
