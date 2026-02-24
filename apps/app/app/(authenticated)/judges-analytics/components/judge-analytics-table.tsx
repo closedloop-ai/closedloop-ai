@@ -95,7 +95,9 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
         {sortedData.map((judge: JudgeAggregateStats) => (
           <TableRow key={judge.judgeName}>
             <TableCell className="break-words">
-              {judgeDescriptions[
+              {(() => {
+                const description = judgeDescriptions[judge.judgeName as keyof typeof judgeDescriptions];
+                return description ? (
                 judge.judgeName as keyof typeof judgeDescriptions
               ] ? (
                 <Tooltip>
