@@ -7,7 +7,6 @@ import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { TableRow } from "@repo/design-system/components/ui/table";
 import { GripVertical } from "lucide-react";
 import type { ReactNode } from "react";
-import { useState } from "react";
 
 type SortableArtifactRowProps = {
   artifact: ArtifactWithWorkstream;
@@ -26,8 +25,6 @@ export function SortableArtifactRow({
   selectedIds,
   onSelectChange,
 }: SortableArtifactRowProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
   const {
     attributes,
     listeners,
@@ -42,31 +39,34 @@ export function SortableArtifactRow({
     transition,
   };
 
-  const showCheckbox = (selectedIds?.size ?? 0) > 0 || isHovered;
+  const hasSelections = (selectedIds?.size ?? 0) > 0;
 
   return (
     <TableRow
-      className={`${className} data-[state=dragging]:opacity-50`}
+      className={`group ${className} data-[state=dragging]:opacity-50`}
       data-state={isDragging ? "dragging" : undefined}
       onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       ref={setNodeRef}
       style={style}
     >
-      <td className="w-8 px-2">
-        {showCheckbox ? (
+      <td className="w-10 px-2">
+        <div className="flex items-center gap-1">
           <Checkbox
             aria-label={`Select ${artifact.title}`}
             checked={selectedIds?.has(artifact.id)}
+            className={
+              hasSelections
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-100"
+            }
             onCheckedChange={(checked) =>
               onSelectChange?.(artifact.id, !!checked)
             }
             onClick={(e) => e.stopPropagation()}
+            tabIndex={hasSelections ? 0 : -1}
           />
-        ) : (
           <button
-            className="cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+            className={`cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing ${hasSelections ? "hidden" : ""}`}
             onClick={(e) => e.stopPropagation()}
             type="button"
             {...attributes}
@@ -75,7 +75,7 @@ export function SortableArtifactRow({
             <GripVertical className="h-4 w-4" />
             <span className="sr-only">Drag to reorder</span>
           </button>
-        )}
+        </div>
       </td>
       {children}
     </TableRow>

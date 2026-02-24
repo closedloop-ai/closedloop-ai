@@ -215,7 +215,7 @@ function ArtifactSection({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-8">
+              <TableHead className="w-10">
                 <Checkbox
                   aria-label={`Select all in ${title}`}
                   checked={

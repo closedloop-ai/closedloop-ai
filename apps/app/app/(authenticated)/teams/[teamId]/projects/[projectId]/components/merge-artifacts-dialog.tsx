@@ -72,10 +72,10 @@ export function MergeArtifactsDialog({
         </DialogHeader>
 
         <div className="py-2">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
             <div className="space-y-1">
               <p className="font-medium text-sm">Primary (survives)</p>
-              <Card>
+              <Card key={`primary-${primaryArtifact.id}`}>
                 <CardHeader className="pt-4 pb-2">
                   <CardTitle className="font-medium text-sm leading-tight">
                     {primaryArtifact.title}
@@ -92,9 +92,25 @@ export function MergeArtifactsDialog({
               </Card>
             </div>
 
+            <Button
+              className="mb-4"
+              disabled={isPending}
+              onClick={handleSwap}
+              size="icon"
+              title="Swap primary and secondary"
+              type="button"
+              variant="outline"
+            >
+              <ArrowLeftRightIcon className="size-4" />
+              <span className="sr-only">Swap</span>
+            </Button>
+
             <div className="space-y-1">
               <p className="font-medium text-sm">Secondary (will be deleted)</p>
-              <Card className="border-destructive/30">
+              <Card
+                className="border-destructive/30"
+                key={`secondary-${secondaryArtifact.id}`}
+              >
                 <CardHeader className="pt-4 pb-2">
                   <CardTitle className="font-medium text-sm leading-tight">
                     {secondaryArtifact.title}
@@ -110,19 +126,6 @@ export function MergeArtifactsDialog({
                 </CardContent>
               </Card>
             </div>
-          </div>
-
-          <div className="mt-3 flex justify-center">
-            <Button
-              disabled={isPending}
-              onClick={handleSwap}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <ArrowLeftRightIcon className="mr-2 size-4" />
-              Swap
-            </Button>
           </div>
 
           {error ? (

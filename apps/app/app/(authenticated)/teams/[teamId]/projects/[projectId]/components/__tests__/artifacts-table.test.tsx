@@ -94,6 +94,11 @@ vi.mock("@/hooks/queries/use-artifacts", () => ({
   }),
 }));
 
+// Mock sonner toast
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
 // Mock Tooltip components so TooltipContent renders inline (not in a Portal)
 // This lets us assert on the tooltip text without hover simulation.
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
