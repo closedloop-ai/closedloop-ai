@@ -1475,40 +1475,15 @@ Please try again or contact support if the issue persists.`
    * Get judges feedback for an artifact from its associated GitHub Action run.
    * Downloads workflow artifacts and parses the judges.json report.
    */
-  async getJudgesFeedback(
+  getJudgesFeedback(
     artifactId: string,
     organizationId: string
   ): Promise<JudgesFeedbackResponse> {
-    try {
-      // Verify artifact exists and belongs to organization
-      const artifact = await this.findByIdSimple(artifactId, organizationId);
-      if (!artifact) {
-        return { status: "not_found", data: null };
-      }
-
-      // Query evaluation from database
-      const evaluation = await withDb((db) =>
-        db.artifactEvaluation.findFirst({
-          where: { artifactId, reportType: PrismaEvaluationReportType.PLAN },
-          orderBy: { createdAt: "desc" },
-        })
-      );
-
-      if (!evaluation) {
-        return { status: "not_found", data: null };
-      }
-
-      const reportData = evaluation.reportData as JudgesReport;
-      return { status: "success", data: reportData };
-    } catch (error) {
-      log.error("[artifacts-service] Failed to get judges feedback", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return {
-        status: "error",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.PLAN
+    );
   },
 
   /**
@@ -1516,9 +1491,22 @@ Please try again or contact support if the issue persists.`
    * (PR) runs, identified by a non-null actionRunId. Returns the most recent one
    * when multiple PRs have been run against the same artifact.
    */
-  async getCodeJudgesFeedback(
+  getCodeJudgesFeedback(
     artifactId: string,
     organizationId: string
+  ): Promise<JudgesFeedbackResponse> {
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.CODE
+    );
+  },
+
+  /** Shared implementation for plan and code evaluation feedback. */
+  async getEvaluationFeedback(
+    artifactId: string,
+    organizationId: string,
+    reportType: PrismaEvaluationReportType
   ): Promise<JudgesFeedbackResponse> {
     try {
       const artifact = await this.findByIdSimple(artifactId, organizationId);
@@ -1528,7 +1516,7 @@ Please try again or contact support if the issue persists.`
 
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId, reportType: PrismaEvaluationReportType.CODE },
+          where: { artifactId, reportType },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1540,7 +1528,11 @@ Please try again or contact support if the issue persists.`
       const reportData = evaluation.reportData as JudgesReport;
       return { status: "success", data: reportData };
     } catch (error) {
-      log.error("[artifacts-service] Failed to get code judges feedback", {
+      const logLabel =
+        reportType === PrismaEvaluationReportType.PLAN
+          ? "judges"
+          : "code judges";
+      log.error(`[artifacts-service] Failed to get ${logLabel} feedback`, {
         error: error instanceof Error ? error.message : String(error),
       });
       return {

@@ -84,7 +84,7 @@ export function createMockEvaluationRow(overrides?: {
     id: "eval-123",
     artifactId: "artifact-123",
     actionRunId: "action-run-123",
-    reportType: EvaluationReportTypeValue.Code,
+    reportType: EvaluationReportTypeValue.Plan,
     reportId: "test-report",
     reportData: defaultReport,
     createdAt: new Date(),
