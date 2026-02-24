@@ -21,6 +21,19 @@ export type HandledPullRequestEvent =
   | PullRequestConvertedToDraftEvent
   | PullRequestReadyForReviewEvent;
 
+/**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ * GitHub sends many PR action types (edited, labeled, assigned, etc.)
+ * that we don't process.
+ */
+const HANDLED_ACTIONS = new Set([
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "ready_for_review",
+]);
+
 /** Parse a nullable ISO date string, falling back to current time if null. */
 function parseDateOrNow(value: string | null): Date {
   return value ? new Date(value) : new Date();
@@ -53,15 +66,6 @@ export async function handlePullRequest(
   const { action, pull_request, repository } = event;
 
   // Early exit for unhandled actions to avoid unnecessary DB lookups.
-  // GitHub sends many PR action types (edited, labeled, assigned, etc.)
-  // that we don't process.
-  const HANDLED_ACTIONS = new Set([
-    "closed",
-    "reopened",
-    "synchronize",
-    "converted_to_draft",
-    "ready_for_review",
-  ]);
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequest] Skipping unhandled action", {
       action,
@@ -86,9 +90,9 @@ export async function handlePullRequest(
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
-    // Step 1: Find Repository by githubId
-    const repo = await tx.repository.findUnique({
-      where: { githubId: repository.id },
+    // Step 1: Find GitHubInstallationRepository by githubRepoId
+    const repo = await tx.gitHubInstallationRepository.findFirst({
+      where: { githubRepoId: repository.id },
       select: { id: true },
     });
 
@@ -238,11 +242,9 @@ export async function handlePullRequest(
         break;
       }
 
-      default: {
-        log.warn("[handlePullRequest] Unhandled action type", {
-          action: action as string,
-        });
-      }
+      default:
+        // Unreachable: HANDLED_ACTIONS guard above filters unhandled actions
+        break;
     }
   });
 

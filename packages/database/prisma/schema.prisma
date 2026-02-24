@@ -243,33 +243,12 @@ model Project {
   organization Organization  @relation(fields: [organizationId], references: [id])
   owner        User?         @relation("ProjectOwner", fields: [ownerId], references: [id])
   workstreams  Workstream[]
-  repositories Repository[]
   artifacts    Artifact[]
   teams        ProjectTeam[]
 
   @@index([organizationId])
   @@index([ownerId])
   @@map("projects")
-}
-
-model Repository {
-  id            String   @id @default(uuid(7)) @db.Uuid
-  projectId     String   @map("project_id") @db.Uuid
-  githubId      Int      @unique @map("github_id")
-  owner         String
-  name          String
-  fullName      String   @map("full_name")
-  defaultBranch String   @default("main") @map("default_branch")
-  isPrimary     Boolean  @default(false) @map("is_primary")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@unique([owner, name])
-  @@index([projectId])
-  @@map("repositories")
 }
 
 // =============================================================================

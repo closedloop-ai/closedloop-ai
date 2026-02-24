@@ -418,8 +418,13 @@ describe("SidebarTeams", () => {
     expect(collapsibles[0].getAttribute("data-open")).toBe("false");
 
     // Hook should be called with enabled: false after closing
-    const lastCallForTeam1 = mockUseRecentProjectsByTeam.mock.calls
-      .filter((call: [string, { enabled?: boolean }?]) => call[0] === "team-1")
+    const lastCallForTeam1 = (
+      mockUseRecentProjectsByTeam.mock.calls as [
+        string,
+        { enabled?: boolean }?,
+      ][]
+    )
+      .filter((call) => call[0] === "team-1")
       .pop();
     expect(lastCallForTeam1?.[1]).toEqual({ enabled: false });
   });

@@ -197,11 +197,7 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
           include: {
             workstream: {
               include: {
-                project: {
-                  include: {
-                    repositories: true,
-                  },
-                },
+                project: true,
               },
             },
           },
