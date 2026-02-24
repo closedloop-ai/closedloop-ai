@@ -719,7 +719,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
@@ -820,7 +820,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -876,7 +876,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -908,7 +908,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -942,7 +942,7 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, null);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -978,7 +978,9 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await expect(handleExecutionSuccess(ctx, executionResult)).rejects.toThrow(
+    await expect(
+      handleExecutionSuccess(ctx, executionResult, null)
+    ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
     );
   });
