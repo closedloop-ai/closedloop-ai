@@ -11,6 +11,7 @@ import {
   getSignedDownloadUrlWithDisposition,
   getSignedUploadUrl,
 } from "@repo/aws";
+import { keys as awsKeys } from "@repo/aws/keys";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 
@@ -72,7 +73,7 @@ export const attachmentsService = {
     mimeType: string,
     sizeBytes: number
   ): Promise<CreateAttachmentResponse> {
-    const bucket = process.env.FILE_ATTACHMENTS_BUCKET;
+    const bucket = awsKeys().FILE_ATTACHMENTS_BUCKET;
     if (!bucket) {
       throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
     }
@@ -82,7 +83,13 @@ export const attachmentsService = {
     const key = `attachments/${organizationId}/${artifactId}/${createId()}`;
 
     // Generate presigned URL first — if this fails, no orphaned DB record is created
-    const uploadUrl = await getSignedUploadUrl(key, mimeType, 900, bucket);
+    const uploadUrl = await getSignedUploadUrl(
+      key,
+      mimeType,
+      900,
+      bucket,
+      sizeBytes
+    );
 
     const created = await withDb((db) =>
       db.fileAttachment.create({

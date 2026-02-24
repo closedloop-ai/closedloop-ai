@@ -28,9 +28,11 @@ const s3Client = new S3Client({
 export async function uploadArtifact(
   key: string,
   content: Buffer | string,
-  contentType?: string
+  contentType?: string,
+  bucket?: string
 ): Promise<string> {
-  if (!config.FILE_ATTACHMENTS_BUCKET) {
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }
 
@@ -38,7 +40,7 @@ export async function uploadArtifact(
 
   await s3Client.send(
     new PutObjectCommand({
-      Bucket: config.FILE_ATTACHMENTS_BUCKET,
+      Bucket: resolvedBucket,
       Key: key,
       Body: body,
       ContentType: contentType || "application/octet-stream",
@@ -51,14 +53,18 @@ export async function uploadArtifact(
 /**
  * Download content from S3.
  */
-export async function downloadArtifact(key: string): Promise<Buffer> {
-  if (!config.FILE_ATTACHMENTS_BUCKET) {
+export async function downloadArtifact(
+  key: string,
+  bucket?: string
+): Promise<Buffer> {
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }
 
   const response = await s3Client.send(
     new GetObjectCommand({
-      Bucket: config.FILE_ATTACHMENTS_BUCKET,
+      Bucket: resolvedBucket,
       Key: key,
     })
   );
@@ -81,7 +87,7 @@ export async function deleteArtifact(
   key: string,
   bucket?: string
 ): Promise<void> {
-  const resolvedBucket = bucket ?? config.FILE_ATTACHMENTS_BUCKET;
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
   if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }
@@ -99,14 +105,16 @@ export async function deleteArtifact(
  */
 export async function getSignedDownloadUrl(
   key: string,
-  expiresIn = 3600
+  expiresIn = 3600,
+  bucket?: string
 ): Promise<string> {
-  if (!config.FILE_ATTACHMENTS_BUCKET) {
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }
 
   const command = new GetObjectCommand({
-    Bucket: config.FILE_ATTACHMENTS_BUCKET,
+    Bucket: resolvedBucket,
     Key: key,
   });
 
@@ -120,9 +128,10 @@ export async function getSignedUploadUrl(
   key: string,
   contentType = "application/octet-stream",
   expiresIn = 3600,
-  bucket?: string
+  bucket?: string,
+  contentLength?: number
 ): Promise<string> {
-  const resolvedBucket = bucket ?? config.FILE_ATTACHMENTS_BUCKET;
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
   if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }
@@ -131,6 +140,7 @@ export async function getSignedUploadUrl(
     Bucket: resolvedBucket,
     Key: key,
     ContentType: contentType,
+    ...(contentLength != null && { ContentLength: contentLength }),
   });
 
   return await s3GetSignedUrl(s3Client, command, { expiresIn });
@@ -146,7 +156,7 @@ export async function getSignedDownloadUrlWithDisposition(
   expiresIn = 3600,
   bucket?: string
 ): Promise<string> {
-  const resolvedBucket = bucket ?? config.FILE_ATTACHMENTS_BUCKET;
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
   if (!resolvedBucket) {
     throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
   }

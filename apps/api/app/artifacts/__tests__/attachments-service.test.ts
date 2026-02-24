@@ -24,6 +24,12 @@ vi.mock("@repo/aws", () => ({
   getSignedUploadUrl: vi.fn(),
 }));
 
+vi.mock("@repo/aws/keys", () => ({
+  keys: () => ({
+    FILE_ATTACHMENTS_BUCKET: process.env.FILE_ATTACHMENTS_BUCKET,
+  }),
+}));
+
 vi.mock("@paralleldrive/cuid2", () => ({
   createId: vi.fn(),
 }));
@@ -97,7 +103,7 @@ describe("attachmentsService.requestUpload", () => {
   });
 
   afterEach(() => {
-    process.env.FILE_ATTACHMENTS_BUCKET = undefined;
+    Reflect.deleteProperty(process.env, "FILE_ATTACHMENTS_BUCKET");
   });
 
   it("calls getSignedUploadUrl with expiresIn=900 (not the default 3600)", async () => {
@@ -132,7 +138,8 @@ describe("attachmentsService.requestUpload", () => {
       expect.any(String),
       "application/pdf",
       900,
-      "test-bucket"
+      "test-bucket",
+      4096
     );
   });
 
@@ -172,7 +179,8 @@ describe("attachmentsService.requestUpload", () => {
       expectedKey,
       expect.any(String),
       expect.any(Number),
-      "test-bucket"
+      "test-bucket",
+      4096
     );
   });
 
