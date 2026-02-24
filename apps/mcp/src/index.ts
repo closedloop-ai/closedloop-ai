@@ -1758,6 +1758,15 @@ async function handleOAuthRegister(
     }
   }
 
+  const grantTypesResult = parseRegistrationGrantTypes(body.grant_types);
+  if (grantTypesResult.errorDescription !== null) {
+    sendJson(res, 400, {
+      error: "invalid_client_metadata",
+      error_description: grantTypesResult.errorDescription,
+    });
+    return;
+  }
+
   const clientId = `dyn_${randomBytes(16).toString("hex")}`;
   const clientName =
     typeof body.client_name === "string" ? body.client_name : "MCP Client";
@@ -1766,10 +1775,52 @@ async function handleOAuthRegister(
     client_id: clientId,
     client_name: clientName,
     redirect_uris: redirectUris,
-    grant_types: ["authorization_code", "refresh_token"],
+    grant_types: grantTypesResult.grantTypes,
     response_types: ["code"],
     token_endpoint_auth_method: "none",
   });
+}
+
+function parseRegistrationGrantTypes(grantTypesInput: unknown): {
+  grantTypes: string[];
+  errorDescription: string | null;
+} {
+  if (grantTypesInput === undefined) {
+    return {
+      grantTypes: ["authorization_code", "refresh_token"],
+      errorDescription: null,
+    };
+  }
+  if (!Array.isArray(grantTypesInput) || grantTypesInput.length === 0) {
+    return {
+      grantTypes: [],
+      errorDescription: "grant_types must be a non-empty array",
+    };
+  }
+  if (grantTypesInput.some((grantType) => typeof grantType !== "string")) {
+    return {
+      grantTypes: [],
+      errorDescription: "grant_types values must be strings",
+    };
+  }
+
+  const supportedGrantTypes = new Set(["authorization_code", "refresh_token"]);
+  const normalized = [...new Set(grantTypesInput as string[])];
+  if (normalized.some((grantType) => !supportedGrantTypes.has(grantType))) {
+    return {
+      grantTypes: [],
+      errorDescription:
+        "Only authorization_code and refresh_token grant_types are supported",
+    };
+  }
+  if (!normalized.includes("authorization_code")) {
+    return {
+      grantTypes: [],
+      errorDescription: "authorization_code grant_type is required",
+    };
+  }
+
+  return { grantTypes: normalized, errorDescription: null };
 }
 
 /**
