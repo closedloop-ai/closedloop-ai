@@ -2514,18 +2514,7 @@ async function mergeLoopStatuses(
       continue;
     }
 
-    const loopGenStatus: GenerationStatus = {
-      status: mappedStatus,
-      command: mapLoopCommand(loop.command),
-      htmlUrl: null,
-      startedAt: loop.startedAt,
-      completedAt: loop.completedAt,
-      correlationId: null,
-      source: "loop",
-      loopId: loop.id,
-      initiatedBy: loop.user,
-    };
-
+    const loopGenStatus = toLoopGenerationStatus(loop, mappedStatus);
     const existing = generationStatusMap.get(loop.artifactId) ?? null;
     generationStatusMap.set(
       loop.artifactId,
@@ -2560,8 +2549,12 @@ async function fetchGitHubActionsStatus(
     return null;
   }
 
+  // CANCELLED maps to FAILURE since both are terminal non-success states
+  const status: GenerationStatus["status"] =
+    actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
+
   return {
-    status: actionRun.status as GenerationStatus["status"],
+    status,
     command: triggerData?.command ?? null,
     htmlUrl: actionRun.htmlUrl || null,
     startedAt: actionRun.startedAt,
@@ -2601,6 +2594,20 @@ async function fetchLoopStatus(
     return null;
   }
 
+  return toLoopGenerationStatus(loop, mappedStatus);
+}
+
+/** Convert a Prisma Loop record into a GenerationStatus. */
+function toLoopGenerationStatus(
+  loop: {
+    id: string;
+    command: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    user: { firstName: string | null; lastName: string | null } | null;
+  },
+  mappedStatus: GenerationStatus["status"]
+): GenerationStatus {
   return {
     status: mappedStatus,
     command: mapLoopCommand(loop.command),
