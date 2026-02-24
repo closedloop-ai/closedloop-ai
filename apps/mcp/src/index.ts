@@ -2235,6 +2235,10 @@ async function handleRefreshTokenGrant(
   }
 
   if (refreshRecord.revokedAt !== null) {
+    // Intentionally conservative: if a revoked token is presented by the bound
+    // client, revoke the remaining family immediately. A concurrent rotation
+    // may cause over-revocation (forcing re-auth), which is preferred over
+    // under-revocation in replay scenarios.
     await revokeRefreshTokenFamily(refreshRecord.familyId);
     sendOAuthJson(res, 400, {
       error: "invalid_grant",

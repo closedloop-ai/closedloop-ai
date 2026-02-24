@@ -43,6 +43,29 @@ describe.sequential("ApiClient", () => {
     ).resolves.toEqual([{ id: "a1" }]);
   });
 
+  it("throws when success envelope is missing data", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+      )
+    );
+
+    const { createApiClient } = await import("../api-client.js");
+    const client = createApiClient(
+      { userId: "u1", organizationId: "o1", scopes: ["read"] },
+      "sk_live_test"
+    );
+
+    await expect(client.get("/artifacts")).rejects.toThrow(
+      "API returned success without data"
+    );
+  });
+
   it("throws when ApiResult reports failure", async () => {
     vi.stubGlobal(
       "fetch",

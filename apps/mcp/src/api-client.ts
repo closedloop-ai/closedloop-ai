@@ -30,6 +30,9 @@ function unwrapApiResult<T>(body: unknown): T {
     return body as T;
   }
   if (success) {
+    if (record.data === undefined) {
+      throw new Error("API returned success without data");
+    }
     return record.data as T;
   }
   const error = record.error;
