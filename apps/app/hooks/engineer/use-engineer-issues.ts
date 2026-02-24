@@ -197,6 +197,13 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
         throw new Error(`Ticket ${ticketIdentifier} not found`);
       }
 
+      if (!ticket.issueId) {
+        console.warn(
+          `[updateTicketStatus] Ticket ${ticketIdentifier} is not an issue, skipping`
+        );
+        return;
+      }
+
       const symphonyStatus = mapToSymphonyStatus(status);
       try {
         await mcp.updateIssue(ticket.issueId, { status: symphonyStatus });
@@ -213,12 +220,38 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
     [tickets, mcp]
   );
 
-  // Get full ticket details — check local state first, fall back to MCP
+  // Get full ticket details — fetch full content for artifacts via MCP
   const getFullTicket = useCallback(
     async (ticketId: string): Promise<FullTicketDetails> => {
       const ticket = tickets.find(
         (t) => t.id === ticketId || t.identifier === ticketId
       );
+
+      // For artifact-sourced tickets, fetch full content via get-artifact
+      if (ticket && ticket.sourceType !== "Issue") {
+        try {
+          const detail = await mcp.getArtifact(ticket.id);
+          return {
+            identifier: ticket.identifier,
+            title: ticket.title,
+            description: detail.version.content || ticket.description || "",
+            url: ticket.url,
+          };
+        } catch (err) {
+          console.warn(
+            `[getFullTicket] Failed to fetch artifact content for ${ticket.identifier}, using snippet:`,
+            err
+          );
+          return {
+            identifier: ticket.identifier,
+            title: ticket.title,
+            description: ticket.description || "",
+            url: ticket.url,
+          };
+        }
+      }
+
+      // Issue-sourced tickets already have full description from list endpoint
       if (ticket) {
         return {
           identifier: ticket.identifier,
@@ -247,6 +280,13 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
       if (!ticket) {
         console.warn(
           `[postComment] Ticket ${ticketIdentifier} not found, skipping`
+        );
+        return;
+      }
+
+      if (!ticket.issueId) {
+        console.warn(
+          `[postComment] Ticket ${ticketIdentifier} is not an issue, skipping`
         );
         return;
       }
@@ -370,7 +410,6 @@ function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
     url: `/${routePrefix}/${artifact.slug}`,
-    issueId: artifact.id,
     projectName: artifact.project?.name ?? undefined,
     workstreamTitle: artifact.workstream?.title ?? undefined,
   };
