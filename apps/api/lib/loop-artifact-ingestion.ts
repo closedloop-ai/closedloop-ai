@@ -9,6 +9,7 @@
  * helpers once both paths are stable and well-tested independently.
  * See: workflow-completion-handler.ts handleWorkflowSuccess / handleExecutionSuccess
  */
+
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
@@ -341,6 +342,36 @@ export async function ingestExecutionArtifacts(
       return;
     }
 
+    if (artifacts.codeJudgesReport) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: loop.artifactId!,
+            reportId: artifacts.codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: loop.artifactId!,
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportId: artifacts.codeJudgesReport.report_id,
+          reportData: artifacts.codeJudgesReport,
+        },
+        update: {
+          loopId: loop.id,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportData: artifacts.codeJudgesReport,
+        },
+      });
+
+      log.info("[loop-artifact-ingestion] Persisted code judges report", {
+        artifactId: loop.artifactId,
+        loopId: loop.id,
+        reportId: artifacts.codeJudgesReport.report_id,
+        judgesCount: artifacts.codeJudgesReport.stats.length,
+      });
+    }
+
     const existingPr = await tx.gitHubPullRequest.findUnique({
       where: {
         repositoryId_number: {
@@ -461,36 +492,6 @@ export async function ingestExecutionArtifacts(
         },
       },
     });
-
-    if (artifacts.codeJudgesReport) {
-      await tx.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId: loop.artifactId!,
-            reportId: artifacts.codeJudgesReport.report_id,
-          },
-        },
-        create: {
-          artifactId: loop.artifactId!,
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportId: artifacts.codeJudgesReport.report_id,
-          reportData: artifacts.codeJudgesReport,
-        },
-        update: {
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.CODE,
-          reportData: artifacts.codeJudgesReport,
-        },
-      });
-
-      log.info("[loop-artifact-ingestion] Persisted code judges report", {
-        artifactId: loop.artifactId,
-        loopId: loop.id,
-        reportId: artifacts.codeJudgesReport.report_id,
-        judgesCount: artifacts.codeJudgesReport.stats.length,
-      });
-    }
   });
 
   log.info("[loop-artifact-ingestion] Execution artifacts ingested", {
