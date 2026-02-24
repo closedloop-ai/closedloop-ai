@@ -86,7 +86,7 @@ async function getInstallationOctokit(
 export type TriggerWorkflowDispatchOptions = {
   targetRepo: string;
   ref?: string;
-  command: "plan" | "execute" | "answer" | "chat";
+  command: "plan" | "execute" | "answer" | "chat" | "prd";
   commandArgs?: string;
   context: string;
   correlationId: string;

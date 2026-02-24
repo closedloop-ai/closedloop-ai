@@ -1346,12 +1346,12 @@ Analyze the content at this link and identify capabilities or features that coul
     // Look up triggering user for commit attribution
     const committer = await getCommitterInfo(userId);
 
-    // Trigger the workflow — use "plan" command with PRD-specific commandArgs
+    // Trigger the workflow — use "prd" command to invoke prd-creator skill
     const result = await triggerWorkflowDispatch({
       targetRepo,
       ref: targetBranch,
-      command: "plan",
-      commandArgs: reverseSynthesisLink ? "self-improve" : "prd-creator",
+      command: "prd",
+      commandArgs: reverseSynthesisLink ? "self-improve" : "",
       context,
       correlationId,
       sessionId: artifact.id,
