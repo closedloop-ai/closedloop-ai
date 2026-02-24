@@ -87,6 +87,10 @@ function getCorsHeaders(origin: string | null): Record<string, string> {
     "Access-Control-Allow-Headers":
       "Content-Type, Authorization, X-Requested-With",
     "Access-Control-Max-Age": "86400",
+    // Allow cross-origin pages to load this resource even when the browser
+    // defaults Cross-Origin-Embedder-Policy to same-origin (fixes
+    // ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep).
+    "Cross-Origin-Resource-Policy": "cross-origin",
   };
 
   if (origin && isOriginAllowed(origin)) {
