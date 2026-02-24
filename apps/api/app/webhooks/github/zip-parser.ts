@@ -1,10 +1,10 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
+import type { ExecutionResult } from "./types";
 
 export type ZipContent = {
   planContent: string | null;

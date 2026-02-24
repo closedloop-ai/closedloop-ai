@@ -163,6 +163,7 @@ const defaultProps = {
   onPreviewRefresh: vi.fn().mockResolvedValue(null),
   isPreviewRefreshing: false,
   judgesReport: null,
+  codeJudgesReport: null,
   onStatusChange: vi.fn(),
   onApproverSelect: vi.fn(),
   onOwnerChange: vi.fn(),
@@ -315,13 +316,14 @@ describe("PlanMetadataPanel", () => {
   });
 
   describe("Section structure", () => {
-    test("renders all collapsible sections: Properties, Execution Log, Evaluation, Performance, and Comments", () => {
+    test("renders all collapsible sections: Properties, Execution Log, Evaluation, Code Evaluation, Performance, and Comments", () => {
       render(<PlanMetadataPanel {...defaultProps} />);
 
       // Check for collapsible section headings
       expect(screen.getByText("Properties")).toBeDefined();
       expect(screen.getByText("Execution Log")).toBeDefined();
       expect(screen.getByText("Evaluation")).toBeDefined();
+      expect(screen.getByText("Code Evaluation")).toBeDefined();
       expect(screen.getByText("Performance")).toBeDefined();
       expect(screen.getByText("Comments")).toBeDefined();
     });

@@ -1,6 +1,5 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
@@ -10,7 +9,7 @@ import type { TransactionClient } from "@repo/database/generated/internal/prisma
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import type { WorkflowContext } from "../types";
+import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import { processArtifactUploads } from "./workflow-artifacts";
 

@@ -45,6 +45,7 @@ export type PlanMetadataPanelProps = {
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
   onStatusChange: (status: ArtifactStatus) => void;
   onApproverSelect: (user: User | null) => void;
   onOwnerChange: (user: User | null) => void;
@@ -64,6 +65,7 @@ export function PlanMetadataPanel({
   onPreviewRefresh,
   isPreviewRefreshing,
   judgesReport,
+  codeJudgesReport,
   onStatusChange,
   onApproverSelect,
   onOwnerChange,
@@ -178,6 +180,12 @@ export function PlanMetadataPanel({
           </CollapsibleSection>
 
           <EvaluationSection judgesReport={judgesReport} />
+
+          <EvaluationSection
+            emptyMessage="Code judge feedback is not available yet"
+            judgesReport={codeJudgesReport}
+            title="Code Evaluation"
+          />
 
           <PerformanceSection artifactId={plan.id} />
 

@@ -11,7 +11,6 @@
  */
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import type { ExecutionResult } from "@repo/api/src/types/execution-result";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
@@ -21,6 +20,7 @@ import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import type { ExecutionResult } from "../app/webhooks/github/types";
 import { downloadArtifactFile } from "./loop-state";
 
 // ---------------------------------------------------------------------------

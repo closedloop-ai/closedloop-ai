@@ -1511,6 +1511,45 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
+   * Get code judges feedback for an artifact — evaluations produced by execution
+   * (PR) runs, identified by a non-null actionRunId. Returns the most recent one
+   * when multiple PRs have been run against the same artifact.
+   */
+  async getCodeJudgesFeedback(
+    artifactId: string,
+    organizationId: string
+  ): Promise<JudgesFeedbackResponse> {
+    try {
+      const artifact = await this.findByIdSimple(artifactId, organizationId);
+      if (!artifact) {
+        return { status: "not_found", data: null };
+      }
+
+      const evaluation = await withDb((db) =>
+        db.artifactEvaluation.findFirst({
+          where: { artifactId, actionRunId: { not: null } },
+          orderBy: { createdAt: "desc" },
+        })
+      );
+
+      if (!evaluation) {
+        return { status: "not_found", data: null };
+      }
+
+      const reportData = evaluation.reportData as JudgesReport;
+      return { status: "success", data: reportData };
+    } catch (error) {
+      log.error("[artifacts-service] Failed to get code judges feedback", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
+
+  /**
    * Get performance data for an artifact from the GitHubActionRunPerformance table.
    * Org-scoping is enforced via Prisma relation filter on the artifact FK.
    * Returns null when no performance data is available for the artifact.

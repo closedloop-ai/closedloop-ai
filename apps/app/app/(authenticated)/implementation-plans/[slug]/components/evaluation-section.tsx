@@ -17,9 +17,15 @@ import { JudgeResultCard } from "./judge-result-card";
 
 type EvaluationSectionProps = {
   judgesReport: JudgesReport | null;
+  title?: string;
+  emptyMessage?: string;
 };
 
-export function EvaluationSection({ judgesReport }: EvaluationSectionProps) {
+export function EvaluationSection({
+  judgesReport,
+  title = "Evaluation",
+  emptyMessage = "Awaiting LLM Judges feedback",
+}: EvaluationSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   const allMetrics =
@@ -33,7 +39,7 @@ export function EvaluationSection({ judgesReport }: EvaluationSectionProps) {
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>
       <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg p-3 font-medium text-sm transition-colors hover:bg-accent">
-        <span>Evaluation</span>
+        <span>{title}</span>
         {isOpen ? (
           <ChevronUpIcon className="h-4 w-4" />
         ) : (
@@ -42,9 +48,7 @@ export function EvaluationSection({ judgesReport }: EvaluationSectionProps) {
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-4 px-3 pb-3">
         {judgesReport === null && (
-          <p className="text-muted-foreground text-sm">
-            Awaiting LLM Judges feedback
-          </p>
+          <p className="text-muted-foreground text-sm">{emptyMessage}</p>
         )}
         {judgesReport !== null && judgesReport.stats.length === 0 && (
           <p className="text-muted-foreground text-sm">
