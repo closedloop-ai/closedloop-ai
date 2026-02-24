@@ -38,6 +38,11 @@ import {
 } from "@repo/github/execution-log-parser";
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
+import {
+  mapLoopCommand,
+  mapLoopStatus,
+  pickBestStatus,
+} from "@/lib/loop-status-utils";
 import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
@@ -238,7 +243,7 @@ export const artifactsService = {
     ];
 
     // Batch-fetch GitHubActionRun records for generation status
-    let generationStatusMap: Map<string, GenerationStatus> = new Map();
+    const generationStatusMap = new Map<string, GenerationStatus>();
     if (uniqueWorkstreamIds.length > 0) {
       const actionRuns = await withDb((db) =>
         db.gitHubActionRun.findMany({
@@ -259,8 +264,6 @@ export const artifactsService = {
         })
       );
 
-      // Build map: artifactId -> most recent GenerationStatus
-      generationStatusMap = new Map<string, GenerationStatus>();
       for (const run of actionRuns) {
         const triggerData = parseTriggerData(run.triggerData);
         if (!triggerData) {
@@ -283,10 +286,17 @@ export const artifactsService = {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             correlationId: triggerData.correlationId,
+            source: "github_actions",
           });
         }
       }
     }
+
+    // Batch-fetch Loop records and merge into generation status map
+    await mergeLoopStatuses(
+      artifacts.map((a) => a.id),
+      generationStatusMap
+    );
 
     // Batch-fetch GitHubPullRequest records for each workstream
     const pullRequestRecords =
@@ -2429,6 +2439,36 @@ Please try again or contact support if the issue persists.`
 
     return Array.from(relatedIds);
   },
+
+  /**
+   * Get the generation status for a single artifact by checking both
+   * GitHub Actions runs and Loop records. Returns null if the artifact
+   * is not found in the org.
+   */
+  async getGenerationStatus(
+    artifactId: string,
+    organizationId: string
+  ): Promise<GenerationStatus | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true, workstreamId: true },
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    const [ghStatus, loopStatus] = await Promise.all([
+      artifact.workstreamId
+        ? fetchGitHubActionsStatus(artifact.workstreamId, artifact.id)
+        : Promise.resolve(null),
+      fetchLoopStatus(artifact.id),
+    ]);
+
+    return pickBestStatus(ghStatus, loopStatus);
+  },
 };
 
 export type ExecuteResult =
@@ -2612,4 +2652,154 @@ function buildPullRequestMap(
     }
   }
   return map;
+}
+
+/**
+ * Batch-fetch Loop records for the given artifact IDs and merge into the
+ * generation status map, preferring active statuses over terminal ones
+ * and most recent when both are terminal.
+ */
+async function mergeLoopStatuses(
+  artifactIds: string[],
+  generationStatusMap: Map<string, GenerationStatus>
+): Promise<void> {
+  if (artifactIds.length === 0) {
+    return;
+  }
+
+  // Fetch all recent loops (not just one per artifact) so pickBestStatus
+  // can prefer an active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId: { in: artifactIds } },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        artifactId: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  for (const loop of loops) {
+    if (!loop.artifactId) {
+      continue;
+    }
+
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (!mappedStatus) {
+      continue;
+    }
+
+    const loopGenStatus = toLoopGenerationStatus(loop, mappedStatus);
+    const existing = generationStatusMap.get(loop.artifactId) ?? null;
+    generationStatusMap.set(
+      loop.artifactId,
+      pickBestStatus(existing, loopGenStatus)
+    );
+  }
+}
+
+/** Fetch the latest GitHub Actions generation status for an artifact. */
+async function fetchGitHubActionsStatus(
+  workstreamId: string,
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  const actionRun = await withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: { workstreamId, workflowName: "symphony-dispatch" },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  if (!actionRun) {
+    return null;
+  }
+
+  const triggerData = actionRun.triggerData as {
+    correlationId?: string;
+    artifactId?: string;
+    command?: "plan" | "execute" | "chat";
+  } | null;
+
+  if (triggerData?.artifactId !== artifactId) {
+    return null;
+  }
+
+  // CANCELLED maps to FAILURE since both are terminal non-success states
+  const status: GenerationStatus["status"] =
+    actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
+
+  return {
+    status,
+    command: triggerData?.command ?? null,
+    htmlUrl: actionRun.htmlUrl || null,
+    startedAt: actionRun.startedAt,
+    completedAt: actionRun.completedAt,
+    correlationId: triggerData?.correlationId ?? null,
+    source: "github_actions",
+  };
+}
+
+/** Fetch the best Loop generation status for an artifact. */
+async function fetchLoopStatus(
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  // Fetch recent loops (not just one) so pickBestStatus can prefer an
+  // active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  let best: GenerationStatus | null = null;
+  for (const loop of loops) {
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (mappedStatus) {
+      best = pickBestStatus(best, toLoopGenerationStatus(loop, mappedStatus));
+    }
+  }
+  return best;
+}
+
+/** Convert a Prisma Loop record into a GenerationStatus. */
+function toLoopGenerationStatus(
+  loop: {
+    id: string;
+    command: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    user: { firstName: string | null; lastName: string | null } | null;
+  },
+  mappedStatus: GenerationStatus["status"]
+): GenerationStatus {
+  return {
+    status: mappedStatus,
+    command: mapLoopCommand(loop.command),
+    htmlUrl: null,
+    startedAt: loop.startedAt,
+    completedAt: loop.completedAt,
+    correlationId: null,
+    source: "loop",
+    loopId: loop.id,
+    initiatedBy: loop.user,
+  };
 }
