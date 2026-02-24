@@ -1152,20 +1152,11 @@ export function TicketList({
       // Move ticket to "In Review" status
       if (onUpdateTicketStatus) {
         try {
-          console.log(
-            "[TicketList] Updating ticket status to In Review:",
-            ticketId
-          );
-          const updated = await onUpdateTicketStatus(ticketId, "In Review");
-          if (updated) {
-            console.log("[TicketList] Ticket status updated successfully");
-          }
+          await onUpdateTicketStatus(ticketId, "In Review");
         } catch (err) {
           console.error("[TicketList] Failed to update ticket status:", err);
           // Don't fail the whole operation if status update fails
         }
-      } else {
-        console.warn("[TicketList] onUpdateTicketStatus not provided");
       }
 
       toast.success("Pull request created", {
