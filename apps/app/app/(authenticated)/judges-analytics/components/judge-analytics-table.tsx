@@ -101,7 +101,7 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
                 judge.judgeName as keyof typeof judgeDescriptions
               ] ? (
                 <Tooltip>
-                  <TooltipTrigger className="cursor-help underline decoration-dotted">
+                  <TooltipTrigger asChild><span className="cursor-help underline decoration-dotted">
                     {judge.judgeName}
                   </TooltipTrigger>
                   <TooltipContent>
