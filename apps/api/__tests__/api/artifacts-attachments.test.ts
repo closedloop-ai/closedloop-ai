@@ -23,6 +23,12 @@ vi.mock("@/lib/auth/with-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/artifacts/attachments-service");
+// Mock @repo/aws with factory to prevent S3Client instantiation (requires AWS_REGION at module level)
+vi.mock("@repo/aws", () => ({
+  deleteArtifact: vi.fn(),
+  getSignedDownloadUrlWithDisposition: vi.fn(),
+  getSignedUploadUrl: vi.fn(),
+}));
 
 describe("POST /api/artifacts/:id/attachments", () => {
   beforeEach(() => {
