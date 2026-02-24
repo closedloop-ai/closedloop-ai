@@ -33,7 +33,7 @@ Client Components:
 - Run in the browser (and once on server for initial HTML)
 - Can use hooks, event handlers, browser APIs
 - Are included in the client JS bundle
-- Can import other client components, but NOT server components
+- Cannot directly `import` Server Components (but can receive them as `children` or props — a core App Router composition pattern)
 
 ## `"use server"` - Server Actions
 Server Actions are **RPC calls** - think of them like serverless functions (AWS Lambda). They run on Vercel infrastructure, not in the browser.

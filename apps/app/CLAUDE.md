@@ -9,7 +9,7 @@ Authenticated Next.js app (App Router). Port 3000. For Server Component vs Clien
 ## TanStack Query Conventions
 
 All data fetching in `hooks/queries/use-*.ts`:
-- Export `entityKeys` factory: `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
+- Export `<entity>Keys` factory (e.g., `artifactKeys`, `projectKeys`): `.all`, `.lists()`, `.list(filters)`, `.detail(id)`
 - Query hooks: `queryKey` + `queryFn` + `enabled` + `...options` spread
 - Mutations: invalidate relevant caches in `onSuccess`
 - `useApiClient()` provides the HTTP client (throws `ApiError`)
@@ -44,7 +44,7 @@ hooks/
 ### React & Components
 - **[pattern]**: Clerk client components (UserButton, OrganizationSwitcher) need mounted state hydration guard.
 - **[insight]**: Check existing component props before adding new ones — data may already be available.
-- **[pattern]**: Radix Dialog `modal={false}` still fires onInteractOutside. Non-modal panels: `e.preventDefault()` on both events.
+- **[pattern]**: Radix Dialog `modal={false}` still fires `onInteractOutside` and `onPointerDownOutside`. Non-modal panels: `e.preventDefault()` on both.
 - **[pattern]**: Multi-provider AI context injection must be provider-aware. Skip client-side formatting for non-target providers — use server-side.
 - **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
 

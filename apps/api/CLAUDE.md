@@ -38,7 +38,6 @@ Use `withAnyAuth` for routes accepting both programmatic (MCP, CLI) and browser 
 - **[convention]**: Webhook expected errors: catch specific error code (e.g., Prisma P2025), re-throw everything else.
 - **[mistake]**: Liveblocks auth with global tokens: must pass organizationId as tenantId for inbox notifications.
 - **[pattern]**: Liveblocks tenant ID from room ID: `extractTenantId(roomId) ?? organizationId` fallback chain.
-- **[pattern]**: Use `parseBody(request, validator)` from `@/lib/route-utils` instead of manual parsing.
 - **[mistake]**: `artifactsService.create` signature: `create(organizationId, userId, input)` — orgId and userId before input.
 - **[pattern]**: Routes must transform service Result types to API contract flat types.
 - **[mistake]**: OAuth connect routes: verify service method signature before copying parameter destructuring.
