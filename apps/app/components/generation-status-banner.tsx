@@ -43,7 +43,7 @@ export function GenerationStatusBanner({
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
       handleGenerationSuccess();
-      toast.success("Plan generation completed successfully");
+      toast.success("Generation completed successfully");
       return;
     }
 

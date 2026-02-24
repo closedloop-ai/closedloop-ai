@@ -74,7 +74,7 @@ function getRunningVerb(command: GenerationStatus["command"]): string {
     case "chat":
       return "Processing chat request...";
     default:
-      return "Generating implementation plan...";
+      return "Generating...";
   }
 }
 
@@ -90,6 +90,6 @@ function getFailureMessage(command: GenerationStatus["command"]): string {
     case "chat":
       return "Chat request failed";
     default:
-      return "Plan generation failed";
+      return "Generation failed";
   }
 }

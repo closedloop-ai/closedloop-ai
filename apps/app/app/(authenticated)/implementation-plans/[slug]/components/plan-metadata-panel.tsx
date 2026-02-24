@@ -14,6 +14,7 @@ import { ExternalLinkIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import {
@@ -49,6 +50,7 @@ export type PlanMetadataPanelProps = {
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
   onStatusChange: (status: ArtifactStatus) => void;
   onApproverSelect: (user: User | null) => void;
   onOwnerChange: (user: User | null) => void;
@@ -68,6 +70,7 @@ export function PlanMetadataPanel({
   onPreviewRefresh,
   isPreviewRefreshing,
   judgesReport,
+  codeJudgesReport,
   onStatusChange,
   onApproverSelect,
   onOwnerChange,
@@ -168,6 +171,12 @@ export function PlanMetadataPanel({
 
           <EvaluationSection judgesReport={judgesReport} />
 
+          <EvaluationSection
+            emptyMessage="Code judge feedback is not available yet"
+            judgesReport={codeJudgesReport}
+            title="Code Evaluation"
+          />
+
           <PerformanceSection artifactId={plan.id} />
 
           <CollapsibleSection
@@ -182,6 +191,8 @@ export function PlanMetadataPanel({
           </CollapsibleSection>
 
           <CommentsSection artifactId={plan.id} />
+
+          <AttachmentsSection artifactId={plan.id} />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog

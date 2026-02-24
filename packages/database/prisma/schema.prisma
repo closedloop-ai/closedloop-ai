@@ -89,6 +89,11 @@ enum ArtifactType {
   TEMPLATE
 }
 
+enum EvaluationReportType {
+  PLAN
+  CODE
+}
+
 enum ApproverRole {
   PM
   DESIGNER
@@ -454,12 +459,13 @@ model Artifact {
   project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   owner        User?                @relation("ArtifactOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
-  versions     ArtifactVersion[]
-  ratings      ArtifactRating[]
-  evaluations  ArtifactEvaluation[]
-  performances GitHubActionRunPerformance[]
-  pullRequests GitHubPullRequest[]
-  loops        Loop[]
+  versions         ArtifactVersion[]
+  ratings          ArtifactRating[]
+  evaluations      ArtifactEvaluation[]
+  performances     GitHubActionRunPerformance[]
+  pullRequests     GitHubPullRequest[]
+  loops            Loop[]
+  fileAttachments  FileAttachment[]
 
   @@unique([organizationId, slug])
   @@unique([organizationId, templateForType])
@@ -492,11 +498,14 @@ model ArtifactEvaluation {
   id          String   @id @default(uuid(7)) @db.Uuid
   artifactId  String   @map("artifact_id") @db.Uuid
   actionRunId String?  @map("action_run_id") @db.Uuid
+  loopId      String?  @map("loop_id") @db.Uuid
+  reportType  EvaluationReportType @map("report_type")
   reportId    String   @map("report_id")
   reportData  Json     @map("report_data")
   createdAt   DateTime @default(now()) @map("created_at")
 
   artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  loop     Loop?    @relation(fields: [loopId], references: [id], onDelete: SetNull)
 
   @@unique([artifactId, reportId])
   @@map("artifact_evaluations")
@@ -537,6 +546,24 @@ model ArtifactRating {
   @@unique([artifactId, userId, organizationId])
   @@index([artifactId, organizationId])
   @@map("artifact_ratings")
+}
+
+model FileAttachment {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  bucket      String
+  key         String
+  filename    String
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdById String   @map("created_by_id") @db.Uuid
+
+  // Relations
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([artifactId])
+  @@map("file_attachments")
 }
 
 model PullRequestRating {
@@ -738,6 +765,7 @@ model Loop {
   workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   childLoops   Loop[]       @relation("LoopParent")
+  evaluations  ArtifactEvaluation[]
   events       LoopEvent[]
 
   @@index([organizationId, status])
@@ -1086,6 +1114,27 @@ model OAuthAuthorizationCode {
   @@index([expiresAt])
   @@index([consumedAt])
   @@map("oauth_authorization_codes")
+}
+
+model OAuthRefreshToken {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tokenFingerprint String    @unique @map("token_fingerprint")
+  encryptedApiKey  String    @map("encrypted_api_key")
+  keyId            String    @map("key_id")
+  userId           String    @map("user_id") @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  clientId         String    @map("client_id")
+  scopes           String[]
+  familyId         String    @map("family_id") @db.Uuid
+  expiresAt        DateTime  @map("expires_at")
+  lastUsedAt       DateTime? @map("last_used_at")
+  revokedAt        DateTime? @map("revoked_at")
+  replacedByTokenId String?  @map("replaced_by_token_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@index([familyId, revokedAt])
+  @@map("oauth_refresh_tokens")
 }
 
 // =============================================================================
