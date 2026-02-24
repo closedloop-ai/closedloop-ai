@@ -116,6 +116,13 @@ vi.mock("@/hooks/queries/use-github-integration", () => ({
   }),
 }));
 
+// Mock AttachmentsSection to avoid QueryClient dependencies
+vi.mock("@/components/artifact-editor/attachments-section", () => ({
+  AttachmentsSection: () => (
+    <div data-testid="attachments-section">Attachments Mock</div>
+  ),
+}));
+
 // Mock pull request rating hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
   usePullRequestRating: () => ({
