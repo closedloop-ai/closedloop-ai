@@ -33,6 +33,7 @@ export type LoopArtifacts = {
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
   // NOTE: perf.jsonl is uploaded to S3 but not ingested here.
   // GitHubActionRunPerformance requires a non-nullable actionRunId
   // (loops don't have action runs). Needs a schema change to support
@@ -43,64 +44,80 @@ export type LoopArtifacts = {
 // Download helpers
 // ---------------------------------------------------------------------------
 
+function parseJsonArtifact<T>(
+  buf: Buffer | null,
+  artifactName: string,
+  extract: (parsed: T) => unknown
+): unknown {
+  if (!buf) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(buf.toString("utf-8")) as T;
+    return extract(parsed);
+  } catch (err) {
+    log.warn(`[loop-artifact-ingestion] Failed to parse ${artifactName}`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 /**
  * Download and parse key artifact files from a loop's S3 state.
  */
 export async function downloadLoopArtifacts(
   stateKeyPrefix: string
 ): Promise<LoopArtifacts> {
-  const [planJsonBuf, questionsBuf, executionResultBuf, judgesReportBuf] =
-    await Promise.all([
-      downloadArtifactFile(stateKeyPrefix, "plan.json"),
-      downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
-      downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
-      downloadArtifactFile(stateKeyPrefix, "judges.json"),
-    ]);
+  const [
+    planJsonBuf,
+    questionsBuf,
+    executionResultBuf,
+    codeJudgesReportBuf,
+    judgesReportBuf,
+  ] = await Promise.all([
+    downloadArtifactFile(stateKeyPrefix, "plan.json"),
+    downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
+    downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
+    downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
+    downloadArtifactFile(stateKeyPrefix, "judges.json"),
+  ]);
 
-  let planContent: string | null = null;
-  if (planJsonBuf) {
-    try {
-      const planJson = JSON.parse(planJsonBuf.toString("utf-8")) as PlanJson;
-      planContent = planJson.content;
-    } catch (err) {
-      log.warn("[loop-artifact-ingestion] Failed to parse plan.json", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const planContent = parseJsonArtifact<PlanJson>(
+    planJsonBuf,
+    "plan.json",
+    (p) => p.content
+  ) as string | null;
 
   // Fall back to open-questions.md if plan.json has no content
   // (mirrors zip-parser.ts questionsContent fallback)
   const questionsContent = questionsBuf ? questionsBuf.toString("utf-8") : null;
 
-  let executionResult: ExecutionResult | null = null;
-  if (executionResultBuf) {
-    try {
-      executionResult = JSON.parse(
-        executionResultBuf.toString("utf-8")
-      ) as ExecutionResult;
-    } catch (err) {
-      log.warn(
-        "[loop-artifact-ingestion] Failed to parse execution-result.json",
-        { error: err instanceof Error ? err.message : String(err) }
-      );
-    }
-  }
+  const executionResult = parseJsonArtifact<ExecutionResult>(
+    executionResultBuf,
+    "execution-result.json",
+    (p) => p
+  ) as ExecutionResult | null;
 
-  let judgesReport: JudgesReport | null = null;
-  if (judgesReportBuf) {
-    try {
-      judgesReport = JSON.parse(
-        judgesReportBuf.toString("utf-8")
-      ) as JudgesReport;
-    } catch (err) {
-      log.warn("[loop-artifact-ingestion] Failed to parse judges.json", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  const judgesReport = parseJsonArtifact<JudgesReport>(
+    judgesReportBuf,
+    "judges.json",
+    (p) => p
+  ) as JudgesReport | null;
 
-  return { planContent, questionsContent, executionResult, judgesReport };
+  const codeJudgesReport = parseJsonArtifact<JudgesReport>(
+    codeJudgesReportBuf,
+    "code-judges.json",
+    (p) => p
+  ) as JudgesReport | null;
+
+  return {
+    planContent,
+    questionsContent,
+    executionResult,
+    judgesReport,
+    codeJudgesReport,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +456,34 @@ export async function ingestExecutionArtifacts(
         },
       },
     });
+
+    if (artifacts.codeJudgesReport) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: loop.artifactId!,
+            reportId: artifacts.codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: loop.artifactId!,
+          loopId: loop.id,
+          reportId: artifacts.codeJudgesReport.report_id,
+          reportData: artifacts.codeJudgesReport,
+        },
+        update: {
+          loopId: loop.id,
+          reportData: artifacts.codeJudgesReport,
+        },
+      });
+
+      log.info("[loop-artifact-ingestion] Persisted code judges report", {
+        artifactId: loop.artifactId,
+        loopId: loop.id,
+        reportId: artifacts.codeJudgesReport.report_id,
+        judgesCount: artifacts.codeJudgesReport.stats.length,
+      });
+    }
   });
 
   log.info("[loop-artifact-ingestion] Execution artifacts ingested", {

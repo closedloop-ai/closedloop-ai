@@ -1488,7 +1488,7 @@ Please try again or contact support if the issue persists.`
       // Query evaluation from database
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId },
+          where: { artifactId, actionRunId: null, loopId: null },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1527,7 +1527,10 @@ Please try again or contact support if the issue persists.`
 
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId, actionRunId: { not: null } },
+          where: {
+            artifactId,
+            OR: [{ actionRunId: { not: null } }, { loopId: { not: null } }],
+          },
           orderBy: { createdAt: "desc" },
         })
       );
