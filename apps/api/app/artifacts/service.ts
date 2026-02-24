@@ -30,7 +30,6 @@ import {
 } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
-  getRepositoryInfo,
   triggerWorkflowDispatch,
 } from "@repo/github";
 import {
@@ -93,6 +92,31 @@ export async function getCommitterInfo(
     committerName: name || user.email,
     committerEmail: user.email,
   };
+}
+
+/**
+ * Look up the GitHubInstallationRepository record ID for a given repo full name.
+ * Queries the repository table directly with a nested installation filter for
+ * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const repo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: { id: true },
+    })
+  );
+
+  return repo?.id ?? null;
 }
 
 /**
@@ -609,7 +633,7 @@ export const artifactsService = {
   },
 
   /**
-   * Find an artifact with full regeneration context (workstream, project, repositories, source artifact)
+   * Find an artifact with full regeneration context (workstream, project, source artifact)
    */
   findWithRegenerationContext(id: string, organizationId: string) {
     return withDb((db) =>
@@ -618,13 +642,7 @@ export const artifactsService = {
         include: {
           workstream: {
             include: {
-              project: {
-                include: {
-                  repositories: {
-                    take: 1,
-                  },
-                },
-              },
+              project: true,
               // Find the PRD in this workstream (source artifact for plan generation)
               artifacts: {
                 where: {
@@ -733,11 +751,7 @@ export const artifactsService = {
         const workstream = await tx.workstream.findUnique({
           where: { id: foundSource.workstreamId! },
           include: {
-            project: {
-              include: {
-                repositories: { take: 1 },
-              },
-            },
+            project: true,
             artifacts: {
               where: { type: PrismaArtifactType.PRD },
               take: 1,
@@ -776,11 +790,7 @@ export const artifactsService = {
       const workstream = await tx.workstream.findUnique({
         where: { id: newWorkstream.id },
         include: {
-          project: {
-            include: {
-              repositories: { take: 1 },
-            },
-          },
+          project: true,
           artifacts: {
             where: { type: PrismaArtifactType.PRD },
             take: 1,
@@ -1116,16 +1126,8 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1135,16 +1137,18 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
@@ -1207,7 +1211,7 @@ Analyze the content at this link and identify capabilities or features that coul
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId: artifact.id,
       prdId: sourceArtifact.id,
       correlationId,
@@ -1282,13 +1286,8 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // PRD's own target repo/branch take priority, then project default
-    const targetRepo = artifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      artifact.targetBranch ?? existingRepository?.defaultBranch ?? "main";
+    const targetRepo = artifact.targetRepo;
+    const targetBranch = artifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1298,16 +1297,18 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
@@ -1371,7 +1372,7 @@ Analyze the content at this link and identify capabilities or features that coul
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId: artifact.id,
       prdId: artifact.id, // PRD generates itself
       correlationId,
@@ -1433,16 +1434,8 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1452,16 +1445,18 @@ Analyze the content at this link and identify capabilities or features that coul
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to error when GitHub is not configured (no placeholder for chat)
     if (!isGitHubConfigured()) {
@@ -1493,7 +1488,7 @@ Analyze the content at this link and identify capabilities or features that coul
     // This prevents race condition where webhook fires before records exist
     await this.createChatWorkflowTriggerRecords({
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId,
       prdId: sourceArtifact.id,
       correlationId,
@@ -1848,16 +1843,8 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1867,16 +1854,18 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
@@ -1904,7 +1893,7 @@ Please try again or contact support if the issue persists.`
         db.gitHubActionRun.create({
           data: {
             workstreamId: workstream.id,
-            repositoryId: repository.id,
+            repositoryId,
             runId: null, // Will be populated by webhook
             workflowName: "symphony-dispatch",
             status: "PENDING",
@@ -2539,55 +2528,6 @@ function isGitHubConfigured(): boolean {
   );
 }
 
-type RepositoryRecord = {
-  id: string;
-  fullName: string;
-  defaultBranch: string | null;
-};
-
-/**
- * Ensures a repository record exists for the given target repo.
- * Creates one if it doesn't exist by fetching info from GitHub.
- */
-async function ensureRepository(
-  targetRepo: string,
-  projectId: string,
-  existingRepository?: RepositoryRecord
-): Promise<
-  | { success: true; repository: RepositoryRecord }
-  | { success: false; error: string }
-> {
-  if (existingRepository) {
-    return { success: true, repository: existingRepository };
-  }
-
-  const repoInfo = await getRepositoryInfo(targetRepo);
-  if (!repoInfo) {
-    return {
-      success: false,
-      error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-    };
-  }
-
-  const repository = await withDb((db) =>
-    db.repository.upsert({
-      where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-      create: {
-        projectId,
-        githubId: repoInfo.githubId,
-        owner: repoInfo.owner,
-        name: repoInfo.name,
-        fullName: repoInfo.fullName,
-        defaultBranch: repoInfo.defaultBranch,
-        isPrimary: true,
-      },
-      update: {},
-    })
-  );
-
-  return { success: true, repository };
-}
-
 function getPlaceholderContent(title: string, version: number): string {
   return `# Implementation Plan: ${title}
 
@@ -2610,6 +2550,7 @@ Configure the following environment variables to enable plan generation:
 `;
 }
 
+const DEFAULT_BRANCH = "main";
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
 
