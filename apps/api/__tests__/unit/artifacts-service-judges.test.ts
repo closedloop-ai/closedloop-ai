@@ -9,11 +9,16 @@ import type {
   JudgesFeedbackResponse,
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  EvaluationReportType: {
+    PLAN: "PLAN",
+    CODE: "CODE",
+  },
 }));
 
 // Import after mocking
@@ -75,6 +80,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
             findFirst: vi.fn().mockResolvedValue(
               createMockEvaluationRow({
                 artifactId: "artifact-123",
+                reportType: EvaluationReportType.Plan,
                 reportData: MOCK_JUDGES_REPORT,
               })
             ),
@@ -140,6 +146,62 @@ describe("artifactsService.getJudgesFeedback", () => {
 
       // Assert
       expect(result).toEqual(scenario.expectedResult);
+    });
+  });
+
+  it("queries only plan evaluations via reportType enum", async () => {
+    vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
+      id: "artifact-123",
+    } as any);
+
+    const findFirst = vi.fn().mockResolvedValue(null);
+    mockWithDb.mockImplementation((callback: any) =>
+      callback({
+        artifactEvaluation: { findFirst },
+      })
+    );
+
+    await artifactsService.getJudgesFeedback("artifact-123", "org-123");
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        artifactId: "artifact-123",
+        reportType: EvaluationReportType.Plan,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  });
+});
+
+describe("artifactsService.getCodeJudgesFeedback", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("queries only code evaluations via reportType enum", async () => {
+    vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
+      id: "artifact-123",
+    } as any);
+
+    const findFirst = vi.fn().mockResolvedValue(null);
+    mockWithDb.mockImplementation((callback: any) =>
+      callback({
+        artifactEvaluation: { findFirst },
+      })
+    );
+
+    await artifactsService.getCodeJudgesFeedback("artifact-123", "org-123");
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        artifactId: "artifact-123",
+        reportType: EvaluationReportType.Code,
+      },
+      orderBy: { createdAt: "desc" },
     });
   });
 });
