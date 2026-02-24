@@ -1351,7 +1351,7 @@ Analyze the content at this link and identify capabilities or features that coul
       targetRepo,
       ref: targetBranch,
       command: "prd",
-      commandArgs: reverseSynthesisLink ? "self-improve" : "",
+      commandArgs: reverseSynthesisLink ? "self-improve" : "prd-creator",
       context,
       correlationId,
       sessionId: artifact.id,
