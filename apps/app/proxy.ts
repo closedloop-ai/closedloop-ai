@@ -49,6 +49,10 @@ export default authMiddleware((_auth, request) => {
 
   const unfurlerResponse = rewriteForLinkUnfurler(request);
   if (unfurlerResponse) {
+    const headers = securityHeaders();
+    for (const [key, value] of headers.headers.entries()) {
+      unfurlerResponse.headers.set(key, value);
+    }
     return unfurlerResponse;
   }
 
