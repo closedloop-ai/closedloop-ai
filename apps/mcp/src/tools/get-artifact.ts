@@ -11,7 +11,7 @@ import {
 } from "./tool-utils.js";
 
 const DEFAULT_CONTENT_MAX_CHARS = 4000;
-const MAX_CONTENT_MAX_CHARS = 20_000;
+const MAX_CONTENT_MAX_CHARS = 120_000;
 
 /**
  * Register the get-artifact tool on the given MCP server.
@@ -44,10 +44,11 @@ export function registerGetArtifact(
     },
     ({ artifactId, includeContent, contentMaxChars }) =>
       withErrorHandling(async () => {
-        const artifact = await apiClient.get<unknown>(
+        const response = await apiClient.get<unknown>(
           `/artifacts/${encodePathSegment(artifactId)}`
         );
-        const row = asRecord(artifact);
+        const envelope = asRecord(response);
+        const row = asRecord(envelope.data ?? response);
         const version = asRecord(row.version);
         const rawContent = readString(version.content) ?? "";
         const resolvedContentMaxChars =

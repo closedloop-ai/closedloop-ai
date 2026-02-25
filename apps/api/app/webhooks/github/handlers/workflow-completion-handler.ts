@@ -1,17 +1,21 @@
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
+import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import { type Prisma, withDb } from "@repo/database";
+import {
+  type Prisma,
+  EvaluationReportType as PrismaEvaluationReportType,
+  withDb,
+} from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import type { WorkflowContext } from "../types";
+import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
-import type { ExecutionResult } from "../zip-parser";
-import { processArtifactUploads } from "./workflow-artifacts";
+import { processArtifactDownloads } from "./workflow-artifacts";
 
 /**
  * Metadata structure for GITHUB_PR_CREATED and GITHUB_PR_MERGED events.
@@ -34,7 +38,8 @@ type PrEventMetadata = {
  */
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
-  executionResult: ExecutionResult
+  executionResult: ExecutionResult,
+  codeJudgesReport: JudgesReport | null
 ): Promise<void> {
   const { correlationId, workstreamId, repositoryId, runId } = ctx;
 
@@ -65,6 +70,14 @@ export async function handleExecutionSuccess(
   }
 
   if (!repositoryId) {
+    if (codeJudgesReport) {
+      log.warn(
+        "[handleExecutionSuccess] Dropping codeJudgesReport — no repositoryId in context",
+        {
+          reportId: codeJudgesReport.report_id,
+        }
+      );
+    }
     log.error(
       `[handleExecutionSuccess] No repositoryId in context for correlation ${correlationId}`
     );
@@ -213,6 +226,34 @@ export async function handleExecutionSuccess(
         } as PrEventMetadata,
       },
     });
+
+    if (codeJudgesReport && ctx.actionRunId) {
+      await tx.artifactEvaluation.upsert({
+        where: {
+          artifactId_reportId: {
+            artifactId: ctx.artifactId,
+            reportId: codeJudgesReport.report_id,
+          },
+        },
+        create: {
+          artifactId: ctx.artifactId,
+          actionRunId: ctx.actionRunId,
+          reportType: PrismaEvaluationReportType.CODE,
+          reportId: codeJudgesReport.report_id,
+          reportData: codeJudgesReport,
+        },
+        update: {
+          reportType: PrismaEvaluationReportType.CODE,
+          reportData: codeJudgesReport,
+        },
+      });
+
+      log.info("[handleExecutionSuccess] Persisted code judges report", {
+        artifactId: ctx.artifactId,
+        reportId: codeJudgesReport.report_id,
+        judgesCount: codeJudgesReport.stats.length,
+      });
+    }
   });
 
   log.info(
@@ -225,31 +266,26 @@ export async function handleExecutionSuccess(
  */
 export async function handleWorkflowSuccess(
   tx: TransactionClient,
-  ctx: WorkflowContext,
-  s3Configured: boolean
+  ctx: WorkflowContext
 ): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
-  // Always download and extract artifacts (we need the plan content regardless of S3)
-  const result = await processArtifactUploads(
-    correlationId,
-    runId,
-    s3Configured
-  );
+  // Download and extract artifacts from GitHub
+  const result = await processArtifactDownloads(runId);
   const {
     planContent,
     questionsContent,
     executionResult,
     judgesReport,
+    codeJudgesReport,
     perfSummary,
-    artifactKeys,
   } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact.
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(ctx, executionResult);
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
     return;
   }
 
@@ -334,7 +370,6 @@ export async function handleWorkflowSuccess(
         artifactId,
         runId,
         conclusion: "success",
-        artifactKeys,
       },
     },
   });
@@ -350,10 +385,12 @@ export async function handleWorkflowSuccess(
       create: {
         artifactId,
         actionRunId: ctx.actionRunId,
+        reportType: PrismaEvaluationReportType.PLAN,
         reportId: judgesReport.report_id,
         reportData: judgesReport,
       },
       update: {
+        reportType: PrismaEvaluationReportType.PLAN,
         reportData: judgesReport,
       },
     });
@@ -436,8 +473,7 @@ export async function handleWorkflowFailure(
  */
 export async function processWorkflowCompletion(
   event: WorkflowRunCompletedEvent,
-  correlationId: string,
-  s3Configured: boolean
+  correlationId: string
 ): Promise<Response> {
   const runId = event.workflow_run.id;
 
@@ -487,7 +523,7 @@ export async function processWorkflowCompletion(
   await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
     if (conclusion === "success") {
-      await handleWorkflowSuccess(tx, ctx, s3Configured);
+      await handleWorkflowSuccess(tx, ctx);
     } else {
       await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }

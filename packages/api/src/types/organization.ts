@@ -1,4 +1,4 @@
-// Organization, User, Project, Repository types for API contract
+// Organization, User, Project types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
 import type { ApproverRole } from "./artifact";
@@ -147,28 +147,4 @@ export type UpdateProjectInput = {
   settings?: JsonObject;
   codebaseSummary?: string | null;
   lastIndexedAt?: Date | null;
-};
-
-// Repository types
-export type Repository = {
-  id: string;
-  projectId: string;
-  githubId: number;
-  owner: string;
-  name: string;
-  fullName: string;
-  defaultBranch: string;
-  isPrimary: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-export type CreateRepositoryInput = {
-  projectId: string;
-  githubId: number;
-  owner: string;
-  name: string;
-  fullName: string;
-  defaultBranch?: string;
-  isPrimary?: boolean;
 };

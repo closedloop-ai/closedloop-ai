@@ -20,11 +20,7 @@ import {
 import { handlePush } from "./handlers/push-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
-import {
-  isGitHubConfigured,
-  isS3Configured,
-  validateRequest,
-} from "./webhook-service";
+import { isGitHubConfigured, validateRequest } from "./webhook-service";
 
 export async function POST(request: Request): Promise<Response> {
   log.info("[webhook/github] Received webhook request");
@@ -33,8 +29,6 @@ export async function POST(request: Request): Promise<Response> {
     log.warn("[webhook/github] GitHub not configured, rejecting request");
     return NextResponse.json({ message: "GitHub not configured", ok: false });
   }
-
-  const s3Configured = isS3Configured();
 
   try {
     const { body, signature, eventType } = await validateRequest(request);
@@ -60,10 +54,7 @@ export async function POST(request: Request): Promise<Response> {
 
     switch (eventType) {
       case "workflow_run":
-        return await handleWorkflowRun(
-          parsedBody as WorkflowRunEvent,
-          s3Configured
-        );
+        return await handleWorkflowRun(parsedBody as WorkflowRunEvent);
 
       case "installation":
         return await handleInstallation(parsedBody as { action: string });

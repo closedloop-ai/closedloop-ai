@@ -25,12 +25,12 @@ import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
+  EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
-  getRepositoryInfo,
   triggerWorkflowDispatch,
 } from "@repo/github";
 import {
@@ -39,6 +39,11 @@ import {
 } from "@repo/github/execution-log-parser";
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
+import {
+  mapLoopCommand,
+  mapLoopStatus,
+  pickBestStatus,
+} from "@/lib/loop-status-utils";
 import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
@@ -93,6 +98,31 @@ export async function getCommitterInfo(
     committerName: name || user.email,
     committerEmail: user.email,
   };
+}
+
+/**
+ * Look up the GitHubInstallationRepository record ID for a given repo full name.
+ * Queries the repository table directly with a nested installation filter for
+ * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const repo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: { id: true },
+    })
+  );
+
+  return repo?.id ?? null;
 }
 
 /**
@@ -214,7 +244,7 @@ export const artifactsService = {
     ];
 
     // Batch-fetch GitHubActionRun records for generation status
-    let generationStatusMap: Map<string, GenerationStatus> = new Map();
+    const generationStatusMap = new Map<string, GenerationStatus>();
     if (uniqueWorkstreamIds.length > 0) {
       const actionRuns = await withDb((db) =>
         db.gitHubActionRun.findMany({
@@ -235,8 +265,6 @@ export const artifactsService = {
         })
       );
 
-      // Build map: artifactId -> most recent GenerationStatus
-      generationStatusMap = new Map<string, GenerationStatus>();
       for (const run of actionRuns) {
         const triggerData = parseTriggerData(run.triggerData);
         if (!triggerData) {
@@ -259,10 +287,17 @@ export const artifactsService = {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             correlationId: triggerData.correlationId,
+            source: "github_actions",
           });
         }
       }
     }
+
+    // Batch-fetch Loop records and merge into generation status map
+    await mergeLoopStatuses(
+      artifacts.map((a) => a.id),
+      generationStatusMap
+    );
 
     // Batch-fetch GitHubPullRequest records for each workstream
     const pullRequestRecords =
@@ -609,7 +644,7 @@ export const artifactsService = {
   },
 
   /**
-   * Find an artifact with full regeneration context (workstream, project, repositories, source artifact)
+   * Find an artifact with full regeneration context (workstream, project, source artifact)
    */
   findWithRegenerationContext(id: string, organizationId: string) {
     return withDb((db) =>
@@ -618,13 +653,7 @@ export const artifactsService = {
         include: {
           workstream: {
             include: {
-              project: {
-                include: {
-                  repositories: {
-                    take: 1,
-                  },
-                },
-              },
+              project: true,
               // Find the PRD in this workstream (source artifact for plan generation)
               artifacts: {
                 where: {
@@ -733,11 +762,7 @@ export const artifactsService = {
         const workstream = await tx.workstream.findUnique({
           where: { id: foundSource.workstreamId! },
           include: {
-            project: {
-              include: {
-                repositories: { take: 1 },
-              },
-            },
+            project: true,
             artifacts: {
               where: { type: PrismaArtifactType.PRD },
               take: 1,
@@ -776,11 +801,7 @@ export const artifactsService = {
       const workstream = await tx.workstream.findUnique({
         where: { id: newWorkstream.id },
         include: {
-          project: {
-            include: {
-              repositories: { take: 1 },
-            },
-          },
+          project: true,
           artifacts: {
             where: { type: PrismaArtifactType.PRD },
             take: 1,
@@ -856,12 +877,13 @@ export const artifactsService = {
   },
 
   /**
-   * Build context for plan generation from source artifact content and optional initial instructions.
-   * Appends "assume defaults" instruction to skip Q&A flow.
+   * Build context base from source content, optional instructions, and an assume-defaults message.
+   * Shared by buildPlanContext and buildPRDContext.
    */
-  buildPlanContext(
+  buildContextBase(
     sourceContent: string,
-    initialInstructions: string | null
+    initialInstructions: string | null,
+    assumeDefaultsMessage: string
   ): string {
     let context = sourceContent;
 
@@ -884,7 +906,51 @@ ${initialInstructions.trim()}`;
 
 ---
 
-**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment.`;
+${assumeDefaultsMessage}`;
+
+    return context;
+  },
+
+  /**
+   * Build context for plan generation from source artifact content and optional initial instructions.
+   * Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPlanContext(
+    sourceContent: string,
+    initialInstructions: string | null
+  ): string {
+    return this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+  },
+
+  /**
+   * Build context for PRD generation from source artifact content, optional initial instructions,
+   * and optional reverse synthesis link. Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPRDContext(
+    sourceContent: string,
+    initialInstructions: string | null,
+    reverseSynthesisLink: string | null
+  ): string {
+    let context = this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the PRD, please assume reasonable defaults for any questions that arise. You may document those as open questions for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+
+    // Add reverse synthesis link section if provided
+    if (reverseSynthesisLink?.trim()) {
+      context += `
+
+---
+
+**Reverse Synthesis Link:** ${reverseSynthesisLink}
+
+Analyze the content at this link and identify capabilities or features that could be adapted for this application.`;
+    }
 
     return context;
   },
@@ -1071,16 +1137,8 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1090,16 +1148,18 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
@@ -1162,9 +1222,170 @@ ${initialInstructions.trim()}`;
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId: artifact.id,
       prdId: sourceArtifact.id,
+      correlationId,
+      targetRepo,
+      targetBranch,
+    });
+
+    return { success: true, artifact: updatedArtifact };
+  },
+
+  /**
+   * Generate a PRD artifact by triggering symphony-dispatch workflow.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  async generatePRD(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    reverseSynthesisLink: string | null
+  ): Promise<RegenerateResult> {
+    // Validate reverseSynthesisLink is a well-formed URL if provided
+    if (reverseSynthesisLink?.trim()) {
+      try {
+        new URL(reverseSynthesisLink);
+      } catch {
+        return {
+          success: false,
+          error: "reverseSynthesisLink must be a valid URL",
+          status: 400,
+        };
+      }
+    }
+
+    // Find artifact with regeneration context
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+
+    if (!artifact) {
+      return { success: false, error: "Artifact not found", status: 404 };
+    }
+
+    if (artifact.type !== PrismaArtifactType.PRD) {
+      return {
+        success: false,
+        error: "Only PRDs can be generated with this method",
+        status: 400,
+      };
+    }
+
+    // Find or create workstream
+    const { workstream } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!(workstream || artifact.projectId)) {
+      return {
+        success: false,
+        error: "Artifact must have a project to generate",
+        status: 400,
+      };
+    }
+
+    if (!workstream) {
+      return {
+        success: false,
+        error: "No workstream found for this artifact",
+        status: 400,
+      };
+    }
+
+    const targetRepo = artifact.targetRepo;
+    const targetBranch = artifact.targetBranch ?? DEFAULT_BRANCH;
+
+    if (!targetRepo) {
+      return {
+        success: false,
+        error: "No repository configured for this artifact or project",
+        status: 400,
+      };
+    }
+
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
+    );
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
+    }
+
+    // Fall back to placeholder content when GitHub is not configured
+    if (!isGitHubConfigured()) {
+      const updatedArtifact = await this.updateWithPlaceholder(
+        artifactId,
+        organizationId,
+        userId,
+        getPlaceholderContent(artifact.title, artifact.latestVersion + 1)
+      );
+      return { success: true, artifact: updatedArtifact };
+    }
+
+    // Check for existing running job
+    const existingRun = await this.findPendingWorkflowRun(
+      workstream.id,
+      "symphony-dispatch"
+    );
+
+    if (existingRun) {
+      return {
+        success: false,
+        error: "PRD generation already in progress",
+        status: 409,
+      };
+    }
+
+    const correlationId = createId();
+
+    // Build context: latest version content + reverse synthesis link
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    const context = this.buildPRDContext(
+      latestVersion?.content ?? "",
+      null,
+      reverseSynthesisLink
+    );
+
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
+    // Trigger the workflow — use "prd" command to invoke prd-creator skill
+    const result = await triggerWorkflowDispatch({
+      targetRepo,
+      ref: targetBranch,
+      command: "prd",
+      commandArgs: reverseSynthesisLink ? "self-improve" : "prd-creator",
+      context,
+      correlationId,
+      sessionId: artifact.id,
+      ...committer,
+    });
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to trigger PRD generation: ${result.error}`,
+        status: 500,
+      };
+    }
+
+    // Create all workflow trigger records
+    const updatedArtifact = await this.createWorkflowTriggerRecords({
+      organizationId,
+      workstreamId: workstream.id,
+      repositoryId,
+      artifactId: artifact.id,
+      prdId: artifact.id, // PRD generates itself
       correlationId,
       targetRepo,
       targetBranch,
@@ -1224,16 +1445,8 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1243,16 +1456,18 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to error when GitHub is not configured (no placeholder for chat)
     if (!isGitHubConfigured()) {
@@ -1284,7 +1499,7 @@ ${initialInstructions.trim()}`;
     // This prevents race condition where webhook fires before records exist
     await this.createChatWorkflowTriggerRecords({
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId,
       prdId: sourceArtifact.id,
       correlationId,
@@ -1475,21 +1690,48 @@ Please try again or contact support if the issue persists.`
    * Get judges feedback for an artifact from its associated GitHub Action run.
    * Downloads workflow artifacts and parses the judges.json report.
    */
-  async getJudgesFeedback(
+  getJudgesFeedback(
     artifactId: string,
     organizationId: string
   ): Promise<JudgesFeedbackResponse> {
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.PLAN
+    );
+  },
+
+  /**
+   * Get code judges feedback for an artifact — evaluations produced by execution
+   * (PR) runs, identified by a non-null actionRunId. Returns the most recent one
+   * when multiple PRs have been run against the same artifact.
+   */
+  getCodeJudgesFeedback(
+    artifactId: string,
+    organizationId: string
+  ): Promise<JudgesFeedbackResponse> {
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.CODE
+    );
+  },
+
+  /** Shared implementation for plan and code evaluation feedback. */
+  async getEvaluationFeedback(
+    artifactId: string,
+    organizationId: string,
+    reportType: PrismaEvaluationReportType
+  ): Promise<JudgesFeedbackResponse> {
     try {
-      // Verify artifact exists and belongs to organization
       const artifact = await this.findByIdSimple(artifactId, organizationId);
       if (!artifact) {
         return { status: "not_found", data: null };
       }
 
-      // Query evaluation from database
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId },
+          where: { artifactId, reportType },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1501,7 +1743,11 @@ Please try again or contact support if the issue persists.`
       const reportData = evaluation.reportData as JudgesReport;
       return { status: "success", data: reportData };
     } catch (error) {
-      log.error("[artifacts-service] Failed to get judges feedback", {
+      const logLabel =
+        reportType === PrismaEvaluationReportType.PLAN
+          ? "judges"
+          : "code judges";
+      log.error(`[artifacts-service] Failed to get ${logLabel} feedback`, {
         error: error instanceof Error ? error.message : String(error),
       });
       return {
@@ -1608,16 +1854,8 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
-
-    // Source artifact (PRD) target repo/branch take priority, then project default
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1627,16 +1865,18 @@ Please try again or contact support if the issue persists.`
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
@@ -1664,7 +1904,7 @@ Please try again or contact support if the issue persists.`
         db.gitHubActionRun.create({
           data: {
             workstreamId: workstream.id,
-            repositoryId: repository.id,
+            repositoryId,
             runId: null, // Will be populated by webhook
             workflowName: "symphony-dispatch",
             status: "PENDING",
@@ -2331,6 +2571,36 @@ Please try again or contact support if the issue persists.`
 
     return Array.from(relatedIds);
   },
+
+  /**
+   * Get the generation status for a single artifact by checking both
+   * GitHub Actions runs and Loop records. Returns null if the artifact
+   * is not found in the org.
+   */
+  async getGenerationStatus(
+    artifactId: string,
+    organizationId: string
+  ): Promise<GenerationStatus | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true, workstreamId: true },
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    const [ghStatus, loopStatus] = await Promise.all([
+      artifact.workstreamId
+        ? fetchGitHubActionsStatus(artifact.workstreamId, artifact.id)
+        : Promise.resolve(null),
+      fetchLoopStatus(artifact.id),
+    ]);
+
+    return pickBestStatus(ghStatus, loopStatus);
+  },
 };
 
 export type ExecuteResult =
@@ -2430,55 +2700,6 @@ function isGitHubConfigured(): boolean {
   );
 }
 
-type RepositoryRecord = {
-  id: string;
-  fullName: string;
-  defaultBranch: string | null;
-};
-
-/**
- * Ensures a repository record exists for the given target repo.
- * Creates one if it doesn't exist by fetching info from GitHub.
- */
-async function ensureRepository(
-  targetRepo: string,
-  projectId: string,
-  existingRepository?: RepositoryRecord
-): Promise<
-  | { success: true; repository: RepositoryRecord }
-  | { success: false; error: string }
-> {
-  if (existingRepository) {
-    return { success: true, repository: existingRepository };
-  }
-
-  const repoInfo = await getRepositoryInfo(targetRepo);
-  if (!repoInfo) {
-    return {
-      success: false,
-      error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-    };
-  }
-
-  const repository = await withDb((db) =>
-    db.repository.upsert({
-      where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-      create: {
-        projectId,
-        githubId: repoInfo.githubId,
-        owner: repoInfo.owner,
-        name: repoInfo.name,
-        fullName: repoInfo.fullName,
-        defaultBranch: repoInfo.defaultBranch,
-        isPrimary: true,
-      },
-      update: {},
-    })
-  );
-
-  return { success: true, repository };
-}
-
 function getPlaceholderContent(title: string, version: number): string {
   return `# Implementation Plan: ${title}
 
@@ -2501,6 +2722,7 @@ Configure the following environment variables to enable plan generation:
 `;
 }
 
+const DEFAULT_BRANCH = "main";
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
 
@@ -2611,4 +2833,154 @@ function buildPullRequestMap(
     }
   }
   return map;
+}
+
+/**
+ * Batch-fetch Loop records for the given artifact IDs and merge into the
+ * generation status map, preferring active statuses over terminal ones
+ * and most recent when both are terminal.
+ */
+async function mergeLoopStatuses(
+  artifactIds: string[],
+  generationStatusMap: Map<string, GenerationStatus>
+): Promise<void> {
+  if (artifactIds.length === 0) {
+    return;
+  }
+
+  // Fetch all recent loops (not just one per artifact) so pickBestStatus
+  // can prefer an active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId: { in: artifactIds } },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        artifactId: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  for (const loop of loops) {
+    if (!loop.artifactId) {
+      continue;
+    }
+
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (!mappedStatus) {
+      continue;
+    }
+
+    const loopGenStatus = toLoopGenerationStatus(loop, mappedStatus);
+    const existing = generationStatusMap.get(loop.artifactId) ?? null;
+    generationStatusMap.set(
+      loop.artifactId,
+      pickBestStatus(existing, loopGenStatus)
+    );
+  }
+}
+
+/** Fetch the latest GitHub Actions generation status for an artifact. */
+async function fetchGitHubActionsStatus(
+  workstreamId: string,
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  const actionRun = await withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: { workstreamId, workflowName: "symphony-dispatch" },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  if (!actionRun) {
+    return null;
+  }
+
+  const triggerData = actionRun.triggerData as {
+    correlationId?: string;
+    artifactId?: string;
+    command?: "plan" | "execute" | "chat";
+  } | null;
+
+  if (triggerData?.artifactId !== artifactId) {
+    return null;
+  }
+
+  // CANCELLED maps to FAILURE since both are terminal non-success states
+  const status: GenerationStatus["status"] =
+    actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
+
+  return {
+    status,
+    command: triggerData?.command ?? null,
+    htmlUrl: actionRun.htmlUrl || null,
+    startedAt: actionRun.startedAt,
+    completedAt: actionRun.completedAt,
+    correlationId: triggerData?.correlationId ?? null,
+    source: "github_actions",
+  };
+}
+
+/** Fetch the best Loop generation status for an artifact. */
+async function fetchLoopStatus(
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  // Fetch recent loops (not just one) so pickBestStatus can prefer an
+  // active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  let best: GenerationStatus | null = null;
+  for (const loop of loops) {
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (mappedStatus) {
+      best = pickBestStatus(best, toLoopGenerationStatus(loop, mappedStatus));
+    }
+  }
+  return best;
+}
+
+/** Convert a Prisma Loop record into a GenerationStatus. */
+function toLoopGenerationStatus(
+  loop: {
+    id: string;
+    command: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    user: { firstName: string | null; lastName: string | null } | null;
+  },
+  mappedStatus: GenerationStatus["status"]
+): GenerationStatus {
+  return {
+    status: mappedStatus,
+    command: mapLoopCommand(loop.command),
+    htmlUrl: null,
+    startedAt: loop.startedAt,
+    completedAt: loop.completedAt,
+    correlationId: null,
+    source: "loop",
+    loopId: loop.id,
+    initiatedBy: loop.user,
+  };
 }

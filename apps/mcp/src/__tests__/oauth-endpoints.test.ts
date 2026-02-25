@@ -1845,6 +1845,20 @@ describe("OAuth endpoints", () => {
     expect(json.response_types_supported).toEqual(["code"]);
   });
 
+  it("advertises refresh_token support in oauth metadata", async () => {
+    const req = createMockRequest({
+      method: "GET",
+      url: "/.well-known/oauth-authorization-server",
+    });
+    const res = createMockResponse();
+    const handled = await dispatchHttpRequestFn(req, asServerResponse(res));
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    const json = JSON.parse(res.body) as { grant_types_supported: string[] };
+    expect(json.grant_types_supported).toContain("authorization_code");
+    expect(json.grant_types_supported).toContain("refresh_token");
+  });
+
   it("supports dynamic client registration for loopback redirect URIs", async () => {
     const registerReq = createMockRequest({
       method: "POST",
@@ -1853,6 +1867,7 @@ describe("OAuth endpoints", () => {
       body: JSON.stringify({
         client_name: "Claude Code",
         redirect_uris: ["http://127.0.0.1:40123/callback"],
+        grant_types: ["authorization_code", "refresh_token"],
       }),
     });
     const registerRes = createMockResponse();
@@ -1865,9 +1880,14 @@ describe("OAuth endpoints", () => {
 
     const registerBody = JSON.parse(registerRes.body) as {
       client_id: string;
+      grant_types: string[];
       token_endpoint_auth_method: string;
     };
     expect(registerBody.client_id).toMatch(DYNAMIC_CLIENT_ID_REGEX);
+    expect(registerBody.grant_types).toEqual([
+      "authorization_code",
+      "refresh_token",
+    ]);
     expect(registerBody.token_endpoint_auth_method).toBe("none");
   });
 });

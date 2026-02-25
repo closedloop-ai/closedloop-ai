@@ -384,7 +384,7 @@ describe("handleWorkflowRun", () => {
         "stage-correlation-123"
       );
 
-      const response = await handleWorkflowRun(event, false);
+      const response = await handleWorkflowRun(event);
       const body = await response.json();
 
       expect(body).toEqual({
@@ -402,7 +402,7 @@ describe("handleWorkflowRun", () => {
         "stage-correlation-123"
       );
 
-      await handleWorkflowRun(event, false);
+      await handleWorkflowRun(event);
 
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-123",
@@ -421,7 +421,7 @@ describe("handleWorkflowRun", () => {
         "prod-correlation-456"
       );
 
-      await handleWorkflowRun(event, false);
+      await handleWorkflowRun(event);
 
       expect(mockIsCurrentEnvironment).toHaveBeenCalledWith(
         "prod-correlation-456"
@@ -437,7 +437,7 @@ describe("handleWorkflowRun", () => {
         "prod-correlation-456"
       );
 
-      const response = await handleWorkflowRun(event, false);
+      const response = await handleWorkflowRun(event);
       const body = await response.json();
 
       expect(body).toEqual({
@@ -457,7 +457,7 @@ describe("handleWorkflowRun", () => {
         "stage-correlation-789"
       );
 
-      await handleWorkflowRun(event, false);
+      await handleWorkflowRun(event);
 
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-789",
@@ -476,7 +476,7 @@ describe("handleWorkflowRun", () => {
         "stage-correlation-123"
       );
 
-      await handleWorkflowRun(event, false);
+      await handleWorkflowRun(event);
 
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-123",
@@ -494,7 +494,7 @@ describe("handleWorkflowRun", () => {
         "stage-correlation-456"
       );
 
-      await handleWorkflowRun(event, false);
+      await handleWorkflowRun(event);
 
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         "stage-correlation-456",
@@ -513,41 +513,13 @@ describe("handleWorkflowRun", () => {
         "success"
       );
 
-      await handleWorkflowRun(event, true);
+      await handleWorkflowRun(event);
 
       expect(mockProcessWorkflowCompletion).toHaveBeenCalledWith(
         event,
-        "stage-correlation-789",
-        true
+        "stage-correlation-789"
       );
       expect(mockHandleWorkflowStatusUpdate).not.toHaveBeenCalled();
-    });
-
-    it("passes s3Configured flag to processWorkflowCompletion", async () => {
-      const event = createWorkflowRunEvent(
-        "completed",
-        ".github/workflows/symphony-dispatch.yml",
-        "stage-correlation-999",
-        "success"
-      );
-
-      // Test with s3Configured = false
-      await handleWorkflowRun(event, false);
-      expect(mockProcessWorkflowCompletion).toHaveBeenCalledWith(
-        event,
-        "stage-correlation-999",
-        false
-      );
-
-      vi.clearAllMocks();
-
-      // Test with s3Configured = true
-      await handleWorkflowRun(event, true);
-      expect(mockProcessWorkflowCompletion).toHaveBeenCalledWith(
-        event,
-        "stage-correlation-999",
-        true
-      );
     });
   });
 
@@ -562,7 +534,7 @@ describe("handleWorkflowRun", () => {
       // Override action to simulate an unhandled type
       (event as any).action = "unknown_action";
 
-      const response = await handleWorkflowRun(event as any, false);
+      const response = await handleWorkflowRun(event as any);
       const body = await response.json();
 
       expect(body).toEqual({
@@ -585,7 +557,7 @@ describe("handleWorkflowRun", () => {
         workflowPath,
         correlationId
       );
-      await handleWorkflowRun(requestedEvent, false);
+      await handleWorkflowRun(requestedEvent);
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         correlationId,
         "requested",
@@ -601,7 +573,7 @@ describe("handleWorkflowRun", () => {
         workflowPath,
         correlationId
       );
-      await handleWorkflowRun(inProgressEvent, false);
+      await handleWorkflowRun(inProgressEvent);
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalledWith(
         correlationId,
         "in_progress",
@@ -618,11 +590,10 @@ describe("handleWorkflowRun", () => {
         correlationId,
         "success"
       );
-      await handleWorkflowRun(completedEvent, true);
+      await handleWorkflowRun(completedEvent);
       expect(mockProcessWorkflowCompletion).toHaveBeenCalledWith(
         completedEvent,
-        correlationId,
-        true
+        correlationId
       );
     });
 
@@ -638,7 +609,7 @@ describe("handleWorkflowRun", () => {
         workflowPath,
         "stage-correlation-1"
       );
-      await handleWorkflowRun(stageEvent, false);
+      await handleWorkflowRun(stageEvent);
       expect(mockHandleWorkflowStatusUpdate).toHaveBeenCalled();
 
       vi.clearAllMocks();
@@ -652,7 +623,7 @@ describe("handleWorkflowRun", () => {
         workflowPath,
         "prod-correlation-2"
       );
-      const response = await handleWorkflowRun(prodEvent, false);
+      const response = await handleWorkflowRun(prodEvent);
       const body = await response.json();
 
       expect(body).toEqual({

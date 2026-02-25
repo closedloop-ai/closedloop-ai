@@ -89,6 +89,11 @@ enum ArtifactType {
   TEMPLATE
 }
 
+enum EvaluationReportType {
+  PLAN
+  CODE
+}
+
 enum ApproverRole {
   PM
   DESIGNER
@@ -300,7 +305,6 @@ model Project {
   organization  Organization   @relation(fields: [organizationId], references: [id])
   owner         User?          @relation("ProjectOwner", fields: [ownerId], references: [id])
   workstreams   Workstream[]
-  repositories  Repository[]
   artifacts     Artifact[]
   issues        Issue[]
   externalLinks ExternalLink[]
@@ -493,11 +497,14 @@ model ArtifactEvaluation {
   id          String   @id @default(uuid(7)) @db.Uuid
   artifactId  String   @map("artifact_id") @db.Uuid
   actionRunId String?  @map("action_run_id") @db.Uuid
+  loopId      String?  @map("loop_id") @db.Uuid
+  reportType  EvaluationReportType @map("report_type")
   reportId    String   @map("report_id")
   reportData  Json     @map("report_data")
   createdAt   DateTime @default(now()) @map("created_at")
 
   artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  loop     Loop?    @relation(fields: [loopId], references: [id], onDelete: SetNull)
 
   @@unique([artifactId, reportId])
   @@map("artifact_evaluations")
@@ -757,6 +764,7 @@ model Loop {
   workstream   Workstream?  @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   parentLoop   Loop?        @relation("LoopParent", fields: [parentLoopId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   childLoops   Loop[]       @relation("LoopParent")
+  evaluations  ArtifactEvaluation[]
   events       LoopEvent[]
 
   @@index([organizationId, status])
@@ -846,26 +854,6 @@ model LinearSubtask {
 // =============================================================================
 // GITHUB INTEGRATION
 // =============================================================================
-
-model Repository {
-  id            String   @id @default(uuid(7)) @db.Uuid
-  projectId     String   @map("project_id") @db.Uuid
-  githubId      Int      @unique @map("github_id")
-  owner         String
-  name          String
-  fullName      String   @map("full_name")
-  defaultBranch String   @default("main") @map("default_branch")
-  isPrimary     Boolean  @default(false) @map("is_primary")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  // Relations
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@unique([owner, name])
-  @@index([projectId])
-  @@map("repositories")
-}
 
 model GitHubInstallation {
   id                  String                   @id @default(uuid(7)) @db.Uuid

@@ -5,7 +5,6 @@
  * - findActionRunByCorrelationId: queries database for action run by correlation ID
  * - validateRequest: validates webhook request by parsing body and headers
  * - isGitHubConfigured: checks if GitHub-related env vars are set
- * - isS3Configured: checks if S3-related env vars are set
  */
 import { type Mock, vi } from "vitest";
 
@@ -24,7 +23,6 @@ import { headers } from "next/headers";
 import {
   findActionRunByCorrelationId,
   isGitHubConfigured,
-  isS3Configured,
   validateRequest,
 } from "@/app/webhooks/github/webhook-service";
 
@@ -117,82 +115,6 @@ describe("isGitHubConfigured", () => {
     process.env.GITHUB_APP_DISPATCH_REPO = "";
 
     const result = isGitHubConfigured();
-
-    expect(result).toBe(false);
-  });
-});
-
-describe("isS3Configured", () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    // Reset process.env for each test
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it("returns true when all required S3 env vars are set", () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
-    process.env.AWS_SECRET_ACCESS_KEY =
-      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = "my-bucket";
-
-    const result = isS3Configured();
-
-    expect(result).toBe(true);
-  });
-
-  it("returns false when AWS_ACCESS_KEY_ID is missing", () => {
-    process.env.AWS_ACCESS_KEY_ID = undefined;
-    process.env.AWS_SECRET_ACCESS_KEY =
-      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = "my-bucket";
-
-    const result = isS3Configured();
-
-    expect(result).toBe(false);
-  });
-
-  it("returns false when AWS_SECRET_ACCESS_KEY is missing", () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
-    process.env.AWS_SECRET_ACCESS_KEY = undefined;
-    process.env.S3_BUCKET_NAME = "my-bucket";
-
-    const result = isS3Configured();
-
-    expect(result).toBe(false);
-  });
-
-  it("returns false when S3_BUCKET_NAME is missing", () => {
-    process.env.AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
-    process.env.AWS_SECRET_ACCESS_KEY =
-      "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    process.env.S3_BUCKET_NAME = undefined;
-
-    const result = isS3Configured();
-
-    expect(result).toBe(false);
-  });
-
-  it("returns false when all env vars are missing", () => {
-    process.env.AWS_ACCESS_KEY_ID = undefined;
-    process.env.AWS_SECRET_ACCESS_KEY = undefined;
-    process.env.S3_BUCKET_NAME = undefined;
-
-    const result = isS3Configured();
-
-    expect(result).toBe(false);
-  });
-
-  it("returns false when env vars are empty strings", () => {
-    process.env.AWS_ACCESS_KEY_ID = "";
-    process.env.AWS_SECRET_ACCESS_KEY = "";
-    process.env.S3_BUCKET_NAME = "";
-
-    const result = isS3Configured();
 
     expect(result).toBe(false);
   });

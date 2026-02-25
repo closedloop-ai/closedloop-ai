@@ -19,7 +19,7 @@ handlers/ (event-specific logic)
     ├── workflow-run-handler.ts (orchestrator)
     ├── workflow-status-handler.ts
     ├── workflow-completion-handler.ts
-    └── workflow-artifacts.ts (S3 upload logic)
+    └── workflow-artifacts.ts (artifact download + parsing)
     ↓
 zip-parser.ts (artifact extraction)
 ```
@@ -31,7 +31,7 @@ zip-parser.ts (artifact extraction)
 - **`route.ts`** - HTTP entry point. Handles:
   - Signature verification via `verifyWebhookSignature()`
   - Event type routing (installation, installation_repositories, workflow_run)
-  - Configuration checks (`isGitHubConfigured()`, `isS3Configured()`)
+  - Configuration check (`isGitHubConfigured()`)
   - Response formatting
 
 - **`types.ts`** - Shared type definitions:
@@ -40,7 +40,6 @@ zip-parser.ts (artifact extraction)
 
 - **`webhook-service.ts`** - Shared validation utilities:
   - `isGitHubConfigured()` - Check required env vars
-  - `isS3Configured()` - Check S3 credentials
   - `validateRequest()` - Extract body, signature, event type from request
   - `findActionRunByCorrelationId()` - Query GitHubActionRun by correlation ID
 
@@ -90,10 +89,9 @@ Event-specific handlers that implement business logic:
   - **`handleExecutionSuccess()`** - Creates GitHubPullRequest and Artifact (type: PullRequest) records
   - Uses `withDb.tx()` transaction to ensure artifact content and status update atomically
 
-- **`workflow-artifacts.ts`** - Pure parsing + S3 upload logic (extracted from completion handler):
-  - **`processArtifactUploads()`** - Downloads artifacts from GitHub, orchestrates parsing
+- **`workflow-artifacts.ts`** - Pure parsing logic (extracted from completion handler):
+  - **`processArtifactDownloads()`** - Downloads artifacts from GitHub, orchestrates parsing
   - **`processArtifactZip()`** - Handles nested zips (GitHub wraps artifacts, Symphony may also zip)
-  - **`uploadEntriesToS3()`** - Uploads extracted files to S3 with `plans/{correlationId}/` prefix
   - **`mergeZipContent()`** - Pure function to merge zip content results (prefers non-null values)
 
 ## Event Flow
@@ -133,7 +131,7 @@ Route by action:
     ├── in_progress → workflow-status-handler.ts (RUNNING)
     └── completed   → processWorkflowCompletion()
                          ├── Download artifacts via GitHub API
-                         ├── Extract content via zip-parser.ts
+                         ├── Extract content via zip-parser.ts (no S3 upload)
                          ├── success → handleWorkflowSuccess()
                          │              ├── execute → handleExecutionSuccess()
                          │              └── other   → update Artifact content/status
@@ -367,16 +365,9 @@ GITHUB_APP_ID=123456
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n..."
 GITHUB_APP_WEBHOOK_SECRET="your-webhook-secret"
 GITHUB_APP_DISPATCH_REPO="owner/repo"
-
-# Optional: S3 Storage (for artifact uploads)
-AWS_ACCESS_KEY_ID="AKIA..."
-AWS_SECRET_ACCESS_KEY="..."
-S3_BUCKET_NAME="bucket-name"
 ```
 
 If GitHub is not configured, the webhook endpoint returns early with `{ ok: false, message: "GitHub not configured" }`.
-
-If S3 is not configured, artifacts are still processed (content extracted and stored in database), but files are not uploaded to S3.
 
 ## Debugging
 
@@ -410,7 +401,6 @@ log.info("[handleWorkflowRun] Processing workflow", {
 
 **Artifact content not updating:**
 - Check workflow artifacts were uploaded successfully in GitHub Actions
-- Verify S3 bucket permissions if `uploadToS3=true`
 - Inspect zip-parser logs for extraction issues
 
 **Transaction errors:**

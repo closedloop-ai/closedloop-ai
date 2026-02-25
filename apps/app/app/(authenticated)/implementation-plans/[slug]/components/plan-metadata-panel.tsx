@@ -11,6 +11,7 @@ import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-ut
 import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { ExternalLinkIcon } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
 import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
@@ -26,7 +27,10 @@ import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dia
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { useExecutionLogDialog } from "@/hooks/use-execution-log-dialog";
-import { transformApiUserToSelectUser } from "@/lib/user-utils";
+import {
+  getUserDisplayName,
+  transformApiUserToSelectUser,
+} from "@/lib/user-utils";
 import { EvaluationSection } from "./evaluation-section";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
@@ -46,6 +50,7 @@ export type PlanMetadataPanelProps = {
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
   onStatusChange: (status: ArtifactStatus) => void;
   onApproverSelect: (user: User | null) => void;
   onOwnerChange: (user: User | null) => void;
@@ -65,6 +70,7 @@ export function PlanMetadataPanel({
   onPreviewRefresh,
   isPreviewRefreshing,
   judgesReport,
+  codeJudgesReport,
   onStatusChange,
   onApproverSelect,
   onOwnerChange,
@@ -127,22 +133,7 @@ export function PlanMetadataPanel({
 
             <SourceArtifactSection artifactId={plan.id} projectId={projectId} />
 
-            {generationStatus?.htmlUrl ? (
-              <MetadataSection separator>
-                <Label className="text-muted-foreground text-xs">
-                  Generation
-                </Label>
-                <a
-                  className="flex items-center gap-1 text-primary text-sm hover:underline"
-                  href={generationStatus.htmlUrl}
-                  rel="noopener noreferrer"
-                  target="_blank"
-                >
-                  View GitHub Workflow
-                  <ExternalLinkIcon className="h-3 w-3" />
-                </a>
-              </MetadataSection>
-            ) : null}
+            <GenerationSection generationStatus={generationStatus} />
 
             {pullRequest ? (
               <PullRequestSection pullRequest={pullRequest} />
@@ -180,6 +171,12 @@ export function PlanMetadataPanel({
 
           <EvaluationSection judgesReport={judgesReport} />
 
+          <EvaluationSection
+            emptyMessage="Code judge feedback is not available yet"
+            judgesReport={codeJudgesReport}
+            title="Code Evaluation"
+          />
+
           <PerformanceSection artifactId={plan.id} />
 
           <CollapsibleSection
@@ -205,5 +202,90 @@ export function PlanMetadataPanel({
         trace={dialogTrace}
       />
     </>
+  );
+}
+
+/** Renders loop or GitHub Actions generation info in the metadata sidebar. */
+function GenerationSection({
+  generationStatus,
+}: {
+  generationStatus: GenerationStatus | null;
+}) {
+  if (generationStatus?.source === "loop" && generationStatus.loopId) {
+    return (
+      <MetadataSection separator>
+        <Label className="text-muted-foreground text-xs">Loop</Label>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Status:</span>
+            <LoopStatusBadge status={generationStatus.status} />
+          </div>
+          {generationStatus.initiatedBy ? (
+            <p className="text-muted-foreground text-sm">
+              Initiated by {getUserDisplayName(generationStatus.initiatedBy)}
+            </p>
+          ) : null}
+          <Link
+            className="flex items-center gap-1 text-primary text-sm hover:underline"
+            href={`/loops/${generationStatus.loopId}`}
+          >
+            View loop details
+          </Link>
+        </div>
+      </MetadataSection>
+    );
+  }
+
+  if (generationStatus?.htmlUrl) {
+    return (
+      <MetadataSection separator>
+        <Label className="text-muted-foreground text-xs">Generation</Label>
+        <a
+          className="flex items-center gap-1 text-primary text-sm hover:underline"
+          href={generationStatus.htmlUrl}
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          View GitHub Workflow
+          <ExternalLinkIcon className="h-3 w-3" />
+        </a>
+      </MetadataSection>
+    );
+  }
+
+  return null;
+}
+
+/** Small inline badge for loop status display in the metadata sidebar. */
+function LoopStatusBadge({ status }: { status: GenerationStatus["status"] }) {
+  if (status === "NONE") {
+    return null;
+  }
+  if (status === "SUCCESS") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-green-700 text-xs dark:bg-green-900/30 dark:text-green-300">
+        Completed
+      </span>
+    );
+  }
+  if (status === "FAILURE") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700 text-xs dark:bg-red-900/30 dark:text-red-300">
+        Failed
+      </span>
+    );
+  }
+  if (status === "RUNNING") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-blue-700 text-xs dark:bg-blue-900/30 dark:text-blue-300">
+        Running
+      </span>
+    );
+  }
+  // PENDING or QUEUED
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
+      Queued
+    </span>
   );
 }
