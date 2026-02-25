@@ -2121,7 +2121,6 @@ Please try again or contact support if the issue persists.`
           workstreamId: prd.workstreamId ?? undefined,
           targetRepo: prd.targetRepo ?? undefined,
           targetBranch: prd.targetBranch ?? undefined,
-          ownerId: userId,
           status: "DRAFT",
         });
 
