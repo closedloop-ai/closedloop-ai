@@ -1,11 +1,11 @@
 "use client";
 
+import type {
+  ComputeMode,
+  ComputeModeResponse,
+} from "@repo/api/src/types/settings";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
-
-type ComputeMode = "GITHUB_ACTIONS" | "LOOPS";
-
-type ComputeModeResponse = { computeMode: ComputeMode };
 
 export const computeModeKeys = {
   all: ["compute-mode"] as const,

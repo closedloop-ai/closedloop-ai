@@ -1,6 +1,8 @@
-import { withDb } from "@repo/database";
+import type { ComputeMode } from "@repo/api/src/types/settings";
 
-export type ComputeMode = "GITHUB_ACTIONS" | "LOOPS";
+export type { ComputeMode } from "@repo/api/src/types/settings";
+
+import { withDb } from "@repo/database";
 
 const VALID_MODES: Set<string> = new Set(["GITHUB_ACTIONS", "LOOPS"]);
 

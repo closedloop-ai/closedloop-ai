@@ -11,6 +11,7 @@ import { withAuth } from "@/lib/auth/with-auth";
 import { launchLoop } from "@/lib/loop-orchestrator";
 import {
   badRequestResponse,
+  conflictResponse,
   errorResponse,
   notFoundResponse,
   parseBody,
@@ -49,6 +50,22 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
 
       if (!artifact) {
         return notFoundResponse("Artifact");
+      }
+
+      // Guard: prevent launching a loop for artifacts originally planned via
+      // GH Actions. State cannot migrate between backends, so the earliest
+      // execution determines the canonical backend.
+      // "plan" is exempt: re-planning generates fresh state, so switching
+      // backends at plan time is safe.
+      if (body.command !== "plan") {
+        const rejection = await artifactsService.assertLoopBackendAllowed(
+          artifactId,
+          user.organizationId,
+          artifact.workstreamId
+        );
+        if (rejection) {
+          return conflictResponse(rejection);
+        }
       }
 
       // Use findOrCreateWorkstream for robust PRD discovery via entity links,
