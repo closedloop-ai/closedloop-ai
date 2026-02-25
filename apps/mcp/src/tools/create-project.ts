@@ -29,7 +29,7 @@ export function registerCreateProject(
           .describe("Initial status for the project"),
       },
     },
-    ({ name, description, priority }) =>
+    ({ name, description, priority, status }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = { name };
         if (description !== undefined) {
@@ -37,6 +37,9 @@ export function registerCreateProject(
         }
         if (priority !== undefined) {
           body.priority = priority;
+        }
+        if (status !== undefined) {
+          body.status = status;
         }
 
         const project = await apiClient.post<unknown>("/projects", body);

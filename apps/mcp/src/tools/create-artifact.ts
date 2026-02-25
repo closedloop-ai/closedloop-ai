@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ArtifactType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -18,9 +19,7 @@ export function registerCreateArtifact(
         "Create a new artifact with the given title, type, content, and project/workstream association",
       inputSchema: {
         title: z.string().describe("Title of the artifact"),
-        type: z
-          .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
-          .describe("Type of the artifact"),
+        type: z.enum(ArtifactType).describe("Type of the artifact"),
         projectId: z
           .string()
           .optional()

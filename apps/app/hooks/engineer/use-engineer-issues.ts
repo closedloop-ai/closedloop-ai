@@ -380,7 +380,7 @@ function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
         name: [artifact.assignee.firstName, artifact.assignee.lastName]
           .filter(Boolean)
           .join(" "),
-        email: "",
+        email: artifact.assignee.email ?? "",
         avatarUrl: artifact.assignee.avatarUrl ?? undefined,
       }
     : undefined;

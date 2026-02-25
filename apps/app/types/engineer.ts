@@ -220,6 +220,7 @@ export type McpArtifact = {
   updatedAt: string;
   assignee: {
     id: string | null;
+    email: string | null;
     firstName: string | null;
     lastName: string | null;
     avatarUrl: string | null;

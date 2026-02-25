@@ -109,7 +109,7 @@ const ARTIFACT_SORT_COLUMNS = [
   "title",
   "type",
   "status",
-  "creator",
+  "assignee",
   "updatedAt",
 ] as const;
 
@@ -122,7 +122,7 @@ const ARTIFACT_SORT_CONFIGS: Record<
   title: { key: "title", columnType: "string" },
   type: { key: "type", columnType: "string" },
   status: { key: "status", columnType: "string" },
-  creator: {
+  assignee: {
     key: "assignee",
     comparator: (a, b) => {
       const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
@@ -250,8 +250,8 @@ function ArtifactSection({
                 sortDir={sortDir}
               />
               <SortableColumnHeader
-                column="creator"
-                label="Creator"
+                column="assignee"
+                label="Assignee"
                 onSort={onSort}
                 sortBy={sortBy}
                 sortDir={sortDir}

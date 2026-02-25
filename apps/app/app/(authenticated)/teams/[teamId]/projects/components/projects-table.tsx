@@ -264,7 +264,6 @@ export function ProjectsTable({
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <UserSelectPopover
                     onSelect={(user) => handleAssigneeChange(project.id, user)}
-                    placeholder="Assign owner"
                     trigger={
                       project.assignee ? (
                         <button

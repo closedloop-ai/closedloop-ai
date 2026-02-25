@@ -31,7 +31,7 @@ export function registerUpdateProject(
           .describe("New status for the project"),
       },
     },
-    ({ projectId, name, description, priority }) =>
+    ({ projectId, name, description, priority, status }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
         if (name !== undefined) {
@@ -42,6 +42,9 @@ export function registerUpdateProject(
         }
         if (priority !== undefined) {
           body.priority = priority;
+        }
+        if (status !== undefined) {
+          body.status = status;
         }
 
         const project = await apiClient.put<unknown>(

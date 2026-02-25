@@ -35,7 +35,7 @@ export function registerUpdateWorkstream(
           .describe("Whether the workstream includes UI changes"),
       },
     },
-    ({ workstreamId, title, description, state, hasUIChanges }) =>
+    ({ workstreamId, title, description, state, priority, hasUIChanges }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
         if (title !== undefined) {
@@ -46,6 +46,9 @@ export function registerUpdateWorkstream(
         }
         if (state !== undefined) {
           body.state = state;
+        }
+        if (priority !== undefined) {
+          body.priority = priority;
         }
         if (hasUIChanges !== undefined) {
           body.hasUIChanges = hasUIChanges;

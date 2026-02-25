@@ -1,5 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ArtifactType } from "@repo/api/src/types/artifact.js";
+import {
+  ArtifactType,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -65,7 +68,10 @@ export function registerListArtifacts(
           query.type = type;
         }
 
-        const artifacts = await apiClient.get<unknown[]>("/artifacts", query);
+        const artifacts = await apiClient.get<ArtifactWithWorkstream[]>(
+          "/artifacts",
+          query
+        );
         const payload = buildPaginatedPayload(artifacts, {
           limit,
           offset,
@@ -89,6 +95,7 @@ export function registerListArtifacts(
               assignee: row.assignee
                 ? {
                     id: readString(assigneeRaw.id),
+                    email: readString(assigneeRaw.email),
                     firstName: readString(assigneeRaw.firstName),
                     lastName: readString(assigneeRaw.lastName),
                     avatarUrl: readString(assigneeRaw.avatarUrl),
