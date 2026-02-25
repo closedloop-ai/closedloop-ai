@@ -114,8 +114,7 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => ({
   ),
 }));
 
-const GENERATING_PLAN_REGEX =
-  /Generating implementation plan\.\.\. - View workflow/i;
+const GENERATING_PLAN_REGEX = /Generating\.\.\. - View workflow/i;
 const EXECUTING_PLAN_REGEX =
   /Executing plan and creating PR\.\.\. - View workflow/i;
 const SELECT_ALL_IN_DOCUMENTS_REGEX = /select all in documents/i;
