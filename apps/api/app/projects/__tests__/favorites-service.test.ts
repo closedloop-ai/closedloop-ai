@@ -131,12 +131,12 @@ describe("projectsService.findFavoritesByUser", () => {
     vi.clearAllMocks();
   });
 
-  it("queries projects filtered by favoritedBy relation and organizationId", async () => {
+  it("queries favorites by userId and project organizationId, ordered by createdAt", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([]);
 
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        project: { findMany: mockFindMany },
+        favoriteProject: { findMany: mockFindMany },
       })
     );
 
@@ -144,31 +144,38 @@ describe("projectsService.findFavoritesByUser", () => {
 
     expect(mockFindMany).toHaveBeenCalledWith({
       where: {
-        organizationId: TEST_ORG_ID,
-        favoritedBy: { some: { userId: TEST_USER_ID } },
+        userId: TEST_USER_ID,
+        project: { organizationId: TEST_ORG_ID },
       },
-      include: expect.any(Object),
-      orderBy: { updatedAt: "desc" },
+      orderBy: { createdAt: "desc" },
+      include: {
+        project: {
+          include: expect.any(Object),
+        },
+      },
     });
   });
 
-  it("returns project results from the database", async () => {
-    const mockProjects = [
+  it("returns mapped project results from the database", async () => {
+    const mockFavorites = [
       {
-        id: "project-1",
-        name: "Favorited Project",
-        organizationId: TEST_ORG_ID,
-        owner: null,
-        teams: [],
-        artifacts: [],
+        project: {
+          id: "project-1",
+          name: "Favorited Project",
+          organizationId: TEST_ORG_ID,
+          settings: null,
+          owner: null,
+          teams: [],
+          artifacts: [],
+        },
       },
     ];
 
-    const mockFindMany = vi.fn().mockResolvedValue(mockProjects);
+    const mockFindMany = vi.fn().mockResolvedValue(mockFavorites);
 
     mockWithDb.mockImplementation((callback: any) =>
       callback({
-        project: { findMany: mockFindMany },
+        favoriteProject: { findMany: mockFindMany },
       })
     );
 
@@ -177,6 +184,7 @@ describe("projectsService.findFavoritesByUser", () => {
       TEST_ORG_ID
     );
 
-    expect(result).toEqual(mockProjects);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("project-1");
   });
 });
