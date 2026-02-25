@@ -6,6 +6,7 @@ import {
 } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { rewriteForLinkUnfurler } from "@/lib/link-unfurler";
 import { env } from "./env";
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
@@ -45,6 +46,12 @@ export default authMiddleware((_auth, request) => {
   if (guardResponse) {
     return guardResponse;
   }
+
+  const unfurlerResponse = rewriteForLinkUnfurler(request);
+  if (unfurlerResponse) {
+    return unfurlerResponse;
+  }
+
   return securityHeaders();
 });
 

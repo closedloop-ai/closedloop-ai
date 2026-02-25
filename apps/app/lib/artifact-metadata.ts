@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { env } from "@/env";
 
 const ARTIFACT_TYPE_DISPLAY: Record<string, string> = {
   PRD: "Product Requirements Document",
@@ -13,7 +14,7 @@ export async function generateArtifactMetadata(
   slug: string
 ): Promise<Metadata> {
   try {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3002";
+    const apiUrl = env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002";
     const res = await fetch(`${apiUrl}/artifacts/by-slug/${slug}/meta`, {
       next: { revalidate: 60 },
     });
@@ -36,6 +37,11 @@ export async function generateArtifactMetadata(
         description: typeLabel,
         type: "website",
         siteName: "ClosedLoop.ai",
+      },
+      twitter: {
+        card: "summary",
+        title: `${title} | ClosedLoop.ai`,
+        description: typeLabel,
       },
     };
   } catch {
