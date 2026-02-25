@@ -56,6 +56,10 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
   },
 }));
 
+vi.mock("@/lib/prompts-service", () => ({
+  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import after mocking
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
@@ -67,6 +71,7 @@ import {
 } from "@/app/webhooks/github/handlers/workflow-completion-handler";
 import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
@@ -76,6 +81,7 @@ const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
 const mockCreateVersion =
   artifactVersionService.createVersion as unknown as Mock;
+const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -645,6 +651,143 @@ describe("handleWorkflowSuccess", () => {
     // Should not throw, but should log error and return early without DB calls
     expect(mockTx.workstream.findUnique).not.toHaveBeenCalled();
   });
+
+  it("calls upsertFromSnapshot with organizationId when agents-snapshot entries are present", async () => {
+    const correlationId = "test-correlation-prompts";
+    const artifactId = "artifact-prompts";
+    const workstreamId = "ws-prompts";
+    const runId = 1_234_000_001;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      command: "plan",
+    };
+
+    const agentFrontmatter = `---
+name: my-planner
+model: claude-opus-4-6
+description: A planning agent
+tools: bash, read
+---
+
+Plan the work carefully.
+`;
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan with snapshot",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      {
+        name: "agents-snapshot/my-planner.md",
+        content: agentFrontmatter,
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-prompts",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "org-prompts",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-prompts" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-prompts",
+      expect.objectContaining({
+        prompts: expect.arrayContaining([
+          expect.objectContaining({ name: "my-planner" }),
+        ]),
+      })
+    );
+  });
+
+  it("calls upsertFromSnapshot with null when no agents-snapshot entries are present", async () => {
+    const correlationId = "test-correlation-no-prompts";
+    const artifactId = "artifact-no-prompts";
+    const workstreamId = "ws-no-prompts";
+    const runId = 1_234_000_002;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      command: "plan",
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan without snapshot",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-no-prompts",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "org-no-prompts",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-no-prompts" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("org-no-prompts", null);
+  });
 });
 
 describe("handleExecutionSuccess", () => {
@@ -710,7 +853,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
@@ -811,7 +954,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -867,7 +1010,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -899,7 +1042,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -933,7 +1076,7 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -970,9 +1113,141 @@ describe("handleExecutionSuccess", () => {
     mockWithDbTx(mockTx);
 
     await expect(
-      handleExecutionSuccess(ctx, executionResult, null)
+      handleExecutionSuccess(ctx, executionResult, null, null)
     ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
+    );
+  });
+
+  it("calls upsertFromSnapshot with resolved organizationId when promptsSnapshot is present", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "exec-correlation-prompts",
+      artifactId: "plan-artifact-prompts",
+      workstreamId: "ws-prompts-exec",
+      repositoryId: "repo-prompts",
+      runId: 5_555_001_001,
+      command: "execute",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/88",
+      pr_number: 88,
+      pr_title: "Symphony: prompts test",
+      branch_name: "symphony/prompts-feature",
+      base_ref: "main",
+      github_id: 9_000_001,
+    };
+
+    const promptsSnapshot = {
+      prompts: [
+        {
+          promptType: "AGENT" as const,
+          name: "executor-agent",
+          description: "Executes tasks",
+          model: "claude-opus-4-6",
+          tools: ["bash"],
+          filePath: "agents-snapshot/executor-agent.md",
+          content: "Execute the given tasks.",
+        },
+      ],
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-exec-prompts" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "org-exec-prompts",
+          projectId: "project-prompts",
+          generatedBy: "user-prompts",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "pr-prompts" }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-prompts" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-prompts" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-exec-prompts" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null, promptsSnapshot);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-exec-prompts",
+      promptsSnapshot
+    );
+  });
+
+  it("calls upsertFromSnapshot with null when promptsSnapshot is null for execution", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "exec-correlation-null-prompts",
+      artifactId: "plan-artifact-null-prompts",
+      workstreamId: "ws-null-prompts-exec",
+      repositoryId: "repo-null-prompts",
+      runId: 5_555_001_002,
+      command: "execute",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/89",
+      pr_number: 89,
+      pr_title: "Symphony: null prompts test",
+      branch_name: "symphony/null-prompts-feature",
+      base_ref: "main",
+      github_id: 9_000_002,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-null-prompts" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "org-null-prompts",
+          projectId: "project-null-prompts",
+          generatedBy: "user-null-prompts",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "pr-null-prompts" }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-null-prompts" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-null-prompts" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-null-prompts" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null, null);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-null-prompts",
+      null
     );
   });
 });

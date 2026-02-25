@@ -1,6 +1,11 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import {
+  type PromptInfo,
+  type PromptsSnapshot,
+  PromptType,
+} from "@repo/api/src/types/prompt";
 import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
@@ -13,8 +18,12 @@ export type ZipContent = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
+  promptsSnapshot: PromptsSnapshot | null;
   entries: { name: string; data: Buffer }[];
 };
+
+const AGENTS_SNAPSHOT_PATTERN = /^agents-snapshot\/.*\.md$/;
+const FRONTMATTER_PATTERN = /^---\s*\n([\s\S]*?)\n---/;
 
 /**
  * Parse execution result JSON safely.
@@ -91,6 +100,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   let judgesReport: JudgesReport | null = null;
   let codeJudgesReport: JudgesReport | null = null;
   let perfSummary: PerfSummary | null = null;
+  let promptsSnapshot: PromptsSnapshot | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
@@ -110,6 +120,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
       judgesReport,
       codeJudgesReport,
       perfSummary,
+      promptsSnapshot,
     });
     planContent = contentResult.planContent;
     questionsContent = contentResult.questionsContent;
@@ -117,6 +128,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     judgesReport = contentResult.judgesReport;
     codeJudgesReport = contentResult.codeJudgesReport;
     perfSummary = contentResult.perfSummary;
+    promptsSnapshot = contentResult.promptsSnapshot;
   }
 
   return {
@@ -126,6 +138,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
     entries,
   };
 }
@@ -139,6 +152,7 @@ type ZipEntryContentArgs = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
+  promptsSnapshot: PromptsSnapshot | null;
 };
 
 function parseZipEntryContent(
@@ -153,6 +167,7 @@ function parseZipEntryContent(
     judgesReport: currentJudgesReport,
     codeJudgesReport: currentCodeJudgesReport,
     perfSummary: currentPerfSummary,
+    promptsSnapshot: currentPromptsSnapshot,
   } = args;
 
   let planContent = currentPlan;
@@ -161,6 +176,7 @@ function parseZipEntryContent(
   let judgesReport = currentJudgesReport;
   let codeJudgesReport = currentCodeJudgesReport;
   let perfSummary = currentPerfSummary;
+  let promptsSnapshot = currentPromptsSnapshot;
 
   // Priority 1: plan.json from experimental plugin
   if (name.endsWith("plan.json") && !planContent) {
@@ -200,6 +216,18 @@ function parseZipEntryContent(
     perfSummary = parsePerfSummary(data);
     log.info(`Found perf.jsonl: ${name}`);
   }
+  // Check for agents-snapshot markdown files
+  else if (AGENTS_SNAPSHOT_PATTERN.test(name)) {
+    const content = data.toString("utf-8");
+    const promptInfo = parseAgentFrontmatter(content, name);
+    if (promptInfo) {
+      promptsSnapshot = {
+        prompts: [...(promptsSnapshot?.prompts ?? []), promptInfo],
+      };
+    } else {
+      log.warn(`[zip-parser] Failed to parse agent frontmatter: ${name}`);
+    }
+  }
 
   return {
     planContent,
@@ -208,5 +236,66 @@ function parseZipEntryContent(
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
+  };
+}
+
+/**
+ * Parse agent/judge frontmatter from a markdown file in the agents-snapshot directory.
+ * Returns a PromptInfo if the frontmatter is valid, null otherwise.
+ */
+export function parseAgentFrontmatter(
+  fileContent: string,
+  entryPath: string
+): PromptInfo | null {
+  const frontmatterMatch = FRONTMATTER_PATTERN.exec(fileContent);
+  if (!frontmatterMatch) {
+    return null;
+  }
+
+  const frontmatterBody = frontmatterMatch[1];
+  const fields: Record<string, string> = {};
+  const fieldRegex = /^([\w_]+):\s*(.+)$/gm;
+  let match = fieldRegex.exec(frontmatterBody);
+  while (match !== null) {
+    fields[match[1]] = match[2].trim();
+    match = fieldRegex.exec(frontmatterBody);
+  }
+
+  const name = fields.name;
+  const model = fields.model;
+
+  if (!(name && model)) {
+    return null;
+  }
+
+  const description = fields.description ?? "";
+  const toolsRaw = fields.tools;
+  const tools = toolsRaw
+    ? toolsRaw
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean)
+    : [];
+  const filePath = fields.file_path ?? entryPath;
+
+  const promptType = entryPath.includes("agents-snapshot/judges/")
+    ? PromptType.Judge
+    : PromptType.Agent;
+
+  // Extract content after the closing --- delimiter
+  const afterFrontmatter = fileContent.slice(
+    (frontmatterMatch.index ?? 0) + frontmatterMatch[0].length
+  );
+  const content = afterFrontmatter.trimStart();
+
+  return {
+    promptType,
+    name,
+    description,
+    model,
+    tools,
+    filePath,
+    content,
   };
 }

@@ -4,6 +4,7 @@ import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   type Prisma,
   EvaluationReportType as PrismaEvaluationReportType,
@@ -13,6 +14,7 @@ import type { TransactionClient } from "@repo/database/generated/internal/prisma
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import { processArtifactDownloads } from "./workflow-artifacts";
@@ -39,7 +41,8 @@ type PrEventMetadata = {
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
   executionResult: ExecutionResult,
-  codeJudgesReport: JudgesReport | null
+  codeJudgesReport: JudgesReport | null,
+  promptsSnapshot: PromptsSnapshot | null
 ): Promise<void> {
   const { correlationId, workstreamId, repositoryId, runId } = ctx;
 
@@ -97,6 +100,8 @@ export async function handleExecutionSuccess(
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 
+  let resolvedOrganizationId: string | null = null;
+
   await withDb.tx(async (tx) => {
     // Look up workstream to get organizationId for org-scoped queries
     const workstream = await tx.workstream.findUnique({
@@ -109,6 +114,8 @@ export async function handleExecutionSuccess(
         `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
       );
     }
+
+    resolvedOrganizationId = workstream.organizationId;
 
     // Query plan artifact scoped to organization for defense-in-depth
     const planArtifact = await tx.artifact.findUnique({
@@ -256,6 +263,11 @@ export async function handleExecutionSuccess(
     }
   });
 
+  // Persist prompts snapshot outside the transaction — upsertFromSnapshot manages its own tx.
+  if (resolvedOrganizationId) {
+    await upsertFromSnapshot(resolvedOrganizationId, promptsSnapshot);
+  }
+
   log.info(
     `Successfully created PR record for workflow run ${runId}, PR #${prNumber}`
   );
@@ -279,13 +291,19 @@ export async function handleWorkflowSuccess(
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
   } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact.
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
+    await handleExecutionSuccess(
+      ctx,
+      executionResult,
+      codeJudgesReport,
+      promptsSnapshot
+    );
     return;
   }
 
@@ -323,6 +341,9 @@ export async function handleWorkflowSuccess(
       `Workstream ${workstreamId} not found - cannot update artifact`
     );
   }
+
+  // Persist prompts snapshot — upsertFromSnapshot manages its own transaction.
+  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
   const existingArtifact = await tx.artifact.findUnique({
     where: { id: artifactId, organizationId: workstream.organizationId },
