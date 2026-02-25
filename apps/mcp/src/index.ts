@@ -2766,6 +2766,10 @@ function getCorsOrigin(
   if (!origin) {
     return null;
   }
+  // Same-origin requests are always allowed
+  if (origin === MCP_SERVER_URL) {
+    return origin;
+  }
   // Wildcard or explicit match
   if (
     CORS_ALLOWED_ORIGINS.includes("*") ||
