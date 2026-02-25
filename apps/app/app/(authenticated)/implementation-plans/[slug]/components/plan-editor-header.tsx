@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type {
+  ArtifactStatus,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -35,7 +38,7 @@ type PlanEditorHeaderProps = {
   /**
    * Status of the artifact
    */
-  status: string;
+  status: ArtifactStatus;
   /**
    * Whether the editor is in edit mode
    */

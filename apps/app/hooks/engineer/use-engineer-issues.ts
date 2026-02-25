@@ -1,6 +1,7 @@
 "use client";
 
 import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import type { IssueStatus } from "@repo/api/src/types/issue";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
@@ -44,9 +45,7 @@ export type EngineerIssuesResultWithUser = EngineerTicketsResult & {
 };
 
 /** Map closedloop-dev status names to Symphony IssueStatus */
-function mapToSymphonyStatus(
-  status: string
-): "NOT_STARTED" | "IN_PROGRESS" | "IN_REVIEW" | "COMPLETED" {
+function mapToSymphonyStatus(status: string): IssueStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
     return "COMPLETED";

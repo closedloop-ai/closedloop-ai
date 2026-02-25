@@ -1,5 +1,6 @@
 "use client";
 
+import type { CreateProjectInput } from "@repo/api/src/types/project";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -60,36 +61,12 @@ export default function TeamProjectsPage() {
     updateTargetDateMutation.mutate({ projectId, targetDate: date });
   };
 
-  const handleCreateProject = (projectData: {
-    name: string;
-    description?: string;
-    priority?: string;
-    assigneeId?: string;
-    targetDate?: string;
-    teamIds: string[];
-  }) => {
-    createProjectMutation.mutate(
-      {
-        name: projectData.name,
-        description: projectData.description,
-        priority: projectData.priority as
-          | "LOW"
-          | "MEDIUM"
-          | "HIGH"
-          | "URGENT"
-          | undefined,
-        assigneeId: projectData.assigneeId || null,
-        targetDate: projectData.targetDate
-          ? new Date(projectData.targetDate)
-          : null,
-        teamIds: projectData.teamIds,
+  const handleCreateProject = (projectData: CreateProjectInput) => {
+    createProjectMutation.mutate(projectData, {
+      onSuccess: (newProject) => {
+        router.push(`/teams/${teamId}/projects/${newProject.id}`);
       },
-      {
-        onSuccess: (newProject) => {
-          router.push(`/teams/${teamId}/projects/${newProject.id}`);
-        },
-      }
-    );
+    });
   };
 
   const handleDeleteProject = async (projectId: string) => {

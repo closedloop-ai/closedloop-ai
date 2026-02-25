@@ -1,6 +1,7 @@
 "use client";
 
-import type { Priority } from "@repo/api/src/types/common";
+import { Priority } from "@repo/api/src/types/common";
+import type { CreateProjectInput } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import {
@@ -28,15 +29,6 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useTeamMembers } from "@/hooks/use-team-members";
 
-type CreateProjectInput = {
-  name: string;
-  description?: string;
-  priority?: string;
-  assigneeId?: string;
-  targetDate?: string;
-  teamIds: string[];
-};
-
 type CreateProjectModalProps = {
   teamId: string;
   teamName: string;
@@ -51,13 +43,13 @@ export function CreateProjectModal({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState<Priority>("MEDIUM");
-  const [owner, setOwner] = useState<{
+  const [priority, setPriority] = useState<Priority>(Priority.Medium);
+  const [assignee, setAssignee] = useState<{
     id: string;
     name: string;
     avatarUrl?: string;
   } | null>(null);
-  const [ownerInitialized, setOwnerInitialized] = useState(false);
+  const [assigneeInitialized, setAssigneeInitialized] = useState(false);
   const [targetDate, setTargetDate] = useState<Date | null>(null);
 
   const { data: currentUser } = useCurrentUser({ enabled: open });
@@ -68,21 +60,21 @@ export function CreateProjectModal({
 
   // Default owner to current user when dialog opens
   useEffect(() => {
-    if (open && !ownerInitialized && currentUser) {
+    if (open && !assigneeInitialized && currentUser) {
       const name = [currentUser.firstName, currentUser.lastName]
         .filter(Boolean)
         .join(" ");
-      setOwner({
+      setAssignee({
         id: currentUser.id,
         name: name || currentUser.email,
         avatarUrl: currentUser.avatarUrl ?? undefined,
       });
-      setOwnerInitialized(true);
+      setAssigneeInitialized(true);
     }
     if (!open) {
-      setOwnerInitialized(false);
+      setAssigneeInitialized(false);
     }
-  }, [open, ownerInitialized, currentUser]);
+  }, [open, assigneeInitialized, currentUser]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -95,8 +87,8 @@ export function CreateProjectModal({
       name: name.trim(),
       description: description.trim() || undefined,
       priority,
-      assigneeId: owner?.id,
-      targetDate: targetDate?.toISOString(),
+      assigneeId: assignee?.id,
+      targetDate,
       teamIds: [teamId],
     };
 
@@ -109,8 +101,8 @@ export function CreateProjectModal({
     // Reset form
     setName("");
     setDescription("");
-    setPriority("MEDIUM");
-    setOwner(null);
+    setPriority(Priority.Medium);
+    setAssignee(null);
     setTargetDate(null);
   };
 
@@ -162,10 +154,10 @@ export function CreateProjectModal({
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="LOW">Low</SelectItem>
-                    <SelectItem value="MEDIUM">Medium</SelectItem>
-                    <SelectItem value="HIGH">High</SelectItem>
-                    <SelectItem value="URGENT">Urgent</SelectItem>
+                    <SelectItem value={Priority.Low}>Low</SelectItem>
+                    <SelectItem value={Priority.Medium}>Medium</SelectItem>
+                    <SelectItem value={Priority.High}>High</SelectItem>
+                    <SelectItem value={Priority.Urgent}>Urgent</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -181,12 +173,12 @@ export function CreateProjectModal({
               </div>
             </div>
             <div className="grid gap-2">
-              <Label>Owner</Label>
+              <Label>Assignee</Label>
               <UserSelectPopover
-                onSelect={setOwner}
-                placeholder="Select owner (optional)"
+                onSelect={setAssignee}
+                placeholder="Select assignee (optional)"
                 users={teamMembers}
-                value={owner}
+                value={assignee}
               />
             </div>
           </div>

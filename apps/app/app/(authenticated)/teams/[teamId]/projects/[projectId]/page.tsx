@@ -142,13 +142,13 @@ export default function ProjectDetailPage() {
   const deleteArtifactMutation = useDeleteArtifact();
   const createIssueMutation = useCreateIssue();
 
-  const handleUpdatePriority = (priority: string) => {
+  const handleUpdatePriority = (priority: Priority) => {
     if (!project) {
       return;
     }
     updatePriorityMutation.mutate({
       projectId: project.id,
-      priority: priority as Priority,
+      priority,
     });
   };
 

@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Priority } from "@repo/api/src/types/common.js";
 import { WORKSTREAM_TYPE_OPTIONS } from "@repo/api/src/types/workstream";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
@@ -25,6 +26,10 @@ export function registerCreateWorkstream(
           .enum(WORKSTREAM_TYPE_OPTIONS)
           .optional()
           .describe("Type of the workstream"),
+        priority: z
+          .enum(Priority)
+          .optional()
+          .describe("Priority level of the workstream"),
         hasUIChanges: z
           .boolean()
           .optional()

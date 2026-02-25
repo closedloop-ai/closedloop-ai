@@ -4,6 +4,7 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
+import { Priority } from "@repo/api/src/types/common";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import {
   Avatar,
@@ -80,11 +81,11 @@ const PROJECT_SORT_COLUMNS = [
 
 type ProjectSortColumn = (typeof PROJECT_SORT_COLUMNS)[number];
 
-const PRIORITY_ORDER: Record<string, number> = {
-  URGENT: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
+const PRIORITY_ORDER: Record<Priority, number> = {
+  [Priority.Urgent]: 0,
+  [Priority.High]: 1,
+  [Priority.Medium]: 2,
+  [Priority.Low]: 3,
 };
 
 const PROJECT_SORT_CONFIGS: Record<

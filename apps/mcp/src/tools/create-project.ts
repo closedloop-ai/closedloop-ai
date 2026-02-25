@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Priority } from "@repo/api/src/types/common";
+import { ProjectStatus } from "@repo/api/src/types/project.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -22,6 +23,10 @@ export function registerCreateProject(
           .enum(Priority)
           .optional()
           .describe("Priority level of the project"),
+        status: z
+          .enum(ProjectStatus)
+          .optional()
+          .describe("Initial status for the project"),
       },
     },
     ({ name, description, priority }) =>
