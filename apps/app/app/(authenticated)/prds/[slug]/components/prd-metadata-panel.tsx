@@ -1,12 +1,13 @@
 "use client";
 
 import type {
+  ArtifactDetail,
   ArtifactStatus,
-  ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
@@ -22,7 +23,7 @@ type PRDMetadataPanelProps = {
   /**
    * PRD artifact with workstream data
    */
-  prd: ArtifactWithWorkstream;
+  prd: ArtifactDetail;
   /**
    * Current artifact status
    */
@@ -66,7 +67,7 @@ type PRDMetadataPanelProps = {
   /**
    * Handler called when target repository input loses focus
    */
-  onTargetRepoBlur: () => void;
+  onTargetRepoBlur: (overrideValue?: string) => void;
   /**
    * Handler called when target branch input value changes
    */
@@ -74,7 +75,7 @@ type PRDMetadataPanelProps = {
   /**
    * Handler called when target branch input loses focus
    */
-  onTargetBranchBlur: () => void;
+  onTargetBranchBlur: (overrideValue?: string) => void;
 };
 
 /**
@@ -146,9 +147,9 @@ export function PRDMetadataPanel({
             />
 
             <ArtifactVersionInfo
-              createdAt={prd.createdAt}
+              createdAt={prd.version.createdAt}
               updatedAt={prd.updatedAt}
-              version={prd.version}
+              version={prd.version.version}
             />
           </CollapsibleSection>
 
@@ -164,6 +165,8 @@ export function PRDMetadataPanel({
           </CollapsibleSection>
 
           <CommentsSection artifactId={prd.id} />
+
+          <AttachmentsSection artifactId={prd.id} />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog

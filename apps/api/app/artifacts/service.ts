@@ -1,13 +1,17 @@
 import { createId } from "@paralleldrive/cuid2";
 import {
   type Artifact,
+  type ArtifactTitleMap,
+  ArtifactType,
   type ArtifactWithWorkstream,
+  BATCH_META_MAX_SLUGS,
+  type BatchCreateArtifactInput,
   type CreateArtifactInput,
   type FindArtifactsOptions,
-  getArtifactType,
-  type PreviewDeployment,
+  type GenerationStatus,
   type PullRequestInfo,
-  shouldGenerateDocumentSlug,
+  PullRequestState,
+  ReviewDecision,
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
@@ -15,34 +19,42 @@ import type {
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import {
-  ArtifactSubtype,
-  type Artifact as PrismaArtifact,
+  LinkType,
+  ArtifactType as PrismaArtifactType,
+  EvaluationReportType as PrismaEvaluationReportType,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
 import {
   downloadWorkflowArtifacts,
-  getLatestDeploymentStatusForRef,
-  getRepositoryInfo,
   triggerWorkflowDispatch,
 } from "@repo/github";
 import {
   createEmptyExecutionTrace,
   parseExecutionLogs,
 } from "@repo/github/execution-log-parser";
+import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
-import { githubService } from "@/app/integrations/github/service";
+import {
+  mapLoopCommand,
+  mapLoopStatus,
+  pickBestStatus,
+} from "@/lib/loop-status-utils";
+import { entityLinksService } from "../entity-links/service";
 import {
   ArtifactNotFoundError,
   artifactIncludeWithContext,
+  artifactIncludeWithSnippet,
   artifactIncludeWithUser,
-  createArtifactVersion,
-  generateDocumentSlug,
-  previewDeploymentSelect,
+  generateSlug,
+  parseTriggerData,
 } from "./artifact-utils";
+import { artifactVersionService } from "./artifact-version-service";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
-import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
+import { PRD_TEMPLATE } from "./template-seeds";
 
 /**
  * Validate that a user belongs to the given organization.
@@ -63,6 +75,133 @@ async function validateOwnerInOrg(
   }
 }
 
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+export async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) {
+    return undefined;
+  }
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
+}
+
+/**
+ * Look up the GitHubInstallationRepository record ID for a given repo full name.
+ * Queries the repository table directly with a nested installation filter for
+ * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const repo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: { id: true },
+    })
+  );
+
+  return repo?.id ?? null;
+}
+
+/**
+ * Create a single artifact record within an existing transaction.
+ * Does NOT call withDb.tx internally - takes the tx parameter directly.
+ * Used by both create() and batchCreate() to avoid code duplication.
+ *
+ * NOTE: validateOwnerInOrg uses withDb (non-transactional) and opens separate
+ * connections. This matches the behavior of the existing create() method.
+ */
+async function createArtifactRecord(
+  tx: TransactionClient,
+  organizationId: string,
+  userId: string,
+  input: CreateArtifactInput
+): Promise<Artifact | null> {
+  const isTemplate = input.type === ArtifactType.Template;
+
+  // Resolve projectId from workstream if needed (non-templates only)
+  if (!(isTemplate || input.projectId)) {
+    const workstream = await tx.workstream.findUnique({
+      where: { id: input.workstreamId, organizationId },
+    });
+    if (!workstream) {
+      return null;
+    }
+    input.projectId = workstream.projectId;
+  }
+
+  const resolvedOwnerId = input.ownerId ?? userId;
+  await validateOwnerInOrg(resolvedOwnerId, organizationId);
+
+  if (input.approverId) {
+    await validateOwnerInOrg(input.approverId, organizationId);
+  }
+
+  const slug = generateSlug();
+  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+    input;
+
+  const artifact = await tx.artifact.create({
+    data: {
+      ...artifactInput,
+      organizationId,
+      slug,
+      latestVersion: 1,
+      generatedBy: userId,
+      ownerId: resolvedOwnerId,
+    },
+    include: artifactIncludeWithUser,
+  });
+
+  // Create initial artifact version
+  await tx.artifactVersion.create({
+    data: {
+      artifactId: artifact.id,
+      version: 1,
+      content,
+      createdById: userId,
+    },
+  });
+
+  if (sourceId && sourceType) {
+    await tx.entityLink.create({
+      data: {
+        organizationId,
+        sourceId,
+        sourceType,
+        sourceVersion,
+        targetId: artifact.id,
+        targetType: "ARTIFACT",
+        targetVersion: artifact.latestVersion,
+        linkType: LinkType.PRODUCES,
+      },
+    });
+  }
+
+  return artifact;
+}
+
 // Result types for service operations
 export type RegenerateResult =
   | { success: true; artifact: Artifact }
@@ -78,27 +217,7 @@ export const artifactsService = {
   async findAll(
     options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
-    const {
-      organizationId,
-      subtype,
-      type,
-      latestOnly = true,
-      workstreamId,
-      projectId,
-      documentSlug,
-      version,
-    } = options;
-
-    // Build version filter: specific version takes precedence over latestOnly
-    function getVersionFilter() {
-      if (version !== undefined) {
-        return { version };
-      }
-      if (latestOnly) {
-        return { isLatest: true };
-      }
-      return {};
-    }
+    const { organizationId, type, workstreamId, projectId, ownerId } = options;
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -106,17 +225,108 @@ export const artifactsService = {
           organizationId,
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
-          ...(documentSlug ? { documentSlug } : {}),
-          ...(subtype ? { subtype } : {}),
           ...(type ? { type } : {}),
-          ...getVersionFilter(),
+          ...(ownerId ? { ownerId } : {}),
         },
-        include: artifactIncludeWithContext,
+        include: artifactIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
       })
     );
 
-    return artifacts.map((a) => toArtifactWithWorkstream(a));
+    // Collect unique workstream IDs for batch queries
+    const uniqueWorkstreamIds = [
+      ...new Set(
+        artifacts
+          .map((a) => a.workstreamId)
+          .filter((id): id is string => id !== null)
+      ),
+    ];
+
+    // Batch-fetch GitHubActionRun records for generation status
+    const generationStatusMap = new Map<string, GenerationStatus>();
+    if (uniqueWorkstreamIds.length > 0) {
+      const actionRuns = await withDb((db) =>
+        db.gitHubActionRun.findMany({
+          where: {
+            workstreamId: { in: uniqueWorkstreamIds },
+            workflowName: "symphony-dispatch",
+          },
+          orderBy: { createdAt: "desc" },
+          take: uniqueWorkstreamIds.length,
+          select: {
+            workstreamId: true,
+            status: true,
+            htmlUrl: true,
+            startedAt: true,
+            completedAt: true,
+            triggerData: true,
+          },
+        })
+      );
+
+      for (const run of actionRuns) {
+        const triggerData = parseTriggerData(run.triggerData);
+        if (!triggerData) {
+          continue;
+        }
+
+        const artifactId = triggerData.artifactId;
+
+        // Map Prisma GitHubActionStatus to GenerationStatus.
+        // CANCELLED maps to FAILURE since both are terminal non-success states.
+        const status: GenerationStatus["status"] =
+          run.status === "CANCELLED" ? "FAILURE" : run.status;
+
+        // Only set if this artifact doesn't have a status yet (first = most recent)
+        if (!generationStatusMap.has(artifactId)) {
+          generationStatusMap.set(artifactId, {
+            status,
+            command: triggerData.command,
+            htmlUrl: run.htmlUrl || null,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            correlationId: triggerData.correlationId,
+            source: "github_actions",
+          });
+        }
+      }
+    }
+
+    // Batch-fetch Loop records and merge into generation status map
+    await mergeLoopStatuses(
+      artifacts.map((a) => a.id),
+      generationStatusMap
+    );
+
+    // Batch-fetch GitHubPullRequest records for each workstream
+    const pullRequestRecords =
+      uniqueWorkstreamIds.length > 0
+        ? await withDb((db) =>
+            db.gitHubPullRequest.findMany({
+              where: { workstreamId: { in: uniqueWorkstreamIds } },
+              select: {
+                id: true,
+                number: true,
+                title: true,
+                htmlUrl: true,
+                state: true,
+                headBranch: true,
+                baseBranch: true,
+                createdAt: true,
+                reviewDecision: true,
+                workstreamId: true,
+              },
+              orderBy: { createdAt: "desc" },
+              take: 100,
+            })
+          )
+        : [];
+
+    const pullRequestMap = buildPullRequestMap(pullRequestRecords);
+
+    return artifacts.map((a) =>
+      toArtifactWithWorkstream(a, { generationStatusMap, pullRequestMap })
+    );
   },
 
   /**
@@ -137,7 +347,28 @@ export const artifactsService = {
       return null;
     }
 
-    return toArtifactWithWorkstream(artifact);
+    return toArtifactWithWorkstream(artifact, {});
+  },
+
+  /**
+   * Find an artifact by slug with context (org-scoped)
+   */
+  async findBySlug(
+    slug: string,
+    organizationId: string
+  ): Promise<ArtifactWithWorkstream | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { organizationId_slug: { organizationId, slug } },
+        include: artifactIncludeWithContext,
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    return toArtifactWithWorkstream(artifact, {});
   },
 
   /**
@@ -157,20 +388,20 @@ export const artifactsService = {
   },
 
   /**
-   * Find an organization template for a specific artifact subtype.
-   * Returns null if no template exists for the given subtype.
+   * Find an organization template for a specific artifact type.
+   * Returns null if no template exists for the given type.
    * Pure read method - does NOT create templates automatically.
    */
   async findOrgTemplate(
     organizationId: string,
-    templateForSubtype: ArtifactSubtype
+    templateForType: PrismaArtifactType
   ): Promise<Artifact | null> {
     const result = await withDb((db) =>
       db.artifact.findUnique({
         where: {
-          organizationId_templateForSubtype: {
+          organizationId_templateForType: {
             organizationId,
-            templateForSubtype,
+            templateForType,
           },
         },
         include: artifactIncludeWithUser,
@@ -181,60 +412,42 @@ export const artifactsService = {
 
   /**
    * Ensure default templates exist for an organization.
-   * Creates/upserts templates for PRD, Issue, and Bug subtypes.
-   * Uses upsert on the unique constraint (organizationId, templateForSubtype) for concurrency safety.
-   *
-   * Templates have subtype=TEMPLATE with templateForSubtype pointing to the target subtype (PRD/Issue/Bug).
-   * This ensures templates are queryable via `subtype: TEMPLATE` and don't pollute normal PRD/Issue/Bug queries.
+   * Creates/upserts the PRD template.
+   * Uses upsert on the unique constraint (organizationId, templateForType) for concurrency safety.
    */
   async ensureDefaultTemplates(organizationId: string): Promise<void> {
-    const templates = [
-      {
-        subtype: ArtifactSubtype.TEMPLATE,
-        templateForSubtype: ArtifactSubtype.PRD,
-        title: "Product Requirements Document Template",
-        content: PRD_TEMPLATE,
-      },
-      {
-        subtype: ArtifactSubtype.TEMPLATE,
-        templateForSubtype: ArtifactSubtype.ISSUE,
-        title: "Issue Template",
-        content: ISSUE_TEMPLATE,
-      },
-      {
-        subtype: ArtifactSubtype.TEMPLATE,
-        templateForSubtype: ArtifactSubtype.BUG,
-        title: "Bug Report Template",
-        content: BUG_TEMPLATE,
-      },
-    ];
-
-    // Use individual upserts for concurrency safety - multiple requests can run this simultaneously
-    await Promise.all(
-      templates.map((template) =>
-        withDb((db) =>
-          db.artifact.upsert({
-            where: {
-              organizationId_templateForSubtype: {
-                organizationId,
-                templateForSubtype: template.templateForSubtype,
-              },
-            },
-            create: {
-              ...template,
-              type: getArtifactType(template.subtype),
-              organizationId,
-              documentSlug: null, // Templates are not navigable in MVP
-              version: 1,
-              isLatest: true,
-            },
-            // On conflict, do nothing - preserve existing template content
-            // (user may have edited the template)
-            update: {},
-          })
-        )
-      )
+    const template = await withDb((db) =>
+      db.artifact.upsert({
+        where: {
+          organizationId_templateForType: {
+            organizationId,
+            templateForType: PrismaArtifactType.PRD,
+          },
+        },
+        create: {
+          type: PrismaArtifactType.TEMPLATE,
+          templateForType: PrismaArtifactType.PRD,
+          organizationId,
+          title: "Product Requirements Document Template",
+          slug: generateSlug(),
+          latestVersion: 1,
+        },
+        // On conflict, do nothing - preserve existing template content
+        // (user may have edited the template)
+        update: {},
+        select: { id: true },
+      })
     );
+
+    // Create the initial version with template content if it doesn't exist yet
+    const existingVersion = await artifactVersionService.getLatest(template.id);
+    if (!existingVersion) {
+      await artifactVersionService.createVersion(
+        template.id,
+        null,
+        PRD_TEMPLATE
+      );
+    }
   },
 
   /**
@@ -271,6 +484,7 @@ export const artifactsService = {
           headBranch: true,
           baseBranch: true,
           createdAt: true,
+          reviewDecision: true,
         },
       })
     );
@@ -279,19 +493,18 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast state enum to literal union type
-    return pr as PullRequestInfo;
+    return toPullRequestInfo(pr);
   },
 
   /**
-   * Create a new artifact (handles versioning and default project creation)
+   * Create a new artifact (handles initial version and Liveblocks room creation)
    */
   async create(
     organizationId: string,
     userId: string,
     input: CreateArtifactInput
   ): Promise<Artifact | null> {
-    const isTemplate = input.subtype === ArtifactSubtype.TEMPLATE;
+    const isTemplate = input.type === ArtifactType.Template;
 
     // Validate scope constraints
     if (isTemplate && (input.projectId || input.workstreamId)) {
@@ -305,56 +518,59 @@ export const artifactsService = {
       );
     }
 
-    const createdArtifact = await withDb.tx(async (tx) => {
-      // Resolve projectId from workstream if needed (non-templates only)
-      if (!(isTemplate || input.projectId)) {
-        const workstream = await tx.workstream.findUnique({
-          where: { id: input.workstreamId, organizationId },
-        });
-        if (!workstream) {
-          return null;
-        }
-        input.projectId = workstream.projectId;
-      }
+    const createdArtifact = await withDb.tx((tx) =>
+      createArtifactRecord(tx, organizationId, userId, input)
+    );
 
-      const resolvedOwnerId = input.ownerId ?? userId;
-      await validateOwnerInOrg(resolvedOwnerId, organizationId);
-
-      if (input.approverId) {
-        await validateOwnerInOrg(input.approverId, organizationId);
-      }
-
-      const documentSlug = shouldGenerateDocumentSlug(input.subtype)
-        ? generateDocumentSlug()
-        : null;
-
-      const artifact = await tx.artifact.create({
-        data: {
-          ...input,
-          type: getArtifactType(input.subtype),
-          organizationId,
-          documentSlug,
-          version: 1,
-          isLatest: true,
-          generatedBy: userId,
-          ownerId: resolvedOwnerId,
-        },
-        include: artifactIncludeWithUser,
-      });
-      return artifact;
-    });
-
-    if (createdArtifact?.documentSlug) {
-      // Create Liveblocks room for document artifacts (PRDs, plans, issues, etc.)
-      createArtifactRoom(createdArtifact);
+    if (createdArtifact) {
+      // Create Liveblocks room for all artifacts
+      await createArtifactRoom(createdArtifact);
     }
 
     return createdArtifact;
   },
 
   /**
+   * Create multiple artifacts in a single transaction.
+   * All items are created atomically - if any fails, the entire batch is rolled back.
+   * Liveblocks rooms are created after the transaction completes.
+   *
+   * @param organizationId - Organization ID for all artifacts
+   * @param userId - User ID for authorship attribution
+   * @param input - Batch input with array of artifact creation inputs (1-50 items)
+   */
+  async batchCreate(
+    organizationId: string,
+    userId: string,
+    input: BatchCreateArtifactInput
+  ): Promise<Artifact[]> {
+    const createdArtifacts = await withDb.tx(async (tx) => {
+      const results: Artifact[] = [];
+      for (const item of input.items) {
+        const artifact = await createArtifactRecord(
+          tx,
+          organizationId,
+          userId,
+          item
+        );
+        if (!artifact) {
+          throw new Error(
+            `Failed to create artifact: workstream not found for item "${item.title}"`
+          );
+        }
+        results.push(artifact);
+      }
+      return results;
+    });
+
+    // Create Liveblocks rooms after transaction completes
+    await Promise.all(createdArtifacts.map((a) => createArtifactRoom(a)));
+
+    return createdArtifacts;
+  },
+
+  /**
    * Update an existing artifact.
-   * Auto-increments version when content is modified.
    */
   async update(
     id: string,
@@ -367,6 +583,19 @@ export const artifactsService = {
     if (input.approverId) {
       await validateOwnerInOrg(input.approverId, organizationId);
     }
+    if (input.projectId) {
+      const project = await withDb((db) =>
+        db.project.findFirst({
+          where: { id: input.projectId!, organizationId },
+          select: { id: true },
+        })
+      );
+      if (!project) {
+        throw new Error(
+          "Invalid project ID: project not found in this organization"
+        );
+      }
+    }
 
     return withDb((db) =>
       db.artifact.update({
@@ -378,51 +607,43 @@ export const artifactsService = {
   },
 
   /**
-   * Delete all versions of an artifact.
+   * Delete an artifact and its associated resources.
    */
   async delete(id: string, organizationId: string): Promise<void> {
-    const result = await withDb(async (db) => {
-      // First get the artifact to check for a document slug
-      const artifact = await db.artifact.findUnique({
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
         where: { id, organizationId },
         select: {
-          documentSlug: true,
+          slug: true,
           organizationId: true,
         },
+      })
+    );
+
+    if (!artifact) {
+      return;
+    }
+
+    // Delete entity links referencing this artifact, then delete the artifact.
+    // Loops are preserved (onDelete: SetNull) to retain execution history.
+    await withDb.tx(async (tx) => {
+      await tx.entityLink.deleteMany({
+        where: {
+          organizationId,
+          OR: [
+            { sourceId: id, sourceType: "ARTIFACT" },
+            { targetId: id, targetType: "ARTIFACT" },
+          ],
+        },
       });
-
-      if (!artifact) {
-        return;
-      }
-
-      if (artifact.documentSlug) {
-        // Delete all versions with the same document slug
-        await db.artifact.deleteMany({
-          where: {
-            organizationId,
-            documentSlug: artifact.documentSlug,
-          },
-        });
-      } else {
-        // No document slug means no versions - just delete this one artifact
-        await db.artifact.delete({
-          where: { id, organizationId },
-        });
-      }
-
-      return {
-        documentSlug: artifact.documentSlug,
-      };
+      await tx.artifact.delete({ where: { id } });
     });
 
-    // Asynchronously delete Liveblocks room (fire and forget)
-    if (result?.documentSlug) {
-      deleteArtifactRoom(organizationId, result.documentSlug);
-    }
+    await deleteArtifactRoom(organizationId, artifact.slug);
   },
 
   /**
-   * Find an artifact with full regeneration context (workstream, project, repositories, source artifact)
+   * Find an artifact with full regeneration context (workstream, project, source artifact)
    */
   findWithRegenerationContext(id: string, organizationId: string) {
     return withDb((db) =>
@@ -431,23 +652,11 @@ export const artifactsService = {
         include: {
           workstream: {
             include: {
-              project: {
-                include: {
-                  repositories: {
-                    take: 1,
-                  },
-                },
-              },
+              project: true,
+              // Find the PRD in this workstream (source artifact for plan generation)
               artifacts: {
                 where: {
-                  subtype: {
-                    in: [
-                      ArtifactSubtype.PRD,
-                      ArtifactSubtype.ISSUE,
-                      ArtifactSubtype.BUG,
-                    ],
-                  },
-                  isLatest: true,
+                  type: PrismaArtifactType.PRD,
                 },
                 take: 1,
               },
@@ -456,6 +665,154 @@ export const artifactsService = {
         },
       })
     );
+  },
+
+  /**
+   * Find or create a workstream for the artifact.
+   * If artifact has a workstream, returns it with source PRD looked up via entity links.
+   * If no workstream, finds source PRD (entity links then title fallback),
+   * auto-creates a workstream, and links both artifacts to it.
+   */
+  async findOrCreateWorkstream(
+    organizationId: string,
+    artifact: NonNullable<
+      Awaited<ReturnType<typeof this.findWithRegenerationContext>>
+    >,
+    userId: string
+  ): Promise<{
+    workstream: NonNullable<typeof artifact.workstream> | null;
+    sourceArtifact: {
+      id: string;
+      title: string;
+      targetRepo: string | null;
+      targetBranch: string | null;
+      content: string | null;
+    } | null;
+  }> {
+    // If workstream exists, find source via entity links
+    if (artifact.workstream) {
+      const sourceArtifact = await this.findSourceWithContent(artifact);
+      return {
+        workstream: artifact.workstream,
+        sourceArtifact,
+      };
+    }
+
+    if (!artifact.projectId) {
+      return {
+        workstream: null,
+        sourceArtifact: null,
+      };
+    }
+
+    // Try entity links first
+    let foundSource = await this.findSourceWithContent(artifact);
+
+    // Fallback: title matching (strips "Implementation Plan: " prefix)
+    if (!foundSource?.content) {
+      const titleFallback = artifact.title.replace("Implementation Plan: ", "");
+      const matchedArtifact = await withDb((db) =>
+        db.artifact.findFirst({
+          where: {
+            organizationId,
+            projectId: artifact.projectId,
+            type: PrismaArtifactType.PRD,
+            title: titleFallback,
+          },
+        })
+      );
+      if (matchedArtifact) {
+        const latestVersion = await artifactVersionService.getLatest(
+          matchedArtifact.id
+        );
+        foundSource = {
+          ...matchedArtifact,
+          content: latestVersion?.content ?? null,
+        };
+
+        // Persist the PRODUCES link so subsequent calls resolve via findSourceWithContent
+        await entityLinksService.createLink(organizationId, {
+          sourceId: matchedArtifact.id,
+          sourceType: "ARTIFACT",
+          targetId: artifact.id,
+          targetType: "ARTIFACT",
+          linkType: LinkType.PRODUCES,
+        });
+      }
+    }
+
+    if (!foundSource?.content) {
+      return {
+        workstream: null,
+        sourceArtifact: foundSource,
+      };
+    }
+
+    // If the source PRD already belongs to a workstream, attach the orphan
+    // artifact to it instead of creating a new workstream (avoids reassigning
+    // the PRD away from its existing workstream and breaking related artifacts).
+    if (foundSource.workstreamId) {
+      return withDb.tx(async (tx) => {
+        await tx.artifact.update({
+          where: { id: artifact.id, organizationId },
+          data: { workstreamId: foundSource.workstreamId },
+        });
+
+        const workstream = await tx.workstream.findUnique({
+          where: { id: foundSource.workstreamId! },
+          include: {
+            project: true,
+            artifacts: {
+              where: { type: PrismaArtifactType.PRD },
+              take: 1,
+            },
+          },
+        });
+
+        return {
+          workstream,
+          sourceArtifact: foundSource,
+        };
+      });
+    }
+
+    // Auto-create workstream and link both artifacts
+    return withDb.tx(async (tx) => {
+      const newWorkstream = await tx.workstream.create({
+        data: {
+          organizationId,
+          projectId: artifact.projectId as string,
+          title: foundSource.title,
+          description: `Auto-created for: ${foundSource.title}`,
+          type: "FEATURE_DELIVERY",
+          createdById: userId,
+        },
+      });
+
+      await tx.artifact.updateMany({
+        where: {
+          id: { in: [foundSource.id, artifact.id] },
+          organizationId,
+        },
+        data: { workstreamId: newWorkstream.id },
+      });
+
+      const workstream = await tx.workstream.findUnique({
+        where: { id: newWorkstream.id },
+        include: {
+          project: true,
+          artifacts: {
+            where: { type: PrismaArtifactType.PRD },
+            take: 1,
+          },
+        },
+      });
+
+      return {
+        workstream,
+        sourceArtifact: foundSource,
+      };
+    });
   },
 
   /**
@@ -474,152 +831,58 @@ export const artifactsService = {
   },
 
   /**
-   * Find or create a workstream for the artifact.
-   * If artifact has no workstream, finds a source artifact (PRD or Issue) and auto-creates one.
+   * Find the source PRD in the workstream for the artifact.
    */
-  async findOrCreateWorkstream(
-    organizationId: string,
-    // TODO: use a real type here.
-    artifact: {
-      id: string;
-      title: string;
-      projectId: string | null;
-      parentId: string | null;
-      workstream: {
-        id: string;
-        project: {
-          id: string;
-          repositories: {
-            id: string;
-            fullName: string;
-            defaultBranch: string | null;
-          }[];
-        };
-      } | null;
-    },
-    userId: string
+  async findSourceWithContent(
+    artifact: NonNullable<
+      Awaited<ReturnType<typeof this.findWithRegenerationContext>>
+    >
   ) {
-    // If workstream exists, fetch it with project relation
-    if (artifact.workstream) {
-      const sourceArtifact = await withDb((db) =>
-        db.artifact.findFirst({
-          where: {
-            organizationId,
-            workstreamId: artifact.workstream?.id as string,
-            subtype: {
-              in: [
-                ArtifactSubtype.PRD,
-                ArtifactSubtype.ISSUE,
-                ArtifactSubtype.BUG,
-              ],
-            },
-            // When parentId is set, find that exact artifact (do NOT require isLatest).
-            // When parentId is missing, find any PRD/Issue/Bug in workstream with isLatest.
-            ...(artifact.parentId
-              ? { id: artifact.parentId }
-              : { isLatest: true }),
-          },
-        })
-      );
-      return { workstream: artifact.workstream, sourceArtifact };
+    const sourceLinks = await entityLinksService.findSourceLinks(
+      artifact.organizationId,
+      artifact.id,
+      "ARTIFACT",
+      LinkType.PRODUCES
+    );
+    if (!sourceLinks.length) {
+      return null;
     }
 
-    // Find PRD, Issue, or Bug by parentId or matching title.
-    // When parentId is set, find that exact artifact (do NOT require isLatest - parent may have been versioned).
-    // Title matching is a PRD-only heuristic for legacy plans without parentId.
-    const titleFallback = artifact.title.replace("Implementation Plan: ", "");
-    const sourceSubtypes: ArtifactSubtype[] = [
-      ArtifactSubtype.PRD,
-      ArtifactSubtype.ISSUE,
-      ArtifactSubtype.BUG,
-    ];
-
-    let foundSource: PrismaArtifact | null = null;
-    const projectId = artifact.projectId;
-    const parentId = artifact.parentId;
-    if (parentId && projectId) {
-      foundSource = await withDb((db) =>
-        db.artifact.findFirst({
-          where: {
-            id: parentId,
-            organizationId,
-            projectId,
-            subtype: { in: sourceSubtypes },
-          },
-        })
-      );
-    }
-    if (!foundSource && projectId) {
-      foundSource = await withDb((db) =>
-        db.artifact.findFirst({
-          where: {
-            organizationId,
-            projectId,
-            subtype: { in: sourceSubtypes },
-            isLatest: true,
-            title: titleFallback,
-          },
-        })
-      );
-    }
-
-    if (!(foundSource?.content && artifact.projectId)) {
-      return { workstream: null, sourceArtifact: foundSource };
-    }
-
-    // Auto-create workstream and link artifacts
-    return withDb.tx(async (tx) => {
-      const newWorkstream = await tx.workstream.create({
-        data: {
-          organizationId,
-          projectId: artifact.projectId as string,
-          title: foundSource.title,
-          description: `Auto-created for: ${foundSource.title}`,
-          type: "FEATURE_DELIVERY",
-          createdById: userId,
+    // TODO: Add issue support.
+    const sourceArtifacts = await withDb((db) =>
+      db.artifact.findMany({
+        where: {
+          id: { in: sourceLinks.map((link) => link.sourceId) },
+          organizationId: artifact.organizationId,
         },
-      });
+      })
+    );
+    const sourceArtifact = sourceArtifacts.find(
+      (artifact) => artifact.type === PrismaArtifactType.PRD
+    );
 
-      await tx.artifact.updateMany({
-        where: { id: { in: [foundSource.id, artifact.id] }, organizationId },
-        data: { workstreamId: newWorkstream.id },
-      });
+    // Load the latest version content for the source artifact
+    let sourceContent: string | null = null;
+    if (sourceArtifact) {
+      const latestVersion = await artifactVersionService.getLatest(
+        sourceArtifact.id
+      );
+      sourceContent = latestVersion?.content ?? null;
+    }
 
-      const workstream = await tx.workstream.findUnique({
-        where: { id: newWorkstream.id, organizationId },
-        include: {
-          project: {
-            include: {
-              repositories: { take: 1 },
-            },
-          },
-          artifacts: {
-            where: {
-              subtype: {
-                in: [
-                  ArtifactSubtype.PRD,
-                  ArtifactSubtype.ISSUE,
-                  ArtifactSubtype.BUG,
-                ],
-              },
-              isLatest: true,
-            },
-            take: 1,
-          },
-        },
-      });
-
-      return { workstream, sourceArtifact: foundSource };
-    });
+    return sourceArtifact
+      ? { ...sourceArtifact, content: sourceContent }
+      : null;
   },
 
   /**
-   * Build context for plan generation from source artifact content and optional initial instructions.
-   * Appends "assume defaults" instruction to skip Q&A flow.
+   * Build context base from source content, optional instructions, and an assume-defaults message.
+   * Shared by buildPlanContext and buildPRDContext.
    */
-  buildPlanContext(
+  buildContextBase(
     sourceContent: string,
-    initialInstructions: string | null
+    initialInstructions: string | null,
+    assumeDefaultsMessage: string
   ): string {
     let context = sourceContent;
 
@@ -642,13 +905,57 @@ ${initialInstructions.trim()}`;
 
 ---
 
-**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment.`;
+${assumeDefaultsMessage}`;
 
     return context;
   },
 
   /**
-   * Create records for a triggered workflow (action run, artifact update, event)
+   * Build context for plan generation from source artifact content and optional initial instructions.
+   * Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPlanContext(
+    sourceContent: string,
+    initialInstructions: string | null
+  ): string {
+    return this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the implementation plan, please assume reasonable defaults for any questions that arise. You may document those as open questions in the plan for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+  },
+
+  /**
+   * Build context for PRD generation from source artifact content, optional initial instructions,
+   * and optional reverse synthesis link. Appends "assume defaults" instruction to skip Q&A flow.
+   */
+  buildPRDContext(
+    sourceContent: string,
+    initialInstructions: string | null,
+    reverseSynthesisLink: string | null
+  ): string {
+    let context = this.buildContextBase(
+      sourceContent,
+      initialInstructions,
+      "**Important:** For the PRD, please assume reasonable defaults for any questions that arise. You may document those as open questions for further iteration, but do not ask for clarification - proceed with your best judgment."
+    );
+
+    // Add reverse synthesis link section if provided
+    if (reverseSynthesisLink?.trim()) {
+      context += `
+
+---
+
+**Reverse Synthesis Link:** ${reverseSynthesisLink}
+
+Analyze the content at this link and identify capabilities or features that could be adapted for this application.`;
+    }
+
+    return context;
+  },
+
+  /**
+   * Create records for a triggered workflow (action run, artifact status update, event)
    */
   createWorkflowTriggerRecords(params: {
     organizationId: string;
@@ -657,7 +964,6 @@ ${initialInstructions.trim()}`;
     artifactId: string;
     prdId: string;
     correlationId: string;
-    currentVersion: number;
     targetRepo: string;
     targetBranch: string;
   }): Promise<Artifact> {
@@ -668,7 +974,6 @@ ${initialInstructions.trim()}`;
       artifactId,
       prdId,
       correlationId,
-      currentVersion,
       targetRepo,
       targetBranch,
     } = params;
@@ -698,7 +1003,6 @@ ${initialInstructions.trim()}`;
         db.artifact.update({
           where: { id: artifactId, organizationId },
           data: {
-            version: currentVersion + 1,
             status: "DRAFT",
             // Correlation tracked via GitHubActionRun.triggerData.correlationId
           },
@@ -727,57 +1031,59 @@ ${initialInstructions.trim()}`;
   },
 
   /**
-   * Update artifact with placeholder content (when GitHub is not configured)
+   * Update artifact with placeholder content (when GitHub is not configured).
+   * Creates a new version with the placeholder content.
    */
   async updateWithPlaceholder(
     id: string,
     organizationId: string,
-    currentVersion: number,
+    userId: string | null,
     content: string
   ): Promise<Artifact> {
-    const result = await withDb((db) =>
+    await artifactVersionService.createVersion(id, userId, content);
+
+    // Update status to DRAFT
+    return withDb((db) =>
       db.artifact.update({
         where: { id, organizationId },
-        data: {
-          version: currentVersion + 1,
-          status: "DRAFT",
-          content,
-        },
+        data: { status: "DRAFT" },
         include: artifactIncludeWithUser,
       })
     );
-    return result;
   },
 
   /**
    * Create a new version of an artifact with updated content.
-   * Used when saving edits from an older version - creates v(max+1) with the new content.
+   * Used when saving edits - creates v(latestVersion+1) with the new content.
    */
   async createNewVersion(
     id: string,
     organizationId: string,
+    userId: string | null,
     content: string
   ): Promise<Artifact> {
-    const original = await withDb((db) =>
+    const artifact = await withDb((db) =>
       db.artifact.findUnique({
         where: { id, organizationId },
+        include: artifactIncludeWithUser,
       })
     );
 
-    if (!original) {
+    if (!artifact) {
       throw new ArtifactNotFoundError();
     }
 
-    const newVersion = await withDb.tx((tx) =>
-      createArtifactVersion(tx, original, { content })
+    await artifactVersionService.createVersion(id, userId, content);
+
+    // Re-fetch the artifact to get the updated latestVersion
+    const updated = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id, organizationId },
+        include: artifactIncludeWithUser,
+      })
     );
 
-    // Create Liveblocks room for the new version
-    if (newVersion.documentSlug) {
-      createArtifactRoom(newVersion);
-    }
-
-    return newVersion as unknown as Artifact;
+    return updated!;
   },
 
   /**
@@ -799,7 +1105,7 @@ ${initialInstructions.trim()}`;
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be regenerated",
@@ -807,23 +1113,14 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD or Issue
+    // Find or create workstream + source PRD
     const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!sourceArtifact?.content) {
-      return {
-        success: false,
-        error:
-          "No PRD, Issue, or Bug found to generate plan from. Create one first.",
-        status: 400,
-      };
-    }
-
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to regenerate",
@@ -831,16 +1128,16 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
+    if (!(workstream && sourceArtifact?.content)) {
+      return {
+        success: false,
+        error: "No PRD found to generate plan from. Create one first.",
+        status: 400,
+      };
+    }
 
-    // Use source artifact's target repo (fallback to project's primary)
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -850,24 +1147,26 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to placeholder content when GitHub is not configured
     if (!isGitHubConfigured()) {
       const updatedArtifact = await this.updateWithPlaceholder(
         artifactId,
         organizationId,
-        artifact.version,
-        getPlaceholderContent(artifact.title, artifact.version + 1)
+        userId,
+        getPlaceholderContent(artifact.title, artifact.latestVersion + 1)
       );
       return { success: true, artifact: updatedArtifact };
     }
@@ -889,10 +1188,15 @@ ${initialInstructions.trim()}`;
     const correlationId = createId();
 
     // Build context: source artifact content + initial instructions + "assume defaults"
+    // Load the plan's latest version content as initial instructions
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
     const context = this.buildPlanContext(
       sourceArtifact.content,
-      artifact.content
+      latestVersion?.content ?? null
     );
+
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
 
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
@@ -902,6 +1206,7 @@ ${initialInstructions.trim()}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -916,11 +1221,171 @@ ${initialInstructions.trim()}`;
     const updatedArtifact = await this.createWorkflowTriggerRecords({
       organizationId,
       workstreamId: workstream.id,
-      repositoryId: repository.id,
+      repositoryId,
       artifactId: artifact.id,
       prdId: sourceArtifact.id,
       correlationId,
-      currentVersion: artifact.version,
+      targetRepo,
+      targetBranch,
+    });
+
+    return { success: true, artifact: updatedArtifact };
+  },
+
+  /**
+   * Generate a PRD artifact by triggering symphony-dispatch workflow.
+   * Handles all business logic: validation, workstream setup, GitHub workflow trigger.
+   */
+  async generatePRD(
+    artifactId: string,
+    organizationId: string,
+    userId: string,
+    reverseSynthesisLink: string | null
+  ): Promise<RegenerateResult> {
+    // Validate reverseSynthesisLink is a well-formed URL if provided
+    if (reverseSynthesisLink?.trim()) {
+      try {
+        new URL(reverseSynthesisLink);
+      } catch {
+        return {
+          success: false,
+          error: "reverseSynthesisLink must be a valid URL",
+          status: 400,
+        };
+      }
+    }
+
+    // Find artifact with regeneration context
+    const artifact = await this.findWithRegenerationContext(
+      artifactId,
+      organizationId
+    );
+
+    if (!artifact) {
+      return { success: false, error: "Artifact not found", status: 404 };
+    }
+
+    if (artifact.type !== PrismaArtifactType.PRD) {
+      return {
+        success: false,
+        error: "Only PRDs can be generated with this method",
+        status: 400,
+      };
+    }
+
+    // Find or create workstream
+    const { workstream } = await this.findOrCreateWorkstream(
+      organizationId,
+      artifact,
+      userId
+    );
+
+    if (!(workstream || artifact.projectId)) {
+      return {
+        success: false,
+        error: "Artifact must have a project to generate",
+        status: 400,
+      };
+    }
+
+    if (!workstream) {
+      return {
+        success: false,
+        error: "No workstream found for this artifact",
+        status: 400,
+      };
+    }
+
+    const targetRepo = artifact.targetRepo;
+    const targetBranch = artifact.targetBranch ?? DEFAULT_BRANCH;
+
+    if (!targetRepo) {
+      return {
+        success: false,
+        error: "No repository configured for this artifact or project",
+        status: 400,
+      };
+    }
+
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
+    );
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
+    }
+
+    // Fall back to placeholder content when GitHub is not configured
+    if (!isGitHubConfigured()) {
+      const updatedArtifact = await this.updateWithPlaceholder(
+        artifactId,
+        organizationId,
+        userId,
+        getPlaceholderContent(artifact.title, artifact.latestVersion + 1)
+      );
+      return { success: true, artifact: updatedArtifact };
+    }
+
+    // Check for existing running job
+    const existingRun = await this.findPendingWorkflowRun(
+      workstream.id,
+      "symphony-dispatch"
+    );
+
+    if (existingRun) {
+      return {
+        success: false,
+        error: "PRD generation already in progress",
+        status: 409,
+      };
+    }
+
+    const correlationId = createId();
+
+    // Build context: latest version content + reverse synthesis link
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    const context = this.buildPRDContext(
+      latestVersion?.content ?? "",
+      null,
+      reverseSynthesisLink
+    );
+
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
+    // Trigger the workflow — use "prd" command to invoke prd-creator skill
+    const result = await triggerWorkflowDispatch({
+      targetRepo,
+      ref: targetBranch,
+      command: "prd",
+      commandArgs: reverseSynthesisLink ? "self-improve" : "prd-creator",
+      context,
+      correlationId,
+      sessionId: artifact.id,
+      ...committer,
+    });
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: `Failed to trigger PRD generation: ${result.error}`,
+        status: 500,
+      };
+    }
+
+    // Create all workflow trigger records
+    const updatedArtifact = await this.createWorkflowTriggerRecords({
+      organizationId,
+      workstreamId: workstream.id,
+      repositoryId,
+      artifactId: artifact.id,
+      prdId: artifact.id, // PRD generates itself
+      correlationId,
       targetRepo,
       targetBranch,
     });
@@ -948,7 +1413,7 @@ ${initialInstructions.trim()}`;
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be amended",
@@ -956,23 +1421,14 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Find or create workstream with PRD or Issue
+    // Find or create workstream + source PRD
     const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!sourceArtifact) {
-      return {
-        success: false,
-        error:
-          "No PRD, Issue, or Bug found for this plan. Cannot request changes.",
-        status: 400,
-      };
-    }
-
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to request changes",
@@ -980,16 +1436,16 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
+    if (!(workstream && sourceArtifact?.content)) {
+      return {
+        success: false,
+        error: "No PRD found for this plan. Cannot request changes.",
+        status: 400,
+      };
+    }
 
-    // Use source artifact's target repo (fallback to project's primary)
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -999,16 +1455,18 @@ ${initialInstructions.trim()}`;
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Fall back to error when GitHub is not configured (no placeholder for chat)
     if (!isGitHubConfigured()) {
@@ -1036,21 +1494,15 @@ ${initialInstructions.trim()}`;
 
     const correlationId = createId();
 
-    // Update artifact with current workstream ID (may have been set by findOrCreateWorkstream)
-    const artifactForVersion = {
-      ...artifact,
-      workstreamId: workstream.id,
-      projectId: artifact.projectId ?? workstream.project.id,
-    };
-
     // IMPORTANT: Create GitHubActionRun and new artifact version BEFORE triggering workflow
     // This prevents race condition where webhook fires before records exist
-    const newArtifact = await this.createChatWorkflowTriggerRecords({
+    await this.createChatWorkflowTriggerRecords({
       workstreamId: workstream.id,
-      repositoryId: repository.id,
-      artifact: artifactForVersion as PrismaArtifact,
+      repositoryId,
+      artifactId,
       prdId: sourceArtifact.id,
       correlationId,
+      userId,
       targetRepo,
       targetBranch,
     });
@@ -1060,6 +1512,9 @@ ${initialInstructions.trim()}`;
 
 ${changes}`;
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Now trigger the workflow - records already exist for webhook to find
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1068,22 +1523,19 @@ ${changes}`;
       context,
       correlationId,
       sessionId: sourceArtifact.id, // Same session for artifact continuity
+      ...committer,
     });
 
     if (!result.success) {
-      // Workflow trigger failed - update the artifact with error status
-      // The GitHubActionRun will remain in PENDING but that's acceptable
-      await withDb((db) =>
-        db.artifact.update({
-          where: { id: newArtifact.id },
-          data: {
-            content: `# Change Request Failed
+      // Workflow trigger failed - update the version with error content
+      await artifactVersionService.createVersion(
+        artifactId,
+        userId,
+        `# Change Request Failed
 
 Failed to trigger the workflow: ${result.error}
 
-Please try again or contact support if the issue persists.`,
-          },
-        })
+Please try again or contact support if the issue persists.`
       );
 
       return {
@@ -1096,7 +1548,7 @@ Please try again or contact support if the issue persists.`,
     return {
       success: true,
       message: "Change request submitted",
-      artifactId: newArtifact.id,
+      artifactId,
     };
   },
 
@@ -1107,36 +1559,35 @@ Please try again or contact support if the issue persists.`,
   async createChatWorkflowTriggerRecords(params: {
     workstreamId: string;
     repositoryId: string;
-    artifact: PrismaArtifact;
+    artifactId: string;
     prdId: string;
     correlationId: string;
+    userId: string | null;
     targetRepo: string;
     targetBranch: string;
-  }): Promise<PrismaArtifact> {
+  }): Promise<void> {
     const {
       workstreamId,
       repositoryId,
-      artifact,
+      artifactId,
       prdId,
       correlationId,
+      userId,
       targetRepo,
       targetBranch,
     } = params;
 
-    const newArtifact = await withDb.tx(async (tx) => {
-      // Create a NEW artifact version (preserves original content in previous version)
-      const newArtifact = await createArtifactVersion(tx, artifact, {
-        // Content starts empty - will be populated by webhook when workflow completes
-        // This ensures original content is preserved in the previous version
-        content: "# Generating...\n\nYour change request is being processed.",
-      });
+    // Create a new version with placeholder content (preserves original in previous version)
+    await artifactVersionService.createVersion(
+      artifactId,
+      userId,
+      "# Generating...\n\nYour change request is being processed."
+    );
 
-      // Note: Correlation tracked via GitHubActionRun.triggerData.correlationId
-      // No need to update generatedBy (it's a UUID field, not for correlation strings)
-
-      // Create workflow tracking records
+    // Create workflow tracking records
+    await withDb(async (db) => {
       await Promise.all([
-        tx.gitHubActionRun.create({
+        db.gitHubActionRun.create({
           data: {
             workstreamId,
             repositoryId,
@@ -1147,7 +1598,7 @@ Please try again or contact support if the issue persists.`,
             triggerEvent: "workflow_dispatch",
             triggerData: {
               correlationId: `${process.env.WEBAPP_ENV}-${correlationId}`,
-              artifactId: newArtifact.id, // Reference the NEW version
+              artifactId,
               prdId,
               command: "chat",
             },
@@ -1156,7 +1607,7 @@ Please try again or contact support if the issue persists.`,
             startedAt: new Date(),
           },
         }),
-        tx.workstreamEvent.create({
+        db.workstreamEvent.create({
           data: {
             workstreamId,
             type: "GITHUB_ACTION_TRIGGERED",
@@ -1165,7 +1616,7 @@ Please try again or contact support if the issue persists.`,
               workflowName: "symphony-dispatch",
               command: "chat",
               correlationId,
-              artifactId: newArtifact.id,
+              artifactId,
               prdId,
               targetRepo,
               targetBranch,
@@ -1173,16 +1624,7 @@ Please try again or contact support if the issue persists.`,
           },
         }),
       ]);
-
-      return newArtifact;
     });
-
-    // Create Liveblocks room for the new version after transaction commits
-    if (newArtifact.documentSlug) {
-      createArtifactRoom(newArtifact);
-    }
-
-    return newArtifact;
   },
 
   /**
@@ -1220,15 +1662,21 @@ Please try again or contact support if the issue persists.`,
       }
 
       const artifacts = await downloadWorkflowArtifacts(
-        Number(actionRun.runId),
-        "execution-logs"
+        Number(actionRun.runId)
       );
 
-      if (artifacts.length === 0 || !artifacts[0]) {
+      // Find the symphony run artifact (contains .claude/runs/ with conversation logs)
+      const symphonyArtifact = artifacts.find((a) =>
+        SYMPHONY_RUN_ARTIFACT_PREFIXES.some((prefix) =>
+          a.name.startsWith(prefix)
+        )
+      );
+
+      if (!symphonyArtifact) {
         return createEmptyExecutionTrace();
       }
 
-      return parseExecutionLogs(artifacts[0].data);
+      return parseExecutionLogs(symphonyArtifact.data);
     } catch (error) {
       log.error("[artifacts-service] Failed to get execution log", {
         error: error instanceof Error ? error.message : String(error),
@@ -1241,21 +1689,48 @@ Please try again or contact support if the issue persists.`,
    * Get judges feedback for an artifact from its associated GitHub Action run.
    * Downloads workflow artifacts and parses the judges.json report.
    */
-  async getJudgesFeedback(
+  getJudgesFeedback(
     artifactId: string,
     organizationId: string
   ): Promise<JudgesFeedbackResponse> {
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.PLAN
+    );
+  },
+
+  /**
+   * Get code judges feedback for an artifact — evaluations produced by execution
+   * (PR) runs, identified by a non-null actionRunId. Returns the most recent one
+   * when multiple PRs have been run against the same artifact.
+   */
+  getCodeJudgesFeedback(
+    artifactId: string,
+    organizationId: string
+  ): Promise<JudgesFeedbackResponse> {
+    return this.getEvaluationFeedback(
+      artifactId,
+      organizationId,
+      PrismaEvaluationReportType.CODE
+    );
+  },
+
+  /** Shared implementation for plan and code evaluation feedback. */
+  async getEvaluationFeedback(
+    artifactId: string,
+    organizationId: string,
+    reportType: PrismaEvaluationReportType
+  ): Promise<JudgesFeedbackResponse> {
     try {
-      // Verify artifact exists and belongs to organization
       const artifact = await this.findByIdSimple(artifactId, organizationId);
       if (!artifact) {
         return { status: "not_found", data: null };
       }
 
-      // Query evaluation from database
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
-          where: { artifactId },
+          where: { artifactId, reportType },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1267,7 +1742,11 @@ Please try again or contact support if the issue persists.`,
       const reportData = evaluation.reportData as JudgesReport;
       return { status: "success", data: reportData };
     } catch (error) {
-      log.error("[artifacts-service] Failed to get judges feedback", {
+      const logLabel =
+        reportType === PrismaEvaluationReportType.PLAN
+          ? "judges"
+          : "code judges";
+      log.error(`[artifacts-service] Failed to get ${logLabel} feedback`, {
         error: error instanceof Error ? error.message : String(error),
       });
       return {
@@ -1278,107 +1757,32 @@ Please try again or contact support if the issue persists.`,
   },
 
   /**
-   * Get the preview deployment for an artifact.
+   * Get performance data for an artifact from the GitHubActionRunPerformance table.
+   * Org-scoping is enforced via Prisma relation filter on the artifact FK.
+   * Returns null when no performance data is available for the artifact.
    */
-  async getArtifactPreviewDeployment(
+  async getPerformanceData(
     artifactId: string,
     organizationId: string
-  ): Promise<PreviewDeployment | null> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: artifactId, organizationId },
-        include: {
-          previewDeployment: {
-            select: previewDeploymentSelect,
-          },
+  ): Promise<PerfSummary | null> {
+    // Single query: join through artifact relation to enforce org-scoping
+    const perfRecord = await withDb((db) =>
+      db.gitHubActionRunPerformance.findFirst({
+        where: {
+          artifactId,
+          artifact: { organizationId },
         },
+        orderBy: { createdAt: "desc" },
       })
     );
 
-    return toPreviewDeploymentFromArtifact(artifact?.previewDeployment ?? null);
-  },
-
-  /**
-   * Refresh preview deployment status by fetching latest from GitHub.
-   * Returns updated PreviewDeployment or null if no deployment info available.
-   */
-  async refreshPreviewDeployment(
-    artifactId: string,
-    organizationId: string
-  ): Promise<PreviewDeployment | null> {
-    const artifact = await withDb((db) =>
-      db.artifact.findUnique({
-        where: { id: artifactId, organizationId },
-        include: {
-          previewDeployment: true,
-          workstream: {
-            include: {
-              project: {
-                include: { repositories: { take: 1 } },
-              },
-            },
-          },
-        },
-      })
-    );
-
-    if (!artifact?.previewDeployment?.ref) {
-      return toPreviewDeploymentFromArtifact(
-        artifact?.previewDeployment ?? null
-      );
+    if (!perfRecord) {
+      return null;
     }
 
-    const repoFullName =
-      artifact.targetRepo ??
-      artifact.workstream?.project?.repositories?.[0]?.fullName;
-
-    if (!repoFullName) {
-      return toPreviewDeploymentFromArtifact(artifact.previewDeployment);
-    }
-
-    const installationId = await githubService.findInstallationForRepoFullName(
-      organizationId,
-      repoFullName
-    );
-    let deploymentStatus = await getLatestDeploymentStatusForRef(
-      repoFullName,
-      artifact.previewDeployment.ref,
-      {
-        installationId: installationId ?? undefined,
-        environment: "preview",
-      }
-    );
-    if (!deploymentStatus) {
-      deploymentStatus = await getLatestDeploymentStatusForRef(
-        repoFullName,
-        artifact.previewDeployment.ref,
-        {
-          installationId: installationId ?? undefined,
-          environment: undefined,
-        }
-      );
-    }
-
-    if (!deploymentStatus) {
-      return toPreviewDeploymentFromArtifact(artifact.previewDeployment);
-    }
-
-    const updated = await withDb((db) =>
-      db.previewDeployment.update({
-        where: { artifactId },
-        data: {
-          url: deploymentStatus.url,
-          state: deploymentStatus.state,
-          environment: deploymentStatus.environment,
-          updatedAt: deploymentStatus.updatedAt
-            ? new Date(deploymentStatus.updatedAt)
-            : new Date(),
-        },
-        select: previewDeploymentSelect,
-      })
-    );
-
-    return toPreviewDeploymentFromArtifact(updated);
+    // Safe cast: summaryData was stored by parsePerfSummary() which always
+    // produces a valid PerfSummary shape. Schema drift would require a deploy.
+    return perfRecord.summaryData as PerfSummary;
   },
 
   /**
@@ -1410,7 +1814,7 @@ Please try again or contact support if the issue persists.`,
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    if (artifact.subtype !== ArtifactSubtype.IMPLEMENTATION_PLAN) {
+    if (artifact.type !== PrismaArtifactType.IMPLEMENTATION_PLAN) {
       return {
         success: false,
         error: "Only implementation plans can be executed",
@@ -1426,22 +1830,14 @@ Please try again or contact support if the issue persists.`,
       };
     }
 
-    // Find or create workstream with PRD or Issue
+    // Find or create workstream + source PRD
     const { workstream, sourceArtifact } = await this.findOrCreateWorkstream(
       organizationId,
       artifact,
       userId
     );
 
-    if (!sourceArtifact) {
-      return {
-        success: false,
-        error: "No PRD, Issue, or Bug found for this plan. Cannot execute.",
-        status: 400,
-      };
-    }
-
-    if (!workstream) {
+    if (!(workstream || artifact.projectId)) {
       return {
         success: false,
         error: "Artifact must have a project to execute",
@@ -1449,16 +1845,16 @@ Please try again or contact support if the issue persists.`,
       };
     }
 
-    const project = workstream.project;
-    const existingRepository = project.repositories[0];
+    if (!(workstream && sourceArtifact?.content)) {
+      return {
+        success: false,
+        error: "No PRD found for this plan. Cannot execute.",
+        status: 400,
+      };
+    }
 
-    // Use source artifact's target repo (fallback to project's primary)
-    const targetRepo =
-      sourceArtifact.targetRepo ?? existingRepository?.fullName;
-    const targetBranch =
-      sourceArtifact.targetBranch ??
-      existingRepository?.defaultBranch ??
-      "main";
+    const targetRepo = sourceArtifact.targetRepo ?? artifact.targetRepo;
+    const targetBranch = sourceArtifact.targetBranch ?? DEFAULT_BRANCH;
 
     if (!targetRepo) {
       return {
@@ -1468,16 +1864,18 @@ Please try again or contact support if the issue persists.`,
       };
     }
 
-    // Ensure repository record exists
-    const repoResult = await ensureRepository(
-      targetRepo,
-      project.id,
-      existingRepository
+    const repositoryId = await findInstallationRepoId(
+      organizationId,
+      targetRepo
     );
-    if (!repoResult.success) {
-      return { success: false, error: repoResult.error, status: 400 };
+    if (!repositoryId) {
+      return {
+        success: false,
+        error:
+          "Repository not found in GitHub installation — ensure the GitHub App has access to this repository",
+        status: 400,
+      };
     }
-    const repository = repoResult.repository;
 
     // Check for existing running job
     const existingRun = await this.findPendingWorkflowRun(
@@ -1495,8 +1893,9 @@ Please try again or contact support if the issue persists.`,
 
     const correlationId = createId();
 
-    // Build context: the implementation plan content
-    const context = artifact.content ?? "";
+    // Build context: the implementation plan content (from latest version)
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    const context = latestVersion?.content ?? "";
 
     // Create GitHubActionRun BEFORE triggering workflow (prevent race condition)
     await withDb(async (db) => {
@@ -1504,7 +1903,7 @@ Please try again or contact support if the issue persists.`,
         db.gitHubActionRun.create({
           data: {
             workstreamId: workstream.id,
-            repositoryId: repository.id,
+            repositoryId,
             runId: null, // Will be populated by webhook
             workflowName: "symphony-dispatch",
             status: "PENDING",
@@ -1540,6 +1939,9 @@ Please try again or contact support if the issue persists.`,
       ]);
     });
 
+    // Look up triggering user for commit attribution
+    const committer = await getCommitterInfo(userId);
+
     // Trigger the workflow
     const result = await triggerWorkflowDispatch({
       targetRepo,
@@ -1548,6 +1950,7 @@ Please try again or contact support if the issue persists.`,
       context,
       correlationId,
       sessionId: sourceArtifact.id,
+      ...committer,
     });
 
     if (!result.success) {
@@ -1564,7 +1967,9 @@ Please try again or contact support if the issue persists.`,
     };
   },
 
-  // TODO V2: Extract rating methods to dedicated RatingService when rating expands beyond Implementation Plans (trigger: artifactsService > 2000 lines OR rating on 3+ artifact types)
+  // TODO V2: Extract rating methods to dedicated RatingService when rating expands beyond
+  // Implementation Plans (trigger: artifactsService > 2000 lines OR rating on 3+ artifact types)
+
   /**
    * Get rating summary for an artifact (org-scoped).
    * Returns aggregate statistics and the current user's rating if one exists.
@@ -1631,7 +2036,7 @@ Please try again or contact support if the issue persists.`,
     return withDb.tx(async (tx) => {
       const currentArtifact = await tx.artifact.findFirst({
         where: { id: artifactId, organizationId },
-        select: { version: true },
+        select: { latestVersion: true },
       });
 
       if (!currentArtifact) {
@@ -1650,7 +2055,7 @@ Please try again or contact support if the issue persists.`,
         update: {
           score,
           comment,
-          artifactVersion: currentArtifact.version,
+          artifactVersion: currentArtifact.latestVersion,
           updatedAt: new Date(),
         },
         create: {
@@ -1659,7 +2064,7 @@ Please try again or contact support if the issue persists.`,
           organizationId,
           score,
           comment,
-          artifactVersion: currentArtifact.version,
+          artifactVersion: currentArtifact.latestVersion,
         },
       });
 
@@ -1685,6 +2090,385 @@ Please try again or contact support if the issue persists.`,
       };
     });
   },
+
+  /**
+   * Reorder artifacts by setting sortOrder values atomically.
+   * Validates that all artifacts belong to the user's organization.
+   * Sets sortOrder to index (0-based) for each artifact in the provided array.
+   *
+   * @param artifactIds - Array of artifact IDs in the desired order
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of updated artifact IDs
+   */
+  reorder(artifactIds: string[], organizationId: string): Promise<string[]> {
+    // Early return for empty array
+    if (artifactIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    // Remove duplicates while preserving order
+    const uniqueIds = [...new Set(artifactIds)];
+
+    return withDb.tx(async (tx) => {
+      // Verify all artifacts exist and belong to the organization
+      const artifacts = await tx.artifact.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      // Check if any artifacts were not found or don't belong to the org
+      if (artifacts.length !== uniqueIds.length) {
+        const foundIds = new Set(artifacts.map((a) => a.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      // Update sortOrder for each artifact atomically
+      await Promise.all(
+        uniqueIds.map((id, index) =>
+          tx.artifact.update({
+            where: { id, organizationId },
+            data: { sortOrder: index },
+          })
+        )
+      );
+
+      return uniqueIds;
+    });
+  },
+
+  /**
+   * Move multiple artifacts to a target project atomically.
+   * Validates that all artifacts and the target project belong to the user's organization.
+   * Updates projectId for all specified artifacts in a single transaction.
+   *
+   * @param artifactIds - Array of artifact IDs to move
+   * @param targetProjectId - Target project ID
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of updated artifact IDs
+   */
+  batchMove(
+    artifactIds: string[],
+    targetProjectId: string,
+    organizationId: string
+  ): Promise<string[]> {
+    // Remove duplicates while preserving order
+    const uniqueIds = [...new Set(artifactIds)];
+
+    return withDb.tx(async (tx) => {
+      // Validate target project exists and belongs to organization
+      const targetProject = await tx.project.findFirst({
+        where: { id: targetProjectId, organizationId },
+        select: { id: true },
+      });
+
+      if (!targetProject) {
+        throw new Error(
+          "Invalid project ID: project not found in this organization"
+        );
+      }
+
+      // Verify all artifacts exist and belong to the organization
+      const artifacts = await tx.artifact.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      // Check if any artifacts were not found or don't belong to the org
+      if (artifacts.length !== uniqueIds.length) {
+        const foundIds = new Set(artifacts.map((a) => a.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid artifact IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      // Batch update all artifacts to the target project
+      await tx.artifact.updateMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        data: {
+          projectId: targetProjectId,
+        },
+      });
+
+      return uniqueIds;
+    });
+  },
+
+  /**
+   * Find all approved PRDs for a project (org-scoped).
+   * Used to enumerate PRDs before batch-regenerating implementation plans.
+   */
+  findApprovedPrds(
+    projectId: string,
+    organizationId: string
+  ): Promise<Artifact[]> {
+    return withDb((db) =>
+      db.artifact.findMany({
+        where: {
+          projectId,
+          organizationId,
+          type: PrismaArtifactType.PRD,
+          status: "APPROVED",
+        },
+        include: artifactIncludeWithUser,
+        orderBy: { createdAt: "asc" },
+      })
+    );
+  },
+
+  /**
+   * Batch-regenerate implementation plans for all approved PRDs in a project.
+   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
+   * relationships and calls regenerateImplementationPlan on it.
+   * Returns the count of triggered plans and their artifact IDs.
+   */
+  async batchRegenerateImplementationPlans(
+    projectId: string,
+    organizationId: string,
+    userId: string
+  ): Promise<{ triggered: number; artifactIds: string[] }> {
+    const prds = await this.findApprovedPrds(projectId, organizationId);
+
+    const artifactIds: string[] = [];
+    for (const prd of prds) {
+      // Find the implementation plan(s) that this PRD produced via PRODUCES links
+      const targetLinks = await entityLinksService.findTargetLinks(
+        organizationId,
+        prd.id,
+        "ARTIFACT",
+        LinkType.PRODUCES
+      );
+
+      if (targetLinks.length === 0) {
+        continue;
+      }
+
+      // Look up the linked artifacts and find the IMPLEMENTATION_PLAN
+      const linkedArtifacts = await withDb((db) =>
+        db.artifact.findMany({
+          where: {
+            id: { in: targetLinks.map((l) => l.targetId) },
+            organizationId,
+            type: PrismaArtifactType.IMPLEMENTATION_PLAN,
+          },
+          select: { id: true },
+        })
+      );
+
+      for (const plan of linkedArtifacts) {
+        const result = await this.regenerateImplementationPlan(
+          plan.id,
+          organizationId,
+          userId
+        );
+        if (result.success) {
+          artifactIds.push(result.artifact.id);
+        }
+      }
+    }
+
+    return { triggered: artifactIds.length, artifactIds };
+  },
+
+  /**
+   * Batch fetch artifact titles by slug (org-scoped).
+   * Returns a map of slug -> title for all slugs found in the organization.
+   * Slugs not found are omitted from the result.
+   *
+   * @param organizationId - Organization ID for authorization
+   * @param slugs - Array of artifact slugs to look up (max 50)
+   * @returns Map of slug to artifact title for found artifacts
+   */
+  batchFetchArtifactTitles(
+    organizationId: string,
+    slugs: string[]
+  ): Promise<ArtifactTitleMap> {
+    if (slugs.length === 0) {
+      return Promise.resolve({});
+    }
+    return withDb(async (db) => {
+      if (slugs.length > BATCH_META_MAX_SLUGS) {
+        throw new Error(
+          `batchFetchArtifactTitles: too many slugs (max ${BATCH_META_MAX_SLUGS})`
+        );
+      }
+      const artifacts = await db.artifact.findMany({
+        where: {
+          organizationId,
+          slug: { in: slugs },
+        },
+        select: { slug: true, title: true },
+      });
+
+      return Object.fromEntries(artifacts.map((a) => [a.slug, a.title]));
+    });
+  },
+
+  /**
+   * Find all related artifacts by traversing EntityLink relationships.
+   * Returns array of artifact IDs including:
+   * - All ancestors (traverse up via EntityLink sourceId to find root)
+   * - All descendants (traverse down from root to find all targets)
+   *
+   * Handles circular references with max depth limit.
+   *
+   * @param artifactId - Starting artifact ID
+   * @param organizationId - Organization ID for authorization
+   * @returns Array of related artifact IDs (including the starting artifact)
+   */
+  async findRelatedArtifacts(
+    artifactId: string,
+    organizationId: string
+  ): Promise<string[]> {
+    const MAX_DEPTH = 50; // Prevent infinite loops from circular references
+    const visited = new Set<string>();
+    const relatedIds = new Set<string>();
+
+    // Helper: Traverse up the EntityLink chain to find root
+    async function findRoot(currentId: string, depth = 0): Promise<string> {
+      if (depth > MAX_DEPTH) {
+        log.error(
+          "[artifacts-service] Max depth exceeded traversing up hierarchy",
+          {
+            artifactId: currentId,
+            depth,
+          }
+        );
+        return currentId;
+      }
+
+      if (visited.has(currentId)) {
+        log.error(
+          "[artifacts-service] Circular reference detected in entity link chain",
+          {
+            artifactId: currentId,
+          }
+        );
+        return currentId;
+      }
+
+      visited.add(currentId);
+
+      // Find entity link where this artifact is the target (i.e., find its source/parent)
+      const parentLink = await withDb((db) =>
+        db.entityLink.findFirst({
+          where: {
+            organizationId,
+            targetId: currentId,
+            targetType: "ARTIFACT",
+            sourceType: "ARTIFACT",
+          },
+          select: { sourceId: true },
+        })
+      );
+
+      if (!parentLink) {
+        return currentId; // No parent link, this is the root
+      }
+
+      return findRoot(parentLink.sourceId, depth + 1);
+    }
+
+    // Helper: Traverse down to collect all descendants
+    async function collectDescendants(
+      currentId: string,
+      depth = 0
+    ): Promise<void> {
+      if (depth > MAX_DEPTH) {
+        log.error(
+          "[artifacts-service] Max depth exceeded traversing down hierarchy",
+          {
+            artifactId: currentId,
+            depth,
+          }
+        );
+        return;
+      }
+
+      relatedIds.add(currentId);
+
+      // Find entity links where this artifact is the source (i.e., find its children)
+      const childLinks = await withDb((db) =>
+        db.entityLink.findMany({
+          where: {
+            organizationId,
+            sourceId: currentId,
+            sourceType: "ARTIFACT",
+            targetType: "ARTIFACT",
+          },
+          select: { targetId: true },
+        })
+      );
+
+      for (const link of childLinks) {
+        if (!relatedIds.has(link.targetId)) {
+          await collectDescendants(link.targetId, depth + 1);
+        }
+      }
+    }
+
+    // Verify starting artifact exists
+    const startingArtifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true },
+      })
+    );
+
+    if (!startingArtifact) {
+      return [];
+    }
+
+    // Step 1: Find the root by traversing up
+    const rootId = await findRoot(artifactId);
+
+    // Step 2: Collect all descendants from root (including root itself)
+    await collectDescendants(rootId);
+
+    return Array.from(relatedIds);
+  },
+
+  /**
+   * Get the generation status for a single artifact by checking both
+   * GitHub Actions runs and Loop records. Returns null if the artifact
+   * is not found in the org.
+   */
+  async getGenerationStatus(
+    artifactId: string,
+    organizationId: string
+  ): Promise<GenerationStatus | null> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { id: true, workstreamId: true },
+      })
+    );
+
+    if (!artifact) {
+      return null;
+    }
+
+    const [ghStatus, loopStatus] = await Promise.all([
+      artifact.workstreamId
+        ? fetchGitHubActionsStatus(artifact.workstreamId, artifact.id)
+        : Promise.resolve(null),
+      fetchLoopStatus(artifact.id),
+    ]);
+
+    return pickBestStatus(ghStatus, loopStatus);
+  },
 };
 
 export type ExecuteResult =
@@ -1696,7 +2480,10 @@ export type RequestChangesResult =
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 // Type for raw Prisma result before transformation.
-// Must stay in sync with artifactIncludeWithContext in artifact-utils.ts.
+// Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
+// in artifact-utils.ts. versions is optional because findAll uses
+// artifactIncludeWithSnippet (includes versions) while findById/findBySlug use
+// artifactIncludeWithContext (omits versions — they load content via /versions).
 type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
   workstream: { id: string; title: string; state: string } | null;
   project: {
@@ -1711,32 +2498,49 @@ type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
-  parent: {
-    id: string;
-    title: string;
-    subtype: ArtifactSubtype;
-    documentSlug: string | null;
-  } | null;
   approver: {
     id: string;
     firstName: string | null;
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
-  previewDeployment: {
-    url: string | null;
-    state: string | null;
-    environment: string | null;
-    ref: string | null;
-    sha: string | null;
-    updatedAt: Date | null;
-  } | null;
+  versions?: { content: string | null }[];
 };
+
+/**
+ * Extract a plain-text snippet from markdown content for display in list views.
+ * Strips markdown syntax and collapses whitespace to a single line.
+ */
+function extractContentSnippet(content: string): string | null {
+  const stripped = content
+    .replaceAll(/```[\s\S]*?```/g, " ")
+    .replaceAll(/!\[.*?\]\(.*?\)/g, "")
+    .replaceAll(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replaceAll(/^#{1,6}\s+/gm, "")
+    .replaceAll(/[*_`]/g, "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  if (!stripped) {
+    return null;
+  }
+  return stripped.length > 300 ? `${stripped.slice(0, 300)}…` : stripped;
+}
 
 /** Transform Prisma result to flatten teams structure for API response */
 function toArtifactWithWorkstream(
-  artifact: RawArtifactWithContext
+  artifact: RawArtifactWithContext,
+  maps?: {
+    generationStatusMap?: Map<string, GenerationStatus>;
+    pullRequestMap?: Map<string, PullRequestInfo>;
+  }
 ): ArtifactWithWorkstream {
+  const generationStatus = maps?.generationStatusMap?.get(artifact.id);
+  const pullRequest = artifact.workstreamId
+    ? (maps?.pullRequestMap?.get(artifact.workstreamId) ?? null)
+    : null;
+  const rawContent = artifact.versions?.[0]?.content ?? null;
+  const snippet = rawContent ? extractContentSnippet(rawContent) : null;
+
   return {
     ...artifact,
     project: artifact.project
@@ -1746,25 +2550,12 @@ function toArtifactWithWorkstream(
           teams: artifact.project.teams.map((pt) => pt.team),
         }
       : null,
-    previewDeployment: toPreviewDeploymentFromArtifact(
-      artifact.previewDeployment
-    ),
-  };
-}
-
-function toPreviewDeploymentFromArtifact(
-  pd: RawArtifactWithContext["previewDeployment"]
-): PreviewDeployment | null {
-  if (!pd) {
-    return null;
-  }
-  return {
-    url: pd.url,
-    state: pd.state,
-    environment: pd.environment,
-    ref: pd.ref,
-    sha: pd.sha,
-    updatedAt: pd.updatedAt,
+    ...(generationStatus && { generationStatus }),
+    // Three-state contract for pullRequest:
+    //   - maps omitted          → field absent (caller didn't request PR data)
+    //   - maps.pullRequestMap   → field set to PullRequestInfo | null
+    ...(maps && "pullRequestMap" in maps && { pullRequest }),
+    ...(snippet !== null && { snippet }),
   };
 }
 
@@ -1775,55 +2566,6 @@ function isGitHubConfigured(): boolean {
       process.env.GITHUB_APP_WEBHOOK_SECRET &&
       process.env.GITHUB_APP_DISPATCH_REPO
   );
-}
-
-type RepositoryRecord = {
-  id: string;
-  fullName: string;
-  defaultBranch: string | null;
-};
-
-/**
- * Ensures a repository record exists for the given target repo.
- * Creates one if it doesn't exist by fetching info from GitHub.
- */
-async function ensureRepository(
-  targetRepo: string,
-  projectId: string,
-  existingRepository?: RepositoryRecord
-): Promise<
-  | { success: true; repository: RepositoryRecord }
-  | { success: false; error: string }
-> {
-  if (existingRepository) {
-    return { success: true, repository: existingRepository };
-  }
-
-  const repoInfo = await getRepositoryInfo(targetRepo);
-  if (!repoInfo) {
-    return {
-      success: false,
-      error: `Could not fetch repository info for ${targetRepo}. Ensure the repository exists and the GitHub App has access.`,
-    };
-  }
-
-  const repository = await withDb((db) =>
-    db.repository.upsert({
-      where: { owner_name: { owner: repoInfo.owner, name: repoInfo.name } },
-      create: {
-        projectId,
-        githubId: repoInfo.githubId,
-        owner: repoInfo.owner,
-        name: repoInfo.name,
-        fullName: repoInfo.fullName,
-        defaultBranch: repoInfo.defaultBranch,
-        isPrimary: true,
-      },
-      update: {},
-    })
-  );
-
-  return { success: true, repository };
 }
 
 function getPlaceholderContent(title: string, version: number): string {
@@ -1846,4 +2588,218 @@ Configure the following environment variables to enable plan generation:
 - GITHUB_APP_DISPATCH_REPO
 - WEBAPP_ENV
 `;
+}
+
+const DEFAULT_BRANCH = "main";
+const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
+const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
+
+/**
+ * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
+ * Returns null if the record contains invalid enum values (e.g. a new GitHub
+ * state we don't yet map) so a single bad record doesn't break batch listings.
+ */
+function toPullRequestInfo(pr: {
+  id: string;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: Date;
+  reviewDecision: string | null;
+}): PullRequestInfo | null {
+  if (!VALID_PR_STATES.has(pr.state)) {
+    log.warn(`Skipping PR #${pr.number}: invalid state "${pr.state}"`);
+    return null;
+  }
+  if (
+    pr.reviewDecision !== null &&
+    !VALID_REVIEW_DECISIONS.has(pr.reviewDecision)
+  ) {
+    log.warn(
+      `Skipping PR #${pr.number}: invalid review decision "${pr.reviewDecision}"`
+    );
+    return null;
+  }
+  return {
+    id: pr.id,
+    number: pr.number,
+    title: pr.title,
+    htmlUrl: pr.htmlUrl,
+    state: pr.state as PullRequestState,
+    headBranch: pr.headBranch,
+    baseBranch: pr.baseBranch,
+    createdAt: pr.createdAt,
+    reviewDecision: pr.reviewDecision as ReviewDecision | null,
+  };
+}
+
+/** Build Map keyed by workstreamId (one PR per workstream — most recent wins). */
+function buildPullRequestMap(
+  records: (Parameters<typeof toPullRequestInfo>[0] & {
+    workstreamId: string | null;
+  })[]
+): Map<string, PullRequestInfo> {
+  const map = new Map<string, PullRequestInfo>();
+  for (const pr of records) {
+    if (pr.workstreamId && !map.has(pr.workstreamId)) {
+      const mapped = toPullRequestInfo(pr);
+      if (mapped) {
+        map.set(pr.workstreamId, mapped);
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * Batch-fetch Loop records for the given artifact IDs and merge into the
+ * generation status map, preferring active statuses over terminal ones
+ * and most recent when both are terminal.
+ */
+async function mergeLoopStatuses(
+  artifactIds: string[],
+  generationStatusMap: Map<string, GenerationStatus>
+): Promise<void> {
+  if (artifactIds.length === 0) {
+    return;
+  }
+
+  // Fetch all recent loops (not just one per artifact) so pickBestStatus
+  // can prefer an active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId: { in: artifactIds } },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        artifactId: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  for (const loop of loops) {
+    if (!loop.artifactId) {
+      continue;
+    }
+
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (!mappedStatus) {
+      continue;
+    }
+
+    const loopGenStatus = toLoopGenerationStatus(loop, mappedStatus);
+    const existing = generationStatusMap.get(loop.artifactId) ?? null;
+    generationStatusMap.set(
+      loop.artifactId,
+      pickBestStatus(existing, loopGenStatus)
+    );
+  }
+}
+
+/** Fetch the latest GitHub Actions generation status for an artifact. */
+async function fetchGitHubActionsStatus(
+  workstreamId: string,
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  const actionRun = await withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: { workstreamId, workflowName: "symphony-dispatch" },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+
+  if (!actionRun) {
+    return null;
+  }
+
+  const triggerData = actionRun.triggerData as {
+    correlationId?: string;
+    artifactId?: string;
+    command?: "plan" | "execute" | "chat";
+  } | null;
+
+  if (triggerData?.artifactId !== artifactId) {
+    return null;
+  }
+
+  // CANCELLED maps to FAILURE since both are terminal non-success states
+  const status: GenerationStatus["status"] =
+    actionRun.status === "CANCELLED" ? "FAILURE" : actionRun.status;
+
+  return {
+    status,
+    command: triggerData?.command ?? null,
+    htmlUrl: actionRun.htmlUrl || null,
+    startedAt: actionRun.startedAt,
+    completedAt: actionRun.completedAt,
+    correlationId: triggerData?.correlationId ?? null,
+    source: "github_actions",
+  };
+}
+
+/** Fetch the best Loop generation status for an artifact. */
+async function fetchLoopStatus(
+  artifactId: string
+): Promise<GenerationStatus | null> {
+  // Fetch recent loops (not just one) so pickBestStatus can prefer an
+  // active loop over a newer-but-terminal one.
+  const loops = await withDb((db) =>
+    db.loop.findMany({
+      where: { artifactId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        status: true,
+        command: true,
+        startedAt: true,
+        completedAt: true,
+        user: {
+          select: { firstName: true, lastName: true },
+        },
+      },
+    })
+  );
+
+  let best: GenerationStatus | null = null;
+  for (const loop of loops) {
+    const mappedStatus = mapLoopStatus(loop.status);
+    if (mappedStatus) {
+      best = pickBestStatus(best, toLoopGenerationStatus(loop, mappedStatus));
+    }
+  }
+  return best;
+}
+
+/** Convert a Prisma Loop record into a GenerationStatus. */
+function toLoopGenerationStatus(
+  loop: {
+    id: string;
+    command: string;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    user: { firstName: string | null; lastName: string | null } | null;
+  },
+  mappedStatus: GenerationStatus["status"]
+): GenerationStatus {
+  return {
+    status: mappedStatus,
+    command: mapLoopCommand(loop.command),
+    htmlUrl: null,
+    startedAt: loop.startedAt,
+    completedAt: loop.completedAt,
+    correlationId: null,
+    source: "loop",
+    loopId: loop.id,
+    initiatedBy: loop.user,
+  };
 }

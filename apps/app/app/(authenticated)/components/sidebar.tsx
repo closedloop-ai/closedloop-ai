@@ -29,11 +29,13 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { NotificationsTrigger } from "@repo/notifications/components/trigger";
 import { useQueryClient } from "@tanstack/react-query";
+import type { LucideIcon } from "lucide-react";
 import {
-  FileTextIcon,
+  BarChart3,
+  CodeIcon,
   InboxIcon,
   LifeBuoyIcon,
-  LightbulbIcon,
+  RotateCcwIcon,
   SendIcon,
   SettingsIcon,
   UsersIcon,
@@ -42,6 +44,7 @@ import Link from "next/link";
 import { type ReactNode, useEffect, useRef } from "react";
 import { useIsMounted } from "@/hooks/use-is-mounted";
 import { type AppEnvironment, appEnvironment } from "@/lib/environment";
+import { InboxBadge } from "./inbox-badge";
 import { Search } from "./search";
 import { SidebarTeams } from "./sidebar-teams";
 
@@ -90,20 +93,9 @@ const orgSwitcherAppearance = {
   },
 } as const;
 
-const envBadge: Record<
-  AppEnvironment,
-  { label: string; className: string } | null
-> = {
-  local: {
-    label: "DEV",
-    className:
-      "rounded bg-blue-100 px-1.5 py-0.5 font-medium text-[10px] text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  },
-  stage: {
-    label: "STAGE",
-    className:
-      "rounded bg-amber-100 px-1.5 py-0.5 font-medium text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-200",
-  },
+const envBadge: Record<AppEnvironment, string | null> = {
+  local: process.env.NEXT_PUBLIC_API_URL ?? "localhost",
+  stage: null,
   prod: null,
 };
 
@@ -111,35 +103,58 @@ type GlobalSidebarProperties = {
   readonly children: ReactNode;
 };
 
-const data = {
-  workspace: [
+type NavItem = {
+  title: string;
+  url: string;
+  icon: LucideIcon;
+  disabled: boolean;
+};
+
+const baseWorkspaceItems: NavItem[] = [
+  {
+    title: "Inbox",
+    url: "/inbox",
+    icon: InboxIcon,
+    disabled: false,
+  },
+  {
+    title: "Loops",
+    url: "/loops",
+    icon: RotateCcwIcon,
+    disabled: false,
+  },
+  {
+    title: "Members",
+    url: "/members",
+    icon: UsersIcon,
+    disabled: false,
+  },
+];
+
+const engineerNavItem: NavItem = {
+  title: "Engineer",
+  url: "/engineer",
+  icon: CodeIcon,
+  disabled: false,
+};
+
+const workspaceItems: NavItem[] =
+  appEnvironment === "local"
+    ? [...baseWorkspaceItems, engineerNavItem]
+    : baseWorkspaceItems;
+
+const data: {
+  workspace: NavItem[];
+  navSecondary: NavItem[];
+} = {
+  workspace: workspaceItems,
+  navSecondary: [
     {
-      title: "Inbox",
-      url: "/inbox",
-      icon: InboxIcon,
-      badge: 1,
-      disabled: true,
-    },
-    {
-      title: "Initiatives",
-      url: "/initiatives",
-      icon: LightbulbIcon,
-      disabled: true,
-    },
-    {
-      title: "My Documents",
-      url: "/my-documents",
-      icon: FileTextIcon,
-      disabled: true,
-    },
-    {
-      title: "Members",
-      url: "/members",
-      icon: UsersIcon,
+      title: "Judges",
+      url: "/judges-analytics",
+      icon: BarChart3,
       disabled: false,
     },
-  ],
-  navSecondary: [
     {
       title: "Settings",
       url: "/settings",
@@ -167,7 +182,11 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
   const queryClient = useQueryClient();
   const prevOrgIdRef = useRef<string | undefined>(undefined);
   const mounted = useIsMounted();
-  const activeEnvBadge = envBadge[appEnvironment];
+  const isLocalhost =
+    mounted &&
+    (globalThis.location.hostname === "localhost" ||
+      globalThis.location.hostname === "127.0.0.1");
+  const activeEnvBadge = isLocalhost ? envBadge[appEnvironment] : null;
 
   // Clear cache when organization changes
   useEffect(() => {
@@ -194,8 +213,12 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
             <SidebarMenuItem>
               <div
                 className={cn(
-                  "flex h-[36px] items-center gap-2 overflow-hidden transition-all",
-                  sidebar.open ? "px-2" : "justify-center"
+                  "flex overflow-hidden transition-all",
+                  sidebar.open && activeEnvBadge
+                    ? "flex-col items-start gap-1 px-2 py-1"
+                    : "h-[36px] items-center gap-2",
+                  !sidebar.open && "justify-center px-0",
+                  sidebar.open && !activeEnvBadge && "px-2"
                 )}
               >
                 {!mounted && (
@@ -205,9 +228,20 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                   <>
                     <OrganizationSwitcher appearance={orgSwitcherAppearance} />
                     {activeEnvBadge && (
-                      <span className={activeEnvBadge.className}>
-                        {activeEnvBadge.label}
-                      </span>
+                      <div className="w-full rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1.5 dark:border-amber-500/20 dark:bg-amber-500/10">
+                        <div className="mb-0.5 flex items-center gap-1.5">
+                          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />
+                          <span className="font-bold font-mono text-[9px] text-amber-700 uppercase tracking-wider dark:text-amber-400">
+                            local
+                          </span>
+                        </div>
+                        <p
+                          className="truncate font-mono text-[9px] text-amber-700/60 leading-tight dark:text-amber-400/60"
+                          title={activeEnvBadge}
+                        >
+                          {activeEnvBadge}
+                        </p>
+                      </div>
                     )}
                   </>
                 )}
@@ -244,23 +278,14 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                   >
                     {item.disabled ? (
                       <span className="flex items-center gap-2">
-                        <item.icon />
+                        <item.icon className="size-4" />
                         <span>{item.title}</span>
-                        {item.badge ? (
-                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-muted font-medium text-[10px] text-muted-foreground">
-                            {item.badge}
-                          </span>
-                        ) : null}
                       </span>
                     ) : (
                       <Link href={item.url}>
                         <item.icon />
                         <span>{item.title}</span>
-                        {item.badge ? (
-                          <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground">
-                            {item.badge}
-                          </span>
-                        ) : null}
+                        {item.title === "Inbox" && <InboxBadge />}
                       </Link>
                     )}
                   </SidebarMenuButton>
@@ -286,7 +311,7 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
                     >
                       {item.disabled ? (
                         <span className="flex items-center gap-2">
-                          <item.icon />
+                          <item.icon className="size-4" />
                           <span>{item.title}</span>
                         </span>
                       ) : (
@@ -305,20 +330,20 @@ export function GlobalSidebar({ children }: GlobalSidebarProperties) {
         <SidebarFooter>
           <SidebarMenu>
             <SidebarMenuItem className="flex items-center gap-2">
-              {mounted ? (
-                <UserButton
-                  appearance={{
-                    elements: {
-                      rootBox: "flex overflow-hidden w-full",
-                      userButtonBox: "flex-row-reverse",
-                      userButtonOuterIdentifier: "truncate pl-0",
-                    },
-                  }}
-                  showName
-                />
-              ) : (
-                <div className="h-8 w-full" />
-              )}
+              <div className="h-8 w-full">
+                {mounted && (
+                  <UserButton
+                    appearance={{
+                      elements: {
+                        rootBox: "flex overflow-hidden w-full",
+                        userButtonBox: "flex-row-reverse",
+                        userButtonOuterIdentifier: "truncate pl-0",
+                      },
+                    }}
+                    showName
+                  />
+                )}
+              </div>
               <div className="flex shrink-0 items-center gap-px">
                 <ModeToggle />
                 <Button

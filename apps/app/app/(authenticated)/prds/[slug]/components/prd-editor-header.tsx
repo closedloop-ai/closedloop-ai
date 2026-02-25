@@ -10,7 +10,11 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
+  ChevronDownIcon,
   DownloadIcon,
+  FolderIcon,
+  LoaderIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
   RotateCcwIcon,
@@ -58,6 +62,18 @@ type PRDEditorHeaderProps = {
    */
   onGeneratePlan: () => void;
   /**
+   * Callback when Quick PRD (inline generation) is clicked
+   */
+  onQuickGenerate: () => void;
+  /**
+   * Callback when Deep PRD (async GH Action generation) is clicked
+   */
+  onDeepGenerate: () => void;
+  /**
+   * Whether PRD generation is currently in progress
+   */
+  isGenerating?: boolean;
+  /**
    * Callback when edit button is clicked
    */
   onEdit: () => void;
@@ -66,6 +82,10 @@ type PRDEditorHeaderProps = {
    */
   onSave: () => void;
   /**
+   * Callback when discard button is clicked (exit edit mode without saving)
+   */
+  onDiscard: () => void;
+  /**
    * Callback when rename menu item is clicked
    */
   onRename: () => void;
@@ -73,6 +93,10 @@ type PRDEditorHeaderProps = {
    * Callback when export menu item is clicked
    */
   onExport: () => void;
+  /**
+   * Callback when move menu item is clicked
+   */
+  onMove: () => void;
   /**
    * Whether to show the restore option
    */
@@ -93,6 +117,10 @@ type PRDEditorHeaderProps = {
    * Whether any async operation is in progress (disables buttons)
    */
   isPending?: boolean;
+  /**
+   * Number of unresolved comment threads
+   */
+  openThreadCount?: number;
 };
 
 export function PRDEditorHeader({
@@ -105,13 +133,19 @@ export function PRDEditorHeader({
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onQuickGenerate,
+  onDeepGenerate,
+  isGenerating = false,
+  onDiscard,
   onEdit,
   onSave,
   onRename,
   onExport,
+  onMove,
   showRestore = false,
   onRestoreVersion,
   onDelete,
+  openThreadCount = 0,
   versionDisplay,
   isPending = false,
 }: PRDEditorHeaderProps) {
@@ -128,11 +162,33 @@ export function PRDEditorHeader({
   const rightActions = (
     <>
       {isEditing ? (
-        <Button disabled={isPending} onClick={onSave} size="sm">
-          {isSaving ? "Publishing..." : "Publish"}
-        </Button>
+        <>
+          <Button
+            disabled={isPending}
+            onClick={onDiscard}
+            size="sm"
+            variant="outline"
+          >
+            Discard
+          </Button>
+          <Button disabled={isPending} onClick={onSave} size="sm">
+            {isSaving ? "Publishing..." : "Publish"}
+          </Button>
+        </>
       ) : (
         <>
+          {openThreadCount > 0 ? (
+            <Button
+              onClick={onEdit}
+              size="sm"
+              title="View comments"
+              variant="ghost"
+            >
+              <MessageSquareIcon className="mr-1 h-4 w-4" />
+              {openThreadCount}
+            </Button>
+          ) : null}
+
           <Button
             onClick={onToggleMetadataPanel}
             size="sm"
@@ -141,6 +197,33 @@ export function PRDEditorHeader({
             <SettingsIcon className="mr-2 h-4 w-4" />
             Details
           </Button>
+
+          {isGenerating ? (
+            <Button disabled size="sm">
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Generating PRD...
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button disabled={isPending} size="sm" variant="outline">
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Generate PRD
+                  <ChevronDownIcon className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onQuickGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Quick PRD
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDeepGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Deep PRD
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           <Button onClick={onGeneratePlan} size="sm" variant="default">
             <SparklesIcon className="mr-2 h-4 w-4" />
@@ -173,6 +256,10 @@ export function PRDEditorHeader({
           <DropdownMenuItem onClick={onExport}>
             <DownloadIcon className="mr-2 h-4 w-4" />
             Export .md
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onMove}>
+            <FolderIcon className="mr-2 h-4 w-4" />
+            Move...
           </DropdownMenuItem>
           {showRestore ? (
             <DropdownMenuItem onClick={onRestoreVersion}>

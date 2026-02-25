@@ -71,6 +71,34 @@ export async function deleteRoom(
 }
 
 /**
+ * Update metadata on an existing Liveblocks room.
+ * This function handles errors gracefully and will not throw.
+ *
+ * @param roomId - The ID of the room to update
+ * @param metadata - Key-value pairs to merge into existing metadata (null deletes a key)
+ * @returns Promise that resolves with success status and optional error message
+ */
+export async function updateRoomMetadata(
+  roomId: string,
+  metadata: Record<string, string | null>
+): Promise<{ success: true } | { success: false; error: string }> {
+  try {
+    const liveblocks = getLiveblocksClient();
+
+    if (!liveblocks) {
+      return { success: true };
+    }
+
+    await liveblocks.updateRoom(roomId, { metadata });
+
+    return { success: true };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
  * Get a Liveblocks client instance.
  * Returns null if LIVEBLOCKS_SECRET is not configured.
  */

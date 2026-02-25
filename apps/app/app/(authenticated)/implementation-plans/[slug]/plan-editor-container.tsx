@@ -1,11 +1,10 @@
 "use client";
 
-import { ArtifactSubtype } from "@repo/api/src/types/artifact";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
 import { useState } from "react";
-import { useArtifacts } from "@/hooks/queries/use-artifacts";
+import { useArtifactBySlug } from "@/hooks/queries/use-artifacts";
 import { PlanEditor } from "./plan-editor";
 
 type PlanEditorContainerProps = {
@@ -22,44 +21,18 @@ export function PlanEditorContainer({
     initialVersion
   );
 
-  // Fetch the latest version to know the total version count
+  // Fetch the artifact by slug with optional version
   const {
-    data: latestPlans,
-    isLoading: isLoadingLatest,
-    error: latestError,
-  } = useArtifacts({
-    subtype: ArtifactSubtype.ImplementationPlan,
-    documentSlug: slug,
-    latestOnly: true,
+    data: plan,
+    isLoading,
+    error,
+  } = useArtifactBySlug(slug, selectedVersion, {
+    // When the selected version changes, keep displaying the previous version's data
+    // until the new version is loaded (instead of a loading state).
+    placeholderData: keepPreviousData,
   });
 
-  // Fetch the selected version (or latest if no version selected)
-  const {
-    data: versionPlans,
-    isLoading: isLoadingVersion,
-    error: versionError,
-  } = useArtifacts(
-    {
-      subtype: ArtifactSubtype.ImplementationPlan,
-      documentSlug: slug,
-      ...(selectedVersion
-        ? { version: selectedVersion }
-        : { latestOnly: true }),
-    },
-    {
-      // Only run this query if we have a specific version selected
-      enabled: selectedVersion !== undefined,
-      // Keep showing previous data while fetching new version (prevents flash)
-      placeholderData: keepPreviousData,
-    }
-  );
-
-  // Only show loading spinner on initial load, not when switching versions
-  const isInitialLoading =
-    isLoadingLatest || (selectedVersion !== undefined && isLoadingVersion);
-  const error = latestError || versionError;
-
-  if (isInitialLoading) {
+  if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
         <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -67,18 +40,15 @@ export function PlanEditorContainer({
     );
   }
 
-  if (error || !latestPlans?.length) {
+  if (error || !plan) {
     notFound();
   }
 
-  // Use the versioned plan if viewing a specific version, otherwise use latest
-  const plan =
-    selectedVersion && versionPlans?.length ? versionPlans[0] : latestPlans[0];
-  const latestVersion = latestPlans[0].version;
-  const currentVersion = plan.version;
+  const latestVersion = plan.latestVersion;
+  const currentVersion = plan.version.version;
 
   const handleVersionChange = (version: number) => {
-    // If selecting the latest version, clear the selection to use latestOnly query
+    // If selecting the latest version, clear the selection to use default (latest)
     if (version === latestVersion) {
       setSelectedVersion(undefined);
     } else {

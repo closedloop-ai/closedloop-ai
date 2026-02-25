@@ -90,7 +90,7 @@ try {
     sslCaSource = `PGSSLROOTCERT (${process.env.PGSSLROOTCERT})`;
   }
 } catch (error) {
-  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`); 
+  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`);
   console.error(error?.message || error);
   process.exit(1);
 }
@@ -109,7 +109,11 @@ const originalSslMode = parsedUrl.searchParams.get("sslmode");
 parsedUrl.searchParams.delete("sslmode");
 
 const clientConfig = { connectionString: parsedUrl.toString() };
-if ((originalSslMode && originalSslMode !== "disable") || sslCa || !sslRejectUnauthorized) {
+if (
+  (originalSslMode && originalSslMode !== "disable") ||
+  sslCa ||
+  !sslRejectUnauthorized
+) {
   clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
   if (sslCa) {
     clientConfig.ssl.ca = sslCa;
@@ -139,7 +143,7 @@ try {
   try {
     const migrationResult = await client.query(`
       SELECT COUNT(*) as total,
-             COUNT(*) FILTER (WHERE finished_at IS NULL) as pending
+             COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL) as pending
       FROM _prisma_migrations
     `);
     const { total, pending } = migrationResult.rows[0];

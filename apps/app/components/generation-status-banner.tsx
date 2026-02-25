@@ -1,10 +1,15 @@
 "use client";
 
-import type { GenerationStatus } from "@repo/api/src/types/artifact";
+import {
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
+import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusBannerProps = {
   artifactId: string;
@@ -13,27 +18,6 @@ type GenerationStatusBannerProps = {
 const MIN_POLL_INTERVAL = 2000; // 2 seconds
 const MAX_POLL_INTERVAL = 30_000; // 30 seconds
 const BACKOFF_MULTIPLIER = 1.5;
-
-function getStatusMessage(
-  status: GenerationStatus["status"],
-  command: GenerationStatus["command"]
-): string {
-  const isExecute = command === "execute";
-  switch (status) {
-    case "PENDING":
-      return "Waiting to start...";
-    case "QUEUED":
-      return isExecute ? "Queued for execution..." : "Queued for generation...";
-    case "RUNNING":
-      return isExecute
-        ? "Executing plan and creating PR..."
-        : "Generating implementation plan...";
-    case "FAILURE":
-      return isExecute ? "Plan execution failed" : "Plan generation failed";
-    default:
-      return "";
-  }
-}
 
 export function GenerationStatusBanner({
   artifactId,
@@ -59,7 +43,7 @@ export function GenerationStatusBanner({
     if (generationStatus?.status === "SUCCESS") {
       setIsPolling(false);
       handleGenerationSuccess();
-      toast.success("Plan generation completed successfully");
+      toast.success("Generation completed successfully");
       return;
     }
 
@@ -115,10 +99,7 @@ export function GenerationStatusBanner({
     return null;
   }
 
-  const isActive =
-    generationStatus.status === "PENDING" ||
-    generationStatus.status === "QUEUED" ||
-    generationStatus.status === "RUNNING";
+  const isActive = isActiveGenerationStatus(generationStatus.status);
   const isFailed = generationStatus.status === "FAILURE";
 
   return (
@@ -136,21 +117,49 @@ export function GenerationStatusBanner({
           <XCircleIcon className="h-4 w-4" />
         )}
         <span>
-          {getStatusMessage(generationStatus.status, generationStatus.command)}
+          {getStatusMessage(
+            generationStatus.status,
+            generationStatus.command,
+            generationStatus.initiatedBy
+          )}
         </span>
       </div>
 
-      {generationStatus.htmlUrl ? (
-        <a
-          className="flex items-center gap-1 text-xs underline hover:no-underline"
-          href={generationStatus.htmlUrl}
-          rel="noopener noreferrer"
-          target="_blank"
-        >
-          View workflow
-          <ExternalLinkIcon className="h-3 w-3" />
-        </a>
-      ) : null}
+      <BannerLink generationStatus={generationStatus} />
     </div>
   );
+}
+
+/** Renders the appropriate link for the banner: internal Loop link, external GitHub link, or nothing. */
+function BannerLink({
+  generationStatus,
+}: {
+  generationStatus: GenerationStatus;
+}) {
+  if (generationStatus.source === "loop" && generationStatus.loopId) {
+    return (
+      <Link
+        className="flex items-center gap-1 text-xs underline hover:no-underline"
+        href={`/loops/${generationStatus.loopId}`}
+      >
+        View loop
+      </Link>
+    );
+  }
+
+  if (generationStatus.htmlUrl) {
+    return (
+      <a
+        className="flex items-center gap-1 text-xs underline hover:no-underline"
+        href={generationStatus.htmlUrl}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        View workflow
+        <ExternalLinkIcon className="h-3 w-3" />
+      </a>
+    );
+  }
+
+  return null;
 }

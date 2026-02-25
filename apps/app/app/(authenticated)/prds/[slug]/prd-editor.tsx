@@ -1,25 +1,32 @@
 "use client";
 
 import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
+  type ArtifactDetail,
+  ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import { GenerationStatusBanner } from "@/components/generation-status-banner";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { RenameDialog } from "@/components/rename-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
+import {
+  useInlineGeneratePRD,
+  useRegenerateArtifact,
+} from "@/hooks/queries/use-artifacts";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
 type PRDEditorProps = {
-  prd: ArtifactWithWorkstream;
+  prd: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
@@ -31,36 +38,20 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>(
-    undefined
-  );
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >(undefined);
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // The existence of a room ID controls whether liveblocks is loaded.
-  // Liveblocks can't function properly when the editor is read-only.
-  const liveblocksRoomId =
-    isEditing && prd.documentSlug
-      ? generateArtifactRoomId(prd.organizationId, prd.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePRDEditor
   const content = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: prd,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -75,7 +66,7 @@ export function PRDEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.Prd,
+    artifactType: ArtifactType.Prd,
   });
 
   // Type assertion: useArtifactUIState returns a union; narrow to the PRD/Issue branch
@@ -91,6 +82,41 @@ export function PRDEditor({
     { showGeneratePlanModal: boolean }
   >;
 
+  // PRD generation mutations
+  const inlineGenerate = useInlineGeneratePRD();
+  const deepGenerate = useRegenerateArtifact();
+
+  const handleQuickGenerate = () => {
+    inlineGenerate.mutate(
+      { artifactId: prd.id },
+      {
+        onSuccess: () => {
+          toast.success("PRD generated successfully");
+        },
+        onError: (error) => {
+          toast.error(`PRD generation failed: ${error.message}`);
+        },
+      }
+    );
+  };
+
+  const handleDeepGenerate = () => {
+    deepGenerate.mutate(
+      { id: prd.id },
+      {
+        onSuccess: () => {
+          toast.success("PRD generation started — check the status banner");
+        },
+        onError: (error) => {
+          toast.error(`Failed to start PRD generation: ${error.message}`);
+        },
+      }
+    );
+  };
+
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
   // Determine if any operation is pending
   const isPending =
     content.isSaving ||
@@ -104,75 +130,91 @@ export function PRDEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(prd.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
-        canEdit={!isViewingHistorical}
-        isEditing={isEditing}
+        canEdit={!session.isViewingHistorical}
+        isEditing={session.isEditing}
+        isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
         isSaving={content.isSaving}
         lastSaved={content.lastSaved}
+        onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
+        onMove={() => setShowMoveDialog(true)}
+        onQuickGenerate={handleQuickGenerate}
         onRename={openRenameDialog}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={session.openThreadCount}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PRDMetadataPanel
-            approver={metadata.approver}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onStatusChange={metadata.handleStatusChange}
-            onTargetBranchBlur={metadata.handleTargetBranchBlur}
-            onTargetBranchChange={metadata.handleTargetBranchChange}
-            onTargetRepoBlur={metadata.handleTargetRepoBlur}
-            onTargetRepoChange={metadata.handleTargetRepoChange}
-            owner={metadata.owner}
-            prd={prd}
-            status={metadata.status}
-            targetBranch={metadata.targetBranch}
-            targetRepo={metadata.targetRepo}
-            teamMembers={metadata.teamMembers}
-          />
+      {/* Generation Status Banner */}
+      <GenerationStatusBanner artifactId={prd.id} />
+
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
         }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+      >
+        <CollaborativeEditor
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          key={session.latestVersion}
+          liveblocksRoomId={session.liveblocksRoomId}
+          metadataPanel={
+            <PRDMetadataPanel
+              approver={metadata.approver}
+              onApproverSelect={metadata.handleApproverSelect}
+              onOwnerChange={metadata.handleOwnerChange}
+              onStatusChange={metadata.handleStatusChange}
+              onTargetBranchBlur={metadata.handleTargetBranchBlur}
+              onTargetBranchChange={metadata.handleTargetBranchChange}
+              onTargetRepoBlur={metadata.handleTargetRepoBlur}
+              onTargetRepoChange={metadata.handleTargetRepoChange}
+              owner={metadata.owner}
+              prd={prd}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Rename Dialog */}
       <RenameDialog
@@ -184,6 +226,13 @@ export function PRDEditor({
         onRename={actions.handleRename}
         open={showRenameDialog}
         title="Rename PRD"
+      />
+
+      {/* Move Dialog */}
+      <MoveArtifactDialog
+        artifact={prd}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       {/* Delete Confirmation Dialog */}

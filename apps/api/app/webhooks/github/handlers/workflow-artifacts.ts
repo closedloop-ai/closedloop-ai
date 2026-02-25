@@ -1,13 +1,12 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { PerfSummary } from "@repo/api/src/types/performance";
 import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
+import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import {
-  type ExecutionResult,
-  findPlanInZip,
-  type ZipContent,
-} from "../zip-parser";
+import type { ExecutionResult } from "../types";
+import { findPlanInZip, type ZipContent } from "../zip-parser";
 
 /**
  * Result type returned by processArtifactUploads.
@@ -17,6 +16,8 @@ export type ProcessArtifactResult = {
   questionsContent: string | null;
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
+  codeJudgesReport: JudgesReport | null;
+  perfSummary: PerfSummary | null;
   artifactKeys: string[];
 };
 
@@ -56,6 +57,8 @@ export function mergeZipContent(
     questionsContent: result.questionsContent ?? current.questionsContent,
     executionResult: result.executionResult ?? current.executionResult,
     judgesReport: result.judgesReport ?? current.judgesReport,
+    codeJudgesReport: result.codeJudgesReport ?? current.codeJudgesReport,
+    perfSummary: result.perfSummary ?? current.perfSummary,
   };
 }
 
@@ -74,11 +77,10 @@ export async function processArtifactZip(
   uploadToS3: boolean
 ): Promise<ZipContent & { artifactKeys: string[] }> {
   const outerZip = new AdmZip(artifactData);
-  const outerEntries = outerZip.getEntries();
   const artifactKeys: string[] = [];
 
   log.info(
-    `[processArtifactZip] "${artifactName}" contains ${outerEntries.length} files`
+    `[processArtifactZip] "${artifactName}" contains ${outerZip.getEntries().length} files`
   );
 
   let content: Omit<ZipContent, "entries"> = {
@@ -86,17 +88,13 @@ export async function processArtifactZip(
     questionsContent: null,
     executionResult: null,
     judgesReport: null,
+    codeJudgesReport: null,
+    perfSummary: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
-  for (const entry of outerEntries) {
-    const isNestedZip = entry.entryName.endsWith(".zip") && !entry.isDirectory;
-    if (!isNestedZip) {
-      continue;
-    }
-
-    log.info(`[processArtifactZip] Found nested zip: ${entry.entryName}`);
-    const innerZip = new AdmZip(entry.getData());
+  const innerZips = extractInnerZips(outerZip);
+  for (const innerZip of innerZips) {
     const result = findPlanInZip(innerZip);
     content = mergeZipContent(content, result);
 
@@ -144,6 +142,8 @@ export async function processArtifactUploads(
   let questionsContent: string | null = null;
   let executionResult: ExecutionResult | null = null;
   let judgesReport: JudgesReport | null = null;
+  let codeJudgesReport: JudgesReport | null = null;
+  let perfSummary: PerfSummary | null = null;
   const artifactKeys: string[] = [];
 
   log.info(`[processArtifactUploads] Downloaded ${artifacts.length} artifacts`);
@@ -160,16 +160,24 @@ export async function processArtifactUploads(
     questionsContent = result.questionsContent ?? questionsContent;
     executionResult = result.executionResult ?? executionResult;
     judgesReport = result.judgesReport ?? judgesReport;
+    codeJudgesReport = result.codeJudgesReport ?? codeJudgesReport;
+    perfSummary = result.perfSummary ?? perfSummary;
     artifactKeys.push(...result.artifactKeys);
   }
 
-  if (planContent || questionsContent || executionResult || judgesReport) {
+  if (
+    planContent ||
+    questionsContent ||
+    executionResult ||
+    judgesReport ||
+    codeJudgesReport
+  ) {
     log.info(
-      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}`
+      `[processArtifactUploads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}, codeJudges=${!!codeJudgesReport}`
     );
   } else {
     log.warn(
-      "[processArtifactUploads] No plan, questions, execution result, or judges report found in artifacts"
+      "[processArtifactUploads] No plan, questions, execution result, or judges reports found in artifacts"
     );
   }
 
@@ -178,6 +186,8 @@ export async function processArtifactUploads(
     questionsContent,
     executionResult,
     judgesReport,
+    codeJudgesReport,
+    perfSummary,
     artifactKeys,
   };
 }

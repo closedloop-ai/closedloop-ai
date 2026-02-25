@@ -1,6 +1,8 @@
 // Workstream types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
+import type { ArtifactUser } from "./artifact";
+
 export const WORKSTREAM_TYPE_OPTIONS = [
   "FEATURE_DELIVERY",
   "BUG_FIX",
@@ -43,6 +45,9 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "LINEAR_SUBTASK_CREATED",
   "GITHUB_PR_CREATED",
   "GITHUB_PR_MERGED",
+  "GITHUB_PR_CLOSED",
+  "GITHUB_PR_REVIEW_SUBMITTED",
+  "GITHUB_PR_COMMENT_ADDED",
   "GITHUB_ACTION_TRIGGERED",
   "GITHUB_ACTION_COMPLETED",
   "SLACK_NOTIFICATION_SENT",
@@ -50,6 +55,7 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "ASSIGNEE_CHANGED",
   "BLOCKED",
   "UNBLOCKED",
+  "LOOP_COMPLETED",
 ] as const;
 export type WorkstreamEventType =
   (typeof WORKSTREAM_EVENT_TYPE_OPTIONS)[number];
@@ -63,6 +69,7 @@ export type Workstream = {
   state: WorkstreamState;
   stateChangedAt: Date;
   createdById: string;
+  createdBy?: ArtifactUser | null;
   assignedToId: string | null;
   hasUIChanges: boolean;
   startedAt: Date;

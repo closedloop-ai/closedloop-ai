@@ -1,4 +1,4 @@
-// Organization, User, Project, Repository types for API contract
+// Organization, User, Project types for API contract
 // These are explicitly defined to keep packages/api independent of database
 
 import type { ApproverRole } from "./artifact";
@@ -10,7 +10,6 @@ export type Organization = {
   name: string;
   slug: string;
   active: boolean;
-  anthropicApiKey: string | null;
   settings: JsonObject;
   createdAt: Date;
   updatedAt: Date;
@@ -20,14 +19,12 @@ export type CreateOrganizationInput = {
   clerkId: string;
   name: string;
   slug: string;
-  anthropicApiKey?: string | null;
 };
 
 export type UpdateOrganizationInput = {
   id: string;
   name?: string;
   slug?: string;
-  anthropicApiKey?: string | null;
   settings?: JsonObject;
   active?: boolean;
 };
@@ -111,6 +108,7 @@ export type Project = {
   codebaseSummary: string | null;
   lastIndexedAt: Date | null;
   settings: JsonObject;
+  sortOrder: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -149,28 +147,4 @@ export type UpdateProjectInput = {
   settings?: JsonObject;
   codebaseSummary?: string | null;
   lastIndexedAt?: Date | null;
-};
-
-// Repository types
-export type Repository = {
-  id: string;
-  projectId: string;
-  githubId: number;
-  owner: string;
-  name: string;
-  fullName: string;
-  defaultBranch: string;
-  isPrimary: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-export type CreateRepositoryInput = {
-  projectId: string;
-  githubId: number;
-  owner: string;
-  name: string;
-  fullName: string;
-  defaultBranch?: string;
-  isPrimary?: boolean;
 };

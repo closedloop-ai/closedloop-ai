@@ -7,7 +7,14 @@ import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
 import { Toolbar } from "@repo/feature-flags/components/toolbar";
 import type { Metadata } from "next";
+import { Silkscreen } from "next/font/google";
 import type { ReactNode } from "react";
+
+const silkscreen = Silkscreen({
+  variable: "--font-pixel",
+  subsets: ["latin"],
+  weight: ["400", "700"],
+});
 
 export const metadata: Metadata = {
   title: "ClosedLoop.ai",
@@ -21,7 +28,11 @@ type RootLayoutProperties = {
 };
 
 const RootLayout = ({ children }: RootLayoutProperties) => (
-  <html className={fonts} lang="en" suppressHydrationWarning>
+  <html
+    className={`${fonts} ${silkscreen.variable}`}
+    lang="en"
+    suppressHydrationWarning
+  >
     <body className="overflow-hidden">
       <QueryProvider>
         <AnalyticsProvider>

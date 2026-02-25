@@ -12,7 +12,7 @@ import {
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import { formatDistanceToNow } from "date-fns";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, ExternalLinkIcon } from "lucide-react";
 import { useState } from "react";
 
 type ActivityPanelProps = {
@@ -92,9 +92,23 @@ export function ActivityPanel({ activities }: ActivityPanelProps) {
                 {activity.actor ? (
                   <span className="font-medium">{activity.actor.name} </span>
                 ) : null}
-                <span className="text-muted-foreground">
-                  {activity.description}
-                </span>
+                {(activity.type === "GITHUB_PR_CREATED" ||
+                  activity.type === "GITHUB_PR_MERGED") &&
+                activity.metadata?.prUrl ? (
+                  <a
+                    className="text-primary hover:underline"
+                    href={activity.metadata.prUrl as string}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  >
+                    {activity.description}{" "}
+                    <ExternalLinkIcon className="ml-1 inline h-3 w-3" />
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">
+                    {activity.description}
+                  </span>
+                )}
               </p>
               <p className="mt-0.5 text-muted-foreground text-xs">
                 {formatActivityTimestamp(activity.timestamp)}

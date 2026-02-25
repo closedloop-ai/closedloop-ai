@@ -8,9 +8,13 @@ import type {
 } from "@repo/api/src/types/execution-log";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
+import { extractInnerZips } from "./zip-utils";
 
 // Top-level regex patterns for performance
-const CONVERSATION_FILE_REGEX = /\.claude\/runs\/conversations\/.*\.jsonl$/;
+const CONVERSATION_FILE_REGEX =
+  /(?:\.claude\/)?runs\/conversations\/.*\.jsonl$/;
+const SESSIONS_INDEX_REGEX =
+  /(?:\.claude\/)?runs\/conversations\/sessions-index\.json$/;
 const COMMAND_NAME_REGEX = /<command-name>(.*?)<\/command-name>/;
 
 /**
@@ -21,7 +25,7 @@ function findSessionFiles(
 ): { sessionId: string; data: Buffer }[] {
   // Try sessions-index.json first
   const sessionsIndexEntry = entries.find((e) =>
-    e.entryName.endsWith(".claude/runs/conversations/sessions-index.json")
+    SESSIONS_INDEX_REGEX.test(e.entryName)
   );
 
   if (sessionsIndexEntry) {
@@ -111,7 +115,7 @@ function parseSessionFile(
 export function parseExecutionLogs(zipBuffer: Buffer): ExecutionTrace {
   try {
     const zip = new AdmZip(zipBuffer);
-    const entries = zip.getEntries();
+    const entries = extractNestedEntries(zip);
 
     const sessionFiles = findSessionFiles(entries);
     const sessions = sessionFiles
@@ -125,6 +129,19 @@ export function parseExecutionLogs(zipBuffer: Buffer): ExecutionTrace {
     });
     return createEmptyExecutionTrace();
   }
+}
+
+/**
+ * Extract zip entries, handling nested zips if present.
+ * Uses shared extractInnerZips utility (same logic as workflow-artifacts).
+ * Returns flattened entries from all nested zips, or outer entries if none found.
+ */
+function extractNestedEntries(zip: AdmZip): AdmZip.IZipEntry[] {
+  const innerZips = extractInnerZips(zip);
+  if (innerZips.length > 0) {
+    return innerZips.flatMap((z) => z.getEntries());
+  }
+  return zip.getEntries();
 }
 
 /**

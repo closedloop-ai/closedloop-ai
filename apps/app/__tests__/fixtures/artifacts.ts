@@ -14,10 +14,10 @@ export const createMockArtifact = (
   ({
     id: "artifact-123",
     title: "Test Artifact",
-    type: "DOCUMENT",
-    subtype: "PRD",
-    version: 1,
-    documentSlug: "test-artifact",
+    type: "PRD",
+    slug: "test-artifact",
+    latestVersion: 1,
+    status: "DRAFT",
     createdAt: "2024-01-15T10:00:00Z",
     updatedAt: "2024-01-16T10:00:00Z",
     ...overrides,
@@ -40,17 +40,25 @@ export const createMockGenerationStatus = (
 
 /**
  * Factory for creating mock PullRequestInfo objects.
+ * If only `number` is provided, `htmlUrl` will be automatically generated to match.
  */
 export const createMockPullRequest = (
   overrides?: Partial<PullRequestInfo>
-): PullRequestInfo => ({
-  id: "pr-123",
-  number: 42,
-  title: "Add new feature",
-  htmlUrl: "https://github.com/org/repo/pull/42",
-  state: "OPEN",
-  headBranch: "feature-branch",
-  baseBranch: "main",
-  createdAt: new Date("2024-01-15T10:00:00Z"),
-  ...overrides,
-});
+): PullRequestInfo => {
+  const number = overrides?.number ?? 42;
+  const htmlUrl =
+    overrides?.htmlUrl ?? `https://github.com/org/repo/pull/${number}`;
+
+  return {
+    id: "pr-123",
+    number,
+    title: "Add new feature",
+    htmlUrl,
+    state: "OPEN",
+    headBranch: "feature-branch",
+    baseBranch: "main",
+    createdAt: new Date("2024-01-15T10:00:00Z"),
+    reviewDecision: null,
+    ...overrides,
+  };
+};

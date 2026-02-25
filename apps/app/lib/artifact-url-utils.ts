@@ -1,24 +1,18 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
+
 /**
- * Get the detail page URL for a document artifact given its subtype and slug.
- * Returns null if the subtype has no detail page or slug is missing.
+ * Get the detail page URL for an artifact given its type and slug.
+ * Returns null if the type has no detail page.
  */
 export function getArtifactDetailUrl(
-  subtype: string,
-  documentSlug: string | null
+  type: ArtifactType,
+  slug: string
 ): string | null {
-  if (!documentSlug) {
-    return null;
-  }
-
-  switch (subtype) {
-    case "PRD":
-      return `/prds/${documentSlug}`;
-    case "IMPLEMENTATION_PLAN":
-    case "IMPLEMENTATION_STRATEGY":
-      return `/implementation-plans/${documentSlug}`;
-    case "ISSUE":
-    case "BUG":
-      return `/issues/${documentSlug}`;
+  switch (type) {
+    case ArtifactType.Prd:
+      return `/prds/${slug}`;
+    case ArtifactType.ImplementationPlan:
+      return `/implementation-plans/${slug}`;
     default:
       return null;
   }

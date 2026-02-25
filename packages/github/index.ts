@@ -86,11 +86,13 @@ async function getInstallationOctokit(
 export type TriggerWorkflowDispatchOptions = {
   targetRepo: string;
   ref?: string;
-  command: "plan" | "execute" | "answer" | "chat";
+  command: "plan" | "execute" | "answer" | "chat" | "prd";
   commandArgs?: string;
   context: string;
   correlationId: string;
   sessionId?: string;
+  committerName?: string;
+  committerEmail?: string;
 };
 
 /**
@@ -135,6 +137,8 @@ export async function triggerWorkflowDispatch(
         correlation_id: prefixedCorrelationId,
         session_id: opts.sessionId || "",
         environment: config.WEBAPP_ENV === "prod" ? "prod" : "stage",
+        committer_name: opts.committerName || "",
+        committer_email: opts.committerEmail || "",
       },
     });
 
@@ -558,4 +562,25 @@ export async function getRepositoryBranches(
     });
     throw new Error(`Failed to fetch branches: ${errorMessage}`);
   }
+}
+
+/**
+ * Generate an installation access token for a given GitHub App installation.
+ * Used by the loop orchestrator to pass a short-lived token to containers.
+ */
+export async function getInstallationAccessToken(
+  installationId: number
+): Promise<string> {
+  const config = getConfig();
+  const auth = createAppAuth({
+    appId: config.GITHUB_APP_ID,
+    privateKey: config.GITHUB_APP_PRIVATE_KEY,
+  });
+
+  const installationAuth = await auth({
+    type: "installation",
+    installationId,
+  });
+
+  return installationAuth.token;
 }

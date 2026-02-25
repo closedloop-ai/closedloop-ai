@@ -1,19 +1,10 @@
-import {
-  type Artifact,
-  type ArtifactSubtype,
-  ArtifactType,
-} from "@repo/database";
-import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { nanoid } from "nanoid";
-
-export function isDocumentArtifact(artifact: Pick<Artifact, "type">): boolean {
-  return artifact.type === ArtifactType.DOCUMENT;
-}
+import { basicUserSelect } from "@/lib/db-utils";
 
 /**
- * Generates a unique slug that can be used to identify a document artifact across versions.
+ * Generates a unique slug for an artifact URL.
  */
-export function generateDocumentSlug(): string {
+export function generateSlug(): string {
   return nanoid(14);
 }
 
@@ -29,95 +20,12 @@ export class ArtifactNotFoundError extends Error {
 }
 
 /**
- * Options for creating a new artifact version from an existing one.
- */
-export type CreateVersionOptions = {
-  /** Override the title (e.g., append "(Copy)") */
-  title?: string;
-  /** Override the fileName */
-  fileName?: string | null;
-  /** Override the content */
-  content?: string | null;
-};
-
-/**
- * Create a new version of an artifact within a transaction.
- * Handles scope building, version preparation, and artifact creation.
- */
-export async function createArtifactVersion(
-  tx: TransactionClient,
-  original: Artifact,
-  options: CreateVersionOptions = {}
-): Promise<Artifact> {
-  const scopeCondition = buildArtifactScopeCondition({
-    organizationId: original.organizationId,
-    workstreamId: original.workstreamId,
-    projectId: original.projectId,
-    type: original.type,
-    subtype: original.subtype,
-    documentSlug: original.documentSlug,
-  });
-  const nextVersion = await prepareArtifactVersion(tx, scopeCondition);
-
-  const created = await tx.artifact.create({
-    data: {
-      organizationId: original.organizationId,
-      workstreamId: original.workstreamId,
-      projectId: original.projectId,
-      parentId: original.parentId,
-      type: original.type,
-      subtype: original.subtype,
-      title: options.title ?? original.title,
-      fileName:
-        options.fileName === undefined ? original.fileName : options.fileName,
-      approverId: original.approverId,
-      status: "DRAFT",
-      content:
-        options.content === undefined ? original.content : options.content,
-      externalUrl: original.externalUrl,
-      generatedBy: original.generatedBy,
-      ownerId: original.ownerId,
-      documentSlug: original.documentSlug,
-      targetRepo: original.targetRepo,
-      targetBranch: original.targetBranch,
-      version: nextVersion,
-      isLatest: true,
-    },
-    include: artifactIncludeWithUser,
-  });
-  return created as Artifact;
-}
-
-/**
  * Lightweight include for queries that return an artifact with owner/approver only.
  * Use artifactIncludeWithContext when workstream/project info is also needed.
  */
 export const artifactIncludeWithUser = {
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
-  approver: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
-} as const;
-
-export const previewDeploymentSelect = {
-  url: true,
-  state: true,
-  environment: true,
-  ref: true,
-  sha: true,
-  updatedAt: true,
+  owner: basicUserSelect,
+  approver: basicUserSelect,
 } as const;
 
 /**
@@ -149,70 +57,74 @@ export const artifactIncludeWithContext = {
       },
     },
   },
-  parent: {
-    select: {
-      id: true,
-      title: true,
-      subtype: true,
-      documentSlug: true,
-    },
-  },
   ...artifactIncludeWithUser,
-  previewDeployment: {
-    select: previewDeploymentSelect,
-  },
 } as const;
 
 /**
- * Build scope condition for artifact versioning.
- * Used to determine which artifacts share the same version group.
+ * Extends artifactIncludeWithContext with the latest version content.
+ * Use only for list queries that need a snippet (e.g. engineer ticket cards).
+ * Single-artifact fetches (findById, findBySlug) don't need this — they load
+ * full version content via the dedicated /versions endpoint.
  */
-export function buildArtifactScopeCondition(params: {
-  organizationId: string;
-  workstreamId?: string | null;
-  projectId?: string | null;
-  type?: ArtifactType;
-  subtype?: ArtifactSubtype;
-  documentSlug?: string | null;
-}): {
-  organizationId: string;
-  workstreamId?: string;
-  projectId?: string;
-  type?: ArtifactType;
-  subtype?: ArtifactSubtype;
-  documentSlug: string | null;
-} {
-  return {
-    organizationId: params.organizationId,
-    ...(params.workstreamId ? { workstreamId: params.workstreamId } : {}),
-    ...(!params.workstreamId && params.projectId
-      ? { projectId: params.projectId }
-      : {}),
-    ...(params.type ? { type: params.type } : {}),
-    ...(params.subtype ? { subtype: params.subtype } : {}),
-    documentSlug: params.documentSlug ?? null,
-  };
-}
+export const artifactIncludeWithSnippet = {
+  ...artifactIncludeWithContext,
+  versions: {
+    orderBy: { version: "desc" as const },
+    take: 1,
+    select: { content: true },
+  },
+} as const;
+
+/** Valid command values for GenerationStatus. */
+const VALID_COMMANDS = new Set(["plan", "execute", "chat"]);
 
 /**
- * Get the next version number for an artifact within a scope.
- * Also marks existing latest artifacts in the scope as not latest.
+ * Type definition for validated trigger data.
  */
-export async function prepareArtifactVersion(
-  tx: TransactionClient,
-  scopeCondition: ReturnType<typeof buildArtifactScopeCondition>
-): Promise<number> {
-  // Mark any existing artifacts of the same type/slug as not latest
-  await tx.artifact.updateMany({
-    where: { ...scopeCondition, isLatest: true },
-    data: { isLatest: false },
-  });
+export type TriggerData = {
+  correlationId: string;
+  artifactId: string;
+  command: "plan" | "execute" | "chat";
+};
 
-  // Get the latest version number for this scope
-  const latestArtifact = await tx.artifact.findFirst({
-    where: scopeCondition,
-    orderBy: { version: "desc" },
-  });
+/**
+ * Type guard to safely parse and validate Prisma Json triggerData fields.
+ * Returns typed TriggerData object if valid, null otherwise.
+ */
+export function parseTriggerData(triggerData: unknown): TriggerData | null {
+  if (
+    typeof triggerData !== "object" ||
+    triggerData === null ||
+    Array.isArray(triggerData)
+  ) {
+    return null;
+  }
 
-  return (latestArtifact?.version ?? 0) + 1;
+  const data = triggerData as Record<string, unknown>;
+
+  if (
+    typeof data.correlationId !== "string" ||
+    typeof data.artifactId !== "string" ||
+    typeof data.command !== "string"
+  ) {
+    return null;
+  }
+
+  if (
+    data.correlationId.trim() === "" ||
+    data.artifactId.trim() === "" ||
+    data.command.trim() === ""
+  ) {
+    return null;
+  }
+
+  if (!VALID_COMMANDS.has(data.command)) {
+    return null;
+  }
+
+  return {
+    correlationId: data.correlationId,
+    artifactId: data.artifactId,
+    command: data.command as TriggerData["command"],
+  };
 }

@@ -14,3 +14,15 @@ process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up";
 process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = "/";
 process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = "/";
 process.env.API_URL = "http://localhost:3002";
+
+// Import jest-dom matchers for toBeInTheDocument, toHaveAttribute, etc.
+import "@testing-library/jest-dom/vitest";
+
+// Ensure DOM is cleaned up between tests so renders don't bleed into each other.
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
+
+afterEach(cleanup);
+
+// Mock scrollIntoView which is not implemented in jsdom
+Element.prototype.scrollIntoView = () => {};

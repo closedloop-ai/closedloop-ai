@@ -2,7 +2,7 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -15,7 +15,11 @@ import {
   findArtifactsQueryValidator,
 } from "./validators";
 
-export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
+/**
+ * GET /artifacts - List artifacts
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
+ */
+export const GET = withAnyAuth<ArtifactWithWorkstream[], "/artifacts">(
   async ({ user }, request) => {
     try {
       const searchParams = request.nextUrl.searchParams;
@@ -44,7 +48,7 @@ export const GET = withAuth<ArtifactWithWorkstream[], "/artifacts">(
   }
 );
 
-export const POST = withAuth<Artifact, "/artifacts">(
+export const POST = withAnyAuth<Artifact, "/artifacts">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -68,5 +72,6 @@ export const POST = withAuth<Artifact, "/artifacts">(
     } catch (error) {
       return errorResponse("Failed to create artifact", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

@@ -23,19 +23,26 @@ function makeJsonlLines(
 
 function buildConversationZip(sessions: {
   indexEntries?: { sessionId: string; path: string; created: string }[];
+  indexPath?: string;
   files: { path: string; content: string }[];
 }): Buffer {
   const zip = new AdmZip();
   if (sessions.indexEntries) {
-    zip.addFile(
-      ".claude/runs/conversations/sessions-index.json",
-      toBuffer(JSON.stringify(sessions.indexEntries))
-    );
+    const indexPath =
+      sessions.indexPath ?? ".claude/runs/conversations/sessions-index.json";
+    zip.addFile(indexPath, toBuffer(JSON.stringify(sessions.indexEntries)));
   }
   for (const file of sessions.files) {
     zip.addFile(file.path, toBuffer(file.content));
   }
   return zip.toBuffer();
+}
+
+/** Wrap an inner zip buffer inside an outer zip as symphony-run.zip */
+function buildNestedZip(innerZipBuffer: Buffer): Buffer {
+  const outerZip = new AdmZip();
+  outerZip.addFile("symphony-run.zip", innerZipBuffer);
+  return outerZip.toBuffer();
 }
 
 // ---------- parseSessionIndex ----------
@@ -499,5 +506,94 @@ describe("parseExecutionLogs", () => {
     expect(trace.sessions[1]!.agentLabel).toBe("Implementation");
     // Overall duration from earliest (00:00:00) to latest (00:02:00) = 120s
     expect(trace.overallDuration).toBe(120_000);
+  });
+
+  it("handles nested symphony-run.zip inside outer zip", () => {
+    const sessionContent = makeJsonlLines([
+      {
+        role: "user",
+        content: "<command-name>plan-writer</command-name> Write a plan",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+      {
+        role: "assistant",
+        content: "Here is the plan.",
+        timestamp: "2025-01-01T00:01:00Z",
+      },
+    ]);
+
+    // Build inner zip with runs/conversations/ path (no .claude/ prefix)
+    const innerZip = buildConversationZip({
+      indexEntries: [
+        {
+          sessionId: "nested-sess",
+          path: "runs/conversations/-home-runner-work-repo/nested-sess.jsonl",
+          created: "2025-01-01T00:00:00Z",
+        },
+      ],
+      indexPath: "runs/conversations/sessions-index.json",
+      files: [
+        {
+          path: "runs/conversations/-home-runner-work-repo/nested-sess.jsonl",
+          content: sessionContent,
+        },
+      ],
+    });
+
+    // Wrap in outer zip as symphony-run.zip
+    const outerZipBuffer = buildNestedZip(innerZip);
+
+    const trace = parseExecutionLogs(outerZipBuffer);
+    expect(trace.totalSessions).toBe(1);
+    expect(trace.totalMessages).toBe(2);
+    expect(trace.sessions[0]!.sessionId).toBe("nested-sess");
+    expect(trace.sessions[0]!.agentLabel).toBe("Plan Writer");
+  });
+
+  it("parses conversation files with runs/conversations/ path (no .claude/ prefix)", () => {
+    const sessionContent = makeJsonlLines([
+      {
+        role: "user",
+        content: "Hello",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+    ]);
+
+    // Flat zip with non-.claude/ prefixed paths
+    const zipBuffer = buildConversationZip({
+      files: [
+        {
+          path: "runs/conversations/-home-runner-work-repo/abc-123.jsonl",
+          content: sessionContent,
+        },
+      ],
+    });
+
+    const trace = parseExecutionLogs(zipBuffer);
+    expect(trace.totalSessions).toBe(1);
+    expect(trace.sessions[0]!.sessionId).toBe("abc-123");
+  });
+
+  it("still parses old .claude/runs/conversations/ paths (backward compat)", () => {
+    const sessionContent = makeJsonlLines([
+      {
+        role: "user",
+        content: "Hello",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+    ]);
+
+    const zipBuffer = buildConversationZip({
+      files: [
+        {
+          path: ".claude/runs/conversations/legacy-sess.jsonl",
+          content: sessionContent,
+        },
+      ],
+    });
+
+    const trace = parseExecutionLogs(zipBuffer);
+    expect(trace.totalSessions).toBe(1);
+    expect(trace.sessions[0]!.sessionId).toBe("legacy-sess");
   });
 });

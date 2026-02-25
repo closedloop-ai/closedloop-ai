@@ -1,17 +1,16 @@
 "use client";
 
 import "./tiptap-editor.css";
+
 import { cn } from "@repo/design-system/lib/utils";
 import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
-import type { Editor } from "@tiptap/react";
+import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useRef, useState } from "react";
-import { Markdown } from "tiptap-markdown";
-import { mermaidMarkdownConfig } from "./markdown-mermaid-config";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MermaidExtension } from "./mermaid-extension";
 import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
 import { TiptapToolbar } from "./tiptap-toolbar";
@@ -48,6 +47,7 @@ export function TiptapEditorCore({
         },
         undoRedo: false,
       }),
+      Markdown,
       MermaidExtension,
       Table.configure({
         resizable: true,
@@ -55,17 +55,11 @@ export function TiptapEditorCore({
       TableRow,
       TableHeader,
       TableCell,
-      Markdown.configure({
-        html: true, // Don't allow HTML in markdown
-        transformPastedText: true, // Enable transformation to handle mermaid blocks
-        transformCopiedText: false,
-        ...mermaidMarkdownConfig,
-      }),
       ...(liveblocksExtension ? [liveblocksExtension] : []),
     ],
     // When using Liveblocks, don't set initial content here
     // The Liveblocks extension will handle syncing
-    content: liveblocksExtension ? "" : value,
+    ...(!liveblocksExtension && { content: value, contentType: "markdown" }),
     editable: !readOnly,
     // Prevent SSR hydration mismatches
     immediatelyRender: false,
@@ -81,10 +75,21 @@ export function TiptapEditorCore({
       onEditorReady?.(editor);
     },
     onUpdate: ({ editor }) => {
-      const markdown = getMarkdownStorage(editor).getMarkdown();
-      onChange(markdown);
+      onChange(editor.getMarkdown());
     },
   });
+
+  const setMarkdownContent = useCallback(
+    (markdown: string) => {
+      if (editor) {
+        // Defer to microtask to avoid flushSync inside React lifecycle
+        queueMicrotask(() => {
+          editor.commands.setContent(markdown, { contentType: "markdown" });
+        });
+      }
+    },
+    [editor]
+  );
 
   // Sync content when not using Liveblocks.
   useEffect(() => {
@@ -95,13 +100,18 @@ export function TiptapEditorCore({
       return;
     }
 
-    const currentMarkdown = getMarkdownStorage(editor).getMarkdown();
-    if (value !== currentMarkdown) {
-      editor.commands.setContent(value);
+    if (value !== editor.getMarkdown()) {
+      setMarkdownContent(value);
     }
-  }, [editor, liveblocksExtension, value]);
+  }, [editor, liveblocksExtension, setMarkdownContent, value]);
 
-  // Seed Liveblocks with initial content if the document is empty once liveblocks has synced.
+  // Seed or reconcile Liveblocks content after sync completes.
+  // - Empty doc: seed with the initial content (first-time room creation).
+  // - Stale doc: clear + re-seed when the Yjs document content no longer
+  //   matches the API version (e.g. a loop created a new version server-side
+  //   but the Liveblocks room was never updated).
+  // The key={latestVersion} on CollaborativeEditor ensures this component
+  // remounts when a new version appears, so hasSeededContent resets.
   useEffect(() => {
     const initialContent = initialContentRef.current;
 
@@ -112,20 +122,47 @@ export function TiptapEditorCore({
       return;
     }
 
-    // Check if editor is empty after Liveblocks sync is complete
     const currentText = editor.getText().trim();
 
-    if (currentText === "" && initialContent.trim() !== "") {
-      // Seed the Liveblocks document with the initial markdown content
-      editor.commands.setContent(initialContent);
+    if (currentText === "") {
+      // Empty doc — seed with initial content
+      setMarkdownContent(initialContent);
       hasSeededContent.current = true;
+    } else if (initialContent.trim() !== "") {
+      // Doc has content — check if it matches the API version.
+      // Compare markdown to detect stale Yjs documents.
+      const editorMarkdown = editor.getMarkdown().trim();
+      if (editorMarkdown !== initialContent.trim()) {
+        // Stale content — clear first then re-seed to avoid Yjs CRDT
+        // concatenation. Comments stay in the room; anchors that can't
+        // find their text rebind to the top of the document.
+        queueMicrotask(() => {
+          editor.commands.clearContent();
+          editor.commands.setContent(initialContent, {
+            contentType: "markdown",
+          });
+        });
+        hasSeededContent.current = true;
+      }
     }
-  }, [editor, liveblocksExtension, liveblocksIsReady]);
+  }, [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]);
 
-  // Explicit content reset (e.g. restore a version)
+  // Explicit content reset (e.g. restore a version).
+  // Temporarily ensures the editor is editable so the command succeeds
+  // even when readOnly flips to true in the same render batch.
   useEffect(() => {
-    if (editor && contentResetKey && contentResetValue) {
-      editor.commands.setContent(contentResetValue);
+    if (editor && contentResetKey && contentResetValue != null) {
+      const markdown = contentResetValue;
+      queueMicrotask(() => {
+        const wasEditable = editor.isEditable;
+        if (!wasEditable) {
+          editor.setEditable(true);
+        }
+        editor.commands.setContent(markdown, { contentType: "markdown" });
+        if (!wasEditable) {
+          editor.setEditable(false);
+        }
+      });
     }
   }, [editor, contentResetKey, contentResetValue]);
 
@@ -135,12 +172,6 @@ export function TiptapEditorCore({
       editor.setEditable(!readOnly);
     }
   }, [editor, readOnly]);
-
-  function handleSetMarkdownContent(markdown: string) {
-    if (markdown && editor) {
-      editor.commands.setContent(markdown);
-    }
-  }
 
   return (
     <>
@@ -169,23 +200,10 @@ export function TiptapEditorCore({
       {!readOnly && (
         <TiptapPasteMarkdownDialog
           onOpenChange={setShowPasteMarkdownDialog}
-          onSetContent={handleSetMarkdownContent}
+          onSetContent={setMarkdownContent}
           open={showPasteMarkdownDialog}
         />
       )}
     </>
   );
-}
-
-// Type for the markdown extension storage added by tiptap-markdown
-type MarkdownStorage = {
-  getMarkdown: () => string;
-  serializer: unknown;
-  parser: unknown;
-  options: Record<string, unknown>;
-};
-
-// Helper to safely access markdown storage
-function getMarkdownStorage(editor: Editor): MarkdownStorage {
-  return (editor.storage as unknown as { markdown: MarkdownStorage }).markdown;
 }

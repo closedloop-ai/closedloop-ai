@@ -44,6 +44,7 @@ export type GitHubRepository = {
   owner: string;
   private: boolean;
   githubRepoId: number;
+  lastPushedAt: string | null;
 };
 
 export type GetRepositoriesResponse = GitHubRepository[];
