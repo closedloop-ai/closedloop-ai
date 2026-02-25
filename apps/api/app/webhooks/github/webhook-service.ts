@@ -15,18 +15,6 @@ export function isGitHubConfigured(): boolean {
 }
 
 /**
- * Check if S3 storage is properly configured.
- */
-export function isS3Configured(): boolean {
-  // Check env vars directly to avoid build-time validation errors
-  return Boolean(
-    process.env.AWS_ACCESS_KEY_ID &&
-      process.env.AWS_SECRET_ACCESS_KEY &&
-      process.env.S3_BUCKET_NAME
-  );
-}
-
-/**
  * Validate and parse incoming GitHub webhook request.
  */
 export async function validateRequest(request: Request) {
