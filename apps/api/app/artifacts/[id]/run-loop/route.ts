@@ -79,13 +79,8 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         );
 
       const workstream = resolvedWorkstream ?? artifact.workstream;
-      const project = workstream?.project;
-      const existingRepository = project?.repositories[0];
 
-      const targetRepo =
-        sourceArtifact?.targetRepo ??
-        artifact.targetRepo ??
-        existingRepository?.fullName;
+      const targetRepo = sourceArtifact?.targetRepo ?? artifact.targetRepo;
 
       if (!targetRepo) {
         return badRequestResponse(
@@ -94,10 +89,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       }
 
       const targetBranch =
-        sourceArtifact?.targetBranch ??
-        artifact.targetBranch ??
-        existingRepository?.defaultBranch ??
-        "main";
+        sourceArtifact?.targetBranch ?? artifact.targetBranch ?? "main";
 
       // Build context refs: include the source PRD so the harness can write prd.md
       const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];

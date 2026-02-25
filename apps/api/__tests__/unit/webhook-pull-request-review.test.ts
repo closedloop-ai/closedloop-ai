@@ -189,8 +189,8 @@ describe("handlePullRequestReview", () => {
 
     // Set up transaction mock
     mockTx = {
-      repository: {
-        findUnique: vi.fn(),
+      gitHubInstallationRepository: {
+        findFirst: vi.fn(),
       },
       gitHubPullRequest: {
         findUnique: vi.fn(),
@@ -235,7 +235,7 @@ describe("handlePullRequestReview", () => {
       } as any;
 
       // Mock repository lookup
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
@@ -260,8 +260,10 @@ describe("handlePullRequestReview", () => {
       await handlePullRequestReview(event);
 
       // Verify repository lookup
-      expect(mockTx.repository.findUnique).toHaveBeenCalledWith({
-        where: { githubId: 789 },
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith({
+        where: { githubRepoId: 789 },
         select: { id: true },
       });
 
@@ -354,7 +356,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
@@ -424,7 +426,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-dismiss",
       });
 
@@ -499,7 +501,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-priority",
       });
 
@@ -554,7 +556,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-dismiss-priority",
       });
 
@@ -602,7 +604,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-resubmit",
       });
 
@@ -664,7 +666,7 @@ describe("handlePullRequestReview", () => {
       } as any;
 
       // Mock repository not found
-      mockTx.repository.findUnique.mockResolvedValue(null);
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
       await handlePullRequestReview(event);
 
@@ -696,7 +698,7 @@ describe("handlePullRequestReview", () => {
       } as any;
 
       // Repository exists
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
       });
 
@@ -733,7 +735,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-multi2",
       });
 
@@ -783,7 +785,7 @@ describe("handlePullRequestReview", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-upsert",
       });
 

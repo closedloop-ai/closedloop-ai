@@ -90,9 +90,9 @@ export async function handlePullRequest(
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
-    // Step 1: Find Repository by githubId
-    const repo = await tx.repository.findUnique({
-      where: { githubId: repository.id },
+    // Step 1: Find GitHubInstallationRepository by githubRepoId
+    const repo = await tx.gitHubInstallationRepository.findFirst({
+      where: { githubRepoId: repository.id },
       select: { id: true },
     });
 
@@ -242,11 +242,9 @@ export async function handlePullRequest(
         break;
       }
 
-      default: {
-        log.warn("[handlePullRequest] Unhandled action type", {
-          action: action as string,
-        });
-      }
+      default:
+        // Unreachable: HANDLED_ACTIONS guard above filters unhandled actions
+        break;
     }
   });
 

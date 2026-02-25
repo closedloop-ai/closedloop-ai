@@ -10,6 +10,7 @@ import {
   LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusIndicatorProps = {
@@ -23,11 +24,12 @@ export function GenerationStatusIndicator({
     return null;
   }
 
-  const { status, command, htmlUrl } = generationStatus;
-  const message = getStatusMessage(status, command);
+  const { status, command, htmlUrl, initiatedBy } = generationStatus;
+  const message = getStatusMessage(status, command, initiatedBy);
   const isActive = isActiveGenerationStatus(status);
   const isSuccess = status === "SUCCESS";
   const isFailure = status === "FAILURE";
+  const isLoop = generationStatus.source === "loop";
 
   // Pick icon based on status
   let icon: React.ReactNode;
@@ -46,14 +48,21 @@ export function GenerationStatusIndicator({
     return null;
   }
 
-  const content = (
-    <>
-      {icon}
-      <span>{message}</span>
-      {htmlUrl && <ExternalLinkIcon className="h-3 w-3" />}
-    </>
-  );
+  // Loop source: use internal Next.js Link to /loops/:id
+  if (isLoop && generationStatus.loopId) {
+    return (
+      <Link
+        aria-label={`${message} - View loop`}
+        className={`inline-flex items-center gap-1 text-sm hover:underline ${colorClass}`}
+        href={`/loops/${generationStatus.loopId}`}
+      >
+        {icon}
+        <span>{message}</span>
+      </Link>
+    );
+  }
 
+  // GitHub Actions source: use external <a> link
   if (htmlUrl) {
     return (
       <a
@@ -63,14 +72,17 @@ export function GenerationStatusIndicator({
         rel="noopener noreferrer"
         target="_blank"
       >
-        {content}
+        {icon}
+        <span>{message}</span>
+        <ExternalLinkIcon className="h-3 w-3" />
       </a>
     );
   }
 
   return (
     <span className={`inline-flex items-center gap-1 text-sm ${colorClass}`}>
-      {content}
+      {icon}
+      <span>{message}</span>
     </span>
   );
 }

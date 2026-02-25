@@ -1,8 +1,12 @@
 "use client";
 
-import { isActiveGenerationStatus } from "@repo/api/src/types/artifact";
+import {
+  type GenerationStatus,
+  isActiveGenerationStatus,
+} from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { ExternalLinkIcon, LoaderIcon, XCircleIcon } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useArtifactGenerationStatus } from "@/hooks/queries/use-artifacts";
 import { getStatusMessage } from "@/lib/generation-status-utils";
@@ -113,21 +117,49 @@ export function GenerationStatusBanner({
           <XCircleIcon className="h-4 w-4" />
         )}
         <span>
-          {getStatusMessage(generationStatus.status, generationStatus.command)}
+          {getStatusMessage(
+            generationStatus.status,
+            generationStatus.command,
+            generationStatus.initiatedBy
+          )}
         </span>
       </div>
 
-      {generationStatus.htmlUrl ? (
-        <a
-          className="flex items-center gap-1 text-xs underline hover:no-underline"
-          href={generationStatus.htmlUrl}
-          rel="noopener noreferrer"
-          target="_blank"
-        >
-          View workflow
-          <ExternalLinkIcon className="h-3 w-3" />
-        </a>
-      ) : null}
+      <BannerLink generationStatus={generationStatus} />
     </div>
   );
+}
+
+/** Renders the appropriate link for the banner: internal Loop link, external GitHub link, or nothing. */
+function BannerLink({
+  generationStatus,
+}: {
+  generationStatus: GenerationStatus;
+}) {
+  if (generationStatus.source === "loop" && generationStatus.loopId) {
+    return (
+      <Link
+        className="flex items-center gap-1 text-xs underline hover:no-underline"
+        href={`/loops/${generationStatus.loopId}`}
+      >
+        View loop
+      </Link>
+    );
+  }
+
+  if (generationStatus.htmlUrl) {
+    return (
+      <a
+        className="flex items-center gap-1 text-xs underline hover:no-underline"
+        href={generationStatus.htmlUrl}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        View workflow
+        <ExternalLinkIcon className="h-3 w-3" />
+      </a>
+    );
+  }
+
+  return null;
 }
