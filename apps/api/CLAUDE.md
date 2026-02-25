@@ -6,7 +6,7 @@ Handles all database operations and external service integrations. Port 3002.
 
 **Routes are thin. Services do the work.**
 
-- **Routes** (`app/*/route.ts`): auth via `withAuth()`, parse params/body, call service, return `NextResponse.json()`
+- **Routes** (`app/*/route.ts`): auth via `withAnyAuth()`, parse params/body, call service, return `NextResponse.json()`
 - **Services** (`app/*/service.ts`): business logic, `@repo/database` imports, `withDb()` queries, external APIs, transactions
 
 No database operations in routes — delegate to services.
@@ -15,11 +15,11 @@ No database operations in routes — delegate to services.
 
 | Wrapper | Import | When to use |
 |---------|--------|-------------|
-| `withAuth` | `@/lib/auth/with-auth` | Clerk session only (browser clients) |
+| `withAnyAuth` | `@/lib/auth/with-any-auth` | **Default.** Accepts API key (`sk_live_*`) or Clerk session |
+| `withAuth` | `@/lib/auth/with-auth` | Clerk session only — use sparingly for browser-only routes |
 | `withApiKeyAuth` | `@/lib/auth/with-api-key-auth` | API key only (`sk_live_*`) |
-| `withAnyAuth` | `@/lib/auth/with-any-auth` | Both — tries API key first, falls back to Clerk |
 
-Use `withAnyAuth` for routes accepting both programmatic (MCP, CLI) and browser clients.
+**Prefer `withAnyAuth`** for all new routes. This supports both programmatic clients (MCP, CLI) and browser clients.
 
 ## Response Helpers
 - Success: `NextResponse.json(success(data))` — import `success` from `@repo/api/src/types/common`

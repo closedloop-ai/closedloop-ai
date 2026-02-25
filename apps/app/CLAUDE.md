@@ -35,7 +35,7 @@ hooks/
 
 ### TanStack Query
 - **[pattern]**: New hooks: queryKey + queryFn + enabled + `...options` spread. Export `queryKeys` factory (.all, .detail(id)). Cache invalidation in mutations. Only `staleTime` acceptable as default.
-- **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAuth() with orgId from JWT, (2) services filter by organizationId, (3) frontend uses authenticated API client.
+- **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAnyAuth() with orgId from JWT/API key, (2) services filter by organizationId, (3) frontend uses authenticated API client.
 
 ### Tables & Sorting
 - **[pattern]**: Sort nested object fields via SortConfig accessor function. `sortItems()` handles nulls-last.

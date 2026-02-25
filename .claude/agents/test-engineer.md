@@ -147,8 +147,8 @@ import {
 
 let mockAuthContext: AuthContext;
 
-vi.mock("@/lib/auth/with-auth", () => ({
-  withAuth: (handler: any) => async (request: any, context: any) =>
+vi.mock("@/lib/auth/with-any-auth", () => ({
+  withAnyAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
 }));
 vi.mock("@/app/things/service");
@@ -175,7 +175,7 @@ describe("GET /api/things", () => {
 **Key details:**
 - Globals enabled — `describe`, `it`, `expect`, `beforeEach` available without import
 - Import only `{ vi }` from `"vitest"`
-- Mock `withAuth` at module level to inject test auth context
+- Mock `withAnyAuth` at module level to inject test auth context
 - Mock service modules with `vi.mock("@/app/things/service")`
 - Use `vi.mocked(service.method)` for type-safe mock setup
 - Use helpers: `createMockRequest()`, `createMockRouteContext()`, `createTestAuthContext()`

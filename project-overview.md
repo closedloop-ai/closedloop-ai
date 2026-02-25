@@ -156,7 +156,7 @@ The core workflow is: a user creates a PRD or Issue (optionally with AI assistan
 | `/collaboration/auth` | POST | Liveblocks authentication |
 | `/cron/keep-alive` | GET | Keep-alive cron job |
 
-**Authentication:** All routes (except webhooks and health) use `withAuth()` HOF that validates Clerk JWT, extracts userId and orgId, and auto-creates user/organization records on first access. Organization-scoped queries ensure data isolation.
+**Authentication:** All routes (except webhooks and health) use `withAnyAuth()` HOF that accepts either an API key (`sk_live_*`) or Clerk JWT, extracts userId and orgId, and auto-creates user/organization records on first access. Organization-scoped queries ensure data isolation.
 
 **Service Layer:** Business logic is separated into service modules:
 - `artifactsService` - Artifact CRUD, versioning, GitHub workflow orchestration, execution logs, judge feedback
@@ -291,7 +291,7 @@ This architecture ensures customer source code is processed within GitHub's infr
 
 - **Authentication:** Clerk (SSO, social login, email/password, MFA supported via Clerk)
 - **Session management:** Clerk JWT tokens, validated server-side in API via `auth()` from `@repo/auth/server`
-- **Organization isolation:** All database queries are scoped by `organizationId` extracted from JWT. The `withAuth()` wrapper enforces this on every API route.
+- **Organization isolation:** All database queries are scoped by `organizationId`. The `withAnyAuth()` wrapper extracts orgId from either API key or JWT and enforces this on every API route.
 - **Role-based access:** Clerk organization roles (`org:admin`, `org:member`) gate admin-only features in the frontend (Settings > Admin tab uses `<Protect role="org:admin">`). Backend does not yet enforce granular role-based permissions beyond org membership.
 - **Team roles:** OWNER, ADMIN, MEMBER at the team level (stored in database, used for display; enforcement is a TODO)
 - **Approver roles:** PM, Designer, Tech Lead, Engineer, Stakeholder (used in approval workflows)
