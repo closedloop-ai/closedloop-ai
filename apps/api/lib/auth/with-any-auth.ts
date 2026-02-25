@@ -39,23 +39,21 @@ export function withAnyAuth<TResponse, TRoute extends string = string>(
 
     if (token?.startsWith("sk_live_")) {
       let fallbackOptions: { requiredScopes: ApiKeyScope[] };
+
       if (request.method === "GET" || request.method === "HEAD") {
-        fallbackOptions = { requiredScopes: ["read"] as ApiKeyScope[] };
+        fallbackOptions = { requiredScopes: ["read"] };
       } else if (request.method === "DELETE") {
-        fallbackOptions = { requiredScopes: ["delete"] as ApiKeyScope[] };
+        fallbackOptions = { requiredScopes: ["delete"] };
       } else {
-        fallbackOptions = { requiredScopes: ["write"] as ApiKeyScope[] };
+        fallbackOptions = { requiredScopes: ["write"] };
       }
       const effectiveOptions = options ?? fallbackOptions;
       return withApiKeyAuth<TResponse, TRoute>(handler, effectiveOptions)(
         request,
-        context as { params: Promise<Record<string, string>> }
+        context
       );
     }
 
-    return withAuth<TResponse, TRoute>(handler)(
-      request,
-      context as { params: Promise<Record<string, string>> }
-    );
+    return withAuth<TResponse, TRoute>(handler)(request, context);
   };
 }

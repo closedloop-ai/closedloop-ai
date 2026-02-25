@@ -21,6 +21,7 @@ Explicit migration files for all schema changes. **Never use `prisma db push` fo
 - Commit both schema changes AND generated migration files
 - Generated client: `packages/database/generated/` (configured in `prisma.config.ts`)
 - `prisma generate` must run after any schema change to update TypeScript types
+- **Never hand-write migration SQL files** — always let `prisma migrate dev` generate them. Hand-written migrations miss Prisma's drift detection, FK cleanup, and standard formatting. First update the schema, then run the migrate command and let Prisma diff the schema against the database.
 - **relationMode = "prisma"** — no DB-level FK constraints. Cascade deletes only through Prisma client. Direct SQL deletes can orphan rows.
 
 ## Learned Patterns

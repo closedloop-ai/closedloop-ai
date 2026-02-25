@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { generateArtifactMetadata } from "@/lib/artifact-metadata";
-import { IssueEditorContainer } from "./issue-editor-container";
+import { FeaturePageContainer } from "./feature-page-container";
 
 type IssuePageProps = {
   params: Promise<{ slug: string }>;
@@ -16,5 +16,5 @@ export async function generateMetadata({
 export default async function IssuePage({ params }: IssuePageProps) {
   const { slug } = await params;
 
-  return <IssueEditorContainer slug={slug} />;
+  return <FeaturePageContainer slug={slug} />;
 }

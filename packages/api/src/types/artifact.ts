@@ -167,6 +167,11 @@ export type UpdateArtifactInput = {
   sortOrder?: number | null;
 };
 
+export type MergeArtifactsInput = {
+  primaryArtifactId: string;
+  secondaryArtifactId: string;
+};
+
 // Pull Request State
 export const PullRequestState = {
   Open: "OPEN",
@@ -199,14 +204,23 @@ export type PullRequestInfo = {
   reviewDecision: ReviewDecision | null;
 };
 
-// Generation status for artifacts being processed by GitHub Actions
+// Generation status for artifacts being processed by GitHub Actions or Loops
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
+  command: "plan" | "execute" | "chat" | "request_changes" | "explore" | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
   correlationId: string | null;
+  /** Identifies the compute backend that produced this status. */
+  source?: "github_actions" | "loop";
+  /** Loop ID when source is "loop". Used for internal navigation to /loops/:id. */
+  loopId?: string | null;
+  /** User who initiated the generation (loop or workflow). */
+  initiatedBy?: {
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
 };
 
 export const ACTIVE_GENERATION_STATUSES = [

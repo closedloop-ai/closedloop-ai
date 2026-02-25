@@ -9,7 +9,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserOAuthClientProvider } from "use-mcp";
-import type { McpArtifact, McpIssue, McpUser } from "@/types/engineer";
+import type {
+  McpArtifact,
+  McpArtifactDetail,
+  McpIssue,
+  McpUser,
+} from "@/types/engineer";
 
 type PaginatedResponse<T> = {
   total: number;
@@ -137,6 +142,7 @@ export type McpClient = {
     offset?: number;
   }) => Promise<PaginatedResponse<McpArtifact>>;
   getIssue: (issueId: string) => Promise<McpIssue>;
+  getArtifact: (artifactId: string) => Promise<McpArtifactDetail>;
   updateIssue: (
     issueId: string,
     updates: Record<string, unknown>
@@ -505,6 +511,15 @@ export function useMcpClient(): McpClient {
           return parsed.data;
         }
         return parsed as McpIssue;
+      },
+
+      getArtifact: async (artifactId) => {
+        const result = await callTool("get-artifact", {
+          artifactId,
+          includeContent: true,
+          contentMaxChars: 120_000,
+        });
+        return parseMcpResult<McpArtifactDetail>(result);
       },
 
       updateIssue: async (issueId, updates) => {

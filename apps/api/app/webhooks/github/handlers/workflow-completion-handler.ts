@@ -15,7 +15,7 @@ import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
-import { processArtifactUploads } from "./workflow-artifacts";
+import { processArtifactDownloads } from "./workflow-artifacts";
 
 /**
  * Metadata structure for GITHUB_PR_CREATED and GITHUB_PR_MERGED events.
@@ -266,17 +266,12 @@ export async function handleExecutionSuccess(
  */
 export async function handleWorkflowSuccess(
   tx: TransactionClient,
-  ctx: WorkflowContext,
-  s3Configured: boolean
+  ctx: WorkflowContext
 ): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
-  // Always download and extract artifacts (we need the plan content regardless of S3)
-  const result = await processArtifactUploads(
-    correlationId,
-    runId,
-    s3Configured
-  );
+  // Download and extract artifacts from GitHub
+  const result = await processArtifactDownloads(runId);
   const {
     planContent,
     questionsContent,
@@ -284,7 +279,6 @@ export async function handleWorkflowSuccess(
     judgesReport,
     codeJudgesReport,
     perfSummary,
-    artifactKeys,
   } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact.
@@ -376,7 +370,6 @@ export async function handleWorkflowSuccess(
         artifactId,
         runId,
         conclusion: "success",
-        artifactKeys,
       },
     },
   });
@@ -480,8 +473,7 @@ export async function handleWorkflowFailure(
  */
 export async function processWorkflowCompletion(
   event: WorkflowRunCompletedEvent,
-  correlationId: string,
-  s3Configured: boolean
+  correlationId: string
 ): Promise<Response> {
   const runId = event.workflow_run.id;
 
@@ -531,7 +523,7 @@ export async function processWorkflowCompletion(
   await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
     if (conclusion === "success") {
-      await handleWorkflowSuccess(tx, ctx, s3Configured);
+      await handleWorkflowSuccess(tx, ctx);
     } else {
       await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }
