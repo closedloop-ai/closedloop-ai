@@ -16,7 +16,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
@@ -73,9 +72,8 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
 
   return (
     <>
-      <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
+      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
         <SidebarTrigger className="-ml-1" />
-        <Separator className="mr-2 h-4" orientation="vertical" />
         <Breadcrumb>
           <BreadcrumbList>
             {teamId && teamName ? (
@@ -108,7 +106,7 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
         <div className="ml-auto">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost">
+              <Button size="icon-sm" variant="ghost">
                 <MoreHorizontalIcon className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
