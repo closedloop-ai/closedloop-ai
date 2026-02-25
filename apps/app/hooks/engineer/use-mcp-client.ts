@@ -287,6 +287,16 @@ export function useMcpClient(): McpClient {
         ) {
           return;
         }
+        // SSE stream errors while connected are non-fatal — client-initiated
+        // tool calls use POST and are unaffected. Don't tank the whole
+        // connection for a background stream hiccup.
+        if (stateRef.current === "ready") {
+          console.warn(
+            "[MCP] transport error (non-fatal):",
+            toErrorMessage(transportError)
+          );
+          return;
+        }
         failConnection(
           `Transport error (HTTP): ${toErrorMessage(transportError)}`
         );
@@ -302,7 +312,8 @@ export function useMcpClient(): McpClient {
         }
 
         if (stateRef.current === "ready") {
-          setStateAndRef("connecting");
+          // Attempt silent reconnect — keep isReady=true so consumers don't flicker.
+          // If connect() fails, failConnection() will set state to "failed".
           reconnectTimerRef.current = setTimeout(() => {
             if (isMountedRef.current) {
               connect().catch(console.error);
@@ -489,6 +500,7 @@ export function useMcpClient(): McpClient {
         if (params?.ownerId) {
           args.ownerId = params.ownerId;
         }
+        console.debug("[engineer] listArtifacts args:", args);
         if (params?.limit !== undefined) {
           args.limit = params.limit;
         }
