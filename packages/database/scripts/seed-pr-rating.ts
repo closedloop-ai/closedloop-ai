@@ -122,7 +122,8 @@ async function main() {
           organizationId,
           name: PR_RATING_QA.projectName,
           description: "QA project for PR rating feature",
-          ownerId: userId,
+          assigneeId: userId,
+          createdById: userId,
         },
       });
       console.log(`✓ Project created: ${project.name} (${project.id})`);
@@ -160,21 +161,37 @@ async function main() {
       console.log(`✓ Workstream created: ${workstream.id}`);
     }
 
-    // 6. Repository (mock GitHub repo; upsert by githubId for idempotency)
-    const repository = await prisma.repository.upsert({
-      where: { githubId: PR_RATING_QA.repoGitHubId },
-      update: {
-        projectId: project.id,
-        defaultBranch: PR_RATING_QA.prBaseBranch,
-      },
+    // 6. GitHubInstallation + GitHubInstallationRepository (mock; upsert for idempotency)
+    const installation = await prisma.gitHubInstallation.upsert({
+      where: { organizationId },
+      update: {},
       create: {
-        projectId: project.id,
-        githubId: PR_RATING_QA.repoGitHubId,
+        organizationId,
+        installationId: 999_999,
+        accountId: 999_999,
+        accountLogin: PR_RATING_QA.repoOwner,
+        accountType: "Organization",
+        senderLogin: "qa-seed",
+        senderId: 1,
+        status: "ACTIVE",
+      },
+    });
+
+    const repository = await prisma.gitHubInstallationRepository.upsert({
+      where: {
+        installationId_githubRepoId: {
+          installationId: installation.id,
+          githubRepoId: PR_RATING_QA.repoGitHubId,
+        },
+      },
+      update: {},
+      create: {
+        installationId: installation.id,
+        githubRepoId: PR_RATING_QA.repoGitHubId,
         owner: PR_RATING_QA.repoOwner,
         name: PR_RATING_QA.repoName,
         fullName: PR_RATING_QA.repoFullName,
-        defaultBranch: PR_RATING_QA.prBaseBranch,
-        isPrimary: true,
+        private: false,
       },
     });
     console.log(`✓ Repository: ${repository.fullName} (${repository.id})`);
@@ -200,6 +217,7 @@ Verify that users can rate pull requests from the Implementation Plan page.
         title: PR_RATING_QA.prdTitle,
         slug: PR_RATING_QA.prdSlug,
         status: "APPROVED",
+        createdById: userId,
         latestVersion: 1,
       },
     });
@@ -241,6 +259,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
         title: PR_RATING_QA.planTitle,
         slug: PR_RATING_QA.planSlug,
         status: "APPROVED",
+        createdById: userId,
         latestVersion: 1,
       },
     });

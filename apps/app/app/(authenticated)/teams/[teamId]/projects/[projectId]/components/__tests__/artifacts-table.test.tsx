@@ -1,6 +1,6 @@
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
@@ -85,10 +85,40 @@ vi.mock("@/hooks/use-api-client", () => ({
   useApiClient: () => mockApiClient,
 }));
 
-const GENERATING_PLAN_REGEX =
-  /Generating implementation plan\.\.\. - View workflow/i;
+// Mock useMergeArtifacts
+const mockMutateAsync = vi.fn();
+vi.mock("@/hooks/queries/use-artifacts", () => ({
+  useMergeArtifacts: () => ({
+    mutateAsync: mockMutateAsync,
+    isPending: false,
+  }),
+}));
+
+// Mock sonner toast
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
+
+// Mock Tooltip components so TooltipContent renders inline (not in a Portal)
+// This lets us assert on the tooltip text without hover simulation.
+vi.mock("@repo/design-system/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  TooltipTrigger: ({
+    children,
+  }: {
+    children: ReactNode;
+    asChild?: boolean;
+  }) => <div>{children}</div>,
+  TooltipContent: ({ children }: { children: ReactNode }) => (
+    <div data-testid="tooltip-content">{children}</div>
+  ),
+}));
+
+const GENERATING_PLAN_REGEX = /Generating\.\.\. - View workflow/i;
 const EXECUTING_PLAN_REGEX =
   /Executing plan and creating PR\.\.\. - View workflow/i;
+const SELECT_ALL_IN_DOCUMENTS_REGEX = /select all in documents/i;
+const SELECTED_REGEX = /selected/;
 
 function createMockProjectArtifact(
   overrides?: Partial<ArtifactWithWorkstream>
@@ -594,5 +624,221 @@ describe("ArtifactsTable - Filter", () => {
 
     expect(screen.queryByText("Login Flow")).not.toBeInTheDocument();
     expect(screen.getByText("Dashboard UI")).toBeInTheDocument();
+  });
+});
+
+describe("ArtifactsTable - Merge Selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUseRouter.mockReturnValue({ push: vi.fn() });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("selecting all in section shows selection count in toolbar", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "artifact-1",
+        title: "PRD Alpha",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-2",
+        title: "PRD Beta",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Toolbar should not be visible yet
+    expect(screen.queryByText(SELECTED_REGEX)).not.toBeInTheDocument();
+
+    // Click the "Select all in Documents" checkbox in section header
+    const selectAllCheckbox = screen.getByRole("checkbox", {
+      name: SELECT_ALL_IN_DOCUMENTS_REGEX,
+    });
+    fireEvent.click(selectAllCheckbox);
+
+    // Toolbar should now show selection count
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+  });
+
+  test("2 same-project artifacts selected enables Merge button", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "artifact-1",
+        title: "PRD Alpha",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-2",
+        title: "PRD Beta",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Select all in section to get 2 same-project artifacts
+    const selectAllCheckbox = screen.getByRole("checkbox", {
+      name: SELECT_ALL_IN_DOCUMENTS_REGEX,
+    });
+    fireEvent.click(selectAllCheckbox);
+
+    // Merge button should be enabled (not disabled)
+    const mergeButton = screen.getByRole("button", { name: "Merge" });
+    expect(mergeButton).not.toBeDisabled();
+  });
+
+  test("2 different-project artifacts selected disables Merge button", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "artifact-1",
+        title: "PRD Alpha",
+        type: "PRD",
+        projectId: "project-a",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-2",
+        title: "PRD Beta",
+        type: "PRD",
+        projectId: "project-b",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Select all artifacts
+    const selectAllCheckbox = screen.getByRole("checkbox", {
+      name: SELECT_ALL_IN_DOCUMENTS_REGEX,
+    });
+    fireEvent.click(selectAllCheckbox);
+
+    // Merge button should be disabled with tooltip reason
+    const mergeButton = screen.getByRole("button", { name: "Merge" });
+    expect(mergeButton).toBeDisabled();
+
+    // Tooltip should explain why
+    const tooltip = screen.getByTestId("tooltip-content");
+    expect(tooltip).toHaveTextContent(
+      "Both artifacts must be from the same project"
+    );
+  });
+
+  test("3+ artifacts selected disables Merge button", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "artifact-1",
+        title: "PRD Alpha",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-2",
+        title: "PRD Beta",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-3",
+        title: "PRD Gamma",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Select all 3 artifacts in section
+    const selectAllCheckbox = screen.getByRole("checkbox", {
+      name: SELECT_ALL_IN_DOCUMENTS_REGEX,
+    });
+    fireEvent.click(selectAllCheckbox);
+
+    // 3 artifacts should be selected
+    expect(screen.getByText("3 selected")).toBeInTheDocument();
+
+    // Merge button should be disabled
+    const mergeButton = screen.getByRole("button", { name: "Merge" });
+    expect(mergeButton).toBeDisabled();
+
+    // Tooltip should explain why
+    const tooltip = screen.getByTestId("tooltip-content");
+    expect(tooltip).toHaveTextContent("Merge requires exactly 2 artifacts");
+  });
+
+  test("Clear Selection button removes all selections", () => {
+    const artifacts: ArtifactWithWorkstream[] = [
+      createMockProjectArtifact({
+        id: "artifact-1",
+        title: "PRD Alpha",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+      createMockProjectArtifact({
+        id: "artifact-2",
+        title: "PRD Beta",
+        type: "PRD",
+        projectId: "test-project-id",
+      }),
+    ];
+
+    renderWithProviders(
+      <ArtifactsTable
+        artifacts={artifacts}
+        filterText=""
+        projectId="test-project-id"
+      />
+    );
+
+    // Select all in section
+    const selectAllCheckbox = screen.getByRole("checkbox", {
+      name: SELECT_ALL_IN_DOCUMENTS_REGEX,
+    });
+    fireEvent.click(selectAllCheckbox);
+
+    // Verify selection count appears
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    // Click Clear Selection
+    const clearButton = screen.getByRole("button", { name: "Clear Selection" });
+    fireEvent.click(clearButton);
+
+    // Toolbar should be gone
+    expect(screen.queryByText(SELECTED_REGEX)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Clear Selection" })
+    ).not.toBeInTheDocument();
   });
 });

@@ -20,7 +20,10 @@ import {
   useArtifactPullRequest,
 } from "@/hooks/queries/use-artifacts";
 import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
-import { useJudgesFeedback } from "@/hooks/queries/use-judges";
+import {
+  useCodeJudgesFeedback,
+  useJudgesFeedback,
+} from "@/hooks/queries/use-judges";
 import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
@@ -100,6 +103,7 @@ export function PlanEditor({
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = useJudgesFeedback(plan.id);
+  const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
   // Preview deployment via ExternalLink
   const workstreamId = plan.workstreamId ?? "";
@@ -209,14 +213,15 @@ export function PlanEditor({
           metadataPanel={
             <PlanMetadataPanel
               approver={metadata.approver}
+              assignee={metadata.assignee}
+              codeJudgesReport={codeJudgesReport ?? null}
               generationStatus={generationStatus ?? null}
               isPreviewRefreshing={isRefreshingPreviewDeployment}
               judgesReport={judgesReport ?? null}
               onApproverSelect={metadata.handleApproverSelect}
-              onOwnerChange={metadata.handleOwnerChange}
+              onAssigneeChange={metadata.handleAssigneeChange}
               onPreviewRefresh={refetchPreviewLinks}
               onStatusChange={metadata.handleStatusChange}
-              owner={metadata.owner}
               plan={plan}
               previewDeployment={previewDeployment}
               pullRequest={pullRequest ?? null}

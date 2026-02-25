@@ -5,7 +5,8 @@ import {
   ArtifactType,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
-import type { ProjectPriority } from "@repo/api/src/types/organization";
+import type { Priority } from "@repo/api/src/types/common";
+import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -24,30 +25,37 @@ import {
 import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
+import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
 import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
   ChevronDownIcon,
+  CircleDotIcon,
   ClipboardListIcon,
   FileTextIcon,
   Loader2Icon,
   SearchIcon,
 } from "lucide-react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
+import {
+  UnderlineTabsList,
+  UnderlineTabsTrigger,
+} from "@/components/underline-tabs";
 import {
   useArtifactsByProject,
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useCreateIssue } from "@/hooks/queries/use-issues";
 import {
   useProject,
   useProjectActivity,
-  useUpdateProjectOwner,
+  useUpdateProjectAssignee,
   useUpdateProjectPriority,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
@@ -60,7 +68,7 @@ import { PropertiesPanel } from "./components/properties-panel";
 import { useMergeNotification } from "./hooks/use-merge-notification";
 
 /** Workstream states that indicate an async workflow is actively running. */
-const ACTIVE_WORKSTREAM_STATES = new Set([
+const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
   "REQUIREMENTS_GENERATING",
   "IMPLEMENTATION_PLANNING",
   "IMPLEMENTATION_IN_PROGRESS",
@@ -71,9 +79,11 @@ const ACTIVE_WORKSTREAM_STATES = new Set([
 
 export default function ProjectDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
+  const [activeTab, setActiveTab] = useState("documents");
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
     useState<ArtifactType>(ArtifactType.Prd);
@@ -126,23 +136,27 @@ export default function ProjectDetailPage() {
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
-  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updateArtifactMutation = useUpdateArtifact();
   const deleteArtifactMutation = useDeleteArtifact();
+  const createIssueMutation = useCreateIssue();
 
-  const handleUpdatePriority = (priority: ProjectPriority) => {
+  const handleUpdatePriority = (priority: Priority) => {
     if (!project) {
       return;
     }
-    updatePriorityMutation.mutate({ projectId: project.id, priority });
+    updatePriorityMutation.mutate({
+      projectId: project.id,
+      priority,
+    });
   };
 
-  const handleUpdateOwner = (ownerId: string | null) => {
+  const handleUpdateAssignee = (assigneeId: string | null) => {
     if (!project) {
       return;
     }
-    updateOwnerMutation.mutate({ projectId: project.id, ownerId });
+    updateAssigneeMutation.mutate({ projectId: project.id, assigneeId });
   };
 
   const handleUpdateTargetDate = (date: Date | null) => {
@@ -190,9 +204,8 @@ export default function ProjectDetailPage() {
 
   return (
     <>
-      <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
+      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
         <SidebarTrigger className="-ml-1" />
-        <Separator className="mr-2 h-4" orientation="vertical" />
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
@@ -229,6 +242,23 @@ export default function ProjectDetailPage() {
                 <ClipboardListIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
               </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={createIssueMutation.isPending}
+                onClick={() => {
+                  // TODO: Add feature creation modal
+                  createIssueMutation.mutate(
+                    { title: "Untitled Feature", projectId },
+                    {
+                      onSuccess: (issue) => {
+                        router.push(`/issues/${issue.slug}`);
+                      },
+                    }
+                  );
+                }}
+              >
+                <CircleDotIcon className="mr-2 h-4 w-4" />
+                Feature
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -236,70 +266,108 @@ export default function ProjectDetailPage() {
       <main className="flex-1 overflow-auto">
         <div className="flex h-full">
           {/* Main Content Area */}
-          <div className="flex-1 p-6">
-            <div className="mb-6">
-              <EditableProjectTitle
-                initialTitle={project.name}
-                projectId={project.id}
-              />
-              <EditableProjectDescription
-                initialDescription={project.description ?? ""}
-                projectId={project.id}
-              />
-            </div>
-            <div className="mb-4 flex items-center justify-end">
-              <ToggleGroup
-                onValueChange={(value) => {
-                  if (value) {
-                    setViewMode(value as "type" | "threaded");
-                  }
-                }}
-                type="single"
-                value={viewMode}
-              >
-                <ToggleGroupItem value="type">Type</ToggleGroupItem>
-                <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
-              </ToggleGroup>
-            </div>
-            {artifacts.length > 0 && (
-              <div className="mb-4">
-                <div className="relative">
-                  <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                    <SearchIcon className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <Input
-                    aria-label="Filter artifacts"
-                    className="pl-9"
-                    onChange={(e) => setFilterText(e.target.value)}
-                    placeholder="Filter artifacts..."
-                    value={filterText}
+          <Tabs
+            className="flex-1"
+            onValueChange={setActiveTab}
+            value={activeTab}
+          >
+            <UnderlineTabsList>
+              <UnderlineTabsTrigger value="documents">
+                Documents
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="features">
+                Features
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="workflows">
+                Workflows
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="branches">
+                Branches
+              </UnderlineTabsTrigger>
+            </UnderlineTabsList>
+            <div className="p-6">
+              <TabsContent className="mt-0" value="documents">
+                <div className="mb-6">
+                  <EditableProjectTitle
+                    initialTitle={project.name}
+                    projectId={project.id}
+                  />
+                  <EditableProjectDescription
+                    initialDescription={project.description ?? ""}
+                    projectId={project.id}
                   />
                 </div>
-              </div>
-            )}
-            {viewMode === "type" ? (
-              <ArtifactsTable
-                artifacts={artifacts}
-                filterText={filterText}
-                onDelete={handleDeleteArtifact}
-                onStatusChange={handleArtifactStatusChange}
-                projectId={projectId}
-              />
-            ) : (
-              <ArtifactsThreadedView
-                artifacts={artifacts}
-                filterText={filterText}
-                onDelete={handleDeleteArtifact}
-                onStatusChange={handleArtifactStatusChange}
-                projectId={projectId}
-              />
-            )}
-          </div>
+                <div className="mb-4 flex items-center justify-end">
+                  <ToggleGroup
+                    onValueChange={(value) => {
+                      if (value) {
+                        setViewMode(value as "type" | "threaded");
+                      }
+                    }}
+                    type="single"
+                    value={viewMode}
+                  >
+                    <ToggleGroupItem value="type">Type</ToggleGroupItem>
+                    <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+                {artifacts.length > 0 && (
+                  <div className="mb-4">
+                    <div className="relative">
+                      <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                        <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                      <Input
+                        aria-label="Filter artifacts"
+                        className="pl-9"
+                        onChange={(e) => setFilterText(e.target.value)}
+                        placeholder="Filter artifacts..."
+                        value={filterText}
+                      />
+                    </div>
+                  </div>
+                )}
+                {viewMode === "type" ? (
+                  <ArtifactsTable
+                    artifacts={artifacts}
+                    filterText={filterText}
+                    onDelete={handleDeleteArtifact}
+                    onStatusChange={handleArtifactStatusChange}
+                    projectId={projectId}
+                  />
+                ) : (
+                  <ArtifactsThreadedView
+                    artifacts={artifacts}
+                    filterText={filterText}
+                    onDelete={handleDeleteArtifact}
+                    onStatusChange={handleArtifactStatusChange}
+                    projectId={projectId}
+                  />
+                )}
+              </TabsContent>
+              <TabsContent className="mt-0" value="features">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Features coming soon
+                </div>
+              </TabsContent>
+              <TabsContent className="mt-0" value="workflows">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Workflows coming soon
+                </div>
+              </TabsContent>
+              <TabsContent className="mt-0" value="branches">
+                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
+                  Branches coming soon
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
 
           {/* Right Sidebar */}
           <div className="w-[300px] space-y-4 border-l p-4">
+            {/* TODO: Add the several missing event handlers for the properties panel */}
             <PropertiesPanel
-              onUpdateOwner={handleUpdateOwner}
+              onUpdateAssignee={handleUpdateAssignee}
               onUpdatePriority={handleUpdatePriority}
               onUpdateTargetDate={handleUpdateTargetDate}
               project={project}

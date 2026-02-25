@@ -842,7 +842,7 @@ function findExistingRunDir(workDir) {
       return null;
     }
     // Use the most recent run directory (last when sorted alphabetically)
-    return path.join(runsDir, dirs[dirs.length - 1]);
+    return path.join(runsDir, dirs.at(-1));
   } catch {
     return null;
   }
@@ -1121,7 +1121,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     `     - Base branch: ${config.targetBranch}`,
     "     - Write a descriptive title based on the actual changes",
     "     - Include a summary of what was changed in the body",
-    '     - Add label: symphony',
+    "     - Add label: symphony",
     "   - If a PR already exists, get its URL with: gh pr view --json url -q .url",
     "7. ONLY after a successful commit AND push, write this EXACT JSON file:",
     `   File path: ${resultFilePath}`,
@@ -1197,9 +1197,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
     // Read execution-result.json written by the LLM (preferred over stdout parsing)
     if (fs.existsSync(resultFilePath)) {
       try {
-        const resultData = JSON.parse(
-          fs.readFileSync(resultFilePath, "utf-8")
-        );
+        const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
         log(
           "info",
           `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
@@ -1226,9 +1224,7 @@ function attemptLlmCommit(workDir, resultFilePath) {
       log("info", `LLM commit created PR: ${prMatch[0]}`);
       return {
         prUrl: prMatch[0],
-        prNumber: prNumberMatch
-          ? Number.parseInt(prNumberMatch[1], 10)
-          : null,
+        prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
         branchName,
         commitSha: null,
       };
@@ -2305,7 +2301,10 @@ function writeExecutionResult(workDir, prInfo) {
     // Don't overwrite if the LLM commit step already wrote it —
     // the LLM's version has first-hand PR/commit info from its own operations.
     if (fs.existsSync(filePath)) {
-      log("info", "execution-result.json already exists (written by LLM commit), skipping");
+      log(
+        "info",
+        "execution-result.json already exists (written by LLM commit), skipping"
+      );
       return;
     }
 
@@ -2374,7 +2373,10 @@ async function reportFinalStatus(
       prInfo = llmPrInfo;
     } else {
       // Fallback: safety commit + push + mechanical PR creation
-      log("info", "LLM commit did not produce execution-result.json — running safety fallback");
+      log(
+        "info",
+        "LLM commit did not produce execution-result.json — running safety fallback"
+      );
       attemptSafetyCommit(workDir, safetyCommitMsg);
       ensureBranchPushed(workDir);
 
@@ -2458,89 +2460,6 @@ async function reportFinalStatus(
       loopId: config.loopId,
     });
     log("info", "Reported FAILED event");
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Fatal error handler (extracted to keep main() complexity under limit)
-// ---------------------------------------------------------------------------
-async function handleFatalError(err, workDir, output, startTime) {
-  const harnessError = toHarnessError(err);
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  const errorMessage = harnessError.message;
-  const errorStack = err instanceof Error ? err.stack : undefined;
-  log(
-    "error",
-    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-  );
-  if (errorStack) {
-    log("error", redactSensitive(errorStack));
-  }
-
-  // Best-effort: refresh token, safety commit, push, create PR, label
-  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-  // even on fatal errors.
-  try {
-    await refreshGitHubToken();
-  } catch (_) {
-    // ignore
-  }
-  try {
-    attemptSafetyCommit(
-      workDir,
-      "[INCOMPLETE] WIP: Safety commit — harness error"
-    );
-    ensureBranchPushed(workDir);
-  } catch (_) {
-    // ignore — attemptSafetyCommit is already best-effort internally
-  }
-
-  let prInfo = null;
-  try {
-    prInfo = parsePrInfo(workDir, output);
-    prInfo = createPullRequest(workDir, prInfo);
-    if (prInfo?.prNumber) {
-      labelPrIncomplete(workDir, prInfo.prNumber);
-    }
-  } catch (_) {
-    // ignore
-  }
-
-  // Best-effort: write execution-result.json before upload
-  try {
-    writeExecutionResult(workDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Best-effort: upload whatever state we have
-  try {
-    await uploadState(workDir, output);
-  } catch (uploadErr) {
-    log(
-      "error",
-      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-    );
-  }
-
-  // Best-effort: report failure with PR info
-  try {
-    await reportEvent({
-      type: "error",
-      code: harnessError.code,
-      message: redactSensitive(errorMessage),
-      result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
-      },
-      correlationId: config.correlationId,
-      loopId: config.loopId,
-    });
-  } catch (reportErr) {
-    log(
-      "error",
-      `Failed to report error event: ${redactSensitive(reportErr.message)}`
-    );
   }
 }
 
@@ -2726,7 +2645,10 @@ async function main() {
 
     let prInfo = null;
     if (shouldCommitAndPush) {
-      const errorResultPath = path.join(symphonyWorkDir || workDir, "execution-result.json");
+      const errorResultPath = path.join(
+        symphonyWorkDir || workDir,
+        "execution-result.json"
+      );
 
       // Try LLM commit first (writes execution-result.json on success)
       let llmPrInfo = null;

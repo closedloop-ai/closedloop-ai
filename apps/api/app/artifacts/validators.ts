@@ -1,13 +1,10 @@
-import {
-  ARTIFACT_STATUS_OPTIONS,
-  ARTIFACT_TYPE_OPTIONS,
-} from "@repo/api/src/types/artifact";
-import { ENTITY_TYPE_OPTIONS } from "@repo/api/src/types/entity-link";
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 
-const artifactStatusEnum = z.enum(ARTIFACT_STATUS_OPTIONS);
-const artifactTypeEnum = z.enum(ARTIFACT_TYPE_OPTIONS);
-const entityTypeEnum = z.enum(ENTITY_TYPE_OPTIONS);
+const artifactStatusEnum = z.enum(ArtifactStatus);
+const artifactTypeEnum = z.enum(ArtifactType);
+const entityTypeEnum = z.enum(EntityType);
 
 // Validate owner/repo format (e.g., "closedloop/astoria-service")
 const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
@@ -30,7 +27,7 @@ export const createArtifactValidator = z
       .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
       .optional(),
     targetBranch: z.string().optional(),
-    ownerId: z.uuidv7().optional(),
+    assigneeId: z.uuidv7().nullable().optional(),
   })
   .refine(
     (data) => data.type === "TEMPLATE" || data.workstreamId || data.projectId,
@@ -52,7 +49,7 @@ export const updateArtifactValidator = z.object({
     .optional(),
   targetBranch: z.string().nullable().optional(),
   projectId: z.uuidv7().nullable().optional(),
-  ownerId: z.uuidv7().nullable().optional(),
+  assigneeId: z.uuidv7().nullable().optional(),
   sortOrder: z.number().nullable().optional(),
 });
 
@@ -64,19 +61,27 @@ export const findArtifactsQueryValidator = z.object({
   type: artifactTypeEnum.optional(),
   workstreamId: z.uuidv7().optional(),
   projectId: z.uuidv7().optional(),
-  ownerId: z.uuidv7().optional(),
+  assigneeId: z.uuidv7().optional(),
 });
 
 export const reorderArtifactsValidator = z.object({
-  artifactIds: z.array(z.string().uuid()),
+  artifactIds: z.array(z.uuidv7()),
 });
 
 export const batchMoveArtifactsValidator = z.object({
-  artifactIds: z
-    .array(z.string().uuid())
-    .min(1, "At least one artifact ID required"),
+  artifactIds: z.array(z.uuidv7()).min(1, "At least one artifact ID required"),
   targetProjectId: z.uuidv7(),
 });
+
+export const mergeArtifactsValidator = z
+  .object({
+    primaryArtifactId: z.uuidv7(),
+    secondaryArtifactId: z.uuidv7(),
+  })
+  .refine((data) => data.primaryArtifactId !== data.secondaryArtifactId, {
+    message: "Primary and secondary artifact IDs must be different",
+    path: ["secondaryArtifactId"],
+  });
 
 export const batchCreateArtifactsValidator = z.object({
   items: z

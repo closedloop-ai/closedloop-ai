@@ -11,7 +11,7 @@ import {
 } from "./tool-utils.js";
 
 const DEFAULT_CONTENT_MAX_CHARS = 4000;
-const MAX_CONTENT_MAX_CHARS = 20_000;
+const MAX_CONTENT_MAX_CHARS = 120_000;
 
 /**
  * Register the get-artifact tool on the given MCP server.
@@ -21,33 +21,36 @@ export function registerGetArtifact(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-artifact",
-    "Retrieve a single artifact by its ID",
     {
-      artifactId: z.string().describe("ID of the artifact to retrieve"),
-      includeContent: z
-        .boolean()
-        .optional()
-        .describe(
-          "Whether to include artifact version content in the response (default false)"
-        ),
-      contentMaxChars: z
-        .number()
-        .int()
-        .min(200)
-        .max(MAX_CONTENT_MAX_CHARS)
-        .optional()
-        .describe(
-          `Maximum content characters when includeContent=true (default ${DEFAULT_CONTENT_MAX_CHARS}, max ${MAX_CONTENT_MAX_CHARS})`
-        ),
+      description: "Retrieve a single artifact by its ID",
+      inputSchema: {
+        artifactId: z.string().describe("ID of the artifact to retrieve"),
+        includeContent: z
+          .boolean()
+          .optional()
+          .describe(
+            "Whether to include artifact version content in the response (default false)"
+          ),
+        contentMaxChars: z
+          .number()
+          .int()
+          .min(200)
+          .max(MAX_CONTENT_MAX_CHARS)
+          .optional()
+          .describe(
+            `Maximum content characters when includeContent=true (default ${DEFAULT_CONTENT_MAX_CHARS}, max ${MAX_CONTENT_MAX_CHARS})`
+          ),
+      },
     },
     ({ artifactId, includeContent, contentMaxChars }) =>
       withErrorHandling(async () => {
-        const artifact = await apiClient.get<unknown>(
+        const response = await apiClient.get<unknown>(
           `/artifacts/${encodePathSegment(artifactId)}`
         );
-        const row = asRecord(artifact);
+        const envelope = asRecord(response);
+        const row = asRecord(envelope.data ?? response);
         const version = asRecord(row.version);
         const rawContent = readString(version.content) ?? "";
         const resolvedContentMaxChars =

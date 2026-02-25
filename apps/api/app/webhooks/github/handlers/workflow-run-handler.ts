@@ -14,8 +14,7 @@ import { handleWorkflowStatusUpdate } from "./workflow-status-handler";
  * and routes to the appropriate handler based on the event action.
  */
 export async function handleWorkflowRun(
-  event: WorkflowRunEvent,
-  s3Configured: boolean
+  event: WorkflowRunEvent
 ): Promise<Response> {
   log.info("[webhook/github] Parsed workflow_run event", {
     action: event.action,
@@ -80,11 +79,7 @@ export async function handleWorkflowRun(
         correlationId,
         conclusion: event.workflow_run.conclusion,
       });
-      return await processWorkflowCompletion(
-        event,
-        correlationId,
-        s3Configured
-      );
+      return await processWorkflowCompletion(event, correlationId);
 
     default: {
       // TypeScript exhaustiveness check - this should never happen

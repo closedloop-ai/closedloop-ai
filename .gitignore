@@ -271,6 +271,7 @@ $RECYCLE.BIN/
 # Symphony
 .symphony
 .agent-types
+CLAUDE.md.backup
 
 # .claude
 .claude/*

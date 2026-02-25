@@ -3,6 +3,10 @@
  * Maps Symphony IssueWithWorkstream to the shape closedloop-dev components expect.
  */
 
+import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
+import { IssueStatus } from "@repo/api/src/types/issue";
+
 export type TicketStatusType =
   | "triage"
   | "backlog"
@@ -40,7 +44,7 @@ export type EngineerTicket = {
   updatedAt: string;
   url: string; // Link to the issue in Symphony
   // Symphony-specific fields
-  issueId: string; // The actual Symphony issue UUID
+  issueId?: string; // The actual Symphony issue UUID (only set for Issue-sourced tickets)
   projectName?: string;
   workstreamTitle?: string;
 };
@@ -53,47 +57,51 @@ export type EngineerTicketsResult = {
 };
 
 /** Map Symphony IssueStatus to closedloop-dev status type */
-export function mapIssueStatusToType(status: string): TicketStatusType {
+export function mapIssueStatusToType(status: IssueStatus): TicketStatusType {
   switch (status) {
-    case "TODO":
+    case IssueStatus.NotStarted:
       return "unstarted";
-    case "IN_PROGRESS":
+    case IssueStatus.InProgress:
       return "started";
-    case "IN_REVIEW":
+    case IssueStatus.InReview:
       return "started";
-    case "CLOSED":
+    case IssueStatus.Completed:
       return "completed";
+    case IssueStatus.Obsolete:
+      return "canceled";
     default:
       return "unstarted";
   }
 }
 
 /** Map Symphony IssueStatus to display name */
-export function statusDisplayName(status: string): string {
+export function statusDisplayName(status: IssueStatus): string {
   switch (status) {
-    case "TODO":
-      return "To Do";
-    case "IN_PROGRESS":
+    case IssueStatus.NotStarted:
+      return "Not Started";
+    case IssueStatus.InProgress:
       return "In Progress";
-    case "IN_REVIEW":
+    case IssueStatus.InReview:
       return "In Review";
-    case "CLOSED":
+    case IssueStatus.Completed:
       return "Done";
+    case IssueStatus.Obsolete:
+      return "Obsolete";
     default:
       return status;
   }
 }
 
 /** Map Symphony IssuePriority to numeric value (higher = more urgent) */
-export function priorityToNumber(priority: string): number {
+export function priorityToNumber(priority: Priority): number {
   switch (priority) {
-    case "URGENT":
+    case Priority.Urgent:
       return 1;
-    case "HIGH":
+    case Priority.High:
       return 2;
-    case "MEDIUM":
+    case Priority.Medium:
       return 3;
-    case "LOW":
+    case Priority.Low:
       return 4;
     default:
       return 3;
@@ -101,15 +109,15 @@ export function priorityToNumber(priority: string): number {
 }
 
 /** Map Symphony IssuePriority to display label */
-export function priorityToLabel(priority: string): string {
+export function priorityToLabel(priority: Priority): string {
   switch (priority) {
-    case "URGENT":
+    case Priority.Urgent:
       return "Urgent";
-    case "HIGH":
+    case Priority.High:
       return "High";
-    case "MEDIUM":
+    case Priority.Medium:
       return "Medium";
-    case "LOW":
+    case Priority.Low:
       return "Low";
     default:
       return "Medium";
@@ -117,45 +125,47 @@ export function priorityToLabel(priority: string): string {
 }
 
 /** Map ArtifactStatus to closedloop-dev status type */
-export function mapArtifactStatusToType(status: string): TicketStatusType {
+export function mapArtifactStatusToType(
+  status: ArtifactStatus
+): TicketStatusType {
   switch (status) {
-    case "DRAFT":
+    case ArtifactStatus.Draft:
       return "started";
-    case "REVIEW":
+    case ArtifactStatus.InReview:
       return "started";
-    case "APPROVED":
+    case ArtifactStatus.Approved:
       return "completed";
-    case "ARCHIVED":
-      return "completed";
+    case ArtifactStatus.Obsolete:
+      return "canceled";
     default:
       return "unstarted";
   }
 }
 
 /** Map ArtifactStatus to display name */
-export function artifactStatusDisplayName(status: string): string {
+export function artifactStatusDisplayName(status: ArtifactStatus): string {
   switch (status) {
-    case "DRAFT":
+    case ArtifactStatus.Draft:
       return "Draft";
-    case "REVIEW":
+    case ArtifactStatus.InReview:
       return "In Review";
-    case "APPROVED":
+    case ArtifactStatus.Approved:
       return "Approved";
-    case "ARCHIVED":
-      return "Archived";
+    case ArtifactStatus.Obsolete:
+      return "Obsolete";
     default:
       return status;
   }
 }
 
 /** Map artifact type string to display label */
-export function artifactTypeToSourceType(type: string): TicketSourceType {
+export function artifactTypeToSourceType(type: ArtifactType): TicketSourceType {
   switch (type) {
-    case "PRD":
+    case ArtifactType.Prd:
       return "PRD";
-    case "IMPLEMENTATION_PLAN":
+    case ArtifactType.ImplementationPlan:
       return "Implementation Plan";
-    case "TEMPLATE":
+    case ArtifactType.Template:
       return "Template";
     default:
       return "PRD";
@@ -179,8 +189,8 @@ export type McpIssue = {
   title: string;
   slug: string;
   description: string | null;
-  status: string;
-  priority: string;
+  status: IssueStatus;
+  priority: Priority;
   projectId: string | null;
   workstreamId: string | null;
   assigneeId: string | null;
@@ -200,20 +210,41 @@ export type McpArtifact = {
   id: string;
   title: string;
   slug: string;
-  type: string;
-  status: string;
+  type: ArtifactType;
+  status: ArtifactStatus;
   snippet: string | null;
   projectId: string | null;
   workstreamId: string | null;
-  ownerId: string | null;
+  assigneeId: string | null;
   createdAt: string;
   updatedAt: string;
-  owner: {
+  assignee: {
     id: string | null;
+    email: string | null;
     firstName: string | null;
     lastName: string | null;
     avatarUrl: string | null;
   } | null;
   project: { name: string | null } | null;
   workstream: { title: string | null } | null;
+};
+
+export type McpArtifactDetail = {
+  id: string;
+  title: string;
+  slug: string;
+  type: ArtifactType;
+  status: ArtifactStatus;
+  projectId: string | null;
+  workstreamId: string | null;
+  latestVersion: number | null;
+  updatedAt: string;
+  version: {
+    id: string;
+    version: number | null;
+    createdAt: string;
+    createdById: string | null;
+    contentLength: number;
+    content?: string;
+  };
 };

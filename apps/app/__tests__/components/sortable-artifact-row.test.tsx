@@ -26,6 +26,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 
 // Mock lucide-react icons
 vi.mock("lucide-react", () => ({
+  CheckIcon: () => <div data-testid="check-icon" />,
   GripVertical: () => <div data-testid="grip-icon" />,
 }));
 
@@ -44,12 +45,12 @@ describe("SortableArtifactRow", () => {
     title: "Test Artifact",
     slug: "test-artifact",
     fileName: null,
-    owner: null,
+    assignee: null,
     approver: null,
     status: "DRAFT",
     latestVersion: 1,
-    generatedBy: null,
-    ownerId: null,
+    createdById: "user-1",
+    assigneeId: null,
     approverId: null,
     tokenUsage: null,
     targetRepo: null,

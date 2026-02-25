@@ -10,6 +10,7 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
+import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -37,6 +38,11 @@ import {
   TableRow,
 } from "@repo/design-system/components/ui/table";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import {
   ChevronDown,
   FileTextIcon,
   FolderIcon,
@@ -46,11 +52,13 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
+import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
@@ -68,6 +76,7 @@ import type { SortConfig, SortDirection } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { ArtifactTypeBadge } from "./artifact-type-badge";
+import { MergeArtifactsDialog } from "./merge-artifacts-dialog";
 import { SortableArtifactRow } from "./sortable-artifact-row";
 
 type ArtifactsTableProps = {
@@ -100,7 +109,7 @@ const ARTIFACT_SORT_COLUMNS = [
   "title",
   "type",
   "status",
-  "creator",
+  "assignee",
   "updatedAt",
 ] as const;
 
@@ -113,11 +122,11 @@ const ARTIFACT_SORT_CONFIGS: Record<
   title: { key: "title", columnType: "string" },
   type: { key: "type", columnType: "string" },
   status: { key: "status", columnType: "string" },
-  creator: {
-    key: "owner",
+  assignee: {
+    key: "assignee",
     comparator: (a, b) => {
-      const aName = a.owner ? getUserDisplayName(a.owner) : "";
-      const bName = b.owner ? getUserDisplayName(b.owner) : "";
+      const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
+      const bName = b.assignee ? getUserDisplayName(b.assignee) : "";
       return aName.localeCompare(bName);
     },
   },
@@ -145,6 +154,12 @@ type ArtifactSectionProps = {
   sortBy: ArtifactSortColumn | null;
   sortDir: SortDirection;
   onSort: (column: ArtifactSortColumn, direction: SortDirection) => void;
+  selectedIds?: Set<string>;
+  onSelectChange?: (id: string, checked: boolean) => void;
+  onSelectAllInSection?: (
+    sectionArtifactIds: string[],
+    checked: boolean
+  ) => void;
 };
 
 function ArtifactSection({
@@ -157,6 +172,9 @@ function ArtifactSection({
   sortBy,
   sortDir,
   onSort,
+  selectedIds,
+  onSelectChange,
+  onSelectAllInSection,
 }: ArtifactSectionProps) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
@@ -180,6 +198,13 @@ function ArtifactSection({
     [sortedArtifacts]
   );
 
+  const allSectionSelected =
+    sortedArtifacts.length > 0 &&
+    sortedArtifacts.every((a) => selectedIds?.has(a.id));
+
+  const someSectionSelected =
+    !allSectionSelected && sortedArtifacts.some((a) => selectedIds?.has(a.id));
+
   return (
     <Collapsible defaultOpen>
       <CollapsibleTrigger className="group flex w-full items-center gap-2 px-0 py-3 text-left font-semibold text-lg hover:opacity-80">
@@ -190,7 +215,19 @@ function ArtifactSection({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-8" />
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label={`Select all in ${title}`}
+                  checked={
+                    allSectionSelected ||
+                    (someSectionSelected ? "indeterminate" : false)
+                  }
+                  onCheckedChange={(checked) =>
+                    onSelectAllInSection?.(sortedArtifactIds, !!checked)
+                  }
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </TableHead>
               <SortableColumnHeader
                 column="title"
                 label="Artifact"
@@ -213,8 +250,8 @@ function ArtifactSection({
                 sortDir={sortDir}
               />
               <SortableColumnHeader
-                column="creator"
-                label="Creator"
+                column="assignee"
+                label="Assignee"
                 onSort={onSort}
                 sortBy={sortBy}
                 sortDir={sortDir}
@@ -249,6 +286,8 @@ function ArtifactSection({
                     }
                     key={artifact.id}
                     onClick={() => onRowClick(artifact)}
+                    onSelectChange={onSelectChange}
+                    selectedIds={selectedIds}
                   >
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -301,8 +340,8 @@ function ArtifactSection({
                     </TableCell>
                     <TableCell>
                       <span className="text-muted-foreground text-sm">
-                        {artifact.owner
-                          ? getUserDisplayName(artifact.owner)
+                        {artifact.assignee
+                          ? getUserDisplayName(artifact.assignee)
                           : "-"}
                       </span>
                     </TableCell>
@@ -373,6 +412,11 @@ export function ArtifactsTable({
   onDelete,
 }: ArtifactsTableProps) {
   const router = useRouter();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [mergeDialogOpen, setMergeDialogOpen] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const { mutateAsync: mergeArtifacts, isPending: isMergePending } =
+    useMergeArtifacts();
   const { sortBy, sortDir, setSort } = useSortParams<ArtifactSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
@@ -407,6 +451,73 @@ export function ArtifactsTable({
     }
   }
 
+  function handleSelectChange(id: string, checked: boolean): void {
+    if (checked) {
+      setSelectedIds((prev) => new Set([...prev, id]));
+    } else {
+      setSelectedIds((prev) => new Set([...prev].filter((x) => x !== id)));
+    }
+  }
+
+  function handleSelectAllInSection(
+    sectionArtifactIds: string[],
+    checked: boolean
+  ): void {
+    if (checked) {
+      setSelectedIds((prev) => new Set([...prev, ...sectionArtifactIds]));
+    } else {
+      const sectionSet = new Set(sectionArtifactIds);
+      setSelectedIds(
+        (prev) => new Set([...prev].filter((x) => !sectionSet.has(x)))
+      );
+    }
+  }
+
+  const selectedArtifactsList = artifacts.filter((a) => selectedIds.has(a.id));
+  const canMerge = getMergeDisabledReason() === null;
+
+  async function handleMerge(
+    primaryId: string,
+    secondaryId: string
+  ): Promise<void> {
+    setMergeError(null);
+    try {
+      const updatedArtifact = await mergeArtifacts({
+        primaryArtifactId: primaryId,
+        secondaryArtifactId: secondaryId,
+      });
+      setSelectedIds(new Set());
+      setMergeDialogOpen(false);
+      const route = getArtifactRoute(updatedArtifact);
+      toast.success("Artifacts merged", {
+        action: route
+          ? { label: "View", onClick: () => router.push(route) }
+          : undefined,
+      });
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to merge artifacts";
+      setMergeError(msg);
+    }
+  }
+
+  function getMergeDisabledReason(): string | null {
+    if (selectedIds.size === 1) {
+      return "Select exactly 2 artifacts to merge";
+    }
+    if (selectedIds.size > 2) {
+      return "Merge requires exactly 2 artifacts";
+    }
+    const pid0 = selectedArtifactsList[0]?.projectId;
+    const pid1 = selectedArtifactsList[1]?.projectId;
+    if (selectedIds.size === 2 && (!(pid0 && pid1) || pid0 !== pid1)) {
+      return "Both artifacts must be from the same project";
+    }
+    return null;
+  }
+
+  const mergeDisabledReason = getMergeDisabledReason();
+
   if (artifacts.length === 0) {
     return (
       <EmptyState
@@ -431,15 +542,53 @@ export function ArtifactsTable({
 
   return (
     <div className="space-y-6">
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-md border bg-muted/50 px-4 py-2">
+          <span className="font-medium text-sm">
+            {selectedIds.size} selected
+          </span>
+          <Button
+            onClick={() => setSelectedIds(new Set())}
+            size="sm"
+            variant="ghost"
+          >
+            Clear Selection
+          </Button>
+          {canMerge ? (
+            <Button
+              disabled={isMergePending}
+              onClick={() => setMergeDialogOpen(true)}
+              size="sm"
+              variant="outline"
+            >
+              Merge
+            </Button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button disabled size="sm" variant="outline">
+                    Merge
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{mergeDisabledReason}</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+      )}
       {sections.map((section) => (
         <ArtifactSection
           artifacts={section.artifacts}
           key={section.title}
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
+          onSelectAllInSection={handleSelectAllInSection}
+          onSelectChange={handleSelectChange}
           onSort={setSort}
           onStatusChange={onStatusChange}
           projectId={projectId}
+          selectedIds={selectedIds}
           sortBy={sortBy}
           sortDir={sortDir}
           title={section.title}
@@ -454,6 +603,21 @@ export function ArtifactsTable({
         open={deleteConfirmation.isOpen}
         title="Artifact"
       />
+      {mergeDialogOpen && selectedArtifactsList.length === 2 && (
+        <MergeArtifactsDialog
+          artifacts={
+            selectedArtifactsList as [
+              ArtifactWithWorkstream,
+              ArtifactWithWorkstream,
+            ]
+          }
+          error={mergeError}
+          isPending={isMergePending}
+          onConfirm={handleMerge}
+          onOpenChange={setMergeDialogOpen}
+          open={mergeDialogOpen}
+        />
+      )}
     </div>
   );
 }

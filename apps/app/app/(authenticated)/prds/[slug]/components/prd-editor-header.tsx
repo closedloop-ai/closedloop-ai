@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import type {
+  ArtifactStatus,
+  ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -10,8 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
+  ChevronDownIcon,
   DownloadIcon,
   FolderIcon,
+  LoaderIcon,
   MessageSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -30,7 +35,7 @@ type PRDEditorHeaderProps = {
   /**
    * Status of the artifact
    */
-  status: string;
+  status: ArtifactStatus;
   /**
    * Whether the editor is in edit mode
    */
@@ -59,6 +64,18 @@ type PRDEditorHeaderProps = {
    * Callback when generate plan button is clicked
    */
   onGeneratePlan: () => void;
+  /**
+   * Callback when Quick PRD (inline generation) is clicked
+   */
+  onQuickGenerate: () => void;
+  /**
+   * Callback when Deep PRD (async GH Action generation) is clicked
+   */
+  onDeepGenerate: () => void;
+  /**
+   * Whether PRD generation is currently in progress
+   */
+  isGenerating?: boolean;
   /**
    * Callback when edit button is clicked
    */
@@ -119,6 +136,9 @@ export function PRDEditorHeader({
   showMetadataPanel,
   onToggleMetadataPanel,
   onGeneratePlan,
+  onQuickGenerate,
+  onDeepGenerate,
+  isGenerating = false,
   onDiscard,
   onEdit,
   onSave,
@@ -180,6 +200,33 @@ export function PRDEditorHeader({
             <SettingsIcon className="mr-2 h-4 w-4" />
             Details
           </Button>
+
+          {isGenerating ? (
+            <Button disabled size="sm">
+              <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
+              Generating PRD...
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button disabled={isPending} size="sm" variant="outline">
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Generate PRD
+                  <ChevronDownIcon className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onQuickGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Quick PRD
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDeepGenerate}>
+                  <SparklesIcon className="mr-2 h-4 w-4" />
+                  Deep PRD
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           <Button onClick={onGeneratePlan} size="sm" variant="default">
             <SparklesIcon className="mr-2 h-4 w-4" />

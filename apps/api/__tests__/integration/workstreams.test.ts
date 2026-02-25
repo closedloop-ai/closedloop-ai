@@ -15,8 +15,8 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
   it("updates stateChangedAt when state changes", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
 
       // Create workstream with initial state
       const workstream = await workstreamsService.create(
@@ -56,8 +56,8 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
   it("does not update stateChangedAt when state is not changed", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
 
       // Create workstream
       const workstream = await workstreamsService.create(
@@ -97,8 +97,8 @@ describe.skipIf(!hasDatabase)("Workstreams Service Integration", () => {
   it("finds workstreams by project with filters", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
 
       // Create multiple workstreams
       await workstreamsService.create(testOrgId, testUser.id, {

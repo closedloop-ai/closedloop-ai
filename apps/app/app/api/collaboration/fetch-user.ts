@@ -1,5 +1,5 @@
 import type { ApiResult } from "@repo/api/src/types/common";
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { env } from "@/env";

@@ -6,10 +6,12 @@ export function registerGetDashboardStats(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-dashboard-stats",
-    "Get artifact counts and workstream metrics for the organization dashboard",
-    {},
+    {
+      description:
+        "Get artifact counts and workstream metrics for the organization dashboard",
+    },
     () =>
       withErrorHandling(async () => {
         const stats = await apiClient.get<unknown>("/dashboard/stats");

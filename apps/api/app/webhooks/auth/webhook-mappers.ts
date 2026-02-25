@@ -1,7 +1,7 @@
 import type {
   CreateUserInput,
   UpdateUserProfileFromClerkInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/user";
 import type { OrganizationMembershipJSON, UserJSON } from "@repo/auth/server";
 
 /**

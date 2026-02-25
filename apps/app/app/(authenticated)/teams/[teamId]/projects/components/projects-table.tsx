@@ -4,10 +4,8 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import type {
-  ProjectOwner,
-  ProjectWithDetails,
-} from "@repo/api/src/types/organization";
+import { Priority } from "@repo/api/src/types/common";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import {
   Avatar,
   AvatarFallback,
@@ -67,7 +65,7 @@ import { SortableProjectRow } from "./sortable-project-row";
 type ProjectsTableProps = {
   projects: ProjectWithDetails[];
   teamId: string;
-  onUpdateOwner?: (projectId: string, owner: ProjectOwner | null) => void;
+  onUpdateAssignee?: (projectId: string, assigneeId: string | null) => void;
   onUpdateTargetDate?: (projectId: string, date: Date | null) => void;
   onDelete?: (projectId: string) => Promise<boolean>;
 };
@@ -75,7 +73,7 @@ type ProjectsTableProps = {
 const PROJECT_SORT_COLUMNS = [
   "name",
   "priority",
-  "owner",
+  "assignee",
   "targetDate",
   "status",
   "updatedAt",
@@ -83,11 +81,11 @@ const PROJECT_SORT_COLUMNS = [
 
 type ProjectSortColumn = (typeof PROJECT_SORT_COLUMNS)[number];
 
-const PRIORITY_ORDER: Record<string, number> = {
-  HIGH: 0,
-  MEDIUM: 1,
-  LOW: 2,
-  NOT_SET: 3,
+const PRIORITY_ORDER: Record<Priority, number> = {
+  [Priority.Urgent]: 0,
+  [Priority.High]: 1,
+  [Priority.Medium]: 2,
+  [Priority.Low]: 3,
 };
 
 const PROJECT_SORT_CONFIGS: Record<
@@ -100,11 +98,11 @@ const PROJECT_SORT_CONFIGS: Record<
     comparator: (a, b) =>
       (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99),
   },
-  owner: {
-    key: "owner",
+  assignee: {
+    key: "assignee",
     comparator: (a, b) => {
-      const aName = a.owner ? getUserDisplayName(a.owner) : "";
-      const bName = b.owner ? getUserDisplayName(b.owner) : "";
+      const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
+      const bName = b.assignee ? getUserDisplayName(b.assignee) : "";
       return aName.localeCompare(bName);
     },
   },
@@ -112,14 +110,14 @@ const PROJECT_SORT_CONFIGS: Record<
     key: "targetDate",
     columnType: "date",
   },
-  status: { key: "status", columnType: "number" },
+  status: { key: "completionPercentage", columnType: "number" },
   updatedAt: { key: "updatedAt", columnType: "date" },
 };
 
 export function ProjectsTable({
   projects,
   teamId,
-  onUpdateOwner,
+  onUpdateAssignee,
   onUpdateTargetDate,
   onDelete,
 }: ProjectsTableProps) {
@@ -165,17 +163,12 @@ export function ProjectsTable({
     }
   };
 
-  const handleOwnerChange = (projectId: string, user: PopoverUser | null) => {
-    if (onUpdateOwner) {
-      const owner: ProjectOwner | null = user
-        ? {
-            id: user.id,
-            firstName: user.name.split(" ")[0] || null,
-            lastName: user.name.split(" ").slice(1).join(" ") || null,
-            avatarUrl: user.avatarUrl ?? null,
-          }
-        : null;
-      onUpdateOwner(projectId, owner);
+  const handleAssigneeChange = (
+    projectId: string,
+    user: PopoverUser | null
+  ) => {
+    if (onUpdateAssignee) {
+      onUpdateAssignee(projectId, user?.id ?? null);
     }
   };
 
@@ -216,8 +209,8 @@ export function ProjectsTable({
               sortDir={sortDir}
             />
             <SortableColumnHeader
-              column="owner"
-              label="Owner"
+              column="assignee"
+              label="Assignee"
               onSort={setSort}
               sortBy={sortBy}
               sortDir={sortDir}
@@ -270,30 +263,29 @@ export function ProjectsTable({
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <UserSelectPopover
-                    onSelect={(user) => handleOwnerChange(project.id, user)}
-                    placeholder="Assign owner"
+                    onSelect={(user) => handleAssigneeChange(project.id, user)}
                     trigger={
-                      project.owner ? (
+                      project.assignee ? (
                         <button
                           className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
                           type="button"
                         >
                           <Avatar className="h-6 w-6">
-                            {project.owner.avatarUrl ? (
+                            {project.assignee.avatarUrl ? (
                               <AvatarImage
-                                alt={getUserDisplayName(project.owner)}
-                                src={project.owner.avatarUrl}
+                                alt={getUserDisplayName(project.assignee)}
+                                src={project.assignee.avatarUrl}
                               />
                             ) : null}
                             <AvatarFallback className="text-[10px]">
                               {getUserInitials(
-                                project.owner.firstName,
-                                project.owner.lastName
+                                project.assignee.firstName,
+                                project.assignee.lastName
                               )}
                             </AvatarFallback>
                           </Avatar>
                           <span className="text-sm">
-                            {getUserDisplayName(project.owner)}
+                            {getUserDisplayName(project.assignee)}
                           </span>
                         </button>
                       ) : (
@@ -308,14 +300,14 @@ export function ProjectsTable({
                     }
                     users={orgUsers}
                     value={
-                      project.owner
+                      project.assignee
                         ? {
-                            id: project.owner.id,
-                            name: getUserDisplayName(project.owner),
-                            avatarUrl: project.owner.avatarUrl ?? undefined,
+                            id: project.assignee.id,
+                            name: getUserDisplayName(project.assignee),
+                            avatarUrl: project.assignee.avatarUrl ?? undefined,
                             initials: getUserInitials(
-                              project.owner.firstName,
-                              project.owner.lastName
+                              project.assignee.firstName,
+                              project.assignee.lastName
                             ),
                           }
                         : null
@@ -351,7 +343,7 @@ export function ProjectsTable({
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span className="inline-flex">
-                        <HexagonProgress value={project.status} />
+                        <HexagonProgress value={project.completionPercentage} />
                       </span>
                     </TooltipTrigger>
                     <TooltipContent>

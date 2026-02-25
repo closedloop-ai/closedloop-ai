@@ -7,6 +7,7 @@ import type {
   CreateArtifactInput,
   FindArtifactsOptions,
   GenerationStatus,
+  MergeArtifactsInput,
   PullRequestInfo,
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
@@ -278,9 +279,14 @@ export function useRegenerateArtifact() {
   const apiClient = useApiClient();
 
   return useMutation({
-    mutationFn: (id: string) =>
-      apiClient.post<Artifact>(`/artifacts/${id}/regenerate`, {}),
-    onSuccess: (_, id) => {
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body?: { reverseSynthesisLink?: string };
+    }) => apiClient.post<Artifact>(`/artifacts/${id}/regenerate`, body ?? {}),
+    onSuccess: (_, { id }) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.detail(id) });
       queryClient.invalidateQueries({
         queryKey: artifactKeys.generationStatus(id),
@@ -379,6 +385,89 @@ export function useCreateAndGenerateArtifact() {
   });
 
   return { ...mutation, isComputeModeLoading };
+}
+
+/**
+ * Create an artifact and immediately generate PRD content inline using Sonnet.
+ * Used for the "Save & Generate" button in the PRD creation modal.
+ *
+ * Returns `{ artifact, generationError }` — the artifact is always returned
+ * (even if inline generation fails) so the caller can navigate to it.
+ */
+export function useCreateAndInlineGeneratePRD() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async ({
+      input,
+      reverseSynthesisLink,
+    }: {
+      input: CreateArtifactInput;
+      reverseSynthesisLink?: string;
+    }) => {
+      const artifact = await apiClient.post<Artifact>("/artifacts", input);
+
+      let generationError: string | null = null;
+      try {
+        await apiClient.post("/ai/prd/generate", {
+          artifactId: artifact.id,
+          reverseSynthesisLink,
+        });
+      } catch (err) {
+        generationError =
+          err instanceof Error
+            ? err.message
+            : "Unknown error during generation";
+      }
+
+      return { artifact, generationError };
+    },
+    onSuccess: ({ artifact }) => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifact.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.versions(artifact.id),
+      });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+    },
+  });
+}
+
+/**
+ * Generate PRD content inline for an existing artifact using Sonnet.
+ * Used for the "Quick PRD" button on the PRD editor detail page.
+ */
+export function useInlineGeneratePRD() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: async ({
+      artifactId,
+      reverseSynthesisLink,
+    }: {
+      artifactId: string;
+      reverseSynthesisLink?: string;
+    }) => {
+      await apiClient.post("/ai/prd/generate", {
+        artifactId,
+        reverseSynthesisLink,
+      });
+      return { artifactId };
+    },
+    onSuccess: (_, { artifactId }) => {
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.detail(artifactId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.versions(artifactId),
+      });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+    },
+  });
 }
 
 type ExecuteResult = {
@@ -532,6 +621,29 @@ export function useBatchMoveArtifacts() {
       queryClient.invalidateQueries({
         queryKey: projectKeys.detail(targetProjectId),
       });
+    },
+  });
+}
+
+/**
+ * Merge two artifacts into one, keeping the primary and deleting the secondary.
+ */
+export function useMergeArtifacts() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: ({
+      primaryArtifactId,
+      secondaryArtifactId,
+    }: MergeArtifactsInput) =>
+      apiClient.post<Artifact>("/artifacts/merge", {
+        primaryArtifactId,
+        secondaryArtifactId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.all });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }

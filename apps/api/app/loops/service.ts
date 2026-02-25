@@ -17,6 +17,7 @@ import type {
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { type Loop as PrismaLoop, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { basicUserSelect } from "@/lib/db-utils";
 
 export class ReplayDetectedError extends Error {
   constructor(message = "Replay detected") {
@@ -269,15 +270,7 @@ export const loopsService = {
           ...(userId ? { userId } : {}),
         },
         include: {
-          user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-              email: true,
-            },
-          },
+          user: basicUserSelect,
         },
         orderBy: { createdAt: "desc" },
         take: limit,

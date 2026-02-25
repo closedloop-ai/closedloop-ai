@@ -168,7 +168,8 @@ async function main() {
         description:
           "Stripe-based payment processing with subscriptions and invoicing",
         priority: "HIGH",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
@@ -184,7 +185,8 @@ async function main() {
         description:
           "Multi-channel notification system (email, push, in-app, SMS)",
         priority: "MEDIUM",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
       },
     });
@@ -238,7 +240,7 @@ async function main() {
       type: "PRD" | "IMPLEMENTATION_PLAN" | "TEMPLATE";
       projectId: string;
       workstreamId?: string;
-      status: "DRAFT" | "REVIEW" | "APPROVED" | "ARCHIVED";
+      status: "DRAFT" | "IN_REVIEW" | "APPROVED" | "OBSOLETE";
       contents: string[]; // one per version
     }) {
       let artifact = await prisma.artifact.findFirst({
@@ -259,7 +261,8 @@ async function main() {
           title: data.title,
           slug: data.slug,
           status: data.status,
-          ownerId: userId,
+          assigneeId: userId,
+          createdById: userId,
           latestVersion: data.contents.length,
         },
       });
@@ -300,7 +303,7 @@ async function main() {
       type: "IMPLEMENTATION_PLAN",
       projectId: project1.id,
       workstreamId: ws1.id,
-      status: "REVIEW",
+      status: "IN_REVIEW",
       contents: [
         "# Payment System Implementation Plan\n\n## Phase 1: Stripe Setup\n- Configure Stripe SDK\n- Create customer portal\n- Set up webhook endpoints\n\n## Phase 2: Checkout Flow\n- Build checkout page\n- Implement payment intent creation\n- Add success/failure handling\n\n## Phase 3: Subscriptions\n- Implement plan selection\n- Handle recurring billing\n- Add upgrade/downgrade logic",
       ],
@@ -350,7 +353,12 @@ async function main() {
       description: string;
       projectId: string;
       workstreamId?: string;
-      status: "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "CLOSED";
+      status:
+        | "NOT_STARTED"
+        | "IN_PROGRESS"
+        | "IN_REVIEW"
+        | "COMPLETED"
+        | "OBSOLETE";
       priority: "LOW" | "MEDIUM" | "HIGH" | "URGENT";
     }) {
       let issue = await prisma.issue.findFirst({
@@ -398,7 +406,7 @@ async function main() {
         "Create responsive HTML email templates for welcome, password reset, and payment confirmation emails using MJML.",
       projectId: project2.id,
       workstreamId: ws2.id,
-      status: "TODO",
+      status: "NOT_STARTED",
       priority: "MEDIUM",
     });
 

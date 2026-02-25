@@ -3,18 +3,8 @@
 
 import type { ArtifactVersion } from "./artifact-version";
 import type { EntityType } from "./entity-link";
-import type { ProjectOwner } from "./organization";
-
-/**
- * Minimal user info included with artifacts for display purposes.
- * Matches the select pattern in artifactIncludeWithContext.
- */
-export type ArtifactUser = {
-  id: string;
-  firstName: string | null;
-  lastName: string | null;
-  avatarUrl: string | null;
-};
+import type { BasicUser } from "./user";
+import type { WorkstreamState } from "./workstream";
 
 /**
  * Artifact types in the new schema.
@@ -55,24 +45,13 @@ export function getRoutePrefixForType(type: string): string | null {
 // Artifact Status
 export const ArtifactStatus = {
   Draft: "DRAFT",
-  Review: "REVIEW",
+  InReview: "IN_REVIEW",
   Approved: "APPROVED",
-  Archived: "ARCHIVED",
+  Obsolete: "OBSOLETE",
 } as const;
 export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
 export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatus);
-
-// Approver Role
-export const ApproverRole = {
-  Pm: "PM",
-  Designer: "DESIGNER",
-  TechLead: "TECH_LEAD",
-  Engineer: "ENGINEER",
-  Stakeholder: "STAKEHOLDER",
-} as const;
-export type ApproverRole = (typeof ApproverRole)[keyof typeof ApproverRole];
-export const APPROVER_ROLE_OPTIONS = Object.values(ApproverRole);
 
 export type Artifact = {
   id: string;
@@ -83,13 +62,13 @@ export type Artifact = {
   title: string;
   slug: string;
   fileName: string | null;
-  owner: ArtifactUser | null;
-  approver: ArtifactUser | null;
   status: ArtifactStatus;
   latestVersion: number;
-  generatedBy: string | null;
-  ownerId: string | null;
+  createdById: string;
+  assigneeId: string | null;
+  assignee: BasicUser | null;
   approverId: string | null;
+  approver: BasicUser | null;
   tokenUsage: unknown;
   targetRepo: string | null;
   targetBranch: string | null;
@@ -103,14 +82,13 @@ export type ArtifactWithWorkstream = Artifact & {
   workstream?: {
     id: string;
     title: string;
-    state: string;
+    state: WorkstreamState;
   } | null;
   project?: {
     id: string;
     name: string;
     teams?: { id: string; name: string }[];
   } | null;
-  owner?: ProjectOwner | null;
   /** The latest generation status for this artifact. Omitted when no generation status is available. */
   generationStatus?: GenerationStatus;
   /**
@@ -133,7 +111,7 @@ export type FindArtifactsOptions = {
   type?: ArtifactType;
   workstreamId?: string;
   projectId?: string;
-  ownerId?: string;
+  assigneeId?: string;
 };
 
 export type CreateArtifactInput = {
@@ -150,7 +128,7 @@ export type CreateArtifactInput = {
   content: string;
   targetRepo?: string;
   targetBranch?: string;
-  ownerId?: string;
+  assigneeId?: string | null;
   templateForType?: ArtifactType | null;
 };
 
@@ -163,8 +141,13 @@ export type UpdateArtifactInput = {
   status?: ArtifactStatus;
   targetRepo?: string | null;
   targetBranch?: string | null;
-  ownerId?: string | null;
+  assigneeId?: string | null;
   sortOrder?: number | null;
+};
+
+export type MergeArtifactsInput = {
+  primaryArtifactId: string;
+  secondaryArtifactId: string;
 };
 
 // Pull Request State
@@ -199,14 +182,23 @@ export type PullRequestInfo = {
   reviewDecision: ReviewDecision | null;
 };
 
-// Generation status for artifacts being processed by GitHub Actions
+// Generation status for artifacts being processed by GitHub Actions or Loops
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | null;
+  command: "plan" | "execute" | "chat" | "request_changes" | "explore" | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
   correlationId: string | null;
+  /** Identifies the compute backend that produced this status. */
+  source?: "github_actions" | "loop";
+  /** Loop ID when source is "loop". Used for internal navigation to /loops/:id. */
+  loopId?: string | null;
+  /** User who initiated the generation (loop or workflow). */
+  initiatedBy?: {
+    firstName: string | null;
+    lastName: string | null;
+  } | null;
 };
 
 export const ACTIVE_GENERATION_STATUSES = [

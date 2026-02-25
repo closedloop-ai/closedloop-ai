@@ -1,6 +1,7 @@
 "use client";
 
 import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import type { IssueStatus } from "@repo/api/src/types/issue";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
@@ -38,18 +39,16 @@ export type EngineerIssuesResultWithUser = EngineerTicketsResult & {
   updateTicketStatus: (
     ticketIdentifier: string,
     status: string
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   getFullTicket: (ticketId: string) => Promise<FullTicketDetails>;
   postComment: (ticketIdentifier: string, body: string) => Promise<void>;
 };
 
 /** Map closedloop-dev status names to Symphony IssueStatus */
-function mapToSymphonyStatus(
-  status: string
-): "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "CLOSED" {
+function mapToSymphonyStatus(status: string): IssueStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
-    return "CLOSED";
+    return "COMPLETED";
   }
   if (lower === "in progress" || lower === "started") {
     return "IN_PROGRESS";
@@ -58,9 +57,9 @@ function mapToSymphonyStatus(
     return "IN_REVIEW";
   }
   if (lower === "todo" || lower === "to do" || lower === "unstarted") {
-    return "TODO";
+    return "NOT_STARTED";
   }
-  return "TODO";
+  return "NOT_STARTED";
 }
 
 /**
@@ -114,6 +113,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
           if (cancelled) {
             return;
           }
+          console.debug("[engineer] getMe:", user.id, user.email);
           setMcpUser(user);
 
           // Step 2: fetch all pages of issues and artifacts in parallel
@@ -122,9 +122,15 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
               mcp.listIssues({ assigneeId: user.id, limit: 100, offset })
             ),
             fetchAllMcpPages((offset) =>
-              mcp.listArtifacts({ ownerId: user.id, limit: 100, offset })
+              mcp.listArtifacts({ assigneeId: user.id, limit: 100, offset })
             ),
           ]);
+          console.debug(
+            "[engineer] fetched %d issues, %d artifacts (ownerId=%s)",
+            allIssues.length,
+            allArtifacts.length,
+            user.id
+          );
           if (cancelled) {
             return;
           }
@@ -191,21 +197,23 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
 
   // Update issue status via MCP
   const updateTicketStatus = useCallback(
-    async (ticketIdentifier: string, status: string) => {
+    async (ticketIdentifier: string, status: string): Promise<boolean> => {
       const ticket = tickets.find((t) => t.identifier === ticketIdentifier);
       if (!ticket) {
         throw new Error(`Ticket ${ticketIdentifier} not found`);
       }
 
+      if (!ticket.issueId) {
+        return false;
+      }
+
       const symphonyStatus = mapToSymphonyStatus(status);
       try {
         await mcp.updateIssue(ticket.issueId, { status: symphonyStatus });
+        return true;
       } catch (err) {
         if (err instanceof McpScopeError) {
-          console.warn(
-            "[updateTicketStatus] Write not available (read-only key), skipping"
-          );
-          return;
+          return false;
         }
         throw err;
       }
@@ -213,12 +221,38 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
     [tickets, mcp]
   );
 
-  // Get full ticket details — check local state first, fall back to MCP
+  // Get full ticket details — fetch full content for artifacts via MCP
   const getFullTicket = useCallback(
     async (ticketId: string): Promise<FullTicketDetails> => {
       const ticket = tickets.find(
         (t) => t.id === ticketId || t.identifier === ticketId
       );
+
+      // For artifact-sourced tickets, fetch full content via get-artifact
+      if (ticket && ticket.sourceType !== "Issue") {
+        try {
+          const detail = await mcp.getArtifact(ticket.id);
+          return {
+            identifier: ticket.identifier,
+            title: ticket.title,
+            description: detail.version.content || ticket.description || "",
+            url: ticket.url,
+          };
+        } catch (err) {
+          console.warn(
+            `[getFullTicket] Failed to fetch artifact content for ${ticket.identifier}, using snippet:`,
+            err
+          );
+          return {
+            identifier: ticket.identifier,
+            title: ticket.title,
+            description: ticket.description || "",
+            url: ticket.url,
+          };
+        }
+      }
+
+      // Issue-sourced tickets already have full description from list endpoint
       if (ticket) {
         return {
           identifier: ticket.identifier,
@@ -247,6 +281,13 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
       if (!ticket) {
         console.warn(
           `[postComment] Ticket ${ticketIdentifier} not found, skipping`
+        );
+        return;
+      }
+
+      if (!ticket.issueId) {
+        console.warn(
+          `[postComment] Ticket ${ticketIdentifier} is not an issue, skipping`
         );
         return;
       }
@@ -340,14 +381,14 @@ function mcpIssueToEngineerTicket(issue: McpIssue): EngineerTicket {
 }
 
 function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
-  const owner = artifact.owner
+  const assignee = artifact.assignee
     ? {
-        id: artifact.owner.id ?? "",
-        name: [artifact.owner.firstName, artifact.owner.lastName]
+        id: artifact.assignee.id ?? "",
+        name: [artifact.assignee.firstName, artifact.assignee.lastName]
           .filter(Boolean)
           .join(" "),
-        email: "",
-        avatarUrl: artifact.owner.avatarUrl ?? undefined,
+        email: artifact.assignee.email ?? "",
+        avatarUrl: artifact.assignee.avatarUrl ?? undefined,
       }
     : undefined;
 
@@ -364,13 +405,12 @@ function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
       name: artifactStatusDisplayName(artifact.status),
       type: mapArtifactStatusToType(artifact.status),
     },
-    assignee: owner,
+    assignee,
     priority: 3,
     priorityLabel: "Medium",
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
     url: `/${routePrefix}/${artifact.slug}`,
-    issueId: artifact.id,
     projectName: artifact.project?.name ?? undefined,
     workstreamTitle: artifact.workstream?.title ?? undefined,
   };

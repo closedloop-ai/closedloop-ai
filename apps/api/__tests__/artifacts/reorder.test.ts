@@ -23,7 +23,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectId = await createTestProject(orgId);
+      const projectId = await createTestProject(orgId, user.id);
 
       // Create 3 artifacts
       const artifact1 = await withDb((db) =>
@@ -33,7 +33,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -46,7 +46,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -59,7 +59,7 @@ describe.skipIf(!hasDatabase)("reorder artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })

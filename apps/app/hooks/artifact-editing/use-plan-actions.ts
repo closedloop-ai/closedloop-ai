@@ -3,13 +3,13 @@
 import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback } from "react";
+import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
 import {
   useExecuteImplementationPlan,
   useRegenerateArtifact,
   useRequestPlanChanges,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useRunLoop } from "@/hooks/queries/use-loops";
 
 type UsePlanActionsConfig = {
@@ -28,8 +28,8 @@ type UsePlanActionsConfig = {
  * - Execute operation (triggers implementation execution, creates PR)
  * - Loading states for each operation
  *
- * When the organization's compute mode is set to "LOOPS" (via Settings > Integrations),
- * regenerate/execute/request-changes operations create Loops instead of triggering GitHub Actions.
+ * Routes regenerate/execute/request-changes operations to either Loops or GitHub Actions
+ * based on the artifact's execution history, falling back to the org's compute mode setting.
  *
  * **Example usage:**
  * ```tsx
@@ -46,7 +46,7 @@ type UsePlanActionsConfig = {
 export function usePlanActions(config: UsePlanActionsConfig) {
   const { artifact } = config;
   const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
-    useIsLoopsEnabled();
+    useIsLoopsEnabledForArtifact(artifact.id);
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
@@ -97,9 +97,12 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         }
       );
     } else {
-      regenerateArtifact.mutate(artifact.id, {
-        onSuccess: () => toast.success("Plan regeneration started"),
-      });
+      regenerateArtifact.mutate(
+        { id: artifact.id },
+        {
+          onSuccess: () => toast.success("Plan regeneration started"),
+        }
+      );
     }
   }, [artifact.id, useLoops, runLoop, regenerateArtifact]);
 

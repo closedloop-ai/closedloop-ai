@@ -7,6 +7,7 @@ import type {
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
+import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
@@ -32,11 +33,11 @@ type PRDMetadataPanelProps = {
    */
   approver: User | null;
   /**
-   * Current owner (User or null if not selected)
+   * Current assignee (User or null if not selected)
    */
-  owner: User | null;
+  assignee: User | null;
   /**
-   * List of team members to choose from for owner selection
+   * List of team members to choose from for assignee selection
    */
   teamMembers: User[];
   /**
@@ -56,9 +57,9 @@ type PRDMetadataPanelProps = {
    */
   onApproverSelect: (user: User | null) => void;
   /**
-   * Handler called when owner is changed
+   * Handler called when assignee is changed
    */
-  onOwnerChange: (user: User | null) => void;
+  onAssigneeChange: (user: User | null) => void;
   /**
    * Handler called when target repository input value changes
    */
@@ -85,13 +86,13 @@ export function PRDMetadataPanel({
   prd,
   status,
   approver,
-  owner,
+  assignee,
   teamMembers,
   targetRepo,
   targetBranch,
   onStatusChange,
   onApproverSelect,
-  onOwnerChange,
+  onAssigneeChange,
   onTargetRepoChange,
   onTargetRepoBlur,
   onTargetBranchChange,
@@ -126,11 +127,11 @@ export function PRDMetadataPanel({
           >
             <StatusMetadataSection
               approver={approver}
+              assignee={assignee}
               onApproverSelect={onApproverSelect}
-              onOwnerChange={onOwnerChange}
+              onAssigneeChange={onAssigneeChange}
               onStatusChange={onStatusChange}
               orgUsers={transformedOrgUsers}
-              owner={owner}
               status={status}
               teamMembers={teamMembers}
             />
@@ -164,6 +165,8 @@ export function PRDMetadataPanel({
           </CollapsibleSection>
 
           <CommentsSection artifactId={prd.id} />
+
+          <AttachmentsSection artifactId={prd.id} />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog
