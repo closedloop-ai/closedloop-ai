@@ -42,3 +42,6 @@ No database operations in routes — delegate to services.
 - **[pattern]**: Routes must transform service Result types to API contract flat types.
 - **[mistake]**: OAuth connect routes: verify service method signature before copying parameter destructuring.
 - **[mistake]**: Throttling via localStorage: write timestamp AFTER operation succeeds (in `.then()`), not before.
+- **[convention]**: `lib/` utilities must not import from `app/` domain modules. When a pure function in `app/` is needed by `lib/`, extract it to `lib/` first so both layers can share from a neutral location. (context: architecture|layering)
+- **[convention]**: `TransactionClient` is re-exported from `@repo/database` top-level — import it as `import type { TransactionClient } from '@repo/database'`, not from the generated subpath. (context: typescript|import|database)
+- **[pattern]**: When adding fan-out writes after an evaluation upsert, both operations must be in the same `withDb.tx()` block for atomicity. A bare `withDb()` call followed by a separate fan-out is a plan defect. (context: database|transaction)

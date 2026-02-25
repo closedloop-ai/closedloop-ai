@@ -13,6 +13,7 @@ import type { TransactionClient } from "@repo/database/generated/internal/prisma
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import { processArtifactDownloads } from "./workflow-artifacts";
@@ -228,7 +229,7 @@ export async function handleExecutionSuccess(
     });
 
     if (codeJudgesReport && ctx.actionRunId) {
-      await tx.artifactEvaluation.upsert({
+      const evaluation = await tx.artifactEvaluation.upsert({
         where: {
           artifactId_reportId: {
             artifactId: ctx.artifactId,
@@ -246,6 +247,13 @@ export async function handleExecutionSuccess(
           reportType: PrismaEvaluationReportType.CODE,
           reportData: codeJudgesReport,
         },
+      });
+
+      await fanOutJudgeScores({
+        evaluationId: evaluation.id,
+        organizationId: workstream.organizationId,
+        report: codeJudgesReport,
+        tx,
       });
 
       log.info("[handleExecutionSuccess] Persisted code judges report", {
@@ -375,7 +383,7 @@ export async function handleWorkflowSuccess(
   });
 
   if (judgesReport && ctx.actionRunId) {
-    await tx.artifactEvaluation.upsert({
+    const evaluation = await tx.artifactEvaluation.upsert({
       where: {
         artifactId_reportId: {
           artifactId,
@@ -393,6 +401,13 @@ export async function handleWorkflowSuccess(
         reportType: PrismaEvaluationReportType.PLAN,
         reportData: judgesReport,
       },
+    });
+
+    await fanOutJudgeScores({
+      evaluationId: evaluation.id,
+      organizationId: workstream.organizationId,
+      report: judgesReport,
+      tx,
     });
 
     log.info("[handleWorkflowSuccess] Persisted judges report", {

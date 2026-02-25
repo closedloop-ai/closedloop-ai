@@ -56,6 +56,10 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
   },
 }));
 
+vi.mock("@/lib/judge-score-fanout", () => ({
+  fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import after mocking
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
@@ -67,6 +71,7 @@ import {
 } from "@/app/webhooks/github/handlers/workflow-completion-handler";
 import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
@@ -76,6 +81,7 @@ const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
 const mockCreateVersion =
   artifactVersionService.createVersion as unknown as Mock;
+const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -1062,6 +1068,374 @@ describe("handleWorkflowFailure", () => {
         },
       },
     });
+  });
+});
+
+describe("handleWorkflowSuccess fan-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls fanOutJudgeScores with the evaluationId returned by upsert", async () => {
+    const correlationId = "fanout-correlation-plan";
+    const artifactId = "fanout-artifact-plan";
+    const workstreamId = "fanout-ws-plan";
+    const runId = 1_234_000_001;
+    const actionRunId = "fanout-action-run-plan";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "fanout-report-plan",
+      timestamp: "2026-02-06T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "quality",
+          final_status: 3,
+          metrics: [
+            {
+              metric_name: "quality_score",
+              threshold: 0.8,
+              score: 0.9,
+              justification: "Looks good",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "fanout-org-plan",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "fanout-org-plan",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-fanout-plan" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          reportData: judgesReport,
+        }),
+      })
+    );
+
+    expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
+      evaluationId: "eval-123",
+      organizationId: "fanout-org-plan",
+      report: judgesReport,
+      tx: asTx(mockDb),
+    });
+  });
+
+  it("still writes reportData even when fanOutJudgeScores is called", async () => {
+    const correlationId = "fanout-correlation-plan-2";
+    const artifactId = "fanout-artifact-plan-2";
+    const workstreamId = "fanout-ws-plan-2";
+    const runId = 1_234_000_002;
+    const actionRunId = "fanout-action-run-plan-2";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "fanout-report-plan-2",
+      timestamp: "2026-02-07T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "completeness",
+          final_status: 3,
+          metrics: [
+            {
+              metric_name: "completeness_score",
+              threshold: 0.7,
+              score: 0.85,
+              justification: "Complete",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan content",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "fanout-org-plan-2",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "fanout-org-plan-2",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-fanout-plan-2" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
+      where: {
+        artifactId_reportId: {
+          artifactId,
+          reportId: judgesReport.report_id,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId,
+        reportType: EvaluationReportType.Plan,
+        reportId: judgesReport.report_id,
+        reportData: judgesReport,
+      },
+      update: {
+        reportType: EvaluationReportType.Plan,
+        reportData: judgesReport,
+      },
+    });
+  });
+});
+
+describe("handleExecutionSuccess fan-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls fanOutJudgeScores with evaluationId from CODE upsert", async () => {
+    const correlationId = "fanout-correlation-code";
+    const artifactId = "fanout-artifact-code";
+    const workstreamId = "fanout-ws-code";
+    const repositoryId = "fanout-repo-code";
+    const runId = 2_234_000_001;
+    const actionRunId = "fanout-action-run-code";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      repositoryId,
+      runId,
+      actionRunId,
+      command: "execute",
+    };
+
+    const codeJudgesReport: JudgesReport = {
+      report_id: "fanout-report-code",
+      timestamp: "2026-02-08T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "correctness",
+          final_status: 3,
+          metrics: [
+            {
+              metric_name: "correctness_score",
+              threshold: 0.75,
+              score: 0.88,
+              justification: "Code is correct",
+            },
+          ],
+        },
+      ],
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/55",
+      pr_number: "55",
+      pr_title: "Symphony: fanout feature",
+      branch_name: "symphony/fanout-feature",
+      base_ref: "main",
+      github_id: 55_000_001,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "fanout-org-code" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          organizationId: "fanout-org-code",
+          projectId: "fanout-project-code",
+          generatedBy: "fanout-user-code",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-pr-code", number: 55 }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-ext-link-code" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-entity-link-code" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-event-code" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-code-123" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          reportType: EvaluationReportType.Code,
+          reportData: codeJudgesReport,
+        }),
+      })
+    );
+
+    expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
+      evaluationId: "eval-code-123",
+      organizationId: "fanout-org-code",
+      report: codeJudgesReport,
+      tx: mockTx,
+    });
+  });
+
+  it("does not call fanOutJudgeScores when codeJudgesReport is null", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "fanout-correlation-no-code",
+      artifactId: "fanout-artifact-no-code",
+      workstreamId: "fanout-ws-no-code",
+      repositoryId: "fanout-repo-no-code",
+      runId: 2_234_000_002,
+      actionRunId: "fanout-action-run-no-code",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/56",
+      pr_number: "56",
+      pr_title: "Symphony: no judges",
+      branch_name: "symphony/no-judges",
+      base_ref: "main",
+      github_id: 56_000_001,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "fanout-org-no-code" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "fanout-org-no-code",
+          projectId: "fanout-project-no-code",
+          generatedBy: "fanout-user-no-code",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi
+          .fn()
+          .mockResolvedValue({ id: "fanout-pr-no-code", number: 56 }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-ext-link-no-code" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-entity-link-no-code" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-event-no-code" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null);
+
+    expect(mockFanOutJudgeScores).not.toHaveBeenCalled();
   });
 });
 

@@ -25,6 +25,7 @@ import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
 import type { ExecutionResult } from "../app/webhooks/github/types";
+import { fanOutJudgeScores } from "./judge-score-fanout";
 import { downloadArtifactFile } from "./loop-state";
 
 // ---------------------------------------------------------------------------
@@ -161,8 +162,8 @@ export async function ingestPlanArtifacts(
 
   // Persist judges report if available (upsert for idempotency)
   if (artifacts.judgesReport) {
-    await withDb((db) =>
-      db.artifactEvaluation.upsert({
+    await withDb.tx(async (tx) => {
+      const evaluation = await tx.artifactEvaluation.upsert({
         where: {
           artifactId_reportId: {
             artifactId,
@@ -181,8 +182,15 @@ export async function ingestPlanArtifacts(
           reportType: PrismaEvaluationReportType.PLAN,
           reportData: artifacts.judgesReport!,
         },
-      })
-    );
+      });
+
+      await fanOutJudgeScores({
+        evaluationId: evaluation.id,
+        organizationId,
+        report: artifacts.judgesReport!,
+        tx,
+      });
+    });
 
     log.info("[loop-artifact-ingestion] Persisted judges report", {
       artifactId,
@@ -326,7 +334,7 @@ export async function ingestExecutionArtifacts(
     }
 
     if (artifacts.codeJudgesReport) {
-      await tx.artifactEvaluation.upsert({
+      const evaluation = await tx.artifactEvaluation.upsert({
         where: {
           artifactId_reportId: {
             artifactId: loop.artifactId!,
@@ -345,6 +353,13 @@ export async function ingestExecutionArtifacts(
           reportType: PrismaEvaluationReportType.CODE,
           reportData: artifacts.codeJudgesReport,
         },
+      });
+
+      await fanOutJudgeScores({
+        evaluationId: evaluation.id,
+        organizationId: loop.organizationId,
+        report: artifacts.codeJudgesReport,
+        tx,
       });
 
       log.info("[loop-artifact-ingestion] Persisted code judges report", {
