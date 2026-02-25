@@ -1,3 +1,7 @@
+# Deploys to BOTH stage and prod on every push to main.
+# The MCP server is a standalone ECS container (not gated by Vercel's
+# branch-based deploys), so we keep environments tightly coupled —
+# one merge deploys everywhere, matching the Claude Runner workflow.
 name: Build MCP Server Container
 
 on:
@@ -76,4 +80,4 @@ jobs:
             --service ${{ matrix.ecs_service }} \
             --force-new-deployment \
             --no-cli-pager
-          echo "Triggered force deploy for ${{ matrix.environment }}: cluster=${{ matrix.ecs_cluster }}, service=${{ matrix.ecs_service }}"
+          echo "Deployed ${{ matrix.environment }}: cluster=${{ matrix.ecs_cluster }}, service=${{ matrix.ecs_service }}"
