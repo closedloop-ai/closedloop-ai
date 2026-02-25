@@ -41,7 +41,7 @@ const securityHeaders = env.FLAGS_SECRET
 // Clerk middleware wraps other middleware in its callback
 // For apps using Clerk, compose middleware inside authMiddleware callback
 // For apps without Clerk, use createNEMO for composition (see apps/web)
-export default authMiddleware((_auth, request) => {
+export default authMiddleware(async (_auth, request) => {
   const guardResponse = engineerGuard(request);
   if (guardResponse) {
     return guardResponse;
@@ -49,8 +49,8 @@ export default authMiddleware((_auth, request) => {
 
   const unfurlerResponse = rewriteForLinkUnfurler(request);
   if (unfurlerResponse) {
-    const headers = securityHeaders();
-    for (const [key, value] of headers.headers.entries()) {
+    const secResponse = await securityHeaders();
+    for (const [key, value] of secResponse.headers.entries()) {
       unfurlerResponse.headers.set(key, value);
     }
     return unfurlerResponse;
