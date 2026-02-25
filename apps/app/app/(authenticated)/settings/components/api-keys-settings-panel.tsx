@@ -359,28 +359,36 @@ function QuickStartGuide() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
+          <p className="font-medium text-sm">Claude Code (CLI)</p>
+          <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {
+              "claude mcp add --transport http closedloop https://mcp.closedloop.ai/mcp"
+            }
+          </pre>
+          <p className="text-muted-foreground text-xs">
+            You&apos;ll be prompted to authenticate via OAuth when the server is
+            first used.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <p className="font-medium text-sm">Claude Code Cowork</p>
+          <p className="text-muted-foreground text-xs">
+            Go to{" "}
+            <strong>
+              Settings &rarr; Connectors &rarr; Add Custom Connector
+            </strong>
+            . Set the name to <code className="text-xs">ClosedLoop</code> and
+            the Remote MCP server URL to:
+          </p>
+          <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {"https://mcp.closedloop.ai/mcp"}
+          </pre>
+        </div>
+        <div className="space-y-2">
           <p className="font-medium text-sm">REST API</p>
           <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
             {`curl https://api.closedloop.ai/artifacts \\
   -H "Authorization: Bearer sk_live_YOUR_KEY"`}
-          </pre>
-        </div>
-        <div className="space-y-2">
-          <p className="font-medium text-sm">
-            MCP (Claude Code / Claude Desktop)
-          </p>
-          <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">
-            {`// claude_desktop_config.json
-{
-  "mcpServers": {
-    "closedloop": {
-      "url": "https://mcp.closedloop.ai/mcp",
-      "headers": {
-        "Authorization": "Bearer sk_live_YOUR_KEY"
-      }
-    }
-  }
-}`}
           </pre>
         </div>
         <div className="space-y-2">
