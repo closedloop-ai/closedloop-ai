@@ -19,12 +19,7 @@ import {
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
+import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
 import {
   FileCode2,
   GitBranchIcon,
@@ -36,6 +31,10 @@ import {
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
+import {
+  UnderlineTabsList,
+  UnderlineTabsTrigger,
+} from "@/components/underline-tabs";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
 import { FeatureBuildTab } from "./components/feature-build-tab";
 import { FeaturePlanTab } from "./components/feature-plan-tab";
@@ -133,36 +132,24 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
             onValueChange={setActiveTab}
             value={activeTab}
           >
-            <TabsList className="h-auto w-full justify-start gap-0 rounded-none border-border border-b bg-transparent p-0 px-4 pt-2">
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="description"
-              >
+            <UnderlineTabsList>
+              <UnderlineTabsTrigger value="description">
                 <TextIcon className="h-4 w-4" />
                 Description
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="plan"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="plan">
                 <FileCode2 className="h-4 w-4" />
                 Plan
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="build"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="build">
                 <GitBranchIcon className="h-4 w-4" />
                 Build
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="preview"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="preview">
                 <ViewIcon className="h-4 w-4" />
                 Preview
-              </TabsTrigger>
-            </TabsList>
+              </UnderlineTabsTrigger>
+            </UnderlineTabsList>
             <div className="p-6">
               <TabsContent className="mt-0" value="description">
                 <h1 className="mb-4 font-bold text-2xl">{issue.title}</h1>

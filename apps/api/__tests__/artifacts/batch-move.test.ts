@@ -23,8 +23,12 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectAId = await createTestProject(orgId, { name: "Project A" });
-      const projectBId = await createTestProject(orgId, { name: "Project B" });
+      const projectAId = await createTestProject(orgId, user.id, {
+        name: "Project A",
+      });
+      const projectBId = await createTestProject(orgId, user.id, {
+        name: "Project B",
+      });
 
       // Create 3 artifacts in project A
       const artifact1 = await withDb((db) =>
@@ -34,7 +38,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId: projectAId,
           },
         })
@@ -47,7 +51,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId: projectAId,
           },
         })
@@ -60,7 +64,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId: projectAId,
           },
         })
@@ -93,7 +97,9 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectAId = await createTestProject(orgId, { name: "Project A" });
+      const projectAId = await createTestProject(orgId, user.id, {
+        name: "Project A",
+      });
       const fakeProjectId = "01FAKE000000000000000000";
 
       const artifact = await withDb((db) =>
@@ -103,7 +109,7 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId: projectAId,
           },
         })
@@ -118,7 +124,10 @@ describe.skipIf(!hasDatabase)("batchMove artifacts", () => {
   it("empty artifactIds array returns without error", async () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
-      const projectBId = await createTestProject(orgId, { name: "Project B" });
+      const user = await createTestUser(orgId);
+      const projectBId = await createTestProject(orgId, user.id, {
+        name: "Project B",
+      });
       await expect(
         artifactsService.batchMove([], projectBId, orgId)
       ).resolves.not.toThrow();

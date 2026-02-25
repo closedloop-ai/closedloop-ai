@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ArtifactType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -11,38 +12,44 @@ import {
 
 /**
  * Register the list-artifacts tool on the given MCP server.
- * Calls GET /artifacts with optional query filters for projectId, type, workstreamId, and ownerId.
+ * Calls GET /artifacts with optional query filters for projectId, type, workstreamId, and assigneeId.
  */
 export function registerListArtifacts(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-artifacts",
-    "List artifacts with optional filters by projectId, type, workstreamId, and ownerId",
     {
-      projectId: z.string().optional().describe("Filter by project ID"),
-      workstreamId: z.string().optional().describe("Filter by workstream ID"),
-      ownerId: z.string().optional().describe("Filter by owner user ID"),
-      type: z
-        .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
-        .optional()
-        .describe("Filter by artifact type"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(`Maximum artifacts to return (1-${MAX_PAGE_LIMIT})`),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description:
+        "List artifacts with optional filters by projectId, type, workstreamId, and assigneeId",
+      inputSchema: {
+        projectId: z.string().optional().describe("Filter by project ID"),
+        workstreamId: z.string().optional().describe("Filter by workstream ID"),
+        assigneeId: z
+          .string()
+          .optional()
+          .describe("Filter by assignee user ID"),
+        type: z
+          .enum(ArtifactType)
+          .optional()
+          .describe("Filter by artifact type"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(`Maximum artifacts to return (1-${MAX_PAGE_LIMIT})`),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
-    ({ projectId, workstreamId, ownerId, type, limit, offset }) =>
+    ({ projectId, workstreamId, assigneeId, type, limit, offset }) =>
       withErrorHandling(async () => {
         const query: Record<string, string> = {};
         if (projectId !== undefined) {
@@ -51,8 +58,8 @@ export function registerListArtifacts(
         if (workstreamId !== undefined) {
           query.workstreamId = workstreamId;
         }
-        if (ownerId !== undefined) {
-          query.ownerId = ownerId;
+        if (assigneeId !== undefined) {
+          query.assigneeId = assigneeId;
         }
         if (type !== undefined) {
           query.type = type;
@@ -64,7 +71,7 @@ export function registerListArtifacts(
           offset,
           mapItem: (value) => {
             const row = asRecord(value);
-            const ownerRaw = asRecord(row.owner);
+            const assigneeRaw = asRecord(row.assignee);
             const projectRaw = asRecord(row.project);
             const workstreamRaw = asRecord(row.workstream);
             return {
@@ -76,15 +83,15 @@ export function registerListArtifacts(
               snippet: readString(row.snippet),
               projectId: readString(row.projectId),
               workstreamId: readString(row.workstreamId),
-              ownerId: readString(row.ownerId),
+              assigneeId: readString(row.assigneeId),
               createdAt: readString(row.createdAt),
               updatedAt: readString(row.updatedAt),
-              owner: row.owner
+              assignee: row.assignee
                 ? {
-                    id: readString(ownerRaw.id),
-                    firstName: readString(ownerRaw.firstName),
-                    lastName: readString(ownerRaw.lastName),
-                    avatarUrl: readString(ownerRaw.avatarUrl),
+                    id: readString(assigneeRaw.id),
+                    firstName: readString(assigneeRaw.firstName),
+                    lastName: readString(assigneeRaw.lastName),
+                    avatarUrl: readString(assigneeRaw.avatarUrl),
                   }
                 : null,
               project: row.project

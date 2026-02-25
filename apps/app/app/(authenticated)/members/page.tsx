@@ -1,9 +1,6 @@
 "use client";
 
-import {
-  APPROVER_ROLE_OPTIONS,
-  ApproverRole,
-} from "@repo/api/src/types/artifact";
+import { APPROVER_ROLE_OPTIONS, ApproverRole } from "@repo/api/src/types/user";
 import { OrganizationProfile } from "@repo/auth/client";
 import {
   Avatar,

@@ -5,7 +5,8 @@ import {
   ArtifactType,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
-import type { ProjectPriority } from "@repo/api/src/types/organization";
+import type { Priority } from "@repo/api/src/types/common";
+import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -24,12 +25,7 @@ import {
 import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
+import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
 import {
   ToggleGroup,
   ToggleGroupItem,
@@ -47,6 +43,10 @@ import { useState } from "react";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
 import {
+  UnderlineTabsList,
+  UnderlineTabsTrigger,
+} from "@/components/underline-tabs";
+import {
   useArtifactsByProject,
   useDeleteArtifact,
   useUpdateArtifact,
@@ -55,7 +55,7 @@ import { useCreateIssue } from "@/hooks/queries/use-issues";
 import {
   useProject,
   useProjectActivity,
-  useUpdateProjectOwner,
+  useUpdateProjectAssignee,
   useUpdateProjectPriority,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
@@ -68,7 +68,7 @@ import { PropertiesPanel } from "./components/properties-panel";
 import { useMergeNotification } from "./hooks/use-merge-notification";
 
 /** Workstream states that indicate an async workflow is actively running. */
-const ACTIVE_WORKSTREAM_STATES = new Set([
+const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
   "REQUIREMENTS_GENERATING",
   "IMPLEMENTATION_PLANNING",
   "IMPLEMENTATION_IN_PROGRESS",
@@ -136,24 +136,27 @@ export default function ProjectDetailPage() {
 
   // Mutations
   const updatePriorityMutation = useUpdateProjectPriority();
-  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updateArtifactMutation = useUpdateArtifact();
   const deleteArtifactMutation = useDeleteArtifact();
   const createIssueMutation = useCreateIssue();
 
-  const handleUpdatePriority = (priority: ProjectPriority) => {
+  const handleUpdatePriority = (priority: string) => {
     if (!project) {
       return;
     }
-    updatePriorityMutation.mutate({ projectId: project.id, priority });
+    updatePriorityMutation.mutate({
+      projectId: project.id,
+      priority: priority as Priority,
+    });
   };
 
-  const handleUpdateOwner = (ownerId: string | null) => {
+  const handleUpdateAssignee = (assigneeId: string | null) => {
     if (!project) {
       return;
     }
-    updateOwnerMutation.mutate({ projectId: project.id, ownerId });
+    updateAssigneeMutation.mutate({ projectId: project.id, assigneeId });
   };
 
   const handleUpdateTargetDate = (date: Date | null) => {
@@ -269,32 +272,20 @@ export default function ProjectDetailPage() {
             onValueChange={setActiveTab}
             value={activeTab}
           >
-            <TabsList className="h-auto w-full justify-start gap-0 rounded-none border-border border-b bg-transparent p-0 px-4 pt-2">
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="documents"
-              >
+            <UnderlineTabsList>
+              <UnderlineTabsTrigger value="documents">
                 Documents
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="features"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="features">
                 Features
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="workflows"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="workflows">
                 Workflows
-              </TabsTrigger>
-              <TabsTrigger
-                className="h-auto rounded-none border-0 border-transparent border-b-2 bg-transparent px-4 py-2 text-base text-muted-foreground shadow-none data-[state=active]:border-b-indigo-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                value="branches"
-              >
+              </UnderlineTabsTrigger>
+              <UnderlineTabsTrigger value="branches">
                 Branches
-              </TabsTrigger>
-            </TabsList>
+              </UnderlineTabsTrigger>
+            </UnderlineTabsList>
             <div className="p-6">
               <TabsContent className="mt-0" value="documents">
                 <div className="mb-6">
@@ -375,8 +366,9 @@ export default function ProjectDetailPage() {
 
           {/* Right Sidebar */}
           <div className="w-[300px] space-y-4 border-l p-4">
+            {/* TODO: Add the several missing event handlers for the properties panel */}
             <PropertiesPanel
-              onUpdateOwner={handleUpdateOwner}
+              onUpdateAssignee={handleUpdateAssignee}
               onUpdatePriority={handleUpdatePriority}
               onUpdateTargetDate={handleUpdateTargetDate}
               project={project}

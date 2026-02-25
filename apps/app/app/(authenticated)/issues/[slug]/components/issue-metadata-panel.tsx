@@ -1,9 +1,11 @@
 "use client";
 
 import {
-  ISSUE_PRIORITY_OPTIONS,
+  Priority,
+  type Priority as PriorityType,
+} from "@repo/api/src/types/common";
+import {
   ISSUE_STATUS_OPTIONS,
-  type IssuePriority,
   type IssueStatus,
   type IssueWithWorkstream,
 } from "@repo/api/src/types/issue";
@@ -63,7 +65,7 @@ export function IssueMetadataPanel({
     );
   };
 
-  const handlePriorityChange = (priority: IssuePriority) => {
+  const handlePriorityChange = (priority: PriorityType) => {
     updateIssue.mutate(
       { id: issue.id, priority },
       { onSuccess: () => toast.success("Priority updated") }
@@ -108,14 +110,14 @@ export function IssueMetadataPanel({
             <div className="space-y-2">
               <Label>Priority</Label>
               <Select
-                onValueChange={(v) => handlePriorityChange(v as IssuePriority)}
+                onValueChange={(v) => handlePriorityChange(v as PriorityType)}
                 value={issue.priority}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ISSUE_PRIORITY_OPTIONS.map((priorityOption) => (
+                  {Object.values(Priority).map((priorityOption) => (
                     <SelectItem key={priorityOption} value={priorityOption}>
                       {issuePriorityLabels[priorityOption] ?? priorityOption}
                     </SelectItem>

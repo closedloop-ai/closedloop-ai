@@ -1,6 +1,6 @@
 "use client";
 
-import type { ProjectPriority } from "@repo/api/src/types/organization";
+import type { Priority } from "@repo/api/src/types/common";
 import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import {
@@ -32,7 +32,7 @@ type CreateProjectInput = {
   name: string;
   description?: string;
   priority?: string;
-  ownerId?: string;
+  assigneeId?: string;
   targetDate?: string;
   teamIds: string[];
 };
@@ -51,7 +51,7 @@ export function CreateProjectModal({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState<ProjectPriority>("NOT_SET");
+  const [priority, setPriority] = useState<Priority>("MEDIUM");
   const [owner, setOwner] = useState<{
     id: string;
     name: string;
@@ -95,7 +95,7 @@ export function CreateProjectModal({
       name: name.trim(),
       description: description.trim() || undefined,
       priority,
-      ownerId: owner?.id,
+      assigneeId: owner?.id,
       targetDate: targetDate?.toISOString(),
       teamIds: [teamId],
     };
@@ -109,7 +109,7 @@ export function CreateProjectModal({
     // Reset form
     setName("");
     setDescription("");
-    setPriority("NOT_SET");
+    setPriority("MEDIUM");
     setOwner(null);
     setTargetDate(null);
   };
@@ -155,17 +155,17 @@ export function CreateProjectModal({
               <div className="grid gap-2">
                 <Label htmlFor="priority">Priority</Label>
                 <Select
-                  onValueChange={(v) => setPriority(v as ProjectPriority)}
+                  onValueChange={(v) => setPriority(v as Priority)}
                   value={priority}
                 >
                   <SelectTrigger id="priority">
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="NOT_SET">Not Set</SelectItem>
                     <SelectItem value="LOW">Low</SelectItem>
                     <SelectItem value="MEDIUM">Medium</SelectItem>
                     <SelectItem value="HIGH">High</SelectItem>
+                    <SelectItem value="URGENT">Urgent</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

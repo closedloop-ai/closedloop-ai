@@ -2,9 +2,9 @@ import type {
   ArtifactStatus,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import type { Priority } from "@repo/api/src/types/common";
 import type { ExternalLinkType } from "@repo/api/src/types/external-link";
 import type { IssueStatus } from "@repo/api/src/types/issue";
-import type { ProjectPriority } from "@repo/api/src/types/organization";
 import {
   AlertCircleIcon,
   ClipboardListIcon,
@@ -14,34 +14,34 @@ import {
 } from "lucide-react";
 import type * as React from "react";
 
-// Priority configuration
-export const PRIORITY_LABELS: Record<ProjectPriority, string> = {
-  NOT_SET: "Not Set",
+// Priority configuration (unified across all entities)
+export const PRIORITY_LABELS: Record<Priority, string> = {
   LOW: "Low",
   MEDIUM: "Medium",
   HIGH: "High",
+  URGENT: "Urgent",
 };
 
-export const PRIORITY_COLORS: Record<ProjectPriority, string> = {
-  NOT_SET: "text-muted-foreground",
+export const PRIORITY_COLORS: Record<Priority, string> = {
   LOW: "text-blue-600 dark:text-blue-400",
   MEDIUM: "text-yellow-600 dark:text-yellow-400",
   HIGH: "text-red-600 dark:text-red-400",
+  URGENT: "text-red-800 dark:text-red-300",
 };
 
 // Artifact status configuration (uses API status directly — no display mapping)
 export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   DRAFT: "Draft",
-  REVIEW: "In Review",
+  IN_REVIEW: "In Review",
   APPROVED: "Approved",
-  ARCHIVED: "Archived",
+  OBSOLETE: "Obsolete",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   DRAFT: "text-muted-foreground",
-  REVIEW: "text-yellow-600 dark:text-yellow-400",
+  IN_REVIEW: "text-yellow-600 dark:text-yellow-400",
   APPROVED: "text-green-600 dark:text-green-400",
-  ARCHIVED: "text-muted-foreground",
+  OBSOLETE: "text-muted-foreground",
 };
 
 // Artifact type icons
@@ -79,17 +79,19 @@ export const ARTIFACT_TYPE_COLORS: Record<
 
 // Issue status labels and colors
 export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
-  TODO: "To Do",
+  NOT_STARTED: "Not Started",
   IN_PROGRESS: "In Progress",
   IN_REVIEW: "In Review",
-  CLOSED: "Closed",
+  COMPLETED: "Completed",
+  OBSOLETE: "Obsolete",
 };
 
 export const ISSUE_STATUS_COLORS: Record<IssueStatus, string> = {
-  TODO: "text-muted-foreground",
+  NOT_STARTED: "text-muted-foreground",
   IN_PROGRESS: "text-blue-600 dark:text-blue-400",
   IN_REVIEW: "text-yellow-600 dark:text-yellow-400",
-  CLOSED: "text-green-600 dark:text-green-400",
+  COMPLETED: "text-green-600 dark:text-green-400",
+  OBSOLETE: "text-muted-foreground",
 };
 
 // External link type icons

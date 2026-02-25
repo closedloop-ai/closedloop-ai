@@ -1,4 +1,4 @@
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -71,7 +71,11 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
         return parseError;
       }
 
-      const project = await projectsService.create(user.organizationId, body);
+      const project = await projectsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
 
       // Fetch the full project with details
       const projectWithDetails = await projectsService.findById(

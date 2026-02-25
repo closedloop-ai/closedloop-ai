@@ -84,19 +84,19 @@ export const previewDeploymentStateColors: Record<string, string> = {
 // Pre-configured color maps for common use cases
 export const artifactStatusColors: Record<string, string> = {
   DRAFT: "bg-muted text-muted-foreground border-muted",
-  REVIEW:
+  IN_REVIEW:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
   APPROVED:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  ARCHIVED:
+  OBSOLETE:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
 export const artifactStatusLabels: Record<string, string> = {
   DRAFT: "Draft",
-  REVIEW: "Review",
+  IN_REVIEW: "In Review",
   APPROVED: "Approved",
-  ARCHIVED: "Archived",
+  OBSOLETE: "Obsolete",
 };
 
 export function ArtifactStatusBadge({ status }: { status: string }) {
@@ -122,20 +122,23 @@ export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 
 // Issue status colors
 export const issueStatusColors: Record<string, string> = {
-  TODO: "bg-muted text-muted-foreground border-muted",
+  NOT_STARTED: "bg-muted text-muted-foreground border-muted",
   IN_PROGRESS:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
   IN_REVIEW:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  CLOSED:
+  COMPLETED:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+  OBSOLETE:
+    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
 export const issueStatusLabels: Record<string, string> = {
-  TODO: "Todo",
+  NOT_STARTED: "Not Started",
   IN_PROGRESS: "In Progress",
   IN_REVIEW: "In Review",
-  CLOSED: "Closed",
+  COMPLETED: "Completed",
+  OBSOLETE: "Obsolete",
 };
 
 export function IssueStatusBadge({ status }: Readonly<{ status: string }>) {
@@ -144,7 +147,7 @@ export function IssueStatusBadge({ status }: Readonly<{ status: string }>) {
     <Badge
       className={cn(
         "font-medium",
-        issueStatusColors[status] ?? issueStatusColors.TODO
+        issueStatusColors[status] ?? issueStatusColors.NOT_STARTED
       )}
       variant="outline"
     >

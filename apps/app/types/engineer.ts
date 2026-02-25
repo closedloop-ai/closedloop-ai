@@ -55,14 +55,16 @@ export type EngineerTicketsResult = {
 /** Map Symphony IssueStatus to closedloop-dev status type */
 export function mapIssueStatusToType(status: string): TicketStatusType {
   switch (status) {
-    case "TODO":
+    case "NOT_STARTED":
       return "unstarted";
     case "IN_PROGRESS":
       return "started";
     case "IN_REVIEW":
       return "started";
-    case "CLOSED":
+    case "COMPLETED":
       return "completed";
+    case "OBSOLETE":
+      return "canceled";
     default:
       return "unstarted";
   }
@@ -71,14 +73,16 @@ export function mapIssueStatusToType(status: string): TicketStatusType {
 /** Map Symphony IssueStatus to display name */
 export function statusDisplayName(status: string): string {
   switch (status) {
-    case "TODO":
-      return "To Do";
+    case "NOT_STARTED":
+      return "Not Started";
     case "IN_PROGRESS":
       return "In Progress";
     case "IN_REVIEW":
       return "In Review";
-    case "CLOSED":
+    case "COMPLETED":
       return "Done";
+    case "OBSOLETE":
+      return "Obsolete";
     default:
       return status;
   }
@@ -121,12 +125,12 @@ export function mapArtifactStatusToType(status: string): TicketStatusType {
   switch (status) {
     case "DRAFT":
       return "started";
-    case "REVIEW":
+    case "IN_REVIEW":
       return "started";
     case "APPROVED":
       return "completed";
-    case "ARCHIVED":
-      return "completed";
+    case "OBSOLETE":
+      return "canceled";
     default:
       return "unstarted";
   }
@@ -137,12 +141,12 @@ export function artifactStatusDisplayName(status: string): string {
   switch (status) {
     case "DRAFT":
       return "Draft";
-    case "REVIEW":
+    case "IN_REVIEW":
       return "In Review";
     case "APPROVED":
       return "Approved";
-    case "ARCHIVED":
-      return "Archived";
+    case "OBSOLETE":
+      return "Obsolete";
     default:
       return status;
   }
@@ -205,10 +209,10 @@ export type McpArtifact = {
   snippet: string | null;
   projectId: string | null;
   workstreamId: string | null;
-  ownerId: string | null;
+  assigneeId: string | null;
   createdAt: string;
   updatedAt: string;
-  owner: {
+  assignee: {
     id: string | null;
     firstName: string | null;
     lastName: string | null;

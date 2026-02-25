@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Priority } from "@repo/api/src/types/common";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -7,16 +8,21 @@ export function registerCreateProject(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-project",
-    "Create a new project",
     {
-      name: z.string().describe("Name of the project"),
-      description: z.string().optional().describe("Description of the project"),
-      priority: z
-        .enum(["NOT_SET", "LOW", "MEDIUM", "HIGH"])
-        .optional()
-        .describe("Priority level of the project"),
+      description: "Create a new project",
+      inputSchema: {
+        name: z.string().describe("Name of the project"),
+        description: z
+          .string()
+          .optional()
+          .describe("Description of the project"),
+        priority: z
+          .enum(Priority)
+          .optional()
+          .describe("Priority level of the project"),
+      },
     },
     ({ name, description, priority }) =>
       withErrorHandling(async () => {

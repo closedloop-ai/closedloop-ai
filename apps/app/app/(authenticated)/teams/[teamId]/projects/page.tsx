@@ -1,6 +1,5 @@
 "use client";
 
-import type { ProjectOwner } from "@repo/api/src/types/organization";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -17,7 +16,7 @@ import {
   useCreateProject,
   useDeleteProject,
   useProjectsByTeam,
-  useUpdateProjectOwner,
+  useUpdateProjectAssignee,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -45,13 +44,16 @@ export default function TeamProjectsPage() {
   const error = teamError?.message || projectsError?.message || null;
 
   // Mutations
-  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const createProjectMutation = useCreateProject();
   const deleteProjectMutation = useDeleteProject();
 
-  const handleUpdateOwner = (projectId: string, owner: ProjectOwner | null) => {
-    updateOwnerMutation.mutate({ projectId, ownerId: owner?.id || null });
+  const handleUpdateAssignee = (
+    projectId: string,
+    assigneeId: string | null
+  ) => {
+    updateAssigneeMutation.mutate({ projectId, assigneeId });
   };
 
   const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
@@ -62,7 +64,7 @@ export default function TeamProjectsPage() {
     name: string;
     description?: string;
     priority?: string;
-    ownerId?: string;
+    assigneeId?: string;
     targetDate?: string;
     teamIds: string[];
   }) => {
@@ -71,12 +73,12 @@ export default function TeamProjectsPage() {
         name: projectData.name,
         description: projectData.description,
         priority: projectData.priority as
-          | "NOT_SET"
           | "LOW"
           | "MEDIUM"
           | "HIGH"
+          | "URGENT"
           | undefined,
-        ownerId: projectData.ownerId || null,
+        assigneeId: projectData.assigneeId || null,
         targetDate: projectData.targetDate
           ? new Date(projectData.targetDate)
           : null,
@@ -150,7 +152,7 @@ export default function TeamProjectsPage() {
         </div>
         <ProjectsTable
           onDelete={handleDeleteProject}
-          onUpdateOwner={handleUpdateOwner}
+          onUpdateAssignee={handleUpdateAssignee}
           onUpdateTargetDate={handleUpdateTargetDate}
           projects={projects}
           teamId={teamId}

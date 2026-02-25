@@ -4,7 +4,8 @@ import type {
   IssueWithWorkstream,
   UpdateIssueInput,
 } from "@repo/api/src/types/issue";
-import { type IssuePriority, type IssueStatus, withDb } from "@repo/database";
+import type { BasicUser } from "@repo/api/src/types/user";
+import { type IssueStatus, type Priority, withDb } from "@repo/database";
 import { nanoid } from "nanoid";
 import { issueIncludeWithContext } from "./issue-utils";
 
@@ -137,7 +138,7 @@ type RawIssueWithContext = {
   slug: string;
   description: string | null;
   status: IssueStatus;
-  priority: IssuePriority;
+  priority: Priority;
   assigneeId: string | null;
   createdById: string;
   createdAt: Date;
@@ -149,18 +150,8 @@ type RawIssueWithContext = {
     name: string;
     teams: { team: { id: string; name: string } }[];
   } | null;
-  assignee: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  createdBy: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  };
+  assignee: BasicUser | null;
+  createdBy: BasicUser | null;
 };
 
 function toIssueWithWorkstream(raw: RawIssueWithContext): IssueWithWorkstream {

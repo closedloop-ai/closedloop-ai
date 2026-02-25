@@ -1,13 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
 
 const artifactItemSchema = z.object({
   title: z.string().describe("Title of the artifact"),
-  type: z
-    .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
-    .describe("Type of the artifact"),
+  type: z.enum(ArtifactType).describe("Type of the artifact"),
   projectId: z
     .string()
     .optional()
@@ -27,13 +26,15 @@ export function registerBatchCreateArtifacts(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "batch-create-artifacts",
-    "Create multiple artifacts in a single batch operation",
     {
-      items: z
-        .array(artifactItemSchema)
-        .describe("List of artifacts to create"),
+      description: "Create multiple artifacts in a single batch operation",
+      inputSchema: {
+        items: z
+          .array(artifactItemSchema)
+          .describe("List of artifacts to create"),
+      },
     },
     ({ items }) =>
       withErrorHandling(async () => {

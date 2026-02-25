@@ -152,7 +152,7 @@ describe("entityLinksService", () => {
   });
 
   describe("resolveEntity dispatches by type", () => {
-    it("resolves ARTIFACT with owner/approver includes", async () => {
+    it("resolves ARTIFACT with assignee/approver includes", async () => {
       const mockArtifact = { id: "a-1", title: "My PRD" };
       const mockDb = {
         artifact: {
@@ -171,9 +171,10 @@ describe("entityLinksService", () => {
       expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
         where: { id: "a-1", organizationId: ORG_ID },
         include: {
-          owner: {
+          assignee: {
             select: {
               id: true,
+              email: true,
               firstName: true,
               lastName: true,
               avatarUrl: true,
@@ -182,6 +183,7 @@ describe("entityLinksService", () => {
           approver: {
             select: {
               id: true,
+              email: true,
               firstName: true,
               lastName: true,
               avatarUrl: true,
@@ -213,6 +215,7 @@ describe("entityLinksService", () => {
           assignee: {
             select: {
               id: true,
+              email: true,
               firstName: true,
               lastName: true,
               avatarUrl: true,
@@ -221,6 +224,7 @@ describe("entityLinksService", () => {
           createdBy: {
             select: {
               id: true,
+              email: true,
               firstName: true,
               lastName: true,
               avatarUrl: true,

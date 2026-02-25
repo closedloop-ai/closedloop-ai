@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { IssueStatus } from "@repo/api/src/types/issue.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -13,30 +14,36 @@ export function registerListIssues(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-issues",
-    "List issues with optional filters by project, status, assignee, or workstream",
     {
-      projectId: z.string().optional().describe("Filter by project ID"),
-      status: z
-        .enum(["TODO", "IN_PROGRESS", "IN_REVIEW", "CLOSED"])
-        .optional()
-        .describe("Filter by issue status"),
-      assigneeId: z.string().optional().describe("Filter by assignee user ID"),
-      workstreamId: z.string().optional().describe("Filter by workstream ID"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(`Maximum number of issues to return (1-${MAX_PAGE_LIMIT})`),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description:
+        "List issues with optional filters by project, status, assignee, or workstream",
+      inputSchema: {
+        projectId: z.string().optional().describe("Filter by project ID"),
+        status: z
+          .enum(IssueStatus)
+          .optional()
+          .describe("Filter by issue status"),
+        assigneeId: z
+          .string()
+          .optional()
+          .describe("Filter by assignee user ID"),
+        workstreamId: z.string().optional().describe("Filter by workstream ID"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(`Maximum number of issues to return (1-${MAX_PAGE_LIMIT})`),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ projectId, status, assigneeId, workstreamId, limit, offset }) =>
       withErrorHandling(async () => {
