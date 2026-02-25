@@ -88,13 +88,12 @@ describe("Favorite Project Query Hooks", () => {
         wrapper: createWrapper(),
       });
 
-      // Initially false while loading, stays false after data loads
-      expect(result.current).toBe(false);
-
+      // Wait for the query to resolve before asserting
       await waitFor(() => {
-        // Wait for the underlying query to resolve, then check again
-        expect(result.current).toBe(false);
+        expect(mockApiClient.get).toHaveBeenCalledWith("/projects/favorites");
       });
+
+      expect(result.current).toBe(false);
     });
 
     test("returns false when favorites data is not yet loaded", () => {

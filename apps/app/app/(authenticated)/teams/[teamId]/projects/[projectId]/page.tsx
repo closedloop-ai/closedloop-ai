@@ -384,9 +384,13 @@ export default function ProjectDetailPage() {
         isPending={deleteProjectMutation.isPending}
         itemName={project.name}
         onConfirm={async () => {
-          await deleteProjectMutation.mutateAsync(project.id);
-          router.push(`/teams/${teamId}/projects`);
-          return true;
+          try {
+            await deleteProjectMutation.mutateAsync(project.id);
+            router.push(`/teams/${teamId}/projects`);
+            return true;
+          } catch {
+            return false;
+          }
         }}
         onOpenChange={setDeleteDialogOpen}
         open={deleteDialogOpen}

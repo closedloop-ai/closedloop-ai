@@ -148,6 +148,7 @@ export function useUpdateProject() {
         queryKey: projectKeys.detail(variables.id),
       });
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
   });
 }
@@ -161,6 +162,7 @@ export function useDeleteProject() {
       apiClient.delete<{ deleted: true }>(`/projects/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
+      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
   });
 }
@@ -336,7 +338,6 @@ export function useUnfavoriteProject() {
 }
 
 export function useToggleFavorite() {
-  const queryClient = useQueryClient();
   const favorite = useFavoriteProject();
   const unfavorite = useUnfavoriteProject();
 
@@ -352,9 +353,6 @@ export function useToggleFavorite() {
         return unfavorite.mutateAsync(projectId);
       }
       return favorite.mutateAsync(projectId);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
   });
 }

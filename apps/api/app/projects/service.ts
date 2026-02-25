@@ -241,17 +241,28 @@ export const projectsService = {
 
   /**
    * Find all favorite projects for a user within an organization.
+   * Returns projects mapped to API format, ordered by when they were favorited.
    */
-  findFavoritesByUser(userId: string, organizationId: string) {
-    return withDb((db) =>
-      db.project.findMany({
+  async findFavoritesByUser(
+    userId: string,
+    organizationId: string
+  ): Promise<ProjectWithDetails[]> {
+    const favorites = await withDb((db) =>
+      db.favoriteProject.findMany({
         where: {
-          organizationId,
-          favoritedBy: { some: { userId } },
+          userId,
+          project: { organizationId },
         },
-        include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { updatedAt: "desc" },
+        orderBy: { createdAt: "desc" },
+        include: {
+          project: {
+            include: PROJECT_DETAIL_INCLUDE,
+          },
+        },
       })
+    );
+    return favorites.map((f) =>
+      projectsService.toProjectWithDetails(f.project)
     );
   },
 
