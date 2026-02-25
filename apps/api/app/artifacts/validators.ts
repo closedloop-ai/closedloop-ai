@@ -78,6 +78,16 @@ export const batchMoveArtifactsValidator = z.object({
   targetProjectId: z.uuidv7(),
 });
 
+export const mergeArtifactsValidator = z
+  .object({
+    primaryArtifactId: z.uuidv7(),
+    secondaryArtifactId: z.uuidv7(),
+  })
+  .refine((data) => data.primaryArtifactId !== data.secondaryArtifactId, {
+    message: "Primary and secondary artifact IDs must be different",
+    path: ["secondaryArtifactId"],
+  });
+
 export const batchCreateArtifactsValidator = z.object({
   items: z
     .array(createArtifactValidator)

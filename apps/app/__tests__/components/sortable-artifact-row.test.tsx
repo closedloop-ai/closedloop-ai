@@ -26,6 +26,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 
 // Mock lucide-react icons
 vi.mock("lucide-react", () => ({
+  CheckIcon: () => <div data-testid="check-icon" />,
   GripVertical: () => <div data-testid="grip-icon" />,
 }));
 
