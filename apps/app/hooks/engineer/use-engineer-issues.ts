@@ -1,6 +1,7 @@
 "use client";
 
 import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import type { IssueStatus } from "@repo/api/src/types/issue";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { McpScopeError } from "@/hooks/engineer/use-mcp-client";
@@ -44,12 +45,10 @@ export type EngineerIssuesResultWithUser = EngineerTicketsResult & {
 };
 
 /** Map closedloop-dev status names to Symphony IssueStatus */
-function mapToSymphonyStatus(
-  status: string
-): "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "CLOSED" {
+function mapToSymphonyStatus(status: string): IssueStatus {
   const lower = status.toLowerCase();
   if (lower === "done" || lower === "completed") {
-    return "CLOSED";
+    return "COMPLETED";
   }
   if (lower === "in progress" || lower === "started") {
     return "IN_PROGRESS";
@@ -58,9 +57,9 @@ function mapToSymphonyStatus(
     return "IN_REVIEW";
   }
   if (lower === "todo" || lower === "to do" || lower === "unstarted") {
-    return "TODO";
+    return "NOT_STARTED";
   }
-  return "TODO";
+  return "NOT_STARTED";
 }
 
 /**
@@ -122,7 +121,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
               mcp.listIssues({ assigneeId: user.id, limit: 100, offset })
             ),
             fetchAllMcpPages((offset) =>
-              mcp.listArtifacts({ ownerId: user.id, limit: 100, offset })
+              mcp.listArtifacts({ assigneeId: user.id, limit: 100, offset })
             ),
           ]);
           if (cancelled) {
@@ -375,14 +374,14 @@ function mcpIssueToEngineerTicket(issue: McpIssue): EngineerTicket {
 }
 
 function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
-  const owner = artifact.owner
+  const assignee = artifact.assignee
     ? {
-        id: artifact.owner.id ?? "",
-        name: [artifact.owner.firstName, artifact.owner.lastName]
+        id: artifact.assignee.id ?? "",
+        name: [artifact.assignee.firstName, artifact.assignee.lastName]
           .filter(Boolean)
           .join(" "),
-        email: "",
-        avatarUrl: artifact.owner.avatarUrl ?? undefined,
+        email: artifact.assignee.email ?? "",
+        avatarUrl: artifact.assignee.avatarUrl ?? undefined,
       }
     : undefined;
 
@@ -399,7 +398,7 @@ function mcpArtifactToEngineerTicket(artifact: McpArtifact): EngineerTicket {
       name: artifactStatusDisplayName(artifact.status),
       type: mapArtifactStatusToType(artifact.status),
     },
-    assignee: owner,
+    assignee,
     priority: 3,
     priorityLabel: "Medium",
     createdAt: artifact.createdAt,

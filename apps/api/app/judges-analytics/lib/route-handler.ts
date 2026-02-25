@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { log } from "@repo/observability/log";
 import type { NextRequest } from "next/server";
 import type { z } from "zod";

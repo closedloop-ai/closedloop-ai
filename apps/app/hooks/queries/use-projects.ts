@@ -1,12 +1,12 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
+import type { Priority } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
-  ProjectPriority,
   ProjectWithDetails,
   UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import {
   type UseQueryOptions,
   useMutation,
@@ -164,17 +164,17 @@ export function useDeleteProject() {
   });
 }
 
-export function useUpdateProjectOwner() {
+export function useUpdateProjectAssignee() {
   const updateProject = useUpdateProject();
 
   return useMutation({
     mutationFn: ({
       projectId,
-      ownerId,
+      assigneeId,
     }: {
       projectId: string;
-      ownerId: string | null;
-    }) => updateProject.mutateAsync({ id: projectId, ownerId }),
+      assigneeId: string | null;
+    }) => updateProject.mutateAsync({ id: projectId, assigneeId }),
   });
 }
 
@@ -201,7 +201,7 @@ export function useUpdateProjectPriority() {
       priority,
     }: {
       projectId: string;
-      priority: ProjectPriority;
+      priority: Priority;
     }) => updateProject.mutateAsync({ id: projectId, priority }),
   });
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ProjectOwner } from "@repo/api/src/types/organization";
+import type { CreateProjectInput } from "@repo/api/src/types/project";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -16,7 +16,7 @@ import {
   useCreateProject,
   useDeleteProject,
   useProjectsByTeam,
-  useUpdateProjectOwner,
+  useUpdateProjectAssignee,
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
@@ -44,49 +44,28 @@ export default function TeamProjectsPage() {
   const error = teamError?.message || projectsError?.message || null;
 
   // Mutations
-  const updateOwnerMutation = useUpdateProjectOwner();
+  const updateAssigneeMutation = useUpdateProjectAssignee();
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const createProjectMutation = useCreateProject();
   const deleteProjectMutation = useDeleteProject();
 
-  const handleUpdateOwner = (projectId: string, owner: ProjectOwner | null) => {
-    updateOwnerMutation.mutate({ projectId, ownerId: owner?.id || null });
+  const handleUpdateAssignee = (
+    projectId: string,
+    assigneeId: string | null
+  ) => {
+    updateAssigneeMutation.mutate({ projectId, assigneeId });
   };
 
   const handleUpdateTargetDate = (projectId: string, date: Date | null) => {
     updateTargetDateMutation.mutate({ projectId, targetDate: date });
   };
 
-  const handleCreateProject = (projectData: {
-    name: string;
-    description?: string;
-    priority?: string;
-    ownerId?: string;
-    targetDate?: string;
-    teamIds: string[];
-  }) => {
-    createProjectMutation.mutate(
-      {
-        name: projectData.name,
-        description: projectData.description,
-        priority: projectData.priority as
-          | "NOT_SET"
-          | "LOW"
-          | "MEDIUM"
-          | "HIGH"
-          | undefined,
-        ownerId: projectData.ownerId || null,
-        targetDate: projectData.targetDate
-          ? new Date(projectData.targetDate)
-          : null,
-        teamIds: projectData.teamIds,
+  const handleCreateProject = (projectData: CreateProjectInput) => {
+    createProjectMutation.mutate(projectData, {
+      onSuccess: (newProject) => {
+        router.push(`/teams/${teamId}/projects/${newProject.id}`);
       },
-      {
-        onSuccess: (newProject) => {
-          router.push(`/teams/${teamId}/projects/${newProject.id}`);
-        },
-      }
-    );
+    });
   };
 
   const handleDeleteProject = async (projectId: string) => {
@@ -148,7 +127,7 @@ export default function TeamProjectsPage() {
         </div>
         <ProjectsTable
           onDelete={handleDeleteProject}
-          onUpdateOwner={handleUpdateOwner}
+          onUpdateAssignee={handleUpdateAssignee}
           onUpdateTargetDate={handleUpdateTargetDate}
           projects={projects}
           teamId={teamId}

@@ -162,7 +162,7 @@ const defaultProps = {
   plan: createMockPlan(),
   status: "DRAFT" as ArtifactStatus,
   approver: null,
-  owner: null,
+  assignee: null,
   teamMembers: [],
   generationStatus: null,
   pullRequest: null,
@@ -173,7 +173,7 @@ const defaultProps = {
   codeJudgesReport: null,
   onStatusChange: vi.fn(),
   onApproverSelect: vi.fn(),
-  onOwnerChange: vi.fn(),
+  onAssigneeChange: vi.fn(),
   targetRepo: "",
   targetBranch: "",
 };

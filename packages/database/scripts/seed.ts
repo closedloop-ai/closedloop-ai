@@ -147,7 +147,8 @@ async function main() {
         description:
           "Implement secure authentication with OAuth2, MFA, and session management",
         priority: "HIGH",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
       },
     });
@@ -167,7 +168,8 @@ async function main() {
         description:
           "Build a real-time analytics dashboard with customizable widgets",
         priority: "MEDIUM",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
       },
     });
@@ -346,6 +348,7 @@ As a security-conscious user, I want to enable MFA so that my account is more se
               title: data.title,
               slug: data.slug,
               status: "APPROVED",
+              createdById: userId,
               latestVersion: 1,
             },
           });
