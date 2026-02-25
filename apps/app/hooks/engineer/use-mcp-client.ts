@@ -500,13 +500,13 @@ export function useMcpClient(): McpClient {
         if (params?.ownerId) {
           args.ownerId = params.ownerId;
         }
-        console.debug("[engineer] listArtifacts args:", args);
         if (params?.limit !== undefined) {
           args.limit = params.limit;
         }
         if (params?.offset !== undefined) {
           args.offset = params.offset;
         }
+        console.debug("[engineer] listArtifacts args:", args);
         const result = await callTool("list-artifacts", args);
         return parseMcpResult<PaginatedResponse<McpArtifact>>(result);
       },
