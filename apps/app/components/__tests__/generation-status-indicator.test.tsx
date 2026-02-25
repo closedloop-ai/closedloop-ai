@@ -65,7 +65,9 @@ describe("GenerationStatusIndicator", () => {
       correlationId: "test-123",
     };
     render(<GenerationStatusIndicator generationStatus={generationStatus} />);
-    expect(screen.getByText("Queued for generation...")).toBeInTheDocument();
+    expect(
+      screen.getByText("Queued for plan generation...")
+    ).toBeInTheDocument();
   });
 
   test("renders spinner for RUNNING state with execute command", () => {
@@ -93,7 +95,9 @@ describe("GenerationStatusIndicator", () => {
       correlationId: "test-123",
     };
     render(<GenerationStatusIndicator generationStatus={generationStatus} />);
-    expect(screen.getByText("Generating...")).toBeInTheDocument();
+    expect(
+      screen.getByText("Generating implementation plan...")
+    ).toBeInTheDocument();
   });
 
   test("renders CheckCircle icon for SUCCESS", () => {
@@ -142,7 +146,7 @@ describe("GenerationStatusIndicator", () => {
       correlationId: "test-123",
     };
     render(<GenerationStatusIndicator generationStatus={generationStatus} />);
-    expect(screen.getByText("Generation failed")).toBeInTheDocument();
+    expect(screen.getByText("Plan generation failed")).toBeInTheDocument();
   });
 
   test("creates clickable link when htmlUrl is provided", () => {
@@ -211,7 +215,7 @@ describe("GenerationStatusIndicator", () => {
       {
         status: "QUEUED",
         command: "plan",
-        expectedMessage: "Queued for generation...",
+        expectedMessage: "Queued for plan generation...",
       },
       {
         status: "RUNNING",
@@ -221,7 +225,7 @@ describe("GenerationStatusIndicator", () => {
       {
         status: "RUNNING",
         command: "plan",
-        expectedMessage: "Generating...",
+        expectedMessage: "Generating implementation plan...",
       },
       {
         status: "FAILURE",
@@ -231,7 +235,7 @@ describe("GenerationStatusIndicator", () => {
       {
         status: "FAILURE",
         command: "plan",
-        expectedMessage: "Generation failed",
+        expectedMessage: "Plan generation failed",
       },
     ];
 

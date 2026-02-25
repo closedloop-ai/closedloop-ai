@@ -39,6 +39,8 @@ function getInitiatorName(
 /** Build a queued message for the given command. */
 function getQueuedMessage(command: GenerationStatus["command"]): string {
   switch (command) {
+    case "plan":
+      return "Queued for plan generation...";
     case "execute":
       return "Queued for execution...";
     case "request_changes":
@@ -65,6 +67,8 @@ function getRunningMessage(
 /** Get the running verb phrase for a command. */
 function getRunningVerb(command: GenerationStatus["command"]): string {
   switch (command) {
+    case "plan":
+      return "Generating implementation plan...";
     case "execute":
       return "Executing plan and creating PR...";
     case "request_changes":
@@ -81,6 +85,8 @@ function getRunningVerb(command: GenerationStatus["command"]): string {
 /** Build a failure message for the given command. */
 function getFailureMessage(command: GenerationStatus["command"]): string {
   switch (command) {
+    case "plan":
+      return "Plan generation failed";
     case "execute":
       return "Plan execution failed";
     case "request_changes":
