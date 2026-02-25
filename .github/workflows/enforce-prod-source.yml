@@ -1,0 +1,15 @@
+name: Enforce production source branch
+on:
+  pull_request:
+    branches: [production]
+
+jobs:
+  check-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify source is main
+        if: github.head_ref != 'main'
+        run: |
+          echo "::error::PRs to production must come from main, not '${{ github.head_ref }}'"
+          echo "All changes must flow through main first, then deploy via main → production."
+          exit 1
