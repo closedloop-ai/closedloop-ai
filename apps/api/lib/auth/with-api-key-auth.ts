@@ -7,6 +7,7 @@ import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import { apiKeysService } from "@/app/api-keys/service";
+import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
 import { forbiddenResponse, unauthorizedResponse } from "../route-utils";
 import { hasApiKeyScopes } from "./api-key-scopes";
@@ -69,10 +70,18 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
         return unauthorizedResponse();
       }
 
+      const organization = await organizationsService.findById(
+        keyContext.organizationId
+      );
+
+      if (!organization) {
+        return unauthorizedResponse();
+      }
+
       const authContext: AuthContext = {
         user,
         clerkUserId: user.clerkId,
-        clerkOrgId: keyContext.organizationId,
+        clerkOrgId: organization.clerkId,
         orgRole: undefined,
         authMethod: "api_key",
         apiKeyScopes: keyContext.scopes,
