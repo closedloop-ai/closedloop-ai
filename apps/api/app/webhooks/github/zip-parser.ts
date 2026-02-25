@@ -5,10 +5,7 @@ import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
-import {
-  parsePromptFrontmatter as parsePromptFrontmatterShared,
-  parsePromptsSnapshotFromMarkdownEntries,
-} from "@/lib/prompt-snapshot-ingestion";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@/lib/prompt-snapshot-ingestion";
 import type { ExecutionResult } from "./types";
 
 export type ZipContent = {
@@ -238,7 +235,4 @@ function parseZipEntryContent(
     perfSummary,
     promptsSnapshot,
   };
-}
-export function parseAgentFrontmatter(fileContent: string, entryPath: string) {
-  return parsePromptFrontmatterShared(fileContent, entryPath);
 }
