@@ -10,7 +10,6 @@
  * These are pure unit tests with mocked external dependencies:
  * - @repo/database (Prisma client)
  * - @repo/github (downloadWorkflowArtifacts)
- * - @repo/aws (uploadArtifact, getArtifactUrl)
  * - @repo/observability/log (logging)
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
@@ -39,11 +38,6 @@ vi.mock("@repo/github", () => ({
   downloadWorkflowArtifacts: vi.fn(),
 }));
 
-vi.mock("@repo/aws", () => ({
-  uploadArtifact: vi.fn(),
-  getArtifactUrl: vi.fn((key: string) => `https://s3.example.com/${key}`),
-}));
-
 vi.mock("@repo/observability/log", () => ({
   log: {
     info: vi.fn(),
@@ -63,7 +57,6 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
 }));
 
 // Import after mocking
-import { uploadArtifact } from "@repo/aws";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
@@ -79,7 +72,6 @@ import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-serv
 const mockWithDb = getMockWithDb();
 const mockDownloadWorkflowArtifacts =
   downloadWorkflowArtifacts as unknown as Mock;
-const mockUploadArtifact = uploadArtifact as unknown as Mock;
 const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
 const mockCreateVersion =
@@ -90,7 +82,7 @@ describe("handleWorkflowSuccess", () => {
     vi.clearAllMocks();
   });
 
-  it("updates artifact with plan content when S3 is configured", async () => {
+  it("updates artifact with plan content from downloaded artifacts", async () => {
     const correlationId = "test-correlation-123";
     const artifactId = "artifact-123";
     const workstreamId = "ws-123";
@@ -124,8 +116,6 @@ describe("handleWorkflowSuccess", () => {
       { name: "artifact.zip", data: zipBuffer },
     ]);
 
-    mockUploadArtifact.mockResolvedValue(undefined);
-
     const mockDb = {
       workstream: {
         findUnique: vi.fn().mockResolvedValue({
@@ -149,14 +139,13 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, true);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
     expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
       where: { id: workstreamId },
       select: { organizationId: true },
     });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
-    expect(mockUploadArtifact).toHaveBeenCalled();
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
       null,
@@ -183,7 +172,7 @@ describe("handleWorkflowSuccess", () => {
     });
   });
 
-  it("updates artifact without uploading to S3 when S3 is not configured", async () => {
+  it("extracts plan content without artifacts having been uploaded to S3", async () => {
     const correlationId = "test-correlation-456";
     const artifactId = "artifact-456";
     const workstreamId = "ws-456";
@@ -239,14 +228,13 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
     expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
       where: { id: workstreamId },
       select: { organizationId: true },
     });
     expect(mockDownloadWorkflowArtifacts).toHaveBeenCalledWith(runId);
-    expect(mockUploadArtifact).not.toHaveBeenCalled();
     expect(mockCreateVersion).toHaveBeenCalledWith(
       artifactId,
       null,
@@ -346,7 +334,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
     expect(mockDb.workstream.findUnique).toHaveBeenCalledWith({
       where: { id: workstreamId },
@@ -411,9 +399,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await expect(
-      handleWorkflowSuccess(asTx(mockDb), ctx, false)
-    ).rejects.toThrow(
+    await expect(handleWorkflowSuccess(asTx(mockDb), ctx)).rejects.toThrow(
       `Workstream ${workstreamId} not found - cannot update artifact`
     );
   });
@@ -462,9 +448,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await expect(
-      handleWorkflowSuccess(asTx(mockDb), ctx, false)
-    ).rejects.toThrow(
+    await expect(handleWorkflowSuccess(asTx(mockDb), ctx)).rejects.toThrow(
       `Artifact ${artifactId} not found in organization - cannot update with workflow results`
     );
   });
@@ -539,7 +523,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
     expect(mockDb.gitHubActionRunPerformance.upsert).toHaveBeenCalledWith({
       where: {
@@ -614,7 +598,7 @@ describe("handleWorkflowSuccess", () => {
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx, false);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
     expect(mockDb.gitHubActionRunPerformance.upsert).not.toHaveBeenCalled();
   });
@@ -656,7 +640,7 @@ describe("handleWorkflowSuccess", () => {
       artifact: { findUnique: vi.fn(), update: vi.fn() },
     };
 
-    await handleWorkflowSuccess(asTx(mockTx), ctx, false);
+    await handleWorkflowSuccess(asTx(mockTx), ctx);
 
     // Should not throw, but should log error and return early without DB calls
     expect(mockTx.workstream.findUnique).not.toHaveBeenCalled();
@@ -1165,11 +1149,7 @@ describe("processWorkflowCompletion", () => {
 
     mockWithDbTx(mockDb);
 
-    const response = await processWorkflowCompletion(
-      event,
-      correlationId,
-      true
-    );
+    const response = await processWorkflowCompletion(event, correlationId);
 
     expect(mockFindActionRunByCorrelationId).toHaveBeenCalledWith(
       correlationId,
@@ -1233,11 +1213,7 @@ describe("processWorkflowCompletion", () => {
 
     mockWithDbTx(mockDb);
 
-    const response = await processWorkflowCompletion(
-      event,
-      correlationId,
-      false
-    );
+    const response = await processWorkflowCompletion(event, correlationId);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -1284,11 +1260,7 @@ describe("processWorkflowCompletion", () => {
       },
     } as WorkflowRunCompletedEvent;
 
-    const response = await processWorkflowCompletion(
-      event,
-      correlationId,
-      true
-    );
+    const response = await processWorkflowCompletion(event, correlationId);
 
     expect(mockFindActionRunByCorrelationId).toHaveBeenCalledWith(
       correlationId,
@@ -1389,11 +1361,7 @@ describe("processWorkflowCompletion", () => {
 
     mockWithDbTx(mockDb);
 
-    const response = await processWorkflowCompletion(
-      event,
-      correlationId,
-      true
-    );
+    const response = await processWorkflowCompletion(event, correlationId);
 
     expect(mockDb.gitHubPullRequest.create).toHaveBeenCalled();
     expect(mockDb.externalLink.create).toHaveBeenCalledWith({
