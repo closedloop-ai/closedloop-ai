@@ -167,6 +167,11 @@ export type UpdateArtifactInput = {
   sortOrder?: number | null;
 };
 
+export type MergeArtifactsInput = {
+  primaryArtifactId: string;
+  secondaryArtifactId: string;
+};
+
 // Pull Request State
 export const PullRequestState = {
   Open: "OPEN",
