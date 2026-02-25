@@ -10,8 +10,7 @@ on:
     paths:
       - "apps/mcp/**"
       - "packages/api/**"
-      - "packages/database/prisma/**"
-      - "packages/database/package.json"
+      - "packages/database/**"
   workflow_dispatch: {}
 
 concurrency:
@@ -80,4 +79,8 @@ jobs:
             --service ${{ matrix.ecs_service }} \
             --force-new-deployment \
             --no-cli-pager
+          echo "Waiting for ${{ matrix.environment }} service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster ${{ matrix.ecs_cluster }} \
+            --services ${{ matrix.ecs_service }}
           echo "Deployed ${{ matrix.environment }}: cluster=${{ matrix.ecs_cluster }}, service=${{ matrix.ecs_service }}"
