@@ -113,6 +113,7 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
           if (cancelled) {
             return;
           }
+          console.debug("[engineer] getMe:", user.id, user.email);
           setMcpUser(user);
 
           // Step 2: fetch all pages of issues and artifacts in parallel
@@ -124,6 +125,12 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
               mcp.listArtifacts({ assigneeId: user.id, limit: 100, offset })
             ),
           ]);
+          console.debug(
+            "[engineer] fetched %d issues, %d artifacts (ownerId=%s)",
+            allIssues.length,
+            allArtifacts.length,
+            user.id
+          );
           if (cancelled) {
             return;
           }
