@@ -14,9 +14,9 @@ import type { PerfSummary } from "@repo/api/src/types/performance";
 import { PromptType } from "@repo/api/src/types/prompt";
 import {
   findPlanInZip,
-  parseAgentFrontmatter,
   parseJudgesReport,
 } from "@/app/webhooks/github/zip-parser";
+import { parsePromptFrontmatter } from "@/lib/prompt-snapshot-ingestion";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
 describe("ZIP parsing for judges.json", () => {
@@ -224,9 +224,9 @@ tools: read
 This is the judge system prompt content.
 `;
 
-  describe("parseAgentFrontmatter", () => {
+  describe("parsePromptFrontmatter", () => {
     it("returns AGENT type for a non-judges path", () => {
-      const result = parseAgentFrontmatter(
+      const result = parsePromptFrontmatter(
         VALID_AGENT_FRONTMATTER,
         "agents-snapshot/my-agent.md"
       );
@@ -239,7 +239,7 @@ This is the judge system prompt content.
     });
 
     it("returns JUDGE type for a path under agents-snapshot/judges/", () => {
-      const result = parseAgentFrontmatter(
+      const result = parsePromptFrontmatter(
         VALID_JUDGE_FRONTMATTER,
         "agents-snapshot/judges/my-judge.md"
       );
@@ -250,7 +250,7 @@ This is the judge system prompt content.
     });
 
     it("parses tools from comma-separated string", () => {
-      const result = parseAgentFrontmatter(
+      const result = parsePromptFrontmatter(
         VALID_AGENT_FRONTMATTER,
         "agents-snapshot/my-agent.md"
       );
@@ -267,7 +267,7 @@ description: Missing name field
 
 Content here.
 `;
-      const result = parseAgentFrontmatter(
+      const result = parsePromptFrontmatter(
         contentWithoutName,
         "agents-snapshot/nameless.md"
       );
@@ -278,7 +278,7 @@ Content here.
     it("returns null when frontmatter is missing entirely", () => {
       const contentWithoutFrontmatter =
         "Just plain content with no frontmatter.";
-      const result = parseAgentFrontmatter(
+      const result = parsePromptFrontmatter(
         contentWithoutFrontmatter,
         "agents-snapshot/no-frontmatter.md"
       );

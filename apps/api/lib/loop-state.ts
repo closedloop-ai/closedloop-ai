@@ -393,3 +393,57 @@ export async function downloadArtifactFile(
     return null;
   }
 }
+
+/**
+ * Download markdown prompt snapshot files from `artifacts/agents-snapshot/`.
+ * Returns entry names relative to `artifacts/` (for parser compatibility).
+ */
+export async function downloadPromptSnapshotMarkdownEntries(
+  stateKeyPrefix: string
+): Promise<Array<{ name: string; data: Buffer }>> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  const artifactPrefix = `${stateKeyPrefix}/artifacts/`;
+  const snapshotPrefix = `${artifactPrefix}agents-snapshot/`;
+  const entries: Array<{ name: string; data: Buffer }> = [];
+
+  let continuationToken: string | undefined;
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: snapshotPrefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    const keys = (response.Contents ?? [])
+      .map((obj) => obj.Key)
+      .filter((key): key is string => Boolean(key))
+      .filter((key) => key.endsWith(".md"));
+
+    const pageEntries = await Promise.all(
+      keys.map(async (key) => {
+        const data = await getObject(key);
+        const relativeName = key.startsWith(artifactPrefix)
+          ? key.slice(artifactPrefix.length)
+          : key;
+        return { name: relativeName, data };
+      })
+    );
+    entries.push(...pageEntries);
+
+    continuationToken = response.IsTruncated
+      ? response.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  if (entries.length > 0) {
+    log.info("[loop-state] Downloaded prompt snapshot markdown entries", {
+      stateKeyPrefix,
+      count: entries.length,
+    });
+  }
+
+  return entries;
+}

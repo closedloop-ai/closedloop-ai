@@ -2,9 +2,9 @@
  * Unit tests for prompts integration in loop-artifact-ingestion.ts.
  *
  * Tests cover:
- * - downloadLoopArtifacts(): prompts-snapshot.json buffer parsed into PromptsSnapshot
- *   with camelCase field mapping (file_path → filePath)
- * - downloadLoopArtifacts(): null buffer returns promptsSnapshot: null without failing
+ * - downloadLoopArtifacts(): markdown entries under agents-snapshot/ are parsed as primary source
+ * - downloadLoopArtifacts(): legacy prompts-snapshot.json fallback is used when markdown is absent
+ * - downloadLoopArtifacts(): null inputs return promptsSnapshot: null without failing
  * - ingestPlanArtifacts(): upsertFromSnapshot called before judgesReport writes
  * - ingestExecutionArtifacts(): upsertFromSnapshot called before code judges report writes
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
@@ -58,6 +58,7 @@ vi.mock("@/app/artifacts/room-utils", () => ({
 
 vi.mock("@/lib/loop-state", () => ({
   downloadArtifactFile: vi.fn(),
+  downloadPromptSnapshotMarkdownEntries: vi.fn(),
 }));
 
 // --- Imports (after mocks) ---
@@ -69,10 +70,15 @@ import {
   ingestExecutionArtifacts,
   ingestPlanArtifacts,
 } from "@/lib/loop-artifact-ingestion";
-import { downloadArtifactFile } from "@/lib/loop-state";
+import {
+  downloadArtifactFile,
+  downloadPromptSnapshotMarkdownEntries,
+} from "@/lib/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 
 const mockDownloadArtifactFile = downloadArtifactFile as unknown as Mock;
+const mockDownloadPromptSnapshotMarkdownEntries =
+  downloadPromptSnapshotMarkdownEntries as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 
@@ -142,16 +148,48 @@ function makeJudgesReport(reportId = "report-1"): JudgesReport {
 }
 
 // ---------------------------------------------------------------------------
-// downloadLoopArtifacts — prompts-snapshot.json parsing
+// downloadLoopArtifacts — prompt snapshot parsing
 // ---------------------------------------------------------------------------
 
-describe("downloadLoopArtifacts — prompts-snapshot.json", () => {
+describe("downloadLoopArtifacts — prompt snapshots", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("parses prompts-snapshot.json buffer into PromptsSnapshot with camelCase filePath mapping", async () => {
-    // The raw JSON uses snake_case file_path; the TS type uses camelCase filePath
+  it("parses markdown entries from agents-snapshot as the primary source", async () => {
+    const markdownContent = `---
+name: my-agent
+model: claude-3
+description: An agent prompt
+tools: bash, read
+---
+
+You are a helpful agent.
+`;
+
+    mockDownloadArtifactFile.mockResolvedValue(null);
+    mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([
+      {
+        name: "agents-snapshot/my-agent.md",
+        data: Buffer.from(markdownContent, "utf-8"),
+      },
+    ]);
+
+    const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
+
+    expect(artifacts.promptsSnapshot).not.toBeNull();
+    expect(artifacts.promptsSnapshot?.prompts).toHaveLength(1);
+    expect(artifacts.promptsSnapshot?.prompts[0]).toMatchObject({
+      promptType: "AGENT",
+      name: "my-agent",
+      model: "claude-3",
+      tools: ["bash", "read"],
+      filePath: "agents-snapshot/my-agent.md",
+      content: "You are a helpful agent.\n",
+    });
+  });
+
+  it("falls back to prompts-snapshot.json when markdown entries are absent", async () => {
     const rawSnapshot = {
       prompts: [
         {
@@ -166,17 +204,12 @@ describe("downloadLoopArtifacts — prompts-snapshot.json", () => {
       ],
     };
 
-    // Return null for all files except prompts-snapshot.json
-    mockDownloadArtifactFile.mockResolvedValue(null);
+    mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
     mockDownloadArtifactFile.mockImplementation(
-      (_prefix: string, filename: string) => {
-        if (filename === "prompts-snapshot.json") {
-          return Promise.resolve(
-            Buffer.from(JSON.stringify(rawSnapshot), "utf-8")
-          );
-        }
-        return Promise.resolve(null);
-      }
+      async (_prefix: string, filename: string) =>
+        filename === "prompts-snapshot.json"
+          ? Buffer.from(JSON.stringify(rawSnapshot), "utf-8")
+          : null
     );
 
     const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
@@ -193,9 +226,10 @@ describe("downloadLoopArtifacts — prompts-snapshot.json", () => {
     expect(prompt?.content).toBe("You are a helpful agent.");
   });
 
-  it("returns promptsSnapshot: null when prompts-snapshot.json buffer is null", async () => {
+  it("returns promptsSnapshot: null when both markdown and JSON snapshots are missing", async () => {
     // All artifact files return null
     mockDownloadArtifactFile.mockResolvedValue(null);
+    mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
 
     const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
 

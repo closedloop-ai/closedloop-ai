@@ -17,7 +17,7 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
-import type { PromptInfo, PromptsSnapshot } from "@repo/api/src/types/prompt";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
@@ -25,9 +25,16 @@ import {
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import {
+  parsePromptsSnapshotFromJson,
+  parsePromptsSnapshotFromMarkdownEntries,
+} from "@/lib/prompt-snapshot-ingestion";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult } from "../app/webhooks/github/types";
-import { downloadArtifactFile } from "./loop-state";
+import {
+  downloadArtifactFile,
+  downloadPromptSnapshotMarkdownEntries,
+} from "./loop-state";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,6 +71,7 @@ export async function downloadLoopArtifacts(
     codeJudgesReportBuf,
     judgesReportBuf,
     promptsSnapshotBuf,
+    promptMarkdownEntries,
   ] = await Promise.all([
     downloadArtifactFile(stateKeyPrefix, "plan.json"),
     downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
@@ -71,6 +79,7 @@ export async function downloadLoopArtifacts(
     downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
     downloadArtifactFile(stateKeyPrefix, "judges.json"),
     downloadArtifactFile(stateKeyPrefix, "prompts-snapshot.json"),
+    downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
   ]);
 
   const planContent = parseJsonArtifact<PlanJson>(
@@ -101,24 +110,26 @@ export async function downloadLoopArtifacts(
     (p) => p
   ) as JudgesReport | null;
 
-  // The JSON uses snake_case file_path; map to camelCase filePath for the TS type.
-  type RawPromptInfo = Omit<PromptInfo, "filePath"> & { file_path: string };
-  type RawPromptsSnapshot = { prompts: RawPromptInfo[] };
-  const promptsSnapshot = parseJsonArtifact<RawPromptsSnapshot>(
-    promptsSnapshotBuf,
-    "prompts-snapshot.json",
-    (p) => ({
-      prompts: p.prompts.map((raw) => ({
-        promptType: raw.promptType,
-        name: raw.name,
-        description: raw.description,
-        model: raw.model,
-        tools: raw.tools,
-        filePath: raw.file_path,
-        content: raw.content,
-      })),
-    })
-  ) as PromptsSnapshot | null;
+  let promptsSnapshot: PromptsSnapshot | null =
+    parsePromptsSnapshotFromMarkdownEntries(
+      promptMarkdownEntries,
+      "[loop-artifact-ingestion]"
+    );
+
+  if (!promptsSnapshot && promptsSnapshotBuf) {
+    promptsSnapshot = parsePromptsSnapshotFromJson(
+      promptsSnapshotBuf,
+      "[loop-artifact-ingestion]"
+    );
+    if (promptsSnapshot) {
+      log.warn(
+        "[loop-artifact-ingestion] Using legacy prompts-snapshot.json fallback",
+        {
+          stateKeyPrefix,
+        }
+      );
+    }
+  }
 
   return {
     planContent,

@@ -1,14 +1,14 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import {
-  type PromptInfo,
-  type PromptsSnapshot,
-  PromptType,
-} from "@repo/api/src/types/prompt";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
+import {
+  parsePromptFrontmatter as parsePromptFrontmatterShared,
+  parsePromptsSnapshotFromMarkdownEntries,
+} from "@/lib/prompt-snapshot-ingestion";
 import type { ExecutionResult } from "./types";
 
 export type ZipContent = {
@@ -21,9 +21,6 @@ export type ZipContent = {
   promptsSnapshot: PromptsSnapshot | null;
   entries: { name: string; data: Buffer }[];
 };
-
-const AGENTS_SNAPSHOT_PATTERN = /^agents-snapshot\/.*\.md$/;
-const FRONTMATTER_PATTERN = /^---\s*\n([\s\S]*?)\n---/;
 
 /**
  * Parse execution result JSON safely.
@@ -217,15 +214,18 @@ function parseZipEntryContent(
     log.info(`Found perf.jsonl: ${name}`);
   }
   // Check for agents-snapshot markdown files
-  else if (AGENTS_SNAPSHOT_PATTERN.test(name)) {
-    const content = data.toString("utf-8");
-    const promptInfo = parseAgentFrontmatter(content, name);
-    if (promptInfo) {
+  else {
+    const parsedSnapshot = parsePromptsSnapshotFromMarkdownEntries(
+      [{ name, data }],
+      "[zip-parser]"
+    );
+    if (parsedSnapshot) {
       promptsSnapshot = {
-        prompts: [...(promptsSnapshot?.prompts ?? []), promptInfo],
+        prompts: [
+          ...(promptsSnapshot?.prompts ?? []),
+          ...parsedSnapshot.prompts,
+        ],
       };
-    } else {
-      log.warn(`[zip-parser] Failed to parse agent frontmatter: ${name}`);
     }
   }
 
@@ -239,63 +239,6 @@ function parseZipEntryContent(
     promptsSnapshot,
   };
 }
-
-/**
- * Parse agent/judge frontmatter from a markdown file in the agents-snapshot directory.
- * Returns a PromptInfo if the frontmatter is valid, null otherwise.
- */
-export function parseAgentFrontmatter(
-  fileContent: string,
-  entryPath: string
-): PromptInfo | null {
-  const frontmatterMatch = FRONTMATTER_PATTERN.exec(fileContent);
-  if (!frontmatterMatch) {
-    return null;
-  }
-
-  const frontmatterBody = frontmatterMatch[1];
-  const fields: Record<string, string> = {};
-  const fieldRegex = /^([\w_]+):\s*(.+)$/gm;
-  let match = fieldRegex.exec(frontmatterBody);
-  while (match !== null) {
-    fields[match[1]] = match[2].trim();
-    match = fieldRegex.exec(frontmatterBody);
-  }
-
-  const name = fields.name;
-  const model = fields.model;
-
-  if (!(name && model)) {
-    return null;
-  }
-
-  const description = fields.description ?? "";
-  const toolsRaw = fields.tools;
-  const tools = toolsRaw
-    ? toolsRaw
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean)
-    : [];
-  const filePath = fields.file_path ?? entryPath;
-
-  const promptType = entryPath.includes("agents-snapshot/judges/")
-    ? PromptType.Judge
-    : PromptType.Agent;
-
-  // Extract content after the closing --- delimiter
-  const afterFrontmatter = fileContent.slice(
-    (frontmatterMatch.index ?? 0) + frontmatterMatch[0].length
-  );
-  const content = afterFrontmatter.trimStart();
-
-  return {
-    promptType,
-    name,
-    description,
-    model,
-    tools,
-    filePath,
-    content,
-  };
+export function parseAgentFrontmatter(fileContent: string, entryPath: string) {
+  return parsePromptFrontmatterShared(fileContent, entryPath);
 }
