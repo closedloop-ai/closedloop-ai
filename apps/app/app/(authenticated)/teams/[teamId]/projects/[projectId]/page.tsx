@@ -98,7 +98,6 @@ export default function ProjectDetailPage() {
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
-  const router = useRouter();
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();
   const deleteProjectMutation = useDeleteProject();
