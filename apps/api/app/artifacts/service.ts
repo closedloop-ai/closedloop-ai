@@ -2343,8 +2343,11 @@ Please try again or contact support if the issue persists.`
       throw new ArtifactNotFoundError();
     }
 
-    // 2. Check same project
-    if (primary.projectId !== secondary.projectId) {
+    // 2. Check same project (require non-null to prevent cross-workstream merges)
+    if (
+      !(primary.projectId && secondary.projectId) ||
+      primary.projectId !== secondary.projectId
+    ) {
       throw new Error("Artifacts must be in the same project");
     }
 
@@ -2398,7 +2401,7 @@ Please try again or contact support if the issue persists.`
     });
 
     const mergedContent = result.text;
-    if (!mergedContent || mergedContent.length < 50) {
+    if (!mergedContent?.trim()) {
       throw new Error("LLM returned empty merged content");
     }
 
@@ -2445,7 +2448,11 @@ Please try again or contact support if the issue persists.`
     await deleteArtifactRoom(organizationId, secondary.slug);
 
     // 8. Return updated primary artifact
-    return (await this.findByIdSimple(primary.id, organizationId)) as Artifact;
+    const updated = await this.findByIdSimple(primary.id, organizationId);
+    if (!updated) {
+      throw new ArtifactNotFoundError();
+    }
+    return updated;
   },
 
   /**
@@ -2789,24 +2796,28 @@ Guidelines:
  * Build the user prompt for the LLM merge operation.
  * Wraps content in XML delimiters to isolate document data from instructions.
  */
+function escapeXmlClosingTags(content: string): string {
+  return content.replaceAll("</", "&lt;/");
+}
+
 function buildMergeUserPrompt(
   primaryContent: string,
   secondaryContent: string,
   templateContent?: string | null
 ): string {
   let prompt = `<primary_artifact>
-${primaryContent}
+${escapeXmlClosingTags(primaryContent)}
 </primary_artifact>
 
 <secondary_artifact>
-${secondaryContent}
+${escapeXmlClosingTags(secondaryContent)}
 </secondary_artifact>`;
 
   if (templateContent) {
     prompt += `
 
 <champion_template>
-${templateContent}
+${escapeXmlClosingTags(templateContent)}
 </champion_template>`;
   }
 

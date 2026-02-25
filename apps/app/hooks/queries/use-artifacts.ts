@@ -642,7 +642,7 @@ export function useMergeArtifacts() {
         secondaryArtifactId,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: artifactKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });

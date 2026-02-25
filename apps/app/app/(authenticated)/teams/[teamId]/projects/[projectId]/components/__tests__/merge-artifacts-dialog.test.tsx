@@ -121,6 +121,34 @@ describe("MergeArtifactsDialog", () => {
     expect(newSecondarySection).toHaveTextContent("Primary Artifact");
   });
 
+  test("Swap button reverses onConfirm argument order", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const artifact1 = createDialogArtifact({
+      id: "artifact-1",
+      title: "Primary Artifact",
+    });
+    const artifact2 = createDialogArtifact({
+      id: "artifact-2",
+      title: "Secondary Artifact",
+    });
+
+    renderDialog({
+      artifacts: [artifact1, artifact2],
+      onConfirm,
+    });
+
+    // Swap so artifact-2 becomes primary
+    const swapButton = screen.getByRole("button", { name: SWAP_REGEX });
+    fireEvent.click(swapButton);
+
+    // Click Merge
+    const mergeButton = screen.getByRole("button", { name: "Merge" });
+    fireEvent.click(mergeButton);
+
+    // After swap, artifact-2 is primary, artifact-1 is secondary
+    expect(onConfirm).toHaveBeenCalledWith("artifact-2", "artifact-1");
+  });
+
   test("isPending=true shows Merging... and disables buttons", () => {
     renderDialog({ isPending: true });
 
@@ -152,6 +180,15 @@ describe("MergeArtifactsDialog", () => {
 
     // Clicking a disabled button should NOT call onOpenChange
     fireEvent.click(cancelButton);
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test("isPending=true prevents close on Escape key", () => {
+    const onOpenChange = vi.fn();
+    renderDialog({ isPending: true, onOpenChange });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 

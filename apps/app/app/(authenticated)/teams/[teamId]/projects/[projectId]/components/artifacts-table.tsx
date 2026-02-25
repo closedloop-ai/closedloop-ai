@@ -498,7 +498,6 @@ export function ArtifactsTable({
       const msg =
         err instanceof Error ? err.message : "Failed to merge artifacts";
       setMergeError(msg);
-      toast.error(msg);
     }
   }
 
@@ -509,11 +508,9 @@ export function ArtifactsTable({
     if (selectedIds.size > 2) {
       return "Merge requires exactly 2 artifacts";
     }
-    if (
-      selectedIds.size === 2 &&
-      selectedArtifactsList[0]?.projectId !==
-        selectedArtifactsList[1]?.projectId
-    ) {
+    const pid0 = selectedArtifactsList[0]?.projectId;
+    const pid1 = selectedArtifactsList[1]?.projectId;
+    if (selectedIds.size === 2 && (!(pid0 && pid1) || pid0 !== pid1)) {
       return "Both artifacts must be from the same project";
     }
     return null;
