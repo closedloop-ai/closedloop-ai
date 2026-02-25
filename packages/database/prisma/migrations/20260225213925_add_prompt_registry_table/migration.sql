@@ -1,6 +1,9 @@
 -- CreateEnum
 CREATE TYPE "PromptType" AS ENUM ('AGENT', 'JUDGE');
 
+-- AlterTable
+ALTER TABLE "artifact_evaluations" ALTER COLUMN "report_data" DROP NOT NULL;
+
 -- CreateTable
 CREATE TABLE "prompt_registry" (
     "id" UUID NOT NULL,
@@ -12,7 +15,7 @@ CREATE TABLE "prompt_registry" (
     "tools" TEXT[],
     "file_path" TEXT NOT NULL,
     "content" TEXT NOT NULL,
-    "sha" TEXT NOT NULL DEFAULT encode(sha256(''::bytea), 'hex'),
+    "sha" TEXT NOT NULL,
     "version" INTEGER NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -20,13 +23,10 @@ CREATE TABLE "prompt_registry" (
 );
 
 -- CreateIndex
-CREATE INDEX "prompt_registry_organization_id_name_prompt_type_idx" ON "prompt_registry"("organization_id", "name", "prompt_type");
+CREATE INDEX "prompt_registry_organization_id_name_idx" ON "prompt_registry"("organization_id", "name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "prompt_registry_organization_id_sha_key" ON "prompt_registry"("organization_id", "sha");
+CREATE UNIQUE INDEX "prompt_registry_organization_id_name_sha_key" ON "prompt_registry"("organization_id", "name", "sha");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "prompt_registry_organization_id_name_prompt_type_version_key" ON "prompt_registry"("organization_id", "name", "prompt_type", "version");
-
--- AlterTable
-ALTER TABLE "artifact_evaluations" ALTER COLUMN "report_data" DROP NOT NULL;
+CREATE UNIQUE INDEX "prompt_registry_organization_id_name_version_key" ON "prompt_registry"("organization_id", "name", "version");

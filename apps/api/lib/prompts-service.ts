@@ -8,16 +8,19 @@
 
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { Prisma, withDb } from "@repo/database";
+import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
+
+type ExistingPromptRow = { id: string };
+type LatestVersionRow = { version: number };
 
 /**
  * Upsert all prompts from a snapshot into the prompt_registry table.
  *
- * Each prompt is inserted atomically using INSERT ... SELECT with an inline
- * COALESCE version subquery. ON CONFLICT (organization_id, sha) DO NOTHING
- * ensures idempotency — re-ingesting the same content is a no-op.
- *
- * The sha column is computed by the database from the content column, so it
- * is intentionally excluded from the INSERT column list.
+ * This flow intentionally avoids DB-generated SHA/version behavior in favor of
+ * explicit, application-managed logic:
+ * 1) Compute SHA in app code.
+ * 2) In one transaction, check (organization_id, name, sha).
+ * 3) No-op when unchanged; otherwise insert with latestVersion + 1.
  */
 export async function upsertFromSnapshot(
   organizationId: string,
@@ -31,12 +34,49 @@ export async function upsertFromSnapshot(
     for (const prompt of snapshot.prompts) {
       const { promptType, name, description, model, tools, filePath, content } =
         prompt;
+      const sha = computePromptSha256(content);
 
       const prismaPromptType: string = promptType;
+      const existingPrompt = await tx.$queryRaw<ExistingPromptRow[]>(Prisma.sql`
+        SELECT id
+        FROM prompt_registry
+        WHERE organization_id = ${organizationId}
+          AND name = ${name}
+          AND sha = ${sha}
+        LIMIT 1
+      `);
+
+      if (existingPrompt.length > 0) {
+        continue;
+      }
+
+      const latestVersionRows = await tx.$queryRaw<
+        LatestVersionRow[]
+      >(Prisma.sql`
+        SELECT version
+        FROM prompt_registry
+        WHERE organization_id = ${organizationId}
+          AND name = ${name}
+        ORDER BY version DESC
+        LIMIT 1
+      `);
+      const nextVersion = (latestVersionRows[0]?.version ?? 0) + 1;
 
       await tx.$queryRaw(Prisma.sql`
-        INSERT INTO prompt_registry (id, organization_id, prompt_type, name, description, model, tools, file_path, content, version)
-        SELECT
+        INSERT INTO prompt_registry (
+          id,
+          organization_id,
+          prompt_type,
+          name,
+          description,
+          model,
+          tools,
+          file_path,
+          content,
+          sha,
+          version
+        )
+        VALUES (
           uuid_generate_v7(),
           ${organizationId},
           ${prismaPromptType}::"PromptType",
@@ -46,8 +86,9 @@ export async function upsertFromSnapshot(
           ${tools}::text[],
           ${filePath},
           ${content},
-          COALESCE((SELECT MAX(version) FROM prompt_registry WHERE organization_id = ${organizationId} AND name = ${name} AND prompt_type = ${prismaPromptType}::"PromptType"), 0) + 1
-        ON CONFLICT (organization_id, sha) DO NOTHING
+          ${sha},
+          ${nextVersion}
+        )
       `);
     }
   });

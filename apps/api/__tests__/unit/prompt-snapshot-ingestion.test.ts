@@ -1,5 +1,6 @@
 import { PromptType } from "@repo/api/src/types/prompt";
 import {
+  computePromptSha256,
   parsePromptFrontmatter,
   parsePromptsSnapshotFromJson,
   parsePromptsSnapshotFromMarkdownEntries,
@@ -89,6 +90,20 @@ Plan work carefully.
       );
 
       expect(judge?.promptType).toBe(PromptType.Judge);
+    });
+  });
+
+  describe("computePromptSha256", () => {
+    it("returns stable SHA-256 hex digest for prompt content", () => {
+      expect(computePromptSha256("Plan work carefully.\n")).toBe(
+        "a022b8daa6de683a4359263cfc176a37b55835b9fd481264fadf2a5f3128799c"
+      );
+    });
+
+    it("returns different hashes when content differs", () => {
+      expect(computePromptSha256("Version A")).not.toBe(
+        computePromptSha256("Version B")
+      );
     });
   });
 

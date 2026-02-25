@@ -1,16 +1,6 @@
-/**
- * Unit tests for upsertFromSnapshot() in prompts-service.
- *
- * Tests cover:
- * - null snapshot → no-op
- * - empty snapshot → no-op
- * - AGENT prompt → calls tx.$queryRaw with INSERT SQL
- * - JUDGE prompt → called with 'JUDGE' cast
- * - Duplicate call → executes without error (ON CONFLICT DO NOTHING)
- * - Two different-content snapshots with same name/type → both call tx.$queryRaw
- */
 import { vi } from "vitest";
-import { mockWithDbTx } from "../utils/db-helpers";
+import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
+import { getMockWithDb, mockWithDbTx } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -53,8 +43,14 @@ describe("upsertFromSnapshot", () => {
     expect(mockTx.$queryRaw).not.toHaveBeenCalled();
   });
 
-  it("calls tx.$queryRaw with INSERT SQL for an AGENT prompt", async () => {
-    const mockTx = { $queryRaw: vi.fn().mockResolvedValue([]) };
+  it("inserts a new prompt with explicit sha and initial version", async () => {
+    const mockTx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -71,17 +67,30 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-    const [sqlArg] = mockTx.$queryRaw.mock.calls[0];
-    // Verify the SQL template values include the org ID, prompt type, and name
-    expect(sqlArg.values).toContain(ORG_ID);
-    expect(sqlArg.values).toContain("AGENT");
-    expect(sqlArg.values).toContain("my-agent");
-    expect(sqlArg.values).toContain("You are a helpful agent.");
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(3);
+
+    const [existsSqlArg] = mockTx.$queryRaw.mock.calls[0];
+    expect(existsSqlArg.values).toContain(ORG_ID);
+    expect(existsSqlArg.values).toContain("my-agent");
+    expect(existsSqlArg.values).toContain(
+      computePromptSha256("You are a helpful agent.")
+    );
+
+    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[2];
+    expect(insertSqlArg.values).toContain(ORG_ID);
+    expect(insertSqlArg.values).toContain("AGENT");
+    expect(insertSqlArg.values).toContain("my-agent");
+    expect(insertSqlArg.values).toContain("You are a helpful agent.");
+    expect(insertSqlArg.values).toContain(
+      computePromptSha256("You are a helpful agent.")
+    );
+    expect(insertSqlArg.values).toContain(1);
   });
 
-  it("calls tx.$queryRaw with JUDGE type cast for a JUDGE prompt", async () => {
-    const mockTx = { $queryRaw: vi.fn().mockResolvedValue([]) };
+  it("no-ops when organization, name, and sha already exist", async () => {
+    const mockTx = {
+      $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "existing-prompt" }]),
+    };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -99,44 +108,52 @@ describe("upsertFromSnapshot", () => {
     });
 
     expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-    const [sqlArg] = mockTx.$queryRaw.mock.calls[0];
-    expect(sqlArg.values).toContain("JUDGE");
-    expect(sqlArg.values).toContain("my-judge");
-    expect(sqlArg.values).toContain("Evaluate the output.");
   });
 
-  it("executes without error on duplicate call (ON CONFLICT handles idempotency)", async () => {
-    const mockTx = { $queryRaw: vi.fn().mockResolvedValue([]) };
+  it("inserts a new version when same org and name have new content", async () => {
+    const mockTx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ version: 1 }])
+        .mockResolvedValueOnce([]),
+    };
     mockWithDbTx(mockTx);
 
-    const snapshot = {
+    await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: "AGENT" as const,
+          promptType: "JUDGE",
           name: "my-agent",
-          description: "An agent prompt",
+          description: "A judge prompt",
           model: "claude-3",
           tools: [],
-          filePath: "prompts/agent.md",
-          content: "You are a helpful agent.",
+          filePath: "prompts/judge.md",
+          content: "Evaluate this output.",
         },
       ],
-    };
+    });
 
-    // First call
-    await upsertFromSnapshot(ORG_ID, snapshot);
-    // Second call with same snapshot (simulates ON CONFLICT DO NOTHING)
-    await upsertFromSnapshot(ORG_ID, snapshot);
-
-    // Both calls succeed without throwing
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(3);
+    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[2];
+    expect(insertSqlArg.values).toContain("JUDGE");
+    expect(insertSqlArg.values).toContain(2);
   });
 
-  it("calls tx.$queryRaw twice for two different-content snapshots with same name/type", async () => {
-    const mockTx = { $queryRaw: vi.fn().mockResolvedValue([]) };
+  it("uses a single transaction callback for multiple prompts in one snapshot", async () => {
+    const mockTx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
     mockWithDbTx(mockTx);
 
-    const firstSnapshot = {
+    await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
           promptType: "AGENT" as const,
@@ -147,33 +164,19 @@ describe("upsertFromSnapshot", () => {
           filePath: "prompts/agent.md",
           content: "Version 1 content.",
         },
-      ],
-    };
-
-    const secondSnapshot = {
-      prompts: [
         {
-          promptType: "AGENT" as const,
-          name: "my-agent",
-          description: "An agent prompt",
+          promptType: "JUDGE",
+          name: "my-judge",
+          description: "A judge prompt",
           model: "claude-3",
           tools: [],
-          filePath: "prompts/agent.md",
-          content: "Version 2 content — different sha triggers new row.",
+          filePath: "prompts/judge.md",
+          content: "Version 2 content.",
         },
       ],
-    };
+    });
 
-    await upsertFromSnapshot(ORG_ID, firstSnapshot);
-    await upsertFromSnapshot(ORG_ID, secondSnapshot);
-
-    // Both snapshots have different content (different sha), so both insert attempts fire
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(2);
-    const firstCallValues = mockTx.$queryRaw.mock.calls[0][0].values;
-    const secondCallValues = mockTx.$queryRaw.mock.calls[1][0].values;
-    expect(firstCallValues).toContain("Version 1 content.");
-    expect(secondCallValues).toContain(
-      "Version 2 content — different sha triggers new row."
-    );
+    expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(6);
   });
 });

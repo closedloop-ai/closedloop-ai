@@ -814,15 +814,15 @@ model Prompt {
   tools          String[]
   filePath       String      @map("file_path")
   content        String      @db.Text
-  sha            String      @default(dbgenerated("encode(sha256(content::bytea), 'hex')"))
+  sha            String
   version        Int
   createdAt      DateTime    @default(now()) @map("created_at")
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, sha])
-  @@unique([organizationId, name, promptType, version])
-  @@index([organizationId, name, promptType])
+  @@unique([organizationId, name, sha])
+  @@unique([organizationId, name, version])
+  @@index([organizationId, name])
   @@map("prompt_registry")
 }
 

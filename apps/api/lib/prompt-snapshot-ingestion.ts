@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PromptInfo, PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { PromptType } from "@repo/api/src/types/prompt";
 import { log } from "@repo/observability/log";
@@ -12,6 +13,13 @@ type SnapshotEntry = {
 
 type RawPromptInfo = Omit<PromptInfo, "filePath"> & { file_path: string };
 type RawPromptsSnapshot = { prompts: RawPromptInfo[] };
+
+/**
+ * Compute a deterministic SHA-256 hex digest for prompt content.
+ */
+export function computePromptSha256(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
 
 /**
  * Parse agent/judge frontmatter from a markdown file in the agents-snapshot directory.
