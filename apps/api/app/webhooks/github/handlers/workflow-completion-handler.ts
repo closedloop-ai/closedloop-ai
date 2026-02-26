@@ -230,6 +230,15 @@ export async function handleExecutionSuccess(
       },
     });
 
+    try {
+      await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+    } catch (error) {
+      log.warn(
+        "[handleExecutionSuccess] Prompt registry upsert failed, continuing",
+        { organizationId: workstream.organizationId, error }
+      );
+    }
+
     if (codeJudgesReport && ctx.actionRunId) {
       const evaluation = await tx.artifactEvaluation.upsert({
         where: {
@@ -263,15 +272,6 @@ export async function handleExecutionSuccess(
         reportId: codeJudgesReport.report_id,
         judgesCount: codeJudgesReport.stats.length,
       });
-    }
-
-    try {
-      await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
-    } catch (error) {
-      log.warn(
-        "[handleExecutionSuccess] Prompt registry upsert failed, continuing",
-        { organizationId: workstream.organizationId, error }
-      );
     }
   });
 
@@ -400,6 +400,15 @@ export async function handleWorkflowSuccess(
     },
   });
 
+  try {
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  } catch (error) {
+    log.warn(
+      "[handleWorkflowSuccess] Prompt registry upsert failed, continuing",
+      { organizationId: workstream.organizationId, correlationId, error }
+    );
+  }
+
   if (judgesReport && ctx.actionRunId) {
     const evaluation = await tx.artifactEvaluation.upsert({
       where: {
@@ -462,15 +471,6 @@ export async function handleWorkflowSuccess(
   log.info(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
   );
-
-  try {
-    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
-  } catch (error) {
-    log.warn(
-      "[handleWorkflowSuccess] Prompt registry upsert failed, continuing",
-      { organizationId: workstream.organizationId, correlationId, error }
-    );
-  }
 }
 
 /**
