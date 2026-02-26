@@ -64,7 +64,7 @@ export async function upsertFromSnapshot(
           version
         )
         SELECT
-          uuid_generate_v7(),
+          gen_random_uuid(),
           ${organizationId},
           ${prismaPromptType}::"PromptType",
           ${name},

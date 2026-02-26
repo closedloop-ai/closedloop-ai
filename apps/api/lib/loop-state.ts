@@ -424,14 +424,29 @@ export async function downloadPromptSnapshotMarkdownEntries(
 
     const pageEntries = await Promise.all(
       keys.map(async (key) => {
-        const data = await getObject(key);
-        const relativeName = key.startsWith(artifactPrefix)
-          ? key.slice(artifactPrefix.length)
-          : key;
-        return { name: relativeName, data };
+        try {
+          const data = await getObject(key);
+          const relativeName = key.startsWith(artifactPrefix)
+            ? key.slice(artifactPrefix.length)
+            : key;
+          return { name: relativeName, data };
+        } catch (err) {
+          log.warn(
+            "[loop-state] Failed to download agent-snapshot file, skipping",
+            {
+              key,
+              err,
+            }
+          );
+          return null;
+        }
       })
     );
-    entries.push(...pageEntries);
+    entries.push(
+      ...pageEntries.filter(
+        (e): e is { name: string; data: Buffer } => e !== null
+      )
+    );
 
     continuationToken = response.IsTruncated
       ? response.NextContinuationToken
