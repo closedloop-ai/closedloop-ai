@@ -83,22 +83,26 @@
     },
     "developers": {
       "meta": {
-        "title": "KI-gestützte Softwarebereitstellung | Claude Code Plugin",
-        "description": "Vom PRD zur Produktion mit 19 spezialisierten Agenten, 13 Qualitätsrichtern, Cross-Repo-Orchestrierung und einem Lernsystem, das sich mit jedem Durchlauf verbessert."
+        "title": "KI-gestützte Softwarebereitstellung | Claude Code Plugins",
+        "description": "Generieren Sie individuelle KI-Agenten aus Ihrer Codebasis. Liefern Sie produktionsreifen Code mit 13 Qualitätsrichtern, Cross-Repo-Orchestrierung und einem Lernsystem, das sich mit jedem Durchlauf verbessert."
       },
       "hero": {
-        "badge": "Claude Code Plugin",
+        "badge": "Claude Code Plugins",
         "title": "AI-Powered Software",
         "titleHighlight": "Delivery",
-        "description": "From PRD to production with 19 specialized agents, 13 quality judges, cross-repo orchestration, and a learning system that improves every run.",
+        "description": "Generate custom AI agents from your codebase. Ship production-ready code with 13 quality judges, cross-repo orchestration, and a learning system that improves every run.",
         "installButton": "Install in 30 Seconds",
         "githubButton": "View on GitHub"
       },
       "features": {
         "label": "Features",
-        "title": "Plan, Implement, Learn",
-        "description": "ClosedLoop transforms how you build software with AI. Structured workflows with quality judges ensure excellence at every step.",
+        "title": "Bootstrap, Plan, Ship",
+        "description": "ClosedLoop analyzes your repo, generates project-specific agents, and orchestrates end-to-end delivery with quality judges at every step.",
         "items": [
+          {
+            "title": "Brownfield Bootstrapping",
+            "description": "Analyze your existing codebase to auto-generate custom domain-expert agents tailored to your stack. Detects languages, frameworks, and architecture patterns to create agents that understand your project."
+          },
           {
             "title": "PRD-to-Code Planning",
             "description": "Pre-Explorer analyzes your codebase, Plan Draft Writer creates implementation plans from PRDs, and Plan Writer refines them with critic feedback. Full requirements traceability from start to finish."
@@ -110,10 +114,6 @@
           {
             "title": "Cross-Repo Orchestration",
             "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
-          },
-          {
-            "title": "Smart Caching",
-            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Subsequent runs skip redundant work and execute faster."
           },
           {
             "title": "Learning System",
@@ -130,6 +130,10 @@
         "title": "Powerful Workflows at Your Fingertips",
         "description": "Simple commands orchestrate complex multi-agent workflows.",
         "items": [
+          {
+            "name": "/agent-bootstrap",
+            "description": "Analyze your repo and generate custom domain-expert agents"
+          },
           {
             "name": "/code",
             "description": "Begin a coding session with full Symphony orchestration"
@@ -149,18 +153,18 @@
           {
             "name": "/goal-stats",
             "description": "Analyze goal performance and improvement trends across runs"
-          },
-          {
-            "name": "/push-learnings",
-            "description": "Push local org patterns to your shared repository"
           }
         ]
       },
       "agents": {
         "label": "Specialized Agents",
         "title": "Purpose-Built AI Teammates",
-        "description": "Each agent is optimized for a specific task in the software delivery lifecycle.",
+        "description": "Pre-built agents for orchestration, plus custom agents generated from your codebase.",
         "items": [
+          {
+            "name": "agent-prompt-generator",
+            "description": "Generates custom domain-expert agents tailored to your project"
+          },
           {
             "name": "plan-draft-writer",
             "description": "Creates high-level implementation plan drafts from PRDs"
@@ -188,17 +192,13 @@
           {
             "name": "visual-qa-subagent",
             "description": "Performs visual QA inspection via Playwright automation"
-          },
-          {
-            "name": "api-spec-writer",
-            "description": "Generates API endpoint specifications from approved plans"
           }
         ]
       },
       "installation": {
         "label": "Get Started",
-        "title": "Install in 30 Seconds",
-        "description": "Zero dependencies. Install via the plugin marketplace.",
+        "title": "Install in Under a Minute",
+        "description": "Two plugins. Zero dependencies. Install via the plugin marketplace.",
         "steps": [
           {
             "title": "Add the Plugin Marketplace",
@@ -206,14 +206,19 @@
             "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
           },
           {
-            "title": "Install Experimental",
-            "description": "Install the plugin from the marketplace:",
-            "code": "/plugin install experimental"
+            "title": "Install ClosedLoop Plugins",
+            "description": "Install the core orchestration engine and bootstrap toolkit:",
+            "code": "/plugin install closedloop-core closedloop-bootstrap"
+          },
+          {
+            "title": "Bootstrap Your Project",
+            "description": "Generate custom agents tailored to your codebase:",
+            "code": "/closedloop-bootstrap:agent-bootstrap"
           },
           {
             "title": "Start Coding",
             "description": "You're ready! Begin your first coding session:",
-            "code": "/experimental:code \"Path to your PRD\""
+            "code": "/closedloop-core:code \"Path to your PRD\""
           }
         ]
       },
