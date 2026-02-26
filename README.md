@@ -128,10 +128,35 @@ Shared packages imported as `@repo/<package-name>`:
 
 ### Prerequisites
 
-- Node.js 20+
-- [pnpm](https://pnpm.io)
-- Docker (for local PostgreSQL)
-- [Stripe CLI](https://docs.stripe.com/stripe-cli) for local webhook testing
+| Requirement | Purpose | Install |
+|-------------|---------|---------|
+| **Node.js 20+** | Runtime | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **pnpm** | Package manager | `npm install -g pnpm` or [pnpm.io](https://pnpm.io) |
+| **Docker** | Local PostgreSQL 16 | [docker.com](https://www.docker.com/get-started) |
+| **Stripe CLI** | Local webhook testing | [docs.stripe.com](https://docs.stripe.com/stripe-cli) |
+
+### Service Accounts
+
+Symphony integrates with several third-party services. At minimum you need accounts for:
+
+| Service | Required | Purpose | Setup |
+|---------|----------|---------|-------|
+| **[Clerk](https://clerk.com)** | Yes | Authentication, user/org management | Create app, get publishable + secret keys |
+| **PostgreSQL** | Yes | Primary database (via Docker locally, [Neon](https://neon.tech) in prod) | `docker compose up -d` |
+| **[GitHub App](https://docs.github.com/en/apps)** | For plan generation | Workflow dispatch, webhook events, repo access | See [docs/github-app-setup.md](docs/github-app-setup.md) |
+| **[Stripe](https://stripe.com)** | For payments | Subscription management | Create account, get API keys |
+| **[Anthropic](https://console.anthropic.com)** | For AI features | PRD generation agent (Claude Opus/Sonnet) | Get API key |
+| **[AWS S3](https://aws.amazon.com/s3/)** | For artifact storage | Plan files, execution logs, screenshots | Create bucket + IAM credentials |
+| **[Liveblocks](https://liveblocks.io)** | For collaboration | Real-time document editing, live cursors | Create project, get secret key |
+| **[PostHog](https://posthog.com)** | Optional | Product analytics, feature flags | Create project, get API key |
+| **[Linear](https://linear.app)** | Optional | Issue sync, task export | OAuth setup |
+| **[Resend](https://resend.com)** | Optional | Transactional emails | Get API key |
+| **[Knock](https://knock.app)** | Optional | In-app notifications | Create account, get API + feed channel keys |
+| **[BaseHub](https://basehub.com)** | Optional | CMS for marketing site blog/docs | Get token |
+| **[Arcjet](https://arcjet.com)** | Optional | Bot detection, rate limiting, attack protection | Get API key |
+| **[Vercel](https://vercel.com)** | For deployment | Hosting, edge functions, blob storage, analytics | Connect repo |
+
+See **[docs/local_deployment.md](docs/local_deployment.md)** for step-by-step configuration of each service.
 
 ### Quick Start
 
@@ -147,6 +172,7 @@ docker compose up -d
 # Configure environment variables (see docs/local_deployment.md)
 cp apps/app/.env.example apps/app/.env.local
 cp apps/api/.env.example apps/api/.env.local
+cp apps/web/.env.example apps/web/.env.local
 
 # Run database migrations
 cd packages/database && pnpm prisma migrate dev && cd ../..

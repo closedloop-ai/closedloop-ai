@@ -31,7 +31,7 @@ cp apps/api/.env.example apps/api/.env.local
 cp apps/web/.env.example apps/web/.env.local
 
 # Run database migrations
-cd packages/database && pnpm prisma migrate dev
+cd packages/database && pnpm prisma migrate dev && cd ../..
 
 # Start development
 pnpm dev
