@@ -550,11 +550,11 @@ export async function processWorkflowCompletion(
 
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.
-  let promptData: WorkflowSuccessPromptData | null = null;
-  await withDb.tx(async (tx) => {
+  const promptData = await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
+    let result: WorkflowSuccessPromptData | null = null;
     if (conclusion === "success") {
-      promptData = await handleWorkflowSuccess(tx, ctx);
+      result = await handleWorkflowSuccess(tx, ctx);
     } else {
       await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }
@@ -570,6 +570,7 @@ export async function processWorkflowCompletion(
         completedAt: new Date(),
       },
     });
+    return result;
   });
 
   // Persist prompts snapshot outside the transaction — upsertFromSnapshot manages its own tx.
