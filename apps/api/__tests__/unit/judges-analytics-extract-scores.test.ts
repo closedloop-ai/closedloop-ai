@@ -17,8 +17,8 @@ import { EvalStatus } from "@repo/api/src/types/evaluation";
 import {
   type EvaluationInput,
   extractJudgeScores,
-  normalizeJudgeName,
 } from "@/app/judges-analytics/service";
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
 
 // ---------------------------------------------------------------------------

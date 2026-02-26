@@ -8,9 +8,7 @@ import {
   EvalStatus,
   EvaluationReportType as EvaluationReportTypeValue,
 } from "@repo/api/src/types/evaluation";
-
-/** Regex pattern to match and remove the "-judge" suffix from case IDs. */
-const JUDGE_SUFFIX_PATTERN = /-judge$/;
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /** Builds a MetricStatistics entry for tests. */
 export function buildMetric(
@@ -46,10 +44,7 @@ export function buildCaseScore(
     throw new Error("caseId must not be empty");
   }
 
-  const metricName = `${caseId
-    .toLowerCase()
-    .replace(JUDGE_SUFFIX_PATTERN, "")
-    .replaceAll("-", "_")}_score`;
+  const metricName = `${normalizeJudgeName(caseId)}_score`;
 
   return {
     type: "case_score",

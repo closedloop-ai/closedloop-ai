@@ -52,6 +52,10 @@ vi.mock("@/app/artifacts/room-utils", () => ({
   updateArtifactRoomVersion: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/judge-score-fanout", () => ({
+  fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/loop-state", () => ({
   downloadArtifactFile: vi.fn(),
   downloadPromptSnapshotMarkdownEntries: vi.fn(),
@@ -61,6 +65,7 @@ vi.mock("@/lib/loop-state", () => ({
 
 import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
 import {
   downloadLoopArtifacts,
   ingestExecutionArtifacts,
@@ -75,6 +80,7 @@ import { upsertFromSnapshot } from "@/lib/prompts-service";
 const mockDownloadArtifactFile = downloadArtifactFile as unknown as Mock;
 const mockDownloadPromptSnapshotMarkdownEntries =
   downloadPromptSnapshotMarkdownEntries as unknown as Mock;
+const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
 const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 
@@ -217,13 +223,24 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
       return Promise.resolve();
     });
 
-    // withDb is used for artifact.update, workstreamEvent, and judgesReport
-    // We need to track when judgesReport upsert is called
+    // withDb.tx is used for judgesReport writes.
     const mockArtifactEvaluationUpsert = vi.fn().mockImplementation(() => {
       callOrder.push("artifactEvaluation.upsert");
       return Promise.resolve({ id: "eval-1" });
     });
 
+    mockWithDb.tx = vi
+      .fn()
+      .mockImplementation((callback: (tx: unknown) => unknown) => {
+        const tx = {
+          artifactEvaluation: {
+            upsert: mockArtifactEvaluationUpsert,
+          },
+        };
+        return callback(tx);
+      });
+
+    // withDb is used for artifact.update and workstreamEvent.
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const db = {
         artifact: {
@@ -231,9 +248,6 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
             slug: "test-slug",
             latestVersion: 2,
           }),
-        },
-        artifactEvaluation: {
-          upsert: mockArtifactEvaluationUpsert,
         },
         workstreamEvent: {
           findFirst: vi.fn().mockResolvedValue(null),
@@ -415,6 +429,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
 
     await ingestExecutionArtifacts(loop, artifacts);
 
+    expect(mockFanOutJudgeScores).toHaveBeenCalledTimes(1);
     const txCallbackIdx = callOrder.indexOf("withDb.tx.callback");
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
     const evalIdx = callOrder.indexOf("artifactEvaluation.upsert");
