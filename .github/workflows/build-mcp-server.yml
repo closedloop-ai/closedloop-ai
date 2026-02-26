@@ -1,0 +1,86 @@
+# Deploys to BOTH stage and prod on every push to main.
+# The MCP server is a standalone ECS container (not gated by Vercel's
+# branch-based deploys), so we keep environments tightly coupled —
+# one merge deploys everywhere, matching the Claude Runner workflow.
+name: Build MCP Server Container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mcp/**"
+      - "packages/api/**"
+      - "packages/database/**"
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-mcp-server-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ECR_REPOSITORY: cl-ai-mcp-server
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-push:
+    name: Build and Push (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # For OIDC
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: stage
+            role_arn: arn:aws:iam::661041595751:role/github-actions/github-actions-terraform
+            ecs_cluster: cl-ai-stage-mcp-server
+            ecs_service: mcp-server
+          - environment: prod
+            role_arn: arn:aws:iam::959853091217:role/github-actions/github-actions-terraform
+            ecs_cluster: cl-ai-prod-mcp-server
+            ecs_service: mcp-server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (${{ matrix.environment }})
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ matrix.role_arn }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/mcp/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Force new ECS deployment
+        run: |
+          aws ecs update-service \
+            --cluster ${{ matrix.ecs_cluster }} \
+            --service ${{ matrix.ecs_service }} \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Waiting for ${{ matrix.environment }} service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster ${{ matrix.ecs_cluster }} \
+            --services ${{ matrix.ecs_service }}
+          echo "Deployed ${{ matrix.environment }}: cluster=${{ matrix.ecs_cluster }}, service=${{ matrix.ecs_service }}"
