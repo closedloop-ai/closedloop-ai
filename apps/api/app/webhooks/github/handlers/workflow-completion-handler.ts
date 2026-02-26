@@ -265,21 +265,14 @@ export async function handleExecutionSuccess(
   );
 }
 
-/** Returned when handleWorkflowSuccess completes the non-execute path. */
-export type WorkflowSuccessPromptData = {
-  organizationId: string;
-  promptsSnapshot: PromptsSnapshot | null;
-};
-
 /**
  * Handle successful workflow completion.
- * Returns prompt data for non-execute path so caller can persist after tx (avoids nested withDb.tx).
- * Returns null when delegating to handleExecutionSuccess (that path persists prompts itself).
+ * Persists prompts snapshot for non-execute path; execute path persists via handleExecutionSuccess.
  */
 export async function handleWorkflowSuccess(
   tx: TransactionClient,
   ctx: WorkflowContext
-): Promise<WorkflowSuccessPromptData | null> {
+): Promise<void> {
   const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
   // Download and extract artifacts from GitHub
@@ -304,7 +297,7 @@ export async function handleWorkflowSuccess(
       codeJudgesReport,
       promptsSnapshot
     );
-    return null;
+    return;
   }
 
   // TODO: Handle questionsContent with needs_answers status in future
@@ -328,7 +321,7 @@ export async function handleWorkflowSuccess(
         command,
       }
     );
-    return null;
+    return;
   }
 
   const workstream = await tx.workstream.findUnique({
@@ -448,10 +441,7 @@ export async function handleWorkflowSuccess(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
   );
 
-  return {
-    organizationId: workstream.organizationId,
-    promptsSnapshot,
-  };
+  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
 }
 
 /**
@@ -544,10 +534,9 @@ export async function processWorkflowCompletion(
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.
   await withDb.tx(async (tx) => {
-    // 1. Process the result (updates artifact content)
-    let result: WorkflowSuccessPromptData | null = null;
+    // 1. Process the result (updates artifact content, persists prompts for non-execute path)
     if (conclusion === "success") {
-      result = await handleWorkflowSuccess(tx, ctx);
+      await handleWorkflowSuccess(tx, ctx);
     } else {
       await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }
@@ -563,14 +552,6 @@ export async function processWorkflowCompletion(
         completedAt: new Date(),
       },
     });
-
-    if (result) {
-      await upsertFromSnapshot(
-        result.organizationId,
-        result.promptsSnapshot,
-        tx
-      );
-    }
   });
 
   return NextResponse.json({ result: "processed", ok: true });

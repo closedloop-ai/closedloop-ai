@@ -724,26 +724,8 @@ Plan the work carefully.
     };
 
     const tx = asTx(mockDb);
-    const result = await handleWorkflowSuccess(tx, ctx);
+    await handleWorkflowSuccess(tx, ctx);
 
-    expect(result).not.toBeNull();
-    expect(result?.organizationId).toBe("org-prompts");
-    expect(result?.promptsSnapshot).toEqual(
-      expect.objectContaining({
-        prompts: expect.arrayContaining([
-          expect.objectContaining({ name: "my-planner" }),
-        ]),
-      })
-    );
-
-    // Simulate caller (processWorkflowCompletion): when result is non-null, it calls upsertFromSnapshot
-    if (result) {
-      await upsertFromSnapshot(
-        result.organizationId,
-        result.promptsSnapshot,
-        tx
-      );
-    }
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-prompts",
       expect.objectContaining({
@@ -751,11 +733,11 @@ Plan the work carefully.
           expect.objectContaining({ name: "my-planner" }),
         ]),
       }),
-      mockDb
+      expect.anything()
     );
   });
 
-  it("returns promptsSnapshot null when no agents-snapshot entries are present", async () => {
+  it("calls upsertFromSnapshot with null when no agents-snapshot entries are present", async () => {
     const correlationId = "test-correlation-no-prompts";
     const artifactId = "artifact-no-prompts";
     const workstreamId = "ws-no-prompts";
@@ -808,11 +790,13 @@ Plan the work carefully.
       },
     };
 
-    const result = await handleWorkflowSuccess(asTx(mockDb), ctx);
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(result).not.toBeNull();
-    expect(result?.organizationId).toBe("org-no-prompts");
-    expect(result?.promptsSnapshot).toBeNull();
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-no-prompts",
+      null,
+      expect.anything()
+    );
   });
 });
 
