@@ -330,13 +330,13 @@ export async function ingestExecutionArtifacts(
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 
-  // Persist prompt registry entries from snapshot before execution context.
-  // Intentional: we capture unique prompts (SHA-deduplicated) regardless of whether
-  // PR/ExternalLink/EntityLink creation succeeds. Prompt tracking is a key goal;
-  // execution context is secondary. upsertFromSnapshot is idempotent by SHA.
-  await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
-
   await withDb.tx(async (tx) => {
+    await upsertFromSnapshot(
+      loop.organizationId,
+      artifacts.promptsSnapshot,
+      tx
+    );
+
     const artifact = await tx.artifact.findUnique({
       where: { id: loop.artifactId!, organizationId: loop.organizationId },
       select: { organizationId: true, projectId: true, slug: true },

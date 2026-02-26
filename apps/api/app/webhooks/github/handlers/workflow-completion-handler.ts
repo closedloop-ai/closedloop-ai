@@ -100,8 +100,6 @@ export async function handleExecutionSuccess(
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 
-  let resolvedOrganizationId: string | null = null;
-
   await withDb.tx(async (tx) => {
     // Look up workstream to get organizationId for org-scoped queries
     const workstream = await tx.workstream.findUnique({
@@ -114,8 +112,6 @@ export async function handleExecutionSuccess(
         `[handleExecutionSuccess] Workstream ${workstreamId} not found for correlation ${correlationId}`
       );
     }
-
-    resolvedOrganizationId = workstream.organizationId;
 
     // Query plan artifact scoped to organization for defense-in-depth
     const planArtifact = await tx.artifact.findUnique({
@@ -260,19 +256,16 @@ export async function handleExecutionSuccess(
         judgesCount: codeJudgesReport.stats.length,
       });
     }
-  });
 
-  // Persist prompts snapshot outside the transaction — upsertFromSnapshot manages its own tx.
-  if (resolvedOrganizationId) {
-    await upsertFromSnapshot(resolvedOrganizationId, promptsSnapshot);
-  }
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  });
 
   log.info(
     `Successfully created PR record for workflow run ${runId}, PR #${prNumber}`
   );
 }
 
-/** Returned when handleWorkflowSuccess completes the non-execute path. Caller must persist prompts after tx. */
+/** Returned when handleWorkflowSuccess completes the non-execute path. */
 export type WorkflowSuccessPromptData = {
   organizationId: string;
   promptsSnapshot: PromptsSnapshot | null;
@@ -550,7 +543,7 @@ export async function processWorkflowCompletion(
 
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.
-  const promptData = await withDb.tx(async (tx) => {
+  await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
     let result: WorkflowSuccessPromptData | null = null;
     if (conclusion === "success") {
@@ -570,17 +563,15 @@ export async function processWorkflowCompletion(
         completedAt: new Date(),
       },
     });
-    return result;
-  });
 
-  // Persist prompts snapshot outside the transaction — upsertFromSnapshot manages its own tx.
-  // Mirrors handleExecutionSuccess: avoids nested withDb.tx (ALS not propagated by db.$transaction).
-  if (promptData) {
-    await upsertFromSnapshot(
-      promptData.organizationId,
-      promptData.promptsSnapshot
-    );
-  }
+    if (result) {
+      await upsertFromSnapshot(
+        result.organizationId,
+        result.promptsSnapshot,
+        tx
+      );
+    }
+  });
 
   return NextResponse.json({ result: "processed", ok: true });
 }

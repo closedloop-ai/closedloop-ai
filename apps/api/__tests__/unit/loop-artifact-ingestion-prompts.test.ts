@@ -335,7 +335,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     vi.clearAllMocks();
   });
 
-  it("calls upsertFromSnapshot before code judges report write in withDb.tx", async () => {
+  it("calls upsertFromSnapshot inside withDb.tx before code judges report write", async () => {
     const loop = makeLoop({
       command: "EXECUTE",
       repo: { fullName: "org/repo", branch: "main" },
@@ -368,6 +368,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     mockWithDb.tx = vi
       .fn()
       .mockImplementation((callback: (tx: unknown) => unknown) => {
+        callOrder.push("withDb.tx.callback");
         const tx = {
           artifact: {
             findUnique: vi.fn().mockResolvedValue({
@@ -429,11 +430,13 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
 
     await ingestExecutionArtifacts(loop, artifacts);
 
-    // upsertFromSnapshot must have been called before codeJudgesReport upsert
+    const txCallbackIdx = callOrder.indexOf("withDb.tx.callback");
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
     const evalIdx = callOrder.indexOf("artifactEvaluation.upsert");
+    expect(txCallbackIdx).toBeGreaterThanOrEqual(0);
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(evalIdx).toBeGreaterThanOrEqual(0);
+    expect(txCallbackIdx).toBeLessThan(upsertIdx);
     expect(upsertIdx).toBeLessThan(evalIdx);
   });
 
@@ -454,6 +457,8 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     });
 
     // withDb.tx used for the main transaction block
+    let capturedTx: unknown = null;
+
     mockWithDb.tx = vi
       .fn()
       .mockImplementation((callback: (tx: unknown) => unknown) => {
@@ -479,6 +484,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
             create: vi.fn().mockResolvedValue({ id: "event-exec-1" }),
           },
         };
+        capturedTx = tx;
         return callback(tx);
       });
 
@@ -506,6 +512,10 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       ingestExecutionArtifacts(loop, artifacts)
     ).resolves.toBeUndefined();
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(ORG_ID, null);
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      ORG_ID,
+      null,
+      capturedTx
+    );
   });
 });

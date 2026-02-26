@@ -6,6 +6,7 @@
  * "PromptType" enum without schema qualification.
  */
 
+import type { TransactionClient } from "@repo/database";
 import { Prisma, withDb } from "@repo/database";
 import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
 import type { PromptsSnapshot } from "@/lib/prompt-types";
@@ -13,21 +14,40 @@ import type { PromptsSnapshot } from "@/lib/prompt-types";
 /**
  * Upsert all prompts from a snapshot into the prompt_registry table.
  *
+ * ## Transaction usage
+ *
+ * **With an outer `tx` (preferred when one is available):**
+ * Pass the caller's transaction so prompt inserts participate in the same
+ * atomic unit as the surrounding writes. If the outer transaction rolls back,
+ * prompt inserts roll back too.
+ *
+ *   await upsertFromSnapshot(orgId, snapshot, tx);
+ *
+ * **Standalone (no outer `tx`):**
+ * Omit `tx` and this function will open its own transaction.
+ *
+ *   await upsertFromSnapshot(orgId, snapshot);
+ *
  * This flow intentionally keeps SHA generation in app code while making the
  * insert atomic in SQL to avoid TOCTOU races:
  * 1) Compute SHA in app code.
  * 2) In one statement, compute next version for (organization_id, name).
  * 3) Insert and ignore unique conflicts (same sha or raced version).
+ *
+ * NOTE: `withDb.tx` does not currently propagate ambient transactions via
+ * AsyncLocalStorage when starting from `withDb.tx` itself. Pass `tx`
+ * explicitly whenever this work must run in the caller's transaction.
  */
 export async function upsertFromSnapshot(
   organizationId: string,
-  snapshot: PromptsSnapshot | null
+  snapshot: PromptsSnapshot | null,
+  tx?: TransactionClient
 ): Promise<void> {
   if (!snapshot || snapshot.prompts.length === 0) {
     return;
   }
 
-  await withDb.tx(async (tx) => {
+  const run = async (client: TransactionClient): Promise<void> => {
     for (const prompt of snapshot.prompts) {
       const { promptType, name, description, model, tools, filePath, content } =
         prompt;
@@ -43,7 +63,7 @@ export async function upsertFromSnapshot(
       //   (organization_id, name, sha) blocks duplicate content for the same prompt
       //   name, and (organization_id, name, version) guarantees version uniqueness.
       //   The same SHA under a different name in the same organization is allowed.
-      await tx.$queryRaw(Prisma.sql`
+      await client.$queryRaw(Prisma.sql`
         WITH latest AS (
           SELECT COALESCE(MAX(version), 0) + 1 AS next_version
           FROM prompt_registry
@@ -79,5 +99,12 @@ export async function upsertFromSnapshot(
         ON CONFLICT DO NOTHING
       `);
     }
-  });
+  };
+
+  if (tx) {
+    await run(tx);
+    return;
+  }
+
+  await withDb.tx(run);
 }

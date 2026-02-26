@@ -723,7 +723,8 @@ Plan the work carefully.
       },
     };
 
-    const result = await handleWorkflowSuccess(asTx(mockDb), ctx);
+    const tx = asTx(mockDb);
+    const result = await handleWorkflowSuccess(tx, ctx);
 
     expect(result).not.toBeNull();
     expect(result?.organizationId).toBe("org-prompts");
@@ -733,6 +734,24 @@ Plan the work carefully.
           expect.objectContaining({ name: "my-planner" }),
         ]),
       })
+    );
+
+    // Simulate caller (processWorkflowCompletion): when result is non-null, it calls upsertFromSnapshot
+    if (result) {
+      await upsertFromSnapshot(
+        result.organizationId,
+        result.promptsSnapshot,
+        tx
+      );
+    }
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-prompts",
+      expect.objectContaining({
+        prompts: expect.arrayContaining([
+          expect.objectContaining({ name: "my-planner" }),
+        ]),
+      }),
+      mockDb
     );
   });
 
@@ -1195,7 +1214,8 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-exec-prompts",
-      promptsSnapshot
+      promptsSnapshot,
+      mockTx
     );
   });
 
@@ -1254,7 +1274,8 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-null-prompts",
-      null
+      null,
+      mockTx
     );
   });
 });
@@ -1449,8 +1470,11 @@ describe("processWorkflowCompletion", () => {
       },
     });
 
-    // Prompts snapshot persisted after tx (avoids nested withDb.tx)
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("test-org-id", null);
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "test-org-id",
+      null,
+      mockDb
+    );
 
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });
