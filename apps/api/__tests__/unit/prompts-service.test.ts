@@ -45,11 +45,7 @@ describe("upsertFromSnapshot", () => {
 
   it("inserts a new prompt with explicit sha and initial version", async () => {
     const mockTx = {
-      $queryRaw: vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]),
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
     mockWithDbTx(mockTx);
 
@@ -67,16 +63,9 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
 
-    const [existsSqlArg] = mockTx.$queryRaw.mock.calls[0];
-    expect(existsSqlArg.values).toContain(ORG_ID);
-    expect(existsSqlArg.values).toContain("my-agent");
-    expect(existsSqlArg.values).toContain(
-      computePromptSha256("You are a helpful agent.")
-    );
-
-    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[2];
+    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[0];
     expect(insertSqlArg.values).toContain(ORG_ID);
     expect(insertSqlArg.values).toContain("AGENT");
     expect(insertSqlArg.values).toContain("my-agent");
@@ -84,12 +73,11 @@ describe("upsertFromSnapshot", () => {
     expect(insertSqlArg.values).toContain(
       computePromptSha256("You are a helpful agent.")
     );
-    expect(insertSqlArg.values).toContain(1);
   });
 
-  it("no-ops when organization, name, and sha already exist", async () => {
+  it("attempts a single atomic insert when organization, name, and sha already exist", async () => {
     const mockTx = {
-      $queryRaw: vi.fn().mockResolvedValueOnce([{ id: "existing-prompt" }]),
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
     mockWithDbTx(mockTx);
 
@@ -110,13 +98,9 @@ describe("upsertFromSnapshot", () => {
     expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
-  it("inserts a new version when same org and name have new content", async () => {
+  it("includes prompt type and content sha in atomic insert values", async () => {
     const mockTx = {
-      $queryRaw: vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ version: 1 }])
-        .mockResolvedValueOnce([]),
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
     mockWithDbTx(mockTx);
 
@@ -134,22 +118,17 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(3);
-    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[2];
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
+    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[0];
     expect(insertSqlArg.values).toContain("JUDGE");
-    expect(insertSqlArg.values).toContain(2);
+    expect(insertSqlArg.values).toContain(
+      computePromptSha256("Evaluate this output.")
+    );
   });
 
   it("uses a single transaction callback for multiple prompts in one snapshot", async () => {
     const mockTx = {
-      $queryRaw: vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]),
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
     mockWithDbTx(mockTx);
 
@@ -177,6 +156,6 @@ describe("upsertFromSnapshot", () => {
     });
 
     expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(6);
+    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(2);
   });
 });

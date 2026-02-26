@@ -10,17 +10,14 @@ import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { Prisma, withDb } from "@repo/database";
 import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
 
-type ExistingPromptRow = { id: string };
-type LatestVersionRow = { version: number };
-
 /**
  * Upsert all prompts from a snapshot into the prompt_registry table.
  *
- * This flow intentionally avoids DB-generated SHA/version behavior in favor of
- * explicit, application-managed logic:
+ * This flow intentionally keeps SHA generation in app code while making the
+ * insert atomic in SQL to avoid TOCTOU races:
  * 1) Compute SHA in app code.
- * 2) In one transaction, check (organization_id, name, sha).
- * 3) No-op when unchanged; otherwise insert with latestVersion + 1.
+ * 2) In one statement, compute next version for (organization_id, name).
+ * 3) Insert and ignore unique conflicts (same sha or raced version).
  */
 export async function upsertFromSnapshot(
   organizationId: string,
@@ -35,34 +32,24 @@ export async function upsertFromSnapshot(
       const { promptType, name, description, model, tools, filePath, content } =
         prompt;
       const sha = computePromptSha256(content);
-
       const prismaPromptType: string = promptType;
-      const existingPrompt = await tx.$queryRaw<ExistingPromptRow[]>(Prisma.sql`
-        SELECT id
-        FROM prompt_registry
-        WHERE organization_id = ${organizationId}
-          AND name = ${name}
-          AND sha = ${sha}
-        LIMIT 1
-      `);
 
-      if (existingPrompt.length > 0) {
-        continue;
-      }
-
-      const latestVersionRows = await tx.$queryRaw<
-        LatestVersionRow[]
-      >(Prisma.sql`
-        SELECT version
-        FROM prompt_registry
-        WHERE organization_id = ${organizationId}
-          AND name = ${name}
-        ORDER BY version DESC
-        LIMIT 1
-      `);
-      const nextVersion = (latestVersionRows[0]?.version ?? 0) + 1;
-
+      // Atomic insert strategy:
+      // - CTE computes next version for (organization_id, name) at execution time.
+      // - INSERT uses that computed version and the precomputed content SHA.
+      // - ON CONFLICT DO NOTHING prevents TOCTOU race failures when concurrent
+      //   workers try to insert the same SHA or the same next version.
+      // - Prisma unique constraints scope this behavior per organization + name:
+      //   (organization_id, name, sha) blocks duplicate content for the same prompt
+      //   name, and (organization_id, name, version) guarantees version uniqueness.
+      //   The same SHA under a different name in the same organization is allowed.
       await tx.$queryRaw(Prisma.sql`
+        WITH latest AS (
+          SELECT COALESCE(MAX(version), 0) + 1 AS next_version
+          FROM prompt_registry
+          WHERE organization_id = ${organizationId}
+            AND name = ${name}
+        )
         INSERT INTO prompt_registry (
           id,
           organization_id,
@@ -76,7 +63,7 @@ export async function upsertFromSnapshot(
           sha,
           version
         )
-        VALUES (
+        SELECT
           uuid_generate_v7(),
           ${organizationId},
           ${prismaPromptType}::"PromptType",
@@ -87,8 +74,9 @@ export async function upsertFromSnapshot(
           ${filePath},
           ${content},
           ${sha},
-          ${nextVersion}
-        )
+          latest.next_version
+        FROM latest
+        ON CONFLICT DO NOTHING
       `);
     }
   });
