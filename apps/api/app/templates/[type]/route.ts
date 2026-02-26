@@ -27,7 +27,10 @@ export const GET = withAuth<Artifact, "/templates/[type]">(
       }
 
       // Lazy seeding: ensure default templates exist
-      await artifactsService.ensureDefaultTemplates(user.organizationId);
+      await artifactsService.ensureDefaultTemplates(
+        user.organizationId,
+        user.id
+      );
 
       // Fetch the template for this type
       const template = await artifactsService.findOrgTemplate(

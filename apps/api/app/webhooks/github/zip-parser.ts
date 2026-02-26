@@ -1,7 +1,9 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePerfSummary } from "@repo/github/perf-parser";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
 import type { ExecutionResult } from "./types";
@@ -13,6 +15,7 @@ export type ZipContent = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
+  promptsSnapshot: PromptsSnapshot | null;
   entries: { name: string; data: Buffer }[];
 };
 
@@ -91,6 +94,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
   let judgesReport: JudgesReport | null = null;
   let codeJudgesReport: JudgesReport | null = null;
   let perfSummary: PerfSummary | null = null;
+  let promptsSnapshot: PromptsSnapshot | null = null;
 
   for (const entry of zip.getEntries()) {
     if (entry.isDirectory) {
@@ -110,6 +114,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
       judgesReport,
       codeJudgesReport,
       perfSummary,
+      promptsSnapshot,
     });
     planContent = contentResult.planContent;
     questionsContent = contentResult.questionsContent;
@@ -117,6 +122,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     judgesReport = contentResult.judgesReport;
     codeJudgesReport = contentResult.codeJudgesReport;
     perfSummary = contentResult.perfSummary;
+    promptsSnapshot = contentResult.promptsSnapshot;
   }
 
   return {
@@ -126,6 +132,7 @@ export function findPlanInZip(zip: AdmZip): ZipContent {
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
     entries,
   };
 }
@@ -139,6 +146,7 @@ type ZipEntryContentArgs = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
+  promptsSnapshot: PromptsSnapshot | null;
 };
 
 function parseZipEntryContent(
@@ -153,6 +161,7 @@ function parseZipEntryContent(
     judgesReport: currentJudgesReport,
     codeJudgesReport: currentCodeJudgesReport,
     perfSummary: currentPerfSummary,
+    promptsSnapshot: currentPromptsSnapshot,
   } = args;
 
   let planContent = currentPlan;
@@ -161,6 +170,7 @@ function parseZipEntryContent(
   let judgesReport = currentJudgesReport;
   let codeJudgesReport = currentCodeJudgesReport;
   let perfSummary = currentPerfSummary;
+  let promptsSnapshot = currentPromptsSnapshot;
 
   // Priority 1: plan.json from experimental plugin
   if (name.endsWith("plan.json") && !planContent) {
@@ -200,6 +210,21 @@ function parseZipEntryContent(
     perfSummary = parsePerfSummary(data);
     log.info(`Found perf.jsonl: ${name}`);
   }
+  // Check for agents-snapshot markdown files
+  else {
+    const parsedSnapshot = parsePromptsSnapshotFromMarkdownEntries(
+      [{ name, data }],
+      "[zip-parser]"
+    );
+    if (parsedSnapshot) {
+      promptsSnapshot = {
+        prompts: [
+          ...(promptsSnapshot?.prompts ?? []),
+          ...parsedSnapshot.prompts,
+        ],
+      };
+    }
+  }
 
   return {
     planContent,
@@ -208,5 +233,6 @@ function parseZipEntryContent(
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
   };
 }

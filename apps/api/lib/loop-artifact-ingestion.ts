@@ -17,16 +17,22 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult } from "../app/webhooks/github/types";
-import { fanOutJudgeScores } from "./judge-score-fanout";
-import { downloadArtifactFile } from "./loop-state";
+import {
+  downloadArtifactFile,
+  downloadPromptSnapshotMarkdownEntries,
+} from "./loop-state";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +45,7 @@ export type LoopArtifacts = {
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
+  promptsSnapshot: PromptsSnapshot | null;
   // NOTE: perf.jsonl is uploaded to S3 but not ingested here.
   // GitHubActionRunPerformance requires a non-nullable actionRunId
   // (loops don't have action runs). Needs a schema change to support
@@ -61,12 +68,14 @@ export async function downloadLoopArtifacts(
     executionResultBuf,
     codeJudgesReportBuf,
     judgesReportBuf,
+    promptMarkdownEntries,
   ] = await Promise.all([
     downloadArtifactFile(stateKeyPrefix, "plan.json"),
     downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
     downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
     downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
     downloadArtifactFile(stateKeyPrefix, "judges.json"),
+    downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
   ]);
 
   const planContent = parseJsonArtifact<PlanJson>(
@@ -97,12 +106,19 @@ export async function downloadLoopArtifacts(
     (p) => p
   ) as JudgesReport | null;
 
+  const promptsSnapshot: PromptsSnapshot | null =
+    parsePromptsSnapshotFromMarkdownEntries(
+      promptMarkdownEntries,
+      "[loop-artifact-ingestion]"
+    );
+
   return {
     planContent,
     questionsContent,
     executionResult,
     judgesReport,
     codeJudgesReport,
+    promptsSnapshot,
   };
 }
 
@@ -157,6 +173,16 @@ export async function ingestPlanArtifacts(
       organizationId,
       updatedArtifact.slug,
       updatedArtifact.latestVersion
+    );
+  }
+
+  // Persist prompt registry entries from snapshot (idempotent upsert)
+  try {
+    await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
+  } catch (error) {
+    log.warn(
+      "[loop-artifact-ingestion] Prompt registry upsert failed, continuing",
+      { organizationId, artifactId, error }
     );
   }
 
@@ -320,6 +346,19 @@ export async function ingestExecutionArtifacts(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
+    try {
+      await upsertFromSnapshot(
+        loop.organizationId,
+        artifacts.promptsSnapshot,
+        tx
+      );
+    } catch (error) {
+      log.warn(
+        "[loop-artifact-ingestion] Prompt registry upsert failed, continuing",
+        { organizationId: loop.organizationId, loopId: loop.id, error }
+      );
+    }
+
     const artifact = await tx.artifact.findUnique({
       where: { id: loop.artifactId!, organizationId: loop.organizationId },
       select: { organizationId: true, projectId: true, slug: true },

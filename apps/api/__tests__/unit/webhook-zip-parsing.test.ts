@@ -11,6 +11,7 @@
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import { parsePromptFrontmatter } from "@repo/github/prompt-snapshot-parser";
 import {
   findPlanInZip,
   parseJudgesReport,
@@ -197,6 +198,136 @@ describe("ZIP parsing for judges.json", () => {
       const result = parseJudgesReport(content, "judges.json");
 
       expect(result).toBeNull();
+    });
+  });
+});
+
+describe("agents-snapshot extraction", () => {
+  const VALID_AGENT_FRONTMATTER = `---
+name: my-agent
+model: claude-opus-4-6
+description: A general purpose agent
+tools: bash, read, write
+---
+
+This is the agent system prompt content.
+`;
+
+  const VALID_JUDGE_FRONTMATTER = `---
+name: my-judge
+model: claude-opus-4-6
+description: A judge agent
+tools: read
+---
+
+This is the judge system prompt content.
+`;
+
+  describe("parsePromptFrontmatter", () => {
+    it("returns AGENT type for a non-judges path", () => {
+      const result = parsePromptFrontmatter(
+        VALID_AGENT_FRONTMATTER,
+        "agents-snapshot/my-agent.md"
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.promptType).toBe("AGENT");
+      expect(result?.name).toBe("my-agent");
+      expect(result?.model).toBe("claude-opus-4-6");
+      expect(result?.description).toBe("A general purpose agent");
+    });
+
+    it("returns JUDGE type for a path under agents-snapshot/judges/", () => {
+      const result = parsePromptFrontmatter(
+        VALID_JUDGE_FRONTMATTER,
+        "agents-snapshot/judges/my-judge.md"
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.promptType).toBe("JUDGE");
+      expect(result?.name).toBe("my-judge");
+    });
+
+    it("parses tools from comma-separated string", () => {
+      const result = parsePromptFrontmatter(
+        VALID_AGENT_FRONTMATTER,
+        "agents-snapshot/my-agent.md"
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.tools).toEqual(["bash", "read", "write"]);
+    });
+
+    it("returns null when name field is missing", () => {
+      const contentWithoutName = `---
+model: claude-opus-4-6
+description: Missing name field
+---
+
+Content here.
+`;
+      const result = parsePromptFrontmatter(
+        contentWithoutName,
+        "agents-snapshot/nameless.md"
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it("returns null when frontmatter is missing entirely", () => {
+      const contentWithoutFrontmatter =
+        "Just plain content with no frontmatter.";
+      const result = parsePromptFrontmatter(
+        contentWithoutFrontmatter,
+        "agents-snapshot/no-frontmatter.md"
+      );
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe("findPlanInZip integration", () => {
+    it("returns null promptsSnapshot when no agents-snapshot/ entries are in zip", () => {
+      const zipBuffer = buildZipWithEntries([
+        {
+          name: "plan.json",
+          content:
+            '{"content": "# Plan", "pendingTasks": [], "openQuestions": []}',
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      expect(result.promptsSnapshot).toBeNull();
+    });
+
+    it("returns promptsSnapshot with parsed AGENT prompt when zip has agents-snapshot/my-agent.md", () => {
+      const zipBuffer = buildZipWithEntries([
+        {
+          name: "plan.json",
+          content:
+            '{"content": "# Plan", "pendingTasks": [], "openQuestions": []}',
+        },
+        {
+          name: "agents-snapshot/my-agent.md",
+          content: VALID_AGENT_FRONTMATTER,
+        },
+      ]);
+
+      const AdmZip = require("adm-zip");
+      const zip = new AdmZip(zipBuffer);
+      const result = findPlanInZip(zip);
+
+      expect(result.promptsSnapshot).not.toBeNull();
+      expect(result.promptsSnapshot?.prompts).toHaveLength(1);
+      expect(result.promptsSnapshot?.prompts[0]).toMatchObject({
+        promptType: "AGENT",
+        name: "my-agent",
+        model: "claude-opus-4-6",
+        tools: ["bash", "read", "write"],
+      });
     });
   });
 });

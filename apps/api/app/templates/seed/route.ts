@@ -5,7 +5,10 @@ import { artifactsService } from "../../artifacts/service";
 export const POST = withAuth<{ message: string }, "/templates/seed">(
   async ({ user }) => {
     try {
-      await artifactsService.ensureDefaultTemplates(user.organizationId);
+      await artifactsService.ensureDefaultTemplates(
+        user.organizationId,
+        user.id
+      );
       return successResponse({
         message: "Default templates ensured successfully",
       });

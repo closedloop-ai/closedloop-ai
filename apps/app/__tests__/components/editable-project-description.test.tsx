@@ -7,7 +7,7 @@
 import type {
   ProjectWithDetails,
   UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import type { UseMutationResult } from "@tanstack/react-query";
 import {
   cleanup,

@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WORKSTREAM_STATE_OPTIONS } from "@repo/api/src/types/workstream.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -13,51 +14,36 @@ export function registerListWorkstreams(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-workstreams",
-    "List workstreams (initiatives) for a project with optional filters",
     {
-      projectId: z
-        .string()
-        .describe("ID of the project to list workstreams for"),
-      state: z
-        .enum([
-          "INITIATED",
-          "REQUIREMENTS_GENERATING",
-          "REQUIREMENTS_PENDING_APPROVAL",
-          "DESIGN_IN_PROGRESS",
-          "DESIGN_PENDING_APPROVAL",
-          "IMPLEMENTATION_PLANNING",
-          "IMPLEMENTATION_IN_PROGRESS",
-          "IMPLEMENTATION_PENDING_REVIEW",
-          "CODE_REVIEW_RUNNING",
-          "CODE_REVIEW_PENDING_APPROVAL",
-          "VISUAL_QA_RUNNING",
-          "VISUAL_QA_PENDING_APPROVAL",
-          "MERGING",
-          "DEPLOYED",
-          "COMPLETED",
-          "BLOCKED",
-          "CANCELLED",
-        ])
-        .optional()
-        .describe("Filter by workstream state"),
-      search: z.string().optional().describe("Search workstreams by title"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(
-          `Maximum number of workstreams to return (1-${MAX_PAGE_LIMIT})`
-        ),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description:
+        "List workstreams (initiatives) for a project with optional filters",
+      inputSchema: {
+        projectId: z
+          .string()
+          .describe("ID of the project to list workstreams for"),
+        state: z
+          .enum(WORKSTREAM_STATE_OPTIONS)
+          .optional()
+          .describe("Filter by workstream state"),
+        search: z.string().optional().describe("Search workstreams by title"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of workstreams to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ projectId, state, search, limit, offset }) =>
       withErrorHandling(async () => {
@@ -83,7 +69,7 @@ export function registerListWorkstreams(
               title: readString(row.title),
               state: readString(row.state),
               projectId: readString(row.projectId),
-              ownerId: readString(row.ownerId),
+              assigneeId: readString(row.assigneeId),
               updatedAt: readString(row.updatedAt),
             };
           },

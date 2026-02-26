@@ -1,30 +1,31 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ExternalLinkType } from "@repo/api/src/types/external-link.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { EXTERNAL_LINK_TYPE_VALUES } from "../tool-enums.js";
 import { withErrorHandling } from "./tool-utils.js";
 
 export function registerCreateExternalLink(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-external-link",
-    "Create an external link (PR, Figma, preview deployment) attached to a workstream or project",
     {
-      workstreamId: z
-        .string()
-        .optional()
-        .describe("ID of the workstream to attach the link to"),
-      projectId: z
-        .string()
-        .optional()
-        .describe("ID of the project to attach the link to"),
-      externalUrl: z.string().url().describe("URL of the external link"),
-      type: z
-        .enum(EXTERNAL_LINK_TYPE_VALUES)
-        .describe("Type of the external link"),
-      title: z.string().describe("Display title for the external link"),
+      description:
+        "Create an external link (PR, Figma, preview deployment) attached to a workstream or project",
+      inputSchema: {
+        workstreamId: z
+          .string()
+          .optional()
+          .describe("ID of the workstream to attach the link to"),
+        projectId: z
+          .string()
+          .optional()
+          .describe("ID of the project to attach the link to"),
+        externalUrl: z.url().describe("URL of the external link"),
+        type: z.enum(ExternalLinkType).describe("Type of the external link"),
+        title: z.string().describe("Display title for the external link"),
+      },
     },
     ({ workstreamId, projectId, externalUrl, type, title }) =>
       withErrorHandling(async () => {

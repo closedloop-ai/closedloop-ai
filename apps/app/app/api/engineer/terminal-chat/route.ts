@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { NextRequest } from "next/server";
+import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import {
   getLearningAttributionInstruction,
   getOrgPatternsContext,
@@ -264,7 +265,7 @@ function handleClaude(
           "--verbose",
           "--output-format",
           "stream-json",
-          "--allowedTools=WebSearch,WebFetch,Bash",
+          `--allowedTools=${withMcpTools("WebSearch,WebFetch,Bash")}`,
           "--append-system-prompt",
           buildClaudeSystemPrompt(),
         ];

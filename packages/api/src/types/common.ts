@@ -34,3 +34,11 @@ export function success<T>(data: T): ApiResult<T> {
 export function failure(error: string): ApiResult<never> {
   return { success: false, error };
 }
+
+export const Priority = {
+  Low: "LOW",
+  Medium: "MEDIUM",
+  High: "HIGH",
+  Urgent: "URGENT",
+} as const;
+export type Priority = (typeof Priority)[keyof typeof Priority];

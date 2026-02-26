@@ -4,16 +4,18 @@ import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   type Prisma,
   EvaluationReportType as PrismaEvaluationReportType,
+  type TransactionClient,
   withDb,
 } from "@repo/database";
-import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";
 import { processArtifactDownloads } from "./workflow-artifacts";
@@ -40,7 +42,8 @@ type PrEventMetadata = {
 export async function handleExecutionSuccess(
   ctx: WorkflowContext,
   executionResult: ExecutionResult,
-  codeJudgesReport: JudgesReport | null
+  codeJudgesReport: JudgesReport | null,
+  promptsSnapshot: PromptsSnapshot | null
 ): Promise<void> {
   const { correlationId, workstreamId, repositoryId, runId } = ctx;
 
@@ -117,7 +120,6 @@ export async function handleExecutionSuccess(
       select: {
         organizationId: true,
         projectId: true,
-        generatedBy: true,
         slug: true,
       },
     });
@@ -262,6 +264,15 @@ export async function handleExecutionSuccess(
         judgesCount: codeJudgesReport.stats.length,
       });
     }
+
+    try {
+      await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+    } catch (error) {
+      log.warn(
+        "[handleExecutionSuccess] Prompt registry upsert failed, continuing",
+        { organizationId: workstream.organizationId, error }
+      );
+    }
   });
 
   log.info(
@@ -271,6 +282,7 @@ export async function handleExecutionSuccess(
 
 /**
  * Handle successful workflow completion.
+ * Persists prompts snapshot for non-execute path; execute path persists via handleExecutionSuccess.
  */
 export async function handleWorkflowSuccess(
   tx: TransactionClient,
@@ -287,13 +299,19 @@ export async function handleWorkflowSuccess(
     judgesReport,
     codeJudgesReport,
     perfSummary,
+    promptsSnapshot,
   } = result;
 
   // Handle execute command differently - create PR record instead of updating artifact.
   // Performance data is intentionally not persisted for execute runs: perf.jsonl tracks
   // Symphony orchestrator iterations, which are only produced by plan-generation runs.
   if (command === "execute" && executionResult) {
-    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport);
+    await handleExecutionSuccess(
+      ctx,
+      executionResult,
+      codeJudgesReport,
+      promptsSnapshot
+    );
     return;
   }
 
@@ -444,6 +462,15 @@ export async function handleWorkflowSuccess(
   log.info(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
   );
+
+  try {
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  } catch (error) {
+    log.warn(
+      "[handleWorkflowSuccess] Prompt registry upsert failed, continuing",
+      { organizationId: workstream.organizationId, correlationId, error }
+    );
+  }
 }
 
 /**
@@ -536,7 +563,7 @@ export async function processWorkflowCompletion(
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.
   await withDb.tx(async (tx) => {
-    // 1. Process the result (updates artifact content)
+    // 1. Process the result (updates artifact content, persists prompts for non-execute path)
     if (conclusion === "success") {
       await handleWorkflowSuccess(tx, ctx);
     } else {

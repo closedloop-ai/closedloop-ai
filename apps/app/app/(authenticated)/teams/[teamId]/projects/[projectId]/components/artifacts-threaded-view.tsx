@@ -9,6 +9,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { parsePreviewDeploymentMetadata } from "@repo/api/src/types/external-link-utils";
+import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Collapsible,
@@ -72,7 +73,7 @@ type WorkstreamGroup = {
   id: string | null;
   groupKey: string;
   title: string;
-  state: string | null;
+  state: WorkstreamState | null;
   artifacts: ArtifactWithWorkstream[];
 };
 
@@ -222,7 +223,7 @@ function ArtifactRow({
         isClickable ? "cursor-pointer hover:bg-muted/50" : ""
       }`}
     >
-      <Icon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-sm">{artifact.title}</span>
         <GenerationStatusIndicator
@@ -322,7 +323,7 @@ function WorkstreamSection({
   return (
     <Collapsible className="rounded-lg border">
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
-        <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
         <span className="min-w-0 flex-1 truncate font-medium text-sm">
           {group.title}
         </span>
@@ -551,8 +552,8 @@ function BranchesSection({ branches }: { branches: BranchEntry[] }) {
   return (
     <Collapsible className="rounded-lg border">
       <CollapsibleTrigger className="group flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/30">
-        <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
-        <GitPullRequestIcon className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+        <GitPullRequestIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate font-medium text-sm">
           Branches
         </span>

@@ -143,6 +143,7 @@ function buildPlanArtifacts(
     executionResult: null,
     judgesReport: null,
     codeJudgesReport: null,
+    promptsSnapshot: null,
     ...overrides,
   };
 }
@@ -166,6 +167,7 @@ function buildExecutionArtifacts(
     },
     judgesReport: null,
     codeJudgesReport: null,
+    promptsSnapshot: null,
     ...overrides,
   };
 }

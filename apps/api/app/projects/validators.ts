@@ -1,15 +1,19 @@
-import { ProjectPriority } from "@repo/api/src/types/organization";
+import { Priority } from "@repo/api/src/types/common";
+import { ProjectStatus } from "@repo/api/src/types/project";
 import { z } from "zod";
 import { transformIsoDateTime } from "@/lib/validators/date-time";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
-const prioritySchema = z.enum(ProjectPriority);
+const priorityEnum = z.enum(Priority);
+const projectStatusEnum = z.enum(ProjectStatus);
 
 export const createProjectValidator = z.object({
   name: z.string().min(1, "Name is required"),
   description: z.string().optional(),
-  priority: prioritySchema.optional(),
-  ownerId: z.uuidv7().nullable().optional(),
+  priority: priorityEnum.optional(),
+  status: projectStatusEnum.optional(),
+  assigneeId: z.uuidv7().nullable().optional(),
+  slug: z.string().nullable().optional(),
   targetDate: z.iso
     .datetime()
     .nullable()
@@ -19,14 +23,16 @@ export const createProjectValidator = z.object({
 });
 
 export const reorderProjectsValidator = z.object({
-  projectIds: z.array(z.string().uuid()),
+  projectIds: z.array(z.uuidv7()),
 });
 
 export const updateProjectValidator = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional(),
-  priority: prioritySchema.optional(),
-  ownerId: z.uuidv7().nullable().optional(),
+  priority: priorityEnum.optional(),
+  status: projectStatusEnum.optional(),
+  assigneeId: z.uuidv7().nullable().optional(),
+  slug: z.string().nullable().optional(),
   targetDate: z.iso
     .datetime()
     .nullable()

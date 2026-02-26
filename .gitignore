@@ -266,6 +266,7 @@ $RECYCLE.BIN/
 
 # AI Rules
 .cursorrules
+.cursor/
 .github/copilot-instructions.md
 
 # Symphony

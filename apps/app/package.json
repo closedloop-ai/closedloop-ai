@@ -15,7 +15,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@liveblocks/react": "^3.13.5",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@repo/analytics": "workspace:*",
     "@repo/api": "workspace:*",
     "@repo/auth": "workspace:*",

@@ -274,6 +274,10 @@ export async function generateUploadUrl(
  * Prevents runaway responses for loops with large state directories.
  */
 const MAX_DOWNLOAD_URLS = 1000;
+const S3_LIST_MAX_KEYS = 1000;
+
+/** 50 MB — mirrors harness upload limit; skip objects above this size. */
+const MAX_OBJECT_SIZE_BYTES = 50 * 1024 * 1024;
 
 /**
  * List all objects under a prefix and generate pre-signed GET URLs for each.
@@ -297,7 +301,7 @@ export async function listAndGenerateDownloadUrls(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: normalizedPrefix,
-        MaxKeys: Math.min(1000, MAX_DOWNLOAD_URLS - results.length),
+        MaxKeys: Math.min(S3_LIST_MAX_KEYS, MAX_DOWNLOAD_URLS - results.length),
         ContinuationToken: continuationToken,
       })
     );
@@ -307,8 +311,7 @@ export async function listAndGenerateDownloadUrls(
         if (!obj.Key) {
           continue;
         }
-        // Skip objects > 50MB (mirrors harness upload limit)
-        if (obj.Size && obj.Size > 50 * 1024 * 1024) {
+        if (obj.Size && obj.Size > MAX_OBJECT_SIZE_BYTES) {
           continue;
         }
 
@@ -392,4 +395,88 @@ export async function downloadArtifactFile(
     });
     return null;
   }
+}
+
+/**
+ * Download markdown prompt snapshot files from `artifacts/agents-snapshot/`.
+ * Returns entry names relative to `artifacts/` (for parser compatibility).
+ *
+ * Capped at MAX_DOWNLOAD_URLS entries; skips files > 50 MB.
+ */
+export async function downloadPromptSnapshotMarkdownEntries(
+  stateKeyPrefix: string
+): Promise<Array<{ name: string; data: Buffer }>> {
+  const bucket = requireBucket();
+  const client = getS3Client();
+  const artifactPrefix = `${stateKeyPrefix}/artifacts/`;
+  const snapshotPrefix = `${artifactPrefix}agents-snapshot/`;
+  const entries: Array<{ name: string; data: Buffer }> = [];
+
+  let continuationToken: string | undefined;
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: snapshotPrefix,
+        MaxKeys: Math.max(
+          1,
+          Math.min(S3_LIST_MAX_KEYS, MAX_DOWNLOAD_URLS - entries.length)
+        ),
+        ContinuationToken: continuationToken,
+      })
+    );
+
+    const objects = (response.Contents ?? [])
+      .filter((obj): obj is { Key: string; Size?: number } => Boolean(obj.Key))
+      .filter((obj) => obj.Key.endsWith(".md"))
+      .filter((obj) => !obj.Size || obj.Size <= MAX_OBJECT_SIZE_BYTES);
+
+    const pageEntries = await Promise.all(
+      objects.map(async (obj) => {
+        const key = obj.Key;
+        try {
+          const data = await getObject(key);
+          const relativeName = key.startsWith(artifactPrefix)
+            ? key.slice(artifactPrefix.length)
+            : key;
+          return { name: relativeName, data };
+        } catch (err) {
+          log.warn(
+            "[loop-state] Failed to download agent-snapshot file, skipping",
+            {
+              key,
+              err,
+            }
+          );
+          return null;
+        }
+      })
+    );
+    entries.push(
+      ...pageEntries.filter(
+        (e): e is { name: string; data: Buffer } => e !== null
+      )
+    );
+
+    if (entries.length >= MAX_DOWNLOAD_URLS) {
+      log.warn("[loop-state] Prompt snapshot entry cap reached", {
+        stateKeyPrefix,
+        cap: MAX_DOWNLOAD_URLS,
+      });
+      return entries;
+    }
+
+    continuationToken = response.IsTruncated
+      ? response.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  if (entries.length > 0) {
+    log.info("[loop-state] Downloaded prompt snapshot markdown entries", {
+      stateKeyPrefix,
+      count: entries.length,
+    });
+  }
+
+  return entries;
 }

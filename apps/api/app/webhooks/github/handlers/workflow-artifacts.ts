@@ -1,5 +1,6 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
@@ -17,6 +18,7 @@ export type ProcessArtifactResult = {
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   perfSummary: PerfSummary | null;
+  promptsSnapshot: PromptsSnapshot | null;
 };
 
 /**
@@ -26,8 +28,20 @@ export type ProcessArtifactResult = {
  */
 export function mergeZipContent(
   current: Omit<ZipContent, "entries">,
-  result: ZipContent
+  result: Omit<ZipContent, "entries">
 ): Omit<ZipContent, "entries"> {
+  let promptsSnapshot: PromptsSnapshot | null;
+  if (current.promptsSnapshot && result.promptsSnapshot) {
+    promptsSnapshot = {
+      prompts: [
+        ...current.promptsSnapshot.prompts,
+        ...result.promptsSnapshot.prompts,
+      ],
+    };
+  } else {
+    promptsSnapshot = result.promptsSnapshot ?? current.promptsSnapshot;
+  }
+
   return {
     planContent: result.planContent ?? current.planContent,
     questionsContent: result.questionsContent ?? current.questionsContent,
@@ -35,6 +49,7 @@ export function mergeZipContent(
     judgesReport: result.judgesReport ?? current.judgesReport,
     codeJudgesReport: result.codeJudgesReport ?? current.codeJudgesReport,
     perfSummary: result.perfSummary ?? current.perfSummary,
+    promptsSnapshot,
   };
 }
 
@@ -63,6 +78,7 @@ export function processArtifactZip(
     judgesReport: null,
     codeJudgesReport: null,
     perfSummary: null,
+    promptsSnapshot: null,
   };
 
   // Check for nested zips first (Symphony artifact structure)
@@ -97,37 +113,35 @@ export async function processArtifactDownloads(
   log.info(`[processArtifactDownloads] Downloading artifacts for run ${runId}`);
 
   const artifacts = await downloadWorkflowArtifacts(runId);
-  let planContent: string | null = null;
-  let questionsContent: string | null = null;
-  let executionResult: ExecutionResult | null = null;
-  let judgesReport: JudgesReport | null = null;
-  let codeJudgesReport: JudgesReport | null = null;
-  let perfSummary: PerfSummary | null = null;
 
   log.info(
     `[processArtifactDownloads] Downloaded ${artifacts.length} artifacts`
   );
 
+  let content: Omit<ZipContent, "entries"> = {
+    planContent: null,
+    questionsContent: null,
+    executionResult: null,
+    judgesReport: null,
+    codeJudgesReport: null,
+    perfSummary: null,
+    promptsSnapshot: null,
+  };
+
   for (const artifact of artifacts) {
     const result = processArtifactZip(artifact.data, artifact.name);
-
-    planContent = result.planContent ?? planContent;
-    questionsContent = result.questionsContent ?? questionsContent;
-    executionResult = result.executionResult ?? executionResult;
-    judgesReport = result.judgesReport ?? judgesReport;
-    codeJudgesReport = result.codeJudgesReport ?? codeJudgesReport;
-    perfSummary = result.perfSummary ?? perfSummary;
+    content = mergeZipContent(content, result);
   }
 
   if (
-    planContent ||
-    questionsContent ||
-    executionResult ||
-    judgesReport ||
-    codeJudgesReport
+    content.planContent ||
+    content.questionsContent ||
+    content.executionResult ||
+    content.judgesReport ||
+    content.codeJudgesReport
   ) {
     log.info(
-      `[processArtifactDownloads] Found content: plan=${!!planContent}, questions=${!!questionsContent}, execution=${!!executionResult}, judges=${!!judgesReport}, codeJudges=${!!codeJudgesReport}`
+      `[processArtifactDownloads] Found content: plan=${!!content.planContent}, questions=${!!content.questionsContent}, execution=${!!content.executionResult}, judges=${!!content.judgesReport}, codeJudges=${!!content.codeJudgesReport}`
     );
   } else {
     log.warn(
@@ -136,11 +150,12 @@ export async function processArtifactDownloads(
   }
 
   return {
-    planContent,
-    questionsContent,
-    executionResult,
-    judgesReport,
-    codeJudgesReport,
-    perfSummary,
+    planContent: content.planContent,
+    questionsContent: content.questionsContent,
+    executionResult: content.executionResult,
+    judgesReport: content.judgesReport,
+    codeJudgesReport: content.codeJudgesReport,
+    perfSummary: content.perfSummary,
+    promptsSnapshot: content.promptsSnapshot,
   };
 }

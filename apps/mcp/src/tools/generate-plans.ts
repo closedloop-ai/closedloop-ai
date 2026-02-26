@@ -11,11 +11,15 @@ export function registerGeneratePlans(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "generate-plans",
-    "Trigger AI plan generation for a project",
     {
-      projectId: z.string().describe("ID of the project to generate plans for"),
+      description: "Trigger AI plan generation for a project",
+      inputSchema: {
+        projectId: z
+          .string()
+          .describe("ID of the project to generate plans for"),
+      },
     },
     ({ projectId }) =>
       withErrorHandling(async () => {
