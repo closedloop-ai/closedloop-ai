@@ -3,9 +3,10 @@ import type {
   CreateProjectInput,
   ProjectWithDetails,
   UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
+import { basicUserSelect } from "@/lib/db-utils";
 
 /**
  * Projects service - handles database operations for project management
@@ -18,15 +19,16 @@ export const projectsService = {
     return {
       ...project,
       settings: project.settings as JsonObject,
-      owner: project.owner
+      assignee: project.assignee
         ? {
-            id: project.owner.id,
-            firstName: project.owner.firstName,
-            lastName: project.owner.lastName,
-            avatarUrl: project.owner.avatarUrl,
+            id: project.assignee.id,
+            email: project.assignee.email,
+            firstName: project.assignee.firstName,
+            lastName: project.assignee.lastName,
+            avatarUrl: project.assignee.avatarUrl,
           }
         : undefined,
-      status: projectsService.calculateStatus(project.artifacts),
+      completionPercentage: projectsService.calculateStatus(project.artifacts),
       teams: project.teams.map((pt) => ({
         id: pt.team.id,
         name: pt.team.name,
@@ -42,7 +44,7 @@ export const projectsService = {
       db.project.findMany({
         where: { organizationId },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
     );
   },
@@ -64,7 +66,7 @@ export const projectsService = {
           organizationId,
         },
         include: PROJECT_DETAIL_INCLUDE,
-        orderBy: { updatedAt: "desc" },
+        orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
         ...(options?.limit && { take: options.limit }),
       })
     );
@@ -85,23 +87,22 @@ export const projectsService = {
   /**
    * Create a new project
    */
-  create(organizationId: string, input: CreateProjectInput) {
+  create(organizationId: string, userId: string, input: CreateProjectInput) {
+    const { teamIds, ...projectData } = input;
+
     return withDb.tx(async (tx) => {
       const project = await tx.project.create({
         data: {
+          ...projectData,
           organizationId,
-          name: input.name,
-          description: input.description,
-          priority: input.priority ?? "NOT_SET",
-          ownerId: input.ownerId,
-          targetDate: input.targetDate,
+          createdById: userId,
         },
       });
 
       // Add project to teams if specified
-      if (input.teamIds && input.teamIds.length > 0) {
+      if (teamIds && teamIds.length > 0) {
         await tx.projectTeam.createMany({
-          data: input.teamIds.map((teamId) => ({
+          data: teamIds.map((teamId) => ({
             projectId: project.id,
             teamId,
           })),
@@ -156,6 +157,47 @@ export const projectsService = {
   },
 
   /**
+   * Reorder projects by setting sortOrder values.
+   * Accepts an array of project IDs in the desired order.
+   */
+  reorder(projectIds: string[], organizationId: string): Promise<string[]> {
+    if (projectIds.length === 0) {
+      return Promise.resolve([]);
+    }
+
+    const uniqueIds = [...new Set(projectIds)];
+
+    return withDb.tx(async (tx) => {
+      const projects = await tx.project.findMany({
+        where: {
+          id: { in: uniqueIds },
+          organizationId,
+        },
+        select: { id: true },
+      });
+
+      if (projects.length !== uniqueIds.length) {
+        const foundIds = new Set(projects.map((p) => p.id));
+        const missingIds = uniqueIds.filter((id) => !foundIds.has(id));
+        throw new Error(
+          `Invalid project IDs: ${missingIds.join(", ")} not found in organization`
+        );
+      }
+
+      await Promise.all(
+        uniqueIds.map((id, index) =>
+          tx.project.update({
+            where: { id, organizationId },
+            data: { sortOrder: index },
+          })
+        )
+      );
+
+      return uniqueIds;
+    });
+  },
+
+  /**
    * Calculate project status based on artifact completion
    */
   calculateStatus(artifacts: Array<{ status: string }>): number {
@@ -172,17 +214,10 @@ export const projectsService = {
 };
 
 /**
- * Standard include pattern for project queries with owner, teams, and artifacts
+ * Standard include pattern for project queries with assignee, teams, and artifacts
  */
 const PROJECT_DETAIL_INCLUDE = {
-  owner: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      avatarUrl: true,
-    },
-  },
+  assignee: basicUserSelect,
   teams: {
     include: {
       team: {
@@ -194,7 +229,6 @@ const PROJECT_DETAIL_INCLUDE = {
     },
   },
   artifacts: {
-    where: { isLatest: true },
     select: { status: true },
   },
 } as const;

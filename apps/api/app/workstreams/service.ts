@@ -3,9 +3,11 @@ import type {
   UpdateWorkstreamInput,
   Workstream,
   WorkstreamState,
+  WorkstreamWithProject,
 } from "@repo/api/src/types/workstream";
 import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
+import { basicUserSelect } from "@/lib/db-utils";
 
 export type FindWorkstreamsOptions = {
   organizationId: string;
@@ -13,6 +15,10 @@ export type FindWorkstreamsOptions = {
   state?: WorkstreamState;
   search?: string;
   limit?: number;
+};
+
+export type FindAllByOrganizationOptions = {
+  excludeStates?: WorkstreamState[];
 };
 
 /**
@@ -40,6 +46,9 @@ export const workstreamsService = {
               }
             : {}),
         },
+        include: {
+          createdBy: basicUserSelect,
+        },
         orderBy: { createdAt: "desc" },
         ...(limit ? { take: limit } : {}),
       })
@@ -53,6 +62,40 @@ export const workstreamsService = {
     return withDb((db) =>
       db.workstream.findUnique({
         where: { id, organizationId },
+        include: {
+          createdBy: basicUserSelect,
+        },
+      })
+    );
+  },
+
+  /**
+   * Find all workstreams for an organization across all projects
+   * Excludes terminal states (COMPLETED, CANCELLED, DEPLOYED) by default
+   */
+  findAllByOrganization(
+    organizationId: string,
+    options: FindAllByOrganizationOptions = {}
+  ): Promise<WorkstreamWithProject[]> {
+    const excludeStates = options.excludeStates ?? [
+      "COMPLETED" as WorkstreamState,
+      "CANCELLED" as WorkstreamState,
+      "DEPLOYED" as WorkstreamState,
+    ];
+
+    return withDb((db) =>
+      db.workstream.findMany({
+        where: {
+          organizationId,
+          state: { notIn: excludeStates },
+        },
+        include: {
+          createdBy: basicUserSelect,
+          project: {
+            select: { name: true },
+          },
+        },
+        orderBy: { updatedAt: "desc" },
       })
     );
   },
@@ -68,14 +111,12 @@ export const workstreamsService = {
     return withDb((db) =>
       db.workstream.create({
         data: {
+          ...input,
           organizationId,
-          projectId: input.projectId,
-          title: input.title,
-          description: input.description,
-          type: input.type ?? "FEATURE_DELIVERY",
           createdById,
-          assignedToId: input.assignedToId,
-          hasUIChanges: input.hasUIChanges ?? false,
+        },
+        include: {
+          createdBy: basicUserSelect,
         },
       })
     );
@@ -90,7 +131,8 @@ export const workstreamsService = {
     input: Omit<UpdateWorkstreamInput, "id">
   ): Promise<Workstream> {
     // If state is being changed, update stateChangedAt
-    const data: WorkstreamUpdateInput = { ...input };
+    const data: Omit<UpdateWorkstreamInput, "id"> &
+      Pick<WorkstreamUpdateInput, "stateChangedAt"> = { ...input };
     if (input.state) {
       data.stateChangedAt = new Date();
     }
@@ -99,6 +141,9 @@ export const workstreamsService = {
       db.workstream.update({
         where: { id, organizationId },
         data,
+        include: {
+          createdBy: basicUserSelect,
+        },
       })
     );
   },

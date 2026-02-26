@@ -13,6 +13,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { dashboardKeys } from "./use-dashboard-stats";
 
 // Query keys
 export const workstreamKeys = {
@@ -22,6 +23,7 @@ export const workstreamKeys = {
     [...workstreamKeys.lists(), filters] as const,
   details: () => [...workstreamKeys.all, "detail"] as const,
   detail: (id: string) => [...workstreamKeys.details(), id] as const,
+  inProgress: () => [...workstreamKeys.all, "inProgress"] as const,
 };
 
 // Queries
@@ -111,6 +113,7 @@ export function useCreateWorkstream() {
       apiClient.post<Workstream>("/workstreams", input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: workstreamKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -129,6 +132,7 @@ export function useUpdateWorkstream() {
         queryKey: workstreamKeys.detail(variables.id),
       });
       queryClient.invalidateQueries({ queryKey: workstreamKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -142,6 +146,7 @@ export function useDeleteWorkstream() {
       apiClient.delete<{ deleted: true }>(`/workstreams/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: workstreamKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }

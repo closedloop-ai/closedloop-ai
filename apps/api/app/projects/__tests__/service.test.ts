@@ -48,7 +48,7 @@ describe("projectsService.findByTeam", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls Prisma with take: 3 and orderBy: { updatedAt: 'desc' } when limit is provided", async () => {
+  it("calls Prisma with take: 3 and sortOrder/updatedAt ordering when limit is provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
     mockWithDb.mockImplementation((callback: any) => {
@@ -70,12 +70,12 @@ describe("projectsService.findByTeam", () => {
         organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
-      orderBy: { updatedAt: "desc" },
+      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
       take: 3,
     });
   });
 
-  it("calls Prisma without take and with orderBy: { updatedAt: 'desc' } when no limit provided", async () => {
+  it("calls Prisma without take and with sortOrder/updatedAt ordering when no limit provided", async () => {
     const mockFindMany = vi.fn().mockResolvedValue([MOCK_PROJECT]);
 
     mockWithDb.mockImplementation((callback: any) => {
@@ -99,7 +99,7 @@ describe("projectsService.findByTeam", () => {
         organizationId: TEST_ORG_ID,
       },
       include: expect.any(Object),
-      orderBy: { updatedAt: "desc" },
+      orderBy: [{ sortOrder: "asc" }, { updatedAt: "desc" }],
     });
 
     // Explicitly verify take is not present

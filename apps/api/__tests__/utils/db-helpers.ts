@@ -1,10 +1,12 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { withDb, withImplicitTransaction } from "@repo/database";
+import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import type {
   OrganizationCreateInput,
   ProjectUncheckedCreateInput,
   UserUncheckedCreateInput,
 } from "@repo/database/generated/models";
+import { type Mock, vi } from "vitest";
 
 /**
  * Wrap test code in a transaction that automatically rolls back.
@@ -86,12 +88,14 @@ export async function createTestUser(
  */
 export async function createTestProject(
   organizationId: string,
+  createdById: string,
   overrides?: Partial<ProjectUncheckedCreateInput>
 ): Promise<string> {
   const project = await withDb((db) =>
     db.project.create({
       data: {
         organizationId,
+        createdById,
         name: "Test Project",
         description: "A test project",
         ...overrides,
@@ -112,4 +116,62 @@ class TestTransactionRollback extends Error {
     super();
     this.result = result;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Unit test mock helpers — for tests that vi.mock("@repo/database")
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `withDb` cast as a Vitest Mock with a `.tx` Mock property.
+ * Call once after `vi.mock("@repo/database")` and the subsequent import.
+ *
+ * @example
+ * const mockWithDb = getMockWithDb();
+ * // later: mockWithDb.mockClear();
+ */
+export function getMockWithDb() {
+  return withDb as unknown as Mock & { tx: Mock };
+}
+
+/**
+ * Cast a plain mock object to a TransactionClient so it can be passed to
+ * handler functions that accept `TransactionClient` as their first argument.
+ *
+ * @example
+ * const mockTx = { workstream: { findUnique: vi.fn().mockResolvedValue(...) } };
+ * await handleWorkflowSuccess(asTx(mockTx), ctx, true);
+ */
+export function asTx<T extends Record<string, unknown>>(mock: T) {
+  return mock as unknown as TransactionClient;
+}
+
+/**
+ * Set up the mocked `withDb.tx` to invoke its callback with the given mock
+ * object as the transaction client.
+ *
+ * @example
+ * mockWithDbTx(mockTx);
+ * await processWorkflowCompletion(event, correlationId, true);
+ */
+export function mockWithDbTx(mockDb: Record<string, unknown>) {
+  getMockWithDb().tx = vi
+    .fn()
+    .mockImplementation((callback: (tx: unknown) => unknown) =>
+      callback(mockDb)
+    );
+}
+
+/**
+ * Set up the mocked `withDb` (non-transactional) to invoke its callback with
+ * the given mock object as the database client.
+ *
+ * @example
+ * mockWithDbCall(mockDb);
+ * await handleExecutionSuccess(ctx, executionResult);
+ */
+export function mockWithDbCall(mockDb: Record<string, unknown>) {
+  getMockWithDb().mockImplementation((callback: (db: unknown) => unknown) =>
+    callback(mockDb)
+  );
 }

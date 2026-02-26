@@ -1,5 +1,6 @@
 import type { Workstream } from "@repo/api/src/types/workstream";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -10,7 +11,7 @@ import {
 import { workstreamsService } from "../service";
 import { updateWorkstreamValidator } from "../validators";
 
-export const GET = withAuth<Workstream, "/workstreams/[id]">(
+export const GET = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
@@ -31,7 +32,7 @@ export const GET = withAuth<Workstream, "/workstreams/[id]">(
   }
 );
 
-export const PUT = withAuth<Workstream, "/workstreams/[id]">(
+export const PUT = withAnyAuth<Workstream, "/workstreams/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -63,10 +64,11 @@ export const PUT = withAuth<Workstream, "/workstreams/[id]">(
     } catch (error) {
       return errorResponse("Failed to update workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
-export const DELETE = withAuth<{ deleted: true }, "/workstreams/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/workstreams/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
@@ -77,5 +79,6 @@ export const DELETE = withAuth<{ deleted: true }, "/workstreams/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete workstream", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

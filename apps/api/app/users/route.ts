@@ -1,9 +1,13 @@
-import type { User } from "@repo/api/src/types/organization";
-import { withAuth } from "@/lib/auth/with-auth";
+import type { User } from "@repo/api/src/types/user";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { usersService } from "./service";
 
-export const GET = withAuth<User[]>(async ({ user }) => {
+/**
+ * GET /users - List all users in the organization
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
+ */
+export const GET = withAnyAuth<User[]>(async ({ user }) => {
   try {
     const users = await usersService.findByOrganization(user.organizationId);
     return successResponse(users);

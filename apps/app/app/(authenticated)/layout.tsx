@@ -4,6 +4,7 @@ import { secure } from "@repo/security";
 import type { ReactNode } from "react";
 import { env } from "@/env";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
+import { DragHandlerWrapper } from "./components/drag-handler-wrapper";
 import { NotificationsProvider } from "./components/notifications-provider";
 import { GlobalSidebar } from "./components/sidebar";
 
@@ -26,15 +27,17 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
 
   return (
     <CollaborationProviderWrapper>
-      <NotificationsProvider userId={user.id}>
-        <SidebarProvider>
-          <GlobalSidebar>
-            <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
-              {children}
-            </div>
-          </GlobalSidebar>
-        </SidebarProvider>
-      </NotificationsProvider>
+      <DragHandlerWrapper>
+        <NotificationsProvider userId={user.id}>
+          <SidebarProvider>
+            <GlobalSidebar>
+              <div className="flex h-full max-h-full flex-col overflow-hidden">
+                {children}
+              </div>
+            </GlobalSidebar>
+          </SidebarProvider>
+        </NotificationsProvider>
+      </DragHandlerWrapper>
     </CollaborationProviderWrapper>
   );
 };

@@ -1,5 +1,6 @@
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
-import { withAuth } from "@/lib/auth/with-auth";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+
 import {
   deleteResponse,
   errorResponse,
@@ -13,7 +14,7 @@ import { updateProjectValidator } from "../validators";
 /**
  * GET /projects/:id - Get a single project by ID
  */
-export const GET = withAuth<ProjectWithDetails, "/projects/[id]">(
+export const GET = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -33,7 +34,7 @@ export const GET = withAuth<ProjectWithDetails, "/projects/[id]">(
 /**
  * PUT /projects/:id - Update a project
  */
-export const PUT = withAuth<ProjectWithDetails, "/projects/[id]">(
+export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
   async ({ user }, request, params) => {
     try {
       const { id } = await params;
@@ -74,13 +75,14 @@ export const PUT = withAuth<ProjectWithDetails, "/projects/[id]">(
     } catch (error) {
       return errorResponse("Failed to update project", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );
 
 /**
  * DELETE /projects/:id - Delete a project
  */
-export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
+export const DELETE = withAnyAuth<{ deleted: true }, "/projects/[id]">(
   async ({ user }, _, params) => {
     try {
       const { id } = await params;
@@ -90,5 +92,6 @@ export const DELETE = withAuth<{ deleted: true }, "/projects/[id]">(
     } catch (error) {
       return errorResponse("Failed to delete project", error);
     }
-  }
+  },
+  { requiredScopes: ["delete"] }
 );

@@ -86,7 +86,7 @@ async function getInstallationOctokit(
 export type TriggerWorkflowDispatchOptions = {
   targetRepo: string;
   ref?: string;
-  command: "plan" | "execute" | "answer" | "chat";
+  command: "plan" | "execute" | "answer" | "chat" | "prd";
   commandArgs?: string;
   context: string;
   correlationId: string;
@@ -658,4 +658,25 @@ export async function queryStatusCheckRollup(
     });
     return null;
   }
+}
+
+/**
+ * Generate an installation access token for a given GitHub App installation.
+ * Used by the loop orchestrator to pass a short-lived token to containers.
+ */
+export async function getInstallationAccessToken(
+  installationId: number
+): Promise<string> {
+  const config = getConfig();
+  const auth = createAppAuth({
+    appId: config.GITHUB_APP_ID,
+    privateKey: config.GITHUB_APP_PRIVATE_KEY,
+  });
+
+  const installationAuth = await auth({
+    type: "installation",
+    installationId,
+  });
+
+  return installationAuth.token;
 }

@@ -2,7 +2,7 @@
  * Migration script to add tenantId to existing Liveblocks rooms.
  *
  * This script:
- * 1. Fetches all artifacts with documentSlugs from the database
+ * 1. Fetches all artifacts from the database
  * 2. For each artifact, updates the corresponding Liveblocks room with tenantId
  * 3. Uses getOrCreateRoom to be idempotent (safe to re-run)
  *
@@ -53,33 +53,28 @@ async function migrateLiveblocksRooms() {
     await prisma.$connect();
     console.log("✅ Connected to database\n");
 
-    // Fetch all artifacts with documentSlugs (PRDs, plans, issues)
+    // Fetch all artifacts (all artifacts have slugs in the new schema)
     const artifacts = await prisma.artifact.findMany({
-      where: {
-        documentSlug: { not: null },
-        isLatest: true, // Only process latest versions
-      },
       select: {
         id: true,
         organizationId: true,
-        documentSlug: true,
-        subtype: true,
+        slug: true,
         type: true,
       },
     });
 
-    console.log(`Found ${artifacts.length} artifacts with document slugs\n`);
+    console.log(`Found ${artifacts.length} artifacts\n`);
 
     let successCount = 0;
     let errorCount = 0;
     const errors: Array<{ artifactId: string; error: string }> = [];
 
     for (const artifact of artifacts) {
-      if (!artifact.documentSlug) {
+      if (!artifact.slug) {
         continue;
       }
 
-      const roomId = `${artifact.organizationId}:artifact:${artifact.documentSlug}`;
+      const roomId = `${artifact.organizationId}:artifact:${artifact.slug}`;
 
       try {
         // Use getOrCreateRoom to update or create the room with tenantId
@@ -88,8 +83,8 @@ async function migrateLiveblocksRooms() {
           tenantId: artifact.organizationId,
           metadata: {
             artifactId: artifact.id,
-            artifactSubtype: artifact.subtype,
-            documentSlug: artifact.documentSlug,
+            artifactType: artifact.type,
+            slug: artifact.slug,
           },
         });
 

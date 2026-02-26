@@ -57,6 +57,40 @@ export async function parseBody<T extends z.ZodType>(
 }
 
 /**
+ * Parse and validate query parameters against a zod schema.
+ * Returns an object with either body (on success) or errorResponse (on failure).
+ *
+ * @example
+ * const { body, errorResponse } = parseQueryParams(request, myValidator);
+ * if (errorResponse) return errorResponse;
+ * // body is now typed as z.infer<typeof myValidator>
+ *
+ * @param request - NextRequest with searchParams
+ * @param validator - Zod schema to validate against
+ * @returns ParseBodyResult with typed body or error response
+ */
+export function parseQueryParams<T extends z.ZodType>(
+  request: { nextUrl: { searchParams: URLSearchParams } },
+  validator: T
+): ParseBodyResult<z.infer<T>> {
+  const queryParams = Object.fromEntries(
+    request.nextUrl.searchParams.entries()
+  );
+  const parseResult = validator.safeParse(queryParams);
+
+  if (!parseResult.success) {
+    return {
+      body: null,
+      errorResponse: badRequestResponse(
+        `Invalid query parameters: ${parseResult.error.message}`
+      ),
+    };
+  }
+
+  return { body: parseResult.data, errorResponse: null };
+}
+
+/**
  * Create a standardized error response with sanitized logging.
  */
 export function errorResponse(
@@ -113,4 +147,14 @@ export function forbiddenResponse(): NextResponse<ApiResult<never>> {
  */
 export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {
   return NextResponse.json(success({ deleted: true }));
+}
+
+/**
+ * Create a conflict response (HTTP 409).
+ * Use when a request conflicts with the current state of a resource.
+ */
+export function conflictResponse(
+  message: string
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure(message), { status: 409 });
 }

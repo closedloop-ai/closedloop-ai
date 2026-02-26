@@ -1,4 +1,4 @@
-import type { CheckRunEvent } from "@octokit/webhooks-types";
+import type { CheckRunEvent, PushEvent } from "@octokit/webhooks-types";
 import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
@@ -10,13 +10,18 @@ import {
   type HandledPullRequestEvent,
   handlePullRequest,
 } from "./handlers/pull-request-handler";
+import {
+  type HandledPullRequestReviewCommentEvent,
+  handlePullRequestReviewComment,
+} from "./handlers/pull-request-review-comment-handler";
+import {
+  type HandledPullRequestReviewEvent,
+  handlePullRequestReview,
+} from "./handlers/pull-request-review-handler";
+import { handlePush } from "./handlers/push-handler";
 import { handleWorkflowRun } from "./handlers/workflow-run-handler";
 import type { WorkflowRunEvent } from "./types";
-import {
-  isGitHubConfigured,
-  isS3Configured,
-  validateRequest,
-} from "./webhook-service";
+import { isGitHubConfigured, validateRequest } from "./webhook-service";
 
 export async function POST(request: Request): Promise<Response> {
   log.info("[webhook/github] Received webhook request");
@@ -25,8 +30,6 @@ export async function POST(request: Request): Promise<Response> {
     log.warn("[webhook/github] GitHub not configured, rejecting request");
     return NextResponse.json({ message: "GitHub not configured", ok: false });
   }
-
-  const s3Configured = isS3Configured();
 
   try {
     const { body, signature, eventType } = await validateRequest(request);
@@ -52,10 +55,7 @@ export async function POST(request: Request): Promise<Response> {
 
     switch (eventType) {
       case "workflow_run":
-        return await handleWorkflowRun(
-          parsedBody as WorkflowRunEvent,
-          s3Configured
-        );
+        return await handleWorkflowRun(parsedBody as WorkflowRunEvent);
 
       case "installation":
         return await handleInstallation(parsedBody as { action: string });
@@ -72,6 +72,19 @@ export async function POST(request: Request): Promise<Response> {
         // GitHub App settings (T-7.1) filter delivery to completed events;
         // handler-level action guard provides defense-in-depth
         return await handleCheckRun(parsedBody as CheckRunEvent);
+
+      case "pull_request_review":
+        return await handlePullRequestReview(
+          parsedBody as HandledPullRequestReviewEvent
+        );
+
+      case "pull_request_review_comment":
+        return await handlePullRequestReviewComment(
+          parsedBody as HandledPullRequestReviewCommentEvent
+        );
+
+      case "push":
+        return await handlePush(parsedBody as PushEvent);
 
       default: {
         log.info("[webhook/github] Ignoring unsupported event type", {

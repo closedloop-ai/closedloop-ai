@@ -1,12 +1,12 @@
 "use client";
 
 import type { ActivityResponse } from "@repo/api/src/types/activity";
+import type { Priority } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
-  ProjectPriority,
   ProjectWithDetails,
   UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import {
   type UseQueryOptions,
   useMutation,
@@ -164,17 +164,17 @@ export function useDeleteProject() {
   });
 }
 
-export function useUpdateProjectOwner() {
+export function useUpdateProjectAssignee() {
   const updateProject = useUpdateProject();
 
   return useMutation({
     mutationFn: ({
       projectId,
-      ownerId,
+      assigneeId,
     }: {
       projectId: string;
-      ownerId: string | null;
-    }) => updateProject.mutateAsync({ id: projectId, ownerId }),
+      assigneeId: string | null;
+    }) => updateProject.mutateAsync({ id: projectId, assigneeId }),
   });
 }
 
@@ -201,8 +201,67 @@ export function useUpdateProjectPriority() {
       priority,
     }: {
       projectId: string;
-      priority: ProjectPriority;
+      priority: Priority;
     }) => updateProject.mutateAsync({ id: projectId, priority }),
+  });
+}
+
+export function useReorderProjects() {
+  const queryClient = useQueryClient();
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (projectIds: string[]) =>
+      apiClient.post<string[]>("/projects/reorder", { projectIds }),
+    onMutate: async (projectIds) => {
+      await queryClient.cancelQueries({ queryKey: projectKeys.lists() });
+
+      const previousLists = queryClient.getQueriesData({
+        queryKey: projectKeys.lists(),
+      });
+
+      queryClient.setQueriesData(
+        { queryKey: projectKeys.lists() },
+        (old: ProjectWithDetails[] | undefined) => {
+          if (!old) {
+            return old;
+          }
+
+          const positionMap = new Map(
+            projectIds.map((id, index) => [id, index])
+          );
+
+          return [...old].sort((a, b) => {
+            const posA = positionMap.get(a.id);
+            const posB = positionMap.get(b.id);
+
+            if (posA === undefined && posB === undefined) {
+              return 0;
+            }
+            if (posA === undefined) {
+              return 1;
+            }
+            if (posB === undefined) {
+              return -1;
+            }
+
+            return posA - posB;
+          });
+        }
+      );
+
+      return { previousLists };
+    },
+    onError: (_err, _variables, context) => {
+      if (context?.previousLists) {
+        for (const [queryKey, data] of context.previousLists) {
+          queryClient.setQueryData(queryKey, data);
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+    },
   });
 }
 

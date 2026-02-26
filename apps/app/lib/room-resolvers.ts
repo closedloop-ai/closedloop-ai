@@ -48,19 +48,18 @@ export function createResolveRoomsInfo(organizationId: string) {
       if (resolved) {
         return {
           name: resolved.name,
-          url: resolved.url,
+          url: resolved.url ?? undefined,
         } satisfies RoomInfo;
       }
 
       try {
-        const { organizationId: roomOrgId, documentSlug } =
-          parseArtifactRoomId(roomId);
+        const { organizationId: roomOrgId, slug } = parseArtifactRoomId(roomId);
         if (roomOrgId !== organizationId) {
           return undefined;
         }
         return {
-          name: documentSlug,
-          url: `/artifacts/${documentSlug}`,
+          name: slug,
+          url: `/artifacts/${slug}`,
         } satisfies RoomInfo;
       } catch {
         return undefined;
@@ -69,6 +68,8 @@ export function createResolveRoomsInfo(organizationId: string) {
   };
 }
 
-type ResolvedRoom = RoomInfo & {
+type ResolvedRoom = {
   roomId: string;
+  name: string;
+  url: string | null;
 };

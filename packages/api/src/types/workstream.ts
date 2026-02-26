@@ -1,5 +1,6 @@
-// Workstream types for API contract
-// These are explicitly defined to keep packages/api independent of database
+import type { Priority } from "./common";
+import type { Project } from "./project";
+import type { BasicUser } from "./user";
 
 export const WORKSTREAM_TYPE_OPTIONS = [
   "FEATURE_DELIVERY",
@@ -44,6 +45,8 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "GITHUB_PR_CREATED",
   "GITHUB_PR_MERGED",
   "GITHUB_PR_CLOSED",
+  "GITHUB_PR_REVIEW_SUBMITTED",
+  "GITHUB_PR_COMMENT_ADDED",
   "GITHUB_ACTION_TRIGGERED",
   "GITHUB_ACTION_COMPLETED",
   "GITHUB_CI_STATUS_CHANGED",
@@ -52,6 +55,7 @@ export const WORKSTREAM_EVENT_TYPE_OPTIONS = [
   "ASSIGNEE_CHANGED",
   "BLOCKED",
   "UNBLOCKED",
+  "LOOP_COMPLETED",
 ] as const;
 export type WorkstreamEventType =
   (typeof WORKSTREAM_EVENT_TYPE_OPTIONS)[number];
@@ -65,7 +69,10 @@ export type Workstream = {
   state: WorkstreamState;
   stateChangedAt: Date;
   createdById: string;
-  assignedToId: string | null;
+  createdBy: BasicUser | null;
+  assigneeId: string | null;
+  priority: Priority;
+  slug: string | null;
   hasUIChanges: boolean;
   startedAt: Date;
   completedAt: Date | null;
@@ -75,9 +82,7 @@ export type Workstream = {
 };
 
 export type WorkstreamWithProject = Workstream & {
-  project: {
-    name: string;
-  };
+  project: Pick<Project, "name">;
 };
 
 export type CreateWorkstreamInput = {
@@ -85,7 +90,9 @@ export type CreateWorkstreamInput = {
   title: string;
   description?: string;
   type?: WorkstreamType;
-  assignedToId?: string | null;
+  assigneeId?: string | null;
+  priority?: Priority;
+  slug?: string | null;
   hasUIChanges?: boolean;
 };
 
@@ -95,7 +102,9 @@ export type UpdateWorkstreamInput = {
   description?: string;
   type?: WorkstreamType;
   state?: WorkstreamState;
-  assignedToId?: string | null;
+  assigneeId?: string | null;
+  priority?: Priority;
+  slug?: string | null;
   hasUIChanges?: boolean;
 };
 

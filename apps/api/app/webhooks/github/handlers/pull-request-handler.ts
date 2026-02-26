@@ -10,6 +10,19 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
 /**
+ * Actions this handler processes. All other actions are ignored with an early return.
+ * GitHub sends many PR action types (edited, labeled, assigned, etc.)
+ * that we don't process.
+ */
+const HANDLED_ACTIONS = new Set([
+  "closed",
+  "reopened",
+  "synchronize",
+  "converted_to_draft",
+  "ready_for_review",
+]);
+
+/**
  * Union type for pull request events we handle.
  * Other PR action types (edited, labeled, assigned, review_requested, etc.)
  * are documented in the handlePullRequest function for future reference.
@@ -52,16 +65,7 @@ export async function handlePullRequest(
 ): Promise<Response> {
   const { action, pull_request, repository } = event;
 
-  // Early exit for unhandled actions to avoid unnecessary DB lookups.
-  // GitHub sends many PR action types (edited, labeled, assigned, etc.)
-  // that we don't process.
-  const HANDLED_ACTIONS = new Set([
-    "closed",
-    "reopened",
-    "synchronize",
-    "converted_to_draft",
-    "ready_for_review",
-  ]);
+  // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
     log.info("[handlePullRequest] Skipping unhandled action", {
       action,
@@ -86,9 +90,9 @@ export async function handlePullRequest(
 
   // All reads and writes in a single transaction to avoid TOCTOU gaps
   await withDb.tx(async (tx) => {
-    // Step 1: Find Repository by githubId
-    const repo = await tx.repository.findUnique({
-      where: { githubId: repository.id },
+    // Step 1: Find GitHubInstallationRepository by githubRepoId
+    const repo = await tx.gitHubInstallationRepository.findFirst({
+      where: { githubRepoId: repository.id },
       select: { id: true },
     });
 
@@ -115,7 +119,7 @@ export async function handlePullRequest(
         workstreamId: true,
         artifactId: true,
         checksStatus: true,
-        artifact: { select: { documentSlug: true } },
+        artifact: { select: { slug: true } },
       },
     });
 
@@ -132,7 +136,7 @@ export async function handlePullRequest(
     // Step 3: Update PR record and create workstream event
     switch (action) {
       case "closed": {
-        const closedEvent = event as PullRequestClosedEvent;
+        const closedEvent = event;
         const isMerged = closedEvent.pull_request.merged;
         const newState = isMerged ? "MERGED" : "CLOSED";
 
@@ -159,7 +163,7 @@ export async function handlePullRequest(
               prTitle: pull_request.title,
               prUrl: pull_request.html_url,
               artifactId: existingPr.artifactId,
-              documentSlug: existingPr.artifact?.documentSlug,
+              slug: existingPr.artifact?.slug,
               ...(isMerged
                 ? {
                     mergedAt: pull_request.merged_at,
@@ -194,7 +198,7 @@ export async function handlePullRequest(
       }
 
       case "synchronize": {
-        const syncEvent = event as PullRequestSynchronizeEvent;
+        const syncEvent = event;
         await tx.gitHubPullRequest.update({
           where: { id: existingPr.id },
           data: {
@@ -214,7 +218,7 @@ export async function handlePullRequest(
               prTitle: pull_request.title,
               prUrl: pull_request.html_url,
               artifactId: existingPr.artifactId,
-              documentSlug: existingPr.artifact?.documentSlug,
+              slug: existingPr.artifact?.slug,
               checksStatus: ChecksStatus.PENDING,
               previousChecksStatus: existingPr.checksStatus,
               headSha: pull_request.head.sha,
@@ -259,11 +263,9 @@ export async function handlePullRequest(
         break;
       }
 
-      default: {
-        log.warn("[handlePullRequest] Unhandled action type", {
-          action: action as string,
-        });
-      }
+      default:
+        // Unreachable: HANDLED_ACTIONS guard above filters unhandled actions
+        break;
     }
   });
 

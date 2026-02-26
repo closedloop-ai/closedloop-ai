@@ -16,14 +16,16 @@ type UseArtifactMetadataConfig = {
 };
 
 /**
- * Convert a ProjectOwner (from the API) to the User shape expected by UserSelectPopover.
- * Returns null if no owner is provided.
+ * Convert an assignee (from the API) to the User shape expected by UserSelectPopover.
+ * Returns null if no assignee is provided.
  */
-function ownerToUser(owner: ArtifactWithWorkstream["owner"]): User | null {
-  if (!owner) {
+function assigneeToUser(
+  assignee: ArtifactWithWorkstream["assignee"]
+): User | null {
+  if (!assignee) {
     return null;
   }
-  return transformApiUserToSelectUser(owner);
+  return transformApiUserToSelectUser(assignee);
 }
 
 /**
@@ -73,8 +75,8 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   const [targetBranch, setTargetBranch] = useState(
     artifact.targetBranch ?? "main"
   );
-  const [owner, setOwner] = useState<User | null>(() =>
-    ownerToUser(artifact.owner)
+  const [assignee, setAssignee] = useState<User | null>(() =>
+    assigneeToUser(artifact.assignee)
   );
 
   // Derived state from artifact
@@ -98,12 +100,12 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     setStatus(artifact.status);
     setTargetRepo(artifact.targetRepo ?? "");
     setTargetBranch(artifact.targetBranch ?? "main");
-    setOwner(ownerToUser(artifact.owner));
+    setAssignee(assigneeToUser(artifact.assignee));
   }, [
     artifact.status,
     artifact.targetRepo,
     artifact.targetBranch,
-    artifact.owner,
+    artifact.assignee,
   ]);
 
   /**
@@ -118,7 +120,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
         approverId: string | null;
         targetRepo: string | null;
         targetBranch: string | null;
-        ownerId: string | null;
+        assigneeId: string | null;
       }>
     ) => {
       updateArtifact.mutate(
@@ -159,26 +161,38 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   /**
    * Handle target repository blur event.
    * Saves to server only if value has changed.
+   * Accepts optional override value to avoid stale closure when called
+   * immediately after a state setter in the same event handler.
    */
-  const handleTargetRepoBlur = useCallback(() => {
-    if (targetRepo !== (artifact.targetRepo ?? "")) {
-      handleMetadataUpdate({
-        targetRepo: targetRepo.trim() === "" ? null : targetRepo,
-      });
-    }
-  }, [targetRepo, artifact.targetRepo, handleMetadataUpdate]);
+  const handleTargetRepoBlur = useCallback(
+    (overrideValue?: string) => {
+      const value = overrideValue ?? targetRepo;
+      if (value !== (artifact.targetRepo ?? "")) {
+        handleMetadataUpdate({
+          targetRepo: value.trim() === "" ? null : value,
+        });
+      }
+    },
+    [targetRepo, artifact.targetRepo, handleMetadataUpdate]
+  );
 
   /**
    * Handle target branch blur event.
    * Saves to server only if value has changed.
+   * Accepts optional override value to avoid stale closure when called
+   * immediately after a state setter in the same event handler.
    */
-  const handleTargetBranchBlur = useCallback(() => {
-    if (targetBranch !== (artifact.targetBranch ?? "main")) {
-      handleMetadataUpdate({
-        targetBranch: targetBranch.trim() === "" ? null : targetBranch,
-      });
-    }
-  }, [targetBranch, artifact.targetBranch, handleMetadataUpdate]);
+  const handleTargetBranchBlur = useCallback(
+    (overrideValue?: string) => {
+      const value = overrideValue ?? targetBranch;
+      if (value !== (artifact.targetBranch ?? "main")) {
+        handleMetadataUpdate({
+          targetBranch: value.trim() === "" ? null : value,
+        });
+      }
+    },
+    [targetBranch, artifact.targetBranch, handleMetadataUpdate]
+  );
 
   /**
    * Handle parent artifact change.
@@ -192,13 +206,13 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
   );
 
   /**
-   * Handle owner change.
+   * Handle assignee change.
    * Updates local state and immediately saves to server.
    */
-  const handleOwnerChange = useCallback(
+  const handleAssigneeChange = useCallback(
     (user: User | null) => {
-      setOwner(user);
-      handleMetadataUpdate({ ownerId: user?.id ?? null });
+      setAssignee(user);
+      handleMetadataUpdate({ assigneeId: user?.id ?? null });
     },
     [handleMetadataUpdate]
   );
@@ -209,7 +223,7 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     approver,
     targetRepo,
     targetBranch,
-    owner,
+    assignee,
     teamMembers,
 
     // Status handlers
@@ -229,8 +243,8 @@ export function useArtifactMetadata(config: UseArtifactMetadataConfig) {
     // Parent handlers
     handleParentChange,
 
-    // Owner handlers
-    handleOwnerChange,
+    // Assignee handlers
+    handleAssigneeChange,
 
     // Loading state
     isUpdating,

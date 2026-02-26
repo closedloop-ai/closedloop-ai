@@ -1,6 +1,6 @@
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { z } from "zod";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
   errorResponse,
@@ -12,11 +12,12 @@ import { createProjectValidator } from "./validators";
 
 /**
  * GET /projects - List all projects
+ * Accepts API key authentication (sk_live_) or Clerk session authentication.
  * Query params:
  *   - teamId: Filter by team
  *   - limit: Maximum number of projects to return (1-100, only applies when teamId is provided)
  */
-export const GET = withAuth<ProjectWithDetails[], "/projects">(
+export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
     try {
       const url = new URL(request.url);
@@ -59,7 +60,7 @@ export const GET = withAuth<ProjectWithDetails[], "/projects">(
 /**
  * POST /projects - Create a new project
  */
-export const POST = withAuth<ProjectWithDetails, "/projects">(
+export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
   async ({ user }, request) => {
     try {
       const { body, errorResponse: parseError } = await parseBody(
@@ -70,7 +71,11 @@ export const POST = withAuth<ProjectWithDetails, "/projects">(
         return parseError;
       }
 
-      const project = await projectsService.create(user.organizationId, body);
+      const project = await projectsService.create(
+        user.organizationId,
+        user.id,
+        body
+      );
 
       // Fetch the full project with details
       const projectWithDetails = await projectsService.findById(
@@ -91,5 +96,6 @@ export const POST = withAuth<ProjectWithDetails, "/projects">(
     } catch (error) {
       return errorResponse("Failed to create project", error);
     }
-  }
+  },
+  { requiredScopes: ["write"] }
 );

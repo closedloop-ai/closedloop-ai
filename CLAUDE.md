@@ -1,212 +1,113 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
-This is a Next.js monorepo built with next-forge (Turborepo template). It's a SaaS application with multiple deployable apps and shared packages.
+Next.js monorepo (next-forge/Turborepo). SaaS with multiple apps and shared packages.
 
 ## Common Commands
 
 ```bash
-# Development
-pnpm dev                                    # Start all apps (uses turbo)
-pnpm turbo dev --filter=app --filter=web    # Start specific apps only
-
-# Building
-pnpm build                                  # Build all packages/apps
-pnpm turbo build --filter=@repo/database    # Build specific package
-
-# Type checking
-pnpm typecheck                              # TypeScript type check
-
-# Linting & Formatting (uses Biome via ultracite)
-pnpm lint                                   # Check linting/formatting
-pnpm lint:fix                               # Auto-fix issues
-
-# Testing
+pnpm dev                                    # Start all apps
+pnpm turbo dev --filter=app --filter=web    # Start specific apps
+pnpm build                                  # Build all
+pnpm typecheck                              # TypeScript check
+pnpm lint                                   # Biome lint/format check
+pnpm lint:fix                               # Auto-fix
 pnpm test                                   # Run all tests
 pnpm turbo test --filter=app                # Test specific app
-
-# Database (Prisma)
-pnpm migrate                                # Format, generate, and db push (dev only, NOT migrations)
-cd packages/database && pnpm prisma generate # Regenerate client after schema changes
-cd packages/database && pnpm prisma studio   # Open Prisma Studio
-cd packages/database && pnpm prisma db push  # Push schema changes (dev only, no migration)
-
-# Database Migrations (for production-safe schema changes)
-cd packages/database && pnpm prisma migrate dev --name <migration_name>  # Create migration
-cd packages/database && pnpm prisma migrate deploy                       # Apply migrations (CI/prod)
-cd packages/database && pnpm prisma migrate status                       # Check migration status
 ```
 
-**Important:** After any change to `packages/database/prisma/schema.prisma` (new fields, enums, relations):
-1. **Create a migration**: `cd packages/database && pnpm prisma migrate dev --name <descriptive_name>`
-2. This automatically runs `prisma generate` to regenerate the TypeScript client in `packages/database/generated/`
-3. Commit both the schema change AND the generated migration files in `prisma/migrations/`
-
-Without migrations, production will not receive your schema changes. Without regenerating, types will be stale and cause type errors in consuming packages (`apps/api`, `packages/api`, etc.).
+For database commands, see `packages/database/CLAUDE.md`.
 
 ## Architecture
 
-### Apps (in `/apps`)
-- **app** (port 3000) - Main authenticated application
-- **web** (port 3001) - Marketing/public website
-- **api** (port 3002) - API server with Stripe webhook handling
-- **docs** (port 3004) - Documentation (Mintlify)
-- **email** (port 3003) - Email template preview (React Email)
-- **storybook** (port 6006) - Component library
-- **studio** (port 3005) - Prisma Studio
+### Apps (`/apps`)
+- **app** (:3000) — Main authenticated app
+- **web** (:3001) — Marketing site
+- **api** (:3002) — API server + Stripe webhooks
+- **docs** (:3004) — Mintlify docs
+- **email** (:3003) — Email preview (React Email)
+- **storybook** (:6006) — Component library
+- **studio** (:3005) — Prisma Studio
 
-### Packages (in `/packages`)
-Shared packages are imported as `@repo/<package-name>`:
-- **api** - Shared API types between frontend and backend
-- **database** - Prisma client with Neon (production) / pg (local) adapters
-- **auth** - Clerk authentication
-- **design-system** - Shadcn/ui components with Tailwind
-- **analytics** - PostHog + Google Analytics
-- **payments** - Stripe integration
-- **email** - Resend email templates
-- **observability** - Error tracking, logging
-- **security** - Arcjet rate limiting
+### Packages (`/packages`, imported as `@repo/<name>`)
+api (shared types) · database (Prisma, Neon/pg) · auth (Clerk) · design-system (Shadcn/Tailwind) · analytics (PostHog/GA) · payments (Stripe) · email (Resend) · observability (logging) · security (Arcjet)
 
 ### Environment Variables
-Each app has its own `.env.local`. Key patterns:
-- Empty string `""` fails validation even for optional fields - comment out unused vars
-- Keys are validated with prefixes (e.g., `sk_` for Clerk, `phc_` for PostHog)
-- Validation schemas are in each package's `keys.ts`
+Each app has `.env.local`. Empty `""` fails validation for optional fields — comment out unused. Keys validated with prefixes (`sk_`, `phc_`). Schemas in `packages/*/keys.ts`.
 
 ### Database
-- Schema: `packages/database/prisma/schema.prisma`
-- Config: `packages/database/prisma.config.ts`
-- Client generated to: `packages/database/generated/`
-- Migrations: `packages/database/prisma/migrations/`
-- Local dev uses `pg` adapter; production uses Neon adapter (auto-detected via URL)
-
-**Schema changes require migrations:**
-- **Development**: Use `prisma migrate dev --name <descriptive_name>` to create a migration file
-- **Production**: Migrations are applied via `prisma migrate deploy` in CI/CD
-- **Never use `prisma db push` for changes that will go to production** — it doesn't create migration files and can cause drift between environments
-- Migration names should be descriptive: `add_user_preferences_table`, `add_index_on_artifact_status`, `rename_foo_to_bar`
+Schema: `packages/database/prisma/schema.prisma`. Client: `packages/database/generated/`. See `packages/database/CLAUDE.md`.
 
 ### Data Access Pattern (IMPORTANT)
+**Do NOT import `@repo/database` in `apps/app`.** All DB access: frontend hooks → `apps/api` routes → services → database.
 
-**Do NOT import `@repo/database` in `apps/app` (frontend).**
-
-All database access must go through the BFF API (`apps/api`):
-
-1. **Frontend hooks** (`apps/app/hooks/queries/`) - TanStack Query hooks for data fetching. Use `useApiClient()` hook.
-2. **API routes** (`apps/api/app/*/route.ts`) - HTTP layer only: authentication, request parsing, response formatting. Delegate business logic to services.
-3. **Services** (`apps/api/app/*/service.ts`) - Business logic and database operations. Import `@repo/database` here, NOT in routes.
-4. **Shared types** (`packages/api/src/types/`) - Define request/response types used by both apps
-
-```
-apps/app (frontend)
-    │
-    ├── hooks/queries/use-*.ts (TanStack Query)
-    │       ↓ useApiClient()
-    │
-    └──→ apps/api routes  →  services  →  @repo/database
-              ↑
-              └── @repo/api types
-```
-
-**Layer responsibilities:**
-- **Frontend hooks**: `useQuery`/`useMutation`, cache invalidation, loading/error states
-- **Route**: `withAuth()`, parse params/body, call service, return `NextResponse.json()`
-- **Service**: Validation, business logic, database queries, external API calls
-
-This separation ensures the frontend never has direct database access and keeps routes thin.
+### Background Work in API Routes (CRITICAL)
+**Never fire-and-forget promises in Vercel serverless.** Always wrap background work with `waitUntil()` from `@vercel/functions`. A `.catch()` without `waitUntil()` is a bug.
 
 ### Type Definitions (IMPORTANT)
+**Never duplicate types.** One canonical location, imported everywhere:
+- **Shared API types** (both frontend+backend) → `packages/api/src/types/`
+- **Database types** → `packages/database/generated/` (Prisma)
+- **Backend-only** → co-located in `apps/api/`
+- **Frontend-only** → co-located in `apps/app/`
 
-**Never duplicate type definitions.** If a type is used in more than one file, it must live in one canonical location and be imported everywhere else.
+`packages/api/src/types/` only for types used by BOTH apps. Never define same type in multiple files.
 
-**Where types belong:**
-
-| Type category | Location | Example |
-|---|---|---|
-| **Shared API types** (used by both frontend and backend) | `packages/api/src/types/` | Entity types, request/response types, enums shared across layers |
-| **Database types** | Generated from Prisma schema in `packages/database/generated/` | Prisma model types, enums |
-| **Backend-only types** | Co-located in `apps/api/` (e.g., `lib/`, route `validators.ts`) | Route params, Zod schemas, service internals |
-| **Frontend-only types** | Co-located in `apps/app/` (e.g., `types/`, component files) | Component props, UI state, display-only models |
-
-**Rules:**
-1. `packages/api/src/types/` is **only** for types consumed by both `apps/api` and `apps/app`. Don't put backend-only or frontend-only types here.
-2. Backend-only types (route params, validation schemas, service internals) stay in `apps/api/`.
-3. Frontend-only types (component props, UI state) stay in `apps/app/`.
-4. If a type is used in multiple files within the same app, extract it to a shared location within that app — don't inline it in every file that needs it.
-5. Never define the same type in multiple files.
-
-```typescript
-// ✅ GOOD - shared API type imported from canonical location
-import type { GenerationStatus, PullRequestInfo } from "@repo/api/src/types/artifact";
-
-// ✅ GOOD - backend-only type stays in the API app
-// apps/api/lib/route-utils.ts
-export type IdRouteParams<T extends string = "id"> = { params: Promise<Record<T, string>> };
-
-// ✅ GOOD - frontend-only type stays in the app
-// apps/app/types/teams.ts
-export type ArtifactDisplayStatus = "active" | "archived";
-
-// ❌ BAD - duplicating a shared type locally instead of importing
-type GenerationStatus = { status: "NONE" | "PENDING" | ... };
-
-// ❌ BAD - putting a backend-only type in packages/api/src/types/
-// (Zod validators and route params don't belong in the shared package)
-```
+### Engineer Feature (SECURITY CRITICAL)
+Located in `apps/app/app/api/engineer/` — spawns local CLI processes (Claude, git, codex). **Localhost-only**: proxy guard (`apps/app/proxy.ts`) rejects non-localhost with 403. `EngineerGuard` is UX-only. **Do NOT remove the proxy guard** (arbitrary command execution). **Do NOT move to `apps/api`** — requires local filesystem access.
 
 ## Self-Improving CLAUDE.md
-
-When working on a PR and you discover a pattern, convention, or gotcha that isn't documented here, **add it to the relevant CLAUDE.md as part of the same PR.** Examples:
-
-- A code review catches a repeated mistake (e.g., duplicating types, wrong import path) → add a rule so it doesn't happen again
-- You hit a non-obvious framework behavior (e.g., MDXEditor requiring `setMarkdown` ref) → document it
-- A build/lint/test failure reveals a convention not captured here → add it
-- You notice an architectural pattern being followed but not written down → write it down
-
-The goal is that every PR makes future sessions smarter. CLAUDE.md files are living documents — treat them like code.
+Discover undocumented patterns during PRs → add to relevant CLAUDE.md in same PR.
 
 ## PR Response Tone
-
-When responding to PR review comments, never use phrases like "you're right", "good catch", or other sycophantic language. Keep responses brief and factual — state what was changed, not how insightful the reviewer was.
+No sycophantic language. Brief, factual — state what changed.
 
 ## Key Files
-- `turbo.json` - Turborepo task configuration
-- `biome.jsonc` - Linting/formatting config (extends ultracite)
-- `packages/*/keys.ts` - Environment variable validation schemas (t3-env)
+`turbo.json` (tasks) · `biome.jsonc` (lint config) · `packages/*/keys.ts` (env validation)
+
+## Code Style
+- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums.
+- `RegExp.exec(str)` not `str.match(regex)` (S6594)
+- `String#replaceAll()` not `.replace()` with global regex (S7781)
+- `globalThis` not `window` (S7764); SSR guards: `globalThis.window === undefined` in client-only, keep `typeof` if server-possible
+- `next/image` over `<img>`
+- No JSX comments between `(` and root element — JS comments above assignment
+- Single `Array#push(a, b, c)` not consecutive calls (S7778)
+- `String.raw` for literal backslash sequences (Sonar80)
+- Cognitive Complexity < 15 — extract helpers (S3776)
+- No nested ternaries — if/else or helper (S3358)
+- Positive condition first in if/else (S7735)
+- Double quotes, semicolons, trailing commas (ES5), 100 char width
+- New functions/types/constants at bottom of file
+
+### Biome
+- Run `pnpm lint:fix` after modifying React components (auto-fixes import/CSS/JSX ordering)
+- `@repo/*` imports before `@/*` path alias imports
+- Single file: `npx biome check <file>` (monorepo `pnpm lint --filter` doesn't support single-file)
+- Don't mark methods `async` if only `return withDb(...)` without `await` (useAwait)
+- Multiple named imports: alphabetical (UPPERCASE then camelCase)
+- `useBlockStatements`: braces on ALL `if` bodies; auto-fix: `npx biome check --write --unsafe <file>`
+
+## Git Commits
+Read `.gitmessage` first and follow its format.
 
 ## Background
+Symphony: human-governed, AI-centric software delivery platform. AI produces artifacts; humans review at milestones. Hybrid: source on customer infra, cloud control plane orchestrates. 'Workflow' = user-defined step sequences, NOT generated artifacts.
 
-The following sections provide the business perspective for what this repository is meant to deliver.
-
-### Vision Statement
-To create a human-governed, AI-centric software delivery platform that transforms intent into high-quality software—by automating execution, preserving human judgment, and making decisions, artifacts, and outcomes traceable across the entire delivery lifecycle.
-
-### Abstract
-We are building a new software delivery platform where AI is the execution engine, not the decision maker. The platform translates human intent—captured from product, design, engineering, and QA—into all of the artifacts required to deliver software, including requirements, designs, plans, code, tests, and release evidence. Each step of the process is structured around familiar delivery milestones and gated by explicit human review and approval, ensuring quality, accountability, and trust. Rather than forcing teams into chatbots, CLIs, or IDE-centric workflows, the platform provides a modern, role-appropriate experience for the entire team, while publishing clean outputs to existing systems of record. The result is faster delivery, higher consistency, and a durable system of organizational memory that scales with both teams and products.
-
-Unlike developer-focused AI tools that only assist with coding, Symphony serves every stakeholder: product managers converse with AI to produce comprehensive PRDs, designers generate specifications grounded in the actual codebase, and engineers implement features with full context of upstream decisions. The platform operates on a hybrid architecture where source code never leaves customer infrastructure, while a cloud-based control plane orchestrates workflows, manages approvals, and integrates with tools teams already use—GitHub, Linear, and Slack.
-
-### The Opportunity
-**The problem:** Software delivery remains bottlenecked by artifact creation. Engineers wait on PRDs. PRDs lack technical grounding. Designs don't account for existing code. Reviews happen too late. Every handoff loses context.
-
-**The insight:** AI can now generate high-quality first drafts of every artifact in the software delivery process—but only if it has deep context about the codebase, the product, and the decisions already made. And it should only act with human approval at critical junctures.
-
-**The product:** A platform where AI agents produce artifacts, humans approve and refine them, and the entire workflow is orchestrated toward shipping software faster—with better quality and more alignment across the team.
 ## Learned Patterns
 
 ### Planning & Verification
-- **[mistake]**: When creating plans for new artifact types, check if support already exists in: (1) useArtifactUIState hook type union, (2) isNavigableArtifact function, (3) getArtifactRoute switch cases, (4) ARTIFACT_SECTIONS dual placement. Mark existing support as verification tasks, not new implementation. (context: artifact-types|plan-writer|verification-vs-implementation)
-- **[convention]**: Before implementing new entity types or schema changes, check `plan.json` architectureDecisions array - schema design choices are documented there. (context: plan-adherence|architecture|implementation)
-- **[mistake]**: When planning changes to existing files, check investigation-log.md for already-imported components before writing import tasks. Mark as verification when component already exists. (context: plan-writer|investigation-log|import-verification)
+- **[mistake]**: New artifact types — check existing support in: useArtifactUIState type union, isNavigableArtifact, getArtifactRoute switch, ARTIFACT_SECTIONS. Mark existing as verification, not implementation.
+- **[convention]**: Check `plan.json` architectureDecisions before implementing entity types or schema changes.
+- **[mistake]**: Check investigation-log.md for already-imported components before writing import tasks. Mark as verification when already present.
 
 ### TypeScript & Imports
 - **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
 - **[mistake]**: Adding `export { ... } from './module'` re-exports to an existing index.ts triggers Biome's `noBarrelFile` lint rule. Use direct subpath imports (e.g., `@repo/github/execution-log-parser`) instead of adding re-exports to barrels. (context: biome|noBarrelFile|subpath-imports)
 - **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm workspace resolution + TypeScript handles this directly. (context: monorepo|pnpm|subpath-imports)
 - **[convention]**: ChecksStatus exists in both `@repo/api/src/types/artifact` (camelCase: .Passing, .Failing, .Pending) and `@repo/database` (UPPERCASE: .PASSING, .FAILING, .PENDING). Both produce identical string values. For webhook handlers not already importing `@repo/database` enum types, use the `@repo/api` version. (context: typescript|imports|ChecksStatus|enum-sources)
+- **[convention]**: Never use inline `import()` types. Always top-level imports.
 
 ### Debugging
 - **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
@@ -274,16 +175,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[convention]**: When drafting PR review responses, be concise and just describe the change made. Don't use filler phrases like "Good catch", "Great point", or other flattery. (context: pr-responses|tone|code-review)
 
 ### Symphony CI/CD
-- **[pattern]**: run-loop.sh stores state in `.symphony-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, completion_promise, workdir, prd_file, run_id, start_sha, started_at) - not in state.json. Resume behavior reads this file at line 564. (context: run-loop|state-management|symphony|CI-workflow)
-- **[insight]**: run-loop.sh deletes `.claude/symphony-loop.local.md` on successful completion (lines 663, 726). State file existence cannot be used as success indicator - verify success by checking for output artifacts (plan.json, plan.md, implementation-plan.md) instead. (context: run-loop|state-management|symphony|verification)
-- **[convention]**: run-loop.sh creates state file at `.claude/symphony-loop.local.md` (repo root), NOT inside the run directory (`.claude/runs/YYYYMMDD-HHMMSS/`). Artifact uploads only include `.claude/runs/`, so state file is not part of the artifact bundle. (context: run-loop|state-management|symphony|artifacts)
-- **[convention]**: The closedloop-ai plugins (symphony-core, experimental) are installed from `https://github.com/closedloop-ai/claude_code.git`. Custom/private Claude Code plugins should use their Git repository URL for installation in CI environments. (context: github-actions|claude-cli|plugins|ci-cd)
-
-### React & Components
-- **[insight]**: Before adding new props to existing components, check what's already available. Components often already receive props that contain the data you need - e.g., plan-metadata-panel.tsx receives a `plan` prop that already has `plan.id` and `plan.version`, no need to modify plan-editor.tsx to pass these separately. (context: react-props|component-api|over-engineering|plan-metadata-panel)
-
-### Liveblocks
-- **[mistake]**: RoomProvider requires a LiveblocksProvider ancestor. When LiveblocksProvider is conditionally mounted based on user data loading, and artifact data resolves first, RoomProvider descendants crash. Always mount at least a minimal LiveblocksProvider (auth endpoint only) during loading states. (context: liveblocks|RoomProvider|react-providers|loading-state|race-condition)
-- **[mistake]**: When mounting LiveblocksProvider in loading/bootstrap branches, must include LiveblocksErrorBoundary to contain auth/runtime errors. Without it, Liveblocks errors during bootstrap bubble up and crash the app before the full provider mounts. (context: liveblocks|error-boundary|bootstrap|error-handling|react)
-- **[pattern]**: When nesting LiveblocksErrorBoundary with a manual LiveblocksAvailabilityContext.Provider, place the manual override inside the error boundary. The inner provider wins, ensuring isAvailable=false during loading regardless of auth errors. (context: react-context|error-boundaries|liveblocks|context-nesting)
-- **[mistake]**: When reading Liveblocks room metadata, must use the same key that was stored at room creation. Room creation stores `artifactSubtype` in `room-utils.ts` but room resolution was reading `artifactType` in `room-metadata.ts`, causing fallback to generic URLs. Always verify read keys match write keys. (context: liveblocks|room-metadata|metadata-keys|consistency|read-write-mismatch)
+- **[pattern]**: run-loop.sh state: `.symphony-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
+- **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
+- **[convention]**: State file at `.claude/symphony-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.
+- **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude_code.git`.

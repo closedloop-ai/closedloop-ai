@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { NextRequest } from "next/server";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
@@ -30,6 +30,8 @@ export function createTestAuthContext(
     user: overrides?.user ?? defaultUser,
     clerkUserId: overrides?.clerkUserId ?? "clerk_test_user",
     clerkOrgId: overrides?.clerkOrgId ?? "org_test",
+    authMethod: overrides?.authMethod ?? "session",
+    apiKeyScopes: overrides?.apiKeyScopes,
   };
 }
 

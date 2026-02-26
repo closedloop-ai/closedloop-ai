@@ -11,23 +11,35 @@ import { useApiClient } from "@/hooks/use-api-client";
 export const judgesKeys = {
   all: ["judges"] as const,
   detail: (id: string) => [...judgesKeys.all, "detail", id] as const,
+  codeDetail: (id: string) => [...judgesKeys.all, "code-detail", id] as const,
 };
 
-// Query hook
-export function useJudgesFeedback(
-  artifactId: string
-): UseQueryResult<JudgesReport | null> {
-  const apiClient = useApiClient();
-
-  return useQuery({
-    queryKey: judgesKeys.detail(artifactId),
-    queryFn: async () => {
-      const response = await apiClient.get<JudgesFeedbackResponse>(
-        `/artifacts/${artifactId}/judges`
-      );
-      return response.status === "success" ? response.data : null;
-    },
-    enabled: !!artifactId,
-    staleTime: 10 * 60 * 1000, // 10 minutes
-  });
+function makeJudgesFeedbackHook(
+  endpoint: string,
+  keyFn: (id: string) => readonly unknown[]
+) {
+  return (artifactId: string): UseQueryResult<JudgesReport | null> => {
+    const apiClient = useApiClient();
+    return useQuery({
+      queryKey: keyFn(artifactId),
+      queryFn: async () => {
+        const response = await apiClient.get<JudgesFeedbackResponse>(
+          endpoint.replace(":id", artifactId)
+        );
+        return response.status === "success" ? response.data : null;
+      },
+      enabled: !!artifactId,
+      staleTime: 10 * 60 * 1000, // 10 minutes
+    });
+  };
 }
+
+export const useJudgesFeedback = makeJudgesFeedbackHook(
+  "/artifacts/:id/judges",
+  judgesKeys.detail
+);
+
+export const useCodeJudgesFeedback = makeJudgesFeedbackHook(
+  "/artifacts/:id/code-judges",
+  judgesKeys.codeDetail
+);

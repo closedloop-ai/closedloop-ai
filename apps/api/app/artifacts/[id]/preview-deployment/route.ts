@@ -1,36 +1,40 @@
-import type { PreviewDeployment } from "@repo/api/src/types/artifact";
 import { success } from "@repo/api/src/types/common";
+import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { NextResponse } from "next/server";
-import { artifactsService } from "@/app/artifacts/service";
+import { externalLinksService } from "@/app/external-links/service";
 import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse } from "@/lib/route-utils";
+import { errorResponse, notFoundResponse } from "@/lib/route-utils";
+import { artifactsService } from "../../service";
 
-export const GET = withAuth<PreviewDeployment | null, "/artifacts/[id]">(
+/**
+ * Get the preview deployment ExternalLink for an artifact's workstream.
+ * Returns the first PREVIEW_DEPLOYMENT external link found for the workstream.
+ */
+export const GET = withAuth<ExternalLink | null, "/artifacts/[id]">(
   async ({ user }, _request, params) => {
     try {
       const { id } = await params;
-      const result = await artifactsService.getArtifactPreviewDeployment(
+
+      // Find the artifact to get its workstreamId
+      const artifact = await artifactsService.findByIdSimple(
         id,
         user.organizationId
       );
-      return NextResponse.json(success(result));
+      if (!artifact) {
+        return notFoundResponse("Artifact");
+      }
+      if (!artifact.workstreamId) {
+        return NextResponse.json(success(null));
+      }
+
+      const links = await externalLinksService.findByWorkstream(
+        artifact.workstreamId,
+        "PREVIEW_DEPLOYMENT"
+      );
+
+      return NextResponse.json(success(links[0] ?? null));
     } catch (error) {
       return errorResponse("Failed to fetch preview deployment", error);
-    }
-  }
-);
-
-export const POST = withAuth<PreviewDeployment | null, "/artifacts/[id]">(
-  async ({ user }, _request, params) => {
-    try {
-      const { id } = await params;
-      const result = await artifactsService.refreshPreviewDeployment(
-        id,
-        user.organizationId
-      );
-      return NextResponse.json(success(result));
-    } catch (error) {
-      return errorResponse("Failed to refresh preview deployment", error);
     }
   }
 );

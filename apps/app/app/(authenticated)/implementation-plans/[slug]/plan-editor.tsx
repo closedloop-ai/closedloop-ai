@@ -1,27 +1,30 @@
 "use client";
 
 import {
-  ArtifactSubtype,
-  type ArtifactWithWorkstream,
+  type ArtifactDetail,
+  ArtifactType,
 } from "@repo/api/src/types/artifact";
-import { generateArtifactRoomId } from "@repo/collaboration/room-utils";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
+import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { useArtifactActions } from "@/hooks/artifact-editing/use-artifact-actions";
 import { useArtifactContent } from "@/hooks/artifact-editing/use-artifact-content";
 import { useArtifactMetadata } from "@/hooks/artifact-editing/use-artifact-metadata";
 import { useArtifactUIState } from "@/hooks/artifact-editing/use-artifact-ui-state";
+import { useEditorSession } from "@/hooks/artifact-editing/use-editor-session";
 import { usePlanActions } from "@/hooks/artifact-editing/use-plan-actions";
 import {
   useArtifactGenerationStatus,
-  useArtifactPreviewDeployment,
   useArtifactPullRequest,
-  useRefreshPreviewDeployment,
 } from "@/hooks/queries/use-artifacts";
-import { useJudgesFeedback } from "@/hooks/queries/use-judges";
-import { ApiError } from "@/lib/api-error";
+import { useWorkstreamPreviewDeployment } from "@/hooks/queries/use-external-links";
+import {
+  useCodeJudgesFeedback,
+  useJudgesFeedback,
+} from "@/hooks/queries/use-judges";
+import { usePreviewDeploymentPolling } from "@/hooks/use-preview-deployment-polling";
 import { ExecutePlanModal } from "../components/execute-plan-modal";
 import { RequestChangesModal } from "../components/request-changes-modal";
 import { VersionSelector } from "../components/version-selector";
@@ -30,45 +33,11 @@ import { PlanEditorHeader } from "./components/plan-editor-header";
 import { PlanMetadataPanel } from "./components/plan-metadata-panel";
 
 type PlanEditorProps = {
-  plan: ArtifactWithWorkstream;
+  plan: ArtifactDetail;
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
 };
-
-const PREVIEW_POLL_MAX_MS = 45 * 60_000;
-const PREVIEW_POLL_FAST_MS = 15_000;
-const PREVIEW_POLL_MEDIUM_MS = 30_000;
-const PREVIEW_POLL_SLOW_MS = 60_000;
-
-const POLL_STOP_STATUSES = new Set([401, 403, 429, 404, 422]);
-
-async function executePollRefresh(
-  refreshRef: React.MutableRefObject<() => Promise<unknown>>,
-  emptyRefreshCountRef: React.MutableRefObject<number>,
-  pollStoppedRef: React.MutableRefObject<boolean>
-) {
-  try {
-    const result = await refreshRef.current();
-    if (result) {
-      emptyRefreshCountRef.current = 0;
-    } else {
-      emptyRefreshCountRef.current += 1;
-      if (emptyRefreshCountRef.current >= 3) {
-        pollStoppedRef.current = true;
-      }
-    }
-  } catch (err) {
-    const status = err instanceof ApiError ? err.status : undefined;
-    if (status && POLL_STOP_STATUSES.has(status)) {
-      pollStoppedRef.current = true;
-    }
-    console.warn("[preview-poll] refresh failed:", {
-      status,
-      message: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 export function PlanEditor({
   plan,
@@ -76,34 +45,20 @@ export function PlanEditor({
   latestVersion,
   onVersionChange,
 }: PlanEditorProps) {
-  const [isEditing, setIsEditing] = useState(true);
-  const [contentResetKey, setContentResetKey] = useState<number | undefined>();
-  const [contentResetValue, setContentResetValue] = useState<
-    string | undefined
-  >();
-
-  const isViewingHistorical = currentVersion !== latestVersion;
-  // The existence of a room ID controls whether liveblocks is loaded.
-  // Liveblocks can't function properly when the editor is read-only.
-  const liveblocksRoomId =
-    isEditing && plan.documentSlug
-      ? generateArtifactRoomId(plan.organizationId, plan.documentSlug)
-      : null;
-
-  const exitEditMode = () => {
-    setIsEditing(false);
-    setContentResetKey(undefined);
-    setContentResetValue(undefined);
-  };
-
-  // Use focused hooks instead of monolithic usePlanEditor
   const content = useArtifactContent({
     artifact: plan,
     onVersionCreated: () => {
-      if (isViewingHistorical) {
+      if (currentVersion !== latestVersion) {
         onVersionChange(latestVersion);
       }
     },
+  });
+
+  const session = useEditorSession({
+    artifact: plan,
+    currentVersion,
+    latestVersion,
+    content,
   });
 
   const metadata = useArtifactMetadata({
@@ -122,7 +77,7 @@ export function PlanEditor({
   });
 
   const uiState = useArtifactUIState({
-    artifactSubtype: ArtifactSubtype.ImplementationPlan,
+    artifactType: ArtifactType.ImplementationPlan,
   });
 
   // Type assertion for Plan-specific UI state
@@ -141,106 +96,37 @@ export function PlanEditor({
     { showRequestChangesModal: boolean }
   >;
 
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);
   const { data: pullRequest } = useArtifactPullRequest(plan.id);
   const { data: judgesReport } = useJudgesFeedback(plan.id);
+  const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
-  // Preview deployment polling
-  const { data: previewDeployment } = useArtifactPreviewDeployment(plan.id);
+  // Preview deployment via ExternalLink
+  const workstreamId = plan.workstreamId ?? "";
   const {
-    mutateAsync: refreshPreviewDeployment,
-    isPending: isRefreshingPreviewDeployment,
-  } = useRefreshPreviewDeployment(plan.id);
+    previewDeployment,
+    refetch: refetchPreviewLinks,
+    isRefetching: isRefreshingPreviewDeployment,
+  } = useWorkstreamPreviewDeployment(workstreamId);
 
-  const pollStartRef = useRef<number | null>(null);
-  const pollStoppedRef = useRef(false);
-  const emptyRefreshCountRef = useRef(0);
-  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const refreshRef = useRef(refreshPreviewDeployment);
-  refreshRef.current = refreshPreviewDeployment;
-
-  // Reset poll start when the PR changes (new execution = new deployment)
-  const pullRequestNumber = pullRequest?.number;
-  const prevPrRef = useRef(pullRequestNumber);
-  if (prevPrRef.current !== pullRequestNumber) {
-    prevPrRef.current = pullRequestNumber;
-    pollStartRef.current = null;
-    pollStoppedRef.current = false;
-    emptyRefreshCountRef.current = 0;
-  }
-
-  // Poll for preview deployment status when a PR exists; stops on terminal states
-  const previewState = previewDeployment?.state;
-  const isGenerationRunning =
+  // Adaptive polling for preview deployment status
+  const isGenerationRunning = !!(
     generationStatus?.status &&
     ["RUNNING", "QUEUED", "IN_PROGRESS", "PENDING"].includes(
       generationStatus.status.toUpperCase()
-    );
-  useEffect(() => {
-    const hasPreviewRef = !!previewDeployment?.ref;
-    if (
-      !(pullRequestNumber || hasPreviewRef || isGenerationRunning) ||
-      pollStoppedRef.current
-    ) {
-      return;
-    }
-
-    const normalized = previewState?.toUpperCase();
-    const isTerminal =
-      normalized === "READY" ||
-      normalized === "SUCCESS" ||
-      normalized === "FAILURE" ||
-      normalized === "ERROR" ||
-      normalized === "INACTIVE";
-
-    if (isTerminal) {
-      return;
-    }
-
-    if (pollStartRef.current === null) {
-      pollStartRef.current = Date.now();
-    }
-
-    // Self-scheduling poll loop: each tick schedules the next via setTimeout
-    function schedulePoll() {
-      if (pollStoppedRef.current || pollStartRef.current === null) {
-        return;
-      }
-
-      const elapsed = Date.now() - pollStartRef.current;
-      if (elapsed > PREVIEW_POLL_MAX_MS) {
-        return;
-      }
-
-      let interval = PREVIEW_POLL_SLOW_MS;
-      if (elapsed < 5 * 60_000) {
-        interval = PREVIEW_POLL_FAST_MS;
-      } else if (elapsed < 15 * 60_000) {
-        interval = PREVIEW_POLL_MEDIUM_MS;
-      }
-
-      pollTimeoutRef.current = setTimeout(async () => {
-        await executePollRefresh(
-          refreshRef,
-          emptyRefreshCountRef,
-          pollStoppedRef
-        );
-        schedulePoll();
-      }, interval);
-    }
-
-    schedulePoll();
-
-    return () => {
-      clearTimeout(pollTimeoutRef.current);
-    };
-  }, [
-    pullRequestNumber,
-    previewState,
+    )
+  );
+  usePreviewDeploymentPolling({
+    previewState: previewDeployment?.state ?? null,
+    hasPreviewRef: !!previewDeployment?.ref,
+    pullRequestNumber: pullRequest?.number,
     isGenerationRunning,
-    previewDeployment?.ref,
-  ]);
+    refetch: refetchPreviewLinks,
+  });
 
   // Derived state
   const isDraft = metadata.status === "DRAFT";
@@ -251,7 +137,8 @@ export function PlanEditor({
     actions.isDeleting ||
     planActions.isApproving ||
     planActions.isRegenerating ||
-    planActions.isExecuting;
+    planActions.isExecuting ||
+    planActions.isComputeModeLoading;
 
   // Create version display component for header
   const versionDisplay = (
@@ -259,32 +146,20 @@ export function PlanEditor({
       currentVersion={currentVersion}
       latestVersion={latestVersion}
       onVersionChange={(version) => {
-        exitEditMode();
+        session.exitEditMode();
         onVersionChange(version);
       }}
     />
   );
 
-  const handleEdit = () => {
-    if (!isViewingHistorical) {
-      setIsEditing(true);
-    }
-  };
-
-  const handleRestoreVersion = () => {
-    setContentResetValue(plan.content ?? "");
-    setContentResetKey((key) => (key ?? 0) + 1);
-    setIsEditing(true);
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PlanEditorHeader
-        canEdit={!isViewingHistorical}
+        canEdit={!session.isViewingHistorical}
         isApproved={isApproved}
         isDraft={isDraft}
-        isEditing={isEditing}
+        isEditing={session.isEditing}
         isExecuting={planActions.isExecuting}
         isPending={isPending}
         isSaving={content.isSaving}
@@ -292,19 +167,22 @@ export function PlanEditor({
         onApprove={planActions.handleApprove}
         onCopyMarkdown={actions.handleCopy}
         onDelete={uiState.openDeleteDialog}
-        onEdit={handleEdit}
+        onDiscard={session.handleDiscard}
+        onEdit={session.handleEdit}
         onExecute={openExecuteModal}
         onExportMarkdown={actions.handleDownload}
         onExportToLinear={openLinearExportDialog}
+        onMove={() => setShowMoveDialog(true)}
         onRegenerate={planActions.handleRegenerate}
         onRequestChanges={openRequestChangesModal}
-        onRestoreVersion={handleRestoreVersion}
-        onSave={content.saveContent}
+        onRestoreVersion={session.handleRestoreVersion}
+        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
+        openThreadCount={session.openThreadCount}
         plan={plan}
         pullRequest={pullRequest ?? null}
         showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={isViewingHistorical}
+        showRestore={session.isViewingHistorical}
         status={metadata.status}
         versionDisplay={versionDisplay}
       />
@@ -312,37 +190,55 @@ export function PlanEditor({
       {/* Generation Status Banner */}
       <GenerationStatusBanner artifactId={plan.id} />
 
-      <CollaborativeEditor
-        contentResetKey={contentResetKey}
-        contentResetValue={contentResetValue}
-        liveblocksRoomId={liveblocksRoomId}
-        metadataPanel={
-          <PlanMetadataPanel
-            approver={metadata.approver}
-            generationStatus={generationStatus ?? null}
-            isPreviewRefreshing={isRefreshingPreviewDeployment}
-            judgesReport={judgesReport ?? null}
-            onApproverSelect={metadata.handleApproverSelect}
-            onOwnerChange={metadata.handleOwnerChange}
-            onParentChange={metadata.handleParentChange}
-            onPreviewRefresh={async () => {
-              const result = await refreshPreviewDeployment();
-              return result ?? null;
-            }}
-            onStatusChange={metadata.handleStatusChange}
-            owner={metadata.owner}
-            plan={plan}
-            previewDeployment={previewDeployment ?? null}
-            pullRequest={pullRequest ?? null}
-            status={metadata.status}
-            teamMembers={metadata.teamMembers}
-          />
+      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+      <div
+        className="flex min-h-0 flex-1 flex-col"
+        onClick={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
         }
-        onChange={content.updateContent}
-        readOnly={!isEditing}
-        showMetadataPanel={uiState.showMetadataPanel}
-        value={content.content}
-      />
+        onKeyDown={
+          session.isEditing || session.isViewingHistorical
+            ? undefined
+            : session.handleEdit
+        }
+      >
+        <CollaborativeEditor
+          contentResetKey={session.contentResetKey}
+          contentResetValue={session.contentResetValue}
+          key={session.latestVersion}
+          liveblocksRoomId={session.liveblocksRoomId}
+          metadataPanel={
+            <PlanMetadataPanel
+              approver={metadata.approver}
+              assignee={metadata.assignee}
+              codeJudgesReport={codeJudgesReport ?? null}
+              generationStatus={generationStatus ?? null}
+              isPreviewRefreshing={isRefreshingPreviewDeployment}
+              judgesReport={judgesReport ?? null}
+              onApproverSelect={metadata.handleApproverSelect}
+              onAssigneeChange={metadata.handleAssigneeChange}
+              onPreviewRefresh={refetchPreviewLinks}
+              onStatusChange={metadata.handleStatusChange}
+              plan={plan}
+              previewDeployment={previewDeployment}
+              pullRequest={pullRequest ?? null}
+              status={metadata.status}
+              targetBranch={metadata.targetBranch}
+              targetRepo={metadata.targetRepo}
+              teamMembers={metadata.teamMembers}
+            />
+          }
+          onChange={content.updateContent}
+          onEditorInstance={session.handleEditorInstance}
+          onOpenThreadCountChange={session.handleThreadCountChange}
+          readOnly={!session.isEditing}
+          showMetadataPanel={uiState.showMetadataPanel}
+          value={content.content}
+        />
+      </div>
 
       {/* Delete Confirmation Dialog */}
       <DeleteConfirmationDialog
@@ -367,6 +263,13 @@ export function PlanEditor({
         artifactId={plan.id}
         onOpenChange={setShowLinearExportDialog}
         open={showLinearExportDialog}
+      />
+
+      {/* Move Dialog */}
+      <MoveArtifactDialog
+        artifact={plan}
+        onOpenChange={setShowMoveDialog}
+        open={showMoveDialog}
       />
 
       {/* Execute Plan Modal */}

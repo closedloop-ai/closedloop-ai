@@ -15,6 +15,7 @@ import {
 } from "@repo/linear";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { artifactVersionService } from "../../artifacts/artifact-version-service";
 
 /**
  * Result types for service operations
@@ -291,8 +292,8 @@ export const linearService = {
       return { success: false, error: "Artifact not found", status: 404 };
     }
 
-    // Validate artifact subtype and status
-    if (artifact.subtype !== "IMPLEMENTATION_PLAN") {
+    // Validate artifact type and status
+    if (artifact.type !== "IMPLEMENTATION_PLAN") {
       return {
         success: false,
         error: "Only implementation plans can be exported to Linear",
@@ -308,7 +309,9 @@ export const linearService = {
       };
     }
 
-    if (!artifact.content) {
+    // Fetch latest version content (content is stored in ArtifactVersion, not on artifact)
+    const latestVersion = await artifactVersionService.getLatest(artifactId);
+    if (!latestVersion?.content) {
       return {
         success: false,
         error: "Artifact has no content to export",
@@ -362,7 +365,7 @@ export const linearService = {
     // Extract tasks using LLM
     let allTasks: ExtractedTask[];
     try {
-      allTasks = await extractTasksWithLLM(artifact.content);
+      allTasks = await extractTasksWithLLM(latestVersion.content);
     } catch (error) {
       log.error("[linear/export] Failed to extract tasks with LLM", {
         userId,

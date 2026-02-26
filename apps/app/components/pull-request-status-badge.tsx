@@ -6,7 +6,11 @@ import type {
 } from "@repo/api/src/types/artifact";
 import type { LucideIcon } from "lucide-react";
 import { CheckCircle2Icon, ClockIcon, XCircleIcon } from "lucide-react";
-import { prStatusColors, StatusBadge } from "./status-badge";
+import {
+  prReviewDecisionColors,
+  prStatusColors,
+  StatusBadge,
+} from "./status-badge";
 
 const CI_STATUS_ICONS: Partial<
   Record<ChecksStatus, { icon: LucideIcon; className: string; testId: string }>
@@ -50,6 +54,13 @@ export function PullRequestStatusBadge({
       />
       {ciIcon && (
         <ciIcon.icon className={ciIcon.className} data-testid={ciIcon.testId} />
+      )}
+      {pullRequest.reviewDecision && (
+        <StatusBadge
+          className="text-xs"
+          colorMap={prReviewDecisionColors}
+          status={pullRequest.reviewDecision}
+        />
       )}
     </div>
   );

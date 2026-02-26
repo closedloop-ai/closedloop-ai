@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { auth } from "@repo/auth/server";
 import { authenticate } from "@repo/collaboration/auth";
 import { parseArtifactRoomId } from "@repo/collaboration/room-utils";
@@ -49,7 +49,6 @@ export async function POST(request: Request): Promise<Response> {
 
     const { token, status } = await authenticate({
       userId: user.id,
-      roomId,
       organizationId: user.organizationId,
       userInfo: {
         name: getUserName(user),

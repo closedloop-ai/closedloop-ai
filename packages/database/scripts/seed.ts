@@ -147,7 +147,8 @@ async function main() {
         description:
           "Implement secure authentication with OAuth2, MFA, and session management",
         priority: "HIGH",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
       },
     });
@@ -167,7 +168,8 @@ async function main() {
         description:
           "Build a real-time analytics dashboard with customizable widgets",
         priority: "MEDIUM",
-        ownerId: userId,
+        assigneeId: userId,
+        createdById: userId,
         targetDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000), // 60 days from now
       },
     });
@@ -310,48 +312,62 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 - Load testing for 10k concurrent users
 - Security penetration testing`;
 
-    // Helper to upsert artifact (can't use prisma.upsert with nullable field in composite unique)
+    // Helper to upsert artifact with initial version content
     async function upsertArtifact(data: {
       projectId: string;
-      subtype: "PRD" | "IMPLEMENTATION_PLAN";
+      type: "PRD" | "IMPLEMENTATION_PLAN";
+      slug: string;
       title: string;
       content: string;
     }) {
       const existing = await prisma.artifact.findFirst({
         where: {
           projectId: data.projectId,
-          subtype: data.subtype,
-          documentSlug: "main",
-          isLatest: true,
+          type: data.type,
+          slug: data.slug,
         },
       });
 
       if (existing) {
-        await prisma.artifact.update({
-          where: { id: existing.id },
-          data: { content: data.content, updatedAt: new Date() },
+        // Update the latest version's content
+        await prisma.artifactVersion.updateMany({
+          where: {
+            artifactId: existing.id,
+            version: existing.latestVersion,
+          },
+          data: { content: data.content },
         });
       } else {
-        await prisma.artifact.create({
-          data: {
-            organizationId,
-            projectId: data.projectId,
-            type: "DOCUMENT",
-            subtype: data.subtype,
-            title: data.title,
-            status: "APPROVED",
-            content: data.content,
-            documentSlug: "main",
-            version: 1,
-            isLatest: true,
-          },
+        // Create artifact + initial version in a transaction
+        await prisma.$transaction(async (tx) => {
+          const artifact = await tx.artifact.create({
+            data: {
+              organizationId,
+              projectId: data.projectId,
+              type: data.type,
+              title: data.title,
+              slug: data.slug,
+              status: "APPROVED",
+              createdById: userId,
+              latestVersion: 1,
+            },
+          });
+
+          await tx.artifactVersion.create({
+            data: {
+              artifactId: artifact.id,
+              version: 1,
+              content: data.content,
+            },
+          });
         });
       }
     }
 
     await upsertArtifact({
       projectId: project1.id,
-      subtype: "PRD",
+      type: "PRD",
+      slug: "seed-auth-prd",
       title: "User Authentication System PRD",
       content: prd1Content,
     });
@@ -359,7 +375,8 @@ As a security-conscious user, I want to enable MFA so that my account is more se
 
     await upsertArtifact({
       projectId: project1.id,
-      subtype: "IMPLEMENTATION_PLAN",
+      type: "IMPLEMENTATION_PLAN",
+      slug: "seed-auth-plan",
       title: "User Authentication System Implementation Plan",
       content: implPlan1Content,
     });
@@ -472,7 +489,8 @@ As an analyst, I want to export dashboard data so that I can perform deeper anal
 
     await upsertArtifact({
       projectId: project2.id,
-      subtype: "PRD",
+      type: "PRD",
+      slug: "seed-analytics-prd",
       title: "Analytics Dashboard PRD",
       content: prd2Content,
     });
@@ -480,7 +498,8 @@ As an analyst, I want to export dashboard data so that I can perform deeper anal
 
     await upsertArtifact({
       projectId: project2.id,
-      subtype: "IMPLEMENTATION_PLAN",
+      type: "IMPLEMENTATION_PLAN",
+      slug: "seed-analytics-plan",
       title: "Analytics Dashboard Implementation Plan",
       content: implPlan2Content,
     });

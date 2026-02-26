@@ -1,5 +1,5 @@
-import { ApproverRole } from "@repo/api/src/types/artifact";
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
+import { ApproverRole } from "@repo/api/src/types/user";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Mock dependencies
@@ -105,12 +105,11 @@ describe("POST /api/collaboration/auth", () => {
       expect(await response.text()).toBe(mockToken);
       expect(mockAuthenticate).toHaveBeenCalledWith({
         userId: "user-123",
-        roomId: "org-123:artifact:art-456",
         organizationId: "org-123",
         userInfo: {
           name: "John Doe",
           avatar: "https://example.com/avatar.jpg",
-          color: expect.stringContaining("var(--color-"),
+          color: expect.any(String),
         },
       });
     });

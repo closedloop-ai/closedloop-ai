@@ -192,8 +192,8 @@ describe("handlePullRequest", () => {
 
     // Set up transaction mock
     mockTx = {
-      repository: {
-        findUnique: vi.fn(),
+      gitHubInstallationRepository: {
+        findFirst: vi.fn(),
       },
       gitHubPullRequest: {
         findUnique: vi.fn(),
@@ -236,7 +236,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       // Mock repository lookup
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
@@ -245,7 +245,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-456",
         workstreamId: "ws-uuid-789",
         artifactId: "artifact-uuid-123",
-        artifact: { documentSlug: "plan-feature-x" },
+        artifact: { slug: "plan-feature-x" },
       });
 
       // Mock update
@@ -257,8 +257,10 @@ describe("handlePullRequest", () => {
       await handlePullRequest(event);
 
       // Verify repository lookup
-      expect(mockTx.repository.findUnique).toHaveBeenCalledWith({
-        where: { githubId: 789 },
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith({
+        where: { githubRepoId: 789 },
         select: { id: true },
       });
 
@@ -275,7 +277,7 @@ describe("handlePullRequest", () => {
           workstreamId: true,
           artifactId: true,
           checksStatus: true,
-          artifact: { select: { documentSlug: true } },
+          artifact: { select: { slug: true } },
         },
       });
 
@@ -290,7 +292,7 @@ describe("handlePullRequest", () => {
         },
       });
 
-      // Verify workstream event creation with artifactId and documentSlug
+      // Verify workstream event creation with artifactId and slug
       expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
         data: {
           workstreamId: "ws-uuid-789",
@@ -301,7 +303,7 @@ describe("handlePullRequest", () => {
             prTitle: "Add feature X",
             prUrl: "https://github.com/owner/test-repo/pull/1",
             artifactId: "artifact-uuid-123",
-            documentSlug: "plan-feature-x",
+            slug: "plan-feature-x",
             mergedAt: "2026-02-10T12:00:00Z",
             mergeCommitSha: "def456",
           },
@@ -331,7 +333,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
       });
 
@@ -367,7 +369,7 @@ describe("handlePullRequest", () => {
             prTitle: "Feature rejected",
             prUrl: "https://github.com/owner/test-repo/pull/1",
             artifactId: null,
-            documentSlug: undefined,
+            slug: undefined,
           },
         },
       });
@@ -391,7 +393,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-456",
       });
 
@@ -433,7 +435,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-sync",
       });
 
@@ -477,7 +479,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-sync",
       });
 
@@ -544,7 +546,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-draft",
       });
 
@@ -583,7 +585,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-ready",
       });
 
@@ -622,7 +624,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       // Mock repository not found
-      mockTx.repository.findUnique.mockResolvedValue(null);
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
       await handlePullRequest(event);
 
@@ -649,7 +651,7 @@ describe("handlePullRequest", () => {
       } as any;
 
       // Repository exists
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-exists",
       });
 
@@ -683,7 +685,9 @@ describe("handlePullRequest", () => {
       await handlePullRequest(event);
 
       // Should not query DB at all
-      expect(mockTx.repository.findUnique).not.toHaveBeenCalled();
+      expect(
+        mockTx.gitHubInstallationRepository.findFirst
+      ).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.findUnique).not.toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
@@ -711,7 +715,7 @@ describe("handlePullRequest", () => {
         sender: createSender(),
       } as any;
 
-      mockTx.repository.findUnique.mockResolvedValue({
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-tx",
       });
 
@@ -719,7 +723,7 @@ describe("handlePullRequest", () => {
         id: "pr-uuid-tx",
         workstreamId: "ws-uuid-tx",
         artifactId: "artifact-uuid-tx",
-        artifact: { documentSlug: "plan-tx" },
+        artifact: { slug: "plan-tx" },
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
@@ -732,7 +736,7 @@ describe("handlePullRequest", () => {
       expect(mockWithDb).not.toHaveBeenCalled();
 
       // Verify lookups and mutations all occurred within the transaction
-      expect(mockTx.repository.findUnique).toHaveBeenCalled();
+      expect(mockTx.gitHubInstallationRepository.findFirst).toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalled();
       expect(mockTx.gitHubPullRequest.update).toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).toHaveBeenCalled();
