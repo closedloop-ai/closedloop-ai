@@ -1,25 +1,11 @@
 import type { Dictionary } from "@repo/internationalization";
-import {
-  Activity,
-  CheckCircle,
-  Clock,
-  FileText,
-  LayoutGrid,
-  Users,
-} from "lucide-react";
+import { Bot, Eye, GitFork, Library, ShieldCheck, Zap } from "lucide-react";
 
 type FeaturesProps = {
   dictionary: Dictionary;
 };
 
-const featureIcons = [
-  FileText,
-  Clock,
-  Users,
-  CheckCircle,
-  Activity,
-  LayoutGrid,
-];
+const featureIcons = [Bot, GitFork, ShieldCheck, Library, Zap, Eye];
 
 export const Features = ({ dictionary }: FeaturesProps) => {
   const d = dictionary.web.developers.features;
@@ -41,7 +27,7 @@ export const Features = ({ dictionary }: FeaturesProps) => {
           </div>
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {d.items.map((item, index) => {
-              const Icon = featureIcons[index] ?? FileText;
+              const Icon = featureIcons[index] ?? Bot;
               return (
                 <div
                   className="flex flex-col gap-4 rounded-lg border bg-card/70 p-7 transition-colors hover:border-border/80 hover:bg-card"
