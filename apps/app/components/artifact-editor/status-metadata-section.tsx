@@ -29,11 +29,11 @@ export type StatusMetadataSectionProps = {
    */
   approver: User | null;
   /**
-   * Current owner (User or null if not selected)
+   * Current assignee (User or null if not selected)
    */
-  owner: User | null;
+  assignee: User | null;
   /**
-   * List of team members to choose from for owner selection
+   * List of team members to choose from for assignee selection
    */
   teamMembers: User[];
   /**
@@ -49,9 +49,9 @@ export type StatusMetadataSectionProps = {
    */
   onApproverSelect: (user: User | null) => void;
   /**
-   * Handler called when owner is changed
+   * Handler called when assignee is changed
    */
-  onOwnerChange: (user: User | null) => void;
+  onAssigneeChange: (user: User | null) => void;
   /**
    * Optional className for custom styling
    */
@@ -69,24 +69,24 @@ export type StatusMetadataSectionProps = {
  * <StatusMetadataSection
  *   status={status}
  *   approver={approver}
- *   owner={owner}
+ *   assignee={assignee}
  *   teamMembers={teamMembers}
  *   orgUsers={orgUsers}
  *   onStatusChange={handleStatusChange}
  *   onApproverSelect={handleApproverSelect}
- *   onOwnerChange={handleOwnerChange}
+ *   onAssigneeChange={handleAssigneeChange}
  * />
  * ```
  */
 export function StatusMetadataSection({
   status,
   approver,
-  owner,
+  assignee,
   teamMembers,
   orgUsers,
   onStatusChange,
   onApproverSelect,
-  onOwnerChange,
+  onAssigneeChange,
   className,
 }: Readonly<StatusMetadataSectionProps>) {
   return (
@@ -111,13 +111,13 @@ export function StatusMetadataSection({
       </div>
 
       <div className="space-y-2">
-        <Label>Owner</Label>
+        <Label>Assignee</Label>
         <UserSelectPopover
           disabled={teamMembers.length === 0}
-          onSelect={onOwnerChange}
-          placeholder="Select owner..."
+          onSelect={onAssigneeChange}
+          placeholder="Select assignee..."
           users={teamMembers}
-          value={owner}
+          value={assignee}
         />
       </div>
 

@@ -9,25 +9,25 @@ const priorityBadgeVariants = cva(
   {
     variants: {
       priority: {
-        NOT_SET: "border-muted-foreground/30 bg-muted/50 text-muted-foreground",
         LOW: "border-info/30 bg-info/10 text-info-foreground",
         MEDIUM: "border-warning/30 bg-warning/10 text-warning-foreground",
         HIGH: "border-destructive/30 bg-destructive/10 text-destructive-foreground",
+        URGENT: "border-destructive/50 bg-destructive/20 text-destructive-foreground font-semibold",
       },
     },
     defaultVariants: {
-      priority: "NOT_SET",
+      priority: "MEDIUM",
     },
   }
 );
 
-type Priority = "NOT_SET" | "LOW" | "MEDIUM" | "HIGH";
+type Priority = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 
 const priorityLabels: Record<Priority, string> = {
-  NOT_SET: "Not Set",
   LOW: "Low",
   MEDIUM: "Medium",
   HIGH: "High",
+  URGENT: "Urgent",
 };
 
 interface PriorityBadgeProps

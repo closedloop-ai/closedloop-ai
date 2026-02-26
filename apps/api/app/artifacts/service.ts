@@ -28,6 +28,7 @@ import {
   ArtifactType as PrismaArtifactType,
   EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
+  type WorkstreamState,
   withDb,
 } from "@repo/database";
 import {
@@ -62,18 +63,18 @@ import { PRD_TEMPLATE } from "./template-seeds";
  * Validate that a user belongs to the given organization.
  * Throws if the user does not exist within the org.
  */
-async function validateOwnerInOrg(
-  ownerId: string,
+async function validateUserInOrg(
+  userId: string,
   organizationId: string
 ): Promise<void> {
-  const owner = await withDb((db) =>
+  const user = await withDb((db) =>
     db.user.findFirst({
-      where: { id: ownerId, organizationId },
+      where: { id: userId, organizationId },
       select: { id: true },
     })
   );
-  if (!owner) {
-    throw new Error("Invalid owner ID: user not found in this organization");
+  if (!user) {
+    throw new Error("Invalid user ID: user not found in this organization");
   }
 }
 
@@ -150,11 +151,11 @@ async function createArtifactRecord(
     input.projectId = workstream.projectId;
   }
 
-  const resolvedOwnerId = input.ownerId ?? userId;
-  await validateOwnerInOrg(resolvedOwnerId, organizationId);
+  const resolvedAssigneeId = input.assigneeId ?? userId;
+  await validateUserInOrg(resolvedAssigneeId, organizationId);
 
   if (input.approverId) {
-    await validateOwnerInOrg(input.approverId, organizationId);
+    await validateUserInOrg(input.approverId, organizationId);
   }
 
   const slug = generateSlug();
@@ -167,8 +168,8 @@ async function createArtifactRecord(
       organizationId,
       slug,
       latestVersion: 1,
-      generatedBy: userId,
-      ownerId: resolvedOwnerId,
+      createdById: userId,
+      assigneeId: resolvedAssigneeId,
     },
     include: artifactIncludeWithUser,
   });
@@ -206,6 +207,14 @@ export type RegenerateResult =
   | { success: true; artifact: Artifact }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
+export type ExecuteResult =
+  | { success: true; correlationId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type RequestChangesResult =
+  | { success: true; message: string; artifactId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
 /**
  * Artifacts service - handles database operations for artifact management
  */
@@ -216,7 +225,8 @@ export const artifactsService = {
   async findAll(
     options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
-    const { organizationId, type, workstreamId, projectId, ownerId } = options;
+    const { organizationId, type, workstreamId, projectId, assigneeId } =
+      options;
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -225,7 +235,7 @@ export const artifactsService = {
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(type ? { type } : {}),
-          ...(ownerId ? { ownerId } : {}),
+          ...(assigneeId ? { assigneeId } : {}),
         },
         include: artifactIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
@@ -412,9 +422,11 @@ export const artifactsService = {
   /**
    * Ensure default templates exist for an organization.
    * Creates/upserts the PRD template.
-   * Uses upsert on the unique constraint (organizationId, templateForType) for concurrency safety.
    */
-  async ensureDefaultTemplates(organizationId: string): Promise<void> {
+  async ensureDefaultTemplates(
+    organizationId: string,
+    userId: string
+  ): Promise<void> {
     const template = await withDb((db) =>
       db.artifact.upsert({
         where: {
@@ -427,6 +439,7 @@ export const artifactsService = {
           type: PrismaArtifactType.TEMPLATE,
           templateForType: PrismaArtifactType.PRD,
           organizationId,
+          createdById: userId,
           title: "Product Requirements Document Template",
           slug: generateSlug(),
           latestVersion: 1,
@@ -576,11 +589,11 @@ export const artifactsService = {
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    if (input.ownerId) {
-      await validateOwnerInOrg(input.ownerId, organizationId);
+    if (input.assigneeId) {
+      await validateUserInOrg(input.assigneeId, organizationId);
     }
     if (input.approverId) {
-      await validateOwnerInOrg(input.approverId, organizationId);
+      await validateUserInOrg(input.approverId, organizationId);
     }
     if (input.projectId) {
       const project = await withDb((db) =>
@@ -2228,9 +2241,10 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Batch-regenerate implementation plans for all approved PRDs in a project.
-   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
-   * relationships and calls regenerateImplementationPlan on it.
+   * Batch-generate (or regenerate) implementation plans for all approved PRDs in a project.
+   * For each approved PRD:
+   * - If a linked IMPLEMENTATION_PLAN exists via PRODUCES link, regenerates it.
+   * - If no linked plan exists, creates a new IMPLEMENTATION_PLAN and triggers generation.
    * Returns the count of triggered plans and their artifact IDs.
    */
   async batchRegenerateImplementationPlans(
@@ -2251,6 +2265,31 @@ Please try again or contact support if the issue persists.`
       );
 
       if (targetLinks.length === 0) {
+        // No linked plan exists — create a new IMPLEMENTATION_PLAN from the PRD
+        const newPlan = await this.create(organizationId, userId, {
+          type: ArtifactType.ImplementationPlan,
+          title: `Implementation Plan: ${prd.title}`,
+          content: "",
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          sourceVersion: prd.latestVersion,
+          projectId: prd.projectId ?? undefined,
+          workstreamId: prd.workstreamId ?? undefined,
+          targetRepo: prd.targetRepo ?? undefined,
+          targetBranch: prd.targetBranch ?? undefined,
+          status: "DRAFT",
+        });
+
+        if (newPlan) {
+          const result = await this.regenerateImplementationPlan(
+            newPlan.id,
+            organizationId,
+            userId
+          );
+          if (result.success) {
+            artifactIds.push(result.artifact.id);
+          }
+        }
         continue;
       }
 
@@ -2672,38 +2711,18 @@ Please try again or contact support if the issue persists.`
   },
 };
 
-export type ExecuteResult =
-  | { success: true; correlationId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type RequestChangesResult =
-  | { success: true; message: string; artifactId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
 // in artifact-utils.ts. versions is optional because findAll uses
 // artifactIncludeWithSnippet (includes versions) while findById/findBySlug use
 // artifactIncludeWithContext (omits versions — they load content via /versions).
-type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
-  workstream: { id: string; title: string; state: string } | null;
+type RawArtifactWithContext = Artifact & {
+  workstream: { id: string; title: string; state: WorkstreamState } | null;
   project: {
     id: string;
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
-  } | null;
-  owner: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  approver: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
   } | null;
   versions?: { content: string | null }[];
 };

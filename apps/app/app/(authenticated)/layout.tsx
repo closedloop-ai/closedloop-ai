@@ -31,7 +31,7 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
         <NotificationsProvider userId={user.id}>
           <SidebarProvider>
             <GlobalSidebar>
-              <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
+              <div className="flex h-full max-h-full flex-col overflow-hidden">
                 {children}
               </div>
             </GlobalSidebar>

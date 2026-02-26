@@ -17,23 +17,27 @@ export function registerListProjects(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-projects",
-    "List all projects accessible to the authenticated user",
     {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(`Maximum number of projects to return (1-${MAX_PAGE_LIMIT})`),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description: "List all projects accessible to the authenticated user",
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of projects to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ limit, offset }) =>
       withErrorHandling(async () => {

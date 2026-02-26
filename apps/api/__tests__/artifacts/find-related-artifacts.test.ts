@@ -23,7 +23,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectId = await createTestProject(orgId);
+      const projectId = await createTestProject(orgId, user.id);
 
       const artifact = await withDb((db) =>
         db.artifact.create({
@@ -32,7 +32,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -51,7 +51,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectId = await createTestProject(orgId);
+      const projectId = await createTestProject(orgId, user.id);
 
       // Create PRD (root, no source)
       const prd = await withDb((db) =>
@@ -61,7 +61,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -75,7 +75,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "IMPLEMENTATION_PLAN",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -103,7 +103,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "IMPLEMENTATION_PLAN",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -149,7 +149,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
     await autoRollbackTransaction(async () => {
       const orgId = await createTestOrganization();
       const user = await createTestUser(orgId);
-      const projectId = await createTestProject(orgId);
+      const projectId = await createTestProject(orgId, user.id);
 
       // Create root
       const root = await withDb((db) =>
@@ -159,7 +159,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -173,7 +173,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "IMPLEMENTATION_PLAN",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -200,7 +200,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "IMPLEMENTATION_PLAN",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -228,7 +228,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })
@@ -255,7 +255,7 @@ describe.skipIf(!hasDatabase)("findRelatedArtifacts", () => {
             slug: generateSlug(),
             type: "PRD",
             organizationId: orgId,
-            generatedBy: user.id,
+            createdById: user.id,
             projectId,
           },
         })

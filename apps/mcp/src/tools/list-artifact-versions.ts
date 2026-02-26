@@ -15,28 +15,31 @@ export function registerListArtifactVersions(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-artifact-versions",
-    "List all versions of an artifact with version numbers and timestamps",
     {
-      artifactId: z
-        .string()
-        .describe("ID of the artifact to list versions for"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(
-          `Maximum number of artifact versions to return (1-${MAX_PAGE_LIMIT})`
-        ),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description:
+        "List all versions of an artifact with version numbers and timestamps",
+      inputSchema: {
+        artifactId: z
+          .string()
+          .describe("ID of the artifact to list versions for"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of artifact versions to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ artifactId, limit, offset }) =>
       withErrorHandling(async () => {

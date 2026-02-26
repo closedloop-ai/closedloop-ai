@@ -176,7 +176,7 @@ export function TiptapEditorCore({
   return (
     <>
       <div
-        className="flex min-h-0 flex-1 flex-col rounded-md border"
+        className="flex min-h-0 flex-1 flex-col"
         data-liveblocks-editor-boundary
       >
         {!readOnly && (

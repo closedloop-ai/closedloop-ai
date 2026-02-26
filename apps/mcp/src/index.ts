@@ -254,10 +254,13 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   {
     name: "ping",
     register: (server) => {
-      server.tool("ping", "Check MCP server connectivity", {}, () =>
-        Promise.resolve({
-          content: [{ type: "text" as const, text: "pong" }],
-        })
+      server.registerTool(
+        "ping",
+        { description: "Check MCP server connectivity" },
+        () =>
+          Promise.resolve({
+            content: [{ type: "text" as const, text: "pong" }],
+          })
       );
     },
   },

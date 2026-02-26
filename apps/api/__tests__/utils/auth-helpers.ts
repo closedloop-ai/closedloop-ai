@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { NextRequest } from "next/server";
 import type { AuthContext } from "@/lib/auth/with-auth";
 

@@ -1,5 +1,5 @@
-import { ApproverRole } from "@repo/api/src/types/artifact";
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
+import { ApproverRole } from "@repo/api/src/types/user";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 // Mock dependencies
