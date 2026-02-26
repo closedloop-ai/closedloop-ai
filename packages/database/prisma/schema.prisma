@@ -537,7 +537,6 @@ model ArtifactEvaluation {
 model JudgeScore {
   id           String   @id @default(uuid(7)) @db.Uuid
   evaluationId String   @map("evaluation_id") @db.Uuid
-  // TODO: add Prisma relation to Prompt once prompt_registry table exists (PR 1)
   promptId     String?  @map("prompt_id") @db.Uuid
   caseId       String   @map("case_id")
   threshold    Float
@@ -548,6 +547,7 @@ model JudgeScore {
 
   // Relations
   evaluation ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  prompt     Prompt?            @relation(fields: [promptId], references: [id], onDelete: SetNull)
 
   @@unique([evaluationId, caseId])
   @@index([promptId])
@@ -857,6 +857,7 @@ model Prompt {
   createdAt      DateTime    @default(now()) @map("created_at")
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  judgeScores    JudgeScore[]
 
   @@unique([organizationId, name, version])
   @@index([organizationId, name])
