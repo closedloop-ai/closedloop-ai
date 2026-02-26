@@ -126,8 +126,8 @@ describe("handleCheckRun", () => {
     vi.clearAllMocks();
 
     mockDb = {
-      repository: {
-        findUnique: vi.fn(),
+      gitHubInstallationRepository: {
+        findFirst: vi.fn(),
       },
       gitHubPullRequest: {
         findFirst: vi.fn(),
@@ -206,12 +206,14 @@ describe("handleCheckRun", () => {
     it("returns ok:true without calling rollup when repository is not found", async () => {
       const event = createCheckRunEvent({ repositoryId: 99_999 });
 
-      mockDb.repository.findUnique.mockResolvedValue(null);
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
 
       const response = await handleCheckRun(event);
 
-      expect(mockDb.repository.findUnique).toHaveBeenCalledWith({
-        where: { githubId: event.repository.id },
+      expect(
+        mockDb.gitHubInstallationRepository.findFirst
+      ).toHaveBeenCalledWith({
+        where: { githubRepoId: event.repository.id },
         select: { id: true, owner: true, name: true },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
@@ -227,7 +229,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
         owner: "org",
         name: "repo",
@@ -268,7 +270,7 @@ describe("handleCheckRun", () => {
       const installationId = 99;
       const event = createCheckRunEvent({ headSha, installationId });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
         owner: "org",
         name: "repo",
@@ -313,7 +315,7 @@ describe("handleCheckRun", () => {
         repositoryId,
       });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-123",
         owner: "org",
         name: "repo",
@@ -395,7 +397,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-idempotent",
         owner: "org",
         name: "repo",
@@ -439,7 +441,7 @@ describe("handleCheckRun", () => {
       const newHeadSha = "111222333444555666777888999000aaabbbcccd";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-toctou",
         owner: "org",
         name: "repo",
@@ -482,7 +484,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-merged",
         owner: "org",
         name: "repo",
@@ -525,7 +527,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-gone",
         owner: "org",
         name: "repo",
@@ -563,7 +565,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha, conclusion: "failure" });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-fail",
         owner: "org",
         name: "repo",
@@ -625,7 +627,7 @@ describe("handleCheckRun", () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const event = createCheckRunEvent({ headSha });
 
-      mockDb.repository.findUnique.mockResolvedValue({
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
         id: "repo-uuid-tx",
         owner: "org",
         name: "repo",

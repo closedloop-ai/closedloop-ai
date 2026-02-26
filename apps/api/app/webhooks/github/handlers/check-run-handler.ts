@@ -86,12 +86,11 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   });
 
   // (3) Non-transactional read - avoid holding locks during external GraphQL call
-  // Repository.githubId is globally @unique, so findUnique is correct and
-  // cross-tenant isolation is guaranteed (a GitHub repo belongs to exactly one
-  // Symphony organization).
+  // Look up by githubRepoId — a GitHub repo may appear once per installation,
+  // but the first match suffices for owner/name needed by the GraphQL call.
   const { repo, pr } = await withDb(async (db) => {
-    const foundRepo = await db.repository.findUnique({
-      where: { githubId: event.repository.id },
+    const foundRepo = await db.gitHubInstallationRepository.findFirst({
+      where: { githubRepoId: event.repository.id },
       select: { id: true, owner: true, name: true },
     });
 
