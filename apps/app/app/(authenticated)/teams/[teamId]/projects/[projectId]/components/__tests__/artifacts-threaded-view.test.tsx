@@ -1169,7 +1169,7 @@ describe("ArtifactsThreadedView - Sibling Plan Indicator", () => {
         id: "2",
         title: "My Plan",
         type: "IMPLEMENTATION_PLAN",
-        status: "REVIEW",
+        status: "IN_REVIEW",
         workstreamId: "ws-1",
         workstream: { id: "ws-1", title: "WS", state: "INITIATED" },
       }),

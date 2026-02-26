@@ -1,3 +1,4 @@
+import type { ComputeModeResponse } from "@repo/api/src/types/settings";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { getOrgAdminStatus } from "@/lib/auth/org-admin";
@@ -8,9 +9,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { type ComputeMode, computeModeService } from "../compute-mode-service";
-
-type ComputeModeResponse = { computeMode: ComputeMode };
+import { computeModeService } from "../compute-mode-service";
 
 const computeModeValidator = z.object({
   computeMode: z.enum(["GITHUB_ACTIONS", "LOOPS"]),

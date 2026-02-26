@@ -123,7 +123,6 @@ export async function handleExecutionSuccess(
       select: {
         organizationId: true,
         projectId: true,
-        generatedBy: true,
         slug: true,
       },
     });

@@ -7,14 +7,17 @@ export function registerCreateArtifactVersion(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-artifact-version",
-    "Create a new version of an artifact. The previous version is preserved in history.",
     {
-      artifactId: z
-        .string()
-        .describe("ID of the artifact to create a new version for"),
-      content: z.string().describe("Content for the new version"),
+      description:
+        "Create a new version of an artifact. The previous version is preserved in history.",
+      inputSchema: {
+        artifactId: z
+          .string()
+          .describe("ID of the artifact to create a new version for"),
+        content: z.string().describe("Content for the new version"),
+      },
     },
     ({ artifactId, content }) =>
       withErrorHandling(async () => {

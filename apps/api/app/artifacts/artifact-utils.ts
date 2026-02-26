@@ -20,11 +20,11 @@ export class ArtifactNotFoundError extends Error {
 }
 
 /**
- * Lightweight include for queries that return an artifact with owner/approver only.
+ * Lightweight include for queries that returns an artifact with assignee and approver only.
  * Use artifactIncludeWithContext when workstream/project info is also needed.
  */
 export const artifactIncludeWithUser = {
-  owner: basicUserSelect,
+  assignee: basicUserSelect,
   approver: basicUserSelect,
 } as const;
 

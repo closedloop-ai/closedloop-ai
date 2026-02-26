@@ -148,3 +148,13 @@ export function forbiddenResponse(): NextResponse<ApiResult<never>> {
 export function deleteResponse(): NextResponse<ApiResult<{ deleted: true }>> {
   return NextResponse.json(success({ deleted: true }));
 }
+
+/**
+ * Create a conflict response (HTTP 409).
+ * Use when a request conflicts with the current state of a resource.
+ */
+export function conflictResponse(
+  message: string
+): NextResponse<ApiResult<never>> {
+  return NextResponse.json(failure(message), { status: 409 });
+}

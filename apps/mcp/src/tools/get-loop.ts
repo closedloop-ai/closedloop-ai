@@ -4,11 +4,13 @@ import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
 
 export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
-  server.tool(
+  server.registerTool(
     "get-loop",
-    "Get a loop execution's detail by its ID",
     {
-      loopId: z.string().describe("ID of the loop to retrieve"),
+      description: "Get a loop execution's detail by its ID",
+      inputSchema: {
+        loopId: z.string().describe("ID of the loop to retrieve"),
+      },
     },
     ({ loopId }) =>
       withErrorHandling(async () => {

@@ -10,6 +10,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { NextRequest } from "next/server";
 import {
+  READONLY_CODEBASE_TOOLS,
+  WEB_ONLY_TOOLS,
+} from "@/lib/engineer/allowed-tools";
+import {
   type ContentBlock,
   createStreamState,
   makeResultKillTimer,
@@ -270,8 +274,8 @@ function spawnClaude(
         );
 
         const allowedTools = hasRunDir
-          ? "Read,Glob,Grep,WebSearch,WebFetch"
-          : "WebSearch,WebFetch";
+          ? READONLY_CODEBASE_TOOLS
+          : WEB_ONLY_TOOLS;
 
         const claudeArgs = [
           "-p",

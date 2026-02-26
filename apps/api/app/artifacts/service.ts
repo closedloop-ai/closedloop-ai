@@ -22,11 +22,13 @@ import type {
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
+import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import {
   LinkType,
   ArtifactType as PrismaArtifactType,
   EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
+  type WorkstreamState,
   withDb,
 } from "@repo/database";
 import {
@@ -58,157 +60,6 @@ import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { PRD_TEMPLATE } from "./template-seeds";
 
 /**
- * Validate that a user belongs to the given organization.
- * Throws if the user does not exist within the org.
- */
-async function validateOwnerInOrg(
-  ownerId: string,
-  organizationId: string
-): Promise<void> {
-  const owner = await withDb((db) =>
-    db.user.findFirst({
-      where: { id: ownerId, organizationId },
-      select: { id: true },
-    })
-  );
-  if (!owner) {
-    throw new Error("Invalid owner ID: user not found in this organization");
-  }
-}
-
-/**
- * Look up the user's name and email for git commit attribution.
- * Used to set committer identity on bot commits so Vercel can
- * match the author to a team member and trigger preview deploys.
- */
-export async function getCommitterInfo(
-  userId: string
-): Promise<{ committerName: string; committerEmail: string } | undefined> {
-  const user = await withDb((db) =>
-    db.user.findUnique({
-      where: { id: userId },
-      select: { email: true, firstName: true, lastName: true },
-    })
-  );
-  if (!user?.email) {
-    return undefined;
-  }
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
-  return {
-    committerName: name || user.email,
-    committerEmail: user.email,
-  };
-}
-
-/**
- * Look up the GitHubInstallationRepository record ID for a given repo full name.
- * Queries the repository table directly with a nested installation filter for
- * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
- */
-async function findInstallationRepoId(
-  organizationId: string,
-  repoFullName: string
-): Promise<string | null> {
-  const repo = await withDb((db) =>
-    db.gitHubInstallationRepository.findFirst({
-      where: {
-        fullName: repoFullName,
-        installation: {
-          organizationId,
-          status: "ACTIVE",
-        },
-      },
-      select: { id: true },
-    })
-  );
-
-  return repo?.id ?? null;
-}
-
-/**
- * Create a single artifact record within an existing transaction.
- * Does NOT call withDb.tx internally - takes the tx parameter directly.
- * Used by both create() and batchCreate() to avoid code duplication.
- *
- * NOTE: validateOwnerInOrg uses withDb (non-transactional) and opens separate
- * connections. This matches the behavior of the existing create() method.
- */
-async function createArtifactRecord(
-  tx: TransactionClient,
-  organizationId: string,
-  userId: string,
-  input: CreateArtifactInput
-): Promise<Artifact | null> {
-  const isTemplate = input.type === ArtifactType.Template;
-
-  // Resolve projectId from workstream if needed (non-templates only)
-  if (!(isTemplate || input.projectId)) {
-    const workstream = await tx.workstream.findUnique({
-      where: { id: input.workstreamId, organizationId },
-    });
-    if (!workstream) {
-      return null;
-    }
-    input.projectId = workstream.projectId;
-  }
-
-  const resolvedOwnerId = input.ownerId ?? userId;
-  await validateOwnerInOrg(resolvedOwnerId, organizationId);
-
-  if (input.approverId) {
-    await validateOwnerInOrg(input.approverId, organizationId);
-  }
-
-  const slug = generateSlug();
-  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
-    input;
-
-  const artifact = await tx.artifact.create({
-    data: {
-      ...artifactInput,
-      organizationId,
-      slug,
-      latestVersion: 1,
-      generatedBy: userId,
-      ownerId: resolvedOwnerId,
-    },
-    include: artifactIncludeWithUser,
-  });
-
-  // Create initial artifact version
-  await tx.artifactVersion.create({
-    data: {
-      artifactId: artifact.id,
-      version: 1,
-      content,
-      createdById: userId,
-    },
-  });
-
-  if (sourceId && sourceType) {
-    await tx.entityLink.create({
-      data: {
-        organizationId,
-        sourceId,
-        sourceType,
-        sourceVersion,
-        targetId: artifact.id,
-        targetType: "ARTIFACT",
-        targetVersion: artifact.latestVersion,
-        linkType: LinkType.PRODUCES,
-      },
-    });
-  }
-
-  return artifact;
-}
-
-// Result types for service operations
-export type RegenerateResult =
-  | { success: true; artifact: Artifact }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-/**
  * Artifacts service - handles database operations for artifact management
  */
 export const artifactsService = {
@@ -218,7 +69,8 @@ export const artifactsService = {
   async findAll(
     options: FindArtifactsOptions & { organizationId: string }
   ): Promise<ArtifactWithWorkstream[]> {
-    const { organizationId, type, workstreamId, projectId, ownerId } = options;
+    const { organizationId, type, workstreamId, projectId, assigneeId } =
+      options;
 
     const artifacts = await withDb((db) =>
       db.artifact.findMany({
@@ -227,7 +79,7 @@ export const artifactsService = {
           ...(workstreamId ? { workstreamId } : {}),
           ...(!workstreamId && projectId ? { projectId } : {}),
           ...(type ? { type } : {}),
-          ...(ownerId ? { ownerId } : {}),
+          ...(assigneeId ? { assigneeId } : {}),
         },
         include: artifactIncludeWithSnippet,
         orderBy: { createdAt: "desc" },
@@ -414,9 +266,11 @@ export const artifactsService = {
   /**
    * Ensure default templates exist for an organization.
    * Creates/upserts the PRD template.
-   * Uses upsert on the unique constraint (organizationId, templateForType) for concurrency safety.
    */
-  async ensureDefaultTemplates(organizationId: string): Promise<void> {
+  async ensureDefaultTemplates(
+    organizationId: string,
+    userId: string
+  ): Promise<void> {
     const template = await withDb((db) =>
       db.artifact.upsert({
         where: {
@@ -429,6 +283,7 @@ export const artifactsService = {
           type: PrismaArtifactType.TEMPLATE,
           templateForType: PrismaArtifactType.PRD,
           organizationId,
+          createdById: userId,
           title: "Product Requirements Document Template",
           slug: generateSlug(),
           latestVersion: 1,
@@ -578,11 +433,11 @@ export const artifactsService = {
     organizationId: string,
     input: Omit<UpdateArtifactInput, "id">
   ): Promise<Artifact> {
-    if (input.ownerId) {
-      await validateOwnerInOrg(input.ownerId, organizationId);
+    if (input.assigneeId) {
+      await validateUserInOrg(input.assigneeId, organizationId);
     }
     if (input.approverId) {
-      await validateOwnerInOrg(input.approverId, organizationId);
+      await validateUserInOrg(input.approverId, organizationId);
     }
     if (input.projectId) {
       const project = await withDb((db) =>
@@ -2230,9 +2085,10 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
-   * Batch-regenerate implementation plans for all approved PRDs in a project.
-   * For each PRD, finds the linked IMPLEMENTATION_PLAN artifact via EntityLink PRODUCES
-   * relationships and calls regenerateImplementationPlan on it.
+   * Batch-generate (or regenerate) implementation plans for all approved PRDs in a project.
+   * For each approved PRD:
+   * - If a linked IMPLEMENTATION_PLAN exists via PRODUCES link, regenerates it.
+   * - If no linked plan exists, creates a new IMPLEMENTATION_PLAN and triggers generation.
    * Returns the count of triggered plans and their artifact IDs.
    */
   async batchRegenerateImplementationPlans(
@@ -2253,6 +2109,31 @@ Please try again or contact support if the issue persists.`
       );
 
       if (targetLinks.length === 0) {
+        // No linked plan exists — create a new IMPLEMENTATION_PLAN from the PRD
+        const newPlan = await this.create(organizationId, userId, {
+          type: ArtifactType.ImplementationPlan,
+          title: `Implementation Plan: ${prd.title}`,
+          content: "",
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          sourceVersion: prd.latestVersion,
+          projectId: prd.projectId ?? undefined,
+          workstreamId: prd.workstreamId ?? undefined,
+          targetRepo: prd.targetRepo ?? undefined,
+          targetBranch: prd.targetBranch ?? undefined,
+          status: "DRAFT",
+        });
+
+        if (newPlan) {
+          const result = await this.regenerateImplementationPlan(
+            newPlan.id,
+            organizationId,
+            userId
+          );
+          if (result.success) {
+            artifactIds.push(result.artifact.id);
+          }
+        }
         continue;
       }
 
@@ -2580,6 +2461,70 @@ Please try again or contact support if the issue persists.`
   },
 
   /**
+   * Resolve the canonical execution backend for an artifact based on its
+   * execution history. Returns null when neither Loops nor GH Actions have
+   * been used — caller should fall back to the org's compute mode.
+   *
+   * The first backend used for planning is canonical — state cannot migrate
+   * between Loops and GH Actions.
+   */
+  async resolveExecutionBackend(
+    artifactId: string,
+    organizationId: string,
+    workstreamId: string | null
+  ): Promise<ExecutionBackendResponse | null> {
+    const earliestLoop = await findEarliestCompletedLoop(
+      artifactId,
+      organizationId
+    );
+    const earliestGhAction = await findEarliestGhActionRun(
+      artifactId,
+      workstreamId
+    );
+    return resolveBackend(earliestLoop, earliestGhAction);
+  },
+
+  /**
+   * Assert that launching a Loop is allowed for this artifact.
+   * Throws a descriptive string when the artifact was originally planned
+   * via GH Actions (caller should return conflictResponse).
+   * Returns silently when Loops are allowed.
+   */
+  async assertLoopBackendAllowed(
+    artifactId: string,
+    organizationId: string,
+    workstreamId: string | null
+  ): Promise<string | null> {
+    const earliestGhAction = await findEarliestGhActionRun(
+      artifactId,
+      workstreamId
+    );
+
+    if (!earliestGhAction) {
+      return null;
+    }
+
+    // Check if a loop was created at the same time or earlier (artifact started on Loops)
+    const earlierLoop = await withDb((db) =>
+      db.loop.findFirst({
+        where: {
+          artifactId,
+          organizationId,
+          status: "COMPLETED",
+          createdAt: { lte: earliestGhAction.createdAt },
+        },
+        select: { id: true },
+      })
+    );
+
+    if (earlierLoop) {
+      return null;
+    }
+
+    return "This artifact was originally planned via GitHub Actions. Use the GitHub Actions path for subsequent operations to maintain state continuity.";
+  },
+
+  /**
    * Get the generation status for a single artifact by checking both
    * GitHub Actions runs and Loop records. Returns null if the artifact
    * is not found in the org.
@@ -2610,6 +2555,11 @@ Please try again or contact support if the issue persists.`
   },
 };
 
+// Result types for service operations
+export type RegenerateResult =
+  | { success: true; artifact: Artifact }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
 export type ExecuteResult =
   | { success: true; correlationId: string }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
@@ -2618,30 +2568,159 @@ export type RequestChangesResult =
   | { success: true; message: string; artifactId: string }
   | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
+/**
+ * Validate that a user belongs to the given organization.
+ * Throws if the user does not exist within the org.
+ */
+async function validateUserInOrg(
+  userId: string,
+  organizationId: string
+): Promise<void> {
+  const user = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: userId, organizationId },
+      select: { id: true },
+    })
+  );
+  if (!user) {
+    throw new Error("Invalid user ID: user not found in this organization");
+  }
+}
+
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+export async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) {
+    return undefined;
+  }
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
+}
+
+/**
+ * Look up the GitHubInstallationRepository record ID for a given repo full name.
+ * Queries the repository table directly with a nested installation filter for
+ * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const repo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: { id: true },
+    })
+  );
+
+  return repo?.id ?? null;
+}
+
+/**
+ * Create a single artifact record within an existing transaction.
+ */
+async function createArtifactRecord(
+  tx: TransactionClient,
+  organizationId: string,
+  userId: string,
+  input: CreateArtifactInput
+): Promise<Artifact | null> {
+  const isTemplate = input.type === ArtifactType.Template;
+
+  // Resolve projectId from workstream if needed (non-templates only)
+  if (!(isTemplate || input.projectId)) {
+    const workstream = await tx.workstream.findUnique({
+      where: { id: input.workstreamId, organizationId },
+    });
+    if (!workstream) {
+      return null;
+    }
+    input.projectId = workstream.projectId;
+  }
+
+  const resolvedAssigneeId = input.assigneeId ?? userId;
+  await validateUserInOrg(resolvedAssigneeId, organizationId);
+
+  if (input.approverId) {
+    await validateUserInOrg(input.approverId, organizationId);
+  }
+
+  const slug = generateSlug();
+  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+    input;
+
+  const artifact = await tx.artifact.create({
+    data: {
+      ...artifactInput,
+      organizationId,
+      slug,
+      latestVersion: 1,
+      createdById: userId,
+      assigneeId: resolvedAssigneeId,
+    },
+    include: artifactIncludeWithUser,
+  });
+
+  // Create initial artifact version
+  await tx.artifactVersion.create({
+    data: {
+      artifactId: artifact.id,
+      version: 1,
+      content,
+      createdById: userId,
+    },
+  });
+
+  if (sourceId && sourceType) {
+    await tx.entityLink.create({
+      data: {
+        organizationId,
+        sourceId,
+        sourceType,
+        sourceVersion,
+        targetId: artifact.id,
+        targetType: "ARTIFACT",
+        targetVersion: artifact.latestVersion,
+        linkType: LinkType.PRODUCES,
+      },
+    });
+  }
+
+  return artifact;
+}
+
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
 // in artifact-utils.ts. versions is optional because findAll uses
 // artifactIncludeWithSnippet (includes versions) while findById/findBySlug use
 // artifactIncludeWithContext (omits versions — they load content via /versions).
-type RawArtifactWithContext = Omit<Artifact, "owner" | "approver"> & {
-  workstream: { id: string; title: string; state: string } | null;
+type RawArtifactWithContext = Artifact & {
+  workstream: { id: string; title: string; state: WorkstreamState } | null;
   project: {
     id: string;
     organizationId: string;
     name: string;
     teams: { team: { id: string; name: string } }[];
-  } | null;
-  owner: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
-  } | null;
-  approver: {
-    id: string;
-    firstName: string | null;
-    lastName: string | null;
-    avatarUrl: string | null;
   } | null;
   versions?: { content: string | null }[];
 };
@@ -2844,6 +2923,87 @@ function buildPullRequestMap(
     }
   }
   return map;
+}
+
+type EarliestRecord = { id: string; createdAt: Date } | null;
+
+/** Find the earliest completed Loop for an artifact (org-scoped). */
+function findEarliestCompletedLoop(
+  artifactId: string,
+  organizationId: string
+): Promise<EarliestRecord> {
+  return withDb((db) =>
+    db.loop.findFirst({
+      where: {
+        artifactId,
+        organizationId,
+        status: "COMPLETED",
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, createdAt: true },
+    })
+  );
+}
+
+/**
+ * Find the earliest GH Action run for an artifact.
+ * GitHubActionRun links to artifacts via triggerData JSON, not a direct FK.
+ * Includes PENDING/QUEUED/RUNNING/SUCCESS — any initiated run counts,
+ * because even an in-flight plan locks the artifact to GH Actions.
+ */
+function findEarliestGhActionRun(
+  artifactId: string,
+  workstreamId: string | null
+): Promise<EarliestRecord> {
+  if (!workstreamId) {
+    return Promise.resolve(null);
+  }
+  return withDb((db) =>
+    db.gitHubActionRun.findFirst({
+      where: {
+        workstreamId,
+        status: {
+          in: ["PENDING", "QUEUED", "RUNNING", "SUCCESS"],
+        },
+        triggerData: { path: ["artifactId"], equals: artifactId },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, createdAt: true },
+    })
+  );
+}
+
+/**
+ * Pick the backend that was used first for this artifact.
+ * State cannot migrate between Loops and GH Actions, so the original
+ * planning backend is canonical for all subsequent operations.
+ * Returns null when neither record exists (caller should fall back to org default).
+ */
+function resolveBackend(
+  earliestLoop: EarliestRecord,
+  earliestGhActionRun: EarliestRecord
+): ExecutionBackendResponse | null {
+  if (!(earliestLoop || earliestGhActionRun)) {
+    return null;
+  }
+
+  if (earliestLoop && !earliestGhActionRun) {
+    return { backend: "LOOPS", reason: "loop_history" };
+  }
+
+  if (!earliestLoop && earliestGhActionRun) {
+    return { backend: "GITHUB_ACTIONS", reason: "github_action_history" };
+  }
+
+  // Both exist — whichever was created first is the original backend
+  const loopTime = earliestLoop!.createdAt.getTime();
+  const ghActionTime = earliestGhActionRun!.createdAt.getTime();
+
+  if (loopTime <= ghActionTime) {
+    return { backend: "LOOPS", reason: "loop_history" };
+  }
+
+  return { backend: "GITHUB_ACTIONS", reason: "github_action_history" };
 }
 
 /**

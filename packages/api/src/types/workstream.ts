@@ -1,7 +1,6 @@
-// Workstream types for API contract
-// These are explicitly defined to keep packages/api independent of database
-
-import type { ArtifactUser } from "./artifact";
+import type { Priority } from "./common";
+import type { Project } from "./project";
+import type { BasicUser } from "./user";
 
 export const WORKSTREAM_TYPE_OPTIONS = [
   "FEATURE_DELIVERY",
@@ -69,8 +68,10 @@ export type Workstream = {
   state: WorkstreamState;
   stateChangedAt: Date;
   createdById: string;
-  createdBy?: ArtifactUser | null;
-  assignedToId: string | null;
+  createdBy: BasicUser | null;
+  assigneeId: string | null;
+  priority: Priority;
+  slug: string | null;
   hasUIChanges: boolean;
   startedAt: Date;
   completedAt: Date | null;
@@ -80,9 +81,7 @@ export type Workstream = {
 };
 
 export type WorkstreamWithProject = Workstream & {
-  project: {
-    name: string;
-  };
+  project: Pick<Project, "name">;
 };
 
 export type CreateWorkstreamInput = {
@@ -90,7 +89,9 @@ export type CreateWorkstreamInput = {
   title: string;
   description?: string;
   type?: WorkstreamType;
-  assignedToId?: string | null;
+  assigneeId?: string | null;
+  priority?: Priority;
+  slug?: string | null;
   hasUIChanges?: boolean;
 };
 
@@ -100,7 +101,9 @@ export type UpdateWorkstreamInput = {
   description?: string;
   type?: WorkstreamType;
   state?: WorkstreamState;
-  assignedToId?: string | null;
+  assigneeId?: string | null;
+  priority?: Priority;
+  slug?: string | null;
   hasUIChanges?: boolean;
 };
 
