@@ -275,6 +275,9 @@ export async function generateUploadUrl(
  */
 const MAX_DOWNLOAD_URLS = 1000;
 
+/** 50 MB — mirrors harness upload limit; skip objects above this size. */
+const MAX_OBJECT_SIZE_BYTES = 50 * 1024 * 1024;
+
 /**
  * List all objects under a prefix and generate pre-signed GET URLs for each.
  * Used for parent state download during resume — the container needs to fetch
@@ -307,8 +310,7 @@ export async function listAndGenerateDownloadUrls(
         if (!obj.Key) {
           continue;
         }
-        // Skip objects > 50MB (mirrors harness upload limit)
-        if (obj.Size && obj.Size > 50 * 1024 * 1024) {
+        if (obj.Size && obj.Size > MAX_OBJECT_SIZE_BYTES) {
           continue;
         }
 
@@ -397,6 +399,8 @@ export async function downloadArtifactFile(
 /**
  * Download markdown prompt snapshot files from `artifacts/agents-snapshot/`.
  * Returns entry names relative to `artifacts/` (for parser compatibility).
+ *
+ * Capped at MAX_DOWNLOAD_URLS entries; skips files > 50 MB.
  */
 export async function downloadPromptSnapshotMarkdownEntries(
   stateKeyPrefix: string
@@ -413,17 +417,19 @@ export async function downloadPromptSnapshotMarkdownEntries(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: snapshotPrefix,
+        MaxKeys: Math.min(1000, MAX_DOWNLOAD_URLS - entries.length),
         ContinuationToken: continuationToken,
       })
     );
 
-    const keys = (response.Contents ?? [])
-      .map((obj) => obj.Key)
-      .filter((key): key is string => Boolean(key))
-      .filter((key) => key.endsWith(".md"));
+    const objects = (response.Contents ?? [])
+      .filter((obj): obj is { Key: string; Size?: number } => Boolean(obj.Key))
+      .filter((obj) => obj.Key.endsWith(".md"))
+      .filter((obj) => !obj.Size || obj.Size <= MAX_OBJECT_SIZE_BYTES);
 
     const pageEntries = await Promise.all(
-      keys.map(async (key) => {
+      objects.map(async (obj) => {
+        const key = obj.Key;
         try {
           const data = await getObject(key);
           const relativeName = key.startsWith(artifactPrefix)
@@ -447,6 +453,14 @@ export async function downloadPromptSnapshotMarkdownEntries(
         (e): e is { name: string; data: Buffer } => e !== null
       )
     );
+
+    if (entries.length >= MAX_DOWNLOAD_URLS) {
+      log.warn("[loop-state] Prompt snapshot entry cap reached", {
+        stateKeyPrefix,
+        cap: MAX_DOWNLOAD_URLS,
+      });
+      return entries;
+    }
 
     continuationToken = response.IsTruncated
       ? response.NextContinuationToken
