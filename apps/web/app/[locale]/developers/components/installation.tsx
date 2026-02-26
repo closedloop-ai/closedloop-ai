@@ -24,11 +24,7 @@ export const Installation = ({ dictionary }: InstallationProps) => {
           </div>
           <div className="mx-auto max-w-2xl">
             {d.steps.map((step, index) => (
-              <div
-                className="mb-9 flex gap-5 last:mb-0"
-                // biome-ignore lint/suspicious/noArrayIndexKey: Static content list
-                key={index}
-              >
+              <div className="mb-9 flex gap-5 last:mb-0" key={step.title}>
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 font-semibold text-sm text-white">
                   {index + 1}
                 </div>
@@ -37,7 +33,7 @@ export const Installation = ({ dictionary }: InstallationProps) => {
                   <p className="text-muted-foreground text-sm">
                     {step.description}
                   </p>
-                  <div className="overflow-x-auto rounded-lg border bg-black/50 px-4 py-3">
+                  <div className="overflow-x-auto rounded-lg border bg-muted px-4 py-3">
                     <code className="font-mono text-indigo-300 text-sm">
                       {step.code}
                     </code>

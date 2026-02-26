@@ -28,7 +28,7 @@ export const Agents = ({ dictionary }: AgentsProps) => {
                 className="flex flex-col gap-2 rounded-lg border bg-card/70 p-5 transition-colors hover:border-border/80"
                 key={item.name}
               >
-                <code className="font-mono text-purple-400 text-sm">
+                <code className="font-mono text-indigo-400 text-sm">
                   {item.name}
                 </code>
                 <p className="text-muted-foreground text-sm leading-relaxed">

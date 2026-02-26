@@ -45,8 +45,7 @@ export const Features = ({ dictionary }: FeaturesProps) => {
               return (
                 <div
                   className="flex flex-col gap-4 rounded-lg border bg-card/70 p-7 transition-colors hover:border-border/80 hover:bg-card"
-                  // biome-ignore lint/suspicious/noArrayIndexKey: Static content list
-                  key={index}
+                  key={item.title}
                 >
                   <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-indigo-500/10">
                     <Icon className="h-5 w-5 text-indigo-400" />

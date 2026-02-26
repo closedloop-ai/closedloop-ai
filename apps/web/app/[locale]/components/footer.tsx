@@ -1,7 +1,12 @@
+import type { Dictionary } from "@repo/internationalization";
 import Link from "next/link";
 import { env } from "@/env";
 
-export const Footer = () => {
+type FooterProps = {
+  dictionary: Dictionary;
+};
+
+export const Footer = ({ dictionary }: FooterProps) => {
   const navigationItems: Array<{ title: string; href: string }> = [
     {
       title: "Home",
@@ -13,8 +18,8 @@ export const Footer = () => {
     },
   ];
 
-  navigationItems.at(1)?.items?.push({
-    title: "Developers",
+  navigationItems.push({
+    title: dictionary.web.header.developers,
     href: "/developers",
   });
 

@@ -32,7 +32,6 @@ export function Header({ dictionary }: HeaderProps) {
   navigationItems.push({
     title: dictionary.web.header.developers,
     href: "/developers",
-    description: "",
   });
 
   if (env.NEXT_PUBLIC_DOCS_URL) {
