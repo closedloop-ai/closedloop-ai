@@ -274,6 +274,7 @@ export async function generateUploadUrl(
  * Prevents runaway responses for loops with large state directories.
  */
 const MAX_DOWNLOAD_URLS = 1000;
+const S3_LIST_MAX_KEYS = 1000;
 
 /** 50 MB — mirrors harness upload limit; skip objects above this size. */
 const MAX_OBJECT_SIZE_BYTES = 50 * 1024 * 1024;
@@ -300,7 +301,7 @@ export async function listAndGenerateDownloadUrls(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: normalizedPrefix,
-        MaxKeys: Math.min(1000, MAX_DOWNLOAD_URLS - results.length),
+        MaxKeys: Math.min(S3_LIST_MAX_KEYS, MAX_DOWNLOAD_URLS - results.length),
         ContinuationToken: continuationToken,
       })
     );
@@ -417,7 +418,10 @@ export async function downloadPromptSnapshotMarkdownEntries(
       new ListObjectsV2Command({
         Bucket: bucket,
         Prefix: snapshotPrefix,
-        MaxKeys: Math.min(1000, MAX_DOWNLOAD_URLS - entries.length),
+        MaxKeys: Math.max(
+          1,
+          Math.min(S3_LIST_MAX_KEYS, MAX_DOWNLOAD_URLS - entries.length)
+        ),
         ContinuationToken: continuationToken,
       })
     );
