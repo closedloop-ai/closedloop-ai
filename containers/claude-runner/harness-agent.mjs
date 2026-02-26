@@ -1059,9 +1059,26 @@ function attemptSafetyCommit(
 // ---------------------------------------------------------------------------
 // LLM-assisted commit (standalone Claude call for quality commits + PR)
 // ---------------------------------------------------------------------------
+/**
+ * Spawn a standalone Claude CLI call to review changes, create a proper
+ * commit, push, and open a PR. This produces much better commit messages
+ * and PR descriptions than the mechanical safety commit.
+ *
+ * Returns PR info if Claude created a PR, or null otherwise.
+ * Best-effort — failures fall through to attemptSafetyCommit.
+ */
+function attemptLlmCommit(workDir, resultFilePath) {
+  if (!(config.targetRepo && config.githubToken && config.anthropicApiKey)) {
+    return null;
+  }
 
-/** Returns true if there are uncommitted tracked changes or untracked files. */
-function hasUncommittedChanges(workDir) {
+  const branchName = detectBranchName(workDir);
+  if (!branchName) {
+    log("info", "LLM commit: on target branch, skipping");
+    return null;
+  }
+
+  // Quick check: are there any uncommitted changes?
   try {
     execFileSync("git", ["diff", "--quiet", "HEAD"], {
       cwd: workDir,
@@ -1075,16 +1092,15 @@ function hasUncommittedChanges(workDir) {
     )
       .toString()
       .trim();
-    return !!untracked;
+    if (!untracked) {
+      log("info", "LLM commit: no uncommitted changes");
+      return null;
+    }
   } catch {
-    // git diff --quiet exits non-zero when there ARE changes
-    return true;
+    // git diff --quiet exits non-zero when there ARE changes — proceed
   }
-}
 
-/** Build the prompt string for the LLM commit assistant. */
-function buildLlmCommitPrompt(branchName, resultFilePath) {
-  return [
+  const prompt = [
     `You are a commit assistant finalizing work from a Symphony ${config.command} loop.`,
     "",
     "Review all uncommitted changes in this repository and create a proper commit, push it, and create a pull request.",
@@ -1127,78 +1143,6 @@ function buildLlmCommitPrompt(branchName, resultFilePath) {
     "- Do NOT write execution-result.json unless you successfully committed AND pushed",
     "- Keep it quick — commit, push, PR, write result file, done",
   ].join("\n");
-}
-
-/**
- * Parse the LLM commit result from the result file or stdout/stderr output.
- * Returns prInfo or null.
- */
-function parseLlmCommitOutput(stdout, stderr, resultFilePath, branchName) {
-  // Preferred: read execution-result.json written by the LLM
-  if (fs.existsSync(resultFilePath)) {
-    try {
-      const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
-      log(
-        "info",
-        `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
-      );
-      return {
-        prUrl: resultData.pr_url || null,
-        prNumber: resultData.pr_number || null,
-        branchName: resultData.branch_name || branchName,
-        commitSha: resultData.commit_sha || null,
-      };
-    } catch (parseErr) {
-      log(
-        "error",
-        `Failed to parse LLM execution-result.json: ${parseErr.message}`
-      );
-    }
-  }
-
-  // Fallback: detect PR URL from output (if LLM didn't write the file)
-  const combined = stdout + stderr;
-  const prMatch = combined.match(RE_GITHUB_PR_URL);
-  if (prMatch) {
-    const prNumberMatch = PR_NUMBER_REGEX.exec(prMatch[0]);
-    log("info", `LLM commit created PR: ${prMatch[0]}`);
-    return {
-      prUrl: prMatch[0],
-      prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
-      branchName,
-      commitSha: null,
-    };
-  }
-
-  return null;
-}
-
-/**
- * Spawn a standalone Claude CLI call to review changes, create a proper
- * commit, push, and open a PR. This produces much better commit messages
- * and PR descriptions than the mechanical safety commit.
- *
- * Returns PR info if Claude created a PR, or null otherwise.
- * Best-effort — failures fall through to attemptSafetyCommit.
- */
-function attemptLlmCommit(workDir, resultFilePath) {
-  if (!(config.targetRepo && config.githubToken && config.anthropicApiKey)) {
-    return null;
-  }
-
-  const branchName = detectBranchName(workDir);
-  if (!branchName) {
-    log("info", "LLM commit: on target branch, skipping");
-    return null;
-  }
-
-  // Quick check: are there any uncommitted changes?
-  if (!hasUncommittedChanges(workDir)) {
-    log("info", "LLM commit: no uncommitted changes");
-    return null;
-  }
-
-  const prompt = buildLlmCommitPrompt(branchName, resultFilePath);
 
   // Build env: git auth + API key + gh token
   const llmEnv = {
@@ -1250,7 +1194,43 @@ function attemptLlmCommit(workDir, resultFilePath) {
       log("info", `LLM commit stderr (tail): ${redactSensitive(tail)}`);
     }
 
-    return parseLlmCommitOutput(stdout, stderr, resultFilePath, branchName);
+    // Read execution-result.json written by the LLM (preferred over stdout parsing)
+    if (fs.existsSync(resultFilePath)) {
+      try {
+        const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
+        log(
+          "info",
+          `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
+        );
+        return {
+          prUrl: resultData.pr_url || null,
+          prNumber: resultData.pr_number || null,
+          branchName: resultData.branch_name || branchName,
+          commitSha: resultData.commit_sha || null,
+        };
+      } catch (parseErr) {
+        log(
+          "error",
+          `Failed to parse LLM execution-result.json: ${parseErr.message}`
+        );
+      }
+    }
+
+    // Fallback: detect PR URL from output (if LLM didn't write the file)
+    const combined = stdout + stderr;
+    const prMatch = combined.match(RE_GITHUB_PR_URL);
+    if (prMatch) {
+      const prNumberMatch = PR_NUMBER_REGEX.exec(prMatch[0]);
+      log("info", `LLM commit created PR: ${prMatch[0]}`);
+      return {
+        prUrl: prMatch[0],
+        prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
+        branchName,
+        commitSha: null,
+      };
+    }
+
+    return null;
   } catch (err) {
     log(
       "error",
@@ -2368,60 +2348,87 @@ function writeExecutionResult(workDir, prInfo) {
 // ---------------------------------------------------------------------------
 // Report final status (completed, failed, or timed out)
 // ---------------------------------------------------------------------------
-
-/**
- * Run LLM commit with safety-commit fallback, return prInfo.
- * Handles both the happy path (LLM writes execution-result.json) and the
- * fallback path (safety commit + mechanical PR creation).
- */
-function commitAndPushForStatus(workDir, output, swDir, safetyCommitMsg) {
-  const resultFilePath = path.join(swDir || workDir, "execution-result.json");
-
-  // Step 1: LLM-assisted commit — standalone Claude call that reviews
-  // changes, writes a good commit message, pushes, creates a PR, and
-  // writes execution-result.json directly with first-hand info.
-  // The LLM ONLY writes execution-result.json on successful commit+push.
-  const llmPrInfo = attemptLlmCommit(workDir, resultFilePath);
-
-  // Step 2: Check if the LLM handled everything.
-  // execution-result.json exists = LLM committed + pushed successfully.
-  // No need for safety commit, branch push, or mechanical PR creation.
-  if (llmPrInfo && fs.existsSync(resultFilePath)) {
-    log("info", "LLM commit handled everything — skipping safety commit");
-    return llmPrInfo;
+async function reportFinalStatus(
+  workDir,
+  output,
+  {
+    timedOut,
+    exitCode,
+    signal,
+    duration,
+    tokenUsage,
+    startTime,
+    symphonyWorkDir: swDir,
   }
-
-  // Fallback: safety commit + push + mechanical PR creation
-  log(
-    "info",
-    "LLM commit did not produce execution-result.json — running safety fallback"
-  );
-  attemptSafetyCommit(workDir, safetyCommitMsg);
-  ensureBranchPushed(workDir);
-
-  let prInfo = parsePrInfo(workDir, output);
-  if (llmPrInfo?.prUrl) {
-    prInfo = { ...(prInfo || {}), ...llmPrInfo };
-  }
-  prInfo = createPullRequest(workDir, prInfo);
-
-  // Write execution-result.json ourselves since the LLM didn't
-  writeExecutionResult(swDir || workDir, prInfo);
-  return prInfo;
-}
-
-/**
- * Report the final completion event (TIMED_OUT, COMPLETED, or PROCESS_FAILED).
- * Exits the process on TIMED_OUT.
- */
-async function reportCompletionEvent(
-  prInfo,
-  timedOut,
-  exitCode,
-  signal,
-  duration,
-  tokenUsage
 ) {
+  // Step 0: Refresh GitHub token before commit/push (token may have expired
+  // during the run)
+  await refreshGitHubToken();
+
+  const shouldCommitAndPush = config.command === "EXECUTE";
+
+  const isIncomplete = timedOut || exitCode !== 0;
+  const safetyCommitMsg = isIncomplete
+    ? "[INCOMPLETE] WIP: Safety commit — leftover changes"
+    : "Post-run: uncommitted changes from loop execution";
+
+  let prInfo = null;
+
+  if (shouldCommitAndPush) {
+    const resultFilePath = path.join(swDir || workDir, "execution-result.json");
+
+    // Step 1: LLM-assisted commit — standalone Claude call that reviews
+    // changes, writes a good commit message, pushes, creates a PR, and
+    // writes execution-result.json directly with first-hand info.
+    // The LLM ONLY writes execution-result.json on successful commit+push.
+    const llmPrInfo = attemptLlmCommit(workDir, resultFilePath);
+
+    // Step 2: Check if the LLM handled everything.
+    // execution-result.json exists = LLM committed + pushed successfully.
+    // No need for safety commit, branch push, or mechanical PR creation.
+    if (llmPrInfo && fs.existsSync(resultFilePath)) {
+      log("info", "LLM commit handled everything — skipping safety commit");
+      prInfo = llmPrInfo;
+    } else {
+      // Fallback: safety commit + push + mechanical PR creation
+      log(
+        "info",
+        "LLM commit did not produce execution-result.json — running safety fallback"
+      );
+      attemptSafetyCommit(workDir, safetyCommitMsg);
+      ensureBranchPushed(workDir);
+
+      prInfo = parsePrInfo(workDir, output);
+      if (llmPrInfo?.prUrl) {
+        prInfo = { ...(prInfo || {}), ...llmPrInfo };
+      }
+      prInfo = createPullRequest(workDir, prInfo);
+
+      // Write execution-result.json ourselves since the LLM didn't
+      writeExecutionResult(swDir || workDir, prInfo);
+    }
+
+    // Label incomplete PRs regardless of which path created the PR
+    if (isIncomplete && prInfo?.prNumber) {
+      labelPrIncomplete(workDir, prInfo.prNumber);
+    }
+  }
+
+  if (prInfo) {
+    log(
+      "info",
+      `PR info: url=${prInfo.prUrl}, number=${prInfo.prNumber}, branch=${prInfo.branchName}`
+    );
+  }
+  if (capturedSessionId) {
+    log("info", `Session ID: ${capturedSessionId}`);
+  }
+
+  // Step 6: Upload state + metadata
+  await uploadState(workDir, output, swDir);
+  await uploadMetadata(workDir, output, tokenUsage, startTime);
+
+  // Step 7: Report event
   if (timedOut) {
     await reportEvent({
       type: "error",
@@ -2474,338 +2481,9 @@ async function reportCompletionEvent(
   }
 }
 
-async function reportFinalStatus(
-  workDir,
-  output,
-  {
-    timedOut,
-    exitCode,
-    signal,
-    duration,
-    tokenUsage,
-    startTime,
-    symphonyWorkDir: swDir,
-  }
-) {
-  // Step 0: Refresh GitHub token before commit/push (token may have expired
-  // during the run)
-  await refreshGitHubToken();
-
-  const shouldCommitAndPush = config.command === "EXECUTE";
-
-  const isIncomplete = timedOut || exitCode !== 0;
-  const safetyCommitMsg = isIncomplete
-    ? "[INCOMPLETE] WIP: Safety commit — leftover changes"
-    : "Post-run: uncommitted changes from loop execution";
-
-  let prInfo = null;
-
-  if (shouldCommitAndPush) {
-    prInfo = commitAndPushForStatus(workDir, output, swDir, safetyCommitMsg);
-
-    // Label incomplete PRs regardless of which path created the PR
-    if (isIncomplete && prInfo?.prNumber) {
-      labelPrIncomplete(workDir, prInfo.prNumber);
-    }
-  }
-
-  if (prInfo) {
-    log(
-      "info",
-      `PR info: url=${prInfo.prUrl}, number=${prInfo.prNumber}, branch=${prInfo.branchName}`
-    );
-  }
-  if (capturedSessionId) {
-    log("info", `Session ID: ${capturedSessionId}`);
-  }
-
-  // Step 6: Upload state + metadata
-  await uploadState(workDir, output, swDir);
-  await uploadMetadata(workDir, output, tokenUsage, startTime);
-
-  // Step 7: Report event
-  await reportCompletionEvent(
-    prInfo,
-    timedOut,
-    exitCode,
-    signal,
-    duration,
-    tokenUsage
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main execution
 // ---------------------------------------------------------------------------
-
-/**
- * Resolve or create the symphony run directory.
- * Reuses parent run dir if one exists (child loops), otherwise creates fresh.
- * Sets the module-level symphonyWorkDir variable and returns the path.
- */
-function resolveRunDirectory(workDir) {
-  const existing = findExistingRunDir(workDir);
-  if (existing) {
-    log("info", `Reusing parent run directory: ${existing}`);
-    return existing;
-  }
-
-  const runTs = new Date()
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace("T", "-")
-    .slice(0, 15);
-  const loopSuffix = (config.loopId || randomUUID())
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 50);
-  const newDir = path.join(
-    workDir,
-    ".claude",
-    "runs",
-    `${runTs}-loop-${loopSuffix}`
-  );
-  fs.mkdirSync(newDir, { recursive: true });
-  log("info", `Created new run directory: ${newDir}`);
-  return newDir;
-}
-
-/**
- * Prepare workspace: clone/init repo, restore prior state, write context files,
- * resolve the symphony run directory, write PRD, sync plan, validate inputs,
- * and create working branch if needed.
- * Returns { symphonyWorkDir, prdPath }.
- */
-async function setupWorkspaceAndRunDir(workDir, contextPack) {
-  // Step 3: Clone the target repository or prepare an empty workspace
-  prepareWorkspace(workDir);
-
-  // Step 3a: Restore prior run state from parent loop (if resuming).
-  // This restores .claude/ and ~/.claude/ so run-loop can continue
-  // where the parent left off.
-  await downloadState(workDir);
-
-  // Step 3b: Write context files into the prepared workspace.
-  // This must happen after clone AND after downloadState — clone fails on
-  // non-empty dir, and we want fresh context to overwrite .claude/context/.
-  writeContextPackFiles(workDir, contextPack);
-
-  // Step 3b2: Resolve the symphony run directory.
-  // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
-  // - PLAN (fresh): creates a new run dir
-  // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
-  // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
-  // the same .claude/runs/TIMESTAMP/ directory across all steps.
-  const resolvedRunDir = resolveRunDirectory(workDir);
-  symphonyWorkDir = resolvedRunDir;
-
-  // Write PRD to the run directory (all commands that have a prompt)
-  const prdPath = writePrdFile(resolvedRunDir, contextPack);
-
-  // For child loops: write the latest plan content from the context pack to
-  // plan.json in the run dir. This picks up manual edits the user made in
-  // the Liveblocks editor between runs. The context pack's primary artifact
-  // contains the latest artifact version content from the DB.
-  if (config.s3ParentStateKey) {
-    syncPlanFromContextPack(resolvedRunDir, contextPack);
-  }
-
-  // Step 3c: Command-level validation and branch hardening.
-  validatePreRunInputs(config.command, contextPack);
-  if (shouldCreateWorkingBranch()) {
-    createWorkingBranch(workDir);
-  }
-
-  return { symphonyWorkDir: resolvedRunDir, prdPath };
-}
-
-/**
- * Build command, execute child process, parse token usage, report final status.
- * Returns exitCode.
- */
-async function runChildProcess(workDir, swDir, prdPath, startTime, outputRef) {
-  // Step 4: Determine execution mode and build command
-  const { cmd, args } = buildCommand(workDir, swDir, prdPath);
-
-  // Step 5: Build environment for the child process
-  const childEnv = {
-    ANTHROPIC_API_KEY: config.anthropicApiKey,
-    GITHUB_TOKEN: config.githubToken,
-    GH_TOKEN: config.githubToken,
-    HOME: process.env.HOME || os.homedir(),
-    PATH: process.env.PATH,
-    LANG: process.env.LANG || "C.UTF-8",
-  };
-
-  // Step 6: Execute
-  log("info", `Executing: ${cmd} ${args.join(" ")}`);
-  const { result, timedOut } = await executeWithTimeout(
-    cmd,
-    args,
-    workDir,
-    childEnv
-  );
-  outputRef.value = result.output;
-
-  const exitCode = timedOut ? null : result.code;
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  log(
-    "info",
-    `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`
-  );
-
-  // Step 7: Parse token usage
-  const tokenUsage = parseTokenUsage(outputRef.value);
-  log(
-    "info",
-    `Token usage: input=${tokenUsage.totalInput}, output=${tokenUsage.totalOutput}, models=${
-      tokenUsage.tokensByModel
-        ? Object.keys(tokenUsage.tokensByModel).join(", ")
-        : "unknown"
-    }`
-  );
-
-  // Step 8: Report final status + upload
-  await reportFinalStatus(workDir, outputRef.value, {
-    timedOut,
-    exitCode,
-    signal: result.signal,
-    duration,
-    tokenUsage,
-    startTime,
-    symphonyWorkDir: swDir,
-  });
-
-  return exitCode;
-}
-
-/**
- * Best-effort commit and push on fatal error.
- * Returns prInfo or null.
- */
-function errorCommitAndPush(workDir, output, errorResultDir) {
-  const errorResultPath = path.join(errorResultDir, "execution-result.json");
-
-  // Try LLM commit first (writes execution-result.json on success)
-  let llmPrInfo = null;
-  try {
-    llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
-  } catch (_) {
-    // ignore
-  }
-
-  // Check if LLM handled everything
-  if (llmPrInfo && fs.existsSync(errorResultPath)) {
-    return llmPrInfo;
-  }
-
-  // Fallback: safety commit + push + mechanical PR
-  let prInfo = null;
-  try {
-    attemptSafetyCommit(
-      workDir,
-      "[INCOMPLETE] WIP: Safety commit — harness error"
-    );
-    ensureBranchPushed(workDir);
-  } catch (_) {
-    // ignore
-  }
-
-  try {
-    prInfo = parsePrInfo(workDir, output);
-    if (llmPrInfo?.prUrl) {
-      prInfo = { ...(prInfo || {}), ...llmPrInfo };
-    }
-    prInfo = createPullRequest(workDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Write execution-result.json ourselves since LLM didn't
-  try {
-    writeExecutionResult(errorResultDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Label incomplete PRs regardless of path
-  if (prInfo?.prNumber) {
-    try {
-      labelPrIncomplete(workDir, prInfo.prNumber);
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  return prInfo;
-}
-
-/**
- * Handle a fatal harness error: log, best-effort commit/push, upload state,
- * report error event, and exit 1.
- */
-async function handleFatalError(err, workDir, output, startTime) {
-  const harnessError = toHarnessError(err);
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  const errorMessage = harnessError.message;
-  const errorStack = err instanceof Error ? err.stack : undefined;
-  log(
-    "error",
-    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-  );
-  if (errorStack) {
-    log("error", redactSensitive(errorStack));
-  }
-
-  // Best-effort: refresh token, LLM commit, safety commit, push, create PR
-  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-  // even on fatal errors.
-  const shouldCommitAndPush = config.command === "EXECUTE";
-
-  try {
-    await refreshGitHubToken();
-  } catch (_) {
-    // ignore
-  }
-
-  let prInfo = null;
-  if (shouldCommitAndPush) {
-    prInfo = errorCommitAndPush(workDir, output, symphonyWorkDir || workDir);
-  }
-
-  // Best-effort: upload whatever state we have
-  try {
-    await uploadState(workDir, output, symphonyWorkDir);
-  } catch (uploadErr) {
-    log(
-      "error",
-      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-    );
-  }
-
-  // Best-effort: report failure with PR info
-  try {
-    await reportEvent({
-      type: "error",
-      code: harnessError.code,
-      message: redactSensitive(errorMessage),
-      result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
-      },
-      correlationId: config.correlationId,
-      loopId: config.loopId,
-    });
-  } catch (reportErr) {
-    log(
-      "error",
-      `Failed to report error event: ${redactSensitive(reportErr.message)}`
-    );
-  }
-
-  process.exit(1);
-}
-
 async function main() {
   const startTime = Date.now();
   const workDir = "/workspace/repo";
@@ -2825,8 +2503,7 @@ async function main() {
   validateConfig();
   setupShutdownHandlers(workDir);
 
-  // Use a ref object so runChildProcess can write back the output array
-  const outputRef = { value: [] };
+  let output = [];
 
   try {
     // Step 1: Download context pack and validate secrets BEFORE reporting started.
@@ -2847,26 +2524,232 @@ async function main() {
     // ECS placement + S3 downloads may have consumed most of that window)
     await refreshGitHubToken();
 
-    // Steps 3-3c: clone, download state, write context, resolve run dir,
-    // validate, create branch.
-    const { symphonyWorkDir: swDir, prdPath } = await setupWorkspaceAndRunDir(
+    // Step 3: Clone the target repository or prepare an empty workspace
+    prepareWorkspace(workDir);
+
+    // Step 3a: Restore prior run state from parent loop (if resuming).
+    // This restores .claude/ and ~/.claude/ so run-loop can continue
+    // where the parent left off.
+    await downloadState(workDir);
+
+    // Step 3b: Write context files into the prepared workspace.
+    // This must happen after clone AND after downloadState — clone fails on
+    // non-empty dir, and we want fresh context to overwrite .claude/context/.
+    writeContextPackFiles(workDir, contextPack);
+
+    // Step 3b2: Resolve the symphony run directory.
+    // There is ONE run directory per chain (PLAN → RC → RC → EXECUTE).
+    // - PLAN (fresh): creates a new run dir
+    // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
+    // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
+    // the same .claude/runs/TIMESTAMP/ directory across all steps.
+    symphonyWorkDir = findExistingRunDir(workDir);
+    if (symphonyWorkDir) {
+      log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
+    } else {
+      const runTs = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID())
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      symphonyWorkDir = path.join(
+        workDir,
+        ".claude",
+        "runs",
+        `${runTs}-loop-${loopSuffix}`
+      );
+      fs.mkdirSync(symphonyWorkDir, { recursive: true });
+      log("info", `Created new run directory: ${symphonyWorkDir}`);
+    }
+
+    // Write PRD to the run directory (all commands that have a prompt)
+    const prdPath = writePrdFile(symphonyWorkDir, contextPack);
+
+    // For child loops: write the latest plan content from the context pack to
+    // plan.json in the run dir. This picks up manual edits the user made in
+    // the Liveblocks editor between runs. The context pack's primary artifact
+    // contains the latest artifact version content from the DB.
+    if (config.s3ParentStateKey) {
+      syncPlanFromContextPack(symphonyWorkDir, contextPack);
+    }
+
+    // Step 3c: Command-level validation and branch hardening.
+    validatePreRunInputs(config.command, contextPack);
+    if (shouldCreateWorkingBranch()) {
+      createWorkingBranch(workDir);
+    }
+
+    // Step 4: Determine execution mode and build command
+    const { cmd, args } = buildCommand(workDir, symphonyWorkDir, prdPath);
+
+    // Step 5: Build environment for the child process
+    const childEnv = {
+      ANTHROPIC_API_KEY: config.anthropicApiKey,
+      GITHUB_TOKEN: config.githubToken,
+      GH_TOKEN: config.githubToken,
+      HOME: process.env.HOME || os.homedir(),
+      PATH: process.env.PATH,
+      LANG: process.env.LANG || "C.UTF-8",
+    };
+
+    // Step 6: Execute
+    log("info", `Executing: ${cmd} ${args.join(" ")}`);
+    const { result, timedOut } = await executeWithTimeout(
+      cmd,
+      args,
       workDir,
-      contextPack
+      childEnv
+    );
+    output = result.output;
+
+    const exitCode = timedOut ? null : result.code;
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    log(
+      "info",
+      `Process exited with code ${exitCode} (signal: ${result.signal}) after ${duration}s`
     );
 
-    // Steps 4-8: build cmd, execute, parse tokens, report final status.
-    const exitCode = await runChildProcess(
-      workDir,
-      swDir,
-      prdPath,
-      startTime,
-      outputRef
+    // Step 7: Parse token usage
+    const tokenUsage = parseTokenUsage(output);
+    log(
+      "info",
+      `Token usage: input=${tokenUsage.totalInput}, output=${tokenUsage.totalOutput}, models=${
+        tokenUsage.tokensByModel
+          ? Object.keys(tokenUsage.tokensByModel).join(", ")
+          : "unknown"
+      }`
     );
+
+    // Step 8: Report final status + upload
+    await reportFinalStatus(workDir, output, {
+      timedOut,
+      exitCode,
+      signal: result.signal,
+      duration,
+      tokenUsage,
+      startTime,
+      symphonyWorkDir,
+    });
 
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    await handleFatalError(err, workDir, outputRef.value, startTime);
+    const harnessError = toHarnessError(err);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    const errorMessage = harnessError.message;
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    log(
+      "error",
+      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+    );
+    if (errorStack) {
+      log("error", redactSensitive(errorStack));
+    }
+
+    // Best-effort: refresh token, LLM commit, safety commit, push, create PR
+    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+    // even on fatal errors.
+    const shouldCommitAndPush = config.command === "EXECUTE";
+
+    try {
+      await refreshGitHubToken();
+    } catch (_) {
+      // ignore
+    }
+
+    let prInfo = null;
+    if (shouldCommitAndPush) {
+      const errorResultPath = path.join(
+        symphonyWorkDir || workDir,
+        "execution-result.json"
+      );
+
+      // Try LLM commit first (writes execution-result.json on success)
+      let llmPrInfo = null;
+      try {
+        llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
+      } catch (_) {
+        // ignore
+      }
+
+      // Check if LLM handled everything
+      if (llmPrInfo && fs.existsSync(errorResultPath)) {
+        prInfo = llmPrInfo;
+      } else {
+        // Fallback: safety commit + push + mechanical PR
+        try {
+          attemptSafetyCommit(
+            workDir,
+            "[INCOMPLETE] WIP: Safety commit — harness error"
+          );
+          ensureBranchPushed(workDir);
+        } catch (_) {
+          // ignore
+        }
+
+        try {
+          prInfo = parsePrInfo(workDir, output);
+          if (llmPrInfo?.prUrl) {
+            prInfo = { ...(prInfo || {}), ...llmPrInfo };
+          }
+          prInfo = createPullRequest(workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+
+        // Write execution-result.json ourselves since LLM didn't
+        try {
+          writeExecutionResult(symphonyWorkDir || workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      // Label incomplete PRs regardless of path
+      if (prInfo?.prNumber) {
+        try {
+          labelPrIncomplete(workDir, prInfo.prNumber);
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    // Best-effort: upload whatever state we have
+    try {
+      await uploadState(workDir, output, symphonyWorkDir);
+    } catch (uploadErr) {
+      log(
+        "error",
+        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+      );
+    }
+
+    // Best-effort: report failure with PR info
+    try {
+      await reportEvent({
+        type: "error",
+        code: harnessError.code,
+        message: redactSensitive(errorMessage),
+        result: {
+          ...(prInfo || {}),
+          sessionId: capturedSessionId,
+        },
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+      });
+    } catch (reportErr) {
+      log(
+        "error",
+        `Failed to report error event: ${redactSensitive(reportErr.message)}`
+      );
+    }
+
+    process.exit(1);
   }
 }
 
