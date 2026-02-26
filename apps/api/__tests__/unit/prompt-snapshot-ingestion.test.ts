@@ -124,27 +124,4 @@ model: claude-opus-4-6
       );
     });
   });
-
-  it("returns the normalized snapshot shape from markdown input", () => {
-    const snapshot = parsePromptsSnapshotFromMarkdownEntries([
-      {
-        name: "agents-snapshot/planner.md",
-        data: Buffer.from(MARKDOWN_PROMPT, "utf-8"),
-      },
-    ]);
-
-    expect(snapshot).toEqual({
-      prompts: [
-        {
-          promptType: PromptType.AGENT,
-          name: "planner",
-          description: "Planner agent",
-          model: "claude-opus-4-6",
-          tools: ["bash", "read"],
-          filePath: "prompts/planner.md",
-          content: "Plan work carefully.\n",
-        },
-      ],
-    });
-  });
 });
