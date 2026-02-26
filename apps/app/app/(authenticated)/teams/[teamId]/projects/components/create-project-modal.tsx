@@ -15,6 +15,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -28,6 +29,7 @@ import { PlusIcon } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useTeamMembers } from "@/hooks/use-team-members";
+import { PRIORITY_LABELS } from "@/lib/project-constants";
 
 type CreateProjectModalProps = {
   teamId: string;
@@ -154,10 +156,14 @@ export function CreateProjectModal({
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={Priority.Low}>Low</SelectItem>
-                    <SelectItem value={Priority.Medium}>Medium</SelectItem>
-                    <SelectItem value={Priority.High}>High</SelectItem>
-                    <SelectItem value={Priority.Urgent}>Urgent</SelectItem>
+                    {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        <span className="inline-flex items-center gap-1.5">
+                          <PriorityIcon priority={value as Priority} />
+                          {label}
+                        </span>
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
