@@ -251,7 +251,7 @@ describe("handleCheckRun", () => {
           headSha: true,
           workstreamId: true,
           artifactId: true,
-          artifact: { select: { documentSlug: true } },
+          artifact: { select: { slug: true } },
         },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
@@ -282,7 +282,7 @@ describe("handleCheckRun", () => {
         headSha,
         workstreamId: "ws-uuid-123",
         artifactId: "artifact-uuid-123",
-        artifact: { documentSlug: "test-slug" },
+        artifact: { slug: "test-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue(null);
@@ -327,7 +327,7 @@ describe("handleCheckRun", () => {
         headSha,
         workstreamId: "ws-uuid-123",
         artifactId: "artifact-uuid-123",
-        artifact: { documentSlug: "test-slug" },
+        artifact: { slug: "test-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("SUCCESS");
@@ -377,7 +377,7 @@ describe("handleCheckRun", () => {
             prTitle: "Test PR",
             prUrl: "https://github.com/org/repo/pull/42",
             artifactId: "artifact-uuid-123",
-            documentSlug: "test-slug",
+            slug: "test-slug",
             checksStatus: "PASSING",
             previousChecksStatus: "UNKNOWN",
             headSha,
@@ -577,7 +577,7 @@ describe("handleCheckRun", () => {
         headSha,
         workstreamId: "ws-uuid-fail",
         artifactId: "artifact-uuid-fail",
-        artifact: { documentSlug: "fail-slug" },
+        artifact: { slug: "fail-slug" },
       });
 
       mockQueryStatusCheckRollup.mockResolvedValue("FAILURE");
@@ -607,7 +607,7 @@ describe("handleCheckRun", () => {
             prTitle: "Failing PR",
             prUrl: "https://github.com/org/repo/pull/47",
             artifactId: "artifact-uuid-fail",
-            documentSlug: "fail-slug",
+            slug: "fail-slug",
             checksStatus: "FAILING",
             previousChecksStatus: "PASSING",
             headSha,

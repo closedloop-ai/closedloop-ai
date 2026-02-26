@@ -114,7 +114,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
         headSha: true,
         workstreamId: true,
         artifactId: true,
-        artifact: { select: { documentSlug: true } },
+        artifact: { select: { slug: true } },
       },
     });
 
@@ -228,7 +228,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
           prTitle: pr.title,
           prUrl: pr.htmlUrl,
           artifactId: pr.artifactId,
-          documentSlug: pr.artifact?.documentSlug,
+          slug: pr.artifact?.slug,
           checksStatus: newStatus,
           previousChecksStatus: currentPr.checksStatus,
           headSha,

@@ -42,6 +42,7 @@ export const pullRequestSelect = {
   baseBranch: true,
   createdAt: true,
   checksStatus: true,
+  reviewDecision: true,
 } as const;
 
 /**
