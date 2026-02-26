@@ -59,19 +59,6 @@ import { artifactVersionService } from "./artifact-version-service";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { PRD_TEMPLATE } from "./template-seeds";
 
-// Result types for service operations
-export type RegenerateResult =
-  | { success: true; artifact: Artifact }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type ExecuteResult =
-  | { success: true; correlationId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type RequestChangesResult =
-  | { success: true; message: string; artifactId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
 /**
  * Validate that a user belongs to the given organization.
  * Throws if the user does not exist within the org.
@@ -217,6 +204,11 @@ async function createArtifactRecord(
 
   return artifact;
 }
+
+// Result types for service operations
+export type RegenerateResult =
+  | { success: true; artifact: Artifact }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 /**
  * Artifacts service - handles database operations for artifact management
@@ -2713,6 +2705,14 @@ Please try again or contact support if the issue persists.`
     return pickBestStatus(ghStatus, loopStatus);
   },
 };
+
+export type ExecuteResult =
+  | { success: true; correlationId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type RequestChangesResult =
+  | { success: true; message: string; artifactId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
