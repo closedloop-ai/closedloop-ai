@@ -163,6 +163,9 @@ export function useMcpClient(): McpClient {
   const isMountedRef = useRef(true);
   const stateRef = useRef<McpConnectionState>("discovering");
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deferred cleanup timer — allows React 19 dev double-invoke re-mount to
+  // cancel the disconnect before it fires, so the in-flight connect survives.
+  const cleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setStateAndRef = useCallback((s: McpConnectionState) => {
     stateRef.current = s;
@@ -439,11 +442,24 @@ export function useMcpClient(): McpClient {
 
   useEffect(() => {
     isMountedRef.current = true;
-    connect().catch(console.error);
+
+    // Cancel deferred cleanup from double-invoke — the in-flight connect from
+    // the previous mount cycle is still valid, so don't start a new one.
+    if (cleanupTimerRef.current !== null) {
+      clearTimeout(cleanupTimerRef.current);
+      cleanupTimerRef.current = null;
+    } else {
+      connect().catch(console.error);
+    }
 
     return () => {
       isMountedRef.current = false;
-      disconnectInternal(true).catch(console.error);
+      // Defer disconnect to next microtask so a double-invoke re-mount can
+      // cancel it. On true unmount, no re-mount happens and disconnect runs.
+      cleanupTimerRef.current = setTimeout(() => {
+        cleanupTimerRef.current = null;
+        disconnectInternal(true).catch(console.error);
+      }, 0);
     };
   }, [connect, disconnectInternal]);
 

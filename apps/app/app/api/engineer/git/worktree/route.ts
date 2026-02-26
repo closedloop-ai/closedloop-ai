@@ -215,11 +215,16 @@ export function POST() {
       return NextResponse.json({ removed: [], kept: [], errors: [] });
     }
 
-    // Find PR worktree directories
+    // Find PR worktree directories that are valid git repos
     const dirEntries = readdirSync(worktreeParentDir, { withFileTypes: true });
     const prPattern = /-pr-\d+$/;
     const prDirs = dirEntries
-      .filter((e) => e.isDirectory() && prPattern.test(e.name))
+      .filter(
+        (e) =>
+          e.isDirectory() &&
+          prPattern.test(e.name) &&
+          existsSync(join(worktreeParentDir, e.name, ".git"))
+      )
       .map((e) => join(worktreeParentDir, e.name));
 
     if (prDirs.length === 0) {
