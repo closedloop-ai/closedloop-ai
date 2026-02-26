@@ -272,13 +272,21 @@ export async function handleExecutionSuccess(
   );
 }
 
+/** Returned when handleWorkflowSuccess completes the non-execute path. Caller must persist prompts after tx. */
+export type WorkflowSuccessPromptData = {
+  organizationId: string;
+  promptsSnapshot: PromptsSnapshot | null;
+};
+
 /**
  * Handle successful workflow completion.
+ * Returns prompt data for non-execute path so caller can persist after tx (avoids nested withDb.tx).
+ * Returns null when delegating to handleExecutionSuccess (that path persists prompts itself).
  */
 export async function handleWorkflowSuccess(
   tx: TransactionClient,
   ctx: WorkflowContext
-): Promise<void> {
+): Promise<WorkflowSuccessPromptData | null> {
   const { correlationId, artifactId, workstreamId, runId, command } = ctx;
 
   // Download and extract artifacts from GitHub
@@ -303,7 +311,7 @@ export async function handleWorkflowSuccess(
       codeJudgesReport,
       promptsSnapshot
     );
-    return;
+    return null;
   }
 
   // TODO: Handle questionsContent with needs_answers status in future
@@ -327,7 +335,7 @@ export async function handleWorkflowSuccess(
         command,
       }
     );
-    return;
+    return null;
   }
 
   const workstream = await tx.workstream.findUnique({
@@ -340,9 +348,6 @@ export async function handleWorkflowSuccess(
       `Workstream ${workstreamId} not found - cannot update artifact`
     );
   }
-
-  // Persist prompts snapshot — upsertFromSnapshot manages its own transaction.
-  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
   const existingArtifact = await tx.artifact.findUnique({
     where: { id: artifactId, organizationId: workstream.organizationId },
@@ -449,6 +454,11 @@ export async function handleWorkflowSuccess(
   log.info(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
   );
+
+  return {
+    organizationId: workstream.organizationId,
+    promptsSnapshot,
+  };
 }
 
 /**
@@ -540,10 +550,11 @@ export async function processWorkflowCompletion(
 
   // Use transaction to ensure artifact content and status are updated atomically.
   // This prevents race condition where frontend sees SUCCESS before content is ready.
+  let promptData: WorkflowSuccessPromptData | null = null;
   await withDb.tx(async (tx) => {
     // 1. Process the result (updates artifact content)
     if (conclusion === "success") {
-      await handleWorkflowSuccess(tx, ctx);
+      promptData = await handleWorkflowSuccess(tx, ctx);
     } else {
       await handleWorkflowFailure(tx, ctx, event.workflow_run.html_url);
     }
@@ -560,6 +571,15 @@ export async function processWorkflowCompletion(
       },
     });
   });
+
+  // Persist prompts snapshot outside the transaction — upsertFromSnapshot manages its own tx.
+  // Mirrors handleExecutionSuccess: avoids nested withDb.tx (ALS not propagated by db.$transaction).
+  if (promptData) {
+    await upsertFromSnapshot(
+      promptData.organizationId,
+      promptData.promptsSnapshot
+    );
+  }
 
   return NextResponse.json({ result: "processed", ok: true });
 }

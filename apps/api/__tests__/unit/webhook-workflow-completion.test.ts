@@ -723,10 +723,11 @@ Plan the work carefully.
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx);
+    const result = await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      "org-prompts",
+    expect(result).not.toBeNull();
+    expect(result?.organizationId).toBe("org-prompts");
+    expect(result?.promptsSnapshot).toEqual(
       expect.objectContaining({
         prompts: expect.arrayContaining([
           expect.objectContaining({ name: "my-planner" }),
@@ -735,7 +736,7 @@ Plan the work carefully.
     );
   });
 
-  it("calls upsertFromSnapshot with null when no agents-snapshot entries are present", async () => {
+  it("returns promptsSnapshot null when no agents-snapshot entries are present", async () => {
     const correlationId = "test-correlation-no-prompts";
     const artifactId = "artifact-no-prompts";
     const workstreamId = "ws-no-prompts";
@@ -788,9 +789,11 @@ Plan the work carefully.
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx);
+    const result = await handleWorkflowSuccess(asTx(mockDb), ctx);
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("org-no-prompts", null);
+    expect(result).not.toBeNull();
+    expect(result?.organizationId).toBe("org-no-prompts");
+    expect(result?.promptsSnapshot).toBeNull();
   });
 });
 
@@ -1445,6 +1448,9 @@ describe("processWorkflowCompletion", () => {
         completedAt: expect.any(Date),
       },
     });
+
+    // Prompts snapshot persisted after tx (avoids nested withDb.tx)
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("test-org-id", null);
 
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });
