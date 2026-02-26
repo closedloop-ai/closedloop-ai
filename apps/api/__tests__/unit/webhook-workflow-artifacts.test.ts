@@ -23,7 +23,6 @@ const emptyContent = (): Parameters<typeof mergeZipContent>[1] => ({
   codeJudgesReport: null,
   perfSummary: null,
   promptsSnapshot: null,
-  entries: [],
 });
 
 describe("mergeZipContent", () => {
