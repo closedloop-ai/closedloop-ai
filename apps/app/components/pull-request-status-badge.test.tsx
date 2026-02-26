@@ -99,6 +99,7 @@ describe("CI status indicator", () => {
     headBranch: "feature-branch",
     baseBranch: "main",
     createdAt: new Date("2024-01-01T00:00:00Z"),
+    reviewDecision: null,
   };
 
   it("renders green checkmark for checksStatus PASSING", () => {
