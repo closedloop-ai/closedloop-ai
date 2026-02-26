@@ -1,13 +1,15 @@
 /**
  * Prompts registry service — upserts prompt snapshots into the database.
  *
- * NOTE: Relies on search_path being set by the connection pool (configured in
- * packages/database/index.ts). The raw SQL references prompt_registry and the
- * "PromptType" enum without schema qualification.
+ * Uses Prisma ORM with UUIDv7 generated in app code (codebase convention).
+ * Race-safe: findUnique for idempotency, P2002 catch for concurrent version
+ * collisions (equivalent to ON CONFLICT DO NOTHING).
  */
 
 import type { TransactionClient } from "@repo/database";
 import { Prisma, withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
+import { v7 as uuidv7 } from "uuid";
 import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
 import type { PromptsSnapshot } from "@/lib/prompt-types";
 
@@ -28,11 +30,11 @@ import type { PromptsSnapshot } from "@/lib/prompt-types";
  *
  *   await upsertFromSnapshot(orgId, snapshot);
  *
- * This flow intentionally keeps SHA generation in app code while making the
- * insert atomic in SQL to avoid TOCTOU races:
- * 1) Compute SHA in app code.
- * 2) In one statement, compute next version for (organization_id, name).
- * 3) Insert and ignore unique conflicts (same sha or raced version).
+ * ## Race-safety
+ *
+ * - Idempotency: findUnique by (org, name, sha) — if exact content exists, skip.
+ * - Version collision: create with computed next_version; catch P2002 when a
+ *   concurrent worker claimed the same version (equivalent to ON CONFLICT DO NOTHING).
  *
  * NOTE: `withDb.tx` does not currently propagate ambient transactions via
  * AsyncLocalStorage when starting from `withDb.tx` itself. Pass `tx`
@@ -52,52 +54,66 @@ export async function upsertFromSnapshot(
       const { promptType, name, description, model, tools, filePath, content } =
         prompt;
       const sha = computePromptSha256(content);
-      const prismaPromptType: string = promptType;
 
-      // Atomic insert strategy:
-      // - CTE computes next version for (organization_id, name) at execution time.
-      // - INSERT uses that computed version and the precomputed content SHA.
-      // - ON CONFLICT DO NOTHING prevents TOCTOU race failures when concurrent
-      //   workers try to insert the same SHA or the same next version.
-      // - Prisma unique constraints scope this behavior per organization + name:
-      //   (organization_id, name, sha) blocks duplicate content for the same prompt
-      //   name, and (organization_id, name, version) guarantees version uniqueness.
-      //   The same SHA under a different name in the same organization is allowed.
-      await client.$queryRaw(Prisma.sql`
-        WITH latest AS (
-          SELECT COALESCE(MAX(version), 0) + 1 AS next_version
-          FROM prompt_registry
-          WHERE organization_id = ${organizationId}
-            AND name = ${name}
-        )
-        INSERT INTO prompt_registry (
-          id,
-          organization_id,
-          prompt_type,
-          name,
-          description,
-          model,
-          tools,
-          file_path,
-          content,
-          sha,
-          version
-        )
-        SELECT
-          gen_random_uuid(),
-          ${organizationId},
-          ${prismaPromptType}::"PromptType",
-          ${name},
-          ${description},
-          ${model},
-          ${tools}::text[],
-          ${filePath},
-          ${content},
-          ${sha},
-          latest.next_version
-        FROM latest
-        ON CONFLICT DO NOTHING
-      `);
+      const existing = await client.prompt.findUnique({
+        where: {
+          organizationId_name_sha: { organizationId, name, sha },
+        },
+        select: { id: true },
+      });
+      if (existing) {
+        return;
+      }
+
+      const latest = await client.prompt.aggregate({
+        where: { organizationId, name },
+        _max: { version: true },
+      });
+      const nextVersion = (latest._max.version ?? 0) + 1;
+
+      try {
+        await client.prompt.create({
+          data: {
+            id: uuidv7(),
+            organizationId,
+            promptType,
+            name,
+            description,
+            model,
+            tools,
+            filePath,
+            content,
+            sha,
+            version: nextVersion,
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === "P2002"
+        ) {
+          // P2002 = unique constraint violation. Two cases:
+          //
+          // 1) (org, name, sha): Another worker already inserted this exact content.
+          //    SHA is a content hash — same content ⇒ same SHA. The unique constraint
+          //    (organization_id, name, sha) prevents duplicate content for the same
+          //    prompt name. We skip; the other worker's row is the canonical one.
+          //
+          // 2) (org, name, version): Two workers computed the same next_version (e.g.
+          //    both saw max=3, both tried version=4). One won; we lost. Equivalent
+          //    to raw SQL's ON CONFLICT DO NOTHING — silently skip, no retry needed.
+          log.debug(
+            "[prompts-service] P2002 unique constraint — concurrent insert won",
+            {
+              organizationId,
+              name,
+              nextVersion,
+            }
+          );
+          return;
+        }
+        throw error;
+      }
     }
   };
 

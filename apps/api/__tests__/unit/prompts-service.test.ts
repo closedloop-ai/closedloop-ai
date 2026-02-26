@@ -2,19 +2,13 @@ import { vi } from "vitest";
 import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
 import { getMockWithDb, mockWithDbTx } from "../utils/db-helpers";
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  Prisma: {
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-      strings,
-      values,
-    }),
-  },
-  PromptType: {
-    AGENT: "AGENT",
-    JUDGE: "JUDGE",
-  },
-}));
+vi.mock("@repo/database", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repo/database")>();
+  return {
+    ...actual,
+    withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  };
+});
 
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 
@@ -26,27 +20,42 @@ describe("upsertFromSnapshot", () => {
   });
 
   it("returns without calling db when snapshot is null", async () => {
-    const mockTx = { $queryRaw: vi.fn() };
+    const mockPrompt = {
+      findUnique: vi.fn(),
+      aggregate: vi.fn(),
+      create: vi.fn(),
+    };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, null);
 
-    expect(mockTx.$queryRaw).not.toHaveBeenCalled();
+    expect(mockPrompt.findUnique).not.toHaveBeenCalled();
+    expect(mockPrompt.create).not.toHaveBeenCalled();
   });
 
   it("returns without calling db when snapshot has empty prompts array", async () => {
-    const mockTx = { $queryRaw: vi.fn() };
+    const mockPrompt = {
+      findUnique: vi.fn(),
+      aggregate: vi.fn(),
+      create: vi.fn(),
+    };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, { prompts: [] });
 
-    expect(mockTx.$queryRaw).not.toHaveBeenCalled();
+    expect(mockPrompt.findUnique).not.toHaveBeenCalled();
+    expect(mockPrompt.create).not.toHaveBeenCalled();
   });
 
   it("inserts a new prompt with explicit sha and initial version", async () => {
-    const mockTx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+    const mockPrompt = {
+      findUnique: vi.fn().mockResolvedValue(null),
+      aggregate: vi.fn().mockResolvedValue({ _max: { version: null } }),
+      create: vi.fn().mockResolvedValue({ id: "new-id" }),
     };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -63,22 +72,37 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-
-    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[0];
-    expect(insertSqlArg.values).toContain(ORG_ID);
-    expect(insertSqlArg.values).toContain("AGENT");
-    expect(insertSqlArg.values).toContain("my-agent");
-    expect(insertSqlArg.values).toContain("You are a helpful agent.");
-    expect(insertSqlArg.values).toContain(
+    expect(mockPrompt.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.findUnique).toHaveBeenCalledWith({
+      where: {
+        organizationId_name_sha: {
+          organizationId: ORG_ID,
+          name: "my-agent",
+          sha: computePromptSha256("You are a helpful agent."),
+        },
+      },
+      select: { id: true },
+    });
+    expect(mockPrompt.aggregate).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.create).toHaveBeenCalledTimes(1);
+    const createArg = mockPrompt.create.mock.calls[0][0];
+    expect(createArg.data.organizationId).toBe(ORG_ID);
+    expect(createArg.data.promptType).toBe("AGENT");
+    expect(createArg.data.name).toBe("my-agent");
+    expect(createArg.data.content).toBe("You are a helpful agent.");
+    expect(createArg.data.sha).toBe(
       computePromptSha256("You are a helpful agent.")
     );
+    expect(createArg.data.version).toBe(1);
   });
 
-  it("attempts a single atomic insert when organization, name, and sha already exist", async () => {
-    const mockTx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+  it("skips insert when organization, name, and sha already exist", async () => {
+    const mockPrompt = {
+      findUnique: vi.fn().mockResolvedValue({ id: "existing-id" }),
+      aggregate: vi.fn(),
+      create: vi.fn(),
     };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -95,13 +119,17 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.create).not.toHaveBeenCalled();
   });
 
-  it("includes prompt type and content sha in atomic insert values", async () => {
-    const mockTx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+  it("includes prompt type and content sha in create data", async () => {
+    const mockPrompt = {
+      findUnique: vi.fn().mockResolvedValue(null),
+      aggregate: vi.fn().mockResolvedValue({ _max: { version: null } }),
+      create: vi.fn().mockResolvedValue({ id: "new-id" }),
     };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -118,18 +146,21 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(1);
-    const [insertSqlArg] = mockTx.$queryRaw.mock.calls[0];
-    expect(insertSqlArg.values).toContain("JUDGE");
-    expect(insertSqlArg.values).toContain(
+    expect(mockPrompt.create).toHaveBeenCalledTimes(1);
+    const createArg = mockPrompt.create.mock.calls[0][0];
+    expect(createArg.data.promptType).toBe("JUDGE");
+    expect(createArg.data.sha).toBe(
       computePromptSha256("Evaluate this output.")
     );
   });
 
   it("uses a single transaction callback for multiple prompts in one snapshot", async () => {
-    const mockTx = {
-      $queryRaw: vi.fn().mockResolvedValue([]),
+    const mockPrompt = {
+      findUnique: vi.fn().mockResolvedValue(null),
+      aggregate: vi.fn().mockResolvedValue({ _max: { version: null } }),
+      create: vi.fn().mockResolvedValue({ id: "new-id" }),
     };
+    const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
     await upsertFromSnapshot(ORG_ID, {
@@ -156,6 +187,7 @@ describe("upsertFromSnapshot", () => {
     });
 
     expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
-    expect(mockTx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(mockPrompt.findUnique).toHaveBeenCalledTimes(2);
+    expect(mockPrompt.create).toHaveBeenCalledTimes(2);
   });
 });
