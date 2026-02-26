@@ -17,7 +17,7 @@ export type Project = {
   priority: Priority;
   status: ProjectStatus;
   assigneeId: string | null;
-  createdById: string;
+  createdById: string | null;
   slug: string | null;
   targetDate: Date | null;
   codebaseSummary: string | null;

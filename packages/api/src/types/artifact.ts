@@ -64,7 +64,7 @@ export type Artifact = {
   fileName: string | null;
   status: ArtifactStatus;
   latestVersion: number;
-  createdById: string;
+  createdById: string | null;
   assigneeId: string | null;
   assignee: BasicUser | null;
   approverId: string | null;
