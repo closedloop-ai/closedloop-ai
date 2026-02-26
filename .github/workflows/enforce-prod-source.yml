@@ -7,9 +7,9 @@ jobs:
   check-source:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify source is main
-        if: github.head_ref != 'main'
+      - name: Verify source is this repo's main branch
+        if: github.head_ref != 'main' || github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "::error::PRs to production must come from main, not '${{ github.head_ref }}'"
-          echo "All changes must flow through main first, then deploy via main → production."
+          echo "::error::PRs to production must come from this repo's main branch."
+          echo "Source: ${{ github.event.pull_request.head.repo.full_name }}/${{ github.head_ref }}"
           exit 1
