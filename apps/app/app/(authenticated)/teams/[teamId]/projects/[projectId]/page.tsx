@@ -38,7 +38,7 @@ import {
   Loader2Icon,
   SearchIcon,
 } from "lucide-react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useState } from "react";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
@@ -51,7 +51,6 @@ import {
   useDeleteArtifact,
   useUpdateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { useCreateIssue } from "@/hooks/queries/use-issues";
 import {
   useProject,
   useProjectActivity,
@@ -64,6 +63,7 @@ import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
+import { CreateFeatureModal } from "./components/create-feature-modal";
 import { PropertiesPanel } from "./components/properties-panel";
 import { useMergeNotification } from "./hooks/use-merge-notification";
 
@@ -79,12 +79,12 @@ const ACTIVE_WORKSTREAM_STATES: Set<WorkstreamState> = new Set([
 
 export default function ProjectDetailPage() {
   const params = useParams();
-  const router = useRouter();
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
   const [activeTab, setActiveTab] = useState("documents");
-  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createArtifactOpen, setCreateArtifactOpen] = useState(false);
+  const [createFeatureOpen, setCreateFeatureOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
     useState<ArtifactType>(ArtifactType.Prd);
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
@@ -140,7 +140,6 @@ export default function ProjectDetailPage() {
   const updateTargetDateMutation = useUpdateProjectTargetDate();
   const updateArtifactMutation = useUpdateArtifact();
   const deleteArtifactMutation = useDeleteArtifact();
-  const createIssueMutation = useCreateIssue();
 
   const handleUpdatePriority = (priority: Priority) => {
     if (!project) {
@@ -178,7 +177,7 @@ export default function ProjectDetailPage() {
 
   const handleCreateArtifact = (type: ArtifactType) => {
     setSelectedArtifactType(type);
-    setCreateModalOpen(true);
+    setCreateArtifactOpen(true);
   };
 
   const handleDeleteArtifact = async (artifactId: string): Promise<boolean> => {
@@ -242,20 +241,7 @@ export default function ProjectDetailPage() {
                 <ClipboardListIcon className="mr-2 h-4 w-4" />
                 Implementation Plan
               </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={createIssueMutation.isPending}
-                onClick={() => {
-                  // TODO: Add feature creation modal
-                  createIssueMutation.mutate(
-                    { title: "Untitled Feature", projectId },
-                    {
-                      onSuccess: (issue) => {
-                        router.push(`/issues/${issue.slug}`);
-                      },
-                    }
-                  );
-                }}
-              >
+              <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
                 <CircleDotIcon className="mr-2 h-4 w-4" />
                 Feature
               </DropdownMenuItem>
@@ -379,9 +365,16 @@ export default function ProjectDetailPage() {
       </main>
       <CreateArtifactModal
         artifactType={selectedArtifactType}
-        onOpenChange={setCreateModalOpen}
-        open={createModalOpen}
+        onOpenChange={setCreateArtifactOpen}
+        open={createArtifactOpen}
         projectId={projectId}
+        teamId={teamId}
+      />
+      <CreateFeatureModal
+        onOpenChange={setCreateFeatureOpen}
+        open={createFeatureOpen}
+        projectId={projectId}
+        teamId={teamId}
       />
     </>
   );

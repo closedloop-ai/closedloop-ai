@@ -32,8 +32,7 @@ function getInitiatorName(
   if (!initiatedBy) {
     return null;
   }
-  const name = getUserDisplayName(initiatedBy);
-  return name === "Unknown" ? null : name;
+  return getUserDisplayName(initiatedBy);
 }
 
 /** Build a queued message for the given command. */
