@@ -110,7 +110,8 @@ SET "created_by_id" = (
 )
 WHERE p."created_by_id" IS NULL;
 
--- 6e. created_by_id is nullable for backwards compatibility with existing data
+-- 6e. Set NOT NULL constraint after backfill
+ALTER TABLE "projects" ALTER COLUMN "created_by_id" SET NOT NULL;
 
 -- 6f. Update indexes: drop old owner_id index, create new ones
 DROP INDEX IF EXISTS "projects_owner_id_idx";
@@ -145,7 +146,8 @@ SET "created_by_id" = COALESCE(
 )
 WHERE a."created_by_id" IS NULL;
 
--- 7d. created_by_id is nullable for backwards compatibility with existing data
+-- 7d. Set NOT NULL constraint after backfill
+ALTER TABLE "artifacts" ALTER COLUMN "created_by_id" SET NOT NULL;
 
 -- 7e. Update indexes: drop old owner_id index, create new ones
 DROP INDEX IF EXISTS "artifacts_owner_id_idx";

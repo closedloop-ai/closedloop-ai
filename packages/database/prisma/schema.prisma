@@ -298,7 +298,7 @@ model Project {
   priority        Priority      @default(MEDIUM)
   status          ProjectStatus @default(NOT_STARTED)
   assigneeId      String?       @map("assignee_id") @db.Uuid
-  createdById     String?       @map("created_by_id") @db.Uuid
+  createdById     String        @map("created_by_id") @db.Uuid
   slug            String?
   targetDate      DateTime?     @map("target_date")
   codebaseSummary String?       @map("codebase_summary")
@@ -311,7 +311,7 @@ model Project {
   // Relations
   organization  Organization   @relation(fields: [organizationId], references: [id])
   assignee      User?          @relation("ProjectAssignee", fields: [assigneeId], references: [id])
-  createdBy     User?          @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  createdBy     User           @relation("ProjectCreatedBy", fields: [createdById], references: [id])
   workstreams   Workstream[]
   artifacts     Artifact[]
   issues        Issue[]
@@ -455,7 +455,7 @@ model Artifact {
   approverId      String?        @map("approver_id") @db.Uuid
   status          ArtifactStatus @default(DRAFT)
   latestVersion   Int            @default(1) @map("latest_version")
-  createdById     String?        @map("created_by_id") @db.Uuid
+  createdById     String         @map("created_by_id") @db.Uuid
   tokenUsage      Json?          @map("token_usage")
   targetRepo      String?        @map("target_repo")
   targetBranch    String?        @map("target_branch")
@@ -469,7 +469,7 @@ model Artifact {
   workstream   Workstream?          @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   project      Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
   assignee     User?                @relation("ArtifactAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  createdBy    User?                @relation("ArtifactCreatedBy", fields: [createdById], references: [id])
+  createdBy    User                 @relation("ArtifactCreatedBy", fields: [createdById], references: [id])
   approver     User?                @relation("ArtifactApprover", fields: [approverId], references: [id], onDelete: SetNull)
   versions         ArtifactVersion[]
   ratings          ArtifactRating[]
