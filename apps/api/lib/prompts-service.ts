@@ -160,9 +160,15 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 function haveSameTools(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  if (leftSet.size !== rightSet.size) {
     return false;
   }
-
-  return left.every((value, index) => value === right[index]);
+  for (const v of leftSet) {
+    if (!rightSet.has(v)) {
+      return false;
+    }
+  }
+  return true;
 }
