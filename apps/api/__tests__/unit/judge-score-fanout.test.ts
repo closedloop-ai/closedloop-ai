@@ -2,13 +2,15 @@
  * Unit tests for fanOutJudgeScores.
  *
  * Verifies that JudgeScore rows are constructed correctly and written via
- * tx.judgeScore.createMany. The Prompt model does not exist yet (PR 1 not
- * merged), so promptId is always null.
+ * tx.judgeScore.createMany, including promptId lookup from prompt_registry.
  */
 import { vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  PromptType: {
+    JUDGE: "JUDGE",
+  },
 }));
 
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
@@ -22,6 +24,9 @@ import { buildCaseScore } from "../fixtures/evaluation";
 
 function createMockTx() {
   return {
+    prompt: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     judgeScore: {
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
@@ -44,7 +49,7 @@ describe("fanOutJudgeScores", () => {
     vi.clearAllMocks();
   });
 
-  it("calls createMany with one row per CaseScore containing correct fields and promptId: null", async () => {
+  it("maps promptId from normalized judge name and falls back to null when not found", async () => {
     const caseScoreA = buildCaseScore("clarity-judge", 0.9);
     const caseScoreB = buildCaseScore("brevity-judge", 0.75);
 
@@ -55,12 +60,29 @@ describe("fanOutJudgeScores", () => {
     };
 
     const tx = createMockTx();
+    tx.prompt.findMany.mockResolvedValue([
+      { id: "prompt-clarity-v3", name: "clarity_judge", version: 3 },
+    ]);
 
     await fanOutJudgeScores({
       evaluationId: EVALUATION_ID,
       organizationId: ORG_ID,
       report,
       tx: tx as any,
+    });
+
+    expect(tx.prompt.findMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG_ID,
+        promptType: "JUDGE",
+      },
+      distinct: ["name"],
+      orderBy: [{ version: "desc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        version: true,
+      },
     });
 
     expect(tx.judgeScore.createMany).toHaveBeenCalledOnce();
@@ -73,7 +95,7 @@ describe("fanOutJudgeScores", () => {
     const metricA = caseScoreA.metrics[0];
     expect(data[0]).toEqual({
       evaluationId: EVALUATION_ID,
-      promptId: null,
+      promptId: "prompt-clarity-v3",
       caseId: caseScoreA.case_id,
       threshold: metricA.threshold,
       score: metricA.score,
@@ -90,6 +112,37 @@ describe("fanOutJudgeScores", () => {
       score: metricB.score,
       justification: metricB.justification,
       finalStatus: caseScoreB.final_status,
+    });
+  });
+
+  it("uses the first prompt per normalized stem from pre-sorted query results", async () => {
+    const report: JudgesReport = {
+      report_id: "r-stem",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [buildCaseScore("clarity-judge", 0.9)],
+    };
+
+    const tx = createMockTx();
+    tx.prompt.findMany.mockResolvedValue([
+      { id: "prompt-clarity-v4", name: "clarity_judge", version: 4 },
+      { id: "prompt-clarity-v2", name: "clarity-score", version: 2 },
+      { id: "prompt-clarity-v1", name: "clarity-judge", version: 1 },
+    ]);
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({
+      caseId: "clarity-judge",
+      promptId: "prompt-clarity-v4",
     });
   });
 
