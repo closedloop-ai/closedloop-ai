@@ -10,6 +10,7 @@ import {
   type IssueWithWorkstream,
 } from "@repo/api/src/types/issue";
 import { Label } from "@repo/design-system/components/ui/label";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -119,7 +120,10 @@ export function IssueMetadataPanel({
                 <SelectContent>
                   {Object.values(Priority).map((priorityOption) => (
                     <SelectItem key={priorityOption} value={priorityOption}>
-                      {issuePriorityLabels[priorityOption] ?? priorityOption}
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={priorityOption} />
+                        {issuePriorityLabels[priorityOption] ?? priorityOption}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>

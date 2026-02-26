@@ -12,6 +12,7 @@ import {
   CollapsibleTrigger,
 } from "@repo/design-system/components/ui/collapsible";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -32,7 +33,7 @@ import {
 import { useMemo, useState } from "react";
 import { useTeamMembers } from "@/hooks/use-team-members";
 import { ensureDate } from "@/lib/date-utils";
-import { PRIORITY_COLORS, PRIORITY_LABELS } from "@/lib/project-constants";
+import { PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { CodebaseSummaryUpload } from "./codebase-summary-upload";
 
@@ -116,7 +117,8 @@ export function PropertiesPanel({
           >
             <SelectTrigger className="w-full">
               <SelectValue>
-                <span className={PRIORITY_COLORS[project.priority]}>
+                <span className="inline-flex items-center gap-1.5">
+                  <PriorityIcon priority={project.priority} />
                   {PRIORITY_LABELS[project.priority]}
                 </span>
               </SelectValue>
@@ -124,7 +126,8 @@ export function PropertiesPanel({
             <SelectContent>
               {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
-                  <span className={PRIORITY_COLORS[value as Priority]}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <PriorityIcon priority={value as Priority} />
                     {label}
                   </span>
                 </SelectItem>

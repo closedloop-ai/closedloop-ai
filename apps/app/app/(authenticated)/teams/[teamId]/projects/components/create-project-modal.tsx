@@ -15,6 +15,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -154,10 +155,30 @@ export function CreateProjectModal({
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={Priority.Low}>Low</SelectItem>
-                    <SelectItem value={Priority.Medium}>Medium</SelectItem>
-                    <SelectItem value={Priority.High}>High</SelectItem>
-                    <SelectItem value={Priority.Urgent}>Urgent</SelectItem>
+                    <SelectItem value={Priority.Low}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={Priority.Low} />
+                        Low
+                      </span>
+                    </SelectItem>
+                    <SelectItem value={Priority.Medium}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={Priority.Medium} />
+                        Medium
+                      </span>
+                    </SelectItem>
+                    <SelectItem value={Priority.High}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={Priority.High} />
+                        High
+                      </span>
+                    </SelectItem>
+                    <SelectItem value={Priority.Urgent}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={Priority.Urgent} />
+                        Urgent
+                      </span>
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
