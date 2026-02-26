@@ -1,4 +1,4 @@
-import { APPROVER_ROLE_OPTIONS } from "@repo/api/src/types/artifact";
+import { APPROVER_ROLE_OPTIONS } from "@repo/api/src/types/user";
 import { z } from "zod";
 
 const approverRoleEnum = z.enum(APPROVER_ROLE_OPTIONS);

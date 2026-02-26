@@ -70,7 +70,11 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
         // Create a project and associate with team
         const project = await withDb((db) =>
           db.project.create({
-            data: { organizationId: orgId, name: "Test Project" },
+            data: {
+              organizationId: orgId,
+              name: "Test Project",
+              createdById: user.id,
+            },
           })
         );
         await withDb((db) =>
@@ -351,7 +355,11 @@ describe.skipIf(!hasDatabase)("Teams Service Integration", () => {
 
         const project = await withDb((db) =>
           db.project.create({
-            data: { organizationId: orgId, name: "Test Project" },
+            data: {
+              organizationId: orgId,
+              name: "Test Project",
+              createdById: user.id,
+            },
           })
         );
         await withDb((db) =>

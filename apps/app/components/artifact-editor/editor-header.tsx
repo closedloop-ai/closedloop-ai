@@ -1,5 +1,6 @@
 "use client";
 
+import type { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Tooltip,
@@ -33,7 +34,7 @@ type EditorHeaderProps = {
   /**
    * Status of the artifact (DRAFT, REVIEW, APPROVED, etc.)
    */
-  status: string;
+  status: ArtifactStatus;
   /**
    * Whether the content is currently being saved
    */

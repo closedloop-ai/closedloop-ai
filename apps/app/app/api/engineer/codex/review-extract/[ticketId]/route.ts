@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
+import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { extractClaudeText } from "@/lib/engineer/claude-stream-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 import {
@@ -140,7 +141,7 @@ function runClaudeExtraction(
         "--model",
         "sonnet",
         "--allowedTools",
-        "Read Glob Grep",
+        withMcpTools("Read,Glob,Grep"),
       ],
       {
         cwd: worktreeDir,

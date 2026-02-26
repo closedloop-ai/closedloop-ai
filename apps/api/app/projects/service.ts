@@ -3,7 +3,7 @@ import type {
   CreateProjectInput,
   ProjectWithDetails,
   UpdateProjectInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
@@ -19,15 +19,16 @@ export const projectsService = {
     return {
       ...project,
       settings: project.settings as JsonObject,
-      owner: project.owner
+      assignee: project.assignee
         ? {
-            id: project.owner.id,
-            firstName: project.owner.firstName,
-            lastName: project.owner.lastName,
-            avatarUrl: project.owner.avatarUrl,
+            id: project.assignee.id,
+            email: project.assignee.email,
+            firstName: project.assignee.firstName,
+            lastName: project.assignee.lastName,
+            avatarUrl: project.assignee.avatarUrl,
           }
         : undefined,
-      status: projectsService.calculateStatus(project.artifacts),
+      completionPercentage: projectsService.calculateStatus(project.artifacts),
       teams: project.teams.map((pt) => ({
         id: pt.team.id,
         name: pt.team.name,
@@ -86,23 +87,22 @@ export const projectsService = {
   /**
    * Create a new project
    */
-  create(organizationId: string, input: CreateProjectInput) {
+  create(organizationId: string, userId: string, input: CreateProjectInput) {
+    const { teamIds, ...projectData } = input;
+
     return withDb.tx(async (tx) => {
       const project = await tx.project.create({
         data: {
+          ...projectData,
           organizationId,
-          name: input.name,
-          description: input.description,
-          priority: input.priority ?? "NOT_SET",
-          ownerId: input.ownerId,
-          targetDate: input.targetDate,
+          createdById: userId,
         },
       });
 
       // Add project to teams if specified
-      if (input.teamIds && input.teamIds.length > 0) {
+      if (teamIds && teamIds.length > 0) {
         await tx.projectTeam.createMany({
-          data: input.teamIds.map((teamId) => ({
+          data: teamIds.map((teamId) => ({
             projectId: project.id,
             teamId,
           })),
@@ -198,6 +198,75 @@ export const projectsService = {
   },
 
   /**
+   * Add a project to the user's favorites (idempotent).
+   */
+  addFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.upsert({
+        where: { userId_projectId: { userId, projectId } },
+        create: { userId, projectId },
+        update: {},
+      });
+      return { favorited: true };
+    });
+  },
+
+  /**
+   * Remove a project from the user's favorites.
+   */
+  removeFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.deleteMany({
+        where: { userId, projectId },
+      });
+      return { favorited: false };
+    });
+  },
+
+  /**
+   * Find all favorite projects for a user within an organization.
+   * Returns projects mapped to API format, ordered by when they were favorited.
+   */
+  async findFavoritesByUser(
+    userId: string,
+    organizationId: string
+  ): Promise<ProjectWithDetails[]> {
+    const favorites = await withDb((db) =>
+      db.favoriteProject.findMany({
+        where: {
+          userId,
+          project: { organizationId },
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          project: {
+            include: PROJECT_DETAIL_INCLUDE,
+          },
+        },
+      })
+    );
+    return favorites.map((f) =>
+      projectsService.toProjectWithDetails(f.project)
+    );
+  },
+
+  /**
    * Calculate project status based on artifact completion
    */
   calculateStatus(artifacts: Array<{ status: string }>): number {
@@ -214,10 +283,10 @@ export const projectsService = {
 };
 
 /**
- * Standard include pattern for project queries with owner, teams, and artifacts
+ * Standard include pattern for project queries with assignee, teams, and artifacts
  */
 const PROJECT_DETAIL_INCLUDE = {
-  owner: basicUserSelect,
+  assignee: basicUserSelect,
   teams: {
     include: {
       team: {

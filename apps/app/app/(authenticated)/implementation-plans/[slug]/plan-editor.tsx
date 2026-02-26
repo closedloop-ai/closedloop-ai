@@ -213,15 +213,15 @@ export function PlanEditor({
           metadataPanel={
             <PlanMetadataPanel
               approver={metadata.approver}
+              assignee={metadata.assignee}
               codeJudgesReport={codeJudgesReport ?? null}
               generationStatus={generationStatus ?? null}
               isPreviewRefreshing={isRefreshingPreviewDeployment}
               judgesReport={judgesReport ?? null}
               onApproverSelect={metadata.handleApproverSelect}
-              onOwnerChange={metadata.handleOwnerChange}
+              onAssigneeChange={metadata.handleAssigneeChange}
               onPreviewRefresh={refetchPreviewLinks}
               onStatusChange={metadata.handleStatusChange}
-              owner={metadata.owner}
               plan={plan}
               previewDeployment={previewDeployment}
               pullRequest={pullRequest ?? null}

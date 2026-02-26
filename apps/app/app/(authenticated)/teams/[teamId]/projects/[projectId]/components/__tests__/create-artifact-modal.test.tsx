@@ -16,7 +16,7 @@ const mockUseCreateAndInlineGeneratePRD = vi.fn();
 const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseArtifact = vi.fn();
 const mockUseArtifactsByProject = vi.fn();
-const mockUseOrganizationUsers = vi.fn();
+const mockUseTeamMembers = vi.fn();
 const mockUseGitHubIntegrationStatus = vi.fn();
 const mockUseGitHubRepositories = vi.fn();
 const mockUseGitHubBranches = vi.fn();
@@ -35,8 +35,8 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   };
 });
 
-vi.mock("@/hooks/queries/use-users", () => ({
-  useOrganizationUsers: () => mockUseOrganizationUsers(),
+vi.mock("@/hooks/queries/use-teams", () => ({
+  useTeamMembers: (...args: unknown[]) => mockUseTeamMembers(...args),
 }));
 
 vi.mock("@/hooks/queries/use-github-integration", () => ({
@@ -105,7 +105,7 @@ describe("CreateArtifactModal", () => {
       isLoading: false,
     });
 
-    mockUseOrganizationUsers.mockReturnValue({
+    mockUseTeamMembers.mockReturnValue({
       data: [],
       isLoading: false,
     });
@@ -143,6 +143,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -169,6 +170,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -203,6 +205,7 @@ describe("CreateArtifactModal", () => {
           onSuccess={mockOnSuccess}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -261,6 +264,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -333,6 +337,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -364,6 +369,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -377,6 +383,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -393,6 +400,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -407,6 +415,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -430,6 +439,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -449,6 +459,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -470,6 +481,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -493,6 +505,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -520,6 +533,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -549,6 +563,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -575,6 +590,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -612,6 +628,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -645,6 +662,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -663,6 +681,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -690,6 +709,7 @@ describe("CreateArtifactModal", () => {
           onSuccess={mockOnSuccess}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -714,6 +734,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -730,6 +751,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={vi.fn()}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -753,6 +775,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -768,6 +791,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -786,6 +810,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -807,6 +832,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -831,6 +857,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 
@@ -864,6 +891,7 @@ describe("CreateArtifactModal", () => {
           onOpenChange={mockOnOpenChange}
           open={true}
           projectId="project-1"
+          teamId="team-1"
         />
       );
 

@@ -7,12 +7,14 @@ export function registerCreateIssueComment(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-issue-comment",
-    "Create a comment on an issue",
     {
-      issueId: z.string().describe("ID of the issue to comment on"),
-      body: z.string().min(1).describe("Comment body text"),
+      description: "Create a comment on an issue",
+      inputSchema: {
+        issueId: z.string().describe("ID of the issue to comment on"),
+        body: z.string().min(1).describe("Comment body text"),
+      },
     },
     ({ issueId, body }) =>
       withErrorHandling(async () => {

@@ -47,6 +47,12 @@ vi.mock("@/hooks/queries/use-users", () => ({
   useOrganizationUsers: vi.fn(() => ({ data: [] })),
 }));
 
+// Mock favorites hooks — avoids needing ClerkProvider for useAuth
+vi.mock("@/hooks/queries/use-projects", () => ({
+  useIsFavorite: vi.fn(() => false),
+  useToggleFavorite: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}));
+
 // Mock Tooltip components so TooltipContent renders inline (not in a Portal)
 // This lets us assert on the tooltip text without hover simulation.
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
@@ -63,7 +69,7 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => ({
 }));
 
 // Import after mocks
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { ProjectsTable } from "@/app/(authenticated)/teams/[teamId]/projects/components/projects-table";
 
 const makeProject = (
@@ -74,7 +80,9 @@ const makeProject = (
   name: "Test Project",
   description: null,
   priority: "MEDIUM",
-  ownerId: null,
+  assigneeId: null,
+  createdById: "user-1",
+  slug: null,
   targetDate: null,
   codebaseSummary: null,
   lastIndexedAt: null,
@@ -82,7 +90,8 @@ const makeProject = (
   sortOrder: null,
   createdAt: new Date("2024-01-01"),
   updatedAt: new Date("2024-01-02"),
-  status: 42,
+  status: "IN_PROGRESS",
+  completionPercentage: 42,
   teams: [],
   ...overrides,
 });

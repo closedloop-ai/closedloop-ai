@@ -3,6 +3,7 @@
 import "./tiptap-editor.css";
 
 import { cn } from "@repo/design-system/lib/utils";
+import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
@@ -47,7 +48,12 @@ export function TiptapEditorCore({
         },
         undoRedo: false,
       }),
-      Markdown,
+      Markdown.configure({
+        markedOptions: {
+          // Claude Code uses GitHub Flavored Markdown
+          gfm: true,
+        },
+      }),
       MermaidExtension,
       Table.configure({
         resizable: true,
@@ -55,6 +61,8 @@ export function TiptapEditorCore({
       TableRow,
       TableHeader,
       TableCell,
+      TaskList,
+      TaskItem,
       ...(liveblocksExtension ? [liveblocksExtension] : []),
     ],
     // When using Liveblocks, don't set initial content here
@@ -93,78 +101,62 @@ export function TiptapEditorCore({
 
   // Sync content when not using Liveblocks.
   useEffect(() => {
-    if (!editor) {
+    if (!editor || liveblocksExtension) {
       return;
     }
-    if (liveblocksExtension) {
-      return;
-    }
-
     if (value !== editor.getMarkdown()) {
       setMarkdownContent(value);
     }
   }, [editor, liveblocksExtension, setMarkdownContent, value]);
 
-  // Seed or reconcile Liveblocks content after sync completes.
-  // - Empty doc: seed with the initial content (first-time room creation).
-  // - Stale doc: clear + re-seed when the Yjs document content no longer
-  //   matches the API version (e.g. a loop created a new version server-side
-  //   but the Liveblocks room was never updated).
-  // The key={latestVersion} on CollaborativeEditor ensures this component
-  // remounts when a new version appears, so hasSeededContent resets.
-  useEffect(() => {
-    const initialContent = initialContentRef.current;
+  useEffect(
+    function maybeSeedLiveblocksRoom() {
+      const initialContent = initialContentRef.current;
 
-    if (
-      !(editor && liveblocksExtension && liveblocksIsReady && initialContent) ||
-      hasSeededContent.current
-    ) {
-      return;
-    }
-
-    const currentText = editor.getText().trim();
-
-    if (currentText === "") {
-      // Empty doc — seed with initial content
-      setMarkdownContent(initialContent);
-      hasSeededContent.current = true;
-    } else if (initialContent.trim() !== "") {
-      // Doc has content — check if it matches the API version.
-      // Compare markdown to detect stale Yjs documents.
-      const editorMarkdown = editor.getMarkdown().trim();
-      if (editorMarkdown !== initialContent.trim()) {
-        // Stale content — clear first then re-seed to avoid Yjs CRDT
-        // concatenation. Comments stay in the room; anchors that can't
-        // find their text rebind to the top of the document.
-        queueMicrotask(() => {
-          editor.commands.clearContent();
-          editor.commands.setContent(initialContent, {
-            contentType: "markdown",
-          });
-        });
-        hasSeededContent.current = true;
+      if (
+        !(
+          editor &&
+          liveblocksExtension &&
+          liveblocksIsReady &&
+          initialContent
+        ) ||
+        hasSeededContent.current
+      ) {
+        return;
       }
-    }
-  }, [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]);
+
+      if (!editor.getText().trim()) {
+        // The passed in value has content, and the liveblocks room is empty.
+        // Seed the liveblocks room with the initial content.
+        setMarkdownContent(initialContent);
+      }
+
+      hasSeededContent.current = true;
+    },
+    [editor, liveblocksExtension, liveblocksIsReady, setMarkdownContent]
+  );
 
   // Explicit content reset (e.g. restore a version).
   // Temporarily ensures the editor is editable so the command succeeds
   // even when readOnly flips to true in the same render batch.
-  useEffect(() => {
-    if (editor && contentResetKey && contentResetValue != null) {
-      const markdown = contentResetValue;
-      queueMicrotask(() => {
-        const wasEditable = editor.isEditable;
-        if (!wasEditable) {
-          editor.setEditable(true);
-        }
-        editor.commands.setContent(markdown, { contentType: "markdown" });
-        if (!wasEditable) {
-          editor.setEditable(false);
-        }
-      });
-    }
-  }, [editor, contentResetKey, contentResetValue]);
+  useEffect(
+    function resetEditorContent() {
+      if (editor && contentResetKey && contentResetValue != null) {
+        const markdown = contentResetValue;
+        queueMicrotask(() => {
+          const wasEditable = editor.isEditable;
+          if (!wasEditable) {
+            editor.setEditable(true);
+          }
+          editor.commands.setContent(markdown, { contentType: "markdown" });
+          if (!wasEditable) {
+            editor.setEditable(false);
+          }
+        });
+      }
+    },
+    [editor, contentResetKey, contentResetValue]
+  );
 
   // Update editable state when readOnly changes
   useEffect(() => {
@@ -176,7 +168,7 @@ export function TiptapEditorCore({
   return (
     <>
       <div
-        className="flex min-h-0 flex-1 flex-col rounded-md border"
+        className="flex min-h-0 flex-1 flex-col"
         data-liveblocks-editor-boundary
       >
         {!readOnly && (

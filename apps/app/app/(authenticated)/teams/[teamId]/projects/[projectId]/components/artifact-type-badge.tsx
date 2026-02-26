@@ -1,5 +1,6 @@
 "use client";
 
+import type { ArtifactType } from "@repo/api/src/types/artifact";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
 import {
@@ -8,7 +9,7 @@ import {
 } from "@/lib/project-constants";
 
 type ArtifactTypeBadgeProps = {
-  type: string;
+  type: ArtifactType;
   className?: string;
 };
 

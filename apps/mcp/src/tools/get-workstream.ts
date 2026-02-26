@@ -7,11 +7,13 @@ export function registerGetWorkstream(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-workstream",
-    "Get a workstream's detail including state and artifacts",
     {
-      workstreamId: z.string().describe("ID of the workstream to retrieve"),
+      description: "Get a workstream's detail including state and artifacts",
+      inputSchema: {
+        workstreamId: z.string().describe("ID of the workstream to retrieve"),
+      },
     },
     ({ workstreamId }) =>
       withErrorHandling(async () => {

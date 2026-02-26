@@ -122,7 +122,8 @@ async function main() {
           organizationId,
           name: PR_RATING_QA.projectName,
           description: "QA project for PR rating feature",
-          ownerId: userId,
+          assigneeId: userId,
+          createdById: userId,
         },
       });
       console.log(`✓ Project created: ${project.name} (${project.id})`);
@@ -216,6 +217,7 @@ Verify that users can rate pull requests from the Implementation Plan page.
         title: PR_RATING_QA.prdTitle,
         slug: PR_RATING_QA.prdSlug,
         status: "APPROVED",
+        createdById: userId,
         latestVersion: 1,
       },
     });
@@ -257,6 +259,7 @@ Minimal plan for QA. Open this artifact in the UI to see the linked PR and rate 
         title: PR_RATING_QA.planTitle,
         slug: PR_RATING_QA.planSlug,
         status: "APPROVED",
+        createdById: userId,
         latestVersion: 1,
       },
     });

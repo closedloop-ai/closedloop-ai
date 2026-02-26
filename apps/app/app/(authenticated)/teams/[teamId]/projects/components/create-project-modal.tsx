@@ -1,6 +1,7 @@
 "use client";
 
-import type { ProjectPriority } from "@repo/api/src/types/organization";
+import { Priority } from "@repo/api/src/types/common";
+import type { CreateProjectInput } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -27,15 +29,7 @@ import { PlusIcon } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useTeamMembers } from "@/hooks/use-team-members";
-
-type CreateProjectInput = {
-  name: string;
-  description?: string;
-  priority?: string;
-  ownerId?: string;
-  targetDate?: string;
-  teamIds: string[];
-};
+import { PRIORITY_LABELS } from "@/lib/project-constants";
 
 type CreateProjectModalProps = {
   teamId: string;
@@ -51,13 +45,13 @@ export function CreateProjectModal({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [priority, setPriority] = useState<ProjectPriority>("NOT_SET");
-  const [owner, setOwner] = useState<{
+  const [priority, setPriority] = useState<Priority>(Priority.Medium);
+  const [assignee, setAssignee] = useState<{
     id: string;
     name: string;
     avatarUrl?: string;
   } | null>(null);
-  const [ownerInitialized, setOwnerInitialized] = useState(false);
+  const [assigneeInitialized, setAssigneeInitialized] = useState(false);
   const [targetDate, setTargetDate] = useState<Date | null>(null);
 
   const { data: currentUser } = useCurrentUser({ enabled: open });
@@ -68,21 +62,21 @@ export function CreateProjectModal({
 
   // Default owner to current user when dialog opens
   useEffect(() => {
-    if (open && !ownerInitialized && currentUser) {
+    if (open && !assigneeInitialized && currentUser) {
       const name = [currentUser.firstName, currentUser.lastName]
         .filter(Boolean)
         .join(" ");
-      setOwner({
+      setAssignee({
         id: currentUser.id,
         name: name || currentUser.email,
         avatarUrl: currentUser.avatarUrl ?? undefined,
       });
-      setOwnerInitialized(true);
+      setAssigneeInitialized(true);
     }
     if (!open) {
-      setOwnerInitialized(false);
+      setAssigneeInitialized(false);
     }
-  }, [open, ownerInitialized, currentUser]);
+  }, [open, assigneeInitialized, currentUser]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -95,8 +89,8 @@ export function CreateProjectModal({
       name: name.trim(),
       description: description.trim() || undefined,
       priority,
-      ownerId: owner?.id,
-      targetDate: targetDate?.toISOString(),
+      assigneeId: assignee?.id,
+      targetDate,
       teamIds: [teamId],
     };
 
@@ -109,8 +103,8 @@ export function CreateProjectModal({
     // Reset form
     setName("");
     setDescription("");
-    setPriority("NOT_SET");
-    setOwner(null);
+    setPriority(Priority.Medium);
+    setAssignee(null);
     setTargetDate(null);
   };
 
@@ -155,17 +149,21 @@ export function CreateProjectModal({
               <div className="grid gap-2">
                 <Label htmlFor="priority">Priority</Label>
                 <Select
-                  onValueChange={(v) => setPriority(v as ProjectPriority)}
+                  onValueChange={(v) => setPriority(v as Priority)}
                   value={priority}
                 >
                   <SelectTrigger id="priority">
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="NOT_SET">Not Set</SelectItem>
-                    <SelectItem value="LOW">Low</SelectItem>
-                    <SelectItem value="MEDIUM">Medium</SelectItem>
-                    <SelectItem value="HIGH">High</SelectItem>
+                    {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        <span className="inline-flex items-center gap-1.5">
+                          <PriorityIcon priority={value as Priority} />
+                          {label}
+                        </span>
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -181,12 +179,12 @@ export function CreateProjectModal({
               </div>
             </div>
             <div className="grid gap-2">
-              <Label>Owner</Label>
+              <Label>Assignee</Label>
               <UserSelectPopover
-                onSelect={setOwner}
-                placeholder="Select owner (optional)"
+                onSelect={setAssignee}
+                placeholder="Select assignee (optional)"
                 users={teamMembers}
-                value={owner}
+                value={assignee}
               />
             </div>
           </div>

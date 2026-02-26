@@ -3,7 +3,7 @@ import "server-only";
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { auth } from "@repo/auth/server";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";

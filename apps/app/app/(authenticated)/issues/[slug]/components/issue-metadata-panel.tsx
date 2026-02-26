@@ -1,13 +1,16 @@
 "use client";
 
 import {
-  ISSUE_PRIORITY_OPTIONS,
+  Priority,
+  type Priority as PriorityType,
+} from "@repo/api/src/types/common";
+import {
   ISSUE_STATUS_OPTIONS,
-  type IssuePriority,
   type IssueStatus,
   type IssueWithWorkstream,
 } from "@repo/api/src/types/issue";
 import { Label } from "@repo/design-system/components/ui/label";
+import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import {
   Select,
   SelectContent,
@@ -63,7 +66,7 @@ export function IssueMetadataPanel({
     );
   };
 
-  const handlePriorityChange = (priority: IssuePriority) => {
+  const handlePriorityChange = (priority: PriorityType) => {
     updateIssue.mutate(
       { id: issue.id, priority },
       { onSuccess: () => toast.success("Priority updated") }
@@ -108,16 +111,19 @@ export function IssueMetadataPanel({
             <div className="space-y-2">
               <Label>Priority</Label>
               <Select
-                onValueChange={(v) => handlePriorityChange(v as IssuePriority)}
+                onValueChange={(v) => handlePriorityChange(v as PriorityType)}
                 value={issue.priority}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ISSUE_PRIORITY_OPTIONS.map((priorityOption) => (
+                  {Object.values(Priority).map((priorityOption) => (
                     <SelectItem key={priorityOption} value={priorityOption}>
-                      {issuePriorityLabels[priorityOption] ?? priorityOption}
+                      <span className="inline-flex items-center gap-1.5">
+                        <PriorityIcon priority={priorityOption} />
+                        {issuePriorityLabels[priorityOption] ?? priorityOption}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
