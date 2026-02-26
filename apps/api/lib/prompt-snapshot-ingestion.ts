@@ -4,7 +4,8 @@ import { PromptType } from "@repo/api/src/types/prompt";
 import { log } from "@repo/observability/log";
 
 const AGENTS_SNAPSHOT_PATTERN = /^agents-snapshot\/.*\.md$/;
-const FRONTMATTER_PATTERN = /^---\s*\n([\s\S]*?)\n---/;
+const FRONTMATTER_PATTERN =
+  /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 type SnapshotEntry = {
   name: string;

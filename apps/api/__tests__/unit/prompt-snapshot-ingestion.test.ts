@@ -62,6 +62,53 @@ Plan work carefully.
 
       expect(judge?.promptType).toBe(PromptType.Judge);
     });
+
+    it("parses frontmatter when closing delimiter is at EOF without trailing newline", () => {
+      const promptWithoutTrailingNewline = `---
+name: planner
+model: claude-opus-4-6
+description: Planner agent
+tools: bash, read
+---
+Plan work carefully.`;
+      const parsed = parsePromptFrontmatter(
+        promptWithoutTrailingNewline,
+        "agents-snapshot/planner.md"
+      );
+
+      expect(parsed).not.toBeNull();
+      expect(parsed?.name).toBe("planner");
+      expect(parsed?.model).toBe("claude-opus-4-6");
+      expect(parsed?.content).toBe("Plan work carefully.");
+    });
+
+    it("parses frontmatter-only file ending with closing delimiter at EOF", () => {
+      const frontmatterOnlyWithoutTrailingNewline = `---
+name: minimal
+model: claude-opus-4-6
+---`;
+      const parsed = parsePromptFrontmatter(
+        frontmatterOnlyWithoutTrailingNewline,
+        "agents-snapshot/minimal.md"
+      );
+
+      expect(parsed).not.toBeNull();
+      expect(parsed?.name).toBe("minimal");
+      expect(parsed?.content).toBe("");
+    });
+
+    it("parses frontmatter with CRLF line endings", () => {
+      const crlfPrompt =
+        "---\r\nname: crlf-agent\r\nmodel: claude-opus-4-6\r\n---\r\nContent here.";
+      const parsed = parsePromptFrontmatter(
+        crlfPrompt,
+        "agents-snapshot/crlf-agent.md"
+      );
+
+      expect(parsed).not.toBeNull();
+      expect(parsed?.name).toBe("crlf-agent");
+      expect(parsed?.content).toBe("Content here.");
+    });
   });
 
   describe("computePromptSha256", () => {
