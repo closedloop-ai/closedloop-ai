@@ -142,7 +142,7 @@ export function PropertiesPanel({
           <UserSelectPopover
             className="w-full"
             onSelect={(user) => onUpdateAssignee?.(user?.id || null)}
-            placeholder="Assign lead"
+            placeholder="Select assignee"
             users={teamMembers}
             value={
               project.assignee

@@ -59,8 +59,8 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
-import { useOrganizationUsers } from "@/hooks/queries/use-users";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 import { transformApiUserToSelectUser } from "@/lib/user-utils";
 
@@ -250,6 +250,7 @@ type CreateArtifactModalProps = {
   onOpenChange: (open: boolean) => void;
   artifactType: ArtifactType;
   projectId: string;
+  teamId: string;
   onSuccess?: (artifact: Artifact) => void;
 };
 
@@ -259,6 +260,7 @@ export function CreateArtifactModal({
   onOpenChange,
   artifactType,
   projectId,
+  teamId,
   onSuccess,
 }: CreateArtifactModalProps) {
   const fileInputRef = useRef<HiddenFileInputHandle>(null);
@@ -323,12 +325,12 @@ export function CreateArtifactModal({
     [artifacts]
   );
 
-  // Fetch organization users for approver dropdown
-  const { data: orgUsers = [], isLoading: isLoadingUsers } =
-    useOrganizationUsers();
+  // Fetch team members for approver dropdown
+  const { data: teamMembers = [], isLoading: isLoadingUsers } =
+    useTeamMembers(teamId);
   const transformedUsers = useMemo(
-    () => orgUsers.map(transformApiUserToSelectUser),
-    [orgUsers]
+    () => teamMembers.map((m) => transformApiUserToSelectUser(m.user)),
+    [teamMembers]
   );
 
   // Create artifact mutations
@@ -542,12 +544,12 @@ export function CreateArtifactModal({
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>Create {typeLabel}</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="sr-only">
             Create a new {typeLabel.toLowerCase()} for this project.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
+        <div className="space-y-4 py-6">
           {error ? (
             <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-destructive text-sm">
               {error}
@@ -556,11 +558,11 @@ export function CreateArtifactModal({
 
           {isImplementationPlan ? (
             <div className="space-y-2">
-              <Label htmlFor="source-prd">
-                Source PRD{" "}
-                <span className="text-muted-foreground text-xs">
-                  (optional)
-                </span>
+              <Label
+                className="font-normal text-muted-foreground text-xs"
+                htmlFor="source-prd"
+              >
+                Source PRD (optional)
               </Label>
               <Select onValueChange={setSelectedPrdId} value={selectedPrdId}>
                 <SelectTrigger id="source-prd">
@@ -577,7 +579,10 @@ export function CreateArtifactModal({
           ) : null}
 
           <div className="space-y-2">
-            <Label htmlFor="artifact-title">
+            <Label
+              className="font-normal text-muted-foreground text-xs"
+              htmlFor="artifact-title"
+            >
               Title<span className="text-destructive">*</span>
             </Label>
             <Input
@@ -589,7 +594,12 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="artifact-filename">File name</Label>
+            <Label
+              className="font-normal text-muted-foreground text-xs"
+              htmlFor="artifact-filename"
+            >
+              File name
+            </Label>
             <Input
               id="artifact-filename"
               onChange={(e) => setFileName(e.target.value)}
@@ -599,7 +609,9 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label>Approver</Label>
+            <Label className="font-normal text-muted-foreground text-xs">
+              Approver
+            </Label>
             <UserSelectPopover
               className="w-full"
               disabled={isLoadingUsers}
@@ -613,11 +625,11 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="artifact-target-repo">
-              Target Repository{" "}
-              <span className="text-muted-foreground text-xs">
-                (for code generation)
-              </span>
+            <Label
+              className="font-normal text-muted-foreground text-xs"
+              htmlFor="artifact-target-repo"
+            >
+              Target Repository (for code generation)
             </Label>
             {githubStatus?.connected === false ? (
               <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">
@@ -650,7 +662,12 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="artifact-target-branch">Target Branch</Label>
+            <Label
+              className="font-normal text-muted-foreground text-xs"
+              htmlFor="artifact-target-branch"
+            >
+              Target Branch
+            </Label>
             <Select
               disabled={!selectedRepoId || isLoadingBranches}
               onValueChange={setTargetBranch}
@@ -671,7 +688,9 @@ export function CreateArtifactModal({
           </div>
 
           <div className="space-y-2">
-            <Label>Status</Label>
+            <Label className="font-normal text-muted-foreground text-xs">
+              Status
+            </Label>
             <Select
               onValueChange={(v) => setStatus(v as ArtifactStatus)}
               value={status}
@@ -694,11 +713,11 @@ export function CreateArtifactModal({
             <>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="artifact-content">
-                    Content{" "}
-                    <span className="text-muted-foreground text-xs">
-                      (optional)
-                    </span>
+                  <Label
+                    className="font-normal text-muted-foreground text-xs"
+                    htmlFor="artifact-content"
+                  >
+                    Content (optional)
                   </Label>
                   <Button
                     onClick={() => fileInputRef.current?.open()}
@@ -727,11 +746,11 @@ export function CreateArtifactModal({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="reverse-synthesis-url">
-                  Source URL{" "}
-                  <span className="text-muted-foreground text-xs">
-                    (optional)
-                  </span>
+                <Label
+                  className="font-normal text-muted-foreground text-xs"
+                  htmlFor="reverse-synthesis-url"
+                >
+                  Source URL (optional)
                 </Label>
                 <Input
                   id="reverse-synthesis-url"
