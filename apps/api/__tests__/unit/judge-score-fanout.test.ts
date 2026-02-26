@@ -123,10 +123,11 @@ describe("fanOutJudgeScores", () => {
     };
 
     const tx = createMockTx();
+    // Match Prisma DISTINCT ON ordering: ORDER BY name ASC, version DESC per distinct name
     tx.prompt.findMany.mockResolvedValue([
-      { id: "prompt-clarity-v4", name: "clarity_judge", version: 4 },
-      { id: "prompt-clarity-v2", name: "clarity-score", version: 2 },
       { id: "prompt-clarity-v1", name: "clarity-judge", version: 1 },
+      { id: "prompt-clarity-v2", name: "clarity-score", version: 2 },
+      { id: "prompt-clarity-v4", name: "clarity_judge", version: 4 },
     ]);
 
     await fanOutJudgeScores({
