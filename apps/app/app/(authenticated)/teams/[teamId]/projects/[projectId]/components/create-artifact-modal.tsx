@@ -326,8 +326,10 @@ export function CreateArtifactModal({
   );
 
   // Fetch team members for approver dropdown
-  const { data: teamMembers = [], isLoading: isLoadingUsers } =
-    useTeamMembers(teamId);
+  const { data: teamMembers = [], isLoading: isLoadingUsers } = useTeamMembers(
+    teamId,
+    { enabled: open }
+  );
   const transformedUsers = useMemo(
     () => teamMembers.map((m) => transformApiUserToSelectUser(m.user)),
     [teamMembers]

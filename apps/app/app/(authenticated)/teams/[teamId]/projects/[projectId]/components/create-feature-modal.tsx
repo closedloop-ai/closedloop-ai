@@ -104,7 +104,8 @@ export function CreateFeatureModal({
   const createIssueMutation = useCreateIssue();
   const createEntityLinkMutation = useCreateEntityLink();
 
-  const isSubmitting = createIssueMutation.isPending;
+  const isSubmitting =
+    createIssueMutation.isPending || createEntityLinkMutation.isPending;
 
   const handleAddArtifact = (artifact: ArtifactWithWorkstream) => {
     setSelectedArtifacts((prev) => [...prev, artifact]);
@@ -304,7 +305,7 @@ export function CreateFeatureModal({
               Priority
             </Label>
             <Select
-              onValueChange={(v) => setPriority(v as Priority)}
+              onValueChange={(v: Priority) => setPriority(v)}
               value={priority}
             >
               <SelectTrigger>
@@ -325,7 +326,7 @@ export function CreateFeatureModal({
               Status
             </Label>
             <Select
-              onValueChange={(v) => setStatus(v as IssueStatus)}
+              onValueChange={(v: IssueStatus) => setStatus(v)}
               value={status}
             >
               <SelectTrigger>
