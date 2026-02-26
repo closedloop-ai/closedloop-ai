@@ -68,6 +68,10 @@ export type UpdateProjectInput = {
   lastIndexedAt?: Date | null;
 };
 
+export type FavoriteResponse = {
+  favorited: boolean;
+};
+
 // Repository types
 export type Repository = {
   id: string;

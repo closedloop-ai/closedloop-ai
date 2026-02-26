@@ -42,9 +42,10 @@ export function SidebarFavorites() {
           <SidebarMenu>
             {favorites.map((project) => {
               const teamId = project.teams[0]?.id;
-              const href = teamId
-                ? `/teams/${teamId}/projects/${project.id}`
-                : "/projects";
+              if (!teamId) {
+                return null;
+              }
+              const href = `/teams/${teamId}/projects/${project.id}`;
               const isActive = pathname === href;
 
               return (

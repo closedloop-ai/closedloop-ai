@@ -164,7 +164,7 @@ describe("projectsService.findFavoritesByUser", () => {
           name: "Favorited Project",
           organizationId: TEST_ORG_ID,
           settings: null,
-          owner: null,
+          assignee: null,
           teams: [],
           artifacts: [],
         },

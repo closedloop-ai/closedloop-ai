@@ -4,6 +4,7 @@ import type { ActivityResponse } from "@repo/api/src/types/activity";
 import type { Priority } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
+  FavoriteResponse,
   ProjectWithDetails,
   UpdateProjectInput,
 } from "@repo/api/src/types/project";
@@ -312,10 +313,7 @@ export function useFavoriteProject() {
 
   return useMutation({
     mutationFn: (projectId: string) =>
-      apiClient.post<{ favorited: boolean }>(
-        `/projects/${projectId}/favorite`,
-        {}
-      ),
+      apiClient.post<FavoriteResponse>(`/projects/${projectId}/favorite`, {}),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
@@ -328,9 +326,7 @@ export function useUnfavoriteProject() {
 
   return useMutation({
     mutationFn: (projectId: string) =>
-      apiClient.delete<{ favorited: boolean }>(
-        `/projects/${projectId}/favorite`
-      ),
+      apiClient.delete<FavoriteResponse>(`/projects/${projectId}/favorite`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
