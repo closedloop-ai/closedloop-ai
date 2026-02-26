@@ -29,6 +29,7 @@ import { PlusIcon } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useCurrentUser } from "@/hooks/queries/use-users";
 import { useTeamMembers } from "@/hooks/use-team-members";
+import { PRIORITY_LABELS } from "@/lib/project-constants";
 
 type CreateProjectModalProps = {
   teamId: string;
@@ -155,30 +156,14 @@ export function CreateProjectModal({
                     <SelectValue placeholder="Select priority" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={Priority.Low}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <PriorityIcon priority={Priority.Low} />
-                        Low
-                      </span>
-                    </SelectItem>
-                    <SelectItem value={Priority.Medium}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <PriorityIcon priority={Priority.Medium} />
-                        Medium
-                      </span>
-                    </SelectItem>
-                    <SelectItem value={Priority.High}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <PriorityIcon priority={Priority.High} />
-                        High
-                      </span>
-                    </SelectItem>
-                    <SelectItem value={Priority.Urgent}>
-                      <span className="inline-flex items-center gap-1.5">
-                        <PriorityIcon priority={Priority.Urgent} />
-                        Urgent
-                      </span>
-                    </SelectItem>
+                    {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>
+                        <span className="inline-flex items-center gap-1.5">
+                          <PriorityIcon priority={value as Priority} />
+                          {label}
+                        </span>
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

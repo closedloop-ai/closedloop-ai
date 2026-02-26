@@ -11,7 +11,7 @@ const meta = {
   argTypes: {
     priority: {
       control: "select",
-      options: ["NOT_SET", "LOW", "MEDIUM", "HIGH", "URGENT"],
+      options: ["LOW", "MEDIUM", "HIGH", "URGENT"],
     },
     size: {
       control: "number",
@@ -32,15 +32,6 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   args: {
     priority: "LOW",
-  },
-};
-
-/**
- * Priority not set — three dashed bars.
- */
-export const NotSet: Story = {
-  args: {
-    priority: "NOT_SET",
   },
 };
 
@@ -81,7 +72,7 @@ export const Urgent: Story = {
 };
 
 /**
- * All five priority levels displayed side by side.
+ * All four priority levels displayed side by side.
  */
 export const AllPriorities: Story = {
   args: {
@@ -89,22 +80,20 @@ export const AllPriorities: Story = {
   },
   render: () => (
     <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-      {(["NOT_SET", "LOW", "MEDIUM", "HIGH", "URGENT"] as const).map(
-        (level) => (
-          <div
-            key={level}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 4,
-            }}
-          >
-            <PriorityIcon priority={level} />
-            <span style={{ fontSize: 11 }}>{level}</span>
-          </div>
-        )
-      )}
+      {(["LOW", "MEDIUM", "HIGH", "URGENT"] as const).map((level) => (
+        <div
+          key={level}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          <PriorityIcon priority={level} />
+          <span style={{ fontSize: 11 }}>{level}</span>
+        </div>
+      ))}
     </div>
   ),
 };

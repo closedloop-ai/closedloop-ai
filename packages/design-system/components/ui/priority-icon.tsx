@@ -3,7 +3,7 @@
 import * as React from "react";
 import { cn } from "@repo/design-system/lib/utils";
 
-type PriorityLevel = "NOT_SET" | "LOW" | "MEDIUM" | "HIGH" | "URGENT";
+type PriorityLevel = "LOW" | "MEDIUM" | "HIGH" | "URGENT";
 
 interface PriorityIconProps extends React.SVGAttributes<SVGSVGElement> {
   /** The priority level to render */
@@ -18,47 +18,6 @@ function PriorityIcon({
   className,
   ...props
 }: PriorityIconProps) {
-  if (priority === "NOT_SET") {
-    return (
-      <svg
-        width={size}
-        height={size}
-        viewBox="0 0 16 16"
-        fill="none"
-        className={cn("shrink-0", className)}
-        {...props}
-      >
-        <rect
-          x={0}
-          y={7}
-          width={4}
-          height={2}
-          rx={1}
-          fill="currentColor"
-          opacity={0.3}
-        />
-        <rect
-          x={6}
-          y={7}
-          width={4}
-          height={2}
-          rx={1}
-          fill="currentColor"
-          opacity={0.3}
-        />
-        <rect
-          x={12}
-          y={7}
-          width={4}
-          height={2}
-          rx={1}
-          fill="currentColor"
-          opacity={0.3}
-        />
-      </svg>
-    );
-  }
-
   if (priority === "URGENT") {
     return (
       <svg
@@ -98,7 +57,7 @@ function PriorityIcon({
   }
 
   // Signal bars: LOW = 1 active, MEDIUM = 2 active, HIGH = 3 active
-  const activeCount = priority === "LOW" ? 1 : priority === "MEDIUM" ? 2 : 3;
+  const activeCount = ACTIVE_BAR_COUNT[priority] ?? 3;
 
   return (
     <svg
@@ -139,6 +98,8 @@ function PriorityIcon({
     </svg>
   );
 }
+
+const ACTIVE_BAR_COUNT: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3 };
 
 export { PriorityIcon };
 export type { PriorityIconProps, PriorityLevel };
