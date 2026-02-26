@@ -75,7 +75,13 @@ async function upsertPromptVersionWithRetry(
       return;
     } catch (error) {
       if (!isUniqueConstraintError(error) || attempt === MAX_P2002_RETRIES) {
-        throw error;
+        log.warn("[prompts-service] Prompt upsert failed, skipping", {
+          organizationId,
+          name: prompt.name,
+          retriesAttempted: attempt,
+          error,
+        });
+        return;
       }
 
       log.debug(

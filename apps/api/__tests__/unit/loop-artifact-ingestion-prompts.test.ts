@@ -190,23 +190,12 @@ You are a helpful agent.
   });
 
   it("returns promptsSnapshot: null when markdown entries are absent", async () => {
-    mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
-    mockDownloadArtifactFile.mockResolvedValue(null);
-
-    const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
-
-    expect(artifacts.promptsSnapshot).toBeNull();
-  });
-
-  it("returns promptsSnapshot: null when markdown snapshots are missing", async () => {
-    // All artifact files return null
     mockDownloadArtifactFile.mockResolvedValue(null);
     mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
 
     const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
 
     expect(artifacts.promptsSnapshot).toBeNull();
-    // Ingestion should not fail — other artifact fields should still be null too
     expect(artifacts.planContent).toBeNull();
     expect(artifacts.judgesReport).toBeNull();
   });
