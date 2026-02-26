@@ -88,8 +88,8 @@
       },
       "hero": {
         "badge": "Claude Code Plugin",
-        "title": "AI-Powered Software",
-        "titleHighlight": "Delivery",
+        "title": "Multi-Agent SDLC,",
+        "titleHighlight": "Grounded in Your Codebase.",
         "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase.",
         "installButton": "Install in 30 Seconds",
         "githubButton": "View on GitHub"
