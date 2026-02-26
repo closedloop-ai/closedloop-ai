@@ -1,4 +1,4 @@
-import { PromptType } from "@repo/api/src/types/prompt";
+import { PromptType } from "@repo/database";
 import {
   computePromptSha256,
   parsePromptFrontmatter,
@@ -29,7 +29,7 @@ Plan work carefully.
       expect(snapshot).toEqual({
         prompts: [
           {
-            promptType: PromptType.Agent,
+            promptType: PromptType.AGENT,
             name: "planner",
             description: "Planner agent",
             model: "claude-opus-4-6",
@@ -60,7 +60,7 @@ Plan work carefully.
         "agents-snapshot/judges/planner-judge.md"
       );
 
-      expect(judge?.promptType).toBe(PromptType.Judge);
+      expect(judge?.promptType).toBe(PromptType.JUDGE);
     });
 
     it("parses frontmatter when closing delimiter is at EOF without trailing newline", () => {
@@ -136,7 +136,7 @@ model: claude-opus-4-6
     expect(snapshot).toEqual({
       prompts: [
         {
-          promptType: PromptType.Agent,
+          promptType: PromptType.AGENT,
           name: "planner",
           description: "Planner agent",
           model: "claude-opus-4-6",

@@ -11,7 +11,7 @@
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import { PromptType } from "@repo/api/src/types/prompt";
+import { PromptType } from "@repo/database";
 import {
   findPlanInZip,
   parseJudgesReport,
@@ -232,7 +232,7 @@ This is the judge system prompt content.
       );
 
       expect(result).not.toBeNull();
-      expect(result?.promptType).toBe(PromptType.Agent);
+      expect(result?.promptType).toBe(PromptType.AGENT);
       expect(result?.name).toBe("my-agent");
       expect(result?.model).toBe("claude-opus-4-6");
       expect(result?.description).toBe("A general purpose agent");
@@ -245,7 +245,7 @@ This is the judge system prompt content.
       );
 
       expect(result).not.toBeNull();
-      expect(result?.promptType).toBe(PromptType.Judge);
+      expect(result?.promptType).toBe(PromptType.JUDGE);
       expect(result?.name).toBe("my-judge");
     });
 
@@ -324,7 +324,7 @@ Content here.
       expect(result.promptsSnapshot).not.toBeNull();
       expect(result.promptsSnapshot?.prompts).toHaveLength(1);
       expect(result.promptsSnapshot?.prompts[0]).toMatchObject({
-        promptType: PromptType.Agent,
+        promptType: PromptType.AGENT,
         name: "my-agent",
         model: "claude-opus-4-6",
         tools: ["bash", "read", "write"],

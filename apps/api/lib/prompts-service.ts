@@ -6,9 +6,9 @@
  * "PromptType" enum without schema qualification.
  */
 
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { Prisma, withDb } from "@repo/database";
 import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
+import type { PromptsSnapshot } from "@/lib/prompt-types";
 
 /**
  * Upsert all prompts from a snapshot into the prompt_registry table.

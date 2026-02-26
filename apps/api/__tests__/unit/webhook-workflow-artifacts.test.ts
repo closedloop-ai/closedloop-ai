@@ -15,7 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { mergeZipContent } from "@/app/webhooks/github/handlers/workflow-artifacts";
 
-const emptyContent = () => ({
+const emptyContent = (): Parameters<typeof mergeZipContent>[1] => ({
   planContent: null,
   questionsContent: null,
   executionResult: null,
@@ -23,6 +23,7 @@ const emptyContent = () => ({
   codeJudgesReport: null,
   perfSummary: null,
   promptsSnapshot: null,
+  entries: [],
 });
 
 describe("mergeZipContent", () => {

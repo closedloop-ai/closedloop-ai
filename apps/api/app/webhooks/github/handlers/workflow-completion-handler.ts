@@ -4,7 +4,6 @@ import {
   ExternalLinkType,
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   type Prisma,
   EvaluationReportType as PrismaEvaluationReportType,
@@ -14,6 +13,7 @@ import type { TransactionClient } from "@repo/database/generated/internal/prisma
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
+import type { PromptsSnapshot } from "@/lib/prompt-types";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult, WorkflowContext } from "../types";
 import { findActionRunByCorrelationId } from "../webhook-service";

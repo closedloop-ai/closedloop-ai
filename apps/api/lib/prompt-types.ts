@@ -1,9 +1,4 @@
-export const PromptType = {
-  Agent: "AGENT",
-  Judge: "JUDGE",
-} as const;
-
-export type PromptType = (typeof PromptType)[keyof typeof PromptType];
+import type { PromptType } from "@repo/database";
 
 export type PromptInfo = {
   promptType: PromptType;

@@ -1,11 +1,11 @@
 import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { parsePerfSummary } from "@repo/github/perf-parser";
 import { log } from "@repo/observability/log";
 import type AdmZip from "adm-zip";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@/lib/prompt-snapshot-ingestion";
+import type { PromptsSnapshot } from "@/lib/prompt-types";
 import type { ExecutionResult } from "./types";
 
 export type ZipContent = {

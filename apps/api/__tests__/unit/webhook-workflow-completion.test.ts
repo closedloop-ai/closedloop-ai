@@ -32,6 +32,10 @@ vi.mock("@repo/database", () => ({
     PLAN: "PLAN",
     CODE: "CODE",
   },
+  PromptType: {
+    AGENT: "AGENT",
+    JUDGE: "JUDGE",
+  },
 }));
 
 vi.mock("@repo/github", () => ({

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { PromptInfo, PromptsSnapshot } from "@repo/api/src/types/prompt";
-import { PromptType } from "@repo/api/src/types/prompt";
+import { PromptType } from "@repo/database";
 import { log } from "@repo/observability/log";
+import type { PromptInfo, PromptsSnapshot } from "@/lib/prompt-types";
 
 const AGENTS_SNAPSHOT_PATTERN = /^agents-snapshot\/.*\.md$/;
 const FRONTMATTER_PATTERN =
@@ -58,8 +58,8 @@ export function parsePromptFrontmatter(
   const filePath = fields.file_path ?? entryPath;
 
   const promptType = entryPath.includes("agents-snapshot/judges/")
-    ? PromptType.Judge
-    : PromptType.Agent;
+    ? PromptType.JUDGE
+    : PromptType.AGENT;
 
   const afterFrontmatter = fileContent.slice(
     (frontmatterMatch.index ?? 0) + frontmatterMatch[0].length

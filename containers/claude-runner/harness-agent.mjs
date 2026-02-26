@@ -1194,7 +1194,43 @@ function attemptLlmCommit(workDir, resultFilePath) {
       log("info", `LLM commit stderr (tail): ${redactSensitive(tail)}`);
     }
 
-    return parseLlmCommitOutput(resultFilePath, branchName, stdout, stderr);
+    // Read execution-result.json written by the LLM (preferred over stdout parsing)
+    if (fs.existsSync(resultFilePath)) {
+      try {
+        const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
+        log(
+          "info",
+          `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
+        );
+        return {
+          prUrl: resultData.pr_url || null,
+          prNumber: resultData.pr_number || null,
+          branchName: resultData.branch_name || branchName,
+          commitSha: resultData.commit_sha || null,
+        };
+      } catch (parseErr) {
+        log(
+          "error",
+          `Failed to parse LLM execution-result.json: ${parseErr.message}`
+        );
+      }
+    }
+
+    // Fallback: detect PR URL from output (if LLM didn't write the file)
+    const combined = stdout + stderr;
+    const prMatch = combined.match(RE_GITHUB_PR_URL);
+    if (prMatch) {
+      const prNumberMatch = PR_NUMBER_REGEX.exec(prMatch[0]);
+      log("info", `LLM commit created PR: ${prMatch[0]}`);
+      return {
+        prUrl: prMatch[0],
+        prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
+        branchName,
+        commitSha: null,
+      };
+    }
+
+    return null;
   } catch (err) {
     log(
       "error",
@@ -2393,69 +2429,6 @@ async function reportFinalStatus(
   await uploadMetadata(workDir, output, tokenUsage, startTime);
 
   // Step 7: Report event
-  await reportFinalEvent(
-    timedOut,
-    exitCode,
-    signal,
-    duration,
-    tokenUsage,
-    prInfo
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers extracted to reduce cognitive complexity of the functions above
-// ---------------------------------------------------------------------------
-
-// Parse the result of an LLM commit attempt from the result file or stdout/stderr.
-function parseLlmCommitOutput(resultFilePath, branchName, stdout, stderr) {
-  if (fs.existsSync(resultFilePath)) {
-    try {
-      const resultData = JSON.parse(fs.readFileSync(resultFilePath, "utf-8"));
-      log(
-        "info",
-        `LLM wrote execution-result.json (has_changes=${resultData.has_changes}, pr_url=${resultData.pr_url})`
-      );
-      return {
-        prUrl: resultData.pr_url || null,
-        prNumber: resultData.pr_number || null,
-        branchName: resultData.branch_name || branchName,
-        commitSha: resultData.commit_sha || null,
-      };
-    } catch (parseErr) {
-      log(
-        "error",
-        `Failed to parse LLM execution-result.json: ${parseErr.message}`
-      );
-    }
-  }
-
-  // Fallback: detect PR URL from output (if LLM didn't write the file)
-  const combined = stdout + stderr;
-  const prMatch = combined.match(RE_GITHUB_PR_URL);
-  if (prMatch) {
-    const prNumberMatch = PR_NUMBER_REGEX.exec(prMatch[0]);
-    log("info", `LLM commit created PR: ${prMatch[0]}`);
-    return {
-      prUrl: prMatch[0],
-      prNumber: prNumberMatch ? Number.parseInt(prNumberMatch[1], 10) : null,
-      branchName,
-      commitSha: null,
-    };
-  }
-
-  return null;
-}
-
-// Report the final event after a completed run (TIMED_OUT, COMPLETED, or PROCESS_FAILED).
-async function reportFinalEvent(
-  timedOut,
-  exitCode,
-  signal,
-  duration,
-  tokenUsage,
-  prInfo
-) {
   if (timedOut) {
     await reportEvent({
       type: "error",
@@ -2506,164 +2479,6 @@ async function reportFinalEvent(
     });
     log("info", "Reported FAILED event");
   }
-}
-
-// Resolve (or create) the symphony run directory for this loop.
-function resolveRunDir(workDir) {
-  const existing = findExistingRunDir(workDir);
-  if (existing) {
-    log("info", `Reusing parent run directory: ${existing}`);
-    return existing;
-  }
-
-  const runTs = new Date()
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace("T", "-")
-    .slice(0, 15);
-  const loopSuffix = (config.loopId || randomUUID())
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .slice(0, 50);
-  const newDir = path.join(
-    workDir,
-    ".claude",
-    "runs",
-    `${runTs}-loop-${loopSuffix}`
-  );
-  fs.mkdirSync(newDir, { recursive: true });
-  log("info", `Created new run directory: ${newDir}`);
-  return newDir;
-}
-
-// Best-effort commit/push/PR after a fatal harness error, then report the event.
-async function handleFatalError(err, startTime, output, workDir) {
-  const harnessError = toHarnessError(err);
-  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  const errorMessage = harnessError.message;
-  const errorStack = err instanceof Error ? err.stack : undefined;
-  log(
-    "error",
-    `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
-  );
-  if (errorStack) {
-    log("error", redactSensitive(errorStack));
-  }
-
-  // Best-effort: refresh token, LLM commit, safety commit, push, create PR
-  // Mirrors dispatch workflow's `if: always()` pattern — preserve work
-  // even on fatal errors.
-  const shouldCommitAndPush = config.command === "EXECUTE";
-
-  try {
-    await refreshGitHubToken();
-  } catch (_) {
-    // ignore
-  }
-
-  let prInfo = null;
-  if (shouldCommitAndPush) {
-    prInfo = commitAndPushOnError(workDir, output);
-  }
-
-  // Best-effort: upload whatever state we have
-  try {
-    await uploadState(workDir, output, symphonyWorkDir);
-  } catch (uploadErr) {
-    log(
-      "error",
-      `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
-    );
-  }
-
-  // Best-effort: report failure with PR info
-  try {
-    await reportEvent({
-      type: "error",
-      code: harnessError.code,
-      message: redactSensitive(errorMessage),
-      result: {
-        ...(prInfo || {}),
-        sessionId: capturedSessionId,
-      },
-      correlationId: config.correlationId,
-      loopId: config.loopId,
-    });
-  } catch (reportErr) {
-    log(
-      "error",
-      `Failed to report error event: ${redactSensitive(reportErr.message)}`
-    );
-  }
-}
-
-// Attempt LLM commit then safety-commit fallback after a fatal error.
-// Returns prInfo or null.
-function commitAndPushOnError(workDir, output) {
-  const errorResultPath = path.join(
-    symphonyWorkDir || workDir,
-    "execution-result.json"
-  );
-
-  // Try LLM commit first (writes execution-result.json on success)
-  let llmPrInfo = null;
-  try {
-    llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
-  } catch (_) {
-    // ignore
-  }
-
-  // Check if LLM handled everything
-  if (llmPrInfo && fs.existsSync(errorResultPath)) {
-    if (llmPrInfo.prNumber) {
-      try {
-        labelPrIncomplete(workDir, llmPrInfo.prNumber);
-      } catch (_) {
-        // ignore
-      }
-    }
-    return llmPrInfo;
-  }
-
-  // Fallback: safety commit + push + mechanical PR
-  let prInfo = null;
-  try {
-    attemptSafetyCommit(
-      workDir,
-      "[INCOMPLETE] WIP: Safety commit — harness error"
-    );
-    ensureBranchPushed(workDir);
-  } catch (_) {
-    // ignore
-  }
-
-  try {
-    prInfo = parsePrInfo(workDir, output);
-    if (llmPrInfo?.prUrl) {
-      prInfo = { ...(prInfo || {}), ...llmPrInfo };
-    }
-    prInfo = createPullRequest(workDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Write execution-result.json ourselves since LLM didn't
-  try {
-    writeExecutionResult(symphonyWorkDir || workDir, prInfo);
-  } catch (_) {
-    // ignore
-  }
-
-  // Label incomplete PRs regardless of path
-  if (prInfo?.prNumber) {
-    try {
-      labelPrIncomplete(workDir, prInfo.prNumber);
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  return prInfo;
 }
 
 // ---------------------------------------------------------------------------
@@ -2728,7 +2543,28 @@ async function main() {
     // - Child loops (RC, EXECUTE): reuse the parent's run dir restored by downloadState
     // This mirrors the GitHub Actions flow where symphony-artifact downloads/uploads
     // the same .claude/runs/TIMESTAMP/ directory across all steps.
-    symphonyWorkDir = resolveRunDir(workDir);
+    symphonyWorkDir = findExistingRunDir(workDir);
+    if (symphonyWorkDir) {
+      log("info", `Reusing parent run directory: ${symphonyWorkDir}`);
+    } else {
+      const runTs = new Date()
+        .toISOString()
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .slice(0, 15);
+      const loopSuffix = (config.loopId || randomUUID())
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .slice(0, 50);
+      symphonyWorkDir = path.join(
+        workDir,
+        ".claude",
+        "runs",
+        `${runTs}-loop-${loopSuffix}`
+      );
+      fs.mkdirSync(symphonyWorkDir, { recursive: true });
+      log("info", `Created new run directory: ${symphonyWorkDir}`);
+    }
 
     // Write PRD to the run directory (all commands that have a prompt)
     const prdPath = writePrdFile(symphonyWorkDir, contextPack);
@@ -2802,7 +2638,117 @@ async function main() {
     // Exit with the child's exit code
     process.exit(exitCode || 0);
   } catch (err) {
-    await handleFatalError(err, startTime, output, workDir);
+    const harnessError = toHarnessError(err);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    const errorMessage = harnessError.message;
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    log(
+      "error",
+      `Fatal error after ${duration}s [${harnessError.code}]: ${redactSensitive(errorMessage)}`
+    );
+    if (errorStack) {
+      log("error", redactSensitive(errorStack));
+    }
+
+    // Best-effort: refresh token, LLM commit, safety commit, push, create PR
+    // Mirrors dispatch workflow's `if: always()` pattern — preserve work
+    // even on fatal errors.
+    const shouldCommitAndPush = config.command === "EXECUTE";
+
+    try {
+      await refreshGitHubToken();
+    } catch (_) {
+      // ignore
+    }
+
+    let prInfo = null;
+    if (shouldCommitAndPush) {
+      const errorResultPath = path.join(
+        symphonyWorkDir || workDir,
+        "execution-result.json"
+      );
+
+      // Try LLM commit first (writes execution-result.json on success)
+      let llmPrInfo = null;
+      try {
+        llmPrInfo = attemptLlmCommit(workDir, errorResultPath);
+      } catch (_) {
+        // ignore
+      }
+
+      // Check if LLM handled everything
+      if (llmPrInfo && fs.existsSync(errorResultPath)) {
+        prInfo = llmPrInfo;
+      } else {
+        // Fallback: safety commit + push + mechanical PR
+        try {
+          attemptSafetyCommit(
+            workDir,
+            "[INCOMPLETE] WIP: Safety commit — harness error"
+          );
+          ensureBranchPushed(workDir);
+        } catch (_) {
+          // ignore
+        }
+
+        try {
+          prInfo = parsePrInfo(workDir, output);
+          if (llmPrInfo?.prUrl) {
+            prInfo = { ...(prInfo || {}), ...llmPrInfo };
+          }
+          prInfo = createPullRequest(workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+
+        // Write execution-result.json ourselves since LLM didn't
+        try {
+          writeExecutionResult(symphonyWorkDir || workDir, prInfo);
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      // Label incomplete PRs regardless of path
+      if (prInfo?.prNumber) {
+        try {
+          labelPrIncomplete(workDir, prInfo.prNumber);
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    // Best-effort: upload whatever state we have
+    try {
+      await uploadState(workDir, output, symphonyWorkDir);
+    } catch (uploadErr) {
+      log(
+        "error",
+        `Failed to upload state after error: ${redactSensitive(uploadErr.message)}`
+      );
+    }
+
+    // Best-effort: report failure with PR info
+    try {
+      await reportEvent({
+        type: "error",
+        code: harnessError.code,
+        message: redactSensitive(errorMessage),
+        result: {
+          ...(prInfo || {}),
+          sessionId: capturedSessionId,
+        },
+        correlationId: config.correlationId,
+        loopId: config.loopId,
+      });
+    } catch (reportErr) {
+      log(
+        "error",
+        `Failed to report error event: ${redactSensitive(reportErr.message)}`
+      );
+    }
+
     process.exit(1);
   }
 }

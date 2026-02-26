@@ -1,10 +1,10 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
+import type { PromptsSnapshot } from "@/lib/prompt-types";
 import type { ExecutionResult } from "../types";
 import { findPlanInZip, type ZipContent } from "../zip-parser";
 
@@ -28,7 +28,7 @@ export type ProcessArtifactResult = {
  */
 export function mergeZipContent(
   current: Omit<ZipContent, "entries">,
-  result: Omit<ZipContent, "entries">
+  result: ZipContent
 ): Omit<ZipContent, "entries"> {
   let promptsSnapshot: PromptsSnapshot | null;
   if (current.promptsSnapshot && result.promptsSnapshot) {
@@ -113,15 +113,13 @@ export async function processArtifactDownloads(
   log.info(`[processArtifactDownloads] Downloading artifacts for run ${runId}`);
 
   const artifacts = await downloadWorkflowArtifacts(runId);
-  let content: Omit<ZipContent, "entries"> = {
-    planContent: null,
-    questionsContent: null,
-    executionResult: null,
-    judgesReport: null,
-    codeJudgesReport: null,
-    perfSummary: null,
-    promptsSnapshot: null,
-  };
+  let planContent: string | null = null;
+  let questionsContent: string | null = null;
+  let executionResult: ExecutionResult | null = null;
+  let judgesReport: JudgesReport | null = null;
+  let codeJudgesReport: JudgesReport | null = null;
+  let perfSummary: PerfSummary | null = null;
+  let promptsSnapshot: PromptsSnapshot | null = null;
 
   log.info(
     `[processArtifactDownloads] Downloaded ${artifacts.length} artifacts`
@@ -129,18 +127,23 @@ export async function processArtifactDownloads(
 
   for (const artifact of artifacts) {
     const result = processArtifactZip(artifact.data, artifact.name);
-    content = mergeZipContent(content, result);
+    planContent = result.planContent ?? planContent;
+    questionsContent = result.questionsContent ?? questionsContent;
+    executionResult = result.executionResult ?? executionResult;
+    judgesReport = result.judgesReport ?? judgesReport;
+    codeJudgesReport = result.codeJudgesReport ?? codeJudgesReport;
+    perfSummary = result.perfSummary ?? perfSummary;
+    if (result.promptsSnapshot && promptsSnapshot) {
+      promptsSnapshot = {
+        prompts: [
+          ...promptsSnapshot.prompts,
+          ...result.promptsSnapshot.prompts,
+        ],
+      };
+    } else {
+      promptsSnapshot = result.promptsSnapshot ?? promptsSnapshot;
+    }
   }
-
-  const {
-    planContent,
-    questionsContent,
-    executionResult,
-    judgesReport,
-    codeJudgesReport,
-    perfSummary,
-    promptsSnapshot,
-  } = content;
 
   if (
     planContent ||
