@@ -257,7 +257,14 @@ export async function handleExecutionSuccess(
       });
     }
 
-    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+    try {
+      await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+    } catch (error) {
+      log.warn(
+        "[handleExecutionSuccess] Prompt registry upsert failed, continuing",
+        { organizationId: workstream.organizationId, error }
+      );
+    }
   });
 
   log.info(
@@ -441,7 +448,14 @@ export async function handleWorkflowSuccess(
     `Successfully processed workflow run ${runId} for correlation ${correlationId}`
   );
 
-  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  try {
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  } catch (error) {
+    log.warn(
+      "[handleWorkflowSuccess] Prompt registry upsert failed, continuing",
+      { organizationId: workstream.organizationId, correlationId, error }
+    );
+  }
 }
 
 /**

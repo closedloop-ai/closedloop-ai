@@ -151,86 +151,44 @@ describe("upsertFromSnapshot", () => {
     expect(createArg.data.version).toBe(3);
   });
 
-  it("retries on P2002 and exits when retry sees matching latest content", async () => {
+  it("logs P2002 and rethrows when version race occurs", async () => {
     const mockPrompt = {
-      findFirst: vi
-        .fn()
-        .mockResolvedValueOnce({
-          version: 1,
-          content: "Old content.",
-          model: "claude-3",
-          tools: [],
-        })
-        .mockResolvedValueOnce({
-          version: 2,
-          content: "New content.",
-          model: "claude-3",
-          tools: [],
-        }),
-      create: vi.fn().mockRejectedValueOnce(createP2002Error()),
+      findFirst: vi.fn().mockResolvedValue({
+        version: 1,
+        content: "Old content.",
+        model: "claude-3",
+        tools: [],
+      }),
+      create: vi.fn().mockRejectedValue(createP2002Error()),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
-    await upsertFromSnapshot(ORG_ID, {
-      prompts: [
-        {
-          promptType: "AGENT",
-          name: "my-agent",
-          description: "An agent prompt",
-          model: "claude-3",
-          tools: [],
-          filePath: "prompts/agent.md",
-          content: "New content.",
-        },
-      ],
-    });
+    const { log } = await import("@repo/observability/log");
+    const logWarnSpy = vi.spyOn(log, "warn");
 
-    expect(mockPrompt.findFirst).toHaveBeenCalledTimes(2);
+    await expect(
+      upsertFromSnapshot(ORG_ID, {
+        prompts: [
+          {
+            promptType: "AGENT",
+            name: "my-agent",
+            description: "An agent prompt",
+            model: "claude-3",
+            tools: [],
+            filePath: "prompts/agent.md",
+            content: "New content.",
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ code: "P2002" });
+
+    expect(logWarnSpy).toHaveBeenCalledWith(
+      "[prompts-service] P2002 unique constraint — version race (concurrent upsert); error propagates",
+      expect.objectContaining({ organizationId: ORG_ID, name: "my-agent" })
+    );
+    expect(mockPrompt.findFirst).toHaveBeenCalledTimes(1);
     expect(mockPrompt.create).toHaveBeenCalledTimes(1);
-  });
-
-  it("retries on P2002 and inserts next available version", async () => {
-    const mockPrompt = {
-      findFirst: vi
-        .fn()
-        .mockResolvedValueOnce({
-          version: 1,
-          content: "Old content.",
-          model: "claude-3",
-          tools: [],
-        })
-        .mockResolvedValueOnce({
-          version: 2,
-          content: "Still old content.",
-          model: "claude-3",
-          tools: [],
-        }),
-      create: vi
-        .fn()
-        .mockRejectedValueOnce(createP2002Error())
-        .mockResolvedValueOnce({ id: "new-id" }),
-    };
-    const mockTx = { prompt: mockPrompt };
-    mockWithDbTx(mockTx);
-
-    await upsertFromSnapshot(ORG_ID, {
-      prompts: [
-        {
-          promptType: "AGENT",
-          name: "my-agent",
-          description: "An agent prompt",
-          model: "claude-3",
-          tools: [],
-          filePath: "prompts/agent.md",
-          content: "New content.",
-        },
-      ],
-    });
-
-    expect(mockPrompt.create).toHaveBeenCalledTimes(2);
-    expect(mockPrompt.create.mock.calls[0][0].data.version).toBe(2);
-    expect(mockPrompt.create.mock.calls[1][0].data.version).toBe(3);
   });
 
   it("uses a single transaction callback for multiple prompts in one snapshot", async () => {

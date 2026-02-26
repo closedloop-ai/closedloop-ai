@@ -176,7 +176,14 @@ export async function ingestPlanArtifacts(
   }
 
   // Persist prompt registry entries from snapshot (idempotent upsert)
-  await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
+  try {
+    await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
+  } catch (error) {
+    log.warn(
+      "[loop-artifact-ingestion] Prompt registry upsert failed, continuing",
+      { organizationId, artifactId, error }
+    );
+  }
 
   // Persist judges report if available (upsert for idempotency)
   if (artifacts.judgesReport) {
@@ -331,11 +338,18 @@ export async function ingestExecutionArtifacts(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
-    await upsertFromSnapshot(
-      loop.organizationId,
-      artifacts.promptsSnapshot,
-      tx
-    );
+    try {
+      await upsertFromSnapshot(
+        loop.organizationId,
+        artifacts.promptsSnapshot,
+        tx
+      );
+    } catch (error) {
+      log.warn(
+        "[loop-artifact-ingestion] Prompt registry upsert failed, continuing",
+        { organizationId: loop.organizationId, loopId: loop.id, error }
+      );
+    }
 
     const artifact = await tx.artifact.findUnique({
       where: { id: loop.artifactId!, organizationId: loop.organizationId },

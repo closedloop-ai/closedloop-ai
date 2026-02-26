@@ -2,7 +2,8 @@
  * Prompts registry service — upserts prompt snapshots into the database.
  *
  * Uses Prisma ORM with UUIDv7 generated in app code (codebase convention).
- * Race-safe: latest-content idempotency with P2002 retry for version races.
+ * Race-safe: latest-content idempotency. P2002 version races are logged and
+ * propagated — no retry (see upsertPromptVersion).
  */
 
 import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
@@ -32,8 +33,8 @@ import { v7 as uuidv7 } from "uuid";
  *
  * - Idempotency: compare incoming content, model, and tools with latest
  *   (org, name) version.
- * - Version collision: create with computed next_version; retry on P2002 when a
- *   concurrent worker claimed the same version.
+ * - Version collision: create with computed next_version. P2002 is logged and
+ *   propagated; caller may retry at a higher level.
  *
  * NOTE: `withDb.tx` does not currently propagate ambient transactions via
  * AsyncLocalStorage when starting from `withDb.tx` itself. Pass `tx`
@@ -50,7 +51,7 @@ export async function upsertFromSnapshot(
 
   const run = async (client: TransactionClient): Promise<void> => {
     for (const prompt of snapshot.prompts) {
-      await upsertPromptVersionWithRetry(client, organizationId, prompt);
+      await upsertPromptVersion(client, organizationId, prompt);
     }
   };
 
@@ -62,38 +63,30 @@ export async function upsertFromSnapshot(
   await withDb.tx(run);
 }
 
-const MAX_P2002_RETRIES = 3;
-
-async function upsertPromptVersionWithRetry(
+/**
+ * P2002 retry cannot reuse the same TransactionClient because any error aborts
+ * the PostgreSQL session. We log and rethrow instead.
+ *
+ * TODO: For outer-tx callers: either accept that a version race will cause the
+ * outer transaction to fail and let the caller retry at a higher level, or do
+ * the prompt upsert outside the outer transaction in its own independent
+ * withDb.tx call so aborts are isolated.
+ */
+async function upsertPromptVersion(
   client: TransactionClient,
   organizationId: string,
   prompt: PromptsSnapshot["prompts"][number]
 ): Promise<void> {
-  for (let attempt = 0; attempt <= MAX_P2002_RETRIES; attempt++) {
-    try {
-      await upsertPromptVersionCore(client, organizationId, prompt);
-      return;
-    } catch (error) {
-      if (!isUniqueConstraintError(error) || attempt === MAX_P2002_RETRIES) {
-        log.warn("[prompts-service] Prompt upsert failed, skipping", {
-          organizationId,
-          name: prompt.name,
-          retriesAttempted: attempt,
-          error,
-        });
-        return;
-      }
-
-      log.debug(
-        "[prompts-service] P2002 unique constraint — retrying prompt upsert",
-        {
-          organizationId,
-          name: prompt.name,
-          attempt: attempt + 1,
-          maxRetries: MAX_P2002_RETRIES,
-        }
+  try {
+    await upsertPromptVersionCore(client, organizationId, prompt);
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      log.warn(
+        "[prompts-service] P2002 unique constraint — version race (concurrent upsert); error propagates",
+        { organizationId, name: prompt.name, error }
       );
     }
+    throw error;
   }
 }
 
