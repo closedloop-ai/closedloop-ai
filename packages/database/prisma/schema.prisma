@@ -959,7 +959,6 @@ model GitHubPullRequest {
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
-  @@index([repositoryId])
   @@index([headSha])
   @@index([organizationId])
   @@index([artifactId])

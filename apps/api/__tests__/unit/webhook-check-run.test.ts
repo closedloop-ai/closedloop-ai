@@ -71,6 +71,7 @@ let mockTx: any;
 function createCheckRunEvent(partial?: {
   action?: string;
   headSha?: string;
+  headBranch?: string;
   repositoryId?: number;
   repositoryFullName?: string;
   installationId?: number | null;
@@ -86,6 +87,9 @@ function createCheckRunEvent(partial?: {
       name: partial?.checkRunName ?? "ci / test",
       head_sha: partial?.headSha ?? "abc123def456abc123def456abc123def456abc1",
       conclusion: partial?.conclusion ?? "success",
+      check_suite: {
+        head_branch: partial?.headBranch ?? "feature/test-branch",
+      },
     },
     repository: {
       id: partial?.repositoryId ?? 12_345,
@@ -240,9 +244,12 @@ describe("handleCheckRun", () => {
 
       expect(mockDb.gitHubPullRequest.findFirst).toHaveBeenCalledWith({
         where: {
-          headSha,
           state: "OPEN",
           repositoryId: "repo-uuid-123",
+          OR: [
+            { headSha },
+            { headSha: null, headBranch: "feature/test-branch" },
+          ],
         },
         select: {
           id: true,

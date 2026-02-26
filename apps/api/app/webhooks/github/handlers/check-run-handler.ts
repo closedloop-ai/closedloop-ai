@@ -1,5 +1,6 @@
 import type { CheckRunEvent } from "@octokit/webhooks-types";
-import { ChecksStatus, withDb } from "@repo/database";
+import { ChecksStatus } from "@repo/api/src/types/artifact";
+import { withDb } from "@repo/database";
 import { queryStatusCheckRollup } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
@@ -18,19 +19,19 @@ export function mapRollupStateToChecksStatus(
 ): ChecksStatus {
   switch (rollupState) {
     case "SUCCESS":
-      return ChecksStatus.PASSING;
+      return ChecksStatus.Passing;
     case "FAILURE":
     case "ERROR":
-      return ChecksStatus.FAILING;
+      return ChecksStatus.Failing;
     case "PENDING":
     case "EXPECTED":
-      return ChecksStatus.PENDING;
+      return ChecksStatus.Pending;
     default: {
       const _exhaustiveCheck: never = rollupState;
       log.warn("[handleCheckRun] Unknown rollup state, defaulting to PENDING", {
         rollupState: _exhaustiveCheck,
       });
-      return ChecksStatus.PENDING;
+      return ChecksStatus.Pending;
     }
   }
 }
@@ -76,11 +77,13 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   }
 
   const headSha = event.check_run.head_sha;
+  const headBranch = event.check_run.check_suite?.head_branch ?? null;
 
   log.info("[handleCheckRun] Processing check_run completed event", {
     checkRunName: event.check_run.name,
     conclusion: event.check_run.conclusion,
     headSha,
+    headBranch,
     repositoryId: event.repository.id,
     installationId,
   });
@@ -98,11 +101,16 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
       return { repo: null, pr: null };
     }
 
+    // Match by headSha, or fall back to headBranch for PRs created
+    // without headSha (e.g., via workflow-completion-handler).
     const foundPr = await db.gitHubPullRequest.findFirst({
       where: {
-        headSha,
         state: "OPEN",
         repositoryId: foundRepo.id,
+        OR: [
+          { headSha },
+          ...(headBranch ? [{ headSha: null, headBranch }] : []),
+        ],
       },
       select: {
         id: true,

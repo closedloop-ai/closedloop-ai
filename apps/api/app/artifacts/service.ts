@@ -160,16 +160,7 @@ export const artifactsService = {
             db.gitHubPullRequest.findMany({
               where: { workstreamId: { in: uniqueWorkstreamIds } },
               select: {
-                id: true,
-                number: true,
-                title: true,
-                htmlUrl: true,
-                state: true,
-                headBranch: true,
-                baseBranch: true,
-                createdAt: true,
-                checksStatus: true,
-                reviewDecision: true,
+                ...pullRequestSelect,
                 workstreamId: true,
               },
               orderBy: { createdAt: "desc" },
@@ -2844,7 +2835,7 @@ function toPullRequestInfo(pr: {
     headBranch: pr.headBranch,
     baseBranch: pr.baseBranch,
     createdAt: pr.createdAt,
-    checksStatus: pr.checksStatus as ChecksStatus | null,
+    checksStatus: pr.checksStatus as ChecksStatus,
     reviewDecision: pr.reviewDecision as ReviewDecision | null,
   };
 }
