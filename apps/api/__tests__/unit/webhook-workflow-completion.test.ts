@@ -1174,6 +1174,8 @@ describe("processWorkflowCompletion", () => {
 
     // Assert call ordering: createVersion must be called before gitHubActionRun.update
     // so the version record exists before the run status is finalized.
+    expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+    expect(mockDb.gitHubActionRun.update).toHaveBeenCalled();
     expect(mockCreateVersion.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.gitHubActionRun.update.mock.invocationCallOrder[0]
     );
