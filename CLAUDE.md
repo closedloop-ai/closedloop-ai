@@ -206,6 +206,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: When using const objects like ArtifactType (ArtifactType.Issue, ArtifactType.Prd), use `import { ArtifactType }` not `import type { ArtifactType }` - const objects are runtime values that cannot be accessed through type-only imports. (context: typescript|import-type|runtime-value)
 - **[mistake]**: Adding `export { ... } from './module'` re-exports to an existing index.ts triggers Biome's `noBarrelFile` lint rule. Use direct subpath imports (e.g., `@repo/github/execution-log-parser`) instead of adding re-exports to barrels. (context: biome|noBarrelFile|subpath-imports)
 - **[insight]**: In this monorepo, subpath imports like `@repo/github/execution-log-parser` resolve correctly without an explicit `exports` field in package.json. pnpm workspace resolution + TypeScript handles this directly. (context: monorepo|pnpm|subpath-imports)
+- **[convention]**: ChecksStatus exists in both `@repo/api/src/types/artifact` (camelCase: .Passing, .Failing, .Pending) and `@repo/database` (UPPERCASE: .PASSING, .FAILING, .PENDING). Both produce identical string values. For webhook handlers not already importing `@repo/database` enum types, use the `@repo/api` version. (context: typescript|imports|ChecksStatus|enum-sources)
 
 ### Debugging
 - **[insight]**: API errors return generic messages to clients but log real errors server-side. When debugging 500 errors, check the API server terminal (port 3002), not browser DevTools - `errorResponse()` in `apps/api/lib/route-utils.ts` and `log.error` both print to server console. (context: debugging|error-handling|api-errors)
@@ -224,6 +225,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[pattern]**: When renaming Prisma enums, `@repo/database` re-exports Prisma-generated types via `export *` in `packages/database/index.ts`. Files importing enum types from `@repo/database` (like `artifact-utils.ts`) need separate treatment from files importing from `@repo/api/src/types/`. Both sources must be updated in sync. (context: prisma|enum|rename|database-reexport|shared-types)
 - **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-transactional) but is called from inside `withDb.tx` callbacks. The `withDb.tx` implementation does NOT store the transaction in AsyncLocalStorage, so nested `withDb` calls open separate connections instead of reusing the transaction. (context: database|transactions|withDb|connection-pool|prisma)
 - **[pattern]**: In this project's multi-org architecture (one User record per Clerk user per org), service methods that update profile data (name, avatar, email) should use `updateMany({ where: { clerkId } })` to sync across all organizations. Document this intentional broad-update behavior in docstrings. (context: multi-org|prisma|service-layer|user-profile|clerk-webhooks)
+- **[insight]**: Repository.githubId is globally @unique — a GitHub repo belongs to exactly one Symphony organization. Cross-tenant isolation for webhook handlers is achieved by looking up the Repository by event.repository.id, not by installation-level filtering. (context: prisma|multi-tenant|webhooks|repository|schema-design)
 
 - **[convention]**: `Artifact.subtype` is non-nullable in both the DB schema and API type. All creation paths require a subtype — don't make it nullable for speculative forward-compatibility. (context: prisma|schema-design|api-contract|artifact)
 - **[pattern]**: When checking if an artifact is a document (or other category), use `artifact.type === ArtifactType.DOCUMENT` instead of enumerating subtypes (PRD, IMPLEMENTATION_PLAN, ISSUE). The `type` field is the canonical categorization after the type/subtype split. (context: artifact-types|schema-design|categorization|type-subtype)
@@ -252,6 +254,9 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[insight]**: `@repo/observability/log` exports `console` directly and does not import `server-only`, so it is safe to use in client components despite `server-only` being a package-level dependency of `@repo/observability`. (context: observability|client-components|server-only|module-resolution)
 - **[pattern]**: When shared mappings (e.g., artifact subtype-to-route prefix) are needed by both server packages (`packages/collaboration`) and frontend code (`apps/app`), place them in `packages/api/src/types/` since server packages cannot import from `apps/app/lib/`. (context: monorepo|code-organization|shared-types|cross-package-dependencies)
 
+### Testing
+- **[pattern]**: In `apps/app` vitest tests, always add `afterEach(() => { cleanup(); })` at the top level when using @testing-library/react with absence assertions (queryByTestId/queryByRole) — auto-cleanup requires `globals:true` which is not set in this project's vitest.config.mts. (context: vitest|testing-library|cleanup|globals)
+
 ### React & Components
 - **[pattern]**: All Clerk client components in this app (UserButton, OrganizationSwitcher) need the mounted state hydration guard pattern - check for existing mounted state variable before adding new Clerk components. (context: clerk|hydration|mounted-guard|next.js)
 
@@ -260,6 +265,7 @@ Unlike developer-focused AI tools that only assist with coding, Symphony serves 
 - **[mistake]**: Biome's import order rules in this monorepo require `@repo/*` package imports before `@/*` path alias imports. Run `pnpm lint:fix` to auto-fix after adding shared package imports. (context: biome|import-order|lint|monorepo)
 - **[convention]**: To lint a single file with Biome, use `npx biome check <file>` directly. The monorepo's `pnpm lint -- --filter=<file>` does not support single-file targeting. (context: biome|linting|cli|single-file)
 - **[mistake]**: Biome's import sorting enforces `@repo/*` (workspace) imports before `@/*` (path alias) imports. Run `pnpm lint:fix` to auto-fix after adding new cross-package imports. (context: biome|import-order|lint|monorepo)
+- **[convention]**: Biome enforces type aliases over interfaces (useConsistentTypeDefinitions) and De Morgan normalization (useSimplifiedLogicExpression). Always prefer `type Foo = { ... }` over `interface Foo { ... }` and `!(a && b)` over `!a || !b`. (context: biome|typescript|type-aliases|de-morgan)
 
 ### Domain Concepts
 - **[convention]**: The 'Workflow' artifact category in Symphony represents user-defined step sequences that orchestrate execution (e.g., plan → code → test → review), NOT artifacts generated during execution or external tool integrations. Workflows let users define what steps get executed. (context: artifact-category|workflow|symphony-concepts)

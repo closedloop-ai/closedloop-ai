@@ -5,7 +5,7 @@ import type {
   PullRequestReopenedEvent,
   PullRequestSynchronizeEvent,
 } from "@octokit/webhooks-types";
-import { withDb } from "@repo/database";
+import { ChecksStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
@@ -114,6 +114,7 @@ export async function handlePullRequest(
         id: true,
         workstreamId: true,
         artifactId: true,
+        checksStatus: true,
         artifact: { select: { documentSlug: true } },
       },
     });
@@ -198,6 +199,26 @@ export async function handlePullRequest(
           where: { id: existingPr.id },
           data: {
             headSha: pull_request.head.sha,
+            checksStatus: ChecksStatus.PENDING,
+          },
+        });
+
+        // Create workstream event to signal CI status reset
+        await tx.workstreamEvent.create({
+          data: {
+            workstreamId: existingPr.workstreamId,
+            type: "GITHUB_CI_STATUS_CHANGED",
+            actorType: "system",
+            data: {
+              prNumber: pull_request.number,
+              prTitle: pull_request.title,
+              prUrl: pull_request.html_url,
+              artifactId: existingPr.artifactId,
+              documentSlug: existingPr.artifact?.documentSlug,
+              checksStatus: ChecksStatus.PENDING,
+              previousChecksStatus: existingPr.checksStatus,
+              headSha: pull_request.head.sha,
+            },
           },
         });
 

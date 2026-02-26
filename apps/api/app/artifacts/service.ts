@@ -41,6 +41,7 @@ import {
   createArtifactVersion,
   generateDocumentSlug,
   previewDeploymentSelect,
+  pullRequestSelect,
 } from "./artifact-utils";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { BUG_TEMPLATE, ISSUE_TEMPLATE, PRD_TEMPLATE } from "./template-seeds";
@@ -78,7 +79,9 @@ async function getCommitterInfo(
       select: { email: true, firstName: true, lastName: true },
     })
   );
-  if (!user?.email) return undefined;
+  if (!user?.email) {
+    return undefined;
+  }
   const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
   return {
     committerName: name || user.email,
@@ -154,17 +157,7 @@ export const artifactsService = {
         db.gitHubPullRequest.findMany({
           where: { workstreamId: { in: uniqueWorkstreamIds } },
           orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            workstreamId: true,
-            number: true,
-            title: true,
-            htmlUrl: true,
-            state: true,
-            headBranch: true,
-            baseBranch: true,
-            createdAt: true,
-          },
+          select: { workstreamId: true, ...pullRequestSelect },
         })
       );
 
@@ -172,7 +165,7 @@ export const artifactsService = {
       prMap = new Map<string, PullRequestInfo>();
       for (const pr of prs) {
         if (pr.workstreamId && !prMap.has(pr.workstreamId)) {
-          // Cast state enum to literal union type
+          // workstreamId is extra (not in PullRequestInfo) but harmless at runtime
           prMap.set(pr.workstreamId, pr as PullRequestInfo);
         }
       }
@@ -324,16 +317,7 @@ export const artifactsService = {
       db.gitHubPullRequest.findFirst({
         where: { workstreamId: artifact.workstreamId as string },
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          number: true,
-          title: true,
-          htmlUrl: true,
-          state: true,
-          headBranch: true,
-          baseBranch: true,
-          createdAt: true,
-        },
+        select: pullRequestSelect,
       })
     );
 
@@ -341,7 +325,6 @@ export const artifactsService = {
       return null;
     }
 
-    // Cast state enum to literal union type
     return pr as PullRequestInfo;
   },
 

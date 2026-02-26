@@ -170,6 +170,14 @@ export const ApproverRole = {
 export type ApproverRole = (typeof ApproverRole)[keyof typeof ApproverRole];
 export const APPROVER_ROLE_OPTIONS = Object.values(ApproverRole);
 
+export const ChecksStatus = {
+  Unknown: "UNKNOWN",
+  Pending: "PENDING",
+  Passing: "PASSING",
+  Failing: "FAILING",
+} as const;
+export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
+
 export type Artifact = {
   id: string;
   organizationId: string;
@@ -311,6 +319,7 @@ export type PullRequestInfo = {
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  checksStatus: ChecksStatus | null;
 };
 
 // Generation status for artifacts being processed by GitHub Actions

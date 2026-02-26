@@ -54,9 +54,9 @@ import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
+import { PullRequestStatusBadge } from "@/components/pull-request-status-badge";
 import {
   previewDeploymentStateColors,
-  prStatusColors,
   StatusBadge,
 } from "@/components/status-badge";
 import { useArtifactsByProject } from "@/hooks/queries/use-artifacts";
@@ -351,11 +351,7 @@ export function PlanMetadataPanel({
                   <ExternalLinkIcon className="h-3 w-3" />
                 </a>
                 <div className="flex items-center gap-2 text-muted-foreground text-xs">
-                  <StatusBadge
-                    className="px-2 py-0.5 text-xs uppercase"
-                    colorMap={prStatusColors}
-                    status={pullRequest.state}
-                  />
+                  <PullRequestStatusBadge pullRequest={pullRequest} />
                   <span>
                     {pullRequest.headBranch} → {pullRequest.baseBranch}
                   </span>

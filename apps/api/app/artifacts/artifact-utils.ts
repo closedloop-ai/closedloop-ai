@@ -121,6 +121,22 @@ export const previewDeploymentSelect = {
 } as const;
 
 /**
+ * Prisma select for GitHubPullRequest fields that map to PullRequestInfo.
+ * Centralises the field list so callers don't omit checksStatus accidentally.
+ */
+export const pullRequestSelect = {
+  id: true,
+  number: true,
+  title: true,
+  htmlUrl: true,
+  state: true,
+  headBranch: true,
+  baseBranch: true,
+  createdAt: true,
+  checksStatus: true,
+} as const;
+
+/**
  * Standard include pattern for artifact queries with workstream and project info.
  */
 export const artifactIncludeWithContext = {

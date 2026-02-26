@@ -1,6 +1,10 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { PullRequestStatusBadge } from "./pull-request-status-badge";
+
+afterEach(() => {
+  cleanup();
+});
 
 describe("PullRequestStatusBadge", () => {
   it("renders blue badge for OPEN state", () => {
@@ -15,6 +19,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-01T00:00:00Z"),
+          checksStatus: null,
         }}
       />
     );
@@ -36,6 +41,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-02T00:00:00Z"),
+          checksStatus: null,
         }}
       />
     );
@@ -57,6 +63,7 @@ describe("PullRequestStatusBadge", () => {
           headBranch: "feature-branch",
           baseBranch: "main",
           createdAt: new Date("2024-01-03T00:00:00Z"),
+          checksStatus: null,
         }}
       />
     );
@@ -76,5 +83,67 @@ describe("PullRequestStatusBadge", () => {
   it("renders null when pullRequest is null", () => {
     const { container } = render(<PullRequestStatusBadge pullRequest={null} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("CI status indicator", () => {
+  const basePullRequest = {
+    id: "pr-ci",
+    state: "OPEN" as const,
+    htmlUrl: "http://example.com",
+    number: 10,
+    title: "CI Test PR",
+    headBranch: "feature-branch",
+    baseBranch: "main",
+    createdAt: new Date("2024-01-01T00:00:00Z"),
+  };
+
+  it("renders green checkmark for checksStatus PASSING", () => {
+    render(
+      <PullRequestStatusBadge
+        pullRequest={{ ...basePullRequest, checksStatus: "PASSING" }}
+      />
+    );
+    expect(screen.getByTestId("ci-status-passing")).toBeDefined();
+  });
+
+  it("renders red X for checksStatus FAILING", () => {
+    render(
+      <PullRequestStatusBadge
+        pullRequest={{ ...basePullRequest, checksStatus: "FAILING" }}
+      />
+    );
+    expect(screen.getByTestId("ci-status-failing")).toBeDefined();
+  });
+
+  it("renders yellow clock for checksStatus PENDING", () => {
+    render(
+      <PullRequestStatusBadge
+        pullRequest={{ ...basePullRequest, checksStatus: "PENDING" }}
+      />
+    );
+    expect(screen.getByTestId("ci-status-pending")).toBeDefined();
+  });
+
+  it("renders no CI icon for checksStatus UNKNOWN", () => {
+    render(
+      <PullRequestStatusBadge
+        pullRequest={{ ...basePullRequest, checksStatus: "UNKNOWN" }}
+      />
+    );
+    expect(screen.queryByTestId("ci-status-passing")).toBeNull();
+    expect(screen.queryByTestId("ci-status-failing")).toBeNull();
+    expect(screen.queryByTestId("ci-status-pending")).toBeNull();
+  });
+
+  it("renders no CI icon for checksStatus null", () => {
+    render(
+      <PullRequestStatusBadge
+        pullRequest={{ ...basePullRequest, checksStatus: null }}
+      />
+    );
+    expect(screen.queryByTestId("ci-status-passing")).toBeNull();
+    expect(screen.queryByTestId("ci-status-failing")).toBeNull();
+    expect(screen.queryByTestId("ci-status-pending")).toBeNull();
   });
 });

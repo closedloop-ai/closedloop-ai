@@ -13,6 +13,17 @@ vi.mock("@repo/database", () => ({
 vi.mock("@/app/artifacts/artifact-utils", () => ({
   artifactIncludeWithContext: {},
   toArtifact: vi.fn(),
+  pullRequestSelect: {
+    id: true,
+    number: true,
+    title: true,
+    htmlUrl: true,
+    state: true,
+    headBranch: true,
+    baseBranch: true,
+    createdAt: true,
+    checksStatus: true,
+  },
 }));
 
 vi.mock("@/app/artifacts/room-utils", () => ({
