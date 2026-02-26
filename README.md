@@ -2,7 +2,7 @@
 
 <div>
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" />
-  <img src="https://img.shields.io/badge/node-20+-blue" alt="Node.js 20+" />
+  <img src="https://img.shields.io/badge/node-18+-blue" alt="Node.js 18+" />
   <img src="https://img.shields.io/badge/next.js-16-black" alt="Next.js 16" />
   <img src="https://img.shields.io/badge/turborepo-monorepo-purple" alt="Turborepo" />
 </div>
@@ -130,7 +130,7 @@ Shared packages imported as `@repo/<package-name>`:
 
 | Requirement | Purpose | Install |
 |-------------|---------|---------|
-| **Node.js 20+** | Runtime | [nodejs.org](https://nodejs.org) or `brew install node` |
+| **Node.js 18+** | Runtime | [nodejs.org](https://nodejs.org) or `brew install node` |
 | **pnpm** | Package manager | `npm install -g pnpm` or [pnpm.io](https://pnpm.io) |
 | **Docker** | Local PostgreSQL 16 | [docker.com](https://www.docker.com/get-started) |
 | **Stripe CLI** | Local webhook testing | [docs.stripe.com](https://docs.stripe.com/stripe-cli) |

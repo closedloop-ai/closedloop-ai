@@ -6,7 +6,7 @@ We welcome contributions! This guide covers everything you need to get started.
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 18+
 - [pnpm](https://pnpm.io)
 - [Stripe CLI](https://docs.stripe.com/stripe-cli) for local webhook testing
 - Docker (for local PostgreSQL)

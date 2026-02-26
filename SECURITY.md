@@ -24,7 +24,7 @@ Email: security@closedloop.ai
 - **Clerk** handles all authentication (SSO, social login, email/password, MFA)
 - **JWT validation** on every API route via `withAuth()` wrapper
 - **Organization isolation** — all database queries scoped by `organizationId` from JWT
-- **Role-based access** — Clerk organization roles (`org:admin`, `org:member`) gate admin features
+- **Role-based access** — Clerk organization roles (`org:admin`, `org:owner`, `org:member`) gate admin features
 
 ### Application Security
 
