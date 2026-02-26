@@ -25,6 +25,7 @@ export function ArtifactRoom({
 }: Readonly<ArtifactRoomProps>) {
   return (
     <RoomProvider
+      engine={2}
       id={roomId}
       initialPresence={{ cursor: null, selection: null }}
     >
