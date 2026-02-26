@@ -3,7 +3,7 @@
  *
  * Tests cover:
  * - downloadLoopArtifacts(): markdown entries under agents-snapshot/ are parsed as primary source
- * - downloadLoopArtifacts(): legacy prompts-snapshot.json fallback is used when markdown is absent
+ * - downloadLoopArtifacts(): returns promptsSnapshot: null when markdown entries are absent
  * - downloadLoopArtifacts(): null inputs return promptsSnapshot: null without failing
  * - ingestPlanArtifacts(): upsertFromSnapshot called before judgesReport writes
  * - ingestExecutionArtifacts(): upsertFromSnapshot called before code judges report writes
@@ -189,44 +189,16 @@ You are a helpful agent.
     });
   });
 
-  it("falls back to prompts-snapshot.json when markdown entries are absent", async () => {
-    const rawSnapshot = {
-      prompts: [
-        {
-          promptType: "AGENT",
-          name: "my-agent",
-          description: "An agent prompt",
-          model: "claude-3",
-          tools: ["bash", "read"],
-          file_path: "prompts/agent.md",
-          content: "You are a helpful agent.",
-        },
-      ],
-    };
-
+  it("returns promptsSnapshot: null when markdown entries are absent", async () => {
     mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
-    mockDownloadArtifactFile.mockImplementation(
-      async (_prefix: string, filename: string) =>
-        filename === "prompts-snapshot.json"
-          ? Buffer.from(JSON.stringify(rawSnapshot), "utf-8")
-          : null
-    );
+    mockDownloadArtifactFile.mockResolvedValue(null);
 
     const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
 
-    expect(artifacts.promptsSnapshot).not.toBeNull();
-    expect(artifacts.promptsSnapshot?.prompts).toHaveLength(1);
-
-    const prompt = artifacts.promptsSnapshot?.prompts[0];
-    expect(prompt?.filePath).toBe("prompts/agent.md");
-    // Verify the snake_case field is not present on the mapped object
-    expect((prompt as Record<string, unknown>)?.file_path).toBeUndefined();
-    expect(prompt?.promptType).toBe("AGENT");
-    expect(prompt?.name).toBe("my-agent");
-    expect(prompt?.content).toBe("You are a helpful agent.");
+    expect(artifacts.promptsSnapshot).toBeNull();
   });
 
-  it("returns promptsSnapshot: null when both markdown and JSON snapshots are missing", async () => {
+  it("returns promptsSnapshot: null when markdown snapshots are missing", async () => {
     // All artifact files return null
     mockDownloadArtifactFile.mockResolvedValue(null);
     mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);

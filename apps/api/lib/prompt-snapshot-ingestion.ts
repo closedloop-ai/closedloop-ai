@@ -11,9 +11,6 @@ type SnapshotEntry = {
   data: Buffer;
 };
 
-type RawPromptInfo = Omit<PromptInfo, "filePath"> & { file_path: string };
-type RawPromptsSnapshot = { prompts: RawPromptInfo[] };
-
 /**
  * Compute a deterministic SHA-256 hex digest for prompt content.
  */
@@ -109,36 +106,4 @@ export function parsePromptsSnapshotFromMarkdownEntries(
   }
 
   return { prompts };
-}
-
-/**
- * Compatibility parser for legacy loop JSON artifact (`prompts-snapshot.json`).
- */
-export function parsePromptsSnapshotFromJson(
-  buf: Buffer | null,
-  logPrefix = "[prompt-snapshot-ingestion]"
-): PromptsSnapshot | null {
-  if (!buf) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(buf.toString("utf-8")) as RawPromptsSnapshot;
-    return {
-      prompts: parsed.prompts.map((raw) => ({
-        promptType: raw.promptType,
-        name: raw.name,
-        description: raw.description,
-        model: raw.model,
-        tools: raw.tools,
-        filePath: raw.file_path,
-        content: raw.content,
-      })),
-    };
-  } catch (err) {
-    log.warn(`${logPrefix} Failed to parse prompts-snapshot.json`, {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
 }

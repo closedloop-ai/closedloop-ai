@@ -25,10 +25,7 @@ import {
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
-import {
-  parsePromptsSnapshotFromJson,
-  parsePromptsSnapshotFromMarkdownEntries,
-} from "@/lib/prompt-snapshot-ingestion";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@/lib/prompt-snapshot-ingestion";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult } from "../app/webhooks/github/types";
 import {
@@ -70,7 +67,6 @@ export async function downloadLoopArtifacts(
     executionResultBuf,
     codeJudgesReportBuf,
     judgesReportBuf,
-    promptsSnapshotBuf,
     promptMarkdownEntries,
   ] = await Promise.all([
     downloadArtifactFile(stateKeyPrefix, "plan.json"),
@@ -78,7 +74,6 @@ export async function downloadLoopArtifacts(
     downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
     downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
     downloadArtifactFile(stateKeyPrefix, "judges.json"),
-    downloadArtifactFile(stateKeyPrefix, "prompts-snapshot.json"),
     downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
   ]);
 
@@ -110,26 +105,11 @@ export async function downloadLoopArtifacts(
     (p) => p
   ) as JudgesReport | null;
 
-  let promptsSnapshot: PromptsSnapshot | null =
+  const promptsSnapshot: PromptsSnapshot | null =
     parsePromptsSnapshotFromMarkdownEntries(
       promptMarkdownEntries,
       "[loop-artifact-ingestion]"
     );
-
-  if (!promptsSnapshot && promptsSnapshotBuf) {
-    promptsSnapshot = parsePromptsSnapshotFromJson(
-      promptsSnapshotBuf,
-      "[loop-artifact-ingestion]"
-    );
-    if (promptsSnapshot) {
-      log.warn(
-        "[loop-artifact-ingestion] Using legacy prompts-snapshot.json fallback",
-        {
-          stateKeyPrefix,
-        }
-      );
-    }
-  }
 
   return {
     planContent,

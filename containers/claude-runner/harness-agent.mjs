@@ -1740,7 +1740,6 @@ async function uploadState(workDir, output, runDir) {
     "code-judges.json",
     "perf.jsonl",
     "state.json",
-    "prompts-snapshot.json",
   ];
   const artifactDir = runDir || workDir;
   for (const fileName of KEY_ARTIFACT_FILES) {
@@ -1756,6 +1755,24 @@ async function uploadState(workDir, output, runDir) {
       } catch (err) {
         log("error", `Failed to upload artifact ${fileName}: ${err.message}`);
       }
+    }
+  }
+
+  // 4. Upload agent/judge prompt snapshots as markdown files.
+  // Keep this directory structure under artifacts/ so API ingestion can
+  // discover prompts from artifacts/agents-snapshot/*.md.
+  const agentsSnapshotDir = path.join(artifactDir, "agents-snapshot");
+  if (fs.existsSync(agentsSnapshotDir)) {
+    try {
+      await uploadDirectory(
+        agentsSnapshotDir,
+        `${statePrefix}/artifacts/agents-snapshot`
+      );
+    } catch (err) {
+      log(
+        "error",
+        `Failed to upload agents-snapshot directory: ${err.message}`
+      );
     }
   }
 

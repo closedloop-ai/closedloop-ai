@@ -2,7 +2,6 @@ import { PromptType } from "@repo/api/src/types/prompt";
 import {
   computePromptSha256,
   parsePromptFrontmatter,
-  parsePromptsSnapshotFromJson,
   parsePromptsSnapshotFromMarkdownEntries,
 } from "@/lib/prompt-snapshot-ingestion";
 
@@ -54,34 +53,6 @@ Plan work carefully.
     });
   });
 
-  describe("parsePromptsSnapshotFromJson", () => {
-    it("maps file_path to filePath from legacy JSON artifact", () => {
-      const snapshot = parsePromptsSnapshotFromJson(
-        Buffer.from(
-          JSON.stringify({
-            prompts: [
-              {
-                promptType: "AGENT",
-                name: "planner",
-                description: "Planner agent",
-                model: "claude-opus-4-6",
-                tools: ["bash", "read"],
-                file_path: "prompts/planner.md",
-                content: "Plan work carefully.\n",
-              },
-            ],
-          }),
-          "utf-8"
-        )
-      );
-
-      expect(snapshot?.prompts[0].filePath).toBe("prompts/planner.md");
-      expect(
-        (snapshot?.prompts[0] as unknown as Record<string, unknown>).file_path
-      ).toBeUndefined();
-    });
-  });
-
   describe("parsePromptFrontmatter", () => {
     it("detects judge prompt type from judges path", () => {
       const judge = parsePromptFrontmatter(
@@ -107,33 +78,26 @@ Plan work carefully.
     });
   });
 
-  it("produces equivalent normalized shape for markdown and JSON inputs", () => {
-    const fromMarkdown = parsePromptsSnapshotFromMarkdownEntries([
+  it("returns the normalized snapshot shape from markdown input", () => {
+    const snapshot = parsePromptsSnapshotFromMarkdownEntries([
       {
         name: "agents-snapshot/planner.md",
         data: Buffer.from(MARKDOWN_PROMPT, "utf-8"),
       },
     ]);
 
-    const fromJson = parsePromptsSnapshotFromJson(
-      Buffer.from(
-        JSON.stringify({
-          prompts: [
-            {
-              promptType: "AGENT",
-              name: "planner",
-              description: "Planner agent",
-              model: "claude-opus-4-6",
-              tools: ["bash", "read"],
-              file_path: "prompts/planner.md",
-              content: "Plan work carefully.\n",
-            },
-          ],
-        }),
-        "utf-8"
-      )
-    );
-
-    expect(fromMarkdown).toEqual(fromJson);
+    expect(snapshot).toEqual({
+      prompts: [
+        {
+          promptType: PromptType.Agent,
+          name: "planner",
+          description: "Planner agent",
+          model: "claude-opus-4-6",
+          tools: ["bash", "read"],
+          filePath: "prompts/planner.md",
+          content: "Plan work carefully.\n",
+        },
+      ],
+    });
   });
 });
