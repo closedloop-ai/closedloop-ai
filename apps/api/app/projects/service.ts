@@ -198,6 +198,75 @@ export const projectsService = {
   },
 
   /**
+   * Add a project to the user's favorites (idempotent).
+   */
+  addFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.upsert({
+        where: { userId_projectId: { userId, projectId } },
+        create: { userId, projectId },
+        update: {},
+      });
+      return { favorited: true };
+    });
+  },
+
+  /**
+   * Remove a project from the user's favorites.
+   */
+  removeFavorite(projectId: string, userId: string, organizationId: string) {
+    return withDb(async (db) => {
+      // Verify project belongs to this org
+      const project = await db.project.findUnique({
+        where: { id: projectId, organizationId },
+        select: { id: true },
+      });
+      if (!project) {
+        return null;
+      }
+      await db.favoriteProject.deleteMany({
+        where: { userId, projectId },
+      });
+      return { favorited: false };
+    });
+  },
+
+  /**
+   * Find all favorite projects for a user within an organization.
+   * Returns projects mapped to API format, ordered by when they were favorited.
+   */
+  async findFavoritesByUser(
+    userId: string,
+    organizationId: string
+  ): Promise<ProjectWithDetails[]> {
+    const favorites = await withDb((db) =>
+      db.favoriteProject.findMany({
+        where: {
+          userId,
+          project: { organizationId },
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          project: {
+            include: PROJECT_DETAIL_INCLUDE,
+          },
+        },
+      })
+    );
+    return favorites.map((f) =>
+      projectsService.toProjectWithDetails(f.project)
+    );
+  },
+
+  /**
    * Calculate project status based on artifact completion
    */
   calculateStatus(artifacts: Array<{ status: string }>): number {

@@ -47,6 +47,12 @@ vi.mock("@/hooks/queries/use-users", () => ({
   useOrganizationUsers: vi.fn(() => ({ data: [] })),
 }));
 
+// Mock favorites hooks — avoids needing ClerkProvider for useAuth
+vi.mock("@/hooks/queries/use-projects", () => ({
+  useIsFavorite: vi.fn(() => false),
+  useToggleFavorite: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+}));
+
 // Mock Tooltip components so TooltipContent renders inline (not in a Portal)
 // This lets us assert on the tooltip text without hover simulation.
 vi.mock("@repo/design-system/components/ui/tooltip", () => ({
