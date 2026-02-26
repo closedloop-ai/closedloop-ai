@@ -2624,6 +2624,13 @@ function commitAndPushOnError(workDir, output) {
 
   // Check if LLM handled everything
   if (llmPrInfo && fs.existsSync(errorResultPath)) {
+    if (llmPrInfo.prNumber) {
+      try {
+        labelPrIncomplete(workDir, llmPrInfo.prNumber);
+      } catch (_) {
+        // ignore
+      }
+    }
     return llmPrInfo;
   }
 
