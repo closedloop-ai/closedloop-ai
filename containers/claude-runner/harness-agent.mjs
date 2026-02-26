@@ -1078,8 +1078,26 @@ function attemptLlmCommit(workDir, resultFilePath) {
     return null;
   }
 
-  if (!hasUncommittedChanges(workDir)) {
-    return null;
+  // Quick check: are there any uncommitted changes?
+  try {
+    execFileSync("git", ["diff", "--quiet", "HEAD"], {
+      cwd: workDir,
+      stdio: "pipe",
+    });
+    // No tracked changes — also check for untracked files
+    const untracked = execFileSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "--exclude", ".claude"],
+      { cwd: workDir, stdio: "pipe" }
+    )
+      .toString()
+      .trim();
+    if (!untracked) {
+      log("info", "LLM commit: no uncommitted changes");
+      return null;
+    }
+  } catch {
+    // git diff --quiet exits non-zero when there ARE changes — proceed
   }
 
   const prompt = [
@@ -2388,33 +2406,6 @@ async function reportFinalStatus(
 // ---------------------------------------------------------------------------
 // Helpers extracted to reduce cognitive complexity of the functions above
 // ---------------------------------------------------------------------------
-
-// Check whether the working directory has any uncommitted changes (tracked or untracked).
-// Returns true if there are changes, false if the tree is clean.
-function hasUncommittedChanges(workDir) {
-  try {
-    execFileSync("git", ["diff", "--quiet", "HEAD"], {
-      cwd: workDir,
-      stdio: "pipe",
-    });
-    // No tracked changes — also check for untracked files
-    const untracked = execFileSync(
-      "git",
-      ["ls-files", "--others", "--exclude-standard", "--exclude", ".claude"],
-      { cwd: workDir, stdio: "pipe" }
-    )
-      .toString()
-      .trim();
-    if (!untracked) {
-      log("info", "LLM commit: no uncommitted changes");
-      return false;
-    }
-    return true;
-  } catch {
-    // git diff --quiet exits non-zero when there ARE changes — proceed
-    return true;
-  }
-}
 
 // Parse the result of an LLM commit attempt from the result file or stdout/stderr.
 function parseLlmCommitOutput(resultFilePath, branchName, stdout, stderr) {
