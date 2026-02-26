@@ -219,8 +219,8 @@
         ]
       },
       "cta": {
-        "title": "Ready to Ship Better Software?",
-        "description": "Join teams using ClosedLoop to build production-ready features with AI.",
+        "title": "Open PRs Your Engineers Love",
+        "description": "Generate code you can actually merge.",
         "primaryButton": "Get Started Free",
         "secondaryButton": "Read the Docs"
       }
