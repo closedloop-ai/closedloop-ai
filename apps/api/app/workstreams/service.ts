@@ -7,6 +7,7 @@ import type {
 } from "@repo/api/src/types/workstream";
 import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
+import { basicUserSelect } from "@/lib/db-utils";
 
 export type FindWorkstreamsOptions = {
   organizationId: string;
@@ -46,14 +47,7 @@ export const workstreamsService = {
             : {}),
         },
         include: {
-          createdBy: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
+          createdBy: basicUserSelect,
         },
         orderBy: { createdAt: "desc" },
         ...(limit ? { take: limit } : {}),
@@ -69,14 +63,7 @@ export const workstreamsService = {
       db.workstream.findUnique({
         where: { id, organizationId },
         include: {
-          createdBy: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
+          createdBy: basicUserSelect,
         },
       })
     );
@@ -103,14 +90,7 @@ export const workstreamsService = {
           state: { notIn: excludeStates },
         },
         include: {
-          createdBy: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              avatarUrl: true,
-            },
-          },
+          createdBy: basicUserSelect,
           project: {
             select: { name: true },
           },
@@ -131,14 +111,12 @@ export const workstreamsService = {
     return withDb((db) =>
       db.workstream.create({
         data: {
+          ...input,
           organizationId,
-          projectId: input.projectId,
-          title: input.title,
-          description: input.description,
-          type: input.type ?? "FEATURE_DELIVERY",
           createdById,
-          assignedToId: input.assignedToId,
-          hasUIChanges: input.hasUIChanges ?? false,
+        },
+        include: {
+          createdBy: basicUserSelect,
         },
       })
     );
@@ -153,7 +131,8 @@ export const workstreamsService = {
     input: Omit<UpdateWorkstreamInput, "id">
   ): Promise<Workstream> {
     // If state is being changed, update stateChangedAt
-    const data: WorkstreamUpdateInput = { ...input };
+    const data: Omit<UpdateWorkstreamInput, "id"> &
+      Pick<WorkstreamUpdateInput, "stateChangedAt"> = { ...input };
     if (input.state) {
       data.stateChangedAt = new Date();
     }
@@ -162,6 +141,9 @@ export const workstreamsService = {
       db.workstream.update({
         where: { id, organizationId },
         data,
+        include: {
+          createdBy: basicUserSelect,
+        },
       })
     );
   },

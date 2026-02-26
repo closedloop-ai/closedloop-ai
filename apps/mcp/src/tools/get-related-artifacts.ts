@@ -7,13 +7,15 @@ export function registerGetRelatedArtifacts(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-related-artifacts",
-    "Get artifacts related to a given artifact via entity links",
     {
-      artifactId: z
-        .string()
-        .describe("ID of the artifact to find related artifacts for"),
+      description: "Get artifacts related to a given artifact via entity links",
+      inputSchema: {
+        artifactId: z
+          .string()
+          .describe("ID of the artifact to find related artifacts for"),
+      },
     },
     ({ artifactId }) =>
       withErrorHandling(async () => {

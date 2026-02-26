@@ -7,11 +7,13 @@ export function registerGetProject(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-project",
-    "Get a project's detail with recent workstreams",
     {
-      projectId: z.string().describe("ID of the project to retrieve"),
+      description: "Get a project's detail with recent workstreams",
+      inputSchema: {
+        projectId: z.string().describe("ID of the project to retrieve"),
+      },
     },
     ({ projectId }) =>
       withErrorHandling(async () => {

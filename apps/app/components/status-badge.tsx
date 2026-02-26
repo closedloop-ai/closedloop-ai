@@ -1,5 +1,13 @@
 "use client";
 
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
+import { IssueStatus } from "@repo/api/src/types/issue";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import type {
+  WorkstreamState,
+  WorkstreamType,
+} from "@repo/api/src/types/workstream";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { cn } from "@repo/design-system/lib/utils";
 
@@ -15,7 +23,7 @@ export function StatusBadge({
   colorMap,
   defaultStyle,
   className,
-}: StatusBadgeProps) {
+}: Readonly<StatusBadgeProps>) {
   return (
     <Badge
       className={cn(
@@ -82,24 +90,26 @@ export const previewDeploymentStateColors: Record<string, string> = {
 };
 
 // Pre-configured color maps for common use cases
-export const artifactStatusColors: Record<string, string> = {
-  DRAFT: "bg-muted text-muted-foreground border-muted",
-  REVIEW:
+export const artifactStatusColors: Record<ArtifactStatus, string> = {
+  [ArtifactStatus.Draft]: "bg-muted text-muted-foreground border-muted",
+  [ArtifactStatus.InReview]:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  APPROVED:
+  [ArtifactStatus.Approved]:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
-  ARCHIVED:
+  [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-export const artifactStatusLabels: Record<string, string> = {
-  DRAFT: "Draft",
-  REVIEW: "Review",
-  APPROVED: "Approved",
-  ARCHIVED: "Archived",
+export const artifactStatusLabels: Record<ArtifactStatus, string> = {
+  [ArtifactStatus.Draft]: "Draft",
+  [ArtifactStatus.InReview]: "In Review",
+  [ArtifactStatus.Approved]: "Approved",
+  [ArtifactStatus.Obsolete]: "Obsolete",
 };
 
-export function ArtifactStatusBadge({ status }: { status: string }) {
+export function ArtifactStatusBadge({
+  status,
+}: Readonly<{ status: ArtifactStatus }>) {
   const displayStatus = artifactStatusLabels[status] ?? status;
   return (
     <Badge
@@ -121,30 +131,35 @@ export const PrdStatusBadge = ArtifactStatusBadge;
 export const ImplementationPlanStatusBadge = ArtifactStatusBadge;
 
 // Issue status colors
-export const issueStatusColors: Record<string, string> = {
-  TODO: "bg-muted text-muted-foreground border-muted",
-  IN_PROGRESS:
+export const issueStatusColors: Record<IssueStatus, string> = {
+  [IssueStatus.NotStarted]: "bg-muted text-muted-foreground border-muted",
+  [IssueStatus.InProgress]:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  IN_REVIEW:
+  [IssueStatus.InReview]:
     "bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:border-yellow-800",
-  CLOSED:
+  [IssueStatus.Completed]:
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
+  [IssueStatus.Obsolete]:
+    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-export const issueStatusLabels: Record<string, string> = {
-  TODO: "Todo",
-  IN_PROGRESS: "In Progress",
-  IN_REVIEW: "In Review",
-  CLOSED: "Closed",
+export const issueStatusLabels: Record<IssueStatus, string> = {
+  [IssueStatus.NotStarted]: "Not Started",
+  [IssueStatus.InProgress]: "In Progress",
+  [IssueStatus.InReview]: "In Review",
+  [IssueStatus.Completed]: "Completed",
+  [IssueStatus.Obsolete]: "Obsolete",
 };
 
-export function IssueStatusBadge({ status }: Readonly<{ status: string }>) {
+export function IssueStatusBadge({
+  status,
+}: Readonly<{ status: IssueStatus }>) {
   const displayStatus = issueStatusLabels[status] ?? status;
   return (
     <Badge
       className={cn(
         "font-medium",
-        issueStatusColors[status] ?? issueStatusColors.TODO
+        issueStatusColors[status] ?? issueStatusColors.NOT_STARTED
       )}
       variant="outline"
     >
@@ -154,25 +169,27 @@ export function IssueStatusBadge({ status }: Readonly<{ status: string }>) {
 }
 
 // Issue priority colors
-export const issuePriorityColors: Record<string, string> = {
-  LOW: "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
-  MEDIUM:
+export const issuePriorityColors: Record<Priority, string> = {
+  [Priority.Low]:
+    "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  [Priority.Medium]:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
-  HIGH: "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
-  URGENT:
+  [Priority.High]:
+    "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-800",
+  [Priority.Urgent]:
     "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800",
 };
 
-export const issuePriorityLabels: Record<string, string> = {
-  LOW: "Low",
-  MEDIUM: "Medium",
-  HIGH: "High",
-  URGENT: "Urgent",
+export const issuePriorityLabels: Record<Priority, string> = {
+  [Priority.Low]: "Low",
+  [Priority.Medium]: "Medium",
+  [Priority.High]: "High",
+  [Priority.Urgent]: "Urgent",
 };
 
 export function IssuePriorityBadge({
   priority,
-}: Readonly<{ priority: string }>) {
+}: Readonly<{ priority: Priority }>) {
   const displayPriority = issuePriorityLabels[priority] ?? priority;
   return (
     <Badge
@@ -188,7 +205,7 @@ export function IssuePriorityBadge({
 }
 
 // Workstream state colors
-export const workstreamStateColors: Record<string, string> = {
+export const workstreamStateColors: Record<WorkstreamState, string> = {
   INITIATED:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
   REQUIREMENTS_GENERATING:
@@ -225,7 +242,7 @@ export const workstreamStateColors: Record<string, string> = {
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
 };
 
-const workstreamStateLabels: Record<string, string> = {
+const workstreamStateLabels: Record<WorkstreamState, string> = {
   INITIATED: "Initiated",
   REQUIREMENTS_GENERATING: "Generating",
   REQUIREMENTS_PENDING_APPROVAL: "Pending Approval",
@@ -245,7 +262,9 @@ const workstreamStateLabels: Record<string, string> = {
   CANCELLED: "Cancelled",
 };
 
-export function WorkstreamStateBadge({ state }: { state: string }) {
+export function WorkstreamStateBadge({
+  state,
+}: Readonly<{ state: WorkstreamState }>) {
   const displayState = workstreamStateLabels[state] ?? state;
   return (
     <Badge
@@ -261,7 +280,7 @@ export function WorkstreamStateBadge({ state }: { state: string }) {
 }
 
 // Workstream type colors
-export const workstreamTypeColors: Record<string, string> = {
+export const workstreamTypeColors: Record<WorkstreamType, string> = {
   FEATURE_DELIVERY:
     "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800",
   BUG_FIX:
@@ -272,14 +291,16 @@ export const workstreamTypeColors: Record<string, string> = {
     "bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800",
 };
 
-const workstreamTypeLabels: Record<string, string> = {
+const workstreamTypeLabels: Record<WorkstreamType, string> = {
   FEATURE_DELIVERY: "Feature",
   BUG_FIX: "Bug Fix",
   TECH_DEBT: "Tech Debt",
   SPIKE: "Spike",
 };
 
-export function WorkstreamTypeBadge({ type }: { type: string }) {
+export function WorkstreamTypeBadge({
+  type,
+}: Readonly<{ type: WorkstreamType }>) {
   const displayType = workstreamTypeLabels[type] ?? type;
   return (
     <Badge
@@ -295,27 +316,27 @@ export function WorkstreamTypeBadge({ type }: { type: string }) {
 }
 
 // Loop status colors
-export const loopStatusColors: Record<string, string> = {
-  PENDING: COLOR_PENDING,
-  CLAIMED: COLOR_PENDING,
-  RUNNING: COLOR_PROGRESS,
-  COMPLETED: COLOR_SUCCESS,
-  FAILED: COLOR_FAILURE,
-  CANCELLED: COLOR_INACTIVE,
-  TIMED_OUT: COLOR_FAILURE,
+export const loopStatusColors: Record<LoopStatus, string> = {
+  [LoopStatus.Pending]: COLOR_PENDING,
+  [LoopStatus.Claimed]: COLOR_PENDING,
+  [LoopStatus.Running]: COLOR_PROGRESS,
+  [LoopStatus.Completed]: COLOR_SUCCESS,
+  [LoopStatus.Failed]: COLOR_FAILURE,
+  [LoopStatus.Cancelled]: COLOR_INACTIVE,
+  [LoopStatus.TimedOut]: COLOR_FAILURE,
 };
 
-const loopStatusLabels: Record<string, string> = {
-  PENDING: "Pending",
-  CLAIMED: "Claimed",
-  RUNNING: "Running",
-  COMPLETED: "Completed",
-  FAILED: "Failed",
-  CANCELLED: "Cancelled",
-  TIMED_OUT: "Timed Out",
+const loopStatusLabels: Record<LoopStatus, string> = {
+  [LoopStatus.Pending]: "Pending",
+  [LoopStatus.Claimed]: "Claimed",
+  [LoopStatus.Running]: "Running",
+  [LoopStatus.Completed]: "Completed",
+  [LoopStatus.Failed]: "Failed",
+  [LoopStatus.Cancelled]: "Cancelled",
+  [LoopStatus.TimedOut]: "Timed Out",
 };
 
-export function LoopStatusBadge({ status }: { status: string }) {
+export function LoopStatusBadge({ status }: Readonly<{ status: LoopStatus }>) {
   const displayStatus = loopStatusLabels[status] ?? status;
   return (
     <Badge
@@ -331,24 +352,26 @@ export function LoopStatusBadge({ status }: { status: string }) {
 }
 
 // Loop command colors
-export const loopCommandColors: Record<string, string> = {
-  PLAN: COLOR_PURPLE,
-  EXECUTE: COLOR_PROGRESS,
-  CHAT: COLOR_PENDING,
-  EXPLORE:
+export const loopCommandColors: Record<LoopCommand, string> = {
+  [LoopCommand.Plan]: COLOR_PURPLE,
+  [LoopCommand.Execute]: COLOR_PROGRESS,
+  [LoopCommand.Chat]: COLOR_PENDING,
+  [LoopCommand.Explore]:
     "bg-teal-100 text-teal-800 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-800",
-  REQUEST_CHANGES: COLOR_PENDING,
+  [LoopCommand.RequestChanges]: COLOR_PENDING,
 };
 
-const loopCommandLabels: Record<string, string> = {
-  PLAN: "Plan",
-  EXECUTE: "Execute",
-  CHAT: "Chat",
-  EXPLORE: "Explore",
-  REQUEST_CHANGES: "Request Changes",
+const loopCommandLabels: Record<LoopCommand, string> = {
+  [LoopCommand.Plan]: "Plan",
+  [LoopCommand.Execute]: "Execute",
+  [LoopCommand.Chat]: "Chat",
+  [LoopCommand.Explore]: "Explore",
+  [LoopCommand.RequestChanges]: "Request Changes",
 };
 
-export function LoopCommandBadge({ command }: { command: string }) {
+export function LoopCommandBadge({
+  command,
+}: Readonly<{ command: LoopCommand }>) {
   const displayCommand = loopCommandLabels[command] ?? command;
   return (
     <Badge

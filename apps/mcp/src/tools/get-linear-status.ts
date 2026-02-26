@@ -6,10 +6,12 @@ export function registerGetLinearStatus(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-linear-status",
-    "Check the Linear integration connection status for the organization",
-    {},
+    {
+      description:
+        "Check the Linear integration connection status for the organization",
+    },
     () =>
       withErrorHandling(async () => {
         const status = await apiClient.get<unknown>("/integrations/linear");

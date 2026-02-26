@@ -1,9 +1,10 @@
 "use client";
 
+import type { Priority } from "@repo/api/src/types/common";
 import type {
-  ProjectPriority,
+  ProjectStatus,
   ProjectWithDetails,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/project";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
@@ -23,6 +24,7 @@ import {
   CalendarIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  CircleDotIcon,
   FlagIcon,
   UserIcon,
   UsersIcon,
@@ -34,10 +36,18 @@ import { PRIORITY_COLORS, PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { CodebaseSummaryUpload } from "./codebase-summary-upload";
 
+const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  NOT_STARTED: "Not Started",
+  IN_PROGRESS: "In Progress",
+  COMPLETED: "Completed",
+  ARCHIVED: "Archived",
+};
+
 type PropertiesPanelProps = {
   project: ProjectWithDetails;
-  onUpdatePriority?: (priority: ProjectPriority) => void;
-  onUpdateOwner?: (ownerId: string | null) => void;
+  onUpdatePriority?: (priority: Priority) => void;
+  onUpdateStatus?: (status: ProjectStatus) => void;
+  onUpdateAssignee?: (assigneeId: string | null) => void;
   onUpdateTargetDate?: (date: Date | null) => void;
   onUpdateTeams?: (teamIds: string[]) => void;
   onCodebaseSummaryUploaded?: (lastIndexedAt: Date) => void;
@@ -46,7 +56,8 @@ type PropertiesPanelProps = {
 export function PropertiesPanel({
   project,
   onUpdatePriority,
-  onUpdateOwner,
+  onUpdateStatus,
+  onUpdateAssignee,
   onUpdateTargetDate,
   onCodebaseSummaryUploaded,
 }: PropertiesPanelProps) {
@@ -70,6 +81,29 @@ export function PropertiesPanel({
         )}
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-4 px-3 pb-3">
+        {/* Status */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+            <CircleDotIcon className="h-4 w-4" />
+            <span>Status</span>
+          </div>
+          <Select
+            onValueChange={(value) => onUpdateStatus?.(value as ProjectStatus)}
+            value={project.status}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue>{PROJECT_STATUS_LABELS[project.status]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(PROJECT_STATUS_LABELS).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         {/* Priority */}
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
@@ -77,9 +111,7 @@ export function PropertiesPanel({
             <span>Priority</span>
           </div>
           <Select
-            onValueChange={(value) =>
-              onUpdatePriority?.(value as ProjectPriority)
-            }
+            onValueChange={(value) => onUpdatePriority?.(value as Priority)}
             value={project.priority}
           >
             <SelectTrigger className="w-full">
@@ -92,7 +124,7 @@ export function PropertiesPanel({
             <SelectContent>
               {Object.entries(PRIORITY_LABELS).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
-                  <span className={PRIORITY_COLORS[value as ProjectPriority]}>
+                  <span className={PRIORITY_COLORS[value as Priority]}>
                     {label}
                   </span>
                 </SelectItem>
@@ -101,23 +133,23 @@ export function PropertiesPanel({
           </Select>
         </div>
 
-        {/* Lead/Owner */}
+        {/* Assignee */}
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <UserIcon className="h-4 w-4" />
-            <span>Lead</span>
+            <span>Assignee</span>
           </div>
           <UserSelectPopover
             className="w-full"
-            onSelect={(user) => onUpdateOwner?.(user?.id || null)}
-            placeholder="Assign lead"
+            onSelect={(user) => onUpdateAssignee?.(user?.id || null)}
+            placeholder="Select assignee"
             users={teamMembers}
             value={
-              project.owner
+              project.assignee
                 ? {
-                    id: project.owner.id,
-                    name: getUserDisplayName(project.owner),
-                    avatarUrl: project.owner.avatarUrl || undefined,
+                    id: project.assignee.id,
+                    name: getUserDisplayName(project.assignee),
+                    avatarUrl: project.assignee.avatarUrl || undefined,
                   }
                 : null
             }

@@ -1,11 +1,11 @@
 "use client";
 
-import type { User } from "@repo/api/src/types/organization";
 import type {
   TeamMember,
   TeamRole,
   TeamWithCounts,
 } from "@repo/api/src/types/teams";
+import type { User } from "@repo/api/src/types/user";
 import {
   Avatar,
   AvatarFallback,

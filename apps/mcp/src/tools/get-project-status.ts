@@ -12,11 +12,13 @@ export function registerGetProjectStatus(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-project-status",
-    "Deprecated alias of get-project. Returns project details.",
     {
-      projectId: z.string().describe("ID of the project to retrieve"),
+      description: "Deprecated alias of get-project. Returns project details.",
+      inputSchema: {
+        projectId: z.string().describe("ID of the project to retrieve"),
+      },
     },
     ({ projectId }) =>
       withErrorHandling(async () => {

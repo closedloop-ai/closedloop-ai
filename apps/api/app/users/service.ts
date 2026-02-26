@@ -2,7 +2,7 @@ import type {
   CreateUserInput,
   UpdateUserInput,
   UpdateUserProfileFromClerkInput,
-} from "@repo/api/src/types/organization";
+} from "@repo/api/src/types/user";
 import { withDb } from "@repo/database";
 
 /**

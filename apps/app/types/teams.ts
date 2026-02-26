@@ -1,4 +1,4 @@
-import type { ProjectPriority } from "@repo/api/src/types/organization";
+import type { Priority } from "@repo/api/src/types/common";
 
 // Project types
 export type ProjectOwner = {
@@ -23,10 +23,10 @@ export type ProjectWithDetails = {
   id: string;
   name: string;
   description?: string;
-  priority: ProjectPriority;
-  owner?: ProjectOwner;
+  priority: Priority;
+  assignee?: ProjectOwner;
   targetDate?: string;
-  status: number; // 0-100 percentage
+  completionPercentage: number; // 0-100 percentage
   teams: ProjectTeam[];
   repositories?: ProjectRepository[];
   createdAt: string;

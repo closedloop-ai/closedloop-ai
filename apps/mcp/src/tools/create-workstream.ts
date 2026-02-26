@@ -1,4 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Priority } from "@repo/api/src/types/common.js";
+import { WORKSTREAM_TYPE_OPTIONS } from "@repo/api/src/types/workstream";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -7,28 +9,34 @@ export function registerCreateWorkstream(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-workstream",
-    "Create a new workstream (initiative) in a project",
     {
-      title: z.string().describe("Title of the workstream"),
-      projectId: z
-        .string()
-        .describe("ID of the project to create the workstream in"),
-      description: z
-        .string()
-        .optional()
-        .describe("Description of the workstream"),
-      type: z
-        .enum(["FEATURE_DELIVERY", "BUG_FIX", "TECH_DEBT", "SPIKE"])
-        .optional()
-        .describe("Type of the workstream"),
-      hasUIChanges: z
-        .boolean()
-        .optional()
-        .describe("Whether the workstream includes UI changes"),
+      description: "Create a new workstream (initiative) in a project",
+      inputSchema: {
+        title: z.string().describe("Title of the workstream"),
+        projectId: z
+          .string()
+          .describe("ID of the project to create the workstream in"),
+        description: z
+          .string()
+          .optional()
+          .describe("Description of the workstream"),
+        type: z
+          .enum(WORKSTREAM_TYPE_OPTIONS)
+          .optional()
+          .describe("Type of the workstream"),
+        priority: z
+          .enum(Priority)
+          .optional()
+          .describe("Priority level of the workstream"),
+        hasUIChanges: z
+          .boolean()
+          .optional()
+          .describe("Whether the workstream includes UI changes"),
+      },
     },
-    ({ title, projectId, description, type, hasUIChanges }) =>
+    ({ title, projectId, description, type, priority, hasUIChanges }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = { title, projectId };
         if (description !== undefined) {
@@ -36,6 +44,9 @@ export function registerCreateWorkstream(
         }
         if (type !== undefined) {
           body.type = type;
+        }
+        if (priority !== undefined) {
+          body.priority = priority;
         }
         if (hasUIChanges !== undefined) {
           body.hasUIChanges = hasUIChanges;

@@ -67,6 +67,7 @@ No sycophantic language. Brief, factual — state what changed.
 `turbo.json` (tasks) · `biome.jsonc` (lint config) · `packages/*/keys.ts` (env validation)
 
 ## Code Style
+- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
 - `globalThis` not `window` (S7764); SSR guards: `globalThis.window === undefined` in client-only, keep `typeof` if server-possible
