@@ -1,4 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Priority } from "@repo/api/src/types/common.js";
+import { ProjectStatus } from "@repo/api/src/types/project.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { encodePathSegment, withErrorHandling } from "./tool-utils.js";
@@ -7,22 +9,29 @@ export function registerUpdateProject(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "update-project",
-    "Update an existing project's name, description, or priority",
     {
-      projectId: z.string().describe("ID of the project to update"),
-      name: z.string().optional().describe("New name for the project"),
-      description: z
-        .string()
-        .optional()
-        .describe("New description for the project"),
-      priority: z
-        .enum(["NOT_SET", "LOW", "MEDIUM", "HIGH"])
-        .optional()
-        .describe("New priority level for the project"),
+      description:
+        "Update an existing project's name, description, or priority",
+      inputSchema: {
+        projectId: z.string().describe("ID of the project to update"),
+        name: z.string().optional().describe("New name for the project"),
+        description: z
+          .string()
+          .optional()
+          .describe("New description for the project"),
+        priority: z
+          .enum(Priority)
+          .optional()
+          .describe("New priority level for the project"),
+        status: z
+          .enum(ProjectStatus)
+          .optional()
+          .describe("New status for the project"),
+      },
     },
-    ({ projectId, name, description, priority }) =>
+    ({ projectId, name, description, priority, status }) =>
       withErrorHandling(async () => {
         const body: Record<string, unknown> = {};
         if (name !== undefined) {
@@ -33,6 +42,9 @@ export function registerUpdateProject(
         }
         if (priority !== undefined) {
           body.priority = priority;
+        }
+        if (status !== undefined) {
+          body.status = status;
         }
 
         const project = await apiClient.put<unknown>(

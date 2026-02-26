@@ -13,25 +13,27 @@ export function registerListTemplates(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-templates",
-    "List available artifact templates for the organization",
     {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(
-          `Maximum number of templates to return (1-${MAX_PAGE_LIMIT})`
-        ),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description: "List available artifact templates for the organization",
+      inputSchema: {
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of templates to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ limit, offset }) =>
       withErrorHandling(async () => {

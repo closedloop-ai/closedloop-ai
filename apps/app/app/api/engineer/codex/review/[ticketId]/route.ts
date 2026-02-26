@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
+import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import {
   describeClaudeEvent,
   extractClaudeSessionId,
@@ -174,7 +175,7 @@ function spawnClaudeReview(cwd: string, model: string): ChildProcess {
       "--model",
       model,
       "--allowedTools",
-      "Bash Read Glob Grep Task TodoWrite",
+      withMcpTools("Bash,Read,Glob,Grep,Task,TodoWrite"),
       "--append-system-prompt",
       REVIEW_SYSTEM_PROMPT,
     ],

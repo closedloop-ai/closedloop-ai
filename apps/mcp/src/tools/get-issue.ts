@@ -7,11 +7,13 @@ export function registerGetIssue(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-issue",
-    "Get a single issue by its ID",
     {
-      issueId: z.string().describe("ID of the issue to retrieve"),
+      description: "Get a single issue by its ID",
+      inputSchema: {
+        issueId: z.string().describe("ID of the issue to retrieve"),
+      },
     },
     ({ issueId }) =>
       withErrorHandling(async () => {

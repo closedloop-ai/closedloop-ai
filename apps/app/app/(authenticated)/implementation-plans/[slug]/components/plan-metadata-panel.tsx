@@ -42,7 +42,7 @@ export type PlanMetadataPanelProps = {
   plan: ArtifactDetail;
   status: ArtifactStatus;
   approver: User | null;
-  owner: User | null;
+  assignee: User | null;
   teamMembers: User[];
   generationStatus: GenerationStatus | null;
   pullRequest: PullRequestInfo | null;
@@ -53,7 +53,7 @@ export type PlanMetadataPanelProps = {
   codeJudgesReport: JudgesReport | null;
   onStatusChange: (status: ArtifactStatus) => void;
   onApproverSelect: (user: User | null) => void;
-  onOwnerChange: (user: User | null) => void;
+  onAssigneeChange: (user: User | null) => void;
   targetRepo: string;
   targetBranch: string;
 };
@@ -62,7 +62,7 @@ export function PlanMetadataPanel({
   plan,
   status,
   approver,
-  owner,
+  assignee,
   teamMembers,
   generationStatus,
   pullRequest,
@@ -73,7 +73,7 @@ export function PlanMetadataPanel({
   codeJudgesReport,
   onStatusChange,
   onApproverSelect,
-  onOwnerChange,
+  onAssigneeChange,
   targetRepo = "Inherited from project",
   targetBranch = "main",
 }: PlanMetadataPanelProps) {
@@ -108,11 +108,11 @@ export function PlanMetadataPanel({
           >
             <StatusMetadataSection
               approver={approver}
+              assignee={assignee}
               onApproverSelect={onApproverSelect}
-              onOwnerChange={onOwnerChange}
+              onAssigneeChange={onAssigneeChange}
               onStatusChange={onStatusChange}
               orgUsers={transformedOrgUsers}
-              owner={owner}
               status={status}
               teamMembers={teamMembers}
             />

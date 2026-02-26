@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { withDb, withImplicitTransaction } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import type {
@@ -88,12 +88,14 @@ export async function createTestUser(
  */
 export async function createTestProject(
   organizationId: string,
+  createdById: string,
   overrides?: Partial<ProjectUncheckedCreateInput>
 ): Promise<string> {
   const project = await withDb((db) =>
     db.project.create({
       data: {
         organizationId,
+        createdById,
         name: "Test Project",
         description: "A test project",
         ...overrides,

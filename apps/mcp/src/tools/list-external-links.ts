@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ExternalLinkType } from "@repo/api/src/types/external-link.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
-import { EXTERNAL_LINK_TYPE_VALUES } from "../tool-enums.js";
 import {
   asRecord,
   buildPaginatedPayload,
@@ -14,37 +14,39 @@ export function registerListExternalLinks(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-external-links",
-    "List external links filtered by workstream or project",
     {
-      workstreamId: z
-        .string()
-        .optional()
-        .describe("ID of the workstream to list links for"),
-      projectId: z
-        .string()
-        .optional()
-        .describe("ID of the project to list links for"),
-      type: z
-        .enum(EXTERNAL_LINK_TYPE_VALUES)
-        .optional()
-        .describe("Filter by external link type"),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(
-          `Maximum number of external links to return (1-${MAX_PAGE_LIMIT})`
-        ),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description: "List external links filtered by workstream or project",
+      inputSchema: {
+        workstreamId: z
+          .string()
+          .optional()
+          .describe("ID of the workstream to list links for"),
+        projectId: z
+          .string()
+          .optional()
+          .describe("ID of the project to list links for"),
+        type: z
+          .enum(ExternalLinkType)
+          .optional()
+          .describe("Filter by external link type"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of external links to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ workstreamId, projectId, type, limit, offset }) =>
       withErrorHandling(async () => {

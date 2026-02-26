@@ -1,4 +1,4 @@
-import type { User } from "@repo/api/src/types/organization";
+import type { User } from "@repo/api/src/types/user";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,

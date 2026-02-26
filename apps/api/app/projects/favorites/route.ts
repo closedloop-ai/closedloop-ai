@@ -1,4 +1,4 @@
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { projectsService } from "../service";

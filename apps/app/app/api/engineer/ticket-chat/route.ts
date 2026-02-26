@@ -4,6 +4,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { NextRequest } from "next/server";
 import {
+  READONLY_CODEBASE_TOOLS,
+  WEB_ONLY_TOOLS,
+} from "@/lib/engineer/allowed-tools";
+import {
   type ContentBlock,
   createStreamState,
   makeResultKillTimer,
@@ -252,10 +256,9 @@ export async function POST(request: NextRequest) {
           )
         );
 
-        // Build Claude arguments - read-only tools for codebase exploration + web tools
         const allowedTools = expandedRepoPath
-          ? "Read,Grep,Glob,WebSearch,WebFetch" // Read-only codebase access + web tools
-          : "WebSearch,WebFetch"; // Only web tools when no repo selected
+          ? READONLY_CODEBASE_TOOLS
+          : WEB_ONLY_TOOLS;
 
         const claudeArgs = [
           "-p",

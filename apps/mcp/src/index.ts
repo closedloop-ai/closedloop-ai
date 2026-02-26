@@ -254,10 +254,13 @@ const TOOL_REGISTRATIONS: ToolRegistration[] = [
   {
     name: "ping",
     register: (server) => {
-      server.tool("ping", "Check MCP server connectivity", {}, () =>
-        Promise.resolve({
-          content: [{ type: "text" as const, text: "pong" }],
-        })
+      server.registerTool(
+        "ping",
+        { description: "Check MCP server connectivity" },
+        () =>
+          Promise.resolve({
+            content: [{ type: "text" as const, text: "pong" }],
+          })
       );
     },
   },
@@ -2765,6 +2768,10 @@ function getCorsOrigin(
   const origin = req.headers.origin;
   if (!origin) {
     return null;
+  }
+  // Same-origin requests are always allowed
+  if (origin === MCP_SERVER_URL) {
+    return origin;
   }
   // Wildcard or explicit match
   if (

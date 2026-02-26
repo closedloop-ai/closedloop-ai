@@ -2,7 +2,7 @@
 
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { ProjectWithDetails } from "@repo/api/src/types/organization";
+import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { TableRow } from "@repo/design-system/components/ui/table";
 import { GripVertical } from "lucide-react";
 import type { ReactNode } from "react";

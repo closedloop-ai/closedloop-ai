@@ -1,5 +1,5 @@
 import { analytics } from "@repo/analytics/server";
-import type { CreateUserInput } from "@repo/api/src/types/organization";
+import type { CreateUserInput } from "@repo/api/src/types/user";
 import type {
   DeletedObjectJSON,
   OrganizationJSON,

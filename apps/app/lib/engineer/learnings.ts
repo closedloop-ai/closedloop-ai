@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withMcpTools } from "./allowed-tools";
 import { parseToon } from "./toon-parser";
 
 /**
@@ -243,7 +244,7 @@ Be selective — only capture things that would help agents do better in the fut
         "-p",
         "--model",
         "sonnet",
-        "--allowedTools=Read,Write,Glob",
+        `--allowedTools=${withMcpTools("Read,Write,Glob")}`,
         "--max-turns",
         "20",
       ],

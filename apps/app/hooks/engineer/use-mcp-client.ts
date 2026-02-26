@@ -137,7 +137,7 @@ export type McpClient = {
     offset?: number;
   }) => Promise<PaginatedResponse<McpIssue>>;
   listArtifacts: (params?: {
-    ownerId?: string;
+    assigneeId?: string;
     limit?: number;
     offset?: number;
   }) => Promise<PaginatedResponse<McpArtifact>>;
@@ -163,6 +163,9 @@ export function useMcpClient(): McpClient {
   const isMountedRef = useRef(true);
   const stateRef = useRef<McpConnectionState>("discovering");
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Deferred cleanup timer — allows React 19 dev double-invoke re-mount to
+  // cancel the disconnect before it fires, so the in-flight connect survives.
+  const cleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setStateAndRef = useCallback((s: McpConnectionState) => {
     stateRef.current = s;
@@ -287,6 +290,16 @@ export function useMcpClient(): McpClient {
         ) {
           return;
         }
+        // SSE stream errors while connected are non-fatal — client-initiated
+        // tool calls use POST and are unaffected. Don't tank the whole
+        // connection for a background stream hiccup.
+        if (stateRef.current === "ready") {
+          console.warn(
+            "[MCP] transport error (non-fatal):",
+            toErrorMessage(transportError)
+          );
+          return;
+        }
         failConnection(
           `Transport error (HTTP): ${toErrorMessage(transportError)}`
         );
@@ -302,7 +315,8 @@ export function useMcpClient(): McpClient {
         }
 
         if (stateRef.current === "ready") {
-          setStateAndRef("connecting");
+          // Attempt silent reconnect — keep isReady=true so consumers don't flicker.
+          // If connect() fails, failConnection() will set state to "failed".
           reconnectTimerRef.current = setTimeout(() => {
             if (isMountedRef.current) {
               connect().catch(console.error);
@@ -428,11 +442,24 @@ export function useMcpClient(): McpClient {
 
   useEffect(() => {
     isMountedRef.current = true;
-    connect().catch(console.error);
+
+    // Cancel deferred cleanup from double-invoke — the in-flight connect from
+    // the previous mount cycle is still valid, so don't start a new one.
+    if (cleanupTimerRef.current !== null) {
+      clearTimeout(cleanupTimerRef.current);
+      cleanupTimerRef.current = null;
+    } else {
+      connect().catch(console.error);
+    }
 
     return () => {
       isMountedRef.current = false;
-      disconnectInternal(true).catch(console.error);
+      // Defer disconnect to next microtask so a double-invoke re-mount can
+      // cancel it. On true unmount, no re-mount happens and disconnect runs.
+      cleanupTimerRef.current = setTimeout(() => {
+        cleanupTimerRef.current = null;
+        disconnectInternal(true).catch(console.error);
+      }, 0);
     };
   }, [connect, disconnectInternal]);
 
@@ -486,8 +513,8 @@ export function useMcpClient(): McpClient {
 
       listArtifacts: async (params) => {
         const args: Record<string, unknown> = {};
-        if (params?.ownerId) {
-          args.ownerId = params.ownerId;
+        if (params?.assigneeId) {
+          args.assigneeId = params.assigneeId;
         }
         if (params?.limit !== undefined) {
           args.limit = params.limit;
@@ -495,6 +522,7 @@ export function useMcpClient(): McpClient {
         if (params?.offset !== undefined) {
           args.offset = params.offset;
         }
+        console.debug("[engineer] listArtifacts args:", args);
         const result = await callTool("list-artifacts", args);
         return parseMcpResult<PaginatedResponse<McpArtifact>>(result);
       },
