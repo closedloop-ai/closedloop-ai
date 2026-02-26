@@ -89,7 +89,7 @@ withDb.tx = async <T>(
   }
 
   const db = await getDatabase();
-  return db.$transaction(fn);
+  return db.$transaction((tx) => als.run({ tx }, () => fn(tx)));
 };
 
 /**

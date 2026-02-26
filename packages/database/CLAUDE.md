@@ -32,5 +32,7 @@ Explicit migration files for all schema changes. **Never use `prisma db push` fo
 - **[pattern]**: Adding taxonomy to enum: prefer new category field with default over renaming existing enum.
 - **[convention]**: `Artifact.subtype` is non-nullable in DB and API. All creation paths require subtype.
 - **[pattern]**: Renaming Prisma enums: `@repo/database` re-exports via `export *`. Both `@repo/database` and `@repo/api/src/types/` imports must update in sync.
-- **[pattern]**: `validateOwnerInOrg` uses `withDb` (non-tx) but called from `withDb.tx`. Nested `withDb` opens separate connections — no AsyncLocalStorage propagation.
+- **[resolved]**: `validateOwnerInOrg` uses `withDb` (non-tx) but called from `withDb.tx`. Nested `withDb` now participates in the parent transaction via AsyncLocalStorage propagation — resolved by AsyncLocalStorage implementation.
 - **[pattern]**: Multi-org user profile updates: `updateMany({ where: { clerkId } })` to sync across all organizations.
+- **[insight]**: When `withDb.tx()` AsyncLocalStorage propagation issues arise, check `withImplicitTransaction()` in the same file — it demonstrates the correct `als.run()` wrapping pattern and serves as the reference implementation. (context: database|AsyncLocalStorage|withDb.tx)
+- **[pattern]**: To test AsyncLocalStorage propagation in withDb/withDb.tx without mocking ALS itself, inject a mock PrismaClient via the globalForPrisma global cache in beforeEach and clear it in afterEach — this lets real ALS run while avoiding real DB connections. (context: database|AsyncLocalStorage|testing|withDb)

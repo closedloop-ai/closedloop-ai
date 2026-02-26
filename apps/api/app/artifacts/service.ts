@@ -130,9 +130,6 @@ async function findInstallationRepoId(
  * Create a single artifact record within an existing transaction.
  * Does NOT call withDb.tx internally - takes the tx parameter directly.
  * Used by both create() and batchCreate() to avoid code duplication.
- *
- * NOTE: validateOwnerInOrg uses withDb (non-transactional) and opens separate
- * connections. This matches the behavior of the existing create() method.
  */
 async function createArtifactRecord(
   tx: TransactionClient,
