@@ -72,16 +72,28 @@ export async function fanOutJudgeScores(params: {
 function buildPromptLookup(
   judgePrompts: Array<{ id: string; name: string; version: number }>
 ): Map<string, string> {
-  // Query already returns the latest version per prompt name.
-  // Keep the first prompt we see per normalized stem.
-  const lookup = new Map<string, string>();
+  // Query returns latest version per raw prompt name.
+  // If multiple names normalize to the same stem, keep the highest version.
+  const versionedLookup = new Map<string, { id: string; version: number }>();
 
   for (const prompt of judgePrompts) {
     const normalizedName = normalizeJudgeName(prompt.name);
+    const existingPrompt = versionedLookup.get(normalizedName);
 
-    if (!lookup.has(normalizedName)) {
-      lookup.set(normalizedName, prompt.id);
+    if (
+      existingPrompt === undefined ||
+      prompt.version > existingPrompt.version
+    ) {
+      versionedLookup.set(normalizedName, {
+        id: prompt.id,
+        version: prompt.version,
+      });
     }
+  }
+
+  const lookup = new Map<string, string>();
+  for (const [normalizedName, prompt] of versionedLookup) {
+    lookup.set(normalizedName, prompt.id);
   }
 
   return lookup;
