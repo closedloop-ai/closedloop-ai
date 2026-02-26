@@ -128,7 +128,7 @@ describe("SidebarFavorites", () => {
     );
   });
 
-  test("renders fallback link when project has no teams", () => {
+  test("does not render projects with no teams", () => {
     mockUseFavoriteProjects.mockReturnValue({
       data: [
         {
@@ -141,7 +141,6 @@ describe("SidebarFavorites", () => {
 
     render(<SidebarFavorites />);
 
-    const link = screen.getByText("Orphan Project").closest("a");
-    expect(link?.getAttribute("href")).toBe("/projects");
+    expect(screen.queryByText("Orphan Project")).toBeNull();
   });
 });
