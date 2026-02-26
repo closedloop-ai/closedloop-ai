@@ -1,10 +1,10 @@
-import { PromptType } from "@repo/database";
+import { describe, expect, it } from "vitest";
 import {
   parsePromptFrontmatter,
   parsePromptsSnapshotFromMarkdownEntries,
-} from "@/lib/prompt-snapshot-ingestion";
+} from "./prompt-snapshot-parser";
 
-describe("prompt-snapshot-ingestion", () => {
+describe("prompt-snapshot-parser", () => {
   const MARKDOWN_PROMPT = `---
 name: planner
 model: claude-opus-4-6
@@ -28,7 +28,7 @@ Plan work carefully.
       expect(snapshot).toEqual({
         prompts: [
           {
-            promptType: PromptType.AGENT,
+            promptType: "AGENT",
             name: "planner",
             description: "Planner agent",
             model: "claude-opus-4-6",
@@ -59,7 +59,7 @@ Plan work carefully.
         "agents-snapshot/judges/planner-judge.md"
       );
 
-      expect(judge?.promptType).toBe(PromptType.JUDGE);
+      expect(judge?.promptType).toBe("JUDGE");
     });
 
     it("parses frontmatter when closing delimiter is at EOF without trailing newline", () => {

@@ -5,11 +5,11 @@
  * Race-safe: latest-content idempotency with P2002 retry for version races.
  */
 
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import type { TransactionClient } from "@repo/database";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
-import type { PromptsSnapshot } from "@/lib/prompt-types";
 
 /**
  * Upsert all prompts from a snapshot into the prompt_registry table.

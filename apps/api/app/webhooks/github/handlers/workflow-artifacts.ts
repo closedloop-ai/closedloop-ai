@@ -1,10 +1,10 @@
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { downloadWorkflowArtifacts } from "@repo/github";
 import { extractInnerZips } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
 import AdmZip from "adm-zip";
-import type { PromptsSnapshot } from "@/lib/prompt-types";
 import type { ExecutionResult } from "../types";
 import { findPlanInZip, type ZipContent } from "../zip-parser";
 

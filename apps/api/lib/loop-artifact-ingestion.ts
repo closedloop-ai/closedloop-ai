@@ -17,15 +17,15 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
-import { parsePromptsSnapshotFromMarkdownEntries } from "@/lib/prompt-snapshot-ingestion";
-import type { PromptsSnapshot } from "@/lib/prompt-types";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult } from "../app/webhooks/github/types";
 import {

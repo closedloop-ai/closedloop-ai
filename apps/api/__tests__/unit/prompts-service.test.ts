@@ -1,4 +1,4 @@
-import { type Prisma, PromptType } from "@repo/database";
+import type { Prisma } from "@repo/database";
 import { vi } from "vitest";
 import { getMockWithDb, mockWithDbTx } from "../utils/db-helpers";
 
@@ -58,7 +58,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.AGENT,
+          promptType: "AGENT",
           name: "my-agent",
           description: "An agent prompt",
           model: "claude-3",
@@ -81,7 +81,7 @@ describe("upsertFromSnapshot", () => {
     expect(mockPrompt.create).toHaveBeenCalledTimes(1);
     const createArg = mockPrompt.create.mock.calls[0][0];
     expect(createArg.data.organizationId).toBe(ORG_ID);
-    expect(createArg.data.promptType).toBe(PromptType.AGENT);
+    expect(createArg.data.promptType).toBe("AGENT");
     expect(createArg.data.name).toBe("my-agent");
     expect(createArg.data.content).toBe("You are a helpful agent.");
     expect(createArg.data.version).toBe(1);
@@ -103,7 +103,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.JUDGE,
+          promptType: "JUDGE",
           name: "my-judge",
           description: "A judge prompt",
           model: "claude-3",
@@ -134,7 +134,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.JUDGE,
+          promptType: "JUDGE",
           name: "my-agent",
           description: "A judge prompt",
           model: "claude-3",
@@ -147,7 +147,7 @@ describe("upsertFromSnapshot", () => {
 
     expect(mockPrompt.create).toHaveBeenCalledTimes(1);
     const createArg = mockPrompt.create.mock.calls[0][0];
-    expect(createArg.data.promptType).toBe(PromptType.JUDGE);
+    expect(createArg.data.promptType).toBe("JUDGE");
     expect(createArg.data.version).toBe(3);
   });
 
@@ -175,7 +175,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.AGENT,
+          promptType: "AGENT",
           name: "my-agent",
           description: "An agent prompt",
           model: "claude-3",
@@ -217,7 +217,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.AGENT,
+          promptType: "AGENT",
           name: "my-agent",
           description: "An agent prompt",
           model: "claude-3",
@@ -244,7 +244,7 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, {
       prompts: [
         {
-          promptType: PromptType.AGENT,
+          promptType: "AGENT",
           name: "my-agent",
           description: "An agent prompt",
           model: "claude-3",
@@ -253,7 +253,7 @@ describe("upsertFromSnapshot", () => {
           content: "Version 1 content.",
         },
         {
-          promptType: PromptType.JUDGE,
+          promptType: "JUDGE",
           name: "my-judge",
           description: "A judge prompt",
           model: "claude-3",

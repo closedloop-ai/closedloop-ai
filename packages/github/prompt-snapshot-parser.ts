@@ -1,6 +1,5 @@
-import { PromptType } from "@repo/database";
+import type { PromptInfo, PromptsSnapshot } from "@repo/api/src/types/prompt";
 import { log } from "@repo/observability/log";
-import type { PromptInfo, PromptsSnapshot } from "@/lib/prompt-types";
 
 const AGENTS_SNAPSHOT_PATTERN = /^agents-snapshot\/.*\.md$/;
 const FRONTMATTER_PATTERN =
@@ -50,8 +49,8 @@ export function parsePromptFrontmatter(
   const filePath = fields.file_path ?? entryPath;
 
   const promptType = entryPath.includes("agents-snapshot/judges/")
-    ? PromptType.JUDGE
-    : PromptType.AGENT;
+    ? ("JUDGE" as const)
+    : ("AGENT" as const);
 
   const afterFrontmatter = fileContent.slice(
     (frontmatterMatch.index ?? 0) + frontmatterMatch[0].length
@@ -74,7 +73,7 @@ export function parsePromptFrontmatter(
  */
 export function parsePromptsSnapshotFromMarkdownEntries(
   entries: SnapshotEntry[],
-  logPrefix = "[prompt-snapshot-ingestion]"
+  logPrefix = "[prompt-snapshot-parser]"
 ): PromptsSnapshot | null {
   const prompts: PromptInfo[] = [];
 

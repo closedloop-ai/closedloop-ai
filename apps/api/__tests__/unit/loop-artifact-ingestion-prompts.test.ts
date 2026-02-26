@@ -28,10 +28,6 @@ vi.mock("@repo/database", () => ({
       values,
     }),
   },
-  PromptType: {
-    AGENT: "AGENT",
-    JUDGE: "JUDGE",
-  },
 }));
 
 vi.mock("@repo/observability/log", () => ({

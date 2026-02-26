@@ -11,12 +11,11 @@
  */
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
-import { PromptType } from "@repo/database";
+import { parsePromptFrontmatter } from "@repo/github/prompt-snapshot-parser";
 import {
   findPlanInZip,
   parseJudgesReport,
 } from "@/app/webhooks/github/zip-parser";
-import { parsePromptFrontmatter } from "@/lib/prompt-snapshot-ingestion";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
 
 describe("ZIP parsing for judges.json", () => {
@@ -232,7 +231,7 @@ This is the judge system prompt content.
       );
 
       expect(result).not.toBeNull();
-      expect(result?.promptType).toBe(PromptType.AGENT);
+      expect(result?.promptType).toBe("AGENT");
       expect(result?.name).toBe("my-agent");
       expect(result?.model).toBe("claude-opus-4-6");
       expect(result?.description).toBe("A general purpose agent");
@@ -245,7 +244,7 @@ This is the judge system prompt content.
       );
 
       expect(result).not.toBeNull();
-      expect(result?.promptType).toBe(PromptType.JUDGE);
+      expect(result?.promptType).toBe("JUDGE");
       expect(result?.name).toBe("my-judge");
     });
 
@@ -324,7 +323,7 @@ Content here.
       expect(result.promptsSnapshot).not.toBeNull();
       expect(result.promptsSnapshot?.prompts).toHaveLength(1);
       expect(result.promptsSnapshot?.prompts[0]).toMatchObject({
-        promptType: PromptType.AGENT,
+        promptType: "AGENT",
         name: "my-agent",
         model: "claude-opus-4-6",
         tools: ["bash", "read", "write"],
