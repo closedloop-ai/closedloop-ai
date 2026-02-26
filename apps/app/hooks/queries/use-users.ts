@@ -1,6 +1,6 @@
 "use client";
 
-import type { UpdateUserInput, User } from "@repo/api/src/types/organization";
+import type { UpdateUserInput, User } from "@repo/api/src/types/user";
 import {
   type UseQueryOptions,
   useMutation,

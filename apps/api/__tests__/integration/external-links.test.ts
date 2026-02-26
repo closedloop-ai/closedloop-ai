@@ -13,8 +13,8 @@ const hasDatabase = !!env.DATABASE_URL;
 
 async function setupTestData() {
   const testOrgId = await createTestOrganization();
-  const testProjectId = await createTestProject(testOrgId);
   const testUser = await createTestUser(testOrgId);
+  const testProjectId = await createTestProject(testOrgId, testUser.id);
   return { testOrgId, testProjectId, testUser };
 }
 

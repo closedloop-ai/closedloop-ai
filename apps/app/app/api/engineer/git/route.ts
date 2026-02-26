@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { auth } from "@repo/auth/server";
 import { type NextRequest, NextResponse } from "next/server";
 import simpleGit, { type SimpleGit, type StatusResult } from "simple-git";
+import { withMcpTools } from "@/lib/engineer/allowed-tools";
 import { isRepoAllowed } from "@/lib/engineer/repos";
 
 /**
@@ -503,7 +504,7 @@ Do NOT run git rebase --continue. Just resolve the files and stage them.`;
         "--model",
         "sonnet",
         "--allowedTools",
-        "Read,Edit,Write,Bash",
+        withMcpTools("Read,Edit,Write,Bash"),
         "--max-turns",
         "15",
         "-p",

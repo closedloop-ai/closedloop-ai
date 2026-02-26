@@ -6,10 +6,12 @@ export function registerGetGithubStatus(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-github-status",
-    "Check the GitHub integration connection status for the organization",
-    {},
+    {
+      description:
+        "Check the GitHub integration connection status for the organization",
+    },
     () =>
       withErrorHandling(async () => {
         const status = await apiClient.get<unknown>("/integrations/github");

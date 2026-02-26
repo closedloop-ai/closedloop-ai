@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
+import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
 import {
   getLearningCaptureInstruction,
   getOrgPatternsContext,
@@ -42,19 +43,7 @@ type FindingChatHistory = {
   contextPercent?: number | null;
 };
 
-// Allowed tools
-const ALLOWED_TOOLS = [
-  "Bash",
-  "Grep",
-  "Glob",
-  "Read",
-  "Edit",
-  "Write",
-  "Task",
-  "TodoWrite",
-  "WebSearch",
-  "WebFetch",
-].join(",");
+const ALLOWED_TOOLS = ENGINEER_CHAT_TOOLS;
 
 /**
  * Get work directory paths for a finding chat

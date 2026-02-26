@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ArtifactType } from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { withErrorHandling } from "./tool-utils.js";
@@ -11,23 +12,24 @@ export function registerCreateArtifact(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "create-artifact",
-    "Create a new artifact with the given title, type, content, and project/workstream association",
     {
-      title: z.string().describe("Title of the artifact"),
-      type: z
-        .enum(["PRD", "IMPLEMENTATION_PLAN", "TEMPLATE"])
-        .describe("Type of the artifact"),
-      projectId: z
-        .string()
-        .optional()
-        .describe("ID of the project to associate with"),
-      workstreamId: z
-        .string()
-        .optional()
-        .describe("ID of the workstream to associate with"),
-      content: z.string().describe("Content/body of the artifact"),
+      description:
+        "Create a new artifact with the given title, type, content, and project/workstream association",
+      inputSchema: {
+        title: z.string().describe("Title of the artifact"),
+        type: z.enum(ArtifactType).describe("Type of the artifact"),
+        projectId: z
+          .string()
+          .optional()
+          .describe("ID of the project to associate with"),
+        workstreamId: z
+          .string()
+          .optional()
+          .describe("ID of the workstream to associate with"),
+        content: z.string().describe("Content/body of the artifact"),
+      },
     },
     ({ title, type, projectId, workstreamId, content }) =>
       withErrorHandling(async () => {

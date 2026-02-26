@@ -6,10 +6,12 @@ export function registerGetGoogleStatus(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "get-google-status",
-    "Check the Google integration connection status for the organization",
-    {},
+    {
+      description:
+        "Check the Google integration connection status for the organization",
+    },
     () =>
       withErrorHandling(async () => {
         const status = await apiClient.get<unknown>("/integrations/google");

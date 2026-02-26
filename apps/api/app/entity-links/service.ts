@@ -133,7 +133,7 @@ export const entityLinksService = {
           db.artifact.findUnique({
             where: { id, organizationId },
             include: {
-              owner: basicUserSelect,
+              assignee: basicUserSelect,
               approver: basicUserSelect,
             },
           })

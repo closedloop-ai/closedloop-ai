@@ -14,37 +14,40 @@ export function registerListEntityLinks(
   server: McpServer,
   apiClient: ApiClient
 ): void {
-  server.tool(
+  server.registerTool(
     "list-entity-links",
-    "List links between entities (artifacts, issues, workstreams, etc.)",
     {
-      entityId: z.string().describe("ID of the entity to list links for"),
-      entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),
-      linkType: z
-        .enum(LINK_TYPE_VALUES)
-        .optional()
-        .describe("Filter by link type"),
-      direction: z
-        .enum(["source", "target", "both"])
-        .optional()
-        .describe(
-          "Filter by link direction: 'source' for outgoing links, 'target' for incoming links, 'both' for all"
-        ),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(MAX_PAGE_LIMIT)
-        .optional()
-        .describe(
-          `Maximum number of entity links to return (1-${MAX_PAGE_LIMIT})`
-        ),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe("Starting offset for pagination (default 0)"),
+      description:
+        "List links between entities (artifacts, issues, workstreams, etc.)",
+      inputSchema: {
+        entityId: z.string().describe("ID of the entity to list links for"),
+        entityType: z.enum(ENTITY_TYPE_VALUES).describe("Type of the entity"),
+        linkType: z
+          .enum(LINK_TYPE_VALUES)
+          .optional()
+          .describe("Filter by link type"),
+        direction: z
+          .enum(["source", "target", "both"])
+          .optional()
+          .describe(
+            "Filter by link direction: 'source' for outgoing links, 'target' for incoming links, 'both' for all"
+          ),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PAGE_LIMIT)
+          .optional()
+          .describe(
+            `Maximum number of entity links to return (1-${MAX_PAGE_LIMIT})`
+          ),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Starting offset for pagination (default 0)"),
+      },
     },
     ({ entityId, entityType, linkType, direction, limit, offset }) =>
       withErrorHandling(async () => {

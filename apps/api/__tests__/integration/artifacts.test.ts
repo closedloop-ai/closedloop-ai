@@ -16,8 +16,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
   it("creates artifact with auto-slug generation", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
       const testUserId = testUser.id;
 
       const artifact = await artifactsService.create(testOrgId, testUserId, {
@@ -54,8 +54,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
   it("creates multiple artifacts each with latestVersion 1", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
       const testUserId = testUser.id;
 
       // Create first artifact
@@ -85,8 +85,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
   it("createNewVersion creates a new version of artifact content", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
       const testUserId = testUser.id;
 
       // Create original artifact
@@ -125,8 +125,8 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
   it("findAll filters by type", async () => {
     await autoRollbackTransaction(async () => {
       const testOrgId = await createTestOrganization();
-      const testProjectId = await createTestProject(testOrgId);
       const testUser = await createTestUser(testOrgId);
+      const testProjectId = await createTestProject(testOrgId, testUser.id);
       const testUserId = testUser.id;
 
       // Create a PRD and a plan

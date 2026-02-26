@@ -109,7 +109,7 @@ const ARTIFACT_SORT_COLUMNS = [
   "title",
   "type",
   "status",
-  "creator",
+  "assignee",
   "updatedAt",
 ] as const;
 
@@ -122,11 +122,11 @@ const ARTIFACT_SORT_CONFIGS: Record<
   title: { key: "title", columnType: "string" },
   type: { key: "type", columnType: "string" },
   status: { key: "status", columnType: "string" },
-  creator: {
-    key: "owner",
+  assignee: {
+    key: "assignee",
     comparator: (a, b) => {
-      const aName = a.owner ? getUserDisplayName(a.owner) : "";
-      const bName = b.owner ? getUserDisplayName(b.owner) : "";
+      const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
+      const bName = b.assignee ? getUserDisplayName(b.assignee) : "";
       return aName.localeCompare(bName);
     },
   },
@@ -250,8 +250,8 @@ function ArtifactSection({
                 sortDir={sortDir}
               />
               <SortableColumnHeader
-                column="creator"
-                label="Creator"
+                column="assignee"
+                label="Assignee"
                 onSort={onSort}
                 sortBy={sortBy}
                 sortDir={sortDir}
@@ -340,8 +340,8 @@ function ArtifactSection({
                     </TableCell>
                     <TableCell>
                       <span className="text-muted-foreground text-sm">
-                        {artifact.owner
-                          ? getUserDisplayName(artifact.owner)
+                        {artifact.assignee
+                          ? getUserDisplayName(artifact.assignee)
                           : "-"}
                       </span>
                     </TableCell>

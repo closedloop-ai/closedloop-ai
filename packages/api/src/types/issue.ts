@@ -1,25 +1,15 @@
-// Issue types for API contract
-
-import type { ArtifactUser } from "./artifact";
-import type { ProjectOwner } from "./organization";
+import type { Priority } from "./common";
+import type { BasicUser } from "./user";
 
 export const IssueStatus = {
-  Todo: "TODO",
+  NotStarted: "NOT_STARTED",
   InProgress: "IN_PROGRESS",
   InReview: "IN_REVIEW",
-  Closed: "CLOSED",
+  Completed: "COMPLETED",
+  Obsolete: "OBSOLETE",
 } as const;
 export type IssueStatus = (typeof IssueStatus)[keyof typeof IssueStatus];
 export const ISSUE_STATUS_OPTIONS = Object.values(IssueStatus);
-
-export const IssuePriority = {
-  Low: "LOW",
-  Medium: "MEDIUM",
-  High: "HIGH",
-  Urgent: "URGENT",
-} as const;
-export type IssuePriority = (typeof IssuePriority)[keyof typeof IssuePriority];
-export const ISSUE_PRIORITY_OPTIONS = Object.values(IssuePriority);
 
 export type Issue = {
   id: string;
@@ -30,11 +20,11 @@ export type Issue = {
   slug: string;
   description: string | null;
   status: IssueStatus;
-  priority: IssuePriority;
+  priority: Priority;
   assigneeId: string | null;
-  assignee: ArtifactUser | null;
+  assignee: BasicUser | null;
   createdById: string;
-  createdBy: ArtifactUser | null;
+  createdBy: BasicUser | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -50,15 +40,13 @@ export type IssueWithWorkstream = Issue & {
     name: string;
     teams?: { id: string; name: string }[];
   } | null;
-  assignee?: ProjectOwner | null;
-  createdBy?: ProjectOwner | null;
 };
 
 export type FindIssuesOptions = {
   workstreamId?: string;
   projectId?: string;
   status?: IssueStatus;
-  priority?: IssuePriority;
+  priority?: Priority;
   assigneeId?: string;
 };
 
@@ -68,7 +56,7 @@ export type CreateIssueInput = {
   title: string;
   description?: string;
   status?: IssueStatus;
-  priority?: IssuePriority;
+  priority?: Priority;
   assigneeId?: string;
 };
 
@@ -77,7 +65,7 @@ export type UpdateIssueInput = {
   title?: string;
   description?: string;
   status?: IssueStatus;
-  priority?: IssuePriority;
+  priority?: Priority;
   assigneeId?: string | null;
   projectId?: string | null;
 };
