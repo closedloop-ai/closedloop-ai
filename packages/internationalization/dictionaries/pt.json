@@ -83,45 +83,45 @@
     },
     "developers": {
       "meta": {
-        "title": "Orquestração de Agentes IA Empresariais | Plugin Claude Code",
-        "description": "Fluxos de trabalho planejados, agentes especializados, execução multifase e revisões com portões de críticos. Entregue código pronto para produção com rastreabilidade completa."
+        "title": "Entrega de Software com IA | Plugin Claude Code",
+        "description": "Do PRD à produção com 19 agentes especializados, 13 juízes de qualidade, orquestração cross-repo e um sistema de aprendizado que melhora a cada execução."
       },
       "hero": {
         "badge": "Claude Code Plugin",
-        "title": "Enterprise AI Agent",
-        "titleHighlight": "Orchestration",
-        "description": "Plan-first workflows, specialized agents, multi-phase execution, and critic-gated reviews. Ship production-ready code with full traceability and zero drift.",
+        "title": "AI-Powered Software",
+        "titleHighlight": "Delivery",
+        "description": "From PRD to production with 19 specialized agents, 13 quality judges, cross-repo orchestration, and a learning system that improves every run.",
         "installButton": "Install in 30 Seconds",
         "githubButton": "View on GitHub"
       },
       "features": {
         "label": "Features",
-        "title": "Plan, Execute, Verify",
-        "description": "ClosedLoop transforms how you build software with AI. Structured workflows ensure quality at every step.",
+        "title": "Plan, Implement, Learn",
+        "description": "ClosedLoop transforms how you build software with AI. Structured workflows with quality judges ensure excellence at every step.",
         "items": [
           {
-            "title": "PRD-Driven Planning",
-            "description": "Start with requirements. The PRD Analyst extracts user stories, acceptance criteria, and constraints. Plan Writer creates detailed implementation plans with full traceability."
+            "title": "PRD-to-Code Planning",
+            "description": "Pre-Explorer analyzes your codebase, Plan Draft Writer creates implementation plans from PRDs, and Plan Writer refines them with critic feedback. Full requirements traceability from start to finish."
           },
           {
-            "title": "Staged Execution",
-            "description": "Large features are automatically broken into LOC-budgeted stages. Each stage is implemented, tested, and verified before moving on. No context window overflows."
+            "title": "13 Quality Judges",
+            "description": "Automated evaluation agents for SOLID principles, DRY, KISS, readability, test quality, code organization, and technical accuracy. Every plan and implementation is scored before shipping."
           },
           {
-            "title": "Specialized Agents",
-            "description": "20+ purpose-built agents: Plan Writer, Code Reviewer, Feature Locator, Stage Implementer, and more. Each agent has deep domain expertise."
+            "title": "Cross-Repo Orchestration",
+            "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
           },
           {
-            "title": "Critic-Gated Reviews",
-            "description": "Plan Verifier red-teams your approach. Code Reviewer catches bugs before they ship. Configurable critic gates ensure nothing slips through."
+            "title": "Smart Caching",
+            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Subsequent runs skip redundant work and execute faster."
           },
           {
-            "title": "Full Traceability",
-            "description": "Every requirement maps to tasks, tasks map to code, code maps to tests. Traceability CSV and anchors.json provide audit-ready documentation."
+            "title": "Learning System",
+            "description": "Captures patterns from every run and validates them for quality. Push learnings to your org, pull shared patterns, and track goal performance across runs."
           },
           {
-            "title": "Linear or Jira Export",
-            "description": "Export implementation plans directly to Linear issues or Jira epics and stories. PRDs can be published to Confluence. Seamless integration with your existing tools."
+            "title": "Visual QA",
+            "description": "Built-in Playwright browser automation for visual QA inspection. Catch UI regressions, verify layouts, and validate user flows without manual testing."
           }
         ]
       },
@@ -131,28 +131,28 @@
         "description": "Simple commands orchestrate complex multi-agent workflows.",
         "items": [
           {
-            "name": "/plan",
-            "description": "Create detailed implementation plans from PRDs"
-          },
-          {
-            "name": "/execute",
-            "description": "Run staged implementation with testing & review"
-          },
-          {
-            "name": "/amend-plan",
-            "description": "Apply targeted changes to existing plans"
-          },
-          {
-            "name": "/implement-stage",
-            "description": "Execute a specific stage from a staged plan"
+            "name": "/code",
+            "description": "Begin a coding session with full Symphony orchestration"
           },
           {
             "name": "/code-review",
-            "description": "Comprehensive code review with critic agents"
+            "description": "Run comprehensive code review with multi-agent validation"
           },
           {
-            "name": "/prd-creator",
-            "description": "Interactive PRD drafting with AI assistance"
+            "name": "/amend-plan",
+            "description": "Discuss and apply amendments to implementation plans"
+          },
+          {
+            "name": "/process-learnings",
+            "description": "Process pending learnings from a run into org patterns"
+          },
+          {
+            "name": "/goal-stats",
+            "description": "Analyze goal performance and improvement trends across runs"
+          },
+          {
+            "name": "/push-learnings",
+            "description": "Push local org patterns to your shared repository"
           }
         ]
       },
@@ -162,36 +162,36 @@
         "description": "Each agent is optimized for a specific task in the software delivery lifecycle.",
         "items": [
           {
-            "name": "plan-writer",
-            "description": "Drafts implementation plans with detailed specs and traceability"
+            "name": "plan-draft-writer",
+            "description": "Creates high-level implementation plan drafts from PRDs"
           },
           {
-            "name": "plan-verifier",
-            "description": "Red-teams plans for realism and parity coverage"
+            "name": "plan-writer",
+            "description": "Refines plans by merging critic feedback and implementation details"
           },
           {
             "name": "code-reviewer",
             "description": "Reviews code for quality, security, and best practices"
           },
           {
-            "name": "feature-locator",
-            "description": "Maps requirements to existing code locations"
+            "name": "pre-explorer",
+            "description": "Pre-explores codebase to produce code maps and investigation logs"
           },
           {
-            "name": "stage-implementer",
-            "description": "Implements code for specific plan stages"
+            "name": "implementation-subagent",
+            "description": "Implements requirements with self-verification gates"
           },
           {
-            "name": "prd-analyst",
-            "description": "Extracts user stories and acceptance criteria"
+            "name": "build-validator",
+            "description": "Discovers and runs project validation commands"
           },
           {
-            "name": "questions-curator",
-            "description": "Identifies and deduplicates open questions"
+            "name": "visual-qa-subagent",
+            "description": "Performs visual QA inspection via Playwright automation"
           },
           {
-            "name": "plan-stager",
-            "description": "Partitions tasks into LOC-budgeted stages"
+            "name": "api-spec-writer",
+            "description": "Generates API endpoint specifications from approved plans"
           }
         ]
       },
@@ -206,14 +206,14 @@
             "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
           },
           {
-            "title": "Install ClosedLoop Core",
+            "title": "Install Experimental",
             "description": "Install the plugin from the marketplace:",
-            "code": "/plugin install symphony-core"
+            "code": "/plugin install experimental"
           },
           {
-            "title": "Start Planning",
-            "description": "You're ready! Create your first implementation plan:",
-            "code": "/symphony-core:plan \"Your feature description here\""
+            "title": "Start Coding",
+            "description": "You're ready! Begin your first coding session:",
+            "code": "/experimental:code \"Path to your PRD\""
           }
         ]
       },
