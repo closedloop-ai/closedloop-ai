@@ -1,6 +1,5 @@
 import { PromptType } from "@repo/database";
 import {
-  computePromptSha256,
   parsePromptFrontmatter,
   parsePromptsSnapshotFromMarkdownEntries,
 } from "@/lib/prompt-snapshot-ingestion";
@@ -108,20 +107,6 @@ model: claude-opus-4-6
       expect(parsed).not.toBeNull();
       expect(parsed?.name).toBe("crlf-agent");
       expect(parsed?.content).toBe("Content here.");
-    });
-  });
-
-  describe("computePromptSha256", () => {
-    it("returns stable SHA-256 hex digest for prompt content", () => {
-      expect(computePromptSha256("Plan work carefully.\n")).toBe(
-        "a022b8daa6de683a4359263cfc176a37b55835b9fd481264fadf2a5f3128799c"
-      );
-    });
-
-    it("returns different hashes when content differs", () => {
-      expect(computePromptSha256("Version A")).not.toBe(
-        computePromptSha256("Version B")
-      );
     });
   });
 });

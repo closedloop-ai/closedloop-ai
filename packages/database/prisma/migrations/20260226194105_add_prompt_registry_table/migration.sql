@@ -15,7 +15,6 @@ CREATE TABLE "prompt_registry" (
     "tools" TEXT[],
     "file_path" TEXT NOT NULL,
     "content" TEXT NOT NULL,
-    "sha" TEXT NOT NULL,
     "version" INTEGER NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -24,9 +23,6 @@ CREATE TABLE "prompt_registry" (
 
 -- CreateIndex
 CREATE INDEX "prompt_registry_organization_id_name_idx" ON "prompt_registry"("organization_id", "name");
-
--- CreateIndex
-CREATE UNIQUE INDEX "prompt_registry_organization_id_name_sha_key" ON "prompt_registry"("organization_id", "name", "sha");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "prompt_registry_organization_id_name_version_key" ON "prompt_registry"("organization_id", "name", "version");

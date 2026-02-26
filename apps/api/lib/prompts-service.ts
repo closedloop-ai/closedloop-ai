@@ -2,15 +2,13 @@
  * Prompts registry service — upserts prompt snapshots into the database.
  *
  * Uses Prisma ORM with UUIDv7 generated in app code (codebase convention).
- * Race-safe: findUnique for idempotency, P2002 catch for concurrent version
- * collisions (equivalent to ON CONFLICT DO NOTHING).
+ * Race-safe: latest-content idempotency with P2002 retry for version races.
  */
 
 import type { TransactionClient } from "@repo/database";
 import { Prisma, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { v7 as uuidv7 } from "uuid";
-import { computePromptSha256 } from "@/lib/prompt-snapshot-ingestion";
 import type { PromptsSnapshot } from "@/lib/prompt-types";
 
 /**
@@ -32,9 +30,10 @@ import type { PromptsSnapshot } from "@/lib/prompt-types";
  *
  * ## Race-safety
  *
- * - Idempotency: findUnique by (org, name, sha) — if exact content exists, skip.
- * - Version collision: create with computed next_version; catch P2002 when a
- *   concurrent worker claimed the same version (equivalent to ON CONFLICT DO NOTHING).
+ * - Idempotency: compare incoming content, model, and tools with latest
+ *   (org, name) version.
+ * - Version collision: create with computed next_version; retry on P2002 when a
+ *   concurrent worker claimed the same version.
  *
  * NOTE: `withDb.tx` does not currently propagate ambient transactions via
  * AsyncLocalStorage when starting from `withDb.tx` itself. Pass `tx`
@@ -51,69 +50,7 @@ export async function upsertFromSnapshot(
 
   const run = async (client: TransactionClient): Promise<void> => {
     for (const prompt of snapshot.prompts) {
-      const { promptType, name, description, model, tools, filePath, content } =
-        prompt;
-      const sha = computePromptSha256(content);
-
-      const existing = await client.prompt.findUnique({
-        where: {
-          organizationId_name_sha: { organizationId, name, sha },
-        },
-        select: { id: true },
-      });
-      if (existing) {
-        return;
-      }
-
-      const latest = await client.prompt.aggregate({
-        where: { organizationId, name },
-        _max: { version: true },
-      });
-      const nextVersion = (latest._max.version ?? 0) + 1;
-
-      try {
-        await client.prompt.create({
-          data: {
-            id: uuidv7(),
-            organizationId,
-            promptType,
-            name,
-            description,
-            model,
-            tools,
-            filePath,
-            content,
-            sha,
-            version: nextVersion,
-          },
-        });
-      } catch (error) {
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === "P2002"
-        ) {
-          // P2002 = unique constraint violation. Two cases:
-          //
-          // 1) (org, name, sha): Another worker already inserted this exact content.
-          //    SHA is a content hash — same content ⇒ same SHA. The unique constraint
-          //    (organization_id, name, sha) prevents duplicate content for the same
-          //    prompt name. We skip; the other worker's row is the canonical one.
-          //
-          // 2) (org, name, version): Two workers computed the same next_version (e.g.
-          //    both saw max=3, both tried version=4). One won; we lost. Equivalent
-          //    to raw SQL's ON CONFLICT DO NOTHING — silently skip, no retry needed.
-          log.debug(
-            "[prompts-service] P2002 unique constraint — concurrent insert won",
-            {
-              organizationId,
-              name,
-              nextVersion,
-            }
-          );
-          return;
-        }
-        throw error;
-      }
+      await upsertPromptVersionWithRetry(client, organizationId, prompt);
     }
   };
 
@@ -123,4 +60,103 @@ export async function upsertFromSnapshot(
   }
 
   await withDb.tx(run);
+}
+
+const MAX_P2002_RETRIES = 3;
+
+async function upsertPromptVersionWithRetry(
+  client: TransactionClient,
+  organizationId: string,
+  prompt: PromptsSnapshot["prompts"][number]
+): Promise<void> {
+  for (let attempt = 0; attempt <= MAX_P2002_RETRIES; attempt++) {
+    try {
+      await upsertPromptVersionCore(client, organizationId, prompt);
+      return;
+    } catch (error) {
+      if (!isUniqueConstraintError(error) || attempt === MAX_P2002_RETRIES) {
+        throw error;
+      }
+
+      log.debug(
+        "[prompts-service] P2002 unique constraint — retrying prompt upsert",
+        {
+          organizationId,
+          name: prompt.name,
+          attempt: attempt + 1,
+          maxRetries: MAX_P2002_RETRIES,
+        }
+      );
+    }
+  }
+}
+
+async function upsertPromptVersionCore(
+  client: TransactionClient,
+  organizationId: string,
+  prompt: PromptsSnapshot["prompts"][number]
+): Promise<void> {
+  const latest = await client.prompt.findFirst({
+    where: {
+      organizationId,
+      name: prompt.name,
+    },
+    orderBy: {
+      version: "desc",
+    },
+    select: {
+      version: true,
+      content: true,
+      model: true,
+      tools: true,
+    },
+  });
+
+  if (
+    latest &&
+    latest.content === prompt.content &&
+    latest.model === prompt.model &&
+    haveSameTools(latest.tools, prompt.tools)
+  ) {
+    return;
+  }
+
+  await client.prompt.create({
+    data: {
+      id: uuidv7(),
+      organizationId,
+      promptType: prompt.promptType,
+      name: prompt.name,
+      description: prompt.description,
+      model: prompt.model,
+      tools: prompt.tools,
+      filePath: prompt.filePath,
+      content: prompt.content,
+      version: (latest?.version ?? 0) + 1,
+    },
+  });
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  ) {
+    return true;
+  }
+
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
+}
+
+function haveSameTools(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
 }
