@@ -1,9 +1,11 @@
 "use client";
 
+import { useRoom } from "@liveblocks/react";
 import { useIsEditorReady, useLiveblocksExtension } from "@repo/collaboration";
 import { cn } from "@repo/design-system/lib/utils";
 import { RichTextEditor } from "@repo/rich-text";
 import type { Editor } from "@tiptap/react";
+import { useRef } from "react";
 
 type EditorContentProps = {
   /**
@@ -125,6 +127,18 @@ function EditorContentWithLiveblocks({
 }: Readonly<EditorContentWithLiveblocksProps>) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
+  const room = useRoom();
+
+  // We need a key we can use with the rich text editor below, to force a remount when
+  // the room changes. I am not really sure why this is necessary, but without it, the
+  // liveblocks state will not be restored correctly when opening the editor for a second
+  // time. The contents will be empty in that case.
+  const prevRoomRef = useRef(room);
+  const editorKeyRef = useRef(0);
+  if (prevRoomRef.current !== room) {
+    prevRoomRef.current = room;
+    editorKeyRef.current += 1;
+  }
 
   return (
     <div
@@ -137,6 +151,7 @@ function EditorContentWithLiveblocks({
       <RichTextEditor
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
+        key={editorKeyRef.current}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={isEditorReady}
         onChange={onChange}
