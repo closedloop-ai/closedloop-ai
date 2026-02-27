@@ -1,6 +1,8 @@
 import { type Artifact, ArtifactType } from "@repo/api/src/types/artifact";
 import type { Issue } from "@repo/api/src/types/issue";
 
+const ISSUE_ROUTE_PREFIX = "issues";
+
 /**
  * Artifact types that support internal navigation to an editor/detail page.
  */
@@ -32,5 +34,5 @@ export function getArtifactRoute(artifact: Artifact): string | null {
  * Get the route to navigate to for viewing/editing an issue.
  */
 export function getIssueRoute(issue: Issue): string {
-  return `/issues/${issue.slug}`;
+  return `/${ISSUE_ROUTE_PREFIX}/${issue.slug}`;
 }

@@ -6,7 +6,6 @@ import {
 } from "@repo/security/proxy";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { rewriteForLinkUnfurler } from "@/lib/link-unfurler";
 import { env } from "./env";
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
@@ -41,21 +40,11 @@ const securityHeaders = env.FLAGS_SECRET
 // Clerk middleware wraps other middleware in its callback
 // For apps using Clerk, compose middleware inside authMiddleware callback
 // For apps without Clerk, use createNEMO for composition (see apps/web)
-export default authMiddleware(async (_auth, request) => {
+export default authMiddleware((_auth, request) => {
   const guardResponse = engineerGuard(request);
   if (guardResponse) {
     return guardResponse;
   }
-
-  const unfurlerResponse = rewriteForLinkUnfurler(request);
-  if (unfurlerResponse) {
-    const secResponse = await securityHeaders();
-    for (const [key, value] of secResponse.headers.entries()) {
-      unfurlerResponse.headers.set(key, value);
-    }
-    return unfurlerResponse;
-  }
-
   return securityHeaders();
 });
 

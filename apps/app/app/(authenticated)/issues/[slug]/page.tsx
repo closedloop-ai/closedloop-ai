@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { generateArtifactMetadata } from "@/lib/artifact-metadata";
+import { resolveOgMetadata } from "@/lib/og-metadata";
 import { FeaturePageContainer } from "./feature-page-container";
 
 type IssuePageProps = {
@@ -10,7 +10,7 @@ export async function generateMetadata({
   params,
 }: IssuePageProps): Promise<Metadata> {
   const { slug } = await params;
-  return generateArtifactMetadata(slug);
+  return resolveOgMetadata(`issues/${slug}`);
 }
 
 export default async function IssuePage({ params }: IssuePageProps) {
