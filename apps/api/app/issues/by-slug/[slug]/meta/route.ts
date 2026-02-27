@@ -1,6 +1,6 @@
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { issuesService } from "../../service";
+import { issuesService } from "../../../service";
 
 type RouteParams = { params: Promise<{ slug: string }> };
 
