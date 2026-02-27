@@ -1,6 +1,9 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactType,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/artifact";
 import type { IssueStatus } from "@repo/api/src/types/issue";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
@@ -136,7 +139,9 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
           }
 
           // Filter out PRDs — engineer only works with implementation plans
-          const nonPrdArtifacts = allArtifacts.filter((a) => a.type !== "PRD");
+          const nonPrdArtifacts = allArtifacts.filter(
+            (a) => a.type !== ArtifactType.Prd
+          );
 
           setMcpIssues(allIssues);
           setMcpArtifacts(nonPrdArtifacts);
