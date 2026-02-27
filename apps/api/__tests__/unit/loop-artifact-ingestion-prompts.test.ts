@@ -76,6 +76,7 @@ import {
   downloadPromptSnapshotMarkdownEntries,
 } from "@/lib/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { buildLoop } from "../fixtures/loop";
 
 const mockDownloadArtifactFile = downloadArtifactFile as unknown as Mock;
 const mockDownloadPromptSnapshotMarkdownEntries =
@@ -95,36 +96,16 @@ const WORKSTREAM_ID = "ws-test-123";
 const STATE_KEY_PREFIX = `${ORG_ID}/loops/${LOOP_ID}/run-1`;
 
 function makeLoop(overrides: Partial<Loop> = {}): Loop {
-  return {
+  return buildLoop({
     id: LOOP_ID,
     organizationId: ORG_ID,
-    userId: "user-1",
-    status: "COMPLETED",
-    command: "PLAN",
     artifactId: ARTIFACT_ID,
     workstreamId: WORKSTREAM_ID,
-    parentLoopId: null,
-    prompt: null,
-    repo: { fullName: "org/repo", branch: "main" },
-    contextRefs: null,
-    containerId: null,
     s3StateKey: STATE_KEY_PREFIX,
-    prUrl: null,
-    prNumber: null,
-    branchName: null,
-    sessionId: null,
-    tokensInput: 0,
-    tokensOutput: 0,
-    tokensByModel: null,
-    estimatedCost: null,
-    startedAt: null,
-    completedAt: null,
-    error: null,
-    metadata: {},
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     ...overrides,
-  };
+  });
 }
 
 function makeJudgesReport(reportId = "report-1"): JudgesReport {
@@ -155,7 +136,7 @@ function makeJudgesReport(reportId = "report-1"): JudgesReport {
 
 describe("downloadLoopArtifacts — prompt snapshots", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("parses markdown entries from agents-snapshot as the primary source", async () => {
@@ -209,7 +190,7 @@ You are a helpful agent.
 
 describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("calls upsertFromSnapshot before the judgesReport withDb write", async () => {
@@ -331,7 +312,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
 
 describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("calls upsertFromSnapshot inside withDb.tx before code judges report write", async () => {

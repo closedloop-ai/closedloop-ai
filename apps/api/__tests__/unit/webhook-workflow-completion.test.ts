@@ -739,7 +739,7 @@ Plan the work carefully.
           expect.objectContaining({ name: "my-planner" }),
         ]),
       }),
-      expect.anything()
+      tx
     );
   });
 
@@ -796,12 +796,13 @@ Plan the work carefully.
       },
     };
 
-    await handleWorkflowSuccess(asTx(mockDb), ctx);
+    const tx = asTx(mockDb);
+    await handleWorkflowSuccess(tx, ctx);
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-no-prompts",
       null,
-      expect.anything()
+      tx
     );
   });
 });
