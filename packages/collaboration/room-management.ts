@@ -31,6 +31,7 @@ export async function createRoom(
       defaultAccesses: [], // Private - require authentication via auth endpoint
       tenantId: options.tenantId,
       metadata: options.metadata,
+      engine: 2,
     });
 
     return { success: true };

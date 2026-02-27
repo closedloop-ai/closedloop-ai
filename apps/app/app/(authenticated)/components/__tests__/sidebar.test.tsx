@@ -76,6 +76,10 @@ vi.mock("../sidebar-teams", () => ({
   SidebarTeams: () => <div data-testid="sidebar-teams">Teams</div>,
 }));
 
+vi.mock("../sidebar-favorites", () => ({
+  SidebarFavorites: () => <div data-testid="sidebar-favorites">Favorites</div>,
+}));
+
 vi.mock("@repo/design-system/components/ui/mode-toggle", () => ({
   ModeToggle: () => <div data-testid="mode-toggle">Mode Toggle</div>,
 }));

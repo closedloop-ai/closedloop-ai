@@ -276,6 +276,7 @@ model User {
   organization       Organization     @relation(fields: [organizationId], references: [id])
   teamMemberships    TeamMember[]
   pullRequestRatings PullRequestRating[]
+  favoriteProjects   FavoriteProject[]
   assignedProjects   Project[]    @relation("ProjectAssignee")
   createdProjects    Project[]    @relation("ProjectCreatedBy")
   assignedArtifacts  Artifact[]   @relation("ArtifactAssignee")
@@ -323,6 +324,7 @@ model Project {
   issues        Issue[]
   externalLinks ExternalLink[]
   teams         ProjectTeam[]
+  favoritedBy   FavoriteProject[]
 
   @@unique([organizationId, slug])
   @@index([assigneeId])
@@ -382,6 +384,23 @@ model ProjectTeam {
   @@unique([projectId, teamId])
   @@index([teamId])
   @@map("project_teams")
+}
+
+/// Per-user favorite projects for quick access in the sidebar
+model FavoriteProject {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([userId])
+  @@index([projectId])
+  @@map("favorite_projects")
 }
 
 // =============================================================================

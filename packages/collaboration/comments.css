@@ -8,6 +8,12 @@
   z-index: 60;
 }
 
+/* Mention suggestion dropdown must appear above floating comments */
+.lb-tiptap-suggestions,
+.lb-tiptap-mention-suggestions {
+  z-index: 70;
+}
+
 .lb-collab-floating-composer,
 .lb-collab-floating-threads,
 .lb-tiptap-floating-composer,

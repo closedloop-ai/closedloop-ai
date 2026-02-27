@@ -11,14 +11,7 @@ import {
   AvatarFallback,
   AvatarImage,
 } from "@repo/design-system/components/ui/avatar";
-import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
 import { HexagonProgress } from "@repo/design-system/components/ui/hexagon-progress";
 import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge";
 import {
@@ -38,12 +31,7 @@ import {
   type User as PopoverUser,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import {
-  FolderIcon,
-  MoreHorizontalIcon,
-  TrashIcon,
-  UserIcon,
-} from "lucide-react";
+import { FolderIcon, UserIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
@@ -60,6 +48,7 @@ import {
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 import { getUserDisplayName, getUserInitials } from "@/lib/user-utils";
+import { ProjectRowActions } from "./project-row-actions";
 import { SortableProjectRow } from "./sortable-project-row";
 
 type ProjectsTableProps = {
@@ -357,25 +346,10 @@ export function ProjectsTable({
                   </span>
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button className="h-8 w-8" size="icon" variant="ghost">
-                        <MoreHorizontalIcon className="h-4 w-4" />
-                        <span className="sr-only">Open menu</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                        onClick={() =>
-                          deleteConfirmation.requestDelete(project)
-                        }
-                      >
-                        <TrashIcon className="mr-2 h-4 w-4" />
-                        Delete project
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  <ProjectRowActions
+                    onDelete={() => deleteConfirmation.requestDelete(project)}
+                    projectId={project.id}
+                  />
                 </TableCell>
               </SortableProjectRow>
             ))}
