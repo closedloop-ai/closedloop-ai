@@ -367,6 +367,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Worktree already exists — update PRD and re-launch
+    if (existsSync(worktreeDir)) {
+      if (ticket) {
+        await createPrdFile(worktreeDir, ticket, expandedRepoPath);
+      }
+      return launchSymphony(
+        worktreeDir,
+        sanitizedTicket,
+        getPrdFileIfExists(worktreeDir),
+        baseBranch
+      );
+    }
+
     // Worktrees require at least one commit — reject empty repos with a helpful message
     const isEmptyRepo =
       spawnSync("git", ["rev-parse", "HEAD"], {
@@ -381,19 +394,6 @@ export async function POST(request: NextRequest) {
             'This repository has no commits yet. Create an initial commit first (e.g. `git commit --allow-empty -m "Initial commit"`) and then try again.',
         },
         { status: 400 }
-      );
-    }
-
-    // Worktree already exists — update PRD and re-launch
-    if (existsSync(worktreeDir)) {
-      if (ticket) {
-        await createPrdFile(worktreeDir, ticket, expandedRepoPath);
-      }
-      return launchSymphony(
-        worktreeDir,
-        sanitizedTicket,
-        getPrdFileIfExists(worktreeDir),
-        baseBranch
       );
     }
 

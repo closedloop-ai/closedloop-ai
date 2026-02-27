@@ -125,7 +125,12 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
               mcp.listIssues({ assigneeId: user.id, limit: 100, offset })
             ),
             fetchAllMcpPages((offset) =>
-              mcp.listArtifacts({ assigneeId: user.id, limit: 100, offset })
+              mcp.listArtifacts({
+                assigneeId: user.id,
+                type: ArtifactType.ImplementationPlan,
+                limit: 100,
+                offset,
+              })
             ),
           ]);
           console.debug(
@@ -138,13 +143,8 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
             return;
           }
 
-          // Filter out PRDs — engineer only works with implementation plans
-          const nonPrdArtifacts = allArtifacts.filter(
-            (a) => a.type !== ArtifactType.Prd
-          );
-
           setMcpIssues(allIssues);
-          setMcpArtifacts(nonPrdArtifacts);
+          setMcpArtifacts(allArtifacts);
           lastError = null;
           break;
         } catch (err) {
