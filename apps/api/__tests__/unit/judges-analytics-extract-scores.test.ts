@@ -17,8 +17,8 @@ import { EvalStatus } from "@repo/api/src/types/evaluation";
 import {
   type EvaluationInput,
   extractJudgeScores,
-  normalizeJudgeName,
 } from "@/app/judges-analytics/service";
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
           {
             type: "case_score",
             case_id: "judge-A",
-            final_status: 3,
+            final_status: EvalStatus.Passed,
             metrics: [
               buildMetric({
                 metric_name: "completely_different_name",
@@ -253,7 +253,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
           {
             type: "case_score",
             case_id: "judge-X",
-            final_status: 3,
+            final_status: EvalStatus.Passed,
             metrics: [buildMetric({ metric_name: "wrong_name", score: 0.5 })],
           },
         ],

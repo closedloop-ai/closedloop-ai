@@ -14,7 +14,10 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import {
+  EvalStatus,
+  EvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -31,6 +34,10 @@ vi.mock("@repo/database", () => ({
   EvaluationReportType: {
     PLAN: "PLAN",
     CODE: "CODE",
+  },
+  PromptType: {
+    AGENT: "AGENT",
+    JUDGE: "JUDGE",
   },
 }));
 
@@ -56,8 +63,16 @@ vi.mock("@/app/artifacts/artifact-version-service", () => ({
   },
 }));
 
-// Import after mocking
+vi.mock("@/lib/prompts-service", () => ({
+  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/judge-score-fanout", () => ({
+  fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { downloadWorkflowArtifacts } from "@repo/github";
+// Import after mocking
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import {
   handleExecutionSuccess,
@@ -67,6 +82,8 @@ import {
 } from "@/app/webhooks/github/handlers/workflow-completion-handler";
 import type { WorkflowContext } from "@/app/webhooks/github/types";
 import { findActionRunByCorrelationId } from "@/app/webhooks/github/webhook-service";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
@@ -76,6 +93,8 @@ const mockFindActionRunByCorrelationId =
   findActionRunByCorrelationId as unknown as Mock;
 const mockCreateVersion =
   artifactVersionService.createVersion as unknown as Mock;
+const mockUpsertFromSnapshot = upsertFromSnapshot as unknown as Mock;
+const mockFanOutJudgeScores = fanOutJudgeScores as unknown as Mock;
 
 describe("handleWorkflowSuccess", () => {
   beforeEach(() => {
@@ -271,7 +290,7 @@ describe("handleWorkflowSuccess", () => {
         {
           type: "case_score",
           case_id: "test-judge",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "test_score",
@@ -645,6 +664,145 @@ describe("handleWorkflowSuccess", () => {
     // Should not throw, but should log error and return early without DB calls
     expect(mockTx.workstream.findUnique).not.toHaveBeenCalled();
   });
+
+  it("calls upsertFromSnapshot with organizationId when agents-snapshot entries are present", async () => {
+    const correlationId = "test-correlation-prompts";
+    const artifactId = "artifact-prompts";
+    const workstreamId = "ws-prompts";
+    const runId = 1_234_000_001;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      command: "plan",
+    };
+
+    const agentFrontmatter = `---
+name: my-planner
+model: claude-opus-4-6
+description: A planning agent
+tools: bash, read
+---
+
+Plan the work carefully.
+`;
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan with snapshot",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      {
+        name: "agents-snapshot/my-planner.md",
+        content: agentFrontmatter,
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-prompts",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "org-prompts",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-prompts" }),
+      },
+    };
+
+    const tx = asTx(mockDb);
+    await handleWorkflowSuccess(tx, ctx);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-prompts",
+      expect.objectContaining({
+        prompts: expect.arrayContaining([
+          expect.objectContaining({ name: "my-planner" }),
+        ]),
+      })
+    );
+  });
+
+  it("calls upsertFromSnapshot with null when no agents-snapshot entries are present", async () => {
+    const correlationId = "test-correlation-no-prompts";
+    const artifactId = "artifact-no-prompts";
+    const workstreamId = "ws-no-prompts";
+    const runId = 1_234_000_002;
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      command: "plan",
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan without snapshot",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "org-no-prompts",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "org-no-prompts",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-no-prompts" }),
+      },
+    };
+
+    const tx = asTx(mockDb);
+    await handleWorkflowSuccess(tx, ctx);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("org-no-prompts", null);
+  });
 });
 
 describe("handleExecutionSuccess", () => {
@@ -710,7 +868,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: {
@@ -811,7 +969,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.gitHubPullRequest.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -867,7 +1025,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbTx(mockTx);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockTx.externalLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -899,7 +1057,7 @@ describe("handleExecutionSuccess", () => {
 
     mockWithDbCall(mockDb);
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     expect(mockDb.workstreamEvent.create).toHaveBeenCalledWith({
       data: {
@@ -933,7 +1091,7 @@ describe("handleExecutionSuccess", () => {
       branch_name: "symphony/no-repo",
     };
 
-    await handleExecutionSuccess(ctx, executionResult, null);
+    await handleExecutionSuccess(ctx, executionResult, null, null);
 
     // Should return early without attempting database operations
     expect(mockWithDb).not.toHaveBeenCalled();
@@ -970,9 +1128,141 @@ describe("handleExecutionSuccess", () => {
     mockWithDbTx(mockTx);
 
     await expect(
-      handleExecutionSuccess(ctx, executionResult, null)
+      handleExecutionSuccess(ctx, executionResult, null, null)
     ).rejects.toThrow(
       `Implementation plan artifact ${ctx.artifactId} not found`
+    );
+  });
+
+  it("calls upsertFromSnapshot with resolved organizationId when promptsSnapshot is present", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "exec-correlation-prompts",
+      artifactId: "plan-artifact-prompts",
+      workstreamId: "ws-prompts-exec",
+      repositoryId: "repo-prompts",
+      runId: 5_555_001_001,
+      command: "execute",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/88",
+      pr_number: 88,
+      pr_title: "Symphony: prompts test",
+      branch_name: "symphony/prompts-feature",
+      base_ref: "main",
+      github_id: 9_000_001,
+    };
+
+    const promptsSnapshot = {
+      prompts: [
+        {
+          promptType: "AGENT" as const,
+          name: "executor-agent",
+          description: "Executes tasks",
+          model: "claude-opus-4-6",
+          tools: ["bash"],
+          filePath: "agents-snapshot/executor-agent.md",
+          content: "Execute the given tasks.",
+        },
+      ],
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-exec-prompts" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "org-exec-prompts",
+          projectId: "project-prompts",
+          generatedBy: "user-prompts",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "pr-prompts" }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-prompts" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-prompts" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-exec-prompts" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null, promptsSnapshot);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-exec-prompts",
+      promptsSnapshot
+    );
+  });
+
+  it("calls upsertFromSnapshot with null when promptsSnapshot is null for execution", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "exec-correlation-null-prompts",
+      artifactId: "plan-artifact-null-prompts",
+      workstreamId: "ws-null-prompts-exec",
+      repositoryId: "repo-null-prompts",
+      runId: 5_555_001_002,
+      command: "execute",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/89",
+      pr_number: 89,
+      pr_title: "Symphony: null prompts test",
+      branch_name: "symphony/null-prompts-feature",
+      base_ref: "main",
+      github_id: 9_000_002,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "org-null-prompts" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "org-null-prompts",
+          projectId: "project-null-prompts",
+          generatedBy: "user-null-prompts",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "pr-null-prompts" }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "ext-link-null-prompts" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "entity-link-null-prompts" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-null-prompts" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null, null);
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
+      "org-null-prompts",
+      null
     );
   });
 });
@@ -1062,6 +1352,374 @@ describe("handleWorkflowFailure", () => {
         },
       },
     });
+  });
+});
+
+describe("handleWorkflowSuccess fan-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls fanOutJudgeScores with the evaluationId returned by upsert", async () => {
+    const correlationId = "fanout-correlation-plan";
+    const artifactId = "fanout-artifact-plan";
+    const workstreamId = "fanout-ws-plan";
+    const runId = 1_234_000_001;
+    const actionRunId = "fanout-action-run-plan";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "fanout-report-plan",
+      timestamp: "2026-02-06T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "quality",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "quality_score",
+              threshold: 0.8,
+              score: 0.9,
+              justification: "Looks good",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "fanout-org-plan",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "fanout-org-plan",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-fanout-plan" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          reportData: judgesReport,
+        }),
+      })
+    );
+
+    expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
+      evaluationId: "eval-123",
+      organizationId: "fanout-org-plan",
+      report: judgesReport,
+      tx: asTx(mockDb),
+    });
+  });
+
+  it("still writes reportData even when fanOutJudgeScores is called", async () => {
+    const correlationId = "fanout-correlation-plan-2";
+    const artifactId = "fanout-artifact-plan-2";
+    const workstreamId = "fanout-ws-plan-2";
+    const runId = 1_234_000_002;
+    const actionRunId = "fanout-action-run-plan-2";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      runId,
+      actionRunId,
+    };
+
+    const judgesReport: JudgesReport = {
+      report_id: "fanout-report-plan-2",
+      timestamp: "2026-02-07T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "completeness",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "completeness_score",
+              threshold: 0.7,
+              score: 0.85,
+              justification: "Complete",
+            },
+          ],
+        },
+      ],
+    };
+
+    const zipBuffer = buildZipWithEntries([
+      {
+        name: "plan.json",
+        content: JSON.stringify({
+          content: "# Plan content",
+          acceptanceCriteria: [],
+          pendingTasks: [],
+          completedTasks: [],
+          openQuestions: [],
+          answeredQuestions: [],
+          gaps: [],
+        }),
+      },
+      { name: "judges.json", content: JSON.stringify(judgesReport) },
+    ]);
+
+    mockDownloadWorkflowArtifacts.mockResolvedValue([
+      { name: "artifact.zip", data: zipBuffer },
+    ]);
+
+    const mockDb = {
+      workstream: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: workstreamId,
+          organizationId: "fanout-org-plan-2",
+        }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          latestVersion: 1,
+          organizationId: "fanout-org-plan-2",
+        }),
+        update: vi.fn().mockResolvedValue({ id: artifactId, status: "DRAFT" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "event-fanout-plan-2" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-123" }),
+      },
+    };
+
+    await handleWorkflowSuccess(asTx(mockDb), ctx);
+
+    expect(mockDb.artifactEvaluation.upsert).toHaveBeenCalledWith({
+      where: {
+        artifactId_reportId: {
+          artifactId,
+          reportId: judgesReport.report_id,
+        },
+      },
+      create: {
+        artifactId,
+        actionRunId,
+        reportType: EvaluationReportType.Plan,
+        reportId: judgesReport.report_id,
+        reportData: judgesReport,
+      },
+      update: {
+        reportType: EvaluationReportType.Plan,
+        reportData: judgesReport,
+      },
+    });
+  });
+});
+
+describe("handleExecutionSuccess fan-out", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls fanOutJudgeScores with evaluationId from CODE upsert", async () => {
+    const correlationId = "fanout-correlation-code";
+    const artifactId = "fanout-artifact-code";
+    const workstreamId = "fanout-ws-code";
+    const repositoryId = "fanout-repo-code";
+    const runId = 2_234_000_001;
+    const actionRunId = "fanout-action-run-code";
+
+    const ctx: WorkflowContext = {
+      correlationId,
+      artifactId,
+      workstreamId,
+      repositoryId,
+      runId,
+      actionRunId,
+      command: "execute",
+    };
+
+    const codeJudgesReport: JudgesReport = {
+      report_id: "fanout-report-code",
+      timestamp: "2026-02-08T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "correctness",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            {
+              metric_name: "correctness_score",
+              threshold: 0.75,
+              score: 0.88,
+              justification: "Code is correct",
+            },
+          ],
+        },
+      ],
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/55",
+      pr_number: "55",
+      pr_title: "Symphony: fanout feature",
+      branch_name: "symphony/fanout-feature",
+      base_ref: "main",
+      github_id: 55_000_001,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "fanout-org-code" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: artifactId,
+          organizationId: "fanout-org-code",
+          projectId: "fanout-project-code",
+          generatedBy: "fanout-user-code",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-pr-code", number: 55 }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-ext-link-code" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-entity-link-code" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-event-code" }),
+      },
+      artifactEvaluation: {
+        upsert: vi.fn().mockResolvedValue({ id: "eval-code-123" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, codeJudgesReport, null);
+
+    expect(mockTx.artifactEvaluation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          reportType: EvaluationReportType.Code,
+          reportData: codeJudgesReport,
+        }),
+      })
+    );
+
+    expect(mockFanOutJudgeScores).toHaveBeenCalledWith({
+      evaluationId: "eval-code-123",
+      organizationId: "fanout-org-code",
+      report: codeJudgesReport,
+      tx: mockTx,
+    });
+  });
+
+  it("does not call fanOutJudgeScores when codeJudgesReport is null", async () => {
+    const ctx: WorkflowContext = {
+      correlationId: "fanout-correlation-no-code",
+      artifactId: "fanout-artifact-no-code",
+      workstreamId: "fanout-ws-no-code",
+      repositoryId: "fanout-repo-no-code",
+      runId: 2_234_000_002,
+      actionRunId: "fanout-action-run-no-code",
+    };
+
+    const executionResult = {
+      has_changes: true,
+      pr_url: "https://github.com/owner/repo/pull/56",
+      pr_number: "56",
+      pr_title: "Symphony: no judges",
+      branch_name: "symphony/no-judges",
+      base_ref: "main",
+      github_id: 56_000_001,
+    };
+
+    const mockTx = {
+      workstream: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ organizationId: "fanout-org-no-code" }),
+      },
+      artifact: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: ctx.artifactId,
+          organizationId: "fanout-org-no-code",
+          projectId: "fanout-project-no-code",
+          generatedBy: "fanout-user-no-code",
+          slug: undefined,
+        }),
+      },
+      gitHubPullRequest: {
+        create: vi
+          .fn()
+          .mockResolvedValue({ id: "fanout-pr-no-code", number: 56 }),
+      },
+      externalLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-ext-link-no-code" }),
+      },
+      entityLink: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-entity-link-no-code" }),
+      },
+      workstreamEvent: {
+        create: vi.fn().mockResolvedValue({ id: "fanout-event-no-code" }),
+      },
+    };
+
+    mockWithDbTx(mockTx);
+
+    await handleExecutionSuccess(ctx, executionResult, null, null);
+
+    expect(mockFanOutJudgeScores).not.toHaveBeenCalled();
   });
 });
 
@@ -1166,6 +1824,8 @@ describe("processWorkflowCompletion", () => {
         completedAt: expect.any(Date),
       },
     });
+
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("test-org-id", null);
 
     // T-2.2: Validates call ordering and side effects only.
     // ALS propagation correctness is validated by withdb-transaction.test.ts (T-2.1).

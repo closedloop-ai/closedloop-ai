@@ -1,3 +1,9 @@
+import {
+  type CaseScore,
+  EvalStatus,
+  type JudgesReport,
+  type MetricStatistics,
+} from "@repo/api/src/types/evaluation";
 import { queryOptions } from "@tanstack/react-query";
 import type { ChatMessage } from "@/components/engineer/chat";
 import { queryKeys } from "./keys";
@@ -68,32 +74,9 @@ export type LogResponse = {
   returnedLines?: number;
 };
 
-export const EvalStatus = {
-  Failed: 1,
-  NeedsImprovement: 2,
-  Passed: 3,
-} as const;
-export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
-
-export type MetricStatistics = {
-  metric_name: string;
-  threshold: number;
-  score: number;
-  justification: string;
-};
-
-export type CaseScore = {
-  type: "case_score";
-  case_id: string;
-  final_status: EvalStatus;
-  metrics: MetricStatistics[];
-};
-
-export type EvaluationReport = {
-  report_id: string;
-  timestamp: string;
-  stats: CaseScore[];
-};
+export { EvalStatus };
+export type { CaseScore, MetricStatistics };
+export type EvaluationReport = JudgesReport;
 
 export type SymphonyJudgesResponse = {
   exists: boolean;

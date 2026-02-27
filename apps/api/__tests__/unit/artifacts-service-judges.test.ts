@@ -9,7 +9,10 @@ import type {
   JudgesFeedbackResponse,
   JudgesReport,
 } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import {
+  EvalStatus,
+  EvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
@@ -37,7 +40,7 @@ const MOCK_JUDGES_REPORT: JudgesReport = {
     {
       type: "case_score",
       case_id: "test-judge",
-      final_status: 1,
+      final_status: EvalStatus.Failed,
       metrics: [
         {
           metric_name: "test_score",
