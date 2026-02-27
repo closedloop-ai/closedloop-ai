@@ -193,7 +193,7 @@ pnpm typecheck                              # TypeScript type check
 pnpm lint                                   # Lint and format check (Biome)
 pnpm lint:fix                               # Auto-fix lint issues
 pnpm test                                   # Run all tests
-pnpm migrate                                # Format, generate, and db push (dev only)
+pnpm migrate                                # Run database migrations (prisma migrate dev, dev only)
 ```
 
 ## Key Features

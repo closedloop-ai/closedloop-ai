@@ -57,4 +57,4 @@ Email: security@closedloop.ai
 
 - Issues in upstream dependencies (Clerk, Stripe, GitHub) — report to those providers
 - Theoretical vulnerabilities without proof of concept
-- Features gated by `org:admin` role in frontend only (known limitation, documented in CLAUDE.md)
+- UI-only display preferences not enforced server-side (non-security cosmetic gating)
