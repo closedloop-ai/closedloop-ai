@@ -80,31 +80,26 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      let callCount = 0;
-      mockWithDb.mockImplementation((callback: any) => {
-        callCount++;
-        if (callCount === 1) {
-          // First call: artifactEvaluation.findFirst
-          return callback({
+      mockWithDb
+        .mockImplementationOnce((callback: any) =>
+          callback({
             artifactEvaluation: {
-              findFirst: vi
-                .fn()
-                .mockResolvedValue(
-                  createMockEvaluationRow({
-                    id: "eval-123",
-                    artifactId: "artifact-123",
-                  })
-                ),
+              findFirst: vi.fn().mockResolvedValue(
+                createMockEvaluationRow({
+                  id: "eval-123",
+                  artifactId: "artifact-123",
+                })
+              ),
             },
-          });
-        }
-        // Second call: judgeScore.findMany
-        return callback({
-          judgeScore: {
-            findMany: vi.fn().mockResolvedValue([MOCK_JUDGE_SCORE_ROW]),
-          },
-        });
-      });
+          })
+        )
+        .mockImplementationOnce((callback: any) =>
+          callback({
+            judgeScore: {
+              findMany: vi.fn().mockResolvedValue([MOCK_JUDGE_SCORE_ROW]),
+            },
+          })
+        );
     },
     expectedResult: { status: "success", data: EXPECTED_FEEDBACK_ITEMS },
   },
@@ -142,24 +137,23 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      let callCount = 0;
-      mockWithDb.mockImplementation((callback: any) => {
-        callCount++;
-        if (callCount === 1) {
-          return callback({
+      mockWithDb
+        .mockImplementationOnce((callback: any) =>
+          callback({
             artifactEvaluation: {
               findFirst: vi
                 .fn()
                 .mockResolvedValue(createMockEvaluationRow({ id: "eval-123" })),
             },
-          });
-        }
-        return callback({
-          judgeScore: {
-            findMany: vi.fn().mockResolvedValue([]),
-          },
-        });
-      });
+          })
+        )
+        .mockImplementationOnce((callback: any) =>
+          callback({
+            judgeScore: {
+              findMany: vi.fn().mockResolvedValue([]),
+            },
+          })
+        );
     },
     expectedResult: { status: "success", data: [] },
   },
