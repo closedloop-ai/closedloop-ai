@@ -53,6 +53,14 @@ export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];
 export const ARTIFACT_STATUS_OPTIONS = Object.values(ArtifactStatus);
 
+export const ChecksStatus = {
+  Unknown: "UNKNOWN",
+  Pending: "PENDING",
+  Passing: "PASSING",
+  Failing: "FAILING",
+} as const;
+export type ChecksStatus = (typeof ChecksStatus)[keyof typeof ChecksStatus];
+
 export type Artifact = {
   id: string;
   organizationId: string;
@@ -179,6 +187,7 @@ export type PullRequestInfo = {
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  checksStatus: ChecksStatus | null;
   reviewDecision: ReviewDecision | null;
 };
 
