@@ -75,10 +75,31 @@ export type JudgesReport = {
 };
 
 /**
+ * Option B canonical response item derived from a normalized JudgeScore row.
+ *
+ * Attributes:
+ * - caseId: Judge identifier (maps to JudgeScore.caseId)
+ * - score: The judge score value
+ * - threshold: Pass/fail threshold
+ * - justification: Explanation for the score
+ * - finalStatus: Final evaluation status (1=Failed, 2=NeedsImprovement, 3=Passed)
+ * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
+ */
+export type JudgeFeedbackItem = {
+  caseId: string;
+  score: number;
+  threshold: number;
+  justification: string;
+  finalStatus: EvalStatus;
+  promptName: string | null;
+};
+
+/**
  * API response wrapper for judges feedback.
- * Returns the report, or null if judges.json not found, or error details if malformed.
+ * Returns normalized JudgeScore rows as JudgeFeedbackItem array on success,
+ * or null if no evaluation found, or error details on failure.
  */
 export type JudgesFeedbackResponse =
-  | { status: "success"; data: JudgesReport }
+  | { status: "success"; data: JudgeFeedbackItem[] }
   | { status: "not_found"; data: null }
   | { status: "error"; error: string };

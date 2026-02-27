@@ -1,5 +1,4 @@
 import type { ArtifactType } from "@repo/api/src/types/artifact";
-import type { CaseScore, JudgesReport } from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
@@ -10,109 +9,6 @@ import type {
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
-import { normalizeJudgeName } from "@/lib/judge-name-utils";
-
-/** Validates and extracts a JudgesReport from unknown reportData. Returns null if invalid. */
-function parseJudgesReport(reportData: unknown): JudgesReport | null {
-  if (
-    !(reportData && typeof reportData === "object" && "stats" in reportData)
-  ) {
-    return null;
-  }
-  const report = reportData as JudgesReport;
-  return report?.stats && Array.isArray(report.stats) ? report : null;
-}
-
-/** Extracts judge name and score from a CaseScore. Returns null if no matching metric. */
-function extractJudgeMetric(
-  caseScore: CaseScore
-): { name: string; score: number } | null {
-  const judgeName = caseScore.case_id;
-  const normalizedCaseId = normalizeJudgeName(caseScore.case_id);
-  const judgeMetric = caseScore.metrics?.find(
-    (metric) => normalizeJudgeName(metric.metric_name) === normalizedCaseId
-  );
-  return judgeMetric ? { name: judgeName, score: judgeMetric.score } : null;
-}
-
-/** Aggregates judge scores by artifact type and judge name. */
-class JudgeScoreAggregator {
-  private readonly data = new Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  >();
-
-  addScore(
-    artifactType: ArtifactType,
-    judgeName: string,
-    score: number,
-    artifactId: string
-  ): void {
-    if (!this.data.has(artifactType)) {
-      this.data.set(artifactType, new Map());
-    }
-
-    const judgeMap = this.data.get(artifactType)!;
-    if (!judgeMap.has(judgeName)) {
-      judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
-    }
-
-    const judgeData = judgeMap.get(judgeName)!;
-    judgeData.scores.push(score);
-    judgeData.artifactIds.add(artifactId);
-  }
-
-  getResults(): Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  > {
-    return this.data;
-  }
-}
-
-export type EvaluationInput = {
-  artifactId: string;
-  artifact: { type: ArtifactType };
-  reportData: unknown;
-};
-
-/**
- * Extracts judge scores from evaluation reportData and aggregates them by artifact type and judge name.
- *
- * @param evaluations - Array of artifact evaluations with their artifact type
- * @returns Nested map structure: artifactType -> judgeName -> { scores, artifactIds }
- */
-export function extractJudgeScores(
-  evaluations: EvaluationInput[]
-): Map<
-  ArtifactType,
-  Map<string, { scores: number[]; artifactIds: Set<string> }>
-> {
-  const aggregator = new JudgeScoreAggregator();
-
-  for (const evaluation of evaluations) {
-    const report = parseJudgesReport(evaluation.reportData);
-    if (!report) {
-      continue;
-    }
-
-    for (const caseScore of report.stats) {
-      const metric = extractJudgeMetric(caseScore);
-      if (!metric) {
-        continue;
-      }
-
-      aggregator.addScore(
-        evaluation.artifact.type,
-        metric.name,
-        metric.score,
-        evaluation.artifactId
-      );
-    }
-  }
-
-  return aggregator.getResults();
-}
 
 /** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
 const SUNDAY_INDEX = 0;
@@ -241,6 +137,77 @@ export async function getHumanRatingsByArtifact(
   return scoresByArtifact;
 }
 
+/** Shape of a JudgeScore row with evaluation and artifact relations for aggregation. */
+export type JudgeScoreInput = {
+  caseId: string;
+  score: number;
+  evaluation: {
+    artifactId: string;
+    artifact: { type: ArtifactType };
+  };
+};
+
+/** Aggregates judge scores by artifact type and judge name. */
+class JudgeScoreAggregator {
+  private readonly data = new Map<
+    ArtifactType,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  >();
+
+  addScore(
+    artifactType: ArtifactType,
+    judgeName: string,
+    score: number,
+    artifactId: string
+  ): void {
+    if (!this.data.has(artifactType)) {
+      this.data.set(artifactType, new Map());
+    }
+
+    const judgeMap = this.data.get(artifactType)!;
+    if (!judgeMap.has(judgeName)) {
+      judgeMap.set(judgeName, { scores: [], artifactIds: new Set() });
+    }
+
+    const judgeData = judgeMap.get(judgeName)!;
+    judgeData.scores.push(score);
+    judgeData.artifactIds.add(artifactId);
+  }
+
+  getResults(): Map<
+    ArtifactType,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  > {
+    return this.data;
+  }
+}
+
+/**
+ * Aggregates JudgeScore rows into a nested map keyed by artifact type and judge name.
+ *
+ * @param judgeScores - Array of JudgeScore rows with evaluation and artifact relations
+ * @returns Nested map structure: artifactType -> caseId -> { scores, artifactIds }
+ */
+export function aggregateJudgeScoreRows(
+  judgeScores: JudgeScoreInput[]
+): Map<
+  ArtifactType,
+  Map<string, { scores: number[]; artifactIds: Set<string> }>
+> {
+  const aggregator = new JudgeScoreAggregator();
+
+  for (const row of judgeScores) {
+    aggregator.addScore(
+      row.evaluation.artifact.type,
+      row.caseId,
+      row.score,
+      row.evaluation.artifactId
+    );
+  }
+
+  return aggregator.getResults();
+}
+
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
 function collectAllArtifactIds(
   aggregator: Map<
@@ -331,9 +298,8 @@ function computeHumanStats(scores: number[]): {
 /**
  * Aggregation service for judges analytics.
  *
- * Queries ArtifactEvaluation records within a date range, extracts judge scores
- * from the reportData JSON, and computes aggregate statistics (min, mean, max, stdDev)
- * grouped by artifact type and judge name.
+ * Queries JudgeScore rows within a date range and computes aggregate statistics
+ * (min, mean, max, stdDev) grouped by artifact type and judge name (caseId).
  */
 export const judgesAnalyticsService = {
   /**
@@ -349,39 +315,38 @@ export const judgesAnalyticsService = {
     startDate: Date,
     endDate: Date
   ): Promise<JudgeStatsResponse> {
-    // Query ArtifactEvaluation records with artifact type, filtered by date range and organization
-    const evaluations = await withDb((db) =>
-      db.artifactEvaluation.findMany({
+    // Query JudgeScore rows joined through ArtifactEvaluation → Artifact
+    const judgeScores = await withDb((db) =>
+      db.judgeScore.findMany({
         where: {
-          artifact: {
-            organizationId,
-          },
-          createdAt: {
-            gte: startDate,
-            lte: endDate,
+          evaluation: {
+            artifact: { organizationId },
+            createdAt: { gte: startDate, lte: endDate },
           },
         },
         select: {
-          artifactId: true,
-          reportData: true,
-          artifact: { select: { type: true } },
-        },
-        orderBy: {
-          createdAt: "desc",
+          caseId: true,
+          score: true,
+          evaluation: {
+            select: {
+              artifactId: true,
+              artifact: { select: { type: true } },
+            },
+          },
         },
       })
     );
 
-    if (evaluations.length === 0) {
-      log.warn("No evaluations found for judges analytics query", {
+    if (judgeScores.length === 0) {
+      log.warn("No judge scores found for judges analytics query", {
         organizationId,
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
       });
     }
 
-    // Extract scores from reportData JSON using the "metric_name === case_id" rule
-    const aggregator = extractJudgeScores(evaluations);
+    // Aggregate scores by artifact type and judge name (caseId)
+    const aggregator = aggregateJudgeScoreRows(judgeScores);
 
     const types = Array.from(aggregator.keys());
     const { humanRatingsByType, humanCommentsByType } =
@@ -421,18 +386,6 @@ export const judgesAnalyticsService = {
         humanRatingsCount: humanRatingsByType.get(artifactType) ?? 0,
         humanCommentsCount: humanCommentsByType.get(artifactType) ?? 0,
       });
-    }
-
-    if (groups.length === 0 && evaluations.length > 0) {
-      log.warn(
-        "No judge score groups extracted despite having evaluations - possible reportData format issue",
-        {
-          organizationId,
-          evaluationCount: evaluations.length,
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString(),
-        }
-      );
     }
 
     return { groups };

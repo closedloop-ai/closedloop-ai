@@ -1,6 +1,7 @@
 import {
   type CaseScore,
   EvalStatus,
+  type JudgeFeedbackItem,
   type JudgesReport,
   type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
@@ -71,6 +72,24 @@ export const createMockJudgesReport = (
 });
 
 /**
+ * Factory for creating mock JudgeFeedbackItem objects.
+ * Use this for Option B response type test data.
+ *
+ * @param overrides - Optional overrides for fields
+ */
+export const createMockJudgeFeedbackItem = (
+  overrides?: Partial<JudgeFeedbackItem>
+): JudgeFeedbackItem => ({
+  caseId: "test-judge",
+  score: 0.92,
+  threshold: 0.8,
+  justification: "Default test justification",
+  finalStatus: EvalStatus.Passed,
+  promptName: null,
+  ...overrides,
+});
+
+/**
  * Helper to determine if a metric passes based on score >= threshold.
  */
 export const doesMetricPass = (metric: MetricStatistics): boolean => {
@@ -82,4 +101,11 @@ export const doesMetricPass = (metric: MetricStatistics): boolean => {
  */
 export const countPassingMetrics = (caseScore: CaseScore): number => {
   return caseScore.metrics.filter(doesMetricPass).length;
+};
+
+/**
+ * Helper to determine if a JudgeFeedbackItem passes based on score >= threshold.
+ */
+export const doesFeedbackItemPass = (item: JudgeFeedbackItem): boolean => {
+  return item.score >= item.threshold;
 };

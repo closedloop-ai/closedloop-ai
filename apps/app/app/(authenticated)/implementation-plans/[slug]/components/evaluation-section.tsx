@@ -1,6 +1,6 @@
 "use client";
 
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import {
   Collapsible,
   CollapsibleContent,
@@ -16,25 +16,23 @@ import {
 import { JudgeResultCard } from "./judge-result-card";
 
 type EvaluationSectionProps = {
-  judgesReport: JudgesReport | null;
+  judgeItems: JudgeFeedbackItem[] | null;
   title?: string;
   emptyMessage?: string;
 };
 
 export function EvaluationSection({
-  judgesReport,
+  judgeItems,
   title = "Evaluation",
   emptyMessage = "Awaiting LLM Judges feedback",
 }: EvaluationSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
 
-  const allMetrics =
-    judgesReport?.stats.flatMap((caseScore) => caseScore.metrics) ?? [];
   const {
     acceptedCount,
     totalCount,
     rate: acceptanceRate,
-  } = calculateAcceptanceRate(allMetrics);
+  } = calculateAcceptanceRate(judgeItems ?? undefined);
 
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>
@@ -47,15 +45,15 @@ export function EvaluationSection({
         )}
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-4 px-3 pb-3">
-        {judgesReport === null && (
+        {judgeItems === null && (
           <p className="text-muted-foreground text-sm">{emptyMessage}</p>
         )}
-        {judgesReport !== null && judgesReport.stats.length === 0 && (
+        {judgeItems !== null && judgeItems.length === 0 && (
           <p className="text-muted-foreground text-sm">
             No judges have been evaluated yet
           </p>
         )}
-        {judgesReport !== null && judgesReport.stats.length > 0 && (
+        {judgeItems !== null && judgeItems.length > 0 && (
           <div className="space-y-3">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
@@ -70,14 +68,9 @@ export function EvaluationSection({
             </div>
 
             <div className="space-y-2">
-              {judgesReport.stats.map((caseScore) =>
-                sortMetricsByScore(caseScore.metrics).map((metric) => (
-                  <JudgeResultCard
-                    key={`${caseScore.case_id}-${metric.metric_name}`}
-                    metric={metric}
-                  />
-                ))
-              )}
+              {sortMetricsByScore(judgeItems).map((item) => (
+                <JudgeResultCard item={item} key={item.caseId} />
+              ))}
             </div>
           </div>
         )}

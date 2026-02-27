@@ -16,8 +16,9 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
+  EvalStatus,
+  JudgeFeedbackItem,
   JudgesFeedbackResponse,
-  JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { PerfSummary } from "@repo/api/src/types/performance";
@@ -1595,8 +1596,23 @@ Please try again or contact support if the issue persists.`
         return { status: "not_found", data: null };
       }
 
-      const reportData = evaluation.reportData as JudgesReport;
-      return { status: "success", data: reportData };
+      const judgeScores = await withDb((db) =>
+        db.judgeScore.findMany({
+          where: { evaluationId: evaluation.id },
+          include: { prompt: true },
+        })
+      );
+
+      const data: JudgeFeedbackItem[] = judgeScores.map((js) => ({
+        caseId: js.caseId,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
+
+      return { status: "success", data };
     } catch (error) {
       const logLabel =
         reportType === PrismaEvaluationReportType.PLAN

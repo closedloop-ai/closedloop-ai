@@ -1,8 +1,8 @@
 "use client";
 
 import type {
+  JudgeFeedbackItem,
   JudgesFeedbackResponse,
-  JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
@@ -18,7 +18,7 @@ function makeJudgesFeedbackHook(
   endpoint: string,
   keyFn: (id: string) => readonly unknown[]
 ) {
-  return (artifactId: string): UseQueryResult<JudgesReport | null> => {
+  return (artifactId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
     const apiClient = useApiClient();
     return useQuery({
       queryKey: keyFn(artifactId),
