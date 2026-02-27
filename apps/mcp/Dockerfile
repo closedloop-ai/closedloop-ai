@@ -25,7 +25,7 @@ COPY packages/database/ packages/database/
 COPY packages/typescript-config/ packages/typescript-config/
 
 # Install dependencies (workspace mode, only for the MCP app and its deps)
-RUN pnpm install --frozen-lockfile --filter @repo/mcp... --ignore-scripts
+RUN pnpm install --frozen-lockfile --filter mcp... --ignore-scripts
 # Generate Prisma client in clean CI checkouts where generated/ is absent.
 RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./prisma/schema.prisma
 
@@ -33,7 +33,7 @@ RUN pnpm --filter @repo/database exec prisma generate --no-hints --schema=./pris
 COPY apps/mcp/src/ apps/mcp/src/
 
 # Build TypeScript → JavaScript
-RUN pnpm --filter @repo/mcp build
+RUN pnpm --filter mcp build
 
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime — minimal image with compiled output
@@ -53,7 +53,7 @@ COPY packages/api/package.json packages/api/
 COPY packages/database/package.json packages/database/
 
 # Install production-only dependencies
-RUN pnpm install --frozen-lockfile --filter @repo/mcp... --prod --ignore-scripts
+RUN pnpm install --frozen-lockfile --filter mcp... --prod --ignore-scripts
 
 # Copy compiled JavaScript from builder
 COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/
@@ -71,7 +71,7 @@ ENV MCP_PORT=3010
 
 EXPOSE 3010
 
-# pnpm --filter @repo/mcp exec sets CWD to /app/apps/mcp/, so paths are relative to that.
+# pnpm --filter mcp exec sets CWD to /app/apps/mcp/, so paths are relative to that.
 # --require needs ./ prefix for CWD-relative resolution (not node_modules lookup).
 # preload.cjs (not .ts/.js) because --require only loads CJS modules.
-CMD ["pnpm", "--filter", "@repo/mcp", "exec", "tsx", "--require", "./src/preload.cjs", "dist/apps/mcp/src/index.js"]
+CMD ["pnpm", "--filter", "mcp", "exec", "tsx", "--require", "./src/preload.cjs", "dist/apps/mcp/src/index.js"]
