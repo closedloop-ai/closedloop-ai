@@ -281,8 +281,8 @@ function createGitWorktree(
     fetchOrigin(expandedRepoPath);
 
     // Determine the base ref: use provided baseBranch or fall back to remote default
-    let resolvedBaseBranch: string;
     let parentTicketId: string | null = null;
+    let resolvedBaseBranch: string;
 
     if (baseBranch) {
       if (!SAFE_REF_REGEX.test(baseBranch)) {
@@ -291,21 +291,22 @@ function createGitWorktree(
           { status: 400 }
         );
       }
-      const verifyResult = spawnSync(
-        "git",
-        ["rev-parse", "--verify", baseBranch],
-        {
-          cwd: expandedRepoPath,
-          stdio: "pipe",
-        }
+      // Try the ref as-is first (local branch), then fall back to origin/<branch>.
+      // This handles freshly cloned repos where only the remote-tracking ref exists.
+      const resolved = [baseBranch, `origin/${baseBranch}`].find(
+        (ref) =>
+          spawnSync("git", ["rev-parse", "--verify", ref], {
+            cwd: expandedRepoPath,
+            stdio: "pipe",
+          }).status === 0
       );
-      if (verifyResult.status !== 0) {
+      if (!resolved) {
         return NextResponse.json(
           { error: `Branch not found: ${baseBranch}` },
           { status: 400 }
         );
       }
-      resolvedBaseBranch = baseBranch;
+      resolvedBaseBranch = resolved;
       parentTicketId = extractTicketIdFromBranch(baseBranch);
     } else {
       resolvedBaseBranch = getRemoteDefaultBranch(expandedRepoPath);
@@ -363,6 +364,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: `Repository not found: ${expandedRepoPath}` },
         { status: 404 }
+      );
+    }
+
+    // Worktrees require at least one commit — reject empty repos with a helpful message
+    const isEmptyRepo =
+      spawnSync("git", ["rev-parse", "HEAD"], {
+        cwd: expandedRepoPath,
+        stdio: "pipe",
+      }).status !== 0;
+
+    if (isEmptyRepo) {
+      return NextResponse.json(
+        {
+          error:
+            'This repository has no commits yet. Create an initial commit first (e.g. `git commit --allow-empty -m "Initial commit"`) and then try again.',
+        },
+        { status: 400 }
       );
     }
 

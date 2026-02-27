@@ -224,6 +224,11 @@ export function useUpdateArtifact() {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(input.id),
       });
+      // Also invalidate slug-based lookups so detail pages loaded by slug pick up the change
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "artifacts" && query.queryKey[1] === "by-slug",
+      });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
       if (input.projectId) {

@@ -38,6 +38,8 @@ type BranchesResponse = {
   worktrees: WorktreeInfo[];
   /** List of all branches (local + remote) */
   branches: BranchInfo[];
+  /** True if the repo has no commits (worktrees can't be created) */
+  isEmpty?: boolean;
 };
 
 /**
@@ -91,7 +93,18 @@ function getDefaultBranch(repoPath: string): string {
       }).trim();
       return ref.replace("refs/remotes/origin/", "");
     } catch {
-      return "main"; // Fallback
+      // Last resort: use the current branch name (works even in empty repos)
+      try {
+        return (
+          execSync("git branch --show-current", {
+            cwd: repoPath,
+            stdio: "pipe",
+            encoding: "utf-8",
+          }).trim() || "main"
+        );
+      } catch {
+        return "main";
+      }
     }
   }
 }
@@ -248,6 +261,24 @@ export function GET(request: NextRequest) {
       { error: `Repository not found: ${expandedPath}` },
       { status: 404 }
     );
+  }
+
+  // Detect empty repos (no commits) early — skip expensive git fetch
+  let isEmpty = false;
+  try {
+    execSync("git rev-parse HEAD", { cwd: expandedPath, stdio: "pipe" });
+  } catch {
+    isEmpty = true;
+  }
+
+  if (isEmpty) {
+    const defaultBranch = getDefaultBranch(expandedPath);
+    return NextResponse.json({
+      defaultBranch,
+      worktrees: [],
+      branches: [],
+      isEmpty,
+    } satisfies BranchesResponse);
   }
 
   // Fetch latest from origin (best effort)

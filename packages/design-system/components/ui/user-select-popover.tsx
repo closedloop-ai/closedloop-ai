@@ -135,7 +135,7 @@ function UserSelectPopover({
               {value && (
                 <CommandItem
                   onSelect={handleClear}
-                  className="text-muted-foreground"
+                  className="cursor-pointer text-muted-foreground hover:!bg-white/10 hover:!text-foreground"
                 >
                   <span className="mr-2 h-4 w-4" />
                   Clear selection
@@ -146,6 +146,7 @@ function UserSelectPopover({
                   key={user.id}
                   value={`${user.name} ${user.email || ""}`}
                   onSelect={() => handleSelect(user)}
+                  className="cursor-pointer hover:!bg-white/10"
                 >
                   <CheckIcon
                     className={cn(
