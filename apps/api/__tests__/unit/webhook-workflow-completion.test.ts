@@ -1167,6 +1167,23 @@ describe("processWorkflowCompletion", () => {
       },
     });
 
+    // T-2.2: Validates call ordering and side effects only.
+    // ALS propagation correctness is validated by withdb-transaction.test.ts (T-2.1).
+    // Note: the artifactVersionService.createVersion mock (at top of file) bypasses
+    // withDb.tx() entirely, so ALS context cannot be verified at this layer.
+
+    // Assert call ordering: createVersion must be called before gitHubActionRun.update
+    // so the version record exists before the run status is finalized.
+    expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+    expect(mockDb.gitHubActionRun.update).toHaveBeenCalled();
+    expect(mockCreateVersion.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.gitHubActionRun.update.mock.invocationCallOrder[0]
+    );
+
+    // Assert withDb.tx() envelope called exactly once — catches regressions where
+    // the transaction wrapper in processWorkflowCompletion is accidentally removed.
+    expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
+
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });
   });
