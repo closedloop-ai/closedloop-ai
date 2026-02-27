@@ -338,7 +338,7 @@ export default function ProjectDetailPage() {
             </UnderlineTabsList>
             <div className="p-6">
               <TabsContent className="mt-0" value="documents">
-                <div className="mb-6">
+                <div className="mb-6 flex flex-col gap-2">
                   <EditableProjectTitle
                     initialTitle={project.name}
                     projectId={project.id}
