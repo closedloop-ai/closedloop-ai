@@ -9,7 +9,7 @@
  */
 
 import type { PrismaClient } from "@repo/database";
-import { withDb, withImplicitTransaction } from "@repo/database";
+import { withDb } from "@repo/database";
 import {
   afterEach,
   beforeEach,
@@ -117,20 +117,6 @@ describe("withDb AsyncLocalStorage propagation", () => {
         });
       })
     ).rejects.toThrow("test-transaction-error");
-  });
-
-  it("(f) withDb.tx() inside withImplicitTransaction() reuses the implicit transaction", async () => {
-    let capturedTx: unknown = null;
-
-    await withImplicitTransaction(async () => {
-      // withImplicitTransaction sets up ALS with its own tx client.
-      // withDb.tx() should reuse it rather than opening a new $transaction.
-      capturedTx = await withDb.tx((tx) => Promise.resolve(tx));
-    });
-
-    // $transaction called once (by withImplicitTransaction), not a second time.
-    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-    expect(capturedTx).toBe(mockTxClient);
   });
 
   it("(g) plain withDb() called two async levels deep within a withDb.tx() chain receives the transaction client", async () => {

@@ -1,5 +1,5 @@
 import type { User } from "@repo/api/src/types/user";
-import { withDb, withImplicitTransaction } from "@repo/database";
+import { withDb } from "@repo/database";
 import type { TransactionClient } from "@repo/database/generated/internal/prismaNamespace";
 import type {
   OrganizationCreateInput,
@@ -26,7 +26,7 @@ export async function autoRollbackTransaction<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   try {
-    return await withImplicitTransaction(async () => {
+    return await withDb.tx(async () => {
       const result = await fn();
       throw new TestTransactionRollback(result);
     });
