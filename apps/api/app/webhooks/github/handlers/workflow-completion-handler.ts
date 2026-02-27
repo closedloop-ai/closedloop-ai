@@ -230,7 +230,7 @@ export async function handleExecutionSuccess(
       },
     });
 
-    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
     if (codeJudgesReport && ctx.actionRunId) {
       const evaluation = await tx.artifactEvaluation.upsert({
@@ -393,7 +393,7 @@ export async function handleWorkflowSuccess(
     },
   });
 
-  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
+  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot);
 
   if (judgesReport && ctx.actionRunId) {
     const evaluation = await tx.artifactEvaluation.upsert({

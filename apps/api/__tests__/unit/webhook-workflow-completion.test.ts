@@ -741,8 +741,7 @@ Plan the work carefully.
         prompts: expect.arrayContaining([
           expect.objectContaining({ name: "my-planner" }),
         ]),
-      }),
-      tx
+      })
     );
   });
 
@@ -802,11 +801,7 @@ Plan the work carefully.
     const tx = asTx(mockDb);
     await handleWorkflowSuccess(tx, ctx);
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      "org-no-prompts",
-      null,
-      tx
-    );
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("org-no-prompts", null);
   });
 });
 
@@ -1208,8 +1203,7 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-exec-prompts",
-      promptsSnapshot,
-      mockTx
+      promptsSnapshot
     );
   });
 
@@ -1268,8 +1262,7 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-null-prompts",
-      null,
-      mockTx
+      null
     );
   });
 });
@@ -1832,11 +1825,7 @@ describe("processWorkflowCompletion", () => {
       },
     });
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      "test-org-id",
-      null,
-      mockDb
-    );
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("test-org-id", null);
 
     // T-2.2: Validates call ordering and side effects only.
     // ALS propagation correctness is validated by withdb-transaction.test.ts (T-2.1).
