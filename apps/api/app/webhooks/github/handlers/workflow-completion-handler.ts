@@ -230,14 +230,7 @@ export async function handleExecutionSuccess(
       },
     });
 
-    try {
-      await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
-    } catch (error) {
-      log.warn(
-        "[handleExecutionSuccess] Prompt registry upsert failed, continuing",
-        { organizationId: workstream.organizationId, error }
-      );
-    }
+    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
 
     if (codeJudgesReport && ctx.actionRunId) {
       const evaluation = await tx.artifactEvaluation.upsert({
@@ -400,14 +393,7 @@ export async function handleWorkflowSuccess(
     },
   });
 
-  try {
-    await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
-  } catch (error) {
-    log.warn(
-      "[handleWorkflowSuccess] Prompt registry upsert failed, continuing",
-      { organizationId: workstream.organizationId, correlationId, error }
-    );
-  }
+  await upsertFromSnapshot(workstream.organizationId, promptsSnapshot, tx);
 
   if (judgesReport && ctx.actionRunId) {
     const evaluation = await tx.artifactEvaluation.upsert({

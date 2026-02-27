@@ -1,4 +1,3 @@
-import type { Prisma } from "@repo/database";
 import { vi } from "vitest";
 import { getMockWithDb, mockWithDbTx } from "../utils/db-helpers";
 
@@ -22,7 +21,8 @@ describe("upsertFromSnapshot", () => {
   it("returns without calling db when snapshot is null", async () => {
     const mockPrompt = {
       findFirst: vi.fn(),
-      create: vi.fn(),
+      findMany: vi.fn(),
+      createMany: vi.fn(),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -30,13 +30,15 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, null);
 
     expect(mockPrompt.findFirst).not.toHaveBeenCalled();
-    expect(mockPrompt.create).not.toHaveBeenCalled();
+    expect(mockPrompt.findMany).not.toHaveBeenCalled();
+    expect(mockPrompt.createMany).not.toHaveBeenCalled();
   });
 
   it("returns without calling db when snapshot has empty prompts array", async () => {
     const mockPrompt = {
       findFirst: vi.fn(),
-      create: vi.fn(),
+      findMany: vi.fn(),
+      createMany: vi.fn(),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -44,13 +46,15 @@ describe("upsertFromSnapshot", () => {
     await upsertFromSnapshot(ORG_ID, { prompts: [] });
 
     expect(mockPrompt.findFirst).not.toHaveBeenCalled();
-    expect(mockPrompt.create).not.toHaveBeenCalled();
+    expect(mockPrompt.findMany).not.toHaveBeenCalled();
+    expect(mockPrompt.createMany).not.toHaveBeenCalled();
   });
 
   it("inserts initial version when no prompt history exists", async () => {
     const mockPrompt = {
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({ id: "new-id" }),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -76,26 +80,28 @@ describe("upsertFromSnapshot", () => {
         name: "my-agent",
       },
       orderBy: { version: "desc" },
-      select: { version: true, content: true, model: true, tools: true },
+      select: { version: true },
     });
-    expect(mockPrompt.create).toHaveBeenCalledTimes(1);
-    const createArg = mockPrompt.create.mock.calls[0][0];
-    expect(createArg.data.organizationId).toBe(ORG_ID);
-    expect(createArg.data.promptType).toBe("AGENT");
-    expect(createArg.data.name).toBe("my-agent");
-    expect(createArg.data.content).toBe("You are a helpful agent.");
-    expect(createArg.data.version).toBe(1);
+    expect(mockPrompt.findMany).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.createMany).toHaveBeenCalledTimes(1);
+    const createArg = mockPrompt.createMany.mock.calls[0][0];
+    expect(createArg.data[0].organizationId).toBe(ORG_ID);
+    expect(createArg.data[0].promptType).toBe("AGENT");
+    expect(createArg.data[0].name).toBe("my-agent");
+    expect(createArg.data[0].content).toBe("You are a helpful agent.");
+    expect(createArg.data[0].version).toBe(1);
+    expect(createArg.skipDuplicates).toBe(true);
   });
 
-  it("skips insert when latest content is unchanged", async () => {
+  it("skips insert when matching content/model/tools already exists", async () => {
     const mockPrompt = {
-      findFirst: vi.fn().mockResolvedValue({
-        version: 4,
-        content: "Evaluate the output.",
-        model: "claude-3",
-        tools: [],
-      }),
-      create: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([
+        {
+          tools: ["tool-b", "tool-a"],
+        },
+      ]),
+      findFirst: vi.fn(),
+      createMany: vi.fn(),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -107,26 +113,28 @@ describe("upsertFromSnapshot", () => {
           name: "my-judge",
           description: "A judge prompt",
           model: "claude-3",
-          tools: [],
+          tools: ["tool-a", "tool-b"],
           filePath: "prompts/judge.md",
           content: "Evaluate the output.",
         },
       ],
     });
 
-    expect(mockPrompt.findFirst).toHaveBeenCalledTimes(1);
-    expect(mockPrompt.create).not.toHaveBeenCalled();
+    expect(mockPrompt.findMany).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.findFirst).not.toHaveBeenCalled();
+    expect(mockPrompt.createMany).not.toHaveBeenCalled();
   });
 
   it("creates a new version when content changed from latest", async () => {
     const mockPrompt = {
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn().mockResolvedValue({
-        version: 2,
-        content: "Previous judge text.",
+        version: 4,
+        content: "Old content.",
         model: "claude-3",
-        tools: [],
+        tools: ["tool-a"],
       }),
-      create: vi.fn().mockResolvedValue({ id: "new-id" }),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -145,56 +153,57 @@ describe("upsertFromSnapshot", () => {
       ],
     });
 
-    expect(mockPrompt.create).toHaveBeenCalledTimes(1);
-    const createArg = mockPrompt.create.mock.calls[0][0];
-    expect(createArg.data.promptType).toBe("JUDGE");
-    expect(createArg.data.version).toBe(3);
+    expect(mockPrompt.createMany).toHaveBeenCalledTimes(1);
+    const createArg = mockPrompt.createMany.mock.calls[0][0];
+    expect(createArg.data[0].promptType).toBe("JUDGE");
+    expect(createArg.data[0].version).toBe(5);
   });
 
-  it("logs P2002 and rethrows when version race occurs", async () => {
+  it("retries on skipped insert and succeeds when a later attempt can insert", async () => {
     const mockPrompt = {
-      findFirst: vi.fn().mockResolvedValue({
-        version: 1,
-        content: "Old content.",
-        model: "claude-3",
-        tools: [],
-      }),
-      create: vi.fn().mockRejectedValue(createP2002Error()),
+      findMany: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+      findFirst: vi
+        .fn()
+        .mockResolvedValueOnce({ version: 1 })
+        .mockResolvedValueOnce({ version: 2 })
+        .mockResolvedValueOnce({ version: 3 }),
+      createMany: vi
+        .fn()
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 }),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
 
-    const { log } = await import("@repo/observability/log");
-    const logWarnSpy = vi.spyOn(log, "warn");
+    await upsertFromSnapshot(ORG_ID, {
+      prompts: [
+        {
+          promptType: "AGENT",
+          name: "my-agent",
+          description: "An agent prompt",
+          model: "claude-3",
+          tools: [],
+          filePath: "prompts/agent.md",
+          content: "New content.",
+        },
+      ],
+    });
 
-    await expect(
-      upsertFromSnapshot(ORG_ID, {
-        prompts: [
-          {
-            promptType: "AGENT",
-            name: "my-agent",
-            description: "An agent prompt",
-            model: "claude-3",
-            tools: [],
-            filePath: "prompts/agent.md",
-            content: "New content.",
-          },
-        ],
-      })
-    ).rejects.toMatchObject({ code: "P2002" });
-
-    expect(logWarnSpy).toHaveBeenCalledWith(
-      "[prompts-service] P2002 unique constraint — version race (concurrent upsert); error propagates",
-      expect.objectContaining({ organizationId: ORG_ID, name: "my-agent" })
-    );
-    expect(mockPrompt.findFirst).toHaveBeenCalledTimes(1);
-    expect(mockPrompt.create).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.findMany).toHaveBeenCalledTimes(3);
+    expect(mockPrompt.findFirst).toHaveBeenCalledTimes(3);
+    expect(mockPrompt.createMany).toHaveBeenCalledTimes(3);
   });
 
   it("uses a single transaction callback for multiple prompts in one snapshot", async () => {
     const mockPrompt = {
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn().mockResolvedValue(null),
-      create: vi.fn().mockResolvedValue({ id: "new-id" }),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
     };
     const mockTx = { prompt: mockPrompt };
     mockWithDbTx(mockTx);
@@ -223,13 +232,8 @@ describe("upsertFromSnapshot", () => {
     });
 
     expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
+    expect(mockPrompt.findMany).toHaveBeenCalledTimes(2);
     expect(mockPrompt.findFirst).toHaveBeenCalledTimes(2);
-    expect(mockPrompt.create).toHaveBeenCalledTimes(2);
+    expect(mockPrompt.createMany).toHaveBeenCalledTimes(2);
   });
 });
-
-function createP2002Error(): Prisma.PrismaClientKnownRequestError {
-  return Object.assign(new Error("Unique constraint failed"), {
-    code: "P2002",
-  }) as Prisma.PrismaClientKnownRequestError;
-}
