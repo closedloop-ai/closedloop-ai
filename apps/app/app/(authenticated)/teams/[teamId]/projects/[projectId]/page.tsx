@@ -357,6 +357,7 @@ export default function ProjectDetailPage() {
                     }}
                     type="single"
                     value={viewMode}
+                    variant="outline"
                   >
                     <ToggleGroupItem value="type">Type</ToggleGroupItem>
                     <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>

@@ -157,7 +157,7 @@ export function SidebarTeams() {
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel className="flex items-center justify-between pr-2">
+      <SidebarGroupLabel className="flex items-center justify-between">
         <span>Your Teams</span>
         {mounted ? (
           <TeamModal
