@@ -1614,11 +1614,7 @@ Please try again or contact support if the issue persists.`
 
       return { status: "success", data };
     } catch (error) {
-      const logLabel =
-        reportType === PrismaEvaluationReportType.PLAN
-          ? "judges"
-          : "code judges";
-      log.error(`[artifacts-service] Failed to get ${logLabel} feedback`, {
+      log.error(`[artifacts-service] Failed to get ${reportType} feedback`, {
         error: error instanceof Error ? error.message : String(error),
       });
       return {
