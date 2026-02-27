@@ -46,11 +46,16 @@ WORKDIR /app
 
 # Copy workspace root files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.json ./
 
 # Copy package manifests for production install
 COPY apps/mcp/package.json apps/mcp/
+COPY --from=builder /app/apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/package.json packages/api/
 COPY packages/database/package.json packages/database/
+
+# Copy typescript-config (tsconfig bases) — needed by tsx for .ts resolution
+COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
 
 # Install production-only dependencies
 RUN pnpm install --frozen-lockfile --filter mcp... --prod --ignore-scripts
