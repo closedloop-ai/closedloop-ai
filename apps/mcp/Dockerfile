@@ -66,10 +66,6 @@ COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/
 # Copy MCP source so runtime tsx can resolve workspace deep imports consistently.
 COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 
-# Copy CJS preload scripts (not compiled by tsc, used via --require)
-COPY --from=builder /app/apps/mcp/src/preload.cjs apps/mcp/src/preload.cjs
-COPY --from=builder /app/apps/mcp/src/server-only-noop.cjs apps/mcp/src/server-only-noop.cjs
-
 # Copy shared workspace packages needed at runtime for module resolution
 COPY --from=builder /app/packages/api/src/ packages/api/src/
 COPY --from=builder /app/packages/database/ packages/database/
