@@ -55,14 +55,19 @@ describe.sequential("OAuth config", () => {
     ).not.toThrow();
   });
 
-  it("requires internal IP allowlist in non-local env", async () => {
+  it("allows startup in non-local env without internal IP allowlist", async () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     process.env.WEBAPP_ENV = "stage";
     process.env.MCP_INTERNAL_ALLOWED_IPS = "";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mod = await import("../index.js");
     expect(() =>
       mod.__testables.requireInternalAllowlistForEnvironment()
-    ).toThrow("MCP_INTERNAL_ALLOWED_IPS must be set in non-local environments");
+    ).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("MCP_INTERNAL_ALLOWED_IPS is empty")
+    );
+    warnSpy.mockRestore();
   });
 
   it("supports exact IP and CIDR entries in internal allowlist", async () => {
