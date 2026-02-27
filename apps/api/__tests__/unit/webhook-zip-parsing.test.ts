@@ -9,7 +9,7 @@
  * 5. ZIP with code-judges.json is extracted correctly (separate from judges.json)
  * 6. code-judges.json does not populate judgesReport (no cross-contamination)
  */
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { PerfSummary } from "@repo/api/src/types/performance";
 import { parsePromptFrontmatter } from "@repo/github/prompt-snapshot-parser";
 import {
@@ -28,7 +28,7 @@ describe("ZIP parsing for judges.json", () => {
           {
             type: "case_score",
             case_id: "test-judge",
-            final_status: 1,
+            final_status: EvalStatus.Failed,
             metrics: [
               {
                 metric_name: "test_score",

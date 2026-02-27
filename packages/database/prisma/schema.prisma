@@ -88,6 +88,12 @@ enum EvaluationReportType {
   CODE
 }
 
+enum EvalStatus {
+  FAILED
+  NEEDS_IMPROVEMENT
+  PASSED
+}
+
 enum PromptType {
   AGENT
   JUDGE
@@ -561,7 +567,7 @@ model JudgeScore {
   threshold    Float
   score        Float
   justification String  @map("justification") @db.Text
-  finalStatus  Int      @map("final_status")
+  finalStatus  EvalStatus @map("final_status")
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Relations

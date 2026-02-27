@@ -14,7 +14,10 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import {
+  EvalStatus,
+  EvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -287,7 +290,7 @@ describe("handleWorkflowSuccess", () => {
         {
           type: "case_score",
           case_id: "test-judge",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "test_score",
@@ -1386,7 +1389,7 @@ describe("handleWorkflowSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "quality",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "quality_score",
@@ -1482,7 +1485,7 @@ describe("handleWorkflowSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "completeness",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "completeness_score",
@@ -1592,7 +1595,7 @@ describe("handleExecutionSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "correctness",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "correctness_score",

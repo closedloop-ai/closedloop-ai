@@ -10,7 +10,7 @@
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
  */
 
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import type { Loop } from "@repo/api/src/types/loop";
 import { vi } from "vitest";
 
@@ -116,7 +116,7 @@ function makeJudgesReport(reportId = "report-1"): JudgesReport {
       {
         type: "case_score",
         case_id: "test-judge",
-        final_status: 3,
+        final_status: EvalStatus.Passed,
         metrics: [
           {
             metric_name: "test_score",

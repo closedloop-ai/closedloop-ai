@@ -4,15 +4,15 @@
 // @see https://linear.app/closedloop-ai/issue/AI-252
 
 /**
- * Evaluation status const object representing the 3-point scale:
- * - 1 = Failed (needs attention)
- * - 2 = Needs Improvement
- * - 3 = Passed
+ * Evaluation status const object persisted as enum values:
+ * - FAILED
+ * - NEEDS_IMPROVEMENT
+ * - PASSED
  */
 export const EvalStatus = {
-  Failed: 1,
-  NeedsImprovement: 2,
-  Passed: 3,
+  Failed: "FAILED",
+  NeedsImprovement: "NEEDS_IMPROVEMENT",
+  Passed: "PASSED",
 } as const;
 
 export type EvalStatus = (typeof EvalStatus)[keyof typeof EvalStatus];
