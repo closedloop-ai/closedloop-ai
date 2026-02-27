@@ -25,7 +25,6 @@ export function useInlineEdit<
   emptyErrorMessage,
   saveErrorMessage,
 }: UseInlineEditOptions) {
-  const [isEditing, setIsEditing] = useState(false);
   const [value, setValue] = useState(initialValue);
   const [inputValue, setInputValue] = useState(initialValue);
   const inputRef = useRef<T>(null);
@@ -37,14 +36,6 @@ export function useInlineEdit<
     setInputValue(initialValue);
   }, [initialValue]);
 
-  // Focus and select text when entering edit mode
-  useEffect(() => {
-    if (isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [isEditing]);
-
   const handleSave = () => {
     const trimmedValue = inputValue.trim();
 
@@ -54,13 +45,11 @@ export function useInlineEdit<
         toast.error(emptyErrorMessage);
       }
       setInputValue(value); // Reset to last valid value
-      setIsEditing(false);
       return;
     }
 
-    // No change, just exit edit mode
+    // No change, just blur
     if (trimmedValue === value) {
-      setIsEditing(false);
       return;
     }
 
@@ -69,7 +58,6 @@ export function useInlineEdit<
 
     // Optimistic update
     setValue(trimmedValue);
-    setIsEditing(false);
 
     // Call mutation
     updateProject.mutate(
@@ -93,13 +81,10 @@ export function useInlineEdit<
 
   const handleCancel = () => {
     setInputValue(value);
-    setIsEditing(false);
+    inputRef.current?.blur();
   };
 
-  const startEditing = () => setIsEditing(true);
-
   return {
-    isEditing,
     value,
     inputValue,
     setInputValue,
@@ -107,6 +92,5 @@ export function useInlineEdit<
     isPending: updateProject.isPending,
     handleSave,
     handleCancel,
-    startEditing,
   };
 }
