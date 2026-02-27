@@ -42,7 +42,7 @@ export function EditableProjectTitle({
 
   return (
     <Input
-      className="h-auto rounded-none border-none px-0 py-0 font-semibold text-2xl shadow-none focus-visible:ring-0 md:text-2xl"
+      className="h-auto rounded-none border-none bg-transparent px-0 py-0 font-semibold text-2xl shadow-none focus-visible:ring-0 md:text-2xl dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}
       onChange={(e) => setInputValue(e.target.value)}

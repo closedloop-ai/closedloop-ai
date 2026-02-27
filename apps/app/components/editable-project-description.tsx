@@ -46,7 +46,7 @@ export function EditableProjectDescription({
 
   return (
     <Textarea
-      className="min-h-0 w-full resize-none rounded-none border-none px-0 py-0 text-sm shadow-none focus-visible:ring-0"
+      className="min-h-0 w-full resize-none rounded-none border-none bg-transparent px-0 py-0 text-sm shadow-none focus-visible:ring-0 dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}
       onChange={(e) => setInputValue(e.target.value)}
