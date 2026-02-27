@@ -1,8 +1,8 @@
 "use client";
 
-import type {
+import {
   ChecksStatus,
-  PullRequestInfo,
+  type PullRequestInfo,
 } from "@repo/api/src/types/artifact";
 import type { LucideIcon } from "lucide-react";
 import { CheckCircle2Icon, ClockIcon, XCircleIcon } from "lucide-react";
@@ -15,17 +15,17 @@ import {
 const CI_STATUS_ICONS: Partial<
   Record<ChecksStatus, { icon: LucideIcon; className: string; testId: string }>
 > = {
-  PASSING: {
+  [ChecksStatus.Passing]: {
     icon: CheckCircle2Icon,
     className: "h-4 w-4 text-green-500",
     testId: "ci-status-passing",
   },
-  FAILING: {
+  [ChecksStatus.Failing]: {
     icon: XCircleIcon,
     className: "h-4 w-4 text-red-500",
     testId: "ci-status-failing",
   },
-  PENDING: {
+  [ChecksStatus.Pending]: {
     icon: ClockIcon,
     className: "h-4 w-4 text-yellow-500",
     testId: "ci-status-pending",

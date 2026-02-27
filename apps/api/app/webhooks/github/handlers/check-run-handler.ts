@@ -188,7 +188,7 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
 
     // If the PR's headSha changed, a synchronize event arrived between our read
     // and this transaction. The new commit will trigger its own check_run events.
-    if (currentPr.headSha !== headSha) {
+    if (currentPr.headSha !== null && currentPr.headSha !== headSha) {
       log.info(
         "[handleCheckRun] PR headSha changed since read, skipping update",
         {

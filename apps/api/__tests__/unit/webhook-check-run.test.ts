@@ -25,15 +25,7 @@ import {
 vi.mock("@repo/database", () => {
   const mockWithDb: any = vi.fn();
   mockWithDb.tx = vi.fn();
-  return {
-    withDb: mockWithDb,
-    ChecksStatus: {
-      UNKNOWN: "UNKNOWN",
-      PENDING: "PENDING",
-      PASSING: "PASSING",
-      FAILING: "FAILING",
-    },
-  };
+  return { withDb: mockWithDb };
 });
 
 vi.mock("@repo/github", () => ({
@@ -49,16 +41,15 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 // Import after mocking
-import { withDb } from "@repo/database";
 import { queryStatusCheckRollup } from "@repo/github";
+import { getMockWithDb } from "@/__tests__/utils/db-helpers";
 import {
   handleCheckRun,
   mapRollupStateToChecksStatus,
 } from "@/app/webhooks/github/handlers/check-run-handler";
 
 // Type aliases for mocked functions
-const mockWithDb = withDb as unknown as Mock;
-const mockWithDbTx = withDb.tx as unknown as Mock;
+const mockWithDb = getMockWithDb();
 const mockQueryStatusCheckRollup = queryStatusCheckRollup as unknown as Mock;
 
 // Mock database clients
@@ -154,7 +145,7 @@ describe("handleCheckRun", () => {
     };
 
     mockWithDb.mockImplementation((fn: any) => fn(mockDb));
-    mockWithDbTx.mockImplementation((fn: any) => fn(mockTx));
+    mockWithDb.tx.mockImplementation((fn: any) => fn(mockTx));
   });
 
   afterEach(() => {
@@ -221,7 +212,7 @@ describe("handleCheckRun", () => {
         select: { id: true, owner: true, name: true },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
-      expect(mockWithDbTx).not.toHaveBeenCalled();
+      expect(mockWithDb.tx).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -264,7 +255,7 @@ describe("handleCheckRun", () => {
         },
       });
       expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
-      expect(mockWithDbTx).not.toHaveBeenCalled();
+      expect(mockWithDb.tx).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -304,7 +295,7 @@ describe("handleCheckRun", () => {
         "repo",
         headSha
       );
-      expect(mockWithDbTx).not.toHaveBeenCalled();
+      expect(mockWithDb.tx).not.toHaveBeenCalled();
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -361,7 +352,7 @@ describe("handleCheckRun", () => {
       );
 
       // Verify transaction was opened
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
 
       // Verify TOCTOU re-read
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
@@ -433,7 +424,7 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       // Transaction was opened but no writes were made
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
@@ -477,7 +468,7 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
@@ -520,7 +511,7 @@ describe("handleCheckRun", () => {
       const response = await handleCheckRun(event);
 
       // Transaction opened but no writes
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
@@ -558,7 +549,7 @@ describe("handleCheckRun", () => {
 
       const response = await handleCheckRun(event);
 
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
       expect(mockTx.gitHubPullRequest.update).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
 
@@ -666,7 +657,7 @@ describe("handleCheckRun", () => {
       // The non-transactional read uses withDb (once)
       expect(mockWithDb).toHaveBeenCalledTimes(1);
       // The transactional write uses withDb.tx (once)
-      expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
     });
   });
 });

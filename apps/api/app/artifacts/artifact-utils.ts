@@ -30,7 +30,7 @@ export const artifactIncludeWithUser = {
 
 /**
  * Prisma select for GitHubPullRequest fields that map to PullRequestInfo.
- * Centralises the field list so callers don't omit checksStatus accidentally.
+ * Centralizes the field list so callers don't omit checksStatus accidentally.
  */
 export const pullRequestSelect = {
   id: true,
