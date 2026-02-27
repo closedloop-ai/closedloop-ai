@@ -135,8 +135,11 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
             return;
           }
 
+          // Filter out PRDs — engineer only works with implementation plans
+          const nonPrdArtifacts = allArtifacts.filter((a) => a.type !== "PRD");
+
           setMcpIssues(allIssues);
-          setMcpArtifacts(allArtifacts);
+          setMcpArtifacts(nonPrdArtifacts);
           lastError = null;
           break;
         } catch (err) {

@@ -619,12 +619,16 @@ export function RepoPickerDialog({
                         </p>
                         <button
                           className="mt-1.5 flex items-center gap-1.5 rounded bg-muted px-2 py-1 font-mono text-xs transition-colors hover:bg-muted/80"
-                          onClick={() => {
-                            navigator.clipboard.writeText(
-                              'git commit --allow-empty -m "Initial commit"'
-                            );
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 2000);
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                'git commit --allow-empty -m "Initial commit"'
+                              );
+                              setCopied(true);
+                              setTimeout(() => setCopied(false), 2000);
+                            } catch {
+                              // Silently fail — clipboard may not be available
+                            }
                           }}
                           type="button"
                         >
