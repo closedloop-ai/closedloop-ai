@@ -16,7 +16,6 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
-  EvalStatus,
   JudgeFeedbackItem,
   JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
@@ -42,6 +41,7 @@ import {
 } from "@repo/github/execution-log-parser";
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
+import { toEvalStatus } from "@/lib/eval-status-utils";
 import {
   mapLoopCommand,
   mapLoopStatus,
@@ -1599,7 +1599,7 @@ Please try again or contact support if the issue persists.`
       const judgeScores = await withDb((db) =>
         db.judgeScore.findMany({
           where: { evaluationId: evaluation.id },
-          include: { prompt: true },
+          include: { prompt: { select: { name: true } } },
         })
       );
 
@@ -1608,7 +1608,7 @@ Please try again or contact support if the issue persists.`
         score: js.score,
         threshold: js.threshold,
         justification: js.justification,
-        finalStatus: js.finalStatus as EvalStatus,
+        finalStatus: toEvalStatus(js.finalStatus),
         promptName: js.prompt?.name ?? null,
       }));
 
