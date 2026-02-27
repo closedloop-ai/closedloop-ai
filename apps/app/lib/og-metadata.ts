@@ -1,4 +1,5 @@
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import type { IssueStatus } from "@repo/api/src/types/issue";
 import type { Metadata } from "next";
 import { env } from "@/env";
 import { ISSUE_STATUS_LABELS } from "@/lib/project-constants";
@@ -90,7 +91,9 @@ const handlers: OgHandler[] = [
         return FALLBACK_METADATA;
       }
       const description =
-        ISSUE_STATUS_LABELS[data.status] ?? data.status ?? "Issue";
+        ISSUE_STATUS_LABELS[data.status as IssueStatus] ??
+        data.status ??
+        "Issue";
       return makeMetadata(data.title, `Issue — ${description}`);
     },
   },
