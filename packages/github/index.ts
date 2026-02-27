@@ -564,6 +564,102 @@ export async function getRepositoryBranches(
   }
 }
 
+type StatusCheckRollupState =
+  | "SUCCESS"
+  | "FAILURE"
+  | "ERROR"
+  | "PENDING"
+  | "EXPECTED";
+
+type StatusCheckRollupResponse = {
+  repository: {
+    object: {
+      statusCheckRollup: { state: StatusCheckRollupState } | null;
+    } | null;
+  } | null;
+};
+
+/**
+ * Query the status check rollup state for a specific commit SHA.
+ * Returns the aggregate CI status or null if unavailable.
+ */
+export async function queryStatusCheckRollup(
+  installationId: number,
+  owner: string,
+  repo: string,
+  commitSha: string
+): Promise<StatusCheckRollupState | null> {
+  if (!(owner && repo)) {
+    log.warn("[github/rollup] Missing owner or repo", { owner, repo });
+    return null;
+  }
+
+  if (commitSha.length !== 40) {
+    log.warn("[github/rollup] Invalid commit SHA (must be 40 chars)", {
+      commitSha,
+      length: commitSha.length,
+    });
+    return null;
+  }
+
+  const query = `
+    query GetStatusCheckRollup($owner: String!, $repo: String!, $commitSha: String!) {
+      repository(owner: $owner, name: $repo) {
+        object(expression: $commitSha) {
+          ... on Commit {
+            statusCheckRollup {
+              state
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const octokit = await getInstallationOctokit(installationId);
+    const data = await octokit.graphql<StatusCheckRollupResponse>(query, {
+      owner,
+      repo,
+      commitSha,
+    });
+
+    return data?.repository?.object?.statusCheckRollup?.state ?? null;
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    const message = error instanceof Error ? error.message : "Unknown error";
+
+    if (message.includes("rate limit")) {
+      log.warn("[github/rollup] Rate limited", {
+        installationId,
+        owner,
+        repo,
+        commitSha,
+      });
+      return null;
+    }
+
+    if (status === 403) {
+      log.error("[github/rollup] Permission denied (403)", {
+        installationId,
+        owner,
+        repo,
+        commitSha,
+      });
+      return null;
+    }
+
+    log.error("[github/rollup] GraphQL query failed", {
+      installationId,
+      owner,
+      repo,
+      commitSha,
+      error: message,
+    });
+    return null;
+  }
+}
+
 /**
  * Generate an installation access token for a given GitHub App installation.
  * Used by the loop orchestrator to pass a short-lived token to containers.

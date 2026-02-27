@@ -91,6 +91,8 @@ export type BranchesResponse = {
   worktrees: WorktreeInfo[];
   /** List of all branches (local + remote) */
   branches: BranchInfo[];
+  /** True if the repo has no commits (worktrees can't be created) */
+  isEmpty?: boolean;
 };
 
 /* ---------- Query option factories ---------- */

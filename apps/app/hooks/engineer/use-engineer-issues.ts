@@ -1,6 +1,9 @@
 "use client";
 
-import { getRoutePrefixForType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactType,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/artifact";
 import type { IssueStatus } from "@repo/api/src/types/issue";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
@@ -122,7 +125,12 @@ export function useEngineerIssues(): EngineerIssuesResultWithUser {
               mcp.listIssues({ assigneeId: user.id, limit: 100, offset })
             ),
             fetchAllMcpPages((offset) =>
-              mcp.listArtifacts({ assigneeId: user.id, limit: 100, offset })
+              mcp.listArtifacts({
+                assigneeId: user.id,
+                type: ArtifactType.ImplementationPlan,
+                limit: 100,
+                offset,
+              })
             ),
           ]);
           console.debug(

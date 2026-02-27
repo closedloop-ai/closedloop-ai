@@ -125,6 +125,7 @@ enum WorkstreamEventType {
   GITHUB_PR_COMMENT_ADDED
   GITHUB_ACTION_TRIGGERED
   GITHUB_ACTION_COMPLETED
+  GITHUB_CI_STATUS_CHANGED
   SLACK_NOTIFICATION_SENT
   COMMENT_ADDED
   ASSIGNEE_CHANGED
@@ -152,6 +153,13 @@ enum GitHubActionStatus {
   SUCCESS
   FAILURE
   CANCELLED
+}
+
+enum ChecksStatus {
+  UNKNOWN
+  PENDING
+  PASSING
+  FAILING
 }
 
 enum ReviewDecision {
@@ -1014,6 +1022,7 @@ model GitHubPullRequest {
   headSha        String?         @map("head_sha")
   state          GitHubPRState   @default(OPEN)
   isDraft        Boolean         @default(false) @map("is_draft")
+  checksStatus   ChecksStatus    @default(UNKNOWN) @map("checks_status")
   reviewDecision ReviewDecision? @map("review_decision")
   closedAt       DateTime?       @map("closed_at")
   mergedAt       DateTime?       @map("merged_at")
@@ -1031,6 +1040,7 @@ model GitHubPullRequest {
 
   @@unique([repositoryId, number])
   @@index([workstreamId, state])
+  @@index([headSha])
   @@index([organizationId])
   @@index([artifactId])
   @@map("github_pull_requests")
