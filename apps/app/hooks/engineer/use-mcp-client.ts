@@ -138,6 +138,7 @@ export type McpClient = {
   }) => Promise<PaginatedResponse<McpIssue>>;
   listArtifacts: (params?: {
     assigneeId?: string;
+    type?: string;
     limit?: number;
     offset?: number;
   }) => Promise<PaginatedResponse<McpArtifact>>;
@@ -515,6 +516,9 @@ export function useMcpClient(): McpClient {
         const args: Record<string, unknown> = {};
         if (params?.assigneeId) {
           args.assigneeId = params.assigneeId;
+        }
+        if (params?.type) {
+          args.type = params.type;
         }
         if (params?.limit !== undefined) {
           args.limit = params.limit;

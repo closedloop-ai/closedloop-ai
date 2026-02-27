@@ -220,9 +220,13 @@ export function useUpdateArtifact() {
       const { id, ...body } = input;
       return apiClient.put<Artifact>(`/artifacts/${id}`, body);
     },
-    onSuccess: (_, input) => {
+    onSuccess: (data, input) => {
       queryClient.invalidateQueries({
         queryKey: artifactKeys.detail(input.id),
+      });
+      // Also invalidate the slug-based lookup so detail pages loaded by slug pick up the change
+      queryClient.invalidateQueries({
+        queryKey: artifactKeys.bySlug(data.slug),
       });
       queryClient.invalidateQueries({ queryKey: artifactKeys.lists() });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
