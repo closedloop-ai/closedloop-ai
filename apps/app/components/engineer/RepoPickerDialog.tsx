@@ -12,16 +12,19 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardCopy,
   Eye,
   FolderGit2,
   GitBranch,
   GitFork,
   Loader2,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   X,
@@ -94,6 +97,7 @@ export function RepoPickerDialog({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
   const [branchSearch, setBranchSearch] = useState("");
+  const [copied, setCopied] = useState(false);
 
   // @ mention state
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
@@ -602,6 +606,58 @@ export function RepoPickerDialog({
                     </button>
                   )}
 
+                  {/* Empty repo warning */}
+                  {selectedRepo && branchesData?.isEmpty && (
+                    <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                      <div>
+                        <p className="font-medium text-amber-600 dark:text-amber-400">
+                          This repository has no commits
+                        </p>
+                        <p className="mt-1 text-muted-foreground">
+                          Create an initial commit before starting:
+                        </p>
+                        <button
+                          className="mt-1.5 flex items-center gap-1.5 rounded bg-muted px-2 py-1 font-mono text-xs transition-colors hover:bg-muted/80"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                'git commit --allow-empty -m "Initial commit"'
+                              );
+                              setCopied(true);
+                              setTimeout(() => setCopied(false), 2000);
+                            } catch {
+                              // Silently fail — clipboard may not be available
+                            }
+                          }}
+                          type="button"
+                        >
+                          <code>
+                            git commit --allow-empty -m &quot;Initial
+                            commit&quot;
+                          </code>
+                          {copied ? (
+                            <Check className="size-3 shrink-0 text-green-500" />
+                          ) : (
+                            <ClipboardCopy className="size-3 shrink-0 text-muted-foreground" />
+                          )}
+                        </button>
+                        <button
+                          className="mt-2 flex items-center gap-1.5 text-amber-600 text-xs hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+                          onClick={() => {
+                            queryClient.invalidateQueries({
+                              queryKey: queryKeys.gitBranches(selectedRepo!),
+                            });
+                          }}
+                          type="button"
+                        >
+                          <RefreshCw className="size-3" />
+                          Recheck
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Advanced: Branch Selection - shown when repo is selected */}
                   {selectedRepo && (
                     <div className="mt-4">
@@ -643,7 +699,7 @@ export function RepoPickerDialog({
                                 <span className="font-medium">
                                   {selectedBranch ||
                                     branchesData?.defaultBranch ||
-                                    "main"}
+                                    "default"}
                                   {!selectedBranch && " (default)"}
                                 </span>
                               </div>
@@ -783,7 +839,11 @@ export function RepoPickerDialog({
                 Cancel
               </Button>
               <Button
-                disabled={!selectedRepo || addRepoMutation.isPending}
+                disabled={
+                  !selectedRepo ||
+                  addRepoMutation.isPending ||
+                  branchesData?.isEmpty
+                }
                 onClick={handleNext}
               >
                 {addRepoMutation.isPending && (

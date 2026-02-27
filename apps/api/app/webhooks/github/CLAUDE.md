@@ -404,9 +404,9 @@ log.info("[handleWorkflowRun] Processing workflow", {
 - Inspect zip-parser logs for extraction issues
 
 **Transaction errors:**
-- The `withDb.tx()` implementation does NOT store transactions in AsyncLocalStorage
-- Nested `withDb()` calls inside a transaction open separate connections
-- Avoid calling service methods that use `withDb()` from within transaction callbacks
+- The `withDb.tx()` implementation stores transactions in AsyncLocalStorage
+- Nested `withDb()` calls inside a transaction automatically participate in the parent transaction
+- Service methods that use `withDb()` can safely be called from within transaction callbacks
 
 ## Related Documentation
 

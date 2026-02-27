@@ -14,7 +14,10 @@
  */
 import type { WorkflowRunCompletedEvent } from "@octokit/webhooks-types";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import {
+  EvalStatus,
+  EvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { type Mock, vi } from "vitest";
 import { buildZipWithEntries } from "../fixtures/zip-helpers";
@@ -287,7 +290,7 @@ describe("handleWorkflowSuccess", () => {
         {
           type: "case_score",
           case_id: "test-judge",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "test_score",
@@ -738,8 +741,7 @@ Plan the work carefully.
         prompts: expect.arrayContaining([
           expect.objectContaining({ name: "my-planner" }),
         ]),
-      }),
-      tx
+      })
     );
   });
 
@@ -799,11 +801,7 @@ Plan the work carefully.
     const tx = asTx(mockDb);
     await handleWorkflowSuccess(tx, ctx);
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      "org-no-prompts",
-      null,
-      tx
-    );
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("org-no-prompts", null);
   });
 });
 
@@ -1205,8 +1203,7 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-exec-prompts",
-      promptsSnapshot,
-      mockTx
+      promptsSnapshot
     );
   });
 
@@ -1265,8 +1262,7 @@ describe("handleExecutionSuccess", () => {
 
     expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
       "org-null-prompts",
-      null,
-      mockTx
+      null
     );
   });
 });
@@ -1386,7 +1382,7 @@ describe("handleWorkflowSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "quality",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "quality_score",
@@ -1482,7 +1478,7 @@ describe("handleWorkflowSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "completeness",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "completeness_score",
@@ -1592,7 +1588,7 @@ describe("handleExecutionSuccess fan-out", () => {
         {
           type: "case_score",
           case_id: "correctness",
-          final_status: 3,
+          final_status: EvalStatus.Passed,
           metrics: [
             {
               metric_name: "correctness_score",
@@ -1829,11 +1825,24 @@ describe("processWorkflowCompletion", () => {
       },
     });
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      "test-org-id",
-      null,
-      mockDb
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith("test-org-id", null);
+
+    // T-2.2: Validates call ordering and side effects only.
+    // ALS propagation correctness is validated by withdb-transaction.test.ts (T-2.1).
+    // Note: the artifactVersionService.createVersion mock (at top of file) bypasses
+    // withDb.tx() entirely, so ALS context cannot be verified at this layer.
+
+    // Assert call ordering: createVersion must be called before gitHubActionRun.update
+    // so the version record exists before the run status is finalized.
+    expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+    expect(mockDb.gitHubActionRun.update).toHaveBeenCalled();
+    expect(mockCreateVersion.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.gitHubActionRun.update.mock.invocationCallOrder[0]
     );
+
+    // Assert withDb.tx() envelope called exactly once — catches regressions where
+    // the transaction wrapper in processWorkflowCompletion is accidentally removed.
+    expect(getMockWithDb().tx).toHaveBeenCalledTimes(1);
 
     const responseData = await response.json();
     expect(responseData).toEqual({ result: "processed", ok: true });

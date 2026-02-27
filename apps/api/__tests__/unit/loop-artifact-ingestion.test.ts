@@ -7,7 +7,7 @@
  * - ingestExecutionArtifacts: fanOutJudgeScores is called when codeJudgesReport is present
  * - ingestExecutionArtifacts: reportData dual-write is preserved in the upsert
  */
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import { EvalStatus, type JudgesReport } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -68,7 +68,7 @@ const JUDGES_REPORT: JudgesReport = {
     {
       type: "case_score",
       case_id: "clarity-judge",
-      final_status: 3,
+      final_status: EvalStatus.Passed,
       metrics: [
         {
           metric_name: "clarity",
@@ -88,7 +88,7 @@ const CODE_JUDGES_REPORT: JudgesReport = {
     {
       type: "case_score",
       case_id: "security-judge",
-      final_status: 3,
+      final_status: EvalStatus.Passed,
       metrics: [
         {
           metric_name: "security",

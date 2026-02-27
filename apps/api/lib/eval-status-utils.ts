@@ -1,12 +1,12 @@
 import { EvalStatus } from "@repo/api/src/types/evaluation";
 
 /**
- * Convert a Prisma JudgeScore.finalStatus (Int) to the API EvalStatus type.
- * Valid values: 1 (Failed), 2 (NeedsImprovement), 3 (Passed).
+ * Validate/normalize a persisted JudgeScore.finalStatus to API EvalStatus.
+ * Valid values: FAILED, NEEDS_IMPROVEMENT, PASSED.
  * Throws on unexpected values to surface data corruption.
  */
-export function toEvalStatus(n: number): EvalStatus {
-  switch (n) {
+export function toEvalStatus(status: string): EvalStatus {
+  switch (status) {
     case EvalStatus.Failed:
       return EvalStatus.Failed;
     case EvalStatus.NeedsImprovement:
@@ -15,7 +15,7 @@ export function toEvalStatus(n: number): EvalStatus {
       return EvalStatus.Passed;
     default:
       throw new Error(
-        `Invalid EvalStatus: expected 1|2|3 (Failed|NeedsImprovement|Passed), got ${n}`
+        `Invalid EvalStatus: expected FAILED|NEEDS_IMPROVEMENT|PASSED, got ${status}`
       );
   }
 }

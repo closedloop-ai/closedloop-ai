@@ -89,26 +89,8 @@ withDb.tx = async <T>(
   }
 
   const db = await getDatabase();
-  return db.$transaction(fn);
+  return db.$transaction((tx) => als.run({ tx }, fn, tx));
 };
-
-/**
- * Execute a database operation within an implicit transaction.
- *
- * Wraps operations in a Prisma implicit transaction, ensuring all operations
- * either succeed together or roll back on failure.
- *
- * This is designed to be used by tests.
- *
- * @param fn - Callback receiving a transaction client. Must be async.
- * @returns The result of the callback function.
- */
-export async function withImplicitTransaction<T>(
-  fn: () => Promise<T>
-): Promise<T> {
-  const db = await getDatabase();
-  return db.$transaction((tx) => als.run({ tx }, fn));
-}
 
 // -----------------------------------------------------------------------------
 // Internal implementation

@@ -1,3 +1,6 @@
+-- CreateEnum
+CREATE TYPE "EvalStatus" AS ENUM ('FAILED', 'NEEDS_IMPROVEMENT', 'PASSED');
+
 -- CreateTable
 CREATE TABLE "judge_scores" (
     "id" UUID NOT NULL,
@@ -7,7 +10,7 @@ CREATE TABLE "judge_scores" (
     "threshold" DOUBLE PRECISION NOT NULL,
     "score" DOUBLE PRECISION NOT NULL,
     "justification" TEXT NOT NULL,
-    "final_status" INTEGER NOT NULL,
+    "final_status" "EvalStatus" NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "judge_scores_pkey" PRIMARY KEY ("id")

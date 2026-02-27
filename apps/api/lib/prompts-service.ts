@@ -20,17 +20,9 @@ const PROMPT_UPSERT_RETRY_DELAY_MS = 500;
  *
  * ## Transaction usage
  *
- * **With an outer `tx` (preferred when one is available):**
- * Pass the caller's transaction so prompt inserts participate in the same
- * atomic unit as the surrounding writes. If the outer transaction rolls back,
- * prompt inserts roll back too.
- *
- *   await upsertFromSnapshot(orgId, snapshot, tx);
- *
- * **Standalone (no outer `tx`):**
- * Omit `tx` and this function will open its own transaction.
- *
- *   await upsertFromSnapshot(orgId, snapshot);
+ * This function always uses `withDb.tx(...)`. When called inside an existing
+ * transaction, it automatically joins that ambient transaction via
+ * AsyncLocalStorage; otherwise it opens a new transaction.
  *
  * ## Race-safety
  *
@@ -39,14 +31,10 @@ const PROMPT_UPSERT_RETRY_DELAY_MS = 500;
  * - Version collision: write with createMany(skipDuplicates) and retry up to 3
  *   times in-process, avoiding unique-violation aborts in outer transactions.
  *
- * NOTE: `withDb.tx` does not currently propagate ambient transactions via
- * AsyncLocalStorage when starting from `withDb.tx` itself. Pass `tx`
- * explicitly whenever this work must run in the caller's transaction.
  */
 export async function upsertFromSnapshot(
   organizationId: string,
-  snapshot: PromptsSnapshot | null,
-  tx?: TransactionClient
+  snapshot: PromptsSnapshot | null
 ): Promise<void> {
   if (!snapshot || snapshot.prompts.length === 0) {
     return;
@@ -57,11 +45,6 @@ export async function upsertFromSnapshot(
       await upsertPromptVersion(client, organizationId, prompt);
     }
   };
-
-  if (tx) {
-    await run(tx);
-    return;
-  }
 
   await withDb.tx(run);
 }

@@ -40,7 +40,7 @@ SELECT
   (metric_match->>'threshold')::float,
   (metric_match->>'score')::float,
   COALESCE(metric_match->>'justification', ''),
-  (s->>'final_status')::int,
+  (s->>'final_status')::"EvalStatus",
   ae.created_at
 FROM artifact_evaluations ae
 CROSS JOIN LATERAL jsonb_array_elements(ae.report_data -> 'stats') AS s

@@ -39,6 +39,12 @@ vi.mock("@repo/database", () => {
       MERGED: "MERGED",
       CLOSED: "CLOSED",
     },
+    ChecksStatus: {
+      UNKNOWN: "UNKNOWN",
+      PENDING: "PENDING",
+      PASSING: "PASSING",
+      FAILING: "FAILING",
+    },
     withDb: mockWithDb,
   };
 });
@@ -258,7 +264,7 @@ describe("handlePullRequest", () => {
         select: { id: true },
       });
 
-      // Verify PR lookup (includes artifact via relation)
+      // Verify PR lookup (includes artifact via relation and checksStatus for CI reset)
       expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith({
         where: {
           repositoryId_number: {
@@ -270,6 +276,7 @@ describe("handlePullRequest", () => {
           id: true,
           workstreamId: true,
           artifactId: true,
+          checksStatus: true,
           artifact: { select: { slug: true } },
         },
       });
@@ -410,7 +417,7 @@ describe("handlePullRequest", () => {
   });
 
   describe("synchronize action", () => {
-    it("updates headSha when PR is synchronized with new commits", async () => {
+    it("updates headSha and resets checksStatus to PENDING when PR is synchronized with new commits", async () => {
       const repository = createRepository(456);
       const pullRequest = createPullRequest({
         number: 45,
@@ -435,9 +442,13 @@ describe("handlePullRequest", () => {
       mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
         id: "pr-uuid-sync",
         workstreamId: "ws-uuid-sync",
+        checksStatus: "UNKNOWN",
+        artifactId: null,
+        artifact: null,
       });
 
       mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
 
       await handlePullRequest(event);
 
@@ -445,7 +456,75 @@ describe("handlePullRequest", () => {
         where: { id: "pr-uuid-sync" },
         data: {
           headSha: "new-sha-xyz",
+          checksStatus: "PENDING",
         },
+      });
+    });
+
+    it("creates GITHUB_CI_STATUS_CHANGED event with previousChecksStatus when status was PASSING", async () => {
+      const repository = createRepository(456);
+      const pullRequest = createPullRequest({
+        number: 45,
+        title: "Updated PR",
+        head: { sha: "new-sha-xyz" },
+      });
+
+      const event: PullRequestSynchronizeEvent = {
+        action: "synchronize",
+        number: pullRequest.number,
+        before: "old-sha-abc",
+        after: "new-sha-xyz",
+        pull_request: pullRequest,
+        repository,
+        sender: createSender(),
+      } as any;
+
+      mockTx.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-sync",
+      });
+
+      // Simulate a PR that currently has PASSING status
+      mockTx.gitHubPullRequest.findUnique.mockResolvedValue({
+        id: "pr-uuid-sync",
+        workstreamId: "ws-uuid-sync",
+        checksStatus: "PASSING",
+        artifactId: null,
+        artifact: null,
+      });
+
+      mockTx.gitHubPullRequest.update.mockResolvedValue({});
+      mockTx.workstreamEvent.create.mockResolvedValue({});
+
+      await handlePullRequest(event);
+
+      // Verify findUnique select includes checksStatus
+      expect(mockTx.gitHubPullRequest.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({ checksStatus: true }),
+        })
+      );
+
+      // Verify update resets checksStatus to PENDING
+      expect(mockTx.gitHubPullRequest.update).toHaveBeenCalledWith({
+        where: { id: "pr-uuid-sync" },
+        data: expect.objectContaining({
+          headSha: "new-sha-xyz",
+          checksStatus: "PENDING",
+        }),
+      });
+
+      // Verify GITHUB_CI_STATUS_CHANGED workstream event is created with previousChecksStatus
+      expect(mockTx.workstreamEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          workstreamId: "ws-uuid-sync",
+          type: "GITHUB_CI_STATUS_CHANGED",
+          actorType: "system",
+          data: expect.objectContaining({
+            checksStatus: "PENDING",
+            previousChecksStatus: "PASSING",
+            headSha: "new-sha-xyz",
+          }),
+        }),
       });
     });
   });

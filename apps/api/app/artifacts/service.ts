@@ -7,6 +7,7 @@ import {
   type ArtifactWithWorkstream,
   BATCH_META_MAX_SLUGS,
   type BatchCreateArtifactInput,
+  type ChecksStatus,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
@@ -56,10 +57,167 @@ import {
   artifactIncludeWithUser,
   generateSlug,
   parseTriggerData,
+  pullRequestSelect,
 } from "./artifact-utils";
 import { artifactVersionService } from "./artifact-version-service";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
 import { PRD_TEMPLATE } from "./template-seeds";
+
+/**
+ * Validate that a user belongs to the given organization.
+ * Throws if the user does not exist within the org.
+ */
+async function validateUserInOrg(
+  userId: string,
+  organizationId: string
+): Promise<void> {
+  const user = await withDb((db) =>
+    db.user.findFirst({
+      where: { id: userId, organizationId },
+      select: { id: true },
+    })
+  );
+  if (!user) {
+    throw new Error("Invalid user ID: user not found in this organization");
+  }
+}
+
+/**
+ * Look up the user's name and email for git commit attribution.
+ * Used to set committer identity on bot commits so Vercel can
+ * match the author to a team member and trigger preview deploys.
+ */
+export async function getCommitterInfo(
+  userId: string
+): Promise<{ committerName: string; committerEmail: string } | undefined> {
+  const user = await withDb((db) =>
+    db.user.findUnique({
+      where: { id: userId },
+      select: { email: true, firstName: true, lastName: true },
+    })
+  );
+  if (!user?.email) {
+    return undefined;
+  }
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return {
+    committerName: name || user.email,
+    committerEmail: user.email,
+  };
+}
+
+/**
+ * Look up the GitHubInstallationRepository record ID for a given repo full name.
+ * Queries the repository table directly with a nested installation filter for
+ * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
+ */
+async function findInstallationRepoId(
+  organizationId: string,
+  repoFullName: string
+): Promise<string | null> {
+  const repo = await withDb((db) =>
+    db.gitHubInstallationRepository.findFirst({
+      where: {
+        fullName: repoFullName,
+        installation: {
+          organizationId,
+          status: "ACTIVE",
+        },
+      },
+      select: { id: true },
+    })
+  );
+
+  return repo?.id ?? null;
+}
+
+/**
+ * Create a single artifact record within an existing transaction.
+ * Does NOT call withDb.tx internally - takes the tx parameter directly.
+ * Used by both create() and batchCreate() to avoid code duplication.
+ */
+async function createArtifactRecord(
+  tx: TransactionClient,
+  organizationId: string,
+  userId: string,
+  input: CreateArtifactInput
+): Promise<Artifact | null> {
+  const isTemplate = input.type === ArtifactType.Template;
+
+  // Resolve projectId from workstream if needed (non-templates only)
+  if (!(isTemplate || input.projectId)) {
+    const workstream = await tx.workstream.findUnique({
+      where: { id: input.workstreamId, organizationId },
+    });
+    if (!workstream) {
+      return null;
+    }
+    input.projectId = workstream.projectId;
+  }
+
+  const resolvedAssigneeId = input.assigneeId ?? userId;
+  await validateUserInOrg(resolvedAssigneeId, organizationId);
+
+  if (input.approverId) {
+    await validateUserInOrg(input.approverId, organizationId);
+  }
+
+  const slug = generateSlug();
+  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
+    input;
+
+  const artifact = await tx.artifact.create({
+    data: {
+      ...artifactInput,
+      organizationId,
+      slug,
+      latestVersion: 1,
+      createdById: userId,
+      assigneeId: resolvedAssigneeId,
+    },
+    include: artifactIncludeWithUser,
+  });
+
+  // Create initial artifact version
+  await tx.artifactVersion.create({
+    data: {
+      artifactId: artifact.id,
+      version: 1,
+      content,
+      createdById: userId,
+    },
+  });
+
+  if (sourceId && sourceType) {
+    await tx.entityLink.create({
+      data: {
+        organizationId,
+        sourceId,
+        sourceType,
+        sourceVersion,
+        targetId: artifact.id,
+        targetType: "ARTIFACT",
+        targetVersion: artifact.latestVersion,
+        linkType: LinkType.PRODUCES,
+      },
+    });
+  }
+
+  return artifact;
+}
+
+// Result types for service operations
+export type RegenerateResult =
+  | { success: true; artifact: Artifact }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type ExecuteResult =
+  | { success: true; correlationId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
+
+export type RequestChangesResult =
+  | { success: true; message: string; artifactId: string }
+  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
 
 /**
  * Artifacts service - handles database operations for artifact management
@@ -160,15 +318,7 @@ export const artifactsService = {
             db.gitHubPullRequest.findMany({
               where: { workstreamId: { in: uniqueWorkstreamIds } },
               select: {
-                id: true,
-                number: true,
-                title: true,
-                htmlUrl: true,
-                state: true,
-                headBranch: true,
-                baseBranch: true,
-                createdAt: true,
-                reviewDecision: true,
+                ...pullRequestSelect,
                 workstreamId: true,
               },
               orderBy: { createdAt: "desc" },
@@ -333,17 +483,7 @@ export const artifactsService = {
       db.gitHubPullRequest.findFirst({
         where: { workstreamId: artifact.workstreamId as string },
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          number: true,
-          title: true,
-          htmlUrl: true,
-          state: true,
-          headBranch: true,
-          baseBranch: true,
-          createdAt: true,
-          reviewDecision: true,
-        },
+        select: pullRequestSelect,
       })
     );
 
@@ -2561,160 +2701,6 @@ Please try again or contact support if the issue persists.`
   },
 };
 
-// Result types for service operations
-export type RegenerateResult =
-  | { success: true; artifact: Artifact }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type ExecuteResult =
-  | { success: true; correlationId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-export type RequestChangesResult =
-  | { success: true; message: string; artifactId: string }
-  | { success: false; error: string; status: 400 | 404 | 409 | 500 };
-
-/**
- * Validate that a user belongs to the given organization.
- * Throws if the user does not exist within the org.
- */
-async function validateUserInOrg(
-  userId: string,
-  organizationId: string
-): Promise<void> {
-  const user = await withDb((db) =>
-    db.user.findFirst({
-      where: { id: userId, organizationId },
-      select: { id: true },
-    })
-  );
-  if (!user) {
-    throw new Error("Invalid user ID: user not found in this organization");
-  }
-}
-
-/**
- * Look up the user's name and email for git commit attribution.
- * Used to set committer identity on bot commits so Vercel can
- * match the author to a team member and trigger preview deploys.
- */
-export async function getCommitterInfo(
-  userId: string
-): Promise<{ committerName: string; committerEmail: string } | undefined> {
-  const user = await withDb((db) =>
-    db.user.findUnique({
-      where: { id: userId },
-      select: { email: true, firstName: true, lastName: true },
-    })
-  );
-  if (!user?.email) {
-    return undefined;
-  }
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
-  return {
-    committerName: name || user.email,
-    committerEmail: user.email,
-  };
-}
-
-/**
- * Look up the GitHubInstallationRepository record ID for a given repo full name.
- * Queries the repository table directly with a nested installation filter for
- * organizationId and ACTIVE status. Returns the repository record ID or null if not found.
- */
-async function findInstallationRepoId(
-  organizationId: string,
-  repoFullName: string
-): Promise<string | null> {
-  const repo = await withDb((db) =>
-    db.gitHubInstallationRepository.findFirst({
-      where: {
-        fullName: repoFullName,
-        installation: {
-          organizationId,
-          status: "ACTIVE",
-        },
-      },
-      select: { id: true },
-    })
-  );
-
-  return repo?.id ?? null;
-}
-
-/**
- * Create a single artifact record within an existing transaction.
- */
-async function createArtifactRecord(
-  tx: TransactionClient,
-  organizationId: string,
-  userId: string,
-  input: CreateArtifactInput
-): Promise<Artifact | null> {
-  const isTemplate = input.type === ArtifactType.Template;
-
-  // Resolve projectId from workstream if needed (non-templates only)
-  if (!(isTemplate || input.projectId)) {
-    const workstream = await tx.workstream.findUnique({
-      where: { id: input.workstreamId, organizationId },
-    });
-    if (!workstream) {
-      return null;
-    }
-    input.projectId = workstream.projectId;
-  }
-
-  const resolvedAssigneeId = input.assigneeId ?? userId;
-  await validateUserInOrg(resolvedAssigneeId, organizationId);
-
-  if (input.approverId) {
-    await validateUserInOrg(input.approverId, organizationId);
-  }
-
-  const slug = generateSlug();
-  const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
-    input;
-
-  const artifact = await tx.artifact.create({
-    data: {
-      ...artifactInput,
-      organizationId,
-      slug,
-      latestVersion: 1,
-      createdById: userId,
-      assigneeId: resolvedAssigneeId,
-    },
-    include: artifactIncludeWithUser,
-  });
-
-  // Create initial artifact version
-  await tx.artifactVersion.create({
-    data: {
-      artifactId: artifact.id,
-      version: 1,
-      content,
-      createdById: userId,
-    },
-  });
-
-  if (sourceId && sourceType) {
-    await tx.entityLink.create({
-      data: {
-        organizationId,
-        sourceId,
-        sourceType,
-        sourceVersion,
-        targetId: artifact.id,
-        targetType: "ARTIFACT",
-        targetVersion: artifact.latestVersion,
-        linkType: LinkType.PRODUCES,
-      },
-    });
-  }
-
-  return artifact;
-}
-
 // Type for raw Prisma result before transformation.
 // Must stay in sync with artifactIncludeWithContext / artifactIncludeWithSnippet
 // in artifact-utils.ts. versions is optional because findAll uses
@@ -2847,6 +2833,7 @@ function toPullRequestInfo(pr: {
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  checksStatus: string;
   reviewDecision: string | null;
 }): PullRequestInfo | null {
   if (!VALID_PR_STATES.has(pr.state)) {
@@ -2871,6 +2858,7 @@ function toPullRequestInfo(pr: {
     headBranch: pr.headBranch,
     baseBranch: pr.baseBranch,
     createdAt: pr.createdAt,
+    checksStatus: pr.checksStatus as ChecksStatus,
     reviewDecision: pr.reviewDecision as ReviewDecision | null,
   };
 }

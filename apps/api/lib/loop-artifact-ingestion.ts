@@ -339,11 +339,7 @@ export async function ingestExecutionArtifacts(
     executionResult.base_branch || executionResult.base_ref || "main";
 
   await withDb.tx(async (tx) => {
-    await upsertFromSnapshot(
-      loop.organizationId,
-      artifacts.promptsSnapshot,
-      tx
-    );
+    await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
 
     const artifact = await tx.artifact.findUnique({
       where: { id: loop.artifactId!, organizationId: loop.organizationId },
