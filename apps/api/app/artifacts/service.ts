@@ -25,6 +25,7 @@ import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import {
   LinkType,
+  type Prisma,
   ArtifactType as PrismaArtifactType,
   EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
@@ -1603,14 +1604,7 @@ Please try again or contact support if the issue persists.`
         })
       );
 
-      const data: JudgeFeedbackItem[] = judgeScores.map((js) => ({
-        caseId: js.caseId,
-        score: js.score,
-        threshold: js.threshold,
-        justification: js.justification,
-        finalStatus: toEvalStatus(js.finalStatus),
-        promptName: js.prompt?.name ?? null,
-      }));
+      const data: JudgeFeedbackItem[] = judgeScores.map(toJudgeFeedbackItem);
 
       return { status: "success", data };
     } catch (error) {
@@ -2823,6 +2817,21 @@ Configure the following environment variables to enable plan generation:
 const DEFAULT_BRANCH = "main";
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
+
+type JudgeScoreWithPrompt = Prisma.JudgeScoreGetPayload<{
+  include: { prompt: { select: { name: true } } };
+}>;
+
+function toJudgeFeedbackItem(js: JudgeScoreWithPrompt): JudgeFeedbackItem {
+  return {
+    caseId: js.caseId,
+    score: js.score,
+    threshold: js.threshold,
+    justification: js.justification,
+    finalStatus: toEvalStatus(js.finalStatus),
+    promptName: js.prompt?.name ?? null,
+  };
+}
 
 /**
  * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.
