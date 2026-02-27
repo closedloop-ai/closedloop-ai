@@ -183,8 +183,8 @@ function requireInternalAllowlistForEnvironment(): void {
     !isLocalOauthEnvironment() &&
     getInternalEndpointAllowlist().length === 0
   ) {
-    console.warn(
-      "MCP_INTERNAL_ALLOWED_IPS is empty — internal OAuth endpoints will reject requests until an allowlist is configured"
+    console.error(
+      "[SECURITY WARNING] MCP_INTERNAL_ALLOWED_IPS is empty — internal OAuth endpoints will reject requests until an allowlist is configured"
     );
   }
 }

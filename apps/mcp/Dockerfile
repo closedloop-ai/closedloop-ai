@@ -60,9 +60,6 @@ COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
 # Install production-only dependencies
 RUN pnpm install --frozen-lockfile --filter mcp... --prod --ignore-scripts
 
-# Copy compiled JavaScript from builder
-COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/
-
 # Copy MCP source so runtime tsx can resolve workspace deep imports consistently.
 COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 
