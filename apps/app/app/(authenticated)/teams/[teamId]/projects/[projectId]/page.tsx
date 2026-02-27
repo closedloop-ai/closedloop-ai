@@ -338,7 +338,7 @@ export default function ProjectDetailPage() {
             </UnderlineTabsList>
             <div className="p-6">
               <TabsContent className="mt-0" value="documents">
-                <div className="mb-6">
+                <div className="mb-6 flex flex-col gap-2">
                   <EditableProjectTitle
                     initialTitle={project.name}
                     projectId={project.id}
@@ -357,6 +357,7 @@ export default function ProjectDetailPage() {
                     }}
                     type="single"
                     value={viewMode}
+                    variant="outline"
                   >
                     <ToggleGroupItem value="type">Type</ToggleGroupItem>
                     <ToggleGroupItem value="threaded">Threaded</ToggleGroupItem>
