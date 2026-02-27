@@ -437,9 +437,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       return callback(db);
     });
 
-    // withDb.tx used for the main transaction block
-    let capturedTx: unknown = null;
-
     mockWithDb.tx = vi
       .fn()
       .mockImplementation((callback: (tx: unknown) => unknown) => {
@@ -465,7 +462,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
             create: vi.fn().mockResolvedValue({ id: "event-exec-1" }),
           },
         };
-        capturedTx = tx;
         return callback(tx);
       });
 
@@ -493,10 +489,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       ingestExecutionArtifacts(loop, artifacts)
     ).resolves.toBeUndefined();
 
-    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(
-      ORG_ID,
-      null,
-      capturedTx
-    );
+    expect(mockUpsertFromSnapshot).toHaveBeenCalledWith(ORG_ID, null);
   });
 });
