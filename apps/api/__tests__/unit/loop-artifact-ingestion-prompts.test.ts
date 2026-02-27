@@ -315,7 +315,7 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     vi.resetAllMocks();
   });
 
-  it("calls upsertFromSnapshot inside withDb.tx before code judges report write", async () => {
+  it("calls upsertFromSnapshot before code judges report write", async () => {
     const loop = makeLoop({
       command: "EXECUTE",
       repo: { fullName: "org/repo", branch: "main" },
@@ -411,13 +411,10 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
     await ingestExecutionArtifacts(loop, artifacts);
 
     expect(mockFanOutJudgeScores).toHaveBeenCalledTimes(1);
-    const txCallbackIdx = callOrder.indexOf("withDb.tx.callback");
     const upsertIdx = callOrder.indexOf("upsertFromSnapshot");
     const evalIdx = callOrder.indexOf("artifactEvaluation.upsert");
-    expect(txCallbackIdx).toBeGreaterThanOrEqual(0);
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(evalIdx).toBeGreaterThanOrEqual(0);
-    expect(txCallbackIdx).toBeLessThan(upsertIdx);
     expect(upsertIdx).toBeLessThan(evalIdx);
   });
 
