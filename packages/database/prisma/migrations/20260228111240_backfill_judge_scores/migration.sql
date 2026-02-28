@@ -37,8 +37,8 @@ SELECT
     LIMIT 1
   ),
   s->>'case_id',
-  (metric_match->>'threshold')::float,
-  (metric_match->>'score')::float,
+  COALESCE((metric_match->>'threshold')::float, 0),
+  COALESCE((metric_match->>'score')::float, 0),
   COALESCE(metric_match->>'justification', ''),
   (s->>'final_status')::"EvalStatus",
   ae.created_at
