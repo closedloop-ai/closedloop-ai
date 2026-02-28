@@ -43,7 +43,12 @@ SELECT
   (s->>'final_status')::"EvalStatus",
   ae.created_at
 FROM artifact_evaluations ae
-CROSS JOIN LATERAL jsonb_array_elements(ae.report_data -> 'stats') AS s
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE
+    WHEN jsonb_typeof(ae.report_data -> 'stats') = 'array' THEN ae.report_data -> 'stats'
+    ELSE '[]'::jsonb
+  END
+) AS s
 CROSS JOIN LATERAL (
   -- Find the one metric whose normalized name matches the normalized case_id
   SELECT m AS metric_match
@@ -59,7 +64,6 @@ CROSS JOIN LATERAL (
 ) matched
 WHERE ae.report_data IS NOT NULL
   AND jsonb_typeof(ae.report_data) = 'object'
-  AND jsonb_typeof(ae.report_data -> 'stats') = 'array'
   AND s->>'case_id' IS NOT NULL
   AND s->>'final_status' IS NOT NULL
 ON CONFLICT (evaluation_id, case_id) DO NOTHING;
