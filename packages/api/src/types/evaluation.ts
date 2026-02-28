@@ -82,7 +82,7 @@ export type JudgesReport = {
  * - score: The judge score value
  * - threshold: Pass/fail threshold
  * - justification: Explanation for the score
- * - finalStatus: Final evaluation status (1=Failed, 2=NeedsImprovement, 3=Passed)
+ * - finalStatus: Final evaluation status (FAILED | NEEDS_IMPROVEMENT | PASSED)
  * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
  */
 export type JudgeFeedbackItem = {
