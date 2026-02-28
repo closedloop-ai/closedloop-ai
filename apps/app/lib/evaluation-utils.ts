@@ -33,7 +33,7 @@ export function calculateAcceptanceRate(
  * Sort judge feedback items by score in ascending order (worst/lowest first).
  * This brings attention to items that need improvement.
  */
-export function sortMetricsByScore(
+export function sortJudgeFeedbackItemsByScore(
   items: JudgeFeedbackItem[]
 ): JudgeFeedbackItem[] {
   return [...items].sort((a, b) => a.score - b.score);

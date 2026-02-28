@@ -11,7 +11,7 @@ import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { useState } from "react";
 import {
   calculateAcceptanceRate,
-  sortMetricsByScore,
+  sortJudgeFeedbackItemsByScore,
 } from "@/lib/evaluation-utils";
 import { JudgeResultCard } from "./judge-result-card";
 
@@ -68,7 +68,7 @@ export function EvaluationSection({
             </div>
 
             <div className="space-y-2">
-              {sortMetricsByScore(judgeItems).map((item) => (
+              {sortJudgeFeedbackItemsByScore(judgeItems).map((item) => (
                 <JudgeResultCard item={item} key={item.caseId} />
               ))}
             </div>

@@ -13,7 +13,7 @@ import {
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
-  sortMetricsByScore,
+  sortJudgeFeedbackItemsByScore,
 } from "@/lib/evaluation-utils";
 import { PlanMetadataPanel } from "../plan-metadata-panel";
 
@@ -172,7 +172,7 @@ const defaultProps = {
   targetBranch: "",
 };
 
-describe("sortMetricsByScore", () => {
+describe("sortJudgeFeedbackItemsByScore", () => {
   test("sorts items by score in ascending order (worst first)", () => {
     const items = [
       createMockJudgeFeedbackItem({ caseId: "High Score", score: 0.95 }),
@@ -180,7 +180,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "Medium Score", score: 0.7 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted[0].caseId).toBe("Low Score");
     expect(sorted[0].score).toBe(0.3);
@@ -197,7 +197,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "Third", score: 0.8 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(3);
     // All have same score, order should be preserved
@@ -209,14 +209,14 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "Only Judge", score: 0.5 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(1);
     expect(sorted[0].caseId).toBe("Only Judge");
   });
 
   test("handles empty array", () => {
-    const sorted = sortMetricsByScore([]);
+    const sorted = sortJudgeFeedbackItemsByScore([]);
     expect(sorted).toHaveLength(0);
   });
 });

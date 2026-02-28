@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
-  sortMetricsByScore,
+  sortJudgeFeedbackItemsByScore,
 } from "../evaluation-utils";
 
 describe("calculateAcceptanceRate", () => {
@@ -133,7 +133,7 @@ describe("calculateAcceptanceRate", () => {
   });
 });
 
-describe("sortMetricsByScore", () => {
+describe("sortJudgeFeedbackItemsByScore", () => {
   test("sorts items by score in ascending order", () => {
     const items = [
       createMockJudgeFeedbackItem({ caseId: "high", score: 0.9 }),
@@ -141,7 +141,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "medium", score: 0.7 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(3);
     expect(sorted[0].caseId).toBe("low");
@@ -160,19 +160,19 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ score: 0.8 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted.map((m) => m.score)).toEqual([0.1, 0.5, 0.8, 1.0]);
   });
 
   test("handles empty array", () => {
-    const sorted = sortMetricsByScore([]);
+    const sorted = sortJudgeFeedbackItemsByScore([]);
     expect(sorted).toEqual([]);
   });
 
   test("handles single item", () => {
     const items = [createMockJudgeFeedbackItem({ score: 0.75 })];
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(1);
     expect(sorted[0].score).toBe(0.75);
@@ -185,7 +185,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "third", score: 0.8 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(3);
     expect(sorted.every((m) => m.score === 0.8)).toBe(true);
@@ -199,7 +199,7 @@ describe("sortMetricsByScore", () => {
     ];
 
     const originalOrder = items.map((m) => m.caseId);
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     // Original array should not be modified
     expect(items.map((m) => m.caseId)).toEqual(originalOrder);
@@ -215,7 +215,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ score: 0.0 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted.map((m) => m.score)).toEqual([-0.2, 0.0, 0.5]);
   });
@@ -227,7 +227,7 @@ describe("sortMetricsByScore", () => {
       createMockJudgeFeedbackItem({ caseId: "okay", score: 0.6 }),
     ];
 
-    const sorted = sortMetricsByScore(items);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     // Worst (lowest) should be first
     expect(sorted[0].caseId).toBe("worst");
