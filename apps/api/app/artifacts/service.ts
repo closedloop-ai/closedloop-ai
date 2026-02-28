@@ -1739,7 +1739,12 @@ Please try again or contact support if the issue persists.`
 
       const judgeScores = await withDb((db) =>
         db.judgeScore.findMany({
-          where: { evaluationId: evaluation.id },
+          where: {
+            evaluationId: evaluation.id,
+            evaluation: {
+              artifact: { organizationId },
+            },
+          },
           include: { prompt: { select: { name: true } } },
         })
       );
