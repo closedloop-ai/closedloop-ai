@@ -66,6 +66,7 @@ WHERE ae.report_data IS NOT NULL
   AND jsonb_typeof(ae.report_data) = 'object'
   AND s->>'case_id' IS NOT NULL
   AND s->>'final_status' IS NOT NULL
+  AND s->>'final_status' = ANY (enum_range(NULL::"EvalStatus")::text[])
 ON CONFLICT (evaluation_id, case_id) DO NOTHING;
 
 -- VERIFICATION QUERY (run after migration to confirm backfill completeness):
