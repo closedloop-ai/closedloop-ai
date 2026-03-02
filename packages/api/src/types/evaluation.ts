@@ -75,7 +75,8 @@ export type JudgesReport = {
 };
 
 /**
- * Option B canonical response item derived from a normalized JudgeScore row.
+ * Single judge's feedback item in API responses.
+ * Normalized from JudgeScore rows for use in judges feedback endpoints.
  *
  * Attributes:
  * - caseId: Judge identifier (maps to JudgeScore.caseId)
