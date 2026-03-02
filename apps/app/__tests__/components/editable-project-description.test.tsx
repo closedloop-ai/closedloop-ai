@@ -19,7 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the hooks - create mocks inside factory functions to avoid hoisting issues
-const mockMutate = vi.fn();
+const mockMutateAsync = vi.fn();
 let mockUpdateProjectInstance: UseMutationResult<
   ProjectWithDetails,
   Error,
@@ -30,14 +30,6 @@ vi.mock("@/hooks/queries/use-projects", () => ({
   useUpdateProject: vi.fn(),
 }));
 
-// Mock toast
-vi.mock("@repo/design-system/components/ui/sonner", () => ({
-  toast: {
-    error: vi.fn(),
-  },
-}));
-
-import { toast } from "@repo/design-system/components/ui/sonner";
 // Import after mocks
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { useUpdateProject } from "@/hooks/queries/use-projects";
@@ -48,10 +40,12 @@ describe("EditableProjectDescription", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    mockMutateAsync.mockResolvedValue({} as ProjectWithDetails);
+
     // Setup default mock return value
     mockUpdateProjectInstance = {
-      mutate: mockMutate,
-      mutateAsync: vi.fn(),
+      mutate: vi.fn(),
+      mutateAsync: mockMutateAsync,
       isPending: false,
       isIdle: true,
       isError: false,
@@ -138,13 +132,10 @@ describe("EditableProjectDescription", () => {
       fireEvent.blur(textarea);
 
       await waitFor(() => {
-        expect(mockMutate).toHaveBeenCalledWith(
-          {
-            id: projectId,
-            description: "Updated description",
-          },
-          expect.any(Object)
-        );
+        expect(mockMutateAsync).toHaveBeenCalledWith({
+          id: projectId,
+          description: "Updated description",
+        });
       });
     });
 
@@ -162,13 +153,10 @@ describe("EditableProjectDescription", () => {
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
 
       await waitFor(() => {
-        expect(mockMutate).toHaveBeenCalledWith(
-          {
-            id: projectId,
-            description: "New description",
-          },
-          expect.any(Object)
-        );
+        expect(mockMutateAsync).toHaveBeenCalledWith({
+          id: projectId,
+          description: "New description",
+        });
       });
     });
 
@@ -185,7 +173,7 @@ describe("EditableProjectDescription", () => {
 
       fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
 
-      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockMutateAsync).not.toHaveBeenCalled();
     });
 
     it("does not save when value unchanged", () => {
@@ -199,7 +187,7 @@ describe("EditableProjectDescription", () => {
       const textarea = within(container).getByRole("textbox");
       fireEvent.blur(textarea);
 
-      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockMutateAsync).not.toHaveBeenCalled();
     });
 
     it("sends undefined for empty descriptions", async () => {
@@ -216,13 +204,10 @@ describe("EditableProjectDescription", () => {
       fireEvent.blur(textarea);
 
       await waitFor(() => {
-        expect(mockMutate).toHaveBeenCalledWith(
-          {
-            id: projectId,
-            description: undefined,
-          },
-          expect.any(Object)
-        );
+        expect(mockMutateAsync).toHaveBeenCalledWith({
+          id: projectId,
+          description: undefined,
+        });
       });
     });
   });
@@ -241,13 +226,13 @@ describe("EditableProjectDescription", () => {
 
       fireEvent.keyDown(textarea, { key: "Escape" });
 
-      expect(mockMutate).not.toHaveBeenCalled();
+      expect(mockMutateAsync).not.toHaveBeenCalled();
       expect(textarea).toHaveValue("Original");
     });
   });
 
-  describe("Optimistic updates", () => {
-    it("immediately updates value on save", async () => {
+  describe("Save success", () => {
+    it("preserves input value after save", async () => {
       const { container } = render(
         <EditableProjectDescription
           initialDescription="Original"
@@ -280,15 +265,13 @@ describe("EditableProjectDescription", () => {
       fireEvent.blur(textarea);
 
       await waitFor(() => {
-        const mutateCall = mockMutate.mock.calls[0];
-        const options = mutateCall[1];
-        options.onSuccess();
+        expect(onDescriptionChange).toHaveBeenCalledWith("Updated");
       });
-
-      expect(onDescriptionChange).toHaveBeenCalledWith("Updated");
     });
 
-    it("reverts to original value on error", async () => {
+    it("preserves user input on failure", async () => {
+      mockMutateAsync.mockRejectedValueOnce(new Error("Network error"));
+
       const { container } = render(
         <EditableProjectDescription
           initialDescription="Original"
@@ -301,22 +284,17 @@ describe("EditableProjectDescription", () => {
       fireEvent.blur(textarea);
 
       await waitFor(() => {
-        const mutateCall = mockMutate.mock.calls[0];
-        const options = mutateCall[1];
-        options.onError();
+        expect(mockMutateAsync).toHaveBeenCalled();
       });
-
-      expect(textarea).toHaveValue("Original");
-      expect(toast.error).toHaveBeenCalledWith(
-        "Failed to update project description. Please try again."
-      );
+      // User's input is preserved, not reverted
+      expect(textarea).toHaveValue("Updated");
     });
   });
 
   describe("Disabled state", () => {
-    it("disables textarea when mutation is pending", () => {
-      mockUpdateProjectInstance.isPending = true;
-      vi.mocked(useUpdateProject).mockReturnValue(mockUpdateProjectInstance);
+    it("disables textarea when save is pending", async () => {
+      // Make mutateAsync hang so isPending stays true
+      mockMutateAsync.mockReturnValue(new Promise(() => {}));
 
       const { container } = render(
         <EditableProjectDescription
@@ -326,7 +304,12 @@ describe("EditableProjectDescription", () => {
       );
 
       const textarea = within(container).getByRole("textbox");
-      expect(textarea).toBeDisabled();
+      fireEvent.change(textarea, { target: { value: "Changed" } });
+      fireEvent.blur(textarea);
+
+      await waitFor(() => {
+        expect(textarea).toBeDisabled();
+      });
     });
   });
 

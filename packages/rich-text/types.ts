@@ -21,4 +21,10 @@ export type RichTextEditorProps = {
    * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
    */
   scrollMode?: "inner" | "outer";
+  /**
+   * Controls toolbar visibility.
+   * "always" (default) shows the toolbar whenever the editor is not read-only.
+   * "focus" hides the toolbar until the editor receives focus.
+   */
+  toolbarMode?: "always" | "focus";
 };
