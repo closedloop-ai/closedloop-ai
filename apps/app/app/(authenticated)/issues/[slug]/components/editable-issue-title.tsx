@@ -1,21 +1,21 @@
 "use client";
 
 import { Input } from "@repo/design-system/components/ui/input";
-import { useUpdateProject } from "@/hooks/queries/use-projects";
+import { useUpdateIssue } from "@/hooks/queries/use-issues";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
 
-type EditableProjectTitleProps = {
-  projectId: string;
+type EditableIssueTitleProps = {
+  issueId: string;
   initialTitle: string;
   onTitleChange?: (newTitle: string) => void;
 };
 
-export function EditableProjectTitle({
-  projectId,
+export function EditableIssueTitle({
+  issueId,
   initialTitle,
   onTitleChange,
-}: EditableProjectTitleProps) {
-  const updateProject = useUpdateProject();
+}: EditableIssueTitleProps) {
+  const updateIssue = useUpdateIssue();
 
   const {
     inputValue,
@@ -26,10 +26,9 @@ export function EditableProjectTitle({
     handleCancel,
   } = useInlineEdit<HTMLInputElement>({
     initialValue: initialTitle,
-    onSave: (trimmedValue) =>
-      updateProject.mutateAsync({ id: projectId, name: trimmedValue }),
+    onSave: (title) => updateIssue.mutateAsync({ id: issueId, title }),
     onChange: onTitleChange,
-    emptyErrorMessage: "Project title cannot be empty",
+    emptyErrorMessage: "Feature title cannot be empty",
   });
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -44,12 +43,12 @@ export function EditableProjectTitle({
 
   return (
     <Input
-      className="h-auto rounded-none border-none bg-transparent px-0 py-0 font-semibold text-2xl shadow-none focus-visible:ring-0 md:text-2xl dark:bg-transparent"
+      className="h-auto rounded-none border-none bg-transparent px-0 py-0 font-semibold text-2xl tracking-[-0.6px] shadow-none focus-visible:ring-0 md:text-2xl dark:bg-transparent"
       disabled={isPending}
       onBlur={handleSave}
       onChange={(e) => setInputValue(e.target.value)}
       onKeyDown={handleKeyDown}
-      placeholder="Untitled project"
+      placeholder="Untitled feature"
       ref={inputRef}
       value={inputValue}
     />
