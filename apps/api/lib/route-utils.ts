@@ -20,6 +20,13 @@ export type ParseBodyResult<T> =
   | { body: null; errorResponse: NextResponse<ApiResult<never>> };
 
 /**
+ * Result of parsing a request query params.
+ */
+export type ParseParamsResult<T> =
+  | { params: T; errorResponse: null }
+  | { params: null; errorResponse: NextResponse<ApiResult<never>> };
+
+/**
  * Parse and validate request body against a zod schema.
  * Returns an object with either body (on success) or errorResponse (on failure).
  */
@@ -32,14 +39,11 @@ export async function parseBody<T extends z.ZodType>(
     const parseResult = validator.safeParse(rawBody);
 
     if (!parseResult.success) {
-      const errorMessage = parseResult.error.issues
-        .map((issue) => issue.message)
-        .join(", ");
       return {
         body: null,
-        errorResponse: NextResponse.json(failure(errorMessage), {
-          status: 400,
-        }),
+        errorResponse: badRequestResponse(
+          formatZodErrors(parseResult.error.issues)
+        ),
       };
     }
 
@@ -58,21 +62,21 @@ export async function parseBody<T extends z.ZodType>(
 
 /**
  * Parse and validate query parameters against a zod schema.
- * Returns an object with either body (on success) or errorResponse (on failure).
+ * Returns an object with either params (on success) or errorResponse (on failure).
  *
  * @example
- * const { body, errorResponse } = parseQueryParams(request, myValidator);
+ * const { params, errorResponse } = parseQueryParams(request, myValidator);
  * if (errorResponse) return errorResponse;
- * // body is now typed as z.infer<typeof myValidator>
+ * // params is now typed as z.infer<typeof myValidator>
  *
  * @param request - NextRequest with searchParams
  * @param validator - Zod schema to validate against
- * @returns ParseBodyResult with typed body or error response
+ * @returns ParseParamsResult with typed params or error response
  */
 export function parseQueryParams<T extends z.ZodType>(
   request: { nextUrl: { searchParams: URLSearchParams } },
   validator: T
-): ParseBodyResult<z.infer<T>> {
+): ParseParamsResult<z.infer<T>> {
   const queryParams = Object.fromEntries(
     request.nextUrl.searchParams.entries()
   );
@@ -80,14 +84,14 @@ export function parseQueryParams<T extends z.ZodType>(
 
   if (!parseResult.success) {
     return {
-      body: null,
+      params: null,
       errorResponse: badRequestResponse(
-        `Invalid query parameters: ${parseResult.error.message}`
+        formatZodErrors(parseResult.error.issues)
       ),
     };
   }
 
-  return { body: parseResult.data, errorResponse: null };
+  return { params: parseResult.data, errorResponse: null };
 }
 
 /**
@@ -157,4 +161,17 @@ export function conflictResponse(
   message: string
 ): NextResponse<ApiResult<never>> {
   return NextResponse.json(failure(message), { status: 409 });
+}
+
+/**
+ * Format Zod validation issues into a human-readable error string.
+ * Includes field paths so callers know which fields failed.
+ */
+function formatZodErrors(issues: z.core.$ZodIssue[]): string {
+  return issues
+    .map((issue) => {
+      const path = issue.path.join(".");
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join(", ");
 }
