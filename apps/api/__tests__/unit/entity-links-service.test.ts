@@ -1,3 +1,4 @@
+import type { EntityLink, EntityType } from "@repo/api/src/types/entity-link";
 import { vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
 
@@ -9,6 +10,29 @@ vi.mock("@repo/database", () => ({
 import { entityLinksService } from "@/app/entity-links/service";
 
 const ORG_ID = "org-1";
+
+function makeLink(
+  id: string,
+  sourceId: string,
+  sourceType: EntityType,
+  targetId: string,
+  targetType: EntityType,
+  linkType: "PRODUCES" | "BLOCKS" | "RELATES_TO" = "PRODUCES"
+): EntityLink {
+  return {
+    id,
+    organizationId: ORG_ID,
+    sourceId,
+    sourceType,
+    targetId,
+    targetType,
+    sourceVersion: null,
+    targetVersion: null,
+    linkType,
+    metadata: null,
+    createdAt: new Date(),
+  };
+}
 
 describe("entityLinksService", () => {
   beforeEach(() => {
@@ -283,6 +307,269 @@ describe("entityLinksService", () => {
       );
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe("resolveLinkedEntities", () => {
+    it("resolves the 'other' entity on each link", async () => {
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const mockIssue = { id: "b", title: "Bug report" };
+      const mockDb = {
+        issue: {
+          findUnique: vi.fn().mockResolvedValue(mockIssue),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await entityLinksService.resolveLinkedEntities(ORG_ID, [
+        { link: linkAB, fromEntityId: "a" },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].resolvedEntity).toEqual({
+        type: "ISSUE",
+        entity: mockIssue,
+      });
+    });
+
+    it("resolves source when known entity is on the target side", async () => {
+      const link = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const mockArtifact = { id: "a", title: "My PRD" };
+      const mockDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue(mockArtifact),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await entityLinksService.resolveLinkedEntities(ORG_ID, [
+        { link, fromEntityId: "b" },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].resolvedEntity).toEqual({
+        type: "ARTIFACT",
+        entity: mockArtifact,
+      });
+    });
+
+    it("deduplicates entities appearing in multiple links", async () => {
+      const link1 = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const link2 = makeLink("l2", "c", "ARTIFACT", "b", "ISSUE");
+      const mockIssue = { id: "b", title: "Shared issue" };
+      const mockDb = {
+        issue: {
+          findUnique: vi.fn().mockResolvedValue(mockIssue),
+        },
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ id: "c", title: "Other" }),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await entityLinksService.resolveLinkedEntities(ORG_ID, [
+        { link: link1, fromEntityId: "a" },
+        { link: link2, fromEntityId: "c" },
+      ]);
+
+      expect(result).toHaveLength(2);
+      // b:ISSUE should only be resolved once
+      expect(mockDb.issue.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns null for missing entities", async () => {
+      const link = makeLink("l1", "a", "ARTIFACT", "b", "ISSUE");
+      const mockDb = {
+        issue: {
+          findUnique: vi.fn().mockResolvedValue(null),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await entityLinksService.resolveLinkedEntities(ORG_ID, [
+        { link, fromEntityId: "a" },
+      ]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].resolvedEntity).toBeNull();
+    });
+
+    it("resolves correct entity at each hop in a tree traversal", async () => {
+      // Chain: A→B→C. fromEntityId tracks which BFS node found each link.
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ISSUE");
+      const mockArtifactB = { id: "b", title: "Plan" };
+      const mockIssueC = { id: "c", title: "Bug" };
+      const mockDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue(mockArtifactB),
+        },
+        issue: {
+          findUnique: vi.fn().mockResolvedValue(mockIssueC),
+        },
+      };
+      mockWithDbCall(mockDb);
+
+      const result = await entityLinksService.resolveLinkedEntities(ORG_ID, [
+        { link: linkAB, fromEntityId: "a" }, // A discovered A→B, resolve B
+        { link: linkBC, fromEntityId: "b" }, // B discovered B→C, resolve C
+      ]);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].resolvedEntity).toEqual({
+        type: "ARTIFACT",
+        entity: mockArtifactB,
+      });
+      expect(result[1].resolvedEntity).toEqual({
+        type: "ISSUE",
+        entity: mockIssueC,
+      });
+    });
+  });
+
+  describe("findLinkTree", () => {
+    let spy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      spy = vi.spyOn(entityLinksService, "findLinksByDirection");
+    });
+
+    afterEach(() => {
+      spy.mockRestore();
+    });
+
+    it("returns annotated links in a simple chain A→B→C", async () => {
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ARTIFACT");
+
+      spy
+        .mockResolvedValueOnce([linkAB]) // query from A
+        .mockResolvedValueOnce([linkBC]) // query from B
+        .mockResolvedValueOnce([]); // query from C
+
+      const result = await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "both",
+        10
+      );
+
+      expect(result).toEqual([
+        { link: linkAB, fromEntityId: "a" },
+        { link: linkBC, fromEntityId: "b" },
+      ]);
+    });
+
+    it("handles cycles without infinite loops", async () => {
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+      const linkBA = makeLink("l2", "b", "ARTIFACT", "a", "ARTIFACT");
+
+      spy
+        .mockResolvedValueOnce([linkAB]) // query from A: finds A→B
+        .mockResolvedValueOnce([linkBA]); // query from B: finds B→A (but A already visited)
+
+      const result = await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "both",
+        10
+      );
+
+      expect(result).toEqual([
+        { link: linkAB, fromEntityId: "a" },
+        { link: linkBA, fromEntityId: "b" },
+      ]);
+      // A was already visited so BFS does not re-enqueue it
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it("respects maxDepth limit", async () => {
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+      const linkBC = makeLink("l2", "b", "ARTIFACT", "c", "ARTIFACT");
+
+      spy
+        .mockResolvedValueOnce([linkAB]) // depth 0: query from A
+        .mockResolvedValueOnce([linkBC]); // depth 1: query from B (but C is at depth 2, won't be queried)
+
+      const result = await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "both",
+        2
+      );
+
+      expect(result).toEqual([
+        { link: linkAB, fromEntityId: "a" },
+        { link: linkBC, fromEntityId: "b" },
+      ]);
+      // Only A (depth 0) and B (depth 1) are queried; C at depth 2 is not expanded
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it("passes direction through to findLinksByDirection", async () => {
+      spy.mockResolvedValueOnce([]);
+
+      await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "target",
+        10,
+        "PRODUCES"
+      );
+
+      expect(spy).toHaveBeenCalledWith(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "target",
+        "PRODUCES"
+      );
+    });
+
+    it("traverses across entity types", async () => {
+      const linkArtIssue = makeLink("l1", "a", "ARTIFACT", "i", "ISSUE");
+      const linkIssueExt = makeLink("l2", "i", "ISSUE", "e", "EXTERNAL_LINK");
+
+      spy
+        .mockResolvedValueOnce([linkArtIssue]) // query from ARTIFACT a
+        .mockResolvedValueOnce([linkIssueExt]) // query from ISSUE i
+        .mockResolvedValueOnce([]); // query from EXTERNAL_LINK e
+
+      const result = await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "both",
+        10
+      );
+
+      expect(result).toEqual([
+        { link: linkArtIssue, fromEntityId: "a" },
+        { link: linkIssueExt, fromEntityId: "i" },
+      ]);
+    });
+
+    it("deduplicates links seen from multiple entities", async () => {
+      const linkAB = makeLink("l1", "a", "ARTIFACT", "b", "ARTIFACT");
+
+      // Both A and B return the same link record
+      spy
+        .mockResolvedValueOnce([linkAB]) // query from A
+        .mockResolvedValueOnce([linkAB]); // query from B (same link, already collected)
+
+      const result = await entityLinksService.findLinkTree(
+        ORG_ID,
+        "a",
+        "ARTIFACT",
+        "both",
+        10
+      );
+
+      expect(result).toEqual([{ link: linkAB, fromEntityId: "a" }]);
     });
   });
 });

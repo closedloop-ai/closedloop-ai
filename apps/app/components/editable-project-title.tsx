@@ -1,6 +1,7 @@
 "use client";
 
 import { Input } from "@repo/design-system/components/ui/input";
+import { useUpdateProject } from "@/hooks/queries/use-projects";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
 
 type EditableProjectTitleProps = {
@@ -14,6 +15,8 @@ export function EditableProjectTitle({
   initialTitle,
   onTitleChange,
 }: EditableProjectTitleProps) {
+  const updateProject = useUpdateProject();
+
   const {
     inputValue,
     setInputValue,
@@ -22,12 +25,11 @@ export function EditableProjectTitle({
     handleSave,
     handleCancel,
   } = useInlineEdit<HTMLInputElement>({
-    projectId,
     initialValue: initialTitle,
-    buildPayload: (trimmedValue) => ({ name: trimmedValue }),
+    onSave: (trimmedValue) =>
+      updateProject.mutateAsync({ id: projectId, name: trimmedValue }),
     onChange: onTitleChange,
     emptyErrorMessage: "Project title cannot be empty",
-    saveErrorMessage: "Failed to update project title. Please try again.",
   });
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

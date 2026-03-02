@@ -25,6 +25,9 @@
     "typecheck": {
       "dependsOn": ["^typecheck"]
     },
+    "figma:typecheck": {
+      "dependsOn": ["^figma:typecheck"]
+    },
     "test": {
       "dependsOn": ["^test"]
     },

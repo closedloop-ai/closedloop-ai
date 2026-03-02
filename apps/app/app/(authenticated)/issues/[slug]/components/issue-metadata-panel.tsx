@@ -81,14 +81,14 @@ export function IssueMetadataPanel({
   };
 
   return (
-    <MetadataPanel title="Issue Details">
+    <MetadataPanel className="self-stretch px-3 pr-4">
       <div className="space-y-6">
         <CollapsibleSection
           onOpenChange={setIsPropertiesOpen}
           open={isPropertiesOpen}
           title="Properties"
         >
-          <MetadataSection>
+          <MetadataSection className="space-y-4">
             <div className="space-y-2">
               <Label>Status</Label>
               <Select

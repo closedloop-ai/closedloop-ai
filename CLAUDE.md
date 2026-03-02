@@ -108,6 +108,9 @@ Symphony: human-governed, AI-centric software delivery platform. AI produces art
 - **[insight]**: Subpath imports (`@repo/github/execution-log-parser`) resolve without explicit `exports` in package.json — pnpm workspace + TS handles it.
 - **[convention]**: Never use inline `import()` types. Always top-level imports.
 
+### React Query & Mutations
+- **[convention]**: Do not add `.catch()` error toasts when calling `mutateAsync`. The global `QueryClient` in `apps/app/lib/query-client.tsx` has a default `mutations.onError` handler that toasts the error message. Only catch rejections to suppress unhandled promise warnings or reset local state.
+
 ### Code Organization
 - **[pattern]**: Check `@repo/github` (`packages/github/index.ts`) before implementing new GitHub API functions.
 - **[convention]**: Domain-specific parsers → domain package (`packages/github/`), not `apps/api/lib/`. Import via subpath.
