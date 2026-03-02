@@ -1,12 +1,10 @@
-import type {
-  CaseScore,
-  EvaluationReportType,
-  JudgesReport,
-  MetricStatistics,
-} from "@repo/api/src/types/evaluation";
 import {
+  type CaseScore,
   EvalStatus,
+  type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValue,
+  type JudgesReport,
+  type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -83,6 +81,39 @@ export function createMockEvaluationRow(overrides?: {
     reportId: "test-report",
     reportData: defaultReport,
     createdAt: new Date(),
+    ...overrides,
+  };
+}
+
+/**
+ * Factory for creating a mock JudgeScore DB row with optional prompt relation.
+ * Used to mock Prisma judgeScore.findMany queries in tests.
+ *
+ * @param overrides - Optional overrides for fields
+ */
+export function createMockJudgeScoreRow(overrides?: {
+  id?: string;
+  evaluationId?: string;
+  promptId?: string | null;
+  caseId?: string;
+  threshold?: number;
+  score?: number;
+  justification?: string;
+  finalStatus?: EvalStatus;
+  createdAt?: Date;
+  prompt?: { id: string; name: string } | null;
+}) {
+  return {
+    id: "judge-score-123",
+    evaluationId: "eval-123",
+    promptId: null,
+    caseId: "test-judge",
+    threshold: 0.8,
+    score: 0.92,
+    justification: "Test justification",
+    finalStatus: EvalStatus.Passed as EvalStatus,
+    createdAt: new Date(),
+    prompt: null,
     ...overrides,
   };
 }

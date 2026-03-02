@@ -17,8 +17,9 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
+  EvalStatus,
+  JudgeFeedbackItem,
   JudgesFeedbackResponse,
-  JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import type { ExecutionTrace } from "@repo/api/src/types/execution-log";
 import type { PerfSummary } from "@repo/api/src/types/performance";
@@ -1727,6 +1728,9 @@ Please try again or contact support if the issue persists.`
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
           where: { artifactId, reportType },
+          include: {
+            judgeScores: { include: { prompt: { select: { name: true } } } },
+          },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1735,14 +1739,18 @@ Please try again or contact support if the issue persists.`
         return { status: "not_found", data: null };
       }
 
-      const reportData = evaluation.reportData as JudgesReport;
-      return { status: "success", data: reportData };
+      const data: JudgeFeedbackItem[] = evaluation.judgeScores.map((js) => ({
+        caseId: js.caseId,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
+
+      return { status: "success", data };
     } catch (error) {
-      const logLabel =
-        reportType === PrismaEvaluationReportType.PLAN
-          ? "judges"
-          : "code judges";
-      log.error(`[artifacts-service] Failed to get ${logLabel} feedback`, {
+      log.error(`[artifacts-service] Failed to get ${reportType} feedback`, {
         error: error instanceof Error ? error.message : String(error),
       });
       return {

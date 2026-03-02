@@ -1,13 +1,14 @@
 /**
  * Unit tests for artifactsService.getJudgesFeedback method.
  *
- * Tests querying ArtifactEvaluation table for stored judges report.
+ * Tests querying JudgeScore rows for the latest evaluation of an artifact.
+ * Returns Option B canonical response (JudgeFeedbackItem[]) on success.
  *
  * Uses scenario registry pattern for maintainable, DRY test structure.
  */
 import type {
+  JudgeFeedbackItem,
   JudgesFeedbackResponse,
-  JudgesReport,
 } from "@repo/api/src/types/evaluation";
 import {
   EvalStatus,
@@ -27,31 +28,34 @@ vi.mock("@repo/database", () => ({
 // Import after mocking
 import { withDb } from "@repo/database";
 import { artifactsService } from "@/app/artifacts/service";
-import { createMockEvaluationRow } from "../fixtures/evaluation";
+import {
+  createMockEvaluationRow,
+  createMockJudgeScoreRow,
+} from "../fixtures/evaluation";
 
 // Type alias for mocked function
 const mockWithDb = withDb as unknown as Mock;
 
-// Sample mock data matching JudgesReport structure
-const MOCK_JUDGES_REPORT: JudgesReport = {
-  report_id: "test-report",
-  timestamp: "2026-02-05T00:00:00Z",
-  stats: [
-    {
-      type: "case_score",
-      case_id: "test-judge",
-      final_status: EvalStatus.Failed,
-      metrics: [
-        {
-          metric_name: "test_score",
-          threshold: 0.8,
-          score: 0.95,
-          justification: "Test justification",
-        },
-      ],
-    },
-  ],
-};
+// Sample mock data matching JudgeFeedbackItem[]
+const MOCK_JUDGE_SCORE_ROW = createMockJudgeScoreRow({
+  caseId: "test-judge",
+  score: 0.95,
+  threshold: 0.8,
+  justification: "Test justification",
+  finalStatus: EvalStatus.Passed,
+  prompt: null,
+});
+
+const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
+  {
+    caseId: "test-judge",
+    score: 0.95,
+    threshold: 0.8,
+    justification: "Test justification",
+    finalStatus: EvalStatus.Passed,
+    promptName: null,
+  },
+];
 
 /**
  * Scenario configuration for parametrized testing.
@@ -69,49 +73,44 @@ type ScenarioConfig = {
  */
 const SCENARIO_REGISTRY: ScenarioConfig[] = [
   {
-    name: "db_success_returns_report",
-    description: "Happy path through database returns stored report",
+    name: "db_success_returns_judge_feedback_items",
+    description:
+      "Happy path returns JudgeFeedbackItem array from JudgeScore rows",
     setupMocks: () => {
-      // Mock findByIdSimple to return artifact
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      // Mock withDb to return evaluation row
-      mockWithDb.mockImplementation((callback: any) => {
-        const mockDb = {
+      mockWithDb.mockImplementation((callback: any) =>
+        callback({
           artifactEvaluation: {
-            findFirst: vi.fn().mockResolvedValue(
-              createMockEvaluationRow({
+            findFirst: vi.fn().mockResolvedValue({
+              ...createMockEvaluationRow({
+                id: "eval-123",
                 artifactId: "artifact-123",
-                reportType: EvaluationReportType.Plan,
-                reportData: MOCK_JUDGES_REPORT,
-              })
-            ),
+              }),
+              judgeScores: [MOCK_JUDGE_SCORE_ROW],
+            }),
           },
-        };
-        return callback(mockDb);
-      });
+        })
+      );
     },
-    expectedResult: { status: "success", data: MOCK_JUDGES_REPORT },
+    expectedResult: { status: "success", data: EXPECTED_FEEDBACK_ITEMS },
   },
   {
     name: "no_evaluation_returns_not_found",
     description:
       "When no evaluation exists in database, returns not_found status",
     setupMocks: () => {
-      // Mock findByIdSimple to return artifact
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      // Mock withDb to return null (no evaluation)
-      mockWithDb.mockImplementation((callback: any) => {
-        const mockDb = {
+      mockWithDb.mockImplementation((callback: any) =>
+        callback({
           artifactEvaluation: {
             findFirst: vi.fn().mockResolvedValue(null),
           },
-        };
-        return callback(mockDb);
-      });
+        })
+      );
     },
     expectedResult: { status: "not_found", data: null },
   },
@@ -119,10 +118,30 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     name: "artifact_not_found_returns_not_found",
     description: "When artifact does not exist, returns not_found status",
     setupMocks: () => {
-      // Mock findByIdSimple to return null
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue(null);
     },
     expectedResult: { status: "not_found", data: null },
+  },
+  {
+    name: "empty_judge_scores_returns_empty_array",
+    description:
+      "When evaluation exists but no judge scores, returns empty array",
+    setupMocks: () => {
+      vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
+        id: "artifact-123",
+      } as any);
+      mockWithDb.mockImplementation((callback: any) =>
+        callback({
+          artifactEvaluation: {
+            findFirst: vi.fn().mockResolvedValue({
+              ...createMockEvaluationRow({ id: "eval-123" }),
+              judgeScores: [],
+            }),
+          },
+        })
+      );
+    },
+    expectedResult: { status: "success", data: [] },
   },
 ];
 
@@ -138,16 +157,13 @@ describe("artifactsService.getJudgesFeedback", () => {
   // Parametrized test using scenario registry
   describe.each(SCENARIO_REGISTRY)("$name", (scenario) => {
     it(scenario.description, async () => {
-      // Setup mocks for this scenario
       scenario.setupMocks();
 
-      // Execute
       const result = await artifactsService.getJudgesFeedback(
         "artifact-123",
         "org-123"
       );
 
-      // Assert
       expect(result).toEqual(scenario.expectedResult);
     });
   });
@@ -171,8 +187,48 @@ describe("artifactsService.getJudgesFeedback", () => {
         artifactId: "artifact-123",
         reportType: EvaluationReportType.Plan,
       },
+      include: {
+        judgeScores: { include: { prompt: { select: { name: true } } } },
+      },
       orderBy: { createdAt: "desc" },
     });
+  });
+
+  it("includes promptName from linked prompt when available", async () => {
+    vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
+      id: "artifact-123",
+    } as any);
+
+    const scoreWithPrompt = createMockJudgeScoreRow({
+      caseId: "dry-judge",
+      score: 0.9,
+      threshold: 0.75,
+      justification: "DRY check passed",
+      finalStatus: EvalStatus.Passed,
+      prompt: { id: "prompt-123", name: "DRY Principle Judge" },
+    });
+
+    mockWithDb.mockImplementation((callback: any) =>
+      callback({
+        artifactEvaluation: {
+          findFirst: vi.fn().mockResolvedValue({
+            ...createMockEvaluationRow(),
+            judgeScores: [scoreWithPrompt],
+          }),
+        },
+      })
+    );
+
+    const result = await artifactsService.getJudgesFeedback(
+      "artifact-123",
+      "org-123"
+    );
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.data[0].promptName).toBe("DRY Principle Judge");
+      expect(result.data[0].caseId).toBe("dry-judge");
+    }
   });
 });
 
@@ -203,6 +259,9 @@ describe("artifactsService.getCodeJudgesFeedback", () => {
       where: {
         artifactId: "artifact-123",
         reportType: EvaluationReportType.Code,
+      },
+      include: {
+        judgeScores: { include: { prompt: { select: { name: true } } } },
       },
       orderBy: { createdAt: "desc" },
     });

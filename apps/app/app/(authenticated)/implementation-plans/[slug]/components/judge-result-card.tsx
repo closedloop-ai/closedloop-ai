@@ -1,6 +1,6 @@
 "use client";
 
-import type { MetricStatistics } from "@repo/api/src/types/evaluation";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import {
   Collapsible,
   CollapsibleContent,
@@ -10,9 +10,9 @@ import { ChevronDown } from "lucide-react";
 
 type JudgeResultCardProps = {
   /**
-   * Metric statistics containing judge name, score, and justifications
+   * Judge feedback item containing score, threshold, and justification
    */
-  metric: MetricStatistics;
+  item: JudgeFeedbackItem;
 };
 
 type ScoreStyles = {
@@ -47,7 +47,7 @@ function getScoreConfig(isPassing: boolean): ScoreStyles {
 /**
  * Display a single judge evaluation result with expand/collapse functionality.
  *
- * Shows the judge name (metric_name), score with visual styling,
+ * Shows the judge name (promptName or caseId), score with visual styling,
  * and expandable justification text.
  *
  * Score-based styling:
@@ -56,13 +56,13 @@ function getScoreConfig(isPassing: boolean): ScoreStyles {
  *
  * Usage:
  * ```tsx
- * <JudgeResultCard metric={metricStatistics} />
+ * <JudgeResultCard item={judgeFeedbackItem} />
  * ```
  */
-export function JudgeResultCard({ metric }: JudgeResultCardProps) {
-  const isPassing = metric.score >= metric.threshold;
+export function JudgeResultCard({ item }: JudgeResultCardProps) {
+  const isPassing = item.score >= item.threshold;
   const config = getScoreConfig(isPassing);
-  const justificationText = metric.justification;
+  const displayName = item.promptName ?? item.caseId;
 
   return (
     <Collapsible
@@ -72,20 +72,20 @@ export function JudgeResultCard({ metric }: JudgeResultCardProps) {
         <div className="flex items-center gap-3">
           <ChevronDown className="h-4 w-4 transition-transform group-data-[state=closed]:-rotate-90" />
           <div className="flex flex-col gap-0.5">
-            <span className="font-medium text-sm">{metric.metric_name}</span>
+            <span className="font-medium text-sm">{displayName}</span>
             <span className={`font-semibold text-xs ${config.text}`}>
-              Score: {metric.score} ({config.label})
+              Score: {item.score} ({config.label})
             </span>
           </div>
         </div>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        {justificationText ? (
+        {item.justification ? (
           <div className="mt-2 ml-7 space-y-1 text-muted-foreground text-sm">
             <p className="font-medium text-xs uppercase tracking-wide">
               Reasoning
             </p>
-            <p className="whitespace-pre-wrap">{justificationText}</p>
+            <p className="whitespace-pre-wrap">{item.justification}</p>
           </div>
         ) : (
           <div className="mt-2 ml-7 text-muted-foreground text-sm italic">

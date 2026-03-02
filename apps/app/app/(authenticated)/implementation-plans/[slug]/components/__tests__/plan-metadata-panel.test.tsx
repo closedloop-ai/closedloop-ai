@@ -2,6 +2,7 @@ import type {
   ArtifactDetail,
   ArtifactStatus,
 } from "@repo/api/src/types/artifact";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -9,10 +10,10 @@ import {
   createMockGenerationStatus,
   createMockPullRequest,
 } from "@/__tests__/fixtures/artifacts";
-import { createMockMetric } from "@/__tests__/fixtures/evaluation";
+import { createMockJudgeFeedbackItem } from "@/__tests__/fixtures/evaluation";
 import {
   calculateAcceptanceRate,
-  sortMetricsByScore,
+  sortJudgeFeedbackItemsByScore,
 } from "@/lib/evaluation-utils";
 import { PlanMetadataPanel } from "../plan-metadata-panel";
 
@@ -41,16 +42,9 @@ vi.mock("@/components/artifact-editor/status-metadata-section", () => ({
 
 // Mock JudgeResultCard to simplify testing
 vi.mock("../judge-result-card", () => ({
-  JudgeResultCard: ({
-    metric,
-  }: {
-    metric: { metric_name: string; score: number };
-  }) => (
-    <div
-      data-score={metric.score}
-      data-testid={`judge-card-${metric.metric_name}`}
-    >
-      {metric.metric_name}: {metric.score}
+  JudgeResultCard: ({ item }: { item: JudgeFeedbackItem }) => (
+    <div data-score={item.score} data-testid={`judge-card-${item.caseId}`}>
+      {item.caseId}: {item.score}
     </div>
   ),
 }));
@@ -169,8 +163,8 @@ const defaultProps = {
   previewDeployment: null,
   onPreviewRefresh: vi.fn().mockResolvedValue(null),
   isPreviewRefreshing: false,
-  judgesReport: null,
-  codeJudgesReport: null,
+  judgeItems: null,
+  codeJudgeItems: null,
   onStatusChange: vi.fn(),
   onApproverSelect: vi.fn(),
   onAssigneeChange: vi.fn(),
@@ -178,111 +172,135 @@ const defaultProps = {
   targetBranch: "",
 };
 
-describe("sortMetricsByScore", () => {
-  test("sorts metrics by score in ascending order (worst first)", () => {
-    const metrics = [
-      createMockMetric("High Score", 0.95),
-      createMockMetric("Low Score", 0.3),
-      createMockMetric("Medium Score", 0.7),
+describe("sortJudgeFeedbackItemsByScore", () => {
+  test("sorts items by score in ascending order (worst first)", () => {
+    const items = [
+      createMockJudgeFeedbackItem({ caseId: "High Score", score: 0.95 }),
+      createMockJudgeFeedbackItem({ caseId: "Low Score", score: 0.3 }),
+      createMockJudgeFeedbackItem({ caseId: "Medium Score", score: 0.7 }),
     ];
 
-    const sorted = sortMetricsByScore(metrics);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
-    expect(sorted[0].metric_name).toBe("Low Score");
+    expect(sorted[0].caseId).toBe("Low Score");
     expect(sorted[0].score).toBe(0.3);
-    expect(sorted[1].metric_name).toBe("Medium Score");
+    expect(sorted[1].caseId).toBe("Medium Score");
     expect(sorted[1].score).toBe(0.7);
-    expect(sorted[2].metric_name).toBe("High Score");
+    expect(sorted[2].caseId).toBe("High Score");
     expect(sorted[2].score).toBe(0.95);
   });
 
-  test("handles metrics with same score (stable sort)", () => {
-    const metrics = [
-      createMockMetric("First", 0.8),
-      createMockMetric("Second", 0.8),
-      createMockMetric("Third", 0.8),
+  test("handles items with same score (stable sort)", () => {
+    const items = [
+      createMockJudgeFeedbackItem({ caseId: "First", score: 0.8 }),
+      createMockJudgeFeedbackItem({ caseId: "Second", score: 0.8 }),
+      createMockJudgeFeedbackItem({ caseId: "Third", score: 0.8 }),
     ];
 
-    const sorted = sortMetricsByScore(metrics);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(3);
     // All have same score, order should be preserved
-    expect(sorted.map((m) => m.metric_name)).toEqual([
-      "First",
-      "Second",
-      "Third",
-    ]);
+    expect(sorted.map((m) => m.caseId)).toEqual(["First", "Second", "Third"]);
   });
 
-  test("handles single metric", () => {
-    const metrics = [createMockMetric("Only Metric", 0.5)];
+  test("handles single item", () => {
+    const items = [
+      createMockJudgeFeedbackItem({ caseId: "Only Judge", score: 0.5 }),
+    ];
 
-    const sorted = sortMetricsByScore(metrics);
+    const sorted = sortJudgeFeedbackItemsByScore(items);
 
     expect(sorted).toHaveLength(1);
-    expect(sorted[0].metric_name).toBe("Only Metric");
+    expect(sorted[0].caseId).toBe("Only Judge");
   });
 
   test("handles empty array", () => {
-    const sorted = sortMetricsByScore([]);
+    const sorted = sortJudgeFeedbackItemsByScore([]);
     expect(sorted).toHaveLength(0);
   });
 });
 
 describe("calculateAcceptanceRate", () => {
-  test("returns 100% when all metrics pass threshold", () => {
-    const metrics = [
-      createMockMetric("Accuracy", 0.9, { threshold: 0.7 }),
-      createMockMetric("Completeness", 0.8, { threshold: 0.7 }),
+  test("returns 100% when all items pass threshold", () => {
+    const items = [
+      createMockJudgeFeedbackItem({
+        caseId: "Accuracy",
+        score: 0.9,
+        threshold: 0.7,
+      }),
+      createMockJudgeFeedbackItem({
+        caseId: "Completeness",
+        score: 0.8,
+        threshold: 0.7,
+      }),
     ];
 
-    const result = calculateAcceptanceRate(metrics);
+    const result = calculateAcceptanceRate(items);
 
     expect(result.acceptedCount).toBe(2);
     expect(result.totalCount).toBe(2);
     expect(result.rate).toBe(100);
   });
 
-  test("calculates correct rate when some metrics fail", () => {
-    const metrics = [
-      createMockMetric("Passing", 0.8, { threshold: 0.7 }),
-      createMockMetric("Failing", 0.5, { threshold: 0.7 }),
-      createMockMetric("Also Passing", 0.75, { threshold: 0.7 }),
+  test("calculates correct rate when some items fail", () => {
+    const items = [
+      createMockJudgeFeedbackItem({
+        caseId: "Passing",
+        score: 0.8,
+        threshold: 0.7,
+      }),
+      createMockJudgeFeedbackItem({
+        caseId: "Failing",
+        score: 0.5,
+        threshold: 0.7,
+      }),
+      createMockJudgeFeedbackItem({
+        caseId: "Also Passing",
+        score: 0.75,
+        threshold: 0.7,
+      }),
     ];
 
-    const result = calculateAcceptanceRate(metrics);
+    const result = calculateAcceptanceRate(items);
 
     expect(result.acceptedCount).toBe(2);
     expect(result.totalCount).toBe(3);
     expect(result.rate).toBeCloseTo(66.67, 1);
   });
 
-  test("returns 0% when all metrics fail", () => {
-    const metrics = [
-      createMockMetric("Failing1", 0.3, { threshold: 0.7 }),
-      createMockMetric("Failing2", 0.4, { threshold: 0.7 }),
+  test("returns 0% when all items fail", () => {
+    const items = [
+      createMockJudgeFeedbackItem({
+        caseId: "Failing1",
+        score: 0.3,
+        threshold: 0.7,
+      }),
+      createMockJudgeFeedbackItem({
+        caseId: "Failing2",
+        score: 0.4,
+        threshold: 0.7,
+      }),
     ];
 
-    const result = calculateAcceptanceRate(metrics);
+    const result = calculateAcceptanceRate(items);
 
     expect(result.acceptedCount).toBe(0);
     expect(result.totalCount).toBe(2);
     expect(result.rate).toBe(0);
   });
 
-  test("handles edge case: metric equals threshold (passes)", () => {
-    const metrics = [
-      createMockMetric("Exactly Threshold", 0.7, { threshold: 0.7 }),
-    ];
+  test("handles edge case: item score equals threshold (passes)", () => {
+    const items = [createMockJudgeFeedbackItem({ score: 0.7, threshold: 0.7 })];
 
-    const result = calculateAcceptanceRate(metrics);
+    const result = calculateAcceptanceRate(items);
 
     expect(result.acceptedCount).toBe(1);
     expect(result.totalCount).toBe(1);
     expect(result.rate).toBe(100);
   });
 
-  test("handles undefined metrics", () => {
+  test("handles undefined items", () => {
     const result = calculateAcceptanceRate(undefined);
 
     expect(result.acceptedCount).toBe(0);
@@ -290,7 +308,7 @@ describe("calculateAcceptanceRate", () => {
     expect(result.rate).toBe(0);
   });
 
-  test("handles empty metrics array", () => {
+  test("handles empty items array", () => {
     const result = calculateAcceptanceRate([]);
 
     expect(result.acceptedCount).toBe(0);
@@ -299,14 +317,22 @@ describe("calculateAcceptanceRate", () => {
   });
 
   test("handles zero threshold (still counts toward total)", () => {
-    const metrics = [
-      createMockMetric("With Threshold", 0.8, { threshold: 0.7 }),
-      createMockMetric("Zero Threshold", 0.9, { threshold: 0 }),
+    const items = [
+      createMockJudgeFeedbackItem({
+        caseId: "With Threshold",
+        score: 0.8,
+        threshold: 0.7,
+      }),
+      createMockJudgeFeedbackItem({
+        caseId: "Zero Threshold",
+        score: 0.9,
+        threshold: 0,
+      }),
     ];
 
-    const result = calculateAcceptanceRate(metrics);
+    const result = calculateAcceptanceRate(items);
 
-    // Both metrics should pass (0.9 >= 0 and 0.8 >= 0.7)
+    // Both items should pass (0.9 >= 0 and 0.8 >= 0.7)
     expect(result.acceptedCount).toBe(2);
     expect(result.totalCount).toBe(2);
     expect(result.rate).toBe(100);
