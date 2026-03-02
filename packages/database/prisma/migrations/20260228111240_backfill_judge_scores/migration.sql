@@ -31,6 +31,7 @@ SELECT
     FROM prompt_registry pr
     INNER JOIN artifacts a ON a.id = ae.artifact_id
     WHERE pr.organization_id = a.organization_id
+      AND pr.prompt_type = 'JUDGE'
       AND LOWER(REPLACE(REGEXP_REPLACE(pr.name, '[-_](judge|score)$', '', 'i'), '-', '_'))
         = LOWER(REPLACE(REGEXP_REPLACE(s->>'case_id', '[-_](judge|score)$', '', 'i'), '-', '_'))
     ORDER BY pr.version DESC

@@ -102,10 +102,3 @@ export const doesMetricPass = (metric: MetricStatistics): boolean => {
 export const countPassingMetrics = (caseScore: CaseScore): number => {
   return caseScore.metrics.filter(doesMetricPass).length;
 };
-
-/**
- * Helper to determine if a JudgeFeedbackItem passes based on score >= threshold.
- */
-export const doesFeedbackItemPass = (item: JudgeFeedbackItem): boolean => {
-  return item.score >= item.threshold;
-};
