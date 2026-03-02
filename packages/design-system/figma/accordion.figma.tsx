@@ -21,7 +21,7 @@ figma.connect(Accordion, FIGMA_URL, {
 });
 
 const ITEM_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=7113-55578";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=1-55";
 
 figma.connect(AccordionItem, ITEM_URL, {
   props: {

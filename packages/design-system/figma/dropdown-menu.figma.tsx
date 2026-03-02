@@ -25,7 +25,7 @@ figma.connect(DropdownMenuContent, FIGMA_URL, {
 });
 
 const ITEM_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=4-6588";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=13-337";
 
 figma.connect(DropdownMenuItem, ITEM_URL, {
   props: {

@@ -21,7 +21,7 @@ figma.connect(Breadcrumb, FIGMA_URL, {
 });
 
 const ITEM_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=6727-5792";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=6727-5796";
 
 figma.connect(BreadcrumbItem, ITEM_URL, {
   props: {

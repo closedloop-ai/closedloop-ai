@@ -22,7 +22,7 @@ figma.connect(Tabs, FIGMA_URL, {
 });
 
 const TRIGGER_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2764-25046";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2761-24993";
 
 figma.connect(TabsTrigger, TRIGGER_URL, {
   props: {

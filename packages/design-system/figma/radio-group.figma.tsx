@@ -18,7 +18,7 @@ figma.connect(RadioGroup, FIGMA_URL, {
 });
 
 const ITEM_URL =
-  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2780-51105";
+  "https://www.figma.com/design/py1Sc5dZnNzqPOYXDqJuAU/ClosedLoop-Design-System?node-id=2780-51111";
 
 figma.connect(RadioGroupItem, ITEM_URL, {
   props: {
