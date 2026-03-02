@@ -53,6 +53,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
@@ -339,11 +340,7 @@ function ArtifactSection({
                       </Select>
                     </TableCell>
                     <TableCell>
-                      <span className="text-muted-foreground text-sm">
-                        {artifact.assignee
-                          ? getUserDisplayName(artifact.assignee)
-                          : "-"}
-                      </span>
+                      <AssigneeAvatar assignee={artifact.assignee} />
                     </TableCell>
                     <TableCell>
                       <span className="text-muted-foreground text-sm">

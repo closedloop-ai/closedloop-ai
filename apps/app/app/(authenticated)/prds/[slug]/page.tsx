@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { generateArtifactMetadata } from "@/lib/artifact-metadata";
+import { resolveOgMetadata } from "@/lib/og-metadata";
 import { PRDEditorContainer } from "./prd-editor-container";
 
 type PrdPageProps = {
@@ -12,7 +12,7 @@ export async function generateMetadata({
   params,
 }: PrdPageProps): Promise<Metadata> {
   const { slug } = await params;
-  return generateArtifactMetadata(slug);
+  return resolveOgMetadata(`prds/${slug}`);
 }
 
 export default async function PrdPage({ params, searchParams }: PrdPageProps) {

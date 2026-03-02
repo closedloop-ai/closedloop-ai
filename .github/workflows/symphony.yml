@@ -227,7 +227,7 @@ jobs:
 
       - name: Upload Run Loop Log
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: run-loop-log-${{ github.event.issue.number }}
           path: ${{ steps.setup_workdir.outputs.workdir }}/run-loop.log
@@ -739,7 +739,7 @@ jobs:
 
       - name: Upload Run Loop Log
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: run-loop-execute-log-${{ github.event.issue.number }}
           path: ${{ steps.verify_plan.outputs.run_dir }}/run-loop.log
