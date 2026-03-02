@@ -299,6 +299,9 @@ packages/database/generated
 .content-collections
 .source
 .workspace-repos.json
+# MCP local config
+.mcp.local.json
+
 # Claude Code
 .claude/.token-stats/
 .claude/work/
