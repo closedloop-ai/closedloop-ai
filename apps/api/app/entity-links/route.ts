@@ -1,10 +1,10 @@
 import type { EntityLink } from "@repo/api/src/types/entity-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
-  badRequestResponse,
   errorResponse,
   forbiddenResponse,
   parseBody,
+  parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
 import { EntityOrganizationMismatchError, entityLinksService } from "./service";
@@ -16,46 +16,36 @@ import {
 export const GET = withAnyAuth<EntityLink[], "/entity-links">(
   async ({ user }, request) => {
     try {
-      const searchParams = request.nextUrl.searchParams;
-      const queryParams = Object.fromEntries(searchParams.entries());
+      const { params, errorResponse } = parseQueryParams(
+        request,
+        findEntityLinksQueryValidator
+      );
+      if (errorResponse) {
+        return errorResponse;
+      }
 
-      const parseResult = findEntityLinksQueryValidator.safeParse(queryParams);
+      const { entityId, entityType, linkType, direction, mode, maxDepth } =
+        params;
 
-      if (!parseResult.success) {
-        return badRequestResponse(
-          `Invalid query parameters: ${parseResult.error.message}`
+      if (mode === "tree") {
+        const annotatedLinks = await entityLinksService.findLinkTree(
+          user.organizationId,
+          entityId,
+          entityType,
+          direction,
+          maxDepth,
+          linkType
         );
+        return successResponse(annotatedLinks.map((a) => a.link));
       }
 
-      const { entityId, entityType, linkType, direction } = parseResult.data;
-
-      let links: EntityLink[];
-      switch (direction) {
-        case "source":
-          links = await entityLinksService.findSourceLinks(
-            user.organizationId,
-            entityId,
-            entityType,
-            linkType
-          );
-          break;
-        case "target":
-          links = await entityLinksService.findTargetLinks(
-            user.organizationId,
-            entityId,
-            entityType,
-            linkType
-          );
-          break;
-        default:
-          links = await entityLinksService.findLinks(
-            user.organizationId,
-            entityId,
-            entityType,
-            linkType
-          );
-          break;
-      }
+      const links = await entityLinksService.findLinksByDirection(
+        user.organizationId,
+        entityId,
+        entityType,
+        direction,
+        linkType
+      );
 
       return successResponse(links);
     } catch (error) {

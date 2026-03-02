@@ -1,12 +1,14 @@
 import {
-  ENTITY_TYPE_OPTIONS,
-  LINK_TYPE_OPTIONS,
+  EntityType,
+  LinkDirection,
+  LinkQueryMode,
+  LinkType,
 } from "@repo/api/src/types/entity-link";
 import { z } from "zod";
 import { jsonObjectValidator } from "@/lib/validators/json";
 
-const entityTypeEnum = z.enum(ENTITY_TYPE_OPTIONS);
-const linkTypeEnum = z.enum(LINK_TYPE_OPTIONS);
+const entityTypeEnum = z.enum(EntityType);
+const linkTypeEnum = z.enum(LinkType);
 
 export const createEntityLinkValidator = z.object({
   sourceId: z.uuidv7(),
@@ -23,5 +25,7 @@ export const findEntityLinksQueryValidator = z.object({
   entityId: z.uuidv7(),
   entityType: entityTypeEnum,
   linkType: linkTypeEnum.optional(),
-  direction: z.enum(["source", "target", "both"]).optional().default("both"),
+  direction: z.enum(LinkDirection).optional().default("both"),
+  mode: z.enum(LinkQueryMode).optional().default("direct"),
+  maxDepth: z.coerce.number().int().min(1).max(50).optional().default(10),
 });

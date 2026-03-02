@@ -1,10 +1,13 @@
 "use client";
 
-import type {
-  CreateEntityLinkInput,
-  EntityLink,
-  EntityType,
-  LinkType,
+import {
+  type CreateEntityLinkInput,
+  type EntityLink,
+  type EntityType,
+  LinkDirection,
+  type LinkedEntity,
+  LinkQueryMode,
+  type LinkType,
 } from "@repo/api/src/types/entity-link";
 import {
   type UseQueryOptions,
@@ -56,7 +59,7 @@ export function useSourceLinks(
   return useLinksWithDirection(
     entityId,
     entityType,
-    "source",
+    LinkDirection.Source,
     linkType,
     options
   );
@@ -72,7 +75,7 @@ export function useTargetLinks(
   return useLinksWithDirection(
     entityId,
     entityType,
-    "target",
+    LinkDirection.Target,
     linkType,
     options
   );
@@ -81,7 +84,7 @@ export function useTargetLinks(
 function useLinksWithDirection(
   entityId: string,
   entityType: EntityType,
-  direction: "source" | "target",
+  direction: LinkDirection,
   linkType?: LinkType,
   options?: Omit<UseQueryOptions<EntityLink[]>, "queryKey" | "queryFn">
 ) {
@@ -106,6 +109,105 @@ function useLinksWithDirection(
     },
     enabled: !!entityId,
     ...options,
+  });
+}
+
+/** All links in the transitive closure (link tree) from an entity. */
+export function useEntityLinkTree(
+  entityId: string,
+  entityType: EntityType,
+  options?: Omit<UseQueryOptions<EntityLink[]>, "queryKey" | "queryFn"> & {
+    direction?: LinkDirection;
+    linkType?: LinkType;
+    maxDepth?: number;
+  }
+) {
+  const apiClient = useApiClient();
+  const {
+    direction = LinkDirection.Both,
+    linkType,
+    maxDepth,
+    ...queryOptions
+  } = options ?? {};
+
+  return useQuery({
+    queryKey: entityLinkKeys.list({
+      entityId,
+      entityType,
+      direction,
+      linkType,
+      mode: LinkQueryMode.Tree,
+      maxDepth,
+    }),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("entityId", entityId);
+      params.set("entityType", entityType);
+      params.set("direction", direction);
+      params.set("mode", LinkQueryMode.Tree);
+      if (linkType) {
+        params.set("linkType", linkType);
+      }
+      if (maxDepth !== undefined) {
+        params.set("maxDepth", String(maxDepth));
+      }
+      return apiClient.get<EntityLink[]>(`/entity-links?${params.toString()}`);
+    },
+    enabled: !!entityId,
+    ...queryOptions,
+  });
+}
+
+/** All links for an entity with the "other" entity on each link resolved. */
+export function useLinkedEntities(
+  entityId: string,
+  entityType: EntityType,
+  options?: Omit<UseQueryOptions<LinkedEntity[]>, "queryKey" | "queryFn"> & {
+    direction?: LinkDirection;
+    linkType?: LinkType;
+    mode?: LinkQueryMode;
+    maxDepth?: number;
+  }
+) {
+  const apiClient = useApiClient();
+  const {
+    direction = LinkDirection.Both,
+    linkType,
+    mode,
+    maxDepth,
+    ...queryOptions
+  } = options ?? {};
+
+  return useQuery({
+    queryKey: entityLinkKeys.list({
+      entityId,
+      entityType,
+      direction,
+      linkType,
+      mode,
+      maxDepth,
+      resolved: true,
+    }),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("entityId", entityId);
+      params.set("entityType", entityType);
+      params.set("direction", direction);
+      if (linkType) {
+        params.set("linkType", linkType);
+      }
+      if (mode) {
+        params.set("mode", mode);
+      }
+      if (maxDepth !== undefined) {
+        params.set("maxDepth", String(maxDepth));
+      }
+      return apiClient.get<LinkedEntity[]>(
+        `/entity-links/resolved?${params.toString()}`
+      );
+    },
+    enabled: !!entityId,
+    ...queryOptions,
   });
 }
 
