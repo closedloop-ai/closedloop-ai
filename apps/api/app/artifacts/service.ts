@@ -17,6 +17,7 @@ import {
   type UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type {
+  EvalStatus,
   JudgeFeedbackItem,
   JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
@@ -26,7 +27,6 @@ import type { ArtifactRatingSummary } from "@repo/api/src/types/rating";
 import type { ExecutionBackendResponse } from "@repo/api/src/types/settings";
 import {
   LinkType,
-  type Prisma,
   ArtifactType as PrismaArtifactType,
   EvaluationReportType as PrismaEvaluationReportType,
   type TransactionClient,
@@ -43,7 +43,6 @@ import {
 } from "@repo/github/execution-log-parser";
 import { SYMPHONY_RUN_ARTIFACT_PREFIXES } from "@repo/github/zip-utils";
 import { log } from "@repo/observability/log";
-import { toEvalStatus } from "@/lib/eval-status-utils";
 import {
   mapLoopCommand,
   mapLoopStatus,
@@ -1739,17 +1738,19 @@ Please try again or contact support if the issue persists.`
 
       const judgeScores = await withDb((db) =>
         db.judgeScore.findMany({
-          where: {
-            evaluationId: evaluation.id,
-            evaluation: {
-              artifact: { organizationId },
-            },
-          },
+          where: { evaluationId: evaluation.id },
           include: { prompt: { select: { name: true } } },
         })
       );
 
-      const data: JudgeFeedbackItem[] = judgeScores.map(toJudgeFeedbackItem);
+      const data: JudgeFeedbackItem[] = judgeScores.map((js) => ({
+        caseId: js.caseId,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
 
       return { status: "success", data };
     } catch (error) {
@@ -2808,21 +2809,6 @@ Configure the following environment variables to enable plan generation:
 const DEFAULT_BRANCH = "main";
 const VALID_PR_STATES = new Set<string>(Object.values(PullRequestState));
 const VALID_REVIEW_DECISIONS = new Set<string>(Object.values(ReviewDecision));
-
-type JudgeScoreWithPrompt = Prisma.JudgeScoreGetPayload<{
-  include: { prompt: { select: { name: true } } };
-}>;
-
-function toJudgeFeedbackItem(js: JudgeScoreWithPrompt): JudgeFeedbackItem {
-  return {
-    caseId: js.caseId,
-    score: js.score,
-    threshold: js.threshold,
-    justification: js.justification,
-    finalStatus: toEvalStatus(js.finalStatus),
-    promptName: js.prompt?.name ?? null,
-  };
-}
 
 /**
  * Convert a Prisma gitHubPullRequest record to the API PullRequestInfo type.

@@ -1,13 +1,10 @@
-import type {
-  CaseScore,
-  EvalStatus,
-  EvaluationReportType,
-  JudgesReport,
-  MetricStatistics,
-} from "@repo/api/src/types/evaluation";
 import {
-  EvalStatus as EvalStatusValue,
+  type CaseScore,
+  EvalStatus,
+  type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValue,
+  type JudgesReport,
+  type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -50,7 +47,7 @@ export function buildCaseScore(
   return {
     type: "case_score",
     case_id: caseId,
-    final_status: EvalStatusValue.Passed,
+    final_status: EvalStatus.Passed,
     metrics: [buildMetric({ metric_name: metricName, score }), ...extraMetrics],
   };
 }
@@ -114,7 +111,7 @@ export function createMockJudgeScoreRow(overrides?: {
     threshold: 0.8,
     score: 0.92,
     justification: "Test justification",
-    finalStatus: EvalStatusValue.Passed as EvalStatus,
+    finalStatus: EvalStatus.Passed as EvalStatus,
     createdAt: new Date(),
     prompt: null,
     ...overrides,
