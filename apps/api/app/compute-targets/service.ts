@@ -60,19 +60,10 @@ function toComputeTarget(
 }
 
 function toComputeTargetList(targets: ComputeTargetRecord[]): ComputeTarget[] {
-  return targets.map((target) => ({
-    id: target.id,
-    organizationId: target.organizationId,
-    userId: target.userId,
-    machineName: target.machineName,
-    platform: target.platform,
-    capabilities: toJsonObject(target.capabilities),
-    supportedOperations: toStringArray(target.supportedOperations),
-    lastSeenAt: target.lastSeenAt,
-    isOnline: target.isOnline,
-    createdAt: target.createdAt,
-    updatedAt: target.updatedAt,
-  }));
+  return targets.flatMap((target) => {
+    const mapped = toComputeTarget(target);
+    return mapped ? [mapped] : [];
+  });
 }
 
 function buildCapabilitiesPayload(
@@ -179,20 +170,9 @@ export const computeTargetsService = {
     userId: string,
     payload: UpdateComputeTargetInput
   ): Promise<ComputeTarget | null> {
-    const target = await withDb((db) =>
-      db.computeTarget.findFirst({
+    const result = await withDb((db) =>
+      db.computeTarget.updateMany({
         where: { id, organizationId, userId },
-        select: { id: true },
-      })
-    );
-
-    if (!target) {
-      return null;
-    }
-
-    const updated = await withDb((db) =>
-      db.computeTarget.update({
-        where: { id },
         data: {
           ...(payload.machineName ? { machineName: payload.machineName } : {}),
           ...(payload.platform ? { platform: payload.platform } : {}),
@@ -206,7 +186,14 @@ export const computeTargetsService = {
       })
     );
 
-    return toComputeTarget(updated as ComputeTargetRecord);
+    if (result.count === 0) {
+      return null;
+    }
+
+    const updated = await withDb((db) =>
+      db.computeTarget.findUnique({ where: { id } })
+    );
+    return toComputeTarget(updated as ComputeTargetRecord | null);
   },
 
   async deleteOwned(

@@ -136,6 +136,7 @@ export function ReviewChatPane({
   const [declined, setDeclined] = useState(false);
   const [findingsRevealed, setFindingsRevealed] = useState(false);
   const [isSubmittingDecline, setIsSubmittingDecline] = useState(false);
+  const [asyncVerdict, setAsyncVerdict] = useState<ReviewVerdict | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
@@ -472,6 +473,12 @@ export function ReviewChatPane({
       ) {
         triggerExtraction(sessionIdRef.current);
       }
+
+      // Extract verdict via session resumption when the review output
+      // doesn't already contain a <pr_verdict> tag (e.g. codex reviews).
+      if (!split.verdict && sessionIdRef.current) {
+        triggerVerdictExtraction(sessionIdRef.current);
+      }
     } catch (err) {
       // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -538,6 +545,10 @@ export function ReviewChatPane({
               config.model,
               split.findings
             );
+          }
+          // Extract verdict via session resumption when not in output
+          if (!split.verdict && sessionIdRef.current) {
+            triggerVerdictExtraction(sessionIdRef.current);
           }
           return;
         }
@@ -927,11 +938,48 @@ export function ReviewChatPane({
     [ticketId, repoPath, config.provider, config.model]
   );
 
-  const hasDeclineVerdict = reviewSplit?.verdict?.verdict === "decline";
+  const triggerVerdictExtraction = useCallback(
+    async (sid: string) => {
+      try {
+        console.log(
+          `[review-verdict] Triggering verdict extraction with session ${sid}`
+        );
+        const res = await fetch(
+          `/api/engineer/codex/review-verdict/${encodeURIComponent(ticketId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repoPath,
+              sessionId: sid,
+              provider: config.provider,
+            }),
+          }
+        );
+        const data = await res.json();
+        if (data.verdict) {
+          console.log(
+            `[review-verdict] Got verdict: ${data.verdict.verdict} — ${data.verdict.reason}`
+          );
+          setAsyncVerdict(data.verdict);
+        } else {
+          console.log("[review-verdict] No verdict returned", data.error ?? "");
+        }
+      } catch (err) {
+        console.warn("[review-verdict] Extraction failed silently:", err);
+      }
+    },
+    [ticketId, repoPath, config.provider]
+  );
+
+  // Merge async verdict into reviewSplit — async verdict takes priority
+  const effectiveVerdict = asyncVerdict ?? reviewSplit?.verdict;
+
+  const hasDeclineVerdict = effectiveVerdict?.verdict === "decline";
   const showFindings = !hasDeclineVerdict || (!declined && findingsRevealed);
 
   const handleDecline = useCallback(async () => {
-    const reason = reviewSplit?.verdict?.reason;
+    const reason = asyncVerdict?.reason ?? reviewSplit?.verdict?.reason;
     if (!reason) {
       return;
     }
@@ -948,6 +996,7 @@ export function ReviewChatPane({
       setIsSubmittingDecline(false);
     }
   }, [
+    asyncVerdict?.reason,
     reviewSplit?.verdict?.reason,
     repoPath,
     prNumber,
@@ -1127,13 +1176,13 @@ export function ReviewChatPane({
                 }
               />
             </ChatBubble>
-            {reviewSplit.verdict && (
+            {effectiveVerdict && (
               <div className="pl-2">
                 <VerdictBanner
                   isDeclined={declined}
                   isSubmitting={isSubmittingDecline}
                   onDecline={handleDecline}
-                  verdict={reviewSplit.verdict}
+                  verdict={effectiveVerdict}
                 />
               </div>
             )}

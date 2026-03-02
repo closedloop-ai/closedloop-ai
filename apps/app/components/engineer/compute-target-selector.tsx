@@ -54,7 +54,7 @@ function normalizeMachineName(value: string): string {
   return value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
+    .replaceAll(/[^a-z0-9]/g, "");
 }
 
 function isSameMachineTarget(
@@ -160,6 +160,16 @@ function TargetStatusDot({ online }: { online: boolean }) {
   );
 }
 
+function OptionIcon({ option }: { option: SelectorOption }) {
+  if (isCloudOption(option)) {
+    return <TargetStatusDot online={option.target.isOnline} />;
+  }
+  if (option.mode === "local-electron") {
+    return <TargetStatusDot online />;
+  }
+  return <Server className="size-3.5 text-muted-foreground" />;
+}
+
 function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
@@ -257,13 +267,7 @@ export function ComputeTargetSelector() {
                       )}
                     />
                     <div className="flex min-w-0 flex-1 items-center gap-2">
-                      {isCloudOption(option) ? (
-                        <TargetStatusDot online={option.target.isOnline} />
-                      ) : option.mode === "local-electron" ? (
-                        <TargetStatusDot online />
-                      ) : (
-                        <Server className="size-3.5 text-muted-foreground" />
-                      )}
+                      <OptionIcon option={option} />
                       <div className="min-w-0">
                         <p className="truncate text-sm">{option.label}</p>
                         <p className="truncate text-muted-foreground text-xs">

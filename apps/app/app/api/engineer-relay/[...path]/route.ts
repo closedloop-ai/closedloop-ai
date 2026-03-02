@@ -59,7 +59,11 @@ async function encodeBody(request: NextRequest): Promise<RelayEncodedBody> {
   const decoder = new TextDecoder();
   if (contentType?.includes("application/json")) {
     const jsonText = decoder.decode(bytes);
-    return { kind: "json", value: JSON.parse(jsonText) };
+    try {
+      return { kind: "json", value: JSON.parse(jsonText) };
+    } catch {
+      throw new RelayRequestError("Invalid JSON body", 400);
+    }
   }
 
   if (
@@ -142,7 +146,7 @@ async function ensureTargetOwnedAndOnline(
     throw new RelayRequestError("Forbidden compute target", 403);
   }
   if (!target.isOnline) {
-    throw new RelayRequestError("Compute target offline", 409);
+    throw new RelayRequestError("Compute target offline", 503);
   }
 }
 
@@ -237,9 +241,5 @@ export function PATCH(request: NextRequest): Promise<Response> {
 }
 
 export function DELETE(request: NextRequest): Promise<Response> {
-  return handleWithErrorBoundary(request);
-}
-
-export function HEAD(request: NextRequest): Promise<Response> {
   return handleWithErrorBoundary(request);
 }

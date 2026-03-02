@@ -45,11 +45,6 @@ type CreateCommandResult = {
   deduped: boolean;
 };
 
-type CreateFromRelayResult = {
-  command: StoredCommand;
-  deduped: boolean;
-};
-
 type IngestCommandEventInput = {
   commandId: string;
   eventType: DesktopCommandEventType;
@@ -350,6 +345,27 @@ async function findCommandById(
   return toStoredCommand(command as StoredCommandRow);
 }
 
+async function recoverDuplicateCommand(
+  computeTargetId: string,
+  idempotencyKey: string,
+  fingerprint: string
+): Promise<CreateCommandResult> {
+  const winner = await withDb((db) =>
+    db.desktopCommand.findFirst({
+      where: { computeTargetId, idempotencyKey },
+      orderBy: { createdAt: "desc" },
+    })
+  );
+  if (!winner) {
+    throw new IdempotencyConflictError();
+  }
+  const winnerCommand = toStoredCommand(winner as StoredCommandRow);
+  if (winnerCommand.requestFingerprint !== fingerprint) {
+    throw new IdempotencyConflictError();
+  }
+  return { command: winnerCommand, deduped: true };
+}
+
 export const desktopCommandStore = {
   async createCommand(
     computeTargetId: string,
@@ -398,21 +414,33 @@ export const desktopCommandStore = {
       }
     }
 
-    const created = await withDb((db) =>
-      db.desktopCommand.create({
-        data: {
+    let created: StoredCommandRow;
+    try {
+      created = (await withDb((db) =>
+        db.desktopCommand.create({
+          data: {
+            computeTargetId,
+            operationId: input.operationId,
+            idempotencyKey: idempotencyKey ?? null,
+            requestFingerprint: fingerprint,
+            requestPayload: input as unknown as Prisma.InputJsonValue,
+            status: "queued",
+            lastSequenceAcked: 0,
+          },
+        })
+      )) as StoredCommandRow;
+    } catch (error) {
+      if (idempotencyKey && (error as { code?: string }).code === "P2002") {
+        return recoverDuplicateCommand(
           computeTargetId,
-          operationId: input.operationId,
-          idempotencyKey: idempotencyKey ?? null,
-          requestFingerprint: fingerprint,
-          requestPayload: input as unknown as Prisma.InputJsonValue,
-          status: "queued",
-          lastSequenceAcked: 0,
-        },
-      })
-    );
+          idempotencyKey,
+          fingerprint
+        );
+      }
+      throw error;
+    }
 
-    const command = toStoredCommand(created as StoredCommandRow);
+    const command = toStoredCommand(created);
     operationIdCache.set(command.operationId, command.commandId);
     if (idempotencyKey) {
       idempotencyCache.set(`${computeTargetId}:${idempotencyKey}`, {
@@ -427,7 +455,7 @@ export const desktopCommandStore = {
   createFromRelayOperation(
     computeTargetId: string,
     operation: RelayOperationDispatchRequest
-  ): Promise<CreateFromRelayResult> {
+  ): Promise<CreateCommandResult> {
     const input = mapRelayPayloadToCommandInput(operation);
     return this.createCommand(computeTargetId, input);
   },
@@ -641,29 +669,50 @@ export const desktopCommandStore = {
       return null;
     }
 
-    if (options?.replay !== false) {
-      const replay =
-        (await this.getCommandEvents(computeTargetId, commandId)) ?? [];
-      for (const event of replay) {
-        listener(event);
-      }
-    }
+    // Register the listener BEFORE replaying from DB so no events
+    // published between the DB query and registration are missed.
+    const liveSequences = new Set<number>();
+    const replayNeeded = options?.replay !== false;
+    const wrappedListener: EventSubscriber = replayNeeded
+      ? (event) => {
+          if (typeof event.sequence === "number") {
+            liveSequences.add(event.sequence);
+          }
+          listener(event);
+        }
+      : listener;
 
     const listeners =
       eventSubscribers.get(commandId) ?? new Set<EventSubscriber>();
-    listeners.add(listener);
+    listeners.add(wrappedListener);
     eventSubscribers.set(commandId, listeners);
 
-    return () => {
+    const unsubscribe = () => {
       const next = eventSubscribers.get(commandId);
       if (!next) {
         return;
       }
-      next.delete(listener);
+      next.delete(wrappedListener);
       if (next.size === 0) {
         eventSubscribers.delete(commandId);
       }
     };
+
+    if (replayNeeded) {
+      const replay =
+        (await this.getCommandEvents(computeTargetId, commandId)) ?? [];
+      for (const event of replay) {
+        if (
+          typeof event.sequence === "number" &&
+          liveSequences.has(event.sequence)
+        ) {
+          continue;
+        }
+        listener(event);
+      }
+    }
+
+    return unsubscribe;
   },
 
   async findCommandIdByOperationId(

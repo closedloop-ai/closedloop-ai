@@ -2,6 +2,8 @@
  * Shared utilities for chat components
  */
 
+import { readNdjsonLines } from "./stream-utils";
+
 /**
  * Check if text looks like terminal/CLI output.
  * Detects box-drawing characters, ANSI codes, and common CLI patterns.
@@ -177,16 +179,9 @@ export async function readChatStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   handlers: StreamEventHandlers
 ): Promise<void> {
-  const decoder = new TextDecoder();
   let accumulated = "";
-  let buffer = "";
 
-  const parseLine = (rawLine: string) => {
-    const line = rawLine.trim();
-    if (!line) {
-      return;
-    }
-
+  for await (const line of readNdjsonLines(reader)) {
     try {
       accumulated = dispatchStreamEvent(
         JSON.parse(line),
@@ -196,28 +191,7 @@ export async function readChatStream(
     } catch {
       // Not JSON - ignore
     }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex !== -1) {
-      const line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-      parseLine(line);
-      newlineIndex = buffer.indexOf("\n");
-    }
   }
-
-  // Flush decoder and parse any trailing line without newline terminator.
-  buffer += decoder.decode();
-  parseLine(buffer);
 }
 
 /**

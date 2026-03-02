@@ -412,6 +412,7 @@ export class RelayClient {
               return;
             }
           }
+          controller.close();
         } catch (error) {
           controller.error(error);
         }

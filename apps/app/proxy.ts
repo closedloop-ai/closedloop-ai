@@ -25,11 +25,12 @@ type CacheEntry = {
 
 const computeTargetGuardCache = new Map<string, CacheEntry>();
 
-function isEngineerApiPath(pathname: string): boolean {
-  return (
-    pathname.startsWith("/api/engineer/") ||
-    pathname.startsWith("/api/engineer-relay/")
-  );
+function isEngineerLocalPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer/");
+}
+
+function isEngineerRelayPath(pathname: string): boolean {
+  return pathname.startsWith("/api/engineer-relay/");
 }
 
 function buildCacheKey(userId: string, orgId: string | null): string {
@@ -76,7 +77,11 @@ async function engineerGuard(
   auth: ProxyAuth,
   request: NextRequest
 ): Promise<NextResponse | null> {
-  if (!isEngineerApiPath(request.nextUrl.pathname)) {
+  const pathname = request.nextUrl.pathname;
+  const isLocal = isEngineerLocalPath(pathname);
+  const isRelay = isEngineerRelayPath(pathname);
+
+  if (!(isLocal || isRelay)) {
     return null;
   }
 
@@ -85,6 +90,15 @@ async function engineerGuard(
     return null;
   }
 
+  // /api/engineer/* routes spawn local CLI processes — always localhost-only.
+  if (isLocal) {
+    return NextResponse.json(
+      { error: "Engineer API is only available on localhost" },
+      { status: 403 }
+    );
+  }
+
+  // /api/engineer-relay/* routes are cloud-safe but require a compute target.
   const authState = await auth();
   if (!authState.userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

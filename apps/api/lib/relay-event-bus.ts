@@ -94,6 +94,11 @@ export const relayEventBus = {
       const pending = operationBacklog.get(targetId) ?? [];
       pending.push(operation);
       if (pending.length > MAX_PENDING_OPERATIONS) {
+        log.warn("Relay operation backlog overflow, dropping oldest", {
+          targetId,
+          operationId: operation.operationId,
+          backlogSize: pending.length,
+        });
         pending.shift();
       }
       operationBacklog.set(targetId, pending);

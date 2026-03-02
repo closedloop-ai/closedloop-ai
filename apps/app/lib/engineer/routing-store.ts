@@ -24,7 +24,7 @@ const DEFAULT_SELECTION: EngineerRoutingSelection = {
 
 let snapshot: EngineerRoutingSelection = {
   ...DEFAULT_SELECTION,
-  mode: appEnvironment === "local" ? "local-dev" : "local-dev",
+  mode: appEnvironment === "local" ? "local-dev" : "cloud-relay",
 };
 
 let hydrated = false;
@@ -161,7 +161,7 @@ export function useEngineerRoutingSelection(): EngineerRoutingSelection {
 export function resetEngineerRoutingSelectionForTests(): void {
   snapshot = {
     ...DEFAULT_SELECTION,
-    mode: appEnvironment === "local" ? "local-dev" : "local-dev",
+    mode: appEnvironment === "local" ? "local-dev" : "cloud-relay",
   };
   hydrated = false;
   listeners.clear();

@@ -1,12 +1,14 @@
-import type { RelayOperationDispatchRequest } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
+import { waitUntil } from "@vercel/functions";
 import { apiKeysService } from "@/app/api-keys/service";
 import { usersService } from "@/app/users/service";
 import { relayEventBus } from "@/lib/relay-event-bus";
+import {
+  createSseResponse,
+  createSseStream,
+  encodeSseData,
+} from "@/lib/sse-stream";
 import { computeTargetsService } from "../../service";
-
-const KEEPALIVE_INTERVAL_MS = 15_000;
-const MAX_STREAM_DURATION_MS = 30 * 60 * 1000;
 
 type ApiKeyAuthContext = {
   organizationId: string;
@@ -28,6 +30,10 @@ async function resolveApiKeyAuthContext(
     return null;
   }
 
+  if (!keyContext.scopes.includes("write")) {
+    return null;
+  }
+
   const user = await usersService.findById(
     keyContext.userId,
     keyContext.organizationId
@@ -40,15 +46,6 @@ async function resolveApiKeyAuthContext(
     organizationId: keyContext.organizationId,
     userId: keyContext.userId,
   };
-}
-
-function encodeOperation(operation: RelayOperationDispatchRequest): Uint8Array {
-  const encoder = new TextEncoder();
-  return encoder.encode(`data: ${JSON.stringify(operation)}\n\n`);
-}
-
-function encodeKeepalive(): Uint8Array {
-  return new TextEncoder().encode(": keepalive\n\n");
 }
 
 /**
@@ -82,138 +79,53 @@ export async function GET(
     true
   );
 
-  let unsubscribeOperations: (() => void) | null = null;
-  let unsubscribeConnection: (() => void) | null = null;
-  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-  let maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  let cleaned = false;
-
-  const stream = new ReadableStream({
-    start(controller) {
-      const cleanup = () => {
-        if (cleaned) {
-          return;
-        }
-        cleaned = true;
-
-        if (keepaliveTimer) {
-          clearInterval(keepaliveTimer);
-          keepaliveTimer = null;
-        }
-        if (maxDurationTimer) {
-          clearTimeout(maxDurationTimer);
-          maxDurationTimer = null;
-        }
-        if (unsubscribeOperations) {
-          unsubscribeOperations();
-          unsubscribeOperations = null;
-        }
-        if (unsubscribeConnection) {
-          unsubscribeConnection();
-          unsubscribeConnection = null;
-        }
-        computeTargetsService
-          .setOnlineState(
+  const markOffline = () => {
+    waitUntil(
+      computeTargetsService
+        .setOnlineState(
+          targetId,
+          authContext.organizationId,
+          authContext.userId,
+          false
+        )
+        .catch((error) => {
+          log.error("Failed to mark compute target offline after SSE close", {
             targetId,
-            authContext.organizationId,
-            authContext.userId,
-            false
-          )
-          .catch((error) => {
-            log.error("Failed to mark compute target offline after SSE close", {
-              targetId,
-              error,
-            });
+            error,
           });
-      };
+        })
+    );
+  };
 
-      const safeClose = () => {
-        cleanup();
-        try {
-          controller.close();
-        } catch {
-          // Stream already closed.
-        }
-      };
+  let unsubscribeConnection: (() => void) | null = null;
 
-      unsubscribeOperations = relayEventBus.subscribeOperations(
+  const stream = createSseStream(
+    ({ send, close }) => {
+      const unsubscribeOps = relayEventBus.subscribeOperations(
         targetId,
         (operation) => {
-          try {
-            controller.enqueue(encodeOperation(operation));
-          } catch (error) {
-            log.error("Failed writing relay operation to SSE stream", {
-              targetId,
-              operationId: operation.operationId,
-              error,
-            });
-            safeClose();
-          }
+          send(encodeSseData(operation));
         }
       );
 
       unsubscribeConnection = relayEventBus.subscribeTargetConnection(
         targetId,
-        safeClose
+        close
       );
 
-      keepaliveTimer = setInterval(() => {
-        try {
-          controller.enqueue(encodeKeepalive());
-        } catch {
-          safeClose();
+      return () => {
+        unsubscribeOps();
+        if (unsubscribeConnection) {
+          unsubscribeConnection();
+          unsubscribeConnection = null;
         }
-      }, KEEPALIVE_INTERVAL_MS);
+      };
+    },
+    {
+      logContext: { targetId },
+      onCleanup: markOffline,
+    }
+  );
 
-      maxDurationTimer = setTimeout(() => {
-        log.info("Relay operation SSE max duration reached", { targetId });
-        safeClose();
-      }, MAX_STREAM_DURATION_MS);
-    },
-    cancel() {
-      if (unsubscribeConnection) {
-        unsubscribeConnection();
-        unsubscribeConnection = null;
-      }
-      if (unsubscribeOperations) {
-        unsubscribeOperations();
-        unsubscribeOperations = null;
-      }
-      if (keepaliveTimer) {
-        clearInterval(keepaliveTimer);
-        keepaliveTimer = null;
-      }
-      if (maxDurationTimer) {
-        clearTimeout(maxDurationTimer);
-        maxDurationTimer = null;
-      }
-      if (!cleaned) {
-        cleaned = true;
-        computeTargetsService
-          .setOnlineState(
-            targetId,
-            authContext.organizationId,
-            authContext.userId,
-            false
-          )
-          .catch((error) => {
-            log.error(
-              "Failed to mark compute target offline after SSE cancel",
-              {
-                targetId,
-                error,
-              }
-            );
-          });
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-    },
-  });
+  return createSseResponse(stream);
 }

@@ -241,6 +241,19 @@ function hasPersistedUserMessage(
   });
 }
 
+function getInputPlaceholder(
+  isStreaming: boolean,
+  isPendingRemote: boolean
+): string {
+  if (isStreaming) {
+    return "Waiting for response...";
+  }
+  if (isPendingRemote) {
+    return "Waiting for local gateway response...";
+  }
+  return "Ask Claude anything, or @codex...";
+}
+
 /**
  * TerminalChatDialog - A chat interface with Claude (default) and @codex routing.
  */
@@ -1157,13 +1170,10 @@ export function TerminalChatDialog({
                   disabled={isStreaming || !!pendingRemoteResponse}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={
-                    isStreaming
-                      ? "Waiting for response..."
-                      : pendingRemoteResponse
-                        ? "Waiting for local gateway response..."
-                        : "Ask Claude anything, or @codex..."
-                  }
+                  placeholder={getInputPlaceholder(
+                    isStreaming,
+                    !!pendingRemoteResponse
+                  )}
                   ref={inputRef}
                   rows={1}
                   style={{
