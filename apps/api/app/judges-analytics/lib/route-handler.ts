@@ -27,12 +27,12 @@ export function createJudgesAnalyticsHandler<
 }) {
   return async ({ user }: { user: User }, request: NextRequest) => {
     try {
-      const { body: params, errorResponse: parseError } = parseQueryParams(
+      const { params, errorResponse } = parseQueryParams(
         request,
         config.validator
       );
-      if (parseError) {
-        return parseError;
+      if (errorResponse) {
+        return errorResponse;
       }
 
       const extra = config.parseExtra?.(params);

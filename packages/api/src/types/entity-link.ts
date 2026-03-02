@@ -12,7 +12,6 @@ export const EntityType = {
   ExternalLink: "EXTERNAL_LINK",
 } as const;
 export type EntityType = (typeof EntityType)[keyof typeof EntityType];
-export const ENTITY_TYPE_OPTIONS = Object.values(EntityType);
 
 export const LinkType = {
   Produces: "PRODUCES",
@@ -20,7 +19,19 @@ export const LinkType = {
   RelatesTo: "RELATES_TO",
 } as const;
 export type LinkType = (typeof LinkType)[keyof typeof LinkType];
-export const LINK_TYPE_OPTIONS = Object.values(LinkType);
+
+export const LinkDirection = {
+  Source: "source",
+  Target: "target",
+  Both: "both",
+} as const;
+export type LinkDirection = (typeof LinkDirection)[keyof typeof LinkDirection];
+
+export const LinkQueryMode = {
+  Direct: "direct",
+  Tree: "tree",
+} as const;
+export type LinkQueryMode = (typeof LinkQueryMode)[keyof typeof LinkQueryMode];
 
 export type EntityLink = {
   id: string;
@@ -52,3 +63,8 @@ export type ResolvedEntity =
   | { type: "ARTIFACT"; entity: Artifact }
   | { type: "ISSUE"; entity: Issue }
   | { type: "EXTERNAL_LINK"; entity: ExternalLink };
+
+/** An EntityLink with the "other" entity (opposite end from the queried entity) resolved. */
+export type LinkedEntity = EntityLink & {
+  resolvedEntity: ResolvedEntity | null;
+};

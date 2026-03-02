@@ -23,11 +23,11 @@ async function setupTestData() {
 async function createArtifact(
   orgId: string,
   userId: string,
-  projectId: string,
+  projectId: string | undefined,
   overrides: { type: ArtifactType; title: string }
 ) {
   const artifact = await artifactsService.create(orgId, userId, {
-    projectId,
+    ...(projectId && { projectId }),
     type: overrides.type,
     title: overrides.title,
     content: "Content",
@@ -346,6 +346,282 @@ describe.skipIf(!hasDatabase)("Entity Links Service Integration", () => {
         "ARTIFACT"
       );
       expect(after).toHaveLength(0);
+    });
+  });
+
+  describe("findLinkTree", () => {
+    it("traverses a three-artifact chain", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const prd = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "PRD", title: "PRD" }
+        );
+        const plan = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+        );
+        const strategy = await createArtifact(
+          testOrgId,
+          testUser.id,
+          undefined,
+          { type: "TEMPLATE", title: "Strategy" }
+        );
+
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          targetId: plan.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: plan.id,
+          sourceType: "ARTIFACT",
+          targetId: strategy.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+
+        const tree = await entityLinksService.findLinkTree(
+          testOrgId,
+          prd.id,
+          "ARTIFACT",
+          "both",
+          10
+        );
+
+        expect(tree).toHaveLength(2);
+        expect(tree[0].fromEntityId).toBe(prd.id);
+        expect(tree[1].fromEntityId).toBe(plan.id);
+      });
+    });
+
+    it("traverses across entity types", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const artifact = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "PRD", title: "PRD" }
+        );
+        const externalLink = await externalLinksService.create(testOrgId, {
+          type: "PULL_REQUEST",
+          title: "PR #1",
+          externalUrl: "https://github.com/org/repo/pull/1",
+        });
+
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: artifact.id,
+          sourceType: "ARTIFACT",
+          targetId: externalLink.id,
+          targetType: "EXTERNAL_LINK",
+          linkType: "PRODUCES",
+        });
+
+        const tree = await entityLinksService.findLinkTree(
+          testOrgId,
+          artifact.id,
+          "ARTIFACT",
+          "both",
+          10
+        );
+
+        expect(tree).toHaveLength(1);
+        expect(tree[0].link.targetType).toBe("EXTERNAL_LINK");
+        expect(tree[0].fromEntityId).toBe(artifact.id);
+      });
+    });
+
+    it("respects maxDepth", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const a = await createArtifact(testOrgId, testUser.id, testProjectId, {
+          type: "PRD",
+          title: "A",
+        });
+        const b = await createArtifact(testOrgId, testUser.id, testProjectId, {
+          type: "IMPLEMENTATION_PLAN",
+          title: "B",
+        });
+        const c = await createArtifact(testOrgId, testUser.id, undefined, {
+          type: "TEMPLATE",
+          title: "C",
+        });
+
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: a.id,
+          sourceType: "ARTIFACT",
+          targetId: b.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: b.id,
+          sourceType: "ARTIFACT",
+          targetId: c.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+
+        // maxDepth=1: only direct links from A
+        const shallow = await entityLinksService.findLinkTree(
+          testOrgId,
+          a.id,
+          "ARTIFACT",
+          "both",
+          1
+        );
+
+        expect(shallow).toHaveLength(1);
+        expect(shallow[0].link.sourceId).toBe(a.id);
+        expect(shallow[0].link.targetId).toBe(b.id);
+      });
+    });
+  });
+
+  describe("resolveLinkedEntities", () => {
+    it("resolves the other entity on each link", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const prd = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "PRD", title: "Feature PRD" }
+        );
+        const plan = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+        );
+
+        const link = await entityLinksService.createLink(testOrgId, {
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          targetId: plan.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+
+        const resolved = await entityLinksService.resolveLinkedEntities(
+          testOrgId,
+          [{ link, fromEntityId: prd.id }]
+        );
+
+        expect(resolved).toHaveLength(1);
+        expect(resolved[0].id).toBe(link.id);
+        expect(resolved[0].resolvedEntity).not.toBeNull();
+        expect(resolved[0].resolvedEntity!.type).toBe("ARTIFACT");
+        expect(resolved[0].resolvedEntity!.entity.id).toBe(plan.id);
+      });
+    });
+
+    it("resolves cross-type links", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const artifact = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+        );
+
+        const externalLink = await externalLinksService.create(testOrgId, {
+          type: "PULL_REQUEST",
+          title: "PR #99",
+          externalUrl: "https://github.com/org/repo/pull/99",
+        });
+
+        const link = await entityLinksService.createLink(testOrgId, {
+          sourceId: artifact.id,
+          sourceType: "ARTIFACT",
+          targetId: externalLink.id,
+          targetType: "EXTERNAL_LINK",
+          linkType: "PRODUCES",
+        });
+
+        const resolved = await entityLinksService.resolveLinkedEntities(
+          testOrgId,
+          [{ link, fromEntityId: artifact.id }]
+        );
+
+        expect(resolved).toHaveLength(1);
+        expect(resolved[0].resolvedEntity!.type).toBe("EXTERNAL_LINK");
+        expect(resolved[0].resolvedEntity!.entity.id).toBe(externalLink.id);
+      });
+    });
+
+    it("resolves tree traversal with correct entity at each hop", async () => {
+      await autoRollbackTransaction(async () => {
+        const { testOrgId, testProjectId, testUser } = await setupTestData();
+
+        const prd = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "PRD", title: "PRD" }
+        );
+        const plan = await createArtifact(
+          testOrgId,
+          testUser.id,
+          testProjectId,
+          { type: "IMPLEMENTATION_PLAN", title: "Plan" }
+        );
+        const pr = await externalLinksService.create(testOrgId, {
+          type: "PULL_REQUEST",
+          title: "PR #1",
+          externalUrl: "https://github.com/org/repo/pull/1",
+        });
+
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: prd.id,
+          sourceType: "ARTIFACT",
+          targetId: plan.id,
+          targetType: "ARTIFACT",
+          linkType: "PRODUCES",
+        });
+        await entityLinksService.createLink(testOrgId, {
+          sourceId: plan.id,
+          sourceType: "ARTIFACT",
+          targetId: pr.id,
+          targetType: "EXTERNAL_LINK",
+          linkType: "PRODUCES",
+        });
+
+        // findLinkTree returns annotated links with fromEntityId per hop
+        const tree = await entityLinksService.findLinkTree(
+          testOrgId,
+          prd.id,
+          "ARTIFACT",
+          "both",
+          10
+        );
+
+        const resolved = await entityLinksService.resolveLinkedEntities(
+          testOrgId,
+          tree
+        );
+
+        expect(resolved).toHaveLength(2);
+        // First link: PRD→Plan, discovered from PRD → resolves Plan
+        expect(resolved[0].resolvedEntity!.type).toBe("ARTIFACT");
+        expect(resolved[0].resolvedEntity!.entity.id).toBe(plan.id);
+        // Second link: Plan→PR, discovered from Plan → resolves PR
+        expect(resolved[1].resolvedEntity!.type).toBe("EXTERNAL_LINK");
+        expect(resolved[1].resolvedEntity!.entity.id).toBe(pr.id);
+      });
     });
   });
 
