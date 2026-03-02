@@ -31,6 +31,9 @@ jobs:
       - name: TypeScript type check
         run: pnpm typecheck
 
+      - name: Figma Code Connect type check
+        run: pnpm --filter @repo/design-system figma:typecheck
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
