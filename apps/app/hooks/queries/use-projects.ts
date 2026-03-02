@@ -121,8 +121,13 @@ export function useCreateProject() {
         ...input,
         targetDate: input.targetDate?.toISOString(),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.all });
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+      if (result.teams.length) {
+        queryClient.invalidateQueries({
+          queryKey: projectKeys.recent(result.teams[0].id),
+        });
+      }
     },
   });
 }
@@ -144,12 +149,16 @@ export function useUpdateProject() {
         }),
       });
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.invalidateQueries({
-        queryKey: projectKeys.detail(variables.id),
+        queryKey: projectKeys.detail(result.id),
       });
-      queryClient.invalidateQueries({ queryKey: projectKeys.all });
-      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
+      if (result.teams.length) {
+        queryClient.invalidateQueries({
+          queryKey: projectKeys.recent(result.teams[0].id),
+        });
+      }
     },
   });
 }
@@ -163,7 +172,6 @@ export function useDeleteProject() {
       apiClient.delete<{ deleted: true }>(`/projects/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: projectKeys.all });
-      queryClient.invalidateQueries({ queryKey: projectKeys.favorites() });
     },
   });
 }
@@ -256,6 +264,9 @@ export function useReorderProjects() {
 
       return { previousLists };
     },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
+    },
     onError: (_err, _variables, context) => {
       if (context?.previousLists) {
         for (const [queryKey, data] of context.previousLists) {
@@ -263,13 +274,11 @@ export function useReorderProjects() {
         }
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
-    },
   });
 }
 
 export function useUploadCodebaseSummary() {
+  const queryClient = useQueryClient();
   const updateProject = useUpdateProject();
 
   return useMutation({
@@ -285,6 +294,11 @@ export function useUploadCodebaseSummary() {
         codebaseSummary: markdownContent,
         lastIndexedAt: new Date(),
       }),
+    onSuccess: (_, input) => {
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.detail(input.projectId),
+      });
+    },
   });
 }
 

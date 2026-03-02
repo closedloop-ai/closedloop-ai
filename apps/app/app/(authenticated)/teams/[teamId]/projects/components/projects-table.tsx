@@ -6,11 +6,6 @@ import {
 } from "@dnd-kit/sortable";
 import { Priority } from "@repo/api/src/types/common";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@repo/design-system/components/ui/avatar";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { HexagonProgress } from "@repo/design-system/components/ui/hexagon-progress";
 import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge";
@@ -31,9 +26,10 @@ import {
   type User as PopoverUser,
   UserSelectPopover,
 } from "@repo/design-system/components/ui/user-select-popover";
-import { FolderIcon, UserIcon } from "lucide-react";
+import { FolderIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
@@ -59,50 +55,6 @@ type ProjectsTableProps = {
   onDelete?: (projectId: string) => Promise<boolean>;
 };
 
-const PROJECT_SORT_COLUMNS = [
-  "name",
-  "priority",
-  "assignee",
-  "targetDate",
-  "status",
-  "updatedAt",
-] as const;
-
-type ProjectSortColumn = (typeof PROJECT_SORT_COLUMNS)[number];
-
-const PRIORITY_ORDER: Record<Priority, number> = {
-  [Priority.Urgent]: 0,
-  [Priority.High]: 1,
-  [Priority.Medium]: 2,
-  [Priority.Low]: 3,
-};
-
-const PROJECT_SORT_CONFIGS: Record<
-  ProjectSortColumn,
-  SortConfig<ProjectWithDetails>
-> = {
-  name: { key: "name", columnType: "string" },
-  priority: {
-    key: "priority",
-    comparator: (a, b) =>
-      (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99),
-  },
-  assignee: {
-    key: "assignee",
-    comparator: (a, b) => {
-      const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
-      const bName = b.assignee ? getUserDisplayName(b.assignee) : "";
-      return aName.localeCompare(bName);
-    },
-  },
-  targetDate: {
-    key: "targetDate",
-    columnType: "date",
-  },
-  status: { key: "completionPercentage", columnType: "number" },
-  updatedAt: { key: "updatedAt", columnType: "date" },
-};
-
 export function ProjectsTable({
   projects,
   teamId,
@@ -113,8 +65,8 @@ export function ProjectsTable({
   const router = useRouter();
   const { data: usersResult } = useOrganizationUsers();
   const { sortBy, sortDir, setSort } = useSortParams<ProjectSortColumn>({
-    defaultColumn: "updatedAt",
-    defaultDirection: "desc",
+    defaultColumn: "name",
+    defaultDirection: "asc",
     validColumns: PROJECT_SORT_COLUMNS,
   });
 
@@ -254,38 +206,12 @@ export function ProjectsTable({
                   <UserSelectPopover
                     onSelect={(user) => handleAssigneeChange(project.id, user)}
                     trigger={
-                      project.assignee ? (
-                        <button
-                          className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
-                          type="button"
-                        >
-                          <Avatar className="h-6 w-6">
-                            {project.assignee.avatarUrl ? (
-                              <AvatarImage
-                                alt={getUserDisplayName(project.assignee)}
-                                src={project.assignee.avatarUrl}
-                              />
-                            ) : null}
-                            <AvatarFallback className="text-[10px]">
-                              {getUserInitials(
-                                project.assignee.firstName,
-                                project.assignee.lastName
-                              )}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm">
-                            {getUserDisplayName(project.assignee)}
-                          </span>
-                        </button>
-                      ) : (
-                        <button
-                          className="-mx-1 flex items-center gap-2 rounded px-1 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                          type="button"
-                        >
-                          <UserIcon className="h-4 w-4" />
-                          <span className="text-sm">Unassigned</span>
-                        </button>
-                      )
+                      <button
+                        className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
+                        type="button"
+                      >
+                        <AssigneeAvatar assignee={project.assignee} />
+                      </button>
                     }
                     users={orgUsers}
                     value={
@@ -368,3 +294,47 @@ export function ProjectsTable({
     </div>
   );
 }
+
+const PROJECT_SORT_COLUMNS = [
+  "name",
+  "priority",
+  "assignee",
+  "targetDate",
+  "status",
+  "updatedAt",
+] as const;
+
+type ProjectSortColumn = (typeof PROJECT_SORT_COLUMNS)[number];
+
+const PRIORITY_ORDER: Record<Priority, number> = {
+  [Priority.Urgent]: 0,
+  [Priority.High]: 1,
+  [Priority.Medium]: 2,
+  [Priority.Low]: 3,
+};
+
+const PROJECT_SORT_CONFIGS: Record<
+  ProjectSortColumn,
+  SortConfig<ProjectWithDetails>
+> = {
+  name: { key: "name", columnType: "string" },
+  priority: {
+    key: "priority",
+    comparator: (a, b) =>
+      (PRIORITY_ORDER[a.priority] ?? 99) - (PRIORITY_ORDER[b.priority] ?? 99),
+  },
+  assignee: {
+    key: "assignee",
+    comparator: (a, b) => {
+      const aName = a.assignee ? getUserDisplayName(a.assignee) : "";
+      const bName = b.assignee ? getUserDisplayName(b.assignee) : "";
+      return aName.localeCompare(bName);
+    },
+  },
+  targetDate: {
+    key: "targetDate",
+    columnType: "date",
+  },
+  status: { key: "completionPercentage", columnType: "number" },
+  updatedAt: { key: "updatedAt", columnType: "date" },
+};
