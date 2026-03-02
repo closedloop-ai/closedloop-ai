@@ -2,6 +2,17 @@
 
 import * as React from "react";
 import { cn } from "@repo/design-system/lib/utils";
+import {
+  CENTER,
+  CIRCUMFERENCE,
+  FilledCheckCircle,
+  FilledXCircle,
+  INNER_CIRCUMFERENCE,
+  INNER_PATH_RADIUS,
+  INNER_STROKE_WIDTH,
+  RADIUS,
+  STROKE_WIDTH,
+} from "./status-icon-shared";
 
 type StatusIconStatus =
   | "backlog"
@@ -17,19 +28,9 @@ interface StatusIconProps
   status: StatusIconStatus;
   /** Icon size in pixels (default 16) */
   size?: 16 | 20;
-  /** Show spinning arc for AI/agent processing */
+  /** Show spinning arc for AI/agent processing (applied to non-terminal statuses) */
   thinking?: boolean;
 }
-
-const CENTER = 10;
-const RADIUS = 9;
-const STROKE_WIDTH = 2;
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-
-// Inner filled circle: thick stroke on a small path creates a solid disk.
-const INNER_PATH_RADIUS = 3;
-const INNER_STROKE_WIDTH = INNER_PATH_RADIUS * 2;
-const INNER_CIRCUMFERENCE = 2 * Math.PI * INNER_PATH_RADIUS;
 
 type StatusConfig = {
   percentage: number;
@@ -82,26 +83,8 @@ function StatusIcon({
         className={cn("shrink-0", className)}
         {...props}
       >
-        <circle cx={CENTER} cy={CENTER} r={RADIUS + STROKE_WIDTH / 2} fill={config.color} />
-        {config.icon === "check" && (
-          <path
-            d="M6.5 10.5L9.5 13.5L14 7.5"
-            stroke="var(--background)"
-            strokeWidth={1.66}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          />
-        )}
-        {config.icon === "x" && (
-          <path
-            d="M7 7L13 13M13 7L7 13"
-            stroke="var(--background)"
-            strokeWidth={1.66}
-            strokeLinecap="round"
-            fill="none"
-          />
-        )}
+        {config.icon === "check" && <FilledCheckCircle fill={config.color} />}
+        {config.icon === "x" && <FilledXCircle fill={config.color} />}
       </svg>
     );
   }
@@ -154,7 +137,7 @@ function StatusIcon({
           cx={CENTER}
           cy={CENTER}
           r={RADIUS}
-          stroke={config.color}
+          stroke="var(--thinking)"
           strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           fill="none"

@@ -2,6 +2,16 @@
 
 import * as React from "react";
 import { cn } from "@repo/design-system/lib/utils";
+import {
+  CENTER,
+  CIRCUMFERENCE,
+  FilledCheckCircle,
+  INNER_CIRCUMFERENCE,
+  INNER_PATH_RADIUS,
+  INNER_STROKE_WIDTH,
+  RADIUS,
+  STROKE_WIDTH,
+} from "./status-icon-shared";
 
 interface StatusPercentageIconProps
   extends React.SVGAttributes<SVGSVGElement> {
@@ -12,16 +22,6 @@ interface StatusPercentageIconProps
   /** Show spinning arc for AI/agent processing */
   thinking?: boolean;
 }
-
-const CENTER = 10;
-const RADIUS = 9;
-const STROKE_WIDTH = 2;
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-
-// Inner filled circle: thick stroke on a small path creates a solid disk.
-const INNER_PATH_RADIUS = 3;
-const INNER_STROKE_WIDTH = INNER_PATH_RADIUS * 2;
-const INNER_CIRCUMFERENCE = 2 * Math.PI * INNER_PATH_RADIUS;
 
 function StatusPercentageIcon({
   value,
@@ -43,15 +43,7 @@ function StatusPercentageIcon({
         className={cn("shrink-0", className)}
         {...props}
       >
-        <circle cx={CENTER} cy={CENTER} r={RADIUS + STROKE_WIDTH / 2} fill="var(--success)" />
-        <path
-          d="M6.5 10.5L9.5 13.5L14 7.5"
-          stroke="var(--background)"
-          strokeWidth={1.66}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          fill="none"
-        />
+        <FilledCheckCircle fill="var(--success)" />
       </svg>
     );
   }
@@ -102,7 +94,7 @@ function StatusPercentageIcon({
           cx={CENTER}
           cy={CENTER}
           r={RADIUS}
-          stroke="var(--progress-foreground)"
+          stroke="var(--thinking)"
           strokeWidth={STROKE_WIDTH}
           strokeLinecap="round"
           fill="none"
