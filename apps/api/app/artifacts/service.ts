@@ -1728,6 +1728,9 @@ Please try again or contact support if the issue persists.`
       const evaluation = await withDb((db) =>
         db.artifactEvaluation.findFirst({
           where: { artifactId, reportType },
+          include: {
+            judgeScores: { include: { prompt: { select: { name: true } } } },
+          },
           orderBy: { createdAt: "desc" },
         })
       );
@@ -1736,14 +1739,7 @@ Please try again or contact support if the issue persists.`
         return { status: "not_found", data: null };
       }
 
-      const judgeScores = await withDb((db) =>
-        db.judgeScore.findMany({
-          where: { evaluationId: evaluation.id },
-          include: { prompt: { select: { name: true } } },
-        })
-      );
-
-      const data: JudgeFeedbackItem[] = judgeScores.map((js) => ({
+      const data: JudgeFeedbackItem[] = evaluation.judgeScores.map((js) => ({
         caseId: js.caseId,
         score: js.score,
         threshold: js.threshold,

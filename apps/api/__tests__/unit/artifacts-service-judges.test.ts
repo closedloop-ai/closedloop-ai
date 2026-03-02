@@ -80,26 +80,19 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      mockWithDb
-        .mockImplementationOnce((callback: any) =>
-          callback({
-            artifactEvaluation: {
-              findFirst: vi.fn().mockResolvedValue(
-                createMockEvaluationRow({
-                  id: "eval-123",
-                  artifactId: "artifact-123",
-                })
-              ),
-            },
-          })
-        )
-        .mockImplementationOnce((callback: any) =>
-          callback({
-            judgeScore: {
-              findMany: vi.fn().mockResolvedValue([MOCK_JUDGE_SCORE_ROW]),
-            },
-          })
-        );
+      mockWithDb.mockImplementation((callback: any) =>
+        callback({
+          artifactEvaluation: {
+            findFirst: vi.fn().mockResolvedValue({
+              ...createMockEvaluationRow({
+                id: "eval-123",
+                artifactId: "artifact-123",
+              }),
+              judgeScores: [MOCK_JUDGE_SCORE_ROW],
+            }),
+          },
+        })
+      );
     },
     expectedResult: { status: "success", data: EXPECTED_FEEDBACK_ITEMS },
   },
@@ -137,23 +130,16 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       vi.spyOn(artifactsService, "findByIdSimple").mockResolvedValue({
         id: "artifact-123",
       } as any);
-      mockWithDb
-        .mockImplementationOnce((callback: any) =>
-          callback({
-            artifactEvaluation: {
-              findFirst: vi
-                .fn()
-                .mockResolvedValue(createMockEvaluationRow({ id: "eval-123" })),
-            },
-          })
-        )
-        .mockImplementationOnce((callback: any) =>
-          callback({
-            judgeScore: {
-              findMany: vi.fn().mockResolvedValue([]),
-            },
-          })
-        );
+      mockWithDb.mockImplementation((callback: any) =>
+        callback({
+          artifactEvaluation: {
+            findFirst: vi.fn().mockResolvedValue({
+              ...createMockEvaluationRow({ id: "eval-123" }),
+              judgeScores: [],
+            }),
+          },
+        })
+      );
     },
     expectedResult: { status: "success", data: [] },
   },
@@ -201,6 +187,9 @@ describe("artifactsService.getJudgesFeedback", () => {
         artifactId: "artifact-123",
         reportType: EvaluationReportType.Plan,
       },
+      include: {
+        judgeScores: { include: { prompt: { select: { name: true } } } },
+      },
       orderBy: { createdAt: "desc" },
     });
   });
@@ -219,22 +208,16 @@ describe("artifactsService.getJudgesFeedback", () => {
       prompt: { id: "prompt-123", name: "DRY Principle Judge" },
     });
 
-    let callCount = 0;
-    mockWithDb.mockImplementation((callback: any) => {
-      callCount++;
-      if (callCount === 1) {
-        return callback({
-          artifactEvaluation: {
-            findFirst: vi.fn().mockResolvedValue(createMockEvaluationRow()),
-          },
-        });
-      }
-      return callback({
-        judgeScore: {
-          findMany: vi.fn().mockResolvedValue([scoreWithPrompt]),
+    mockWithDb.mockImplementation((callback: any) =>
+      callback({
+        artifactEvaluation: {
+          findFirst: vi.fn().mockResolvedValue({
+            ...createMockEvaluationRow(),
+            judgeScores: [scoreWithPrompt],
+          }),
         },
-      });
-    });
+      })
+    );
 
     const result = await artifactsService.getJudgesFeedback(
       "artifact-123",
@@ -276,6 +259,9 @@ describe("artifactsService.getCodeJudgesFeedback", () => {
       where: {
         artifactId: "artifact-123",
         reportType: EvaluationReportType.Code,
+      },
+      include: {
+        judgeScores: { include: { prompt: { select: { name: true } } } },
       },
       orderBy: { createdAt: "desc" },
     });
