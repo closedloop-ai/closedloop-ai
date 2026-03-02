@@ -171,6 +171,9 @@ describe("POST /compute-targets/:id/results", () => {
       mockTarget as any
     );
     vi.mocked(computeTargetsService.heartbeat).mockResolvedValue(true);
+    vi.mocked(desktopCommandStore.findCommandIdByOperationId).mockResolvedValue(
+      "cmd-1"
+    );
 
     const response = await resultsPOST(
       createMockRequest({
