@@ -1,14 +1,20 @@
+import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
   ArtifactCountsResponse,
   ArtifactTypeGroup,
+  CharacteristicLabel,
   JudgeAggregateStats,
+  JudgeDetailResponse,
+  JudgePromptVersion,
   JudgeStatsResponse,
+  RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
-import { withDb } from "@repo/database";
+import { PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
 const SUNDAY_INDEX = 0;
@@ -259,6 +265,7 @@ function computeJudgeStats(
 
   return {
     judgeName,
+    promptName: normalizeJudgeName(judgeName),
     artifactsEvaluated: judgeData.artifactIds.size,
     min,
     mean,
@@ -465,4 +472,285 @@ export const judgesAnalyticsService = {
       });
     return { buckets };
   },
+
+  /**
+   * Get detailed statistics for a single judge identified by normalized prompt name.
+   *
+   * @param organizationId - Organization ID to scope the query
+   * @param promptName - URL-safe normalized judge name (e.g. "clarity")
+   * @returns Full judge detail or null if not found
+   */
+  async getJudgeDetail(
+    organizationId: string,
+    promptName: string
+  ): Promise<JudgeDetailResponse | null> {
+    // 1. Resolve judge by promptName — find all JUDGE prompts in org and match normalized name
+    const allJudgePrompts = await withDb((db) =>
+      db.prompt.findMany({
+        where: {
+          organizationId,
+          promptType: PromptType.JUDGE,
+        },
+        select: {
+          id: true,
+          name: true,
+          version: true,
+          content: true,
+          createdAt: true,
+        },
+        orderBy: { version: "desc" },
+      })
+    );
+
+    // Group prompts by normalized name
+    const matchingPrompts = allJudgePrompts.filter(
+      (p) => normalizeJudgeName(p.name) === promptName
+    );
+
+    if (matchingPrompts.length === 0) {
+      return null;
+    }
+
+    // 2. Latest prompt is first (ordered by version DESC)
+    const latestPrompt = matchingPrompts[0];
+
+    // Collect all raw names for this judge (different versions may have slightly different raw names)
+    const rawNames = new Set(matchingPrompts.map((p) => p.name));
+    const promptIds = matchingPrompts.map((p) => p.id);
+    const promptIdSet = new Set(promptIds);
+
+    // Expand to include hyphen/underscore variants so we match stored caseIds
+    const caseIdVariants = new Set<string>();
+    for (const name of rawNames) {
+      caseIdVariants.add(name);
+      caseIdVariants.add(name.replaceAll("_", "-"));
+      caseIdVariants.add(name.replaceAll("-", "_"));
+    }
+
+    // 3. Load score rows — match by caseId (any raw name variant) scoped to org
+    const allScores = await withDb((db) =>
+      db.judgeScore.findMany({
+        where: {
+          evaluation: {
+            artifact: { organizationId },
+          },
+          caseId: { in: Array.from(caseIdVariants) },
+        },
+        select: {
+          promptId: true,
+          score: true,
+          threshold: true,
+          finalStatus: true,
+          createdAt: true,
+        },
+      })
+    );
+
+    const scoreValues = allScores.map((s) => s.score);
+    const scoreCount = scoreValues.length;
+
+    // 4. Compute radar axes (null when insufficient scores)
+    let radarAxes: RadarAxes | null = null;
+    let labels: CharacteristicLabel[] = [];
+
+    if (scoreCount >= JUDGE_THRESHOLDS.minScoreCount) {
+      const mean = computeMean(scoreValues);
+      const stdDev = computeStdDev(scoreValues, mean);
+      const bimodality = computeBimodalityCoefficient(scoreValues);
+      const certaintyFraction = computeCertaintyFraction(scoreValues);
+
+      radarAxes = {
+        stubbornness: 1 - clamp(stdDev / 0.5, 0, 1),
+        optimism: mean,
+        polarity: bimodality,
+        certainty: certaintyFraction,
+      };
+
+      // 5. Derive characteristic labels from raw stats
+      labels = deriveCharacteristicLabels(
+        stdDev,
+        mean,
+        bimodality,
+        certaintyFraction
+      );
+    }
+
+    // 6. Build per-version stats
+    const scoresByPromptId = new Map<string, number[]>();
+    let unknownVersionScoreCount = 0;
+
+    for (const s of allScores) {
+      if (s.promptId && promptIdSet.has(s.promptId)) {
+        const bucket = scoresByPromptId.get(s.promptId) ?? [];
+        bucket.push(s.score);
+        scoresByPromptId.set(s.promptId, bucket);
+      } else {
+        unknownVersionScoreCount++;
+      }
+    }
+
+    const promptVersions: JudgePromptVersion[] = [];
+    for (const prompt of matchingPrompts) {
+      const versionScores = scoresByPromptId.get(prompt.id);
+      if (!versionScores || versionScores.length === 0) {
+        continue;
+      }
+
+      const vMean = computeMean(versionScores);
+      const vStdDev = computeStdDev(versionScores, vMean);
+
+      let versionRadarAxes: RadarAxes | null = null;
+      if (versionScores.length >= JUDGE_THRESHOLDS.minScoreCount) {
+        const vBimodality = computeBimodalityCoefficient(versionScores);
+        const vCertaintyFraction = computeCertaintyFraction(versionScores);
+        versionRadarAxes = {
+          stubbornness: 1 - clamp(vStdDev / 0.5, 0, 1),
+          optimism: vMean,
+          polarity: vBimodality,
+          certainty: vCertaintyFraction,
+        };
+      }
+
+      promptVersions.push({
+        promptId: prompt.id,
+        version: prompt.version,
+        scoreCount: versionScores.length,
+        mean: vMean,
+        stdDev: vStdDev,
+        min: Math.min(...versionScores),
+        max: Math.max(...versionScores),
+        createdAt: prompt.createdAt.toISOString(),
+        radarAxes: versionRadarAxes,
+      });
+    }
+
+    return {
+      judge: {
+        promptName,
+        displayName: latestPrompt.name,
+        latestPromptId: latestPrompt.id,
+        scoreCount,
+        radarAxes,
+        labels,
+        promptText: latestPrompt.content,
+        promptVersions,
+        unknownVersionScoreCount,
+      },
+    };
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Statistical helper functions
+// ---------------------------------------------------------------------------
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function computeMean(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+export function computeStdDev(values: number[], mean: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const variance =
+    values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+export function computeSkewness(
+  values: number[],
+  mean: number,
+  stdDev: number
+): number {
+  const n = values.length;
+  if (n < 3 || stdDev === 0) {
+    return 0;
+  }
+  const m3 = values.reduce((acc, v) => acc + ((v - mean) / stdDev) ** 3, 0) / n;
+  return m3;
+}
+
+export function computeExcessKurtosis(
+  values: number[],
+  mean: number,
+  stdDev: number
+): number {
+  const n = values.length;
+  if (n < 4 || stdDev === 0) {
+    return 0;
+  }
+  const m4 = values.reduce((acc, v) => acc + ((v - mean) / stdDev) ** 4, 0) / n;
+  return m4 - 3;
+}
+
+export function computeBimodalityCoefficient(values: number[]): number {
+  const n = values.length;
+  if (n < 4) {
+    return 0;
+  }
+
+  const mean = computeMean(values);
+  const stdDev = computeStdDev(values, mean);
+  if (stdDev === 0) {
+    return 0;
+  }
+
+  const skewness = computeSkewness(values, mean, stdDev);
+  const excessKurtosis = computeExcessKurtosis(values, mean, stdDev);
+
+  const denominator = excessKurtosis + (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
+  if (denominator <= 0) {
+    return 0;
+  }
+
+  const bc = (skewness ** 2 + 1) / denominator;
+  return clamp(bc, 0, 1);
+}
+
+export function computeCertaintyFraction(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const extremeCount = values.filter((v) => v > 0.7 || v < 0.3).length;
+  return extremeCount / values.length;
+}
+
+export function deriveCharacteristicLabels(
+  stdDev: number,
+  mean: number,
+  bimodality: number,
+  certaintyFraction: number
+): CharacteristicLabel[] {
+  const labels: CharacteristicLabel[] = [];
+
+  if (stdDev < JUDGE_THRESHOLDS.stubbornness.stubborn) {
+    labels.push("Stubborn");
+  } else if (stdDev > JUDGE_THRESHOLDS.stubbornness.openMinded) {
+    labels.push("Open-Minded");
+  }
+
+  if (mean > JUDGE_THRESHOLDS.optimism.optimistic) {
+    labels.push("Optimistic");
+  } else if (mean < JUDGE_THRESHOLDS.optimism.critical) {
+    labels.push("Critical");
+  }
+
+  if (bimodality > JUDGE_THRESHOLDS.polarity.polarizing) {
+    labels.push("Polarizing");
+  }
+
+  if (certaintyFraction > JUDGE_THRESHOLDS.certainty.decisive) {
+    labels.push("Decisive");
+  } else if (certaintyFraction < JUDGE_THRESHOLDS.certainty.uncertain) {
+    labels.push("Uncertain");
+  }
+
+  return labels;
+}

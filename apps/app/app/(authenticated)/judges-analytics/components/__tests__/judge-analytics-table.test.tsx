@@ -14,6 +14,7 @@ function makeJudge(
 ): JudgeAggregateStats {
   return {
     judgeName: "gpt-4o",
+    promptName: "gpt-4o",
     artifactsEvaluated: 10,
     min: 1.5,
     mean: 3.5,

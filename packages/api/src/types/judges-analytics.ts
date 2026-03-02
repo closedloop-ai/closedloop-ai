@@ -22,6 +22,8 @@ import type { ArtifactType } from "./artifact";
  */
 export type JudgeAggregateStats = {
   judgeName: string;
+  /** URL-safe normalized prompt name for navigation links. */
+  promptName: string;
   artifactsEvaluated: number;
   min: number;
   mean: number;
@@ -102,3 +104,61 @@ export const ARTIFACT_COUNTS_GROUP_BY_OPTIONS = [
 
 export type ArtifactCountsGroupBy =
   (typeof ARTIFACT_COUNTS_GROUP_BY_OPTIONS)[number];
+
+// ---------------------------------------------------------------------------
+// Judge detail page types (GET /judges-analytics/:promptName)
+// ---------------------------------------------------------------------------
+
+/**
+ * Score statistics for a single prompt version.
+ */
+export type JudgePromptVersion = {
+  promptId: string;
+  version: number;
+  scoreCount: number;
+  mean: number;
+  stdDev: number;
+  min: number;
+  max: number;
+  createdAt: string; // ISO date string
+  radarAxes: RadarAxes | null; // null when scoreCount < minScoreCount
+};
+
+/**
+ * Normalized radar-chart axes describing a judge's behavioral characteristics.
+ * All values are in [0, 1].
+ */
+export type RadarAxes = {
+  stubbornness: number; // high = very consistent/stubborn
+  optimism: number; // high = optimistic, low = critical
+  polarity: number; // high = polarizing
+  certainty: number; // high = decisive
+};
+
+export type CharacteristicLabel =
+  | "Stubborn"
+  | "Open-Minded"
+  | "Optimistic"
+  | "Critical"
+  | "Polarizing"
+  | "Decisive"
+  | "Uncertain";
+
+/**
+ * Full detail payload for a single judge, keyed by normalized prompt name.
+ */
+export type JudgeDetail = {
+  promptName: string; // normalized, stable cross-version key
+  displayName: string; // raw prompt name for display
+  latestPromptId: string | null;
+  scoreCount: number;
+  radarAxes: RadarAxes | null; // null when scoreCount < minScoreCount
+  labels: CharacteristicLabel[];
+  promptText: string | null; // from latest prompt row
+  promptVersions: JudgePromptVersion[];
+  unknownVersionScoreCount: number; // prompt_id IS NULL rows count
+};
+
+export type JudgeDetailResponse = {
+  judge: JudgeDetail;
+};

@@ -15,6 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
+import Link from "next/link";
 import { useMemo } from "react";
 import { useSortParams } from "@/hooks/use-sort-params";
 import judgeDescriptions from "@/lib/judge-descriptions.json";
@@ -101,19 +102,23 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
                   judgeDescriptions[
                     judge.judgeName as keyof typeof judgeDescriptions
                   ];
+                const nameLink = (
+                  <Link
+                    className="underline decoration-dotted hover:decoration-solid"
+                    href={`/judges-analytics/${judge.promptName}`}
+                  >
+                    {judge.judgeName}
+                  </Link>
+                );
                 return description ? (
                   <TooltipProvider>
                     <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="cursor-help underline decoration-dotted">
-                          {judge.judgeName}
-                        </span>
-                      </TooltipTrigger>
+                      <TooltipTrigger asChild>{nameLink}</TooltipTrigger>
                       <TooltipContent>{description}</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
                 ) : (
-                  judge.judgeName
+                  nameLink
                 );
               })()}
             </TableCell>

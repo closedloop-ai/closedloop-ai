@@ -1,6 +1,10 @@
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type {
+  JudgesReport,
+  MetricStatistics,
+} from "@repo/api/src/types/evaluation";
 import type { Prisma, TransactionClient } from "@repo/database";
 import { PromptType } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "./judge-name-utils";
 
 /**
@@ -44,14 +48,22 @@ export async function fanOutJudgeScores(params: {
   const rows: Prisma.JudgeScoreCreateManyInput[] = [];
 
   for (const caseScore of params.report.stats) {
-    const metric = caseScore.metrics.at(0);
+    const metric = selectMetricByCaseId(caseScore.case_id, caseScore.metrics);
 
     if (metric === undefined) {
       continue;
     }
 
-    const promptId =
-      promptLookup.get(normalizeJudgeName(caseScore.case_id)) ?? null;
+    const normalizedCaseId = normalizeJudgeName(caseScore.case_id);
+    const promptId = promptLookup.get(normalizedCaseId) ?? null;
+
+    if (promptId === null) {
+      log.warn("judge_prompt_id_unmatched", {
+        caseId: caseScore.case_id,
+        organizationId: params.organizationId,
+        event: "prompt_id_unmatched",
+      });
+    }
 
     rows.push({
       evaluationId: params.evaluationId,
@@ -69,26 +81,75 @@ export async function fanOutJudgeScores(params: {
   }
 }
 
+/**
+ * Select the metric whose normalized metric_name matches the normalized case_id.
+ * Falls back to the first metric if no name match is found.
+ */
+function selectMetricByCaseId(
+  caseId: string,
+  metrics: MetricStatistics[]
+): MetricStatistics | undefined {
+  if (metrics.length === 0) {
+    return undefined;
+  }
+
+  const normalizedCaseId = normalizeJudgeName(caseId);
+  const matched = metrics.find(
+    (m) => normalizeJudgeName(m.metric_name) === normalizedCaseId
+  );
+
+  if (matched) {
+    return matched;
+  }
+
+  log.warn("judge_metric_name_mismatch", {
+    caseId,
+    availableMetrics: metrics.map((m) => m.metric_name),
+  });
+
+  return metrics.at(0);
+}
+
 function buildPromptLookup(
   judgePrompts: Array<{ id: string; name: string; version: number }>
 ): Map<string, string> {
   // Query returns latest version per raw prompt name.
   // If multiple names normalize to the same stem, keep the highest version.
-  const versionedLookup = new Map<string, { id: string; version: number }>();
+  const versionedLookup = new Map<
+    string,
+    { id: string; version: number; rawName: string }
+  >();
+  const collisions = new Map<string, string[]>();
 
   for (const prompt of judgePrompts) {
     const normalizedName = normalizeJudgeName(prompt.name);
-    const existingPrompt = versionedLookup.get(normalizedName);
+    const existing = versionedLookup.get(normalizedName);
 
-    if (
-      existingPrompt === undefined ||
-      prompt.version > existingPrompt.version
-    ) {
+    if (existing !== undefined) {
+      // Track collision: multiple raw names map to same normalized key
+      if (!collisions.has(normalizedName)) {
+        collisions.set(normalizedName, [existing.rawName]);
+      }
+      collisions.get(normalizedName)?.push(prompt.name);
+    }
+
+    if (existing === undefined || prompt.version > existing.version) {
       versionedLookup.set(normalizedName, {
         id: prompt.id,
         version: prompt.version,
+        rawName: prompt.name,
       });
     }
+  }
+
+  // Log any collisions that were detected
+  for (const [normalizedName, rawNames] of collisions) {
+    const winner = versionedLookup.get(normalizedName);
+    log.warn("judge_prompt_name_collision", {
+      normalizedName,
+      collidingNames: rawNames,
+      selected: winner?.rawName,
+    });
   }
 
   const lookup = new Map<string, string>();

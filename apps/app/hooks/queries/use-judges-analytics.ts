@@ -3,6 +3,7 @@
 import type {
   ArtifactCountsGroupBy as ArtifactCountsGroupByType,
   ArtifactCountsResponse,
+  JudgeDetailResponse,
   JudgeStatsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
@@ -27,6 +28,8 @@ export const judgesAnalyticsKeys = {
       endDate,
       groupBy,
     ] as const,
+  detail: (promptName: string) =>
+    [...judgesAnalyticsKeys.all, "detail", promptName] as const,
 };
 
 // Query hook
@@ -76,6 +79,24 @@ export function useArtifactCounts(
       );
     },
     enabled: !!startDate && !!endDate && !!groupBy,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    ...options,
+  });
+}
+
+export function useJudgeDetail(
+  promptName: string,
+  options?: Omit<UseQueryOptions<JudgeDetailResponse>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: judgesAnalyticsKeys.detail(promptName),
+    queryFn: () =>
+      apiClient.get<JudgeDetailResponse>(
+        `/judges-analytics/${encodeURIComponent(promptName)}`
+      ),
+    enabled: Boolean(promptName),
     staleTime: 5 * 60 * 1000, // 5 minutes
     ...options,
   });
