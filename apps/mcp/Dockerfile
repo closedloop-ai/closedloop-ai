@@ -60,12 +60,8 @@ COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
 # Install production-only dependencies
 RUN pnpm install --frozen-lockfile --filter mcp... --prod --ignore-scripts
 
-# Copy compiled JavaScript from builder
-COPY --from=builder /app/apps/mcp/dist/ apps/mcp/dist/
-
-# Copy CJS preload scripts (not compiled by tsc, used via --require)
-COPY --from=builder /app/apps/mcp/src/preload.cjs apps/mcp/src/preload.cjs
-COPY --from=builder /app/apps/mcp/src/server-only-noop.cjs apps/mcp/src/server-only-noop.cjs
+# Copy MCP source so runtime tsx can resolve workspace deep imports consistently.
+COPY --from=builder /app/apps/mcp/src/ apps/mcp/src/
 
 # Copy shared workspace packages needed at runtime for module resolution
 COPY --from=builder /app/packages/api/src/ packages/api/src/
@@ -79,4 +75,4 @@ EXPOSE 3010
 # pnpm --filter mcp exec sets CWD to /app/apps/mcp/, so paths are relative to that.
 # --require needs ./ prefix for CWD-relative resolution (not node_modules lookup).
 # preload.cjs (not .ts/.js) because --require only loads CJS modules.
-CMD ["pnpm", "--filter", "mcp", "exec", "tsx", "--require", "./src/preload.cjs", "dist/apps/mcp/src/index.js"]
+CMD ["pnpm", "--filter", "mcp", "exec", "tsx", "--require", "./src/preload.cjs", "src/index.ts"]

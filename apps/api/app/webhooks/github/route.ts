@@ -1,8 +1,9 @@
-import type { PushEvent } from "@octokit/webhooks-types";
+import type { CheckRunEvent, PushEvent } from "@octokit/webhooks-types";
 import { verifyWebhookSignature } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
+import { handleCheckRun } from "./handlers/check-run-handler";
 import { handleInstallation } from "./handlers/installation-handler";
 import { handleInstallationRepositories } from "./handlers/installation-repositories-handler";
 import {
@@ -66,6 +67,11 @@ export async function POST(request: Request): Promise<Response> {
 
       case "pull_request":
         return await handlePullRequest(parsedBody as HandledPullRequestEvent);
+
+      case "check_run":
+        // GitHub App settings (T-7.1) filter delivery to completed events;
+        // handler-level action guard provides defense-in-depth
+        return await handleCheckRun(parsedBody as CheckRunEvent);
 
       case "pull_request_review":
         return await handlePullRequestReview(

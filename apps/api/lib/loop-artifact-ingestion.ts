@@ -17,15 +17,22 @@ import {
   type PreviewDeploymentMetadata,
 } from "@repo/api/src/types/external-link";
 import type { Loop } from "@repo/api/src/types/loop";
+import type { PromptsSnapshot } from "@repo/api/src/types/prompt";
 import {
   EvaluationReportType as PrismaEvaluationReportType,
   withDb,
 } from "@repo/database";
+import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
 import type { ExecutionResult } from "../app/webhooks/github/types";
-import { downloadArtifactFile } from "./loop-state";
+import {
+  downloadArtifactFile,
+  downloadPromptSnapshotMarkdownEntries,
+} from "./loop-state";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +45,7 @@ export type LoopArtifacts = {
   executionResult: ExecutionResult | null;
   judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
+  promptsSnapshot: PromptsSnapshot | null;
   // NOTE: perf.jsonl is uploaded to S3 but not ingested here.
   // GitHubActionRunPerformance requires a non-nullable actionRunId
   // (loops don't have action runs). Needs a schema change to support
@@ -60,12 +68,14 @@ export async function downloadLoopArtifacts(
     executionResultBuf,
     codeJudgesReportBuf,
     judgesReportBuf,
+    promptMarkdownEntries,
   ] = await Promise.all([
     downloadArtifactFile(stateKeyPrefix, "plan.json"),
     downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
     downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
     downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
     downloadArtifactFile(stateKeyPrefix, "judges.json"),
+    downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
   ]);
 
   const planContent = parseJsonArtifact<PlanJson>(
@@ -96,12 +106,19 @@ export async function downloadLoopArtifacts(
     (p) => p
   ) as JudgesReport | null;
 
+  const promptsSnapshot: PromptsSnapshot | null =
+    parsePromptsSnapshotFromMarkdownEntries(
+      promptMarkdownEntries,
+      "[loop-artifact-ingestion]"
+    );
+
   return {
     planContent,
     questionsContent,
     executionResult,
     judgesReport,
     codeJudgesReport,
+    promptsSnapshot,
   };
 }
 
@@ -159,10 +176,13 @@ export async function ingestPlanArtifacts(
     );
   }
 
+  // Persist prompt registry entries from snapshot (idempotent upsert)
+  await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
+
   // Persist judges report if available (upsert for idempotency)
   if (artifacts.judgesReport) {
-    await withDb((db) =>
-      db.artifactEvaluation.upsert({
+    await withDb.tx(async (tx) => {
+      const evaluation = await tx.artifactEvaluation.upsert({
         where: {
           artifactId_reportId: {
             artifactId,
@@ -181,8 +201,15 @@ export async function ingestPlanArtifacts(
           reportType: PrismaEvaluationReportType.PLAN,
           reportData: artifacts.judgesReport!,
         },
-      })
-    );
+      });
+
+      await fanOutJudgeScores({
+        evaluationId: evaluation.id,
+        organizationId,
+        report: artifacts.judgesReport!,
+        tx,
+      });
+    });
 
     log.info("[loop-artifact-ingestion] Persisted judges report", {
       artifactId,
@@ -311,6 +338,8 @@ export async function ingestExecutionArtifacts(
   const baseBranch =
     executionResult.base_branch || executionResult.base_ref || "main";
 
+  await upsertFromSnapshot(loop.organizationId, artifacts.promptsSnapshot);
+
   await withDb.tx(async (tx) => {
     const artifact = await tx.artifact.findUnique({
       where: { id: loop.artifactId!, organizationId: loop.organizationId },
@@ -326,7 +355,7 @@ export async function ingestExecutionArtifacts(
     }
 
     if (artifacts.codeJudgesReport) {
-      await tx.artifactEvaluation.upsert({
+      const evaluation = await tx.artifactEvaluation.upsert({
         where: {
           artifactId_reportId: {
             artifactId: loop.artifactId!,
@@ -345,6 +374,13 @@ export async function ingestExecutionArtifacts(
           reportType: PrismaEvaluationReportType.CODE,
           reportData: artifacts.codeJudgesReport,
         },
+      });
+
+      await fanOutJudgeScores({
+        evaluationId: evaluation.id,
+        organizationId: loop.organizationId,
+        report: artifacts.codeJudgesReport,
+        tx,
       });
 
       log.info("[loop-artifact-ingestion] Persisted code judges report", {

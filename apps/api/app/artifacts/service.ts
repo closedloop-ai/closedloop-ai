@@ -7,6 +7,7 @@ import {
   type ArtifactWithWorkstream,
   BATCH_META_MAX_SLUGS,
   type BatchCreateArtifactInput,
+  type ChecksStatus,
   type CreateArtifactInput,
   type FindArtifactsOptions,
   type GenerationStatus,
@@ -54,6 +55,7 @@ import {
   artifactIncludeWithUser,
   generateSlug,
   parseTriggerData,
+  pullRequestSelect,
 } from "./artifact-utils";
 import { artifactVersionService } from "./artifact-version-service";
 import { createArtifactRoom, deleteArtifactRoom } from "./room-utils";
@@ -314,15 +316,7 @@ export const artifactsService = {
             db.gitHubPullRequest.findMany({
               where: { workstreamId: { in: uniqueWorkstreamIds } },
               select: {
-                id: true,
-                number: true,
-                title: true,
-                htmlUrl: true,
-                state: true,
-                headBranch: true,
-                baseBranch: true,
-                createdAt: true,
-                reviewDecision: true,
+                ...pullRequestSelect,
                 workstreamId: true,
               },
               orderBy: { createdAt: "desc" },
@@ -487,17 +481,7 @@ export const artifactsService = {
       db.gitHubPullRequest.findFirst({
         where: { workstreamId: artifact.workstreamId as string },
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          number: true,
-          title: true,
-          htmlUrl: true,
-          state: true,
-          headBranch: true,
-          baseBranch: true,
-          createdAt: true,
-          reviewDecision: true,
-        },
+        select: pullRequestSelect,
       })
     );
 
@@ -2828,6 +2812,7 @@ function toPullRequestInfo(pr: {
   headBranch: string;
   baseBranch: string;
   createdAt: Date;
+  checksStatus: string;
   reviewDecision: string | null;
 }): PullRequestInfo | null {
   if (!VALID_PR_STATES.has(pr.state)) {
@@ -2852,6 +2837,7 @@ function toPullRequestInfo(pr: {
     headBranch: pr.headBranch,
     baseBranch: pr.baseBranch,
     createdAt: pr.createdAt,
+    checksStatus: pr.checksStatus as ChecksStatus,
     reviewDecision: pr.reviewDecision as ReviewDecision | null,
   };
 }

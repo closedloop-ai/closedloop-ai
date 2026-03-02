@@ -1812,6 +1812,24 @@ async function uploadState(workDir, output, runDir) {
     }
   }
 
+  // 4. Upload agent/judge prompt snapshots as markdown files.
+  // Keep this directory structure under artifacts/ so API ingestion can
+  // discover prompts from artifacts/agents-snapshot/*.md.
+  const agentsSnapshotDir = path.join(artifactDir, "agents-snapshot");
+  if (fs.existsSync(agentsSnapshotDir)) {
+    try {
+      await uploadDirectory(
+        agentsSnapshotDir,
+        `${statePrefix}/artifacts/agents-snapshot`
+      );
+    } catch (err) {
+      log(
+        "error",
+        `Failed to upload agents-snapshot directory: ${err.message}`
+      );
+    }
+  }
+
   log("info", "State upload complete");
 }
 

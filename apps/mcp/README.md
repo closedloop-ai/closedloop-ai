@@ -78,7 +78,7 @@ Use these steps to connect Claude Code CLI to ClosedLoop MCP:
   - Defaults to `300000` (5 minutes).
   - Controls background cleanup cadence for expired OAuth security records.
 - `MCP_INTERNAL_ALLOWED_IPS` (comma-separated, exact-match allowlist)
-  - Required in stage/prod.
+  - Strongly recommended in stage/prod.
   - Supports exact IPs and IPv4 CIDR ranges.
   - Example: `10.0.0.10,10.0.0.11,10.0.0.0/16`
 - `MCP_TRUST_PROXY` (optional)
@@ -107,9 +107,10 @@ Non-local policy is enforced when either of these is true:
 - `NODE_ENV=production`
 - `WEBAPP_ENV=stage` or `WEBAPP_ENV=prod`
 
-For internal endpoints, non-local environments must also set:
+For internal endpoints in non-local environments:
 
 - `MCP_INTERNAL_ALLOWED_IPS`
+  - If unset, startup still succeeds, but internal OAuth endpoints reject all requests.
 
 ## Internal Security Endpoints
 

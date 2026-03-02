@@ -58,6 +58,7 @@ export const createMockPullRequest = (
     headBranch: "feature-branch",
     baseBranch: "main",
     createdAt: new Date("2024-01-15T10:00:00Z"),
+    checksStatus: null,
     reviewDecision: null,
     ...overrides,
   };
