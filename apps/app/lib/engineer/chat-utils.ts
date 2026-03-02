@@ -179,6 +179,24 @@ export async function readChatStream(
 ): Promise<void> {
   const decoder = new TextDecoder();
   let accumulated = "";
+  let buffer = "";
+
+  const parseLine = (rawLine: string) => {
+    const line = rawLine.trim();
+    if (!line) {
+      return;
+    }
+
+    try {
+      accumulated = dispatchStreamEvent(
+        JSON.parse(line),
+        handlers,
+        accumulated
+      );
+    } catch {
+      // Not JSON - ignore
+    }
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -186,21 +204,20 @@ export async function readChatStream(
       break;
     }
 
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n").filter((line) => line.trim());
+    buffer += decoder.decode(value, { stream: true });
 
-    for (const line of lines) {
-      try {
-        accumulated = dispatchStreamEvent(
-          JSON.parse(line),
-          handlers,
-          accumulated
-        );
-      } catch {
-        // Not JSON - ignore
-      }
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      parseLine(line);
+      newlineIndex = buffer.indexOf("\n");
     }
   }
+
+  // Flush decoder and parse any trailing line without newline terminator.
+  buffer += decoder.decode();
+  parseLine(buffer);
 }
 
 /**

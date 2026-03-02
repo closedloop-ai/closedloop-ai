@@ -31,6 +31,7 @@ import {
   SlashCommandDropdown,
   UserMessageContent,
 } from "@/components/engineer/chat";
+import { VerdictBanner } from "@/components/engineer/codex-review/VerdictBanner";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import {
   type SlashCommand,
@@ -43,9 +44,11 @@ import {
   formatReviewContextForChat,
 } from "@/lib/engineer/codex-review-context";
 import {
+  extractVerdictTag,
   parseClaudeReviewOutput,
   parseCodexReviewOutput,
   type ReviewFinding,
+  type ReviewVerdict,
 } from "@/lib/engineer/codex-review-parser";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { symphonyChatHistoryOptions } from "@/lib/engineer/queries/symphony";
@@ -130,6 +133,9 @@ export function ReviewChatPane({
   const [submittingFindings, setSubmittingFindings] = useState<Set<number>>(
     new Set()
   );
+  const [declined, setDeclined] = useState(false);
+  const [findingsRevealed, setFindingsRevealed] = useState(false);
+  const [isSubmittingDecline, setIsSubmittingDecline] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
@@ -168,13 +174,15 @@ export function ReviewChatPane({
   const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
     findings: Array<{ commented: boolean }>;
+    declined?: boolean;
+    declineReason?: string;
   }>({
     queryKey: ["review-findings", ticketId, repoPath, config.provider],
     queryFn: () => fetch(findingsUrl).then((r) => r.json()),
     enabled: reviewDone,
   });
 
-  // Sync submitted findings from persisted data
+  // Sync submitted findings and declined status from persisted data
   useEffect(() => {
     if (!savedFindings?.findings) {
       return;
@@ -193,6 +201,9 @@ export function ReviewChatPane({
         }
         return merged;
       });
+    }
+    if (savedFindings.declined) {
+      setDeclined(true);
     }
   }, [savedFindings]);
 
@@ -229,7 +240,11 @@ export function ReviewChatPane({
             return resolved !== null && resolved !== "ambiguous";
           })
         : annotated;
-    return { processLog: split.processLog, findings: filtered };
+    return {
+      processLog: split.processLog,
+      findings: filtered,
+      verdict: split.verdict,
+    };
   }, [reviewDone, reviewOutput, config.provider, prFiles]);
 
   // Notify parent when all findings have been individually commented (fire once)
@@ -912,6 +927,34 @@ export function ReviewChatPane({
     [ticketId, repoPath, config.provider, config.model]
   );
 
+  const hasDeclineVerdict = reviewSplit?.verdict?.verdict === "decline";
+  const showFindings = !hasDeclineVerdict || (!declined && findingsRevealed);
+
+  const handleDecline = useCallback(async () => {
+    const reason = reviewSplit?.verdict?.reason;
+    if (!reason) {
+      return;
+    }
+    setIsSubmittingDecline(true);
+    try {
+      await postDeclineComment(repoPath, prNumber, reason);
+      markReviewDeclined(ticketId, repoPath, config.provider, reason);
+      setDeclined(true);
+      setFindingsRevealed(false);
+      toast.success("Decline comment posted to PR");
+    } catch {
+      toast.error("Failed to post decline comment");
+    } finally {
+      setIsSubmittingDecline(false);
+    }
+  }, [
+    reviewSplit?.verdict?.reason,
+    repoPath,
+    prNumber,
+    ticketId,
+    config.provider,
+  ]);
+
   const handleChatAboutFinding = useCallback(
     (index: number, finding: ReviewFinding) => {
       if (stream.isStreaming) {
@@ -1084,7 +1127,31 @@ export function ReviewChatPane({
                 }
               />
             </ChatBubble>
-            {reviewSplit.findings.length > 0 && (
+            {reviewSplit.verdict && (
+              <div className="pl-2">
+                <VerdictBanner
+                  isDeclined={declined}
+                  isSubmitting={isSubmittingDecline}
+                  onDecline={handleDecline}
+                  verdict={reviewSplit.verdict}
+                />
+              </div>
+            )}
+            {hasDeclineVerdict &&
+              !declined &&
+              !findingsRevealed &&
+              reviewSplit.findings.length > 0 && (
+                <div className="pl-2">
+                  <Button
+                    onClick={() => setFindingsRevealed(true)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    See findings ({reviewSplit.findings.length})
+                  </Button>
+                </div>
+              )}
+            {showFindings && reviewSplit.findings.length > 0 && (
               <div className="space-y-2 pl-2">
                 {reviewSplit.findings.map((finding) => {
                   const idx = finding.originalIndex;
@@ -1317,19 +1384,25 @@ const FINDINGS_HEADER = /^(?:Full )?[Rr]eview comments?:\s*$/m;
 export function splitReviewOutput(
   output: string,
   provider?: "claude" | "codex"
-): { processLog: string; findings: ReviewFinding[] } {
+): { processLog: string; findings: ReviewFinding[]; verdict?: ReviewVerdict } {
+  const verdict = extractVerdictTag(output);
+
   if (provider === "claude") {
-    return parseClaudeReviewOutput(output);
+    return { ...parseClaudeReviewOutput(output), verdict };
   }
 
   const match = FINDINGS_HEADER.exec(output);
   if (!match) {
-    return { processLog: output, findings: [] };
+    return { processLog: output, findings: [], verdict };
   }
 
   const processLog = output.slice(0, match.index).trim();
   const findingsText = output.slice(match.index + match[0].length).trim();
-  return { processLog, findings: parseFullReviewComments(findingsText) };
+  return {
+    processLog,
+    findings: parseFullReviewComments(findingsText),
+    verdict,
+  };
 }
 
 /**
@@ -1674,6 +1747,38 @@ function markFindingCommented(
     body: JSON.stringify({ commentedIndex: index }),
   }).catch((err) =>
     console.warn("[review-findings] Failed to mark commented:", err)
+  );
+}
+
+async function postDeclineComment(
+  repoPath: string,
+  prNumber: number,
+  reason: string
+): Promise<void> {
+  const body = `\u26D4 **Review Recommendation: Decline**\n\n${reason}`;
+  const res = await fetch("/api/engineer/git/pr/reply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoPath, prNumber, body, requestChanges: true }),
+  });
+  if (!res.ok) {
+    throw new Error("Failed to request changes");
+  }
+}
+
+function markReviewDeclined(
+  ticketId: string,
+  repoPath: string,
+  provider: string,
+  reason: string
+): void {
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ declined: true, declineReason: reason }),
+  }).catch((err) =>
+    console.warn("[review-findings] Failed to mark declined:", err)
   );
 }
 

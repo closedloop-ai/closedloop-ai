@@ -12,6 +12,7 @@ type ReplyRequest = {
   commentId?: number; // databaseId for threaded reply (optional - if 0 or missing, adds new comment)
   body: string;
   prNumber?: number; // PR number
+  requestChanges?: boolean; // Submit as "Request Changes" review instead of a plain comment
 };
 
 /**
@@ -85,6 +86,40 @@ function ghPrCommentViaStdin(
   });
 }
 
+/**
+ * Run gh pr review with body passed via stdin (for "Request Changes" reviews)
+ */
+function ghPrReviewViaStdin(
+  args: string[],
+  body: string,
+  cwd: string
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("gh", [...args, "--body-file", "-"], { cwd });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+    proc.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const err = new Error(
+          `gh pr review exited with code ${code}: ${stderr}`
+        );
+        Object.assign(err, { stdout, stderr });
+        reject(err);
+      }
+    });
+    proc.stdin.write(body);
+    proc.stdin.end();
+  });
+}
+
 function expandPath(repoPath: string): string {
   return repoPath.startsWith("~/")
     ? repoPath.replace("~", process.env.HOME || "")
@@ -109,13 +144,27 @@ async function postReply(
   cwd: string,
   repoSlug: string
 ): Promise<NextResponse> {
-  const { commentId, prNumber, body: replyBody } = reqBody;
+  const { commentId, prNumber, requestChanges, body: replyBody } = reqBody;
 
   if (!prNumber) {
     return NextResponse.json(
       { error: "prNumber is required" },
       { status: 400 }
     );
+  }
+
+  // Submit as a "Request Changes" PR review
+  if (requestChanges) {
+    const args = ["pr", "review", String(prNumber), "--request-changes"];
+    if (repoSlug) {
+      args.push("-R", repoSlug);
+    }
+    const result = await ghPrReviewViaStdin(args, replyBody, cwd);
+    return NextResponse.json({
+      success: true,
+      message: "Changes requested",
+      output: result.stdout.trim(),
+    });
   }
 
   if (commentId && commentId > 0 && repoSlug) {

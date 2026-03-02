@@ -113,13 +113,21 @@ async function clearReviewLog(
   }
 }
 
+const VERDICT_PROMPT = [
+  "After your review, output exactly one line:",
+  '<pr_verdict>{"verdict":"X","reason":"..."}</pr_verdict>',
+  'where verdict is "decline" (blocking issues or changes are unnecessary/harmful),',
+  '"needs_attention" (high-priority issues only), or "approve" (no significant issues).',
+  "Keep reason under 120 characters.",
+].join(" ");
+
 function spawnCodexReview(
   cwd: string,
   model: string,
   reasoningEffort: string,
   reviewMode: "uncommitted" | "base",
   baseBranch: string,
-  _instructions?: string
+  instructions?: string
 ): ChildProcess {
   const args: string[] = ["review"];
 
@@ -136,10 +144,10 @@ function spawnCodexReview(
     `model_reasoning_effort=${reasoningEffort}`
   );
 
-  // codex review v0.104+ doesn't allow [PROMPT] with --base/--uncommitted.
-  // Custom instructions cannot be passed as a positional arg or via stdin.
-  // The contextPreamble and user instructions are dropped — codex uses its
-  // own built-in review prompt which produces good results without them.
+  const prompt = instructions
+    ? `${instructions}\n\n${VERDICT_PROMPT}`
+    : VERDICT_PROMPT;
+  args.push(prompt);
 
   return spawn("codex", args, {
     cwd,
@@ -162,6 +170,7 @@ const REVIEW_SYSTEM_PROMPT = [
   '"title": "one-line summary", "description": "detailed explanation",',
   '"suggestion": "suggested fix or null"}.',
   'Use FULL repository-relative file paths (e.g. "src/components/Button.tsx"), not abbreviated names.',
+  VERDICT_PROMPT,
 ].join(" ");
 
 function spawnClaudeReview(cwd: string, model: string): ChildProcess {

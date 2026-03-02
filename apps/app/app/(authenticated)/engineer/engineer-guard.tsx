@@ -1,36 +1,97 @@
 "use client";
 
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
 import { EngineerDashboard } from "@/components/engineer/engineer-dashboard";
+import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import { useElectronDetection } from "@/lib/engineer/electron-detection";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { appEnvironment } from "@/lib/environment";
 
+const DESKTOP_SETUP_URL =
+  "https://github.com/closedloop-tech/symphony-alpha/blob/main/docs/runbook-symphony-desktop-client-llm.md";
+
 /**
- * Guards the engineer view to only be accessible on localhost.
- * closedloop-dev features require spawning local processes (Claude CLI, git, etc.)
- * which are only possible when running locally.
+ * Guards engineer access based on the currently selected routing target.
+ * Hosted users must select an available execution target.
  */
 export function EngineerGuard() {
-  if (appEnvironment !== "local") {
+  const detection = useElectronDetection();
+  const routing = useEngineerRoutingSelection();
+  const { data: targets = [], isLoading: targetsLoading } = useComputeTargets({
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+
+  const selectedCloudTargetOnline =
+    routing.mode === "cloud-relay" &&
+    routing.computeTargetId !== null &&
+    targets.some(
+      (target) => target.id === routing.computeTargetId && target.isOnline
+    );
+  const selectedLocalElectronReady =
+    routing.mode === "local-electron" && detection.detected;
+  const selectedLocalDevReady =
+    routing.mode === "local-dev" && appEnvironment === "local";
+  const canAccess =
+    selectedCloudTargetOnline ||
+    selectedLocalElectronReady ||
+    selectedLocalDevReady;
+
+  if (canAccess) {
+    return <EngineerDashboard />;
+  }
+
+  if (detection.loading || targetsLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center p-8">
-        <div className="max-w-md space-y-4 text-center">
-          <AlertCircle className="mx-auto size-12 text-muted-foreground" />
-          <h2 className="font-semibold text-xl">Engineer View Not Available</h2>
-          <p className="text-muted-foreground">
-            The Engineer View is only available when running on localhost. It
-            requires access to local CLI tools (Claude, git, etc.) to function.
-          </p>
-          <p className="text-muted-foreground text-sm">
-            Run{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">
-              pnpm dev:engineer
-            </code>{" "}
-            locally to use this feature.
+        <div className="max-w-md space-y-4 text-center text-muted-foreground">
+          <Loader2 className="mx-auto size-8 animate-spin" />
+          <p className="text-sm">
+            Checking local Electron and compute targets...
           </p>
         </div>
       </div>
     );
   }
 
-  return <EngineerDashboard />;
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center p-8">
+      <div className="max-w-md space-y-4 text-center">
+        <AlertCircle className="mx-auto size-12 text-muted-foreground" />
+        <h2 className="font-semibold text-xl">Engineer View Not Available</h2>
+        <p className="text-muted-foreground">
+          Select an execution target to continue. If your previously selected
+          target is offline, wait for it to come online or choose another
+          target.
+        </p>
+        <div className="flex justify-center pt-1">
+          <ComputeTargetSelector />
+        </div>
+        <p className="text-muted-foreground">
+          You can also run{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">
+            pnpm dev:engineer
+          </code>{" "}
+          on localhost for local-only development.
+        </p>
+        <p className="text-muted-foreground text-sm">
+          Open{" "}
+          <Link className="underline" href="/settings?tab=integrations">
+            Settings - Integrations
+          </Link>{" "}
+          to manage compute targets.
+        </p>
+        <a
+          className="text-primary text-sm underline"
+          href={DESKTOP_SETUP_URL}
+          rel="noreferrer"
+          target="_blank"
+        >
+          Desktop setup instructions
+        </a>
+      </div>
+    </div>
+  );
 }
