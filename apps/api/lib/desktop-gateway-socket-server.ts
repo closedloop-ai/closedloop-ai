@@ -148,6 +148,10 @@ async function resolveDesktopAuthContext(
     return null;
   }
 
+  if (!keyContext.scopes.includes("write")) {
+    return null;
+  }
+
   const user = await usersService.findById(
     keyContext.userId,
     keyContext.organizationId
@@ -510,6 +514,10 @@ async function handleSocketHello(
   }
 
   const sessionId = randomUUID();
+  // Clear stale backlog before subscribing — the DB query below is the
+  // authoritative source for pending commands.  Without this, subscribe
+  // replays the backlog *and* we emit from the DB, causing duplicates.
+  relayEventBus.clearOperationBacklog(targetId);
   const unsubscribeOperations = relayEventBus.subscribeOperations(
     targetId,
     (operation) => {

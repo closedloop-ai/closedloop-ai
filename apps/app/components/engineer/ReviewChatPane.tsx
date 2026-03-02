@@ -38,7 +38,11 @@ import {
   useSlashCommands,
 } from "@/hooks/engineer/use-slash-commands";
 import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
-import type { LearningUsed } from "@/lib/engineer/chat-utils";
+import {
+  type LearningUsed,
+  parseSuggestedActions,
+  type SuggestedAction,
+} from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
@@ -796,6 +800,54 @@ export function ReviewChatPane({
     onLearningsUsed,
   ]);
 
+  const handleChatAction = useCallback(
+    (action: SuggestedAction) => {
+      if (stream.isStreaming) {
+        return;
+      }
+      const userMsg = {
+        id: crypto.randomUUID(),
+        role: "user" as const,
+        content: action.message,
+        timestamp: new Date().toISOString(),
+      };
+      stream.setPendingUserMessage(userMsg);
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
+      const { url, body } = buildChatRequest(action.message);
+      stream.sendMessage(url, body, {
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText && config.provider !== "claude") {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: "codex",
+            });
+          }
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+          });
+        },
+        onLearnings,
+        onLearningsUsed,
+      });
+    },
+    [
+      stream,
+      config.provider,
+      buildChatRequest,
+      persistMessage,
+      ticketId,
+      repoPath,
+      queryClient,
+      onLearnings,
+      onLearningsUsed,
+    ]
+  );
+
   const slash = useSlashCommands(REVIEW_SLASH_COMMANDS, (command) => {
     if (command === "/reflect") {
       setChatInput("");
@@ -1235,8 +1287,18 @@ export function ReviewChatPane({
                 .slice(idx + 1)
                 .some((m) => m.role === "assistant") &&
               !stream.isStreaming;
+            const { actions, contentWithoutActions } =
+              msg.role === "assistant"
+                ? parseSuggestedActions(msg.content)
+                : {
+                    actions: [] as SuggestedAction[],
+                    contentWithoutActions: msg.content,
+                  };
+            const effectiveActions =
+              isLastAssistant && !stream.isStreaming ? actions : [];
             return (
               <ChatBubble
+                actions={effectiveActions}
                 bubbleClassName={
                   msg.role === "user"
                     ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
@@ -1251,6 +1313,15 @@ export function ReviewChatPane({
                 }
                 key={msg.id}
                 messageRole={msg.role}
+                onAction={handleChatAction}
+                onCopy={async () => {
+                  try {
+                    await navigator.clipboard.writeText(contentWithoutActions);
+                    toast.success("Copied to clipboard");
+                  } catch {
+                    toast.error("Failed to copy");
+                  }
+                }}
                 roleClassName={
                   msg.role === "user"
                     ? "text-blue-600 dark:text-blue-400"
@@ -1269,7 +1340,10 @@ export function ReviewChatPane({
                 {msg.role === "user" ? (
                   <UserMessageContent content={msg.content} />
                 ) : (
-                  <MessageContent blocks={msg.blocks} content={msg.content} />
+                  <MessageContent
+                    blocks={msg.blocks}
+                    content={contentWithoutActions}
+                  />
                 )}
               </ChatBubble>
             );
@@ -1292,7 +1366,10 @@ export function ReviewChatPane({
             >
               <MessageContent
                 blocks={stream.streamingBlocks}
-                content={stream.streamingContent}
+                content={
+                  parseSuggestedActions(stream.streamingContent)
+                    .contentWithoutActions
+                }
                 isStreaming
               />
             </ChatBubble>

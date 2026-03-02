@@ -102,42 +102,46 @@ function toCommandEventData(
   return toJsonValue(result.event ?? {});
 }
 
-async function ingestOneShotResult(payload: OneShotRelayResult): Promise<void> {
+async function ingestOneShotResult(
+  payload: OneShotRelayResult
+): Promise<boolean> {
   const commandId = await desktopCommandStore.findCommandIdByOperationId(
     payload.operationId
   );
   if (!commandId) {
-    return;
+    return false;
   }
 
-  await desktopCommandStore.ingestCommandEvent({
+  const result = await desktopCommandStore.ingestCommandEvent({
     commandId,
     eventType: "result",
     data: toTerminalResultData(payload.result),
     sequence: payload.sequence,
   });
+  return result.accepted && !result.duplicate;
 }
 
 async function ingestStreamingResult(
   payload: StreamingRelayResult
-): Promise<void> {
+): Promise<boolean> {
   const commandId = await desktopCommandStore.findCommandIdByOperationId(
     payload.operationId
   );
   if (!commandId) {
-    return;
+    return false;
   }
 
   const eventPayload = isRecord(payload.event) ? payload.event : {};
   const eventType = resolveEventType(eventPayload, payload.error, payload.done);
   const data = toCommandEventData(eventPayload, eventType, payload);
 
-  await desktopCommandStore.ingestCommandEvent({
+  const result = await desktopCommandStore.ingestCommandEvent({
     commandId,
     eventType,
     data,
     sequence: payload.sequence,
   });
+  return result.accepted && !result.duplicate;
 }
 
 function publishOneShotResult(payload: OneShotRelayResult): void {
@@ -190,11 +194,15 @@ export const POST = withAnyAuth<
 
     const payload = body as RelayResultIngestRequest;
     if (isOneShotRelayResult(payload)) {
-      await ingestOneShotResult(payload);
-      publishOneShotResult(payload);
+      const shouldPublish = await ingestOneShotResult(payload);
+      if (shouldPublish) {
+        publishOneShotResult(payload);
+      }
     } else {
-      await ingestStreamingResult(payload);
-      publishStreamingResult(payload);
+      const shouldPublish = await ingestStreamingResult(payload);
+      if (shouldPublish) {
+        publishStreamingResult(payload);
+      }
     }
 
     return successResponse({ ok: true });
