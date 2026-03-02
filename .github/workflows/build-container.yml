@@ -37,7 +37,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Configure AWS Credentials (${{ matrix.environment }})
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ matrix.role_arn }}
           aws-region: ${{ env.AWS_REGION }}
