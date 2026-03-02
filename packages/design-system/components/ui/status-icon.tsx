@@ -28,9 +28,18 @@ interface StatusIconProps
   status: StatusIconStatus;
   /** Icon size in pixels (default 16) */
   size?: 16 | 20;
-  /** Show spinning arc for AI/agent processing (applied to non-terminal statuses) */
+  /** Show spinning arc for AI/agent processing. Only applies to non-terminal statuses (backlog, todo, in-progress, in-review); ignored for complete and wont-do. */
   thinking?: boolean;
 }
+
+const STATUS_LABELS: Record<StatusIconStatus, string> = {
+  backlog: "Backlog",
+  todo: "To do",
+  "in-progress": "In progress",
+  "in-review": "In review",
+  complete: "Complete",
+  "wont-do": "Won't do",
+};
 
 type StatusConfig = {
   percentage: number;
@@ -72,9 +81,13 @@ function StatusIcon({
 }: StatusIconProps) {
   const config = getStatusConfig(status);
 
+  const defaultLabel = STATUS_LABELS[status];
+
   if (config.filled) {
     return (
       <svg
+        role="img"
+        aria-label={defaultLabel}
         data-slot="status-icon"
         width={size}
         height={size}
@@ -97,6 +110,8 @@ function StatusIcon({
 
   return (
     <svg
+      role="img"
+      aria-label={defaultLabel}
       data-slot="status-icon"
       width={size}
       height={size}

@@ -19,7 +19,7 @@ interface StatusPercentageIconProps
   value: number;
   /** Icon size in pixels (default 16) */
   size?: 16 | 20;
-  /** Show spinning arc for AI/agent processing */
+  /** Show spinning arc for AI/agent processing. Ignored when value is 100 (complete state). */
   thinking?: boolean;
 }
 
@@ -31,10 +31,13 @@ function StatusPercentageIcon({
   ...props
 }: StatusPercentageIconProps) {
   const clamped = Math.max(0, Math.min(100, value));
+  const defaultLabel = `${Math.round(clamped)}% complete`;
 
   if (clamped >= 100) {
     return (
       <svg
+        role="img"
+        aria-label={defaultLabel}
         data-slot="status-percentage-icon"
         width={size}
         height={size}
@@ -55,6 +58,8 @@ function StatusPercentageIcon({
 
   return (
     <svg
+      role="img"
+      aria-label={defaultLabel}
       data-slot="status-percentage-icon"
       width={size}
       height={size}
