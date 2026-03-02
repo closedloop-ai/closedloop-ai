@@ -12,6 +12,7 @@
     "build": "turbo build",
     "dev": "turbo dev",
     "typecheck": "turbo typecheck",
+    "figma:typecheck": "pnpm --filter @repo/design-system figma:typecheck",
     "lint": "npx ultracite@latest check",
     "lint:fix": "npx ultracite@latest fix",
     "test": "turbo test",
