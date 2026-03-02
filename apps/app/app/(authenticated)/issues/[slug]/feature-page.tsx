@@ -35,6 +35,8 @@ import {
   UnderlineTabsTrigger,
 } from "@/components/underline-tabs";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
+import { EditableIssueDescription } from "./components/editable-issue-description";
+import { EditableIssueTitle } from "./components/editable-issue-title";
 import { FeatureBuildTab } from "./components/feature-build-tab";
 import { FeaturePlanTab } from "./components/feature-plan-tab";
 import { FeaturePreviewTab } from "./components/feature-preview-tab";
@@ -50,6 +52,7 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
 
   const [activeTab, setActiveTab] = useState("description");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [displayTitle, setDisplayTitle] = useState(issue.title);
 
   const teamId = issue.project?.teams?.[0]?.id;
   const projectId = issue.project?.id;
@@ -98,7 +101,7 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
               </>
             ) : null}
             <BreadcrumbItem>
-              <BreadcrumbPage>{issue.title}</BreadcrumbPage>
+              <BreadcrumbPage>{displayTitle}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
@@ -122,11 +125,11 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
         </div>
       </header>
 
-      <main className="flex-1 overflow-auto">
-        <div className="flex h-full">
+      <main className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="flex min-h-full">
           {/* Main Content Area */}
           <Tabs
-            className="flex-1"
+            className="min-w-0 flex-1"
             onValueChange={setActiveTab}
             value={activeTab}
           >
@@ -150,10 +153,17 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
             </UnderlineTabsList>
             <div className="p-6">
               <TabsContent className="mt-0" value="description">
-                <h1 className="mb-4 font-bold text-2xl">{issue.title}</h1>
-                <p className="text-muted-foreground">
-                  {issue.description || "No description provided."}
-                </p>
+                <div className="mx-auto flex max-w-[750px] flex-col gap-4 py-2">
+                  <EditableIssueTitle
+                    initialTitle={issue.title}
+                    issueId={issue.id}
+                    onTitleChange={setDisplayTitle}
+                  />
+                  <EditableIssueDescription
+                    initialDescription={issue.description || ""}
+                    issueId={issue.id}
+                  />
+                </div>
               </TabsContent>
               <TabsContent className="mt-0" value="plan">
                 <FeaturePlanTab />
@@ -168,9 +178,7 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
           </Tabs>
 
           {/* Right Sidebar */}
-          <div className="w-[300px] border-l">
-            <IssueMetadataPanel issue={issue} />
-          </div>
+          <IssueMetadataPanel issue={issue} />
         </div>
       </main>
 

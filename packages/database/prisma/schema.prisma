@@ -561,6 +561,7 @@ model ArtifactEvaluation {
   judgeScores JudgeScore[]
 
   @@unique([artifactId, reportId])
+  @@index([artifactId, createdAt])
   @@map("artifact_evaluations")
 }
 
