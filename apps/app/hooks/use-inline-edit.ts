@@ -2,33 +2,28 @@
 
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useEffect, useRef, useState } from "react";
-import { useUpdateProject } from "@/hooks/queries/use-projects";
 
 type UseInlineEditOptions = {
-  projectId: string;
   initialValue: string;
-  buildPayload: (trimmedValue: string) => Record<string, unknown>;
+  onSave: (trimmedValue: string) => Promise<unknown>;
   onChange?: (newValue: string) => void;
   allowEmpty?: boolean;
   emptyErrorMessage?: string;
-  saveErrorMessage: string;
 };
 
 export function useInlineEdit<
   T extends HTMLInputElement | HTMLTextAreaElement,
 >({
-  projectId,
   initialValue,
-  buildPayload,
+  onSave,
   onChange,
   allowEmpty = false,
   emptyErrorMessage,
-  saveErrorMessage,
 }: UseInlineEditOptions) {
   const [value, setValue] = useState(initialValue);
   const [inputValue, setInputValue] = useState(initialValue);
+  const [isPending, setIsPending] = useState(false);
   const inputRef = useRef<T>(null);
-  const updateProject = useUpdateProject();
 
   // Sync with prop changes (e.g., from server updates)
   useEffect(() => {
@@ -53,30 +48,19 @@ export function useInlineEdit<
       return;
     }
 
-    // Capture original value BEFORE optimistic update
-    const previousValue = value;
+    setIsPending(true);
 
-    // Optimistic update
-    setValue(trimmedValue);
-
-    // Call mutation
-    updateProject.mutate(
-      {
-        id: projectId,
-        ...buildPayload(trimmedValue),
-      },
-      {
-        onSuccess: () => {
-          onChange?.(trimmedValue);
-        },
-        onError: () => {
-          // Revert on error using captured previous value
-          setValue(previousValue);
-          setInputValue(previousValue);
-          toast.error(saveErrorMessage);
-        },
-      }
-    );
+    onSave(trimmedValue)
+      .then(() => {
+        setValue(trimmedValue);
+        onChange?.(trimmedValue);
+      })
+      .catch(() => {
+        // Global mutation onError handler toasts; nothing else to do here
+      })
+      .finally(() => {
+        setIsPending(false);
+      });
   };
 
   const handleCancel = () => {
@@ -89,7 +73,7 @@ export function useInlineEdit<
     inputValue,
     setInputValue,
     inputRef,
-    isPending: updateProject.isPending,
+    isPending,
     handleSave,
     handleCancel,
   };
