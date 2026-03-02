@@ -48,7 +48,7 @@
   --sidebar-ring: oklch(0.708 0 0);
   --progress: oklch(0 0 0 / 0.09);
   --progress-foreground: oklch(0.547 0.245 275);
-  --thinking: oklch(0 0 0 / 0.09);
+  --thinking: oklch(0.547 0.245 275);
   --symphony-violet: oklch(0.61 0.256 285.5);
 
   --font-weight-bold: 600;
@@ -95,7 +95,7 @@
   --sidebar-ring: oklch(0.439 0 0);
   --progress: oklch(1 0 0 / 0.14);
   --progress-foreground: oklch(0.63 0.245 275);
-  --thinking: oklch(1 0 0 / 0.14);
+  --thinking: oklch(0.63 0.245 275);
   --symphony-violet: oklch(0.61 0.256 285.5);
 }
 
