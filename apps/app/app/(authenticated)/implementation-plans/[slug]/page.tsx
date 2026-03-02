@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { generateArtifactMetadata } from "@/lib/artifact-metadata";
+import { resolveOgMetadata } from "@/lib/og-metadata";
 import { PlanEditorContainer } from "./plan-editor-container";
 
 type PlanPageProps = {
@@ -12,7 +12,7 @@ export async function generateMetadata({
   params,
 }: PlanPageProps): Promise<Metadata> {
   const { slug } = await params;
-  return generateArtifactMetadata(slug);
+  return resolveOgMetadata(`implementation-plans/${slug}`);
 }
 
 export default async function ImplementationPlanPage({

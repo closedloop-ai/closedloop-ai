@@ -112,6 +112,26 @@ export const issuesService = {
     return toIssueWithWorkstream(issue);
   },
 
+  /**
+   * Public metadata lookup by slug. Returns only title and status.
+   * No org scoping — used by OG metadata for link previews.
+   *
+   * Note: queries slug without organizationId so the composite unique index
+   * (organizationId, slug) won't be used (seq scan). Fine for now — this is
+   * low-traffic (link unfurling only). When we move to org-scoped URLs the
+   * caller will have organizationId and the existing index kicks in.
+   */
+  findMetaBySlug(
+    slug: string
+  ): Promise<{ title: string; status: string } | null> {
+    return withDb((db) =>
+      db.issue.findFirst({
+        where: { slug },
+        select: { title: true, status: true },
+      })
+    );
+  },
+
   async delete(id: string, organizationId: string): Promise<void> {
     await withDb.tx(async (tx) => {
       await tx.entityLink.deleteMany({
