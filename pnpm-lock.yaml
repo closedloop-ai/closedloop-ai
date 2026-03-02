@@ -1345,8 +1345,8 @@ importers:
   packages/notifications:
     dependencies:
       '@knocklabs/node':
-        specifier: ^1.28.0
-        version: 1.28.0
+        specifier: ^1.29.1
+        version: 1.29.1
       '@knocklabs/react':
         specifier: ^0.9.5
         version: 0.9.5(@types/react-dom@19.2.3(@types/react@19.2.13))(@types/react@19.2.13)(next@16.1.6(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.1(react@19.2.1))(react@19.2.1))(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
@@ -3724,8 +3724,8 @@ packages:
   '@knocklabs/client@0.19.4':
     resolution: {integrity: sha512-dvTBsGBHsVB73YfsdVt/kubCjH2fzG1eLEV9UIfSmozgUrfRKQcD6wu86S1WR2sz96y3hpGOmcF0QQgBjvPh3g==}
 
-  '@knocklabs/node@1.28.0':
-    resolution: {integrity: sha512-xWUPNWgjEt3CYA+gKsyFNtc44nDJDvIzyWcCyqu+EkNC6zu96BZw4NB8h8YPYUYWWN2diYdqkbRiiT8fw4d6Ew==}
+  '@knocklabs/node@1.29.1':
+    resolution: {integrity: sha512-KpT905Qs97ZUPxR4gKrxt8Ko5xOHctSiaTaPxC3rXMtdqRwrD3fNsX0PLCK36qV4pi/fBFM8LH6WxfL6o1+0ZQ==}
 
   '@knocklabs/react-core@0.11.4':
     resolution: {integrity: sha512-TvhT8HcWrzL9Q142kN8BMvyju1vqrkg5tW76eiBMyPyR/u4fj+cc8RV9y9pl+w5aYQ3prAwHzMaMo8WQ+B03Jw==}
@@ -16281,7 +16281,7 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  '@knocklabs/node@1.28.0':
+  '@knocklabs/node@1.29.1':
     dependencies:
       jose: 6.1.3
 
