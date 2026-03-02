@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import { env } from "@/env";
 import { ISSUE_STATUS_LABELS } from "@/lib/project-constants";
 
-const ARTIFACT_TYPE_DISPLAY: Record<string, string> = {
+const ARTIFACT_TYPE_DISPLAY: Record<ArtifactType, string> = {
   [ArtifactType.Prd]: "PRD",
   [ArtifactType.ImplementationPlan]: "Plan",
   [ArtifactType.Template]: "Template",
@@ -78,7 +78,8 @@ const handlers: OgHandler[] = [
       if (!data) {
         return FALLBACK_METADATA;
       }
-      const description = ARTIFACT_TYPE_DISPLAY[data.type] ?? data.type;
+      const description =
+        ARTIFACT_TYPE_DISPLAY[data.type as ArtifactType] ?? data.type;
       return makeMetadata(data.title, description);
     },
   },

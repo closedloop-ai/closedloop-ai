@@ -28,6 +28,8 @@ export async function generateMetadata({
 }: SignInPageProps): Promise<Metadata> {
   const { redirect_url } = await searchParams;
 
+  // Clerk redirects unauthenticated requests here with the original URL:
+  // /sign-in?redirect_url=https://app.closedloop.ai/prds/my-slug
   if (redirect_url) {
     try {
       const parsed = new URL(redirect_url);
