@@ -16,9 +16,7 @@ import {
   useComputeTargets,
   useDeleteComputeTarget,
 } from "@/hooks/queries/use-compute-targets";
-
-const DESKTOP_SETUP_URL =
-  "https://github.com/closedloop-tech/symphony-alpha/blob/main/docs/runbook-symphony-desktop-client-llm.md";
+import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
 
 function formatLastSeen(value: Date): string {
   if (Number.isNaN(value.getTime())) {

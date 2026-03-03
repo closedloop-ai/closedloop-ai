@@ -413,7 +413,9 @@ export const desktopCommandStore = {
     input: CreateDesktopCommandInput
   ): Promise<CreateCommandResult> {
     const idempotencyKey = input.idempotencyKey?.trim() || undefined;
-    const fingerprint = fingerprintCommand(input);
+    // Fingerprint with the trimmed key so " key " and "key" produce the
+    // same hash — prevents false IdempotencyConflictError on retry.
+    const fingerprint = fingerprintCommand({ ...input, idempotencyKey });
 
     if (idempotencyKey) {
       const cacheKey = `${computeTargetId}:${idempotencyKey}`;
@@ -781,16 +783,24 @@ export const desktopCommandStore = {
   },
 
   async findCommandIdByOperationId(
-    operationId: string
+    operationId: string,
+    computeTargetId?: string
   ): Promise<string | null> {
     const cachedId = operationIdCache.get(operationId);
     if (cachedId) {
       return cachedId;
     }
 
+    const where: { operationId: string; computeTargetId?: string } = {
+      operationId,
+    };
+    if (computeTargetId) {
+      where.computeTargetId = computeTargetId;
+    }
+
     const command = await withDb((db) =>
       db.desktopCommand.findFirst({
-        where: { operationId },
+        where,
         select: { id: true },
         orderBy: { createdAt: "desc" },
       })

@@ -57,6 +57,7 @@ export function parseHelloPayload(
     typeof payload.pluginVersion !== "string" ||
     !isStringArray(payload.supportedOperations) ||
     typeof payload.maxInFlightCommands !== "number" ||
+    !Number.isFinite(payload.maxInFlightCommands) ||
     payload.maxInFlightCommands < 1
   ) {
     return null;

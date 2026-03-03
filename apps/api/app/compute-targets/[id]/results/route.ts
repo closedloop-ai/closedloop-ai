@@ -1,4 +1,5 @@
 import type { RelayResultIngestRequest } from "@repo/api/src/types/compute-target";
+import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
@@ -24,17 +25,27 @@ type IngestResultResponse = {
 };
 
 async function ingestOneShotResult(
-  payload: Extract<RelayResultIngestRequest, { result: unknown }>
+  payload: Extract<RelayResultIngestRequest, { result: unknown }>,
+  computeTargetId: string
 ): Promise<boolean> {
   const commandId = await desktopCommandStore.findCommandIdByOperationId(
-    payload.operationId
+    payload.operationId,
+    computeTargetId
   );
   if (!commandId) {
+    // Result arrives for an unknown operationId — may happen if the command
+    // expired or was created on a different target. 200 OK is returned to
+    // avoid triggering retry loops in the relay runner.
+    log.warn("Result dropped: no command found for operationId", {
+      operationId: payload.operationId,
+      computeTargetId,
+    });
     return false;
   }
 
   const result = await desktopCommandStore.ingestCommandEvent({
     commandId,
+    computeTargetId,
     eventType: "result",
     data: toTerminalResultData(payload.result),
     sequence: payload.sequence,
@@ -43,12 +54,18 @@ async function ingestOneShotResult(
 }
 
 async function ingestStreamingResult(
-  payload: StreamingRelayResult
+  payload: StreamingRelayResult,
+  computeTargetId: string
 ): Promise<boolean> {
   const commandId = await desktopCommandStore.findCommandIdByOperationId(
-    payload.operationId
+    payload.operationId,
+    computeTargetId
   );
   if (!commandId) {
+    log.warn("Streaming result dropped: no command found for operationId", {
+      operationId: payload.operationId,
+      computeTargetId,
+    });
     return false;
   }
 
@@ -58,6 +75,7 @@ async function ingestStreamingResult(
 
   const result = await desktopCommandStore.ingestCommandEvent({
     commandId,
+    computeTargetId,
     eventType,
     data,
     sequence: payload.sequence,
@@ -124,12 +142,12 @@ export const POST = withAnyAuth<
 
     const payload = body as RelayResultIngestRequest;
     if (isOneShotRelayResult(payload)) {
-      const shouldPublish = await ingestOneShotResult(payload);
+      const shouldPublish = await ingestOneShotResult(payload, target.id);
       if (shouldPublish) {
         publishOneShotResult(payload);
       }
     } else {
-      const shouldPublish = await ingestStreamingResult(payload);
+      const shouldPublish = await ingestStreamingResult(payload, target.id);
       if (shouldPublish) {
         publishStreamingResult(payload);
       }

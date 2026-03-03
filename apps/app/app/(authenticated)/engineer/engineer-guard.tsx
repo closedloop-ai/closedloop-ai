@@ -6,12 +6,10 @@ import Link from "next/link";
 import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
 import { EngineerDashboard } from "@/components/engineer/engineer-dashboard";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
+import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { appEnvironment } from "@/lib/environment";
-
-const DESKTOP_SETUP_URL =
-  "https://github.com/closedloop-tech/symphony-alpha/blob/main/docs/runbook-symphony-desktop-client-llm.md";
 
 /**
  * Guards engineer access based on the currently selected routing target.

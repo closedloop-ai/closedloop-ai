@@ -1,6 +1,6 @@
 # Relay Integration Contracts
 
-Last updated: 2026-02-27 (synced with Desktop DG artifacts from `/Users/daniel.ochoa/Source/closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`)
+Last updated: 2026-02-27 (synced with Desktop DG artifacts from `closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`)
 
 ## Tier Routing Decision Table
 
@@ -32,7 +32,7 @@ Last updated: 2026-02-27 (synced with Desktop DG artifacts from `/Users/daniel.o
 
 ## Desktop Contract Sync Inputs
 
-- Source of truth: `/Users/daniel.ochoa/Source/closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`
+- Source of truth: `closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`
 - `DG-001`: `/health` response identity fields (`status`, `machineName`, `capabilities`, `version`, `port`) and CORS headers
 - `DG-002`: port fallback behavior (`19432 -> 19433 -> 19434 -> 19435`) + discovery file
 - `DG-003`: registration + heartbeat payload/envelope, plus desktop retry/backoff semantics

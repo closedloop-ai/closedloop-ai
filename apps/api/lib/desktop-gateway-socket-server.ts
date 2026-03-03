@@ -283,6 +283,40 @@ async function handleSocketHello(
     pendingCommandsPromise,
     onlineUpdatePromise,
   ]);
+
+  // Guard: if the socket disconnected during the async work above,
+  // compensate by marking the target offline and cleaning up resources.
+  // The disconnect handler may have already run (before contextsBySocketId
+  // was set, or after), so all cleanup operations here are idempotent.
+  if (!socket.connected) {
+    unsubscribeOperations();
+    unsubscribeConnectionClose();
+    clearInterval(heartbeatTimer);
+    contextsBySocketId.delete(socket.id);
+    removeSocketFromTarget(targetId, socket.id);
+    computeTargetsService
+      .setOnlineState(
+        targetId,
+        authContext.organizationId,
+        authContext.userId,
+        false
+      )
+      .catch((error) => {
+        log.error(
+          "Failed to compensate online state after disconnect during hello",
+          { socketId: socket.id, targetId, error }
+        );
+      });
+    log.info(
+      "Desktop gateway hello cancelled — socket disconnected mid-hello",
+      {
+        socketId: socket.id,
+        targetId,
+      }
+    );
+    return;
+  }
+
   if (!onlineUpdated) {
     log.warn("Desktop target online-state update missed during hello", {
       socketId: socket.id,

@@ -182,7 +182,10 @@ function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  return option.mode === EngineerRoutingMode.LocalElectron;
+  return (
+    option.mode === EngineerRoutingMode.LocalElectron ||
+    option.mode === EngineerRoutingMode.LocalDev
+  );
 }
 
 export function ComputeTargetSelector() {

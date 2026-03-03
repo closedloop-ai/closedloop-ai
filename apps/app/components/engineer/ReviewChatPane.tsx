@@ -1041,10 +1041,12 @@ export function ReviewChatPane({
     }
     setIsSubmittingDecline(true);
     try {
-      await postDeclineComment(repoPath, prNumber, reason);
+      // Persist state first so the button is disabled even if the PR
+      // comment fails — prevents duplicate comments on retry.
       await markReviewDeclined(ticketId, repoPath, config.provider, reason);
       setDeclined(true);
       setFindingsRevealed(false);
+      await postDeclineComment(repoPath, prNumber, reason);
       toast.success("Decline comment posted to PR");
     } catch {
       toast.error("Failed to post decline comment");

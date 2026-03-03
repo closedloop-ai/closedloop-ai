@@ -214,11 +214,11 @@ async function handleWithErrorBoundary(
       );
     }
 
+    // Generic message to avoid leaking internal details (file paths,
+    // connection strings) from unexpected exceptions. Real error is logged.
     log.error("Engineer relay request failed", { error });
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Relay request failed",
-      },
+      { error: "Relay request failed" },
       { status: 502 }
     );
   }

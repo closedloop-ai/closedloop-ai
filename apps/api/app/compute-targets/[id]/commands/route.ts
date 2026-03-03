@@ -34,11 +34,6 @@ export const POST = withAnyAuth<
       return parseError;
     }
 
-    await computeTargetsService.markStaleTargetsOffline({
-      organizationId: user.organizationId,
-      userId: user.id,
-    });
-
     const target = await computeTargetsService.findOwnedById(
       targetId,
       user.organizationId,

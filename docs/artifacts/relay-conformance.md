@@ -7,8 +7,8 @@ Last updated: 2026-02-27
 This report validates Relay Integration phases R0-R6 against implemented code and automated checks in this repository.
 
 Desktop dependency note:
-- Desktop contract source: `/Users/daniel.ochoa/Source/closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`
-- Desktop conformance source: `/Users/daniel.ochoa/Source/closedloop-electron/docs/artifacts/desktop-gateway-conformance.md`
+- Desktop contract source: `closedloop-electron/docs/artifacts/desktop-gateway-contracts.md`
+- Desktop conformance source: `closedloop-electron/docs/artifacts/desktop-gateway-conformance.md`
 - Desktop DG status at sync time: `DG-001..DG-004 finalized` (including DG-003 live endpoint probes and DG-004 full parity matrix).
 
 ## Verification Runs

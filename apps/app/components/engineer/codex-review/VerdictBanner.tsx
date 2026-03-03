@@ -59,6 +59,10 @@ function DeclineAction({
   isDeclined?: boolean;
   isSubmitting?: boolean;
 }>) {
+  if (!onDecline) {
+    return null;
+  }
+
   if (isDeclined) {
     return (
       <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-red-500/10 px-2.5 py-1 font-medium text-red-600 text-xs dark:text-red-400">

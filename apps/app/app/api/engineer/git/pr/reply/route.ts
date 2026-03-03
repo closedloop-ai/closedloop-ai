@@ -52,47 +52,13 @@ function ghApiViaStdin(
 }
 
 /**
- * Run gh pr comment with body passed via stdin
+ * Run a gh CLI command with body passed via stdin (--body-file -)
  */
-function ghPrCommentViaStdin(
+function ghCliViaStdin(
   args: string[],
   body: string,
-  cwd: string
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    // Use --body-file - to read from stdin
-    const proc = spawn("gh", [...args, "--body-file", "-"], { cwd });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
-    });
-    proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        const err = new Error(
-          `gh pr comment exited with code ${code}: ${stderr}`
-        );
-        Object.assign(err, { stdout, stderr });
-        reject(err);
-      }
-    });
-    proc.stdin.write(body);
-    proc.stdin.end();
-  });
-}
-
-/**
- * Run gh pr review with body passed via stdin (for "Request Changes" reviews)
- */
-function ghPrReviewViaStdin(
-  args: string[],
-  body: string,
-  cwd: string
+  cwd: string,
+  label: string
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const proc = spawn("gh", [...args, "--body-file", "-"], { cwd });
@@ -108,9 +74,7 @@ function ghPrReviewViaStdin(
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        const err = new Error(
-          `gh pr review exited with code ${code}: ${stderr}`
-        );
+        const err = new Error(`${label} exited with code ${code}: ${stderr}`);
         Object.assign(err, { stdout, stderr });
         reject(err);
       }
@@ -159,7 +123,7 @@ async function postReply(
     if (repoSlug) {
       args.push("-R", repoSlug);
     }
-    const result = await ghPrReviewViaStdin(args, replyBody, cwd);
+    const result = await ghCliViaStdin(args, replyBody, cwd, "gh pr review");
     return NextResponse.json({
       success: true,
       message: "Changes requested",
@@ -181,7 +145,7 @@ async function postReply(
   if (repoSlug) {
     args.push("-R", repoSlug);
   }
-  const result = await ghPrCommentViaStdin(args, replyBody, cwd);
+  const result = await ghCliViaStdin(args, replyBody, cwd, "gh pr comment");
   return NextResponse.json({
     success: true,
     message: "Comment posted successfully",

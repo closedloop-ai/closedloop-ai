@@ -19,10 +19,12 @@ app
     const server = createServer((request, response) => {
       handle(request, response).catch((error) => {
         console.error("Failed handling API request", error);
-        if (!response.headersSent) {
+        if (response.headersSent) {
+          response.end();
+        } else {
           response.statusCode = 500;
+          response.end("Internal Server Error");
         }
-        response.end("Internal Server Error");
       });
     });
 

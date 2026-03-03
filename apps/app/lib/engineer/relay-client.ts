@@ -442,6 +442,9 @@ export class RelayClient {
           controller.error(error);
         } finally {
           clearTimeout(timeout);
+          // controller.error() does NOT trigger the cancel() callback per
+          // the ReadableStream spec, so abort the upstream fetch explicitly.
+          upstreamController.abort();
         }
       },
       cancel() {
