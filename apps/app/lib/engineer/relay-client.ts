@@ -122,6 +122,19 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
       separatorIndex = buffer.indexOf("\n\n");
     }
   }
+
+  // Flush decoder and yield any trailing SSE event without a terminating \n\n
+  buffer += decoder.decode();
+  const remaining = buffer.trim();
+  if (remaining) {
+    const dataLines = remaining
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart());
+    if (dataLines.length > 0) {
+      yield dataLines.join("\n");
+    }
+  }
 }
 
 async function parseStreamError(

@@ -1857,7 +1857,7 @@ function ReviewCard({
                   isDone
                     ? undefined
                     : {
-                        animation: `letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
+                        animation: `eng-letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
                       }
                 }
               >

@@ -3,7 +3,7 @@ import next from "next";
 import { initDesktopGatewaySocketServer } from "./lib/desktop-gateway-socket-server";
 
 const dev = process.env.NODE_ENV !== "production";
-const hostname = process.env.HOSTNAME ?? "0.0.0.0";
+const hostname = process.env.HOST ?? "0.0.0.0";
 const port = Number.parseInt(process.env.PORT ?? "3002", 10);
 
 const app = next({

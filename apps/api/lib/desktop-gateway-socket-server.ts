@@ -89,9 +89,7 @@ const serverInstances = new WeakMap<HttpServer, DesktopGatewaySocketServer>();
 const contextsBySocketId = new Map<string, SocketConnectionContext>();
 const socketIdsByTargetId = new Map<string, Set<string>>();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "@/lib/type-guards";
 
 function isStringArray(value: unknown): value is string[] {
   return (

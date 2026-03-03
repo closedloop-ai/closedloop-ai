@@ -221,6 +221,7 @@ export const relayEventBus = {
         });
       }
     }
+    targetConnections.delete(targetId);
   },
 
   clearOperationBacklog(targetId: string): void {

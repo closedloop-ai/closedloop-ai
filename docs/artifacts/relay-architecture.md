@@ -14,8 +14,8 @@ It consolidates:
 
 Source docs:
 
-- `~/Documents/prd-symphony-relay-integration.md`
-- `/Users/daniel.ochoa/Source/closedloop-electron/docs/artifacts/api-server-socketio-handoff.md`
+- PRD: Symphony Relay Integration (internal)
+- closedloop-electron repo: `docs/artifacts/api-server-socketio-handoff.md`
 - `docs/artifacts/relay-integration-contracts.md`
 - `docs/artifacts/relay-conformance.md`
 

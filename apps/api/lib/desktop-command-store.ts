@@ -97,9 +97,7 @@ const eventSubscribers = new Map<string, Set<EventSubscriber>>();
 const operationIdCache = new Map<string, string>();
 const idempotencyCache = new Map<string, IdempotencyEntry>();
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "@/lib/type-guards";
 
 function stableStringify(value: unknown): string {
   if (value === null || value === undefined) {
@@ -493,14 +491,25 @@ export const desktopCommandStore = {
       data = {};
     }
 
-    const updated = await withDb((db) =>
-      db.desktopCommand.update({
-        where: { id: commandId },
+    // Use conditional update to prevent overwriting a concurrent terminal transition
+    const { count } = await withDb((db) =>
+      db.desktopCommand.updateMany({
+        where: {
+          id: commandId,
+          status: { notIn: ["done", "failed", "cancelled", "expired"] },
+        },
         data,
       })
     );
 
-    return toSummary(toStoredCommand(updated as StoredCommandRow));
+    // If no rows updated, re-fetch to return current state
+    if (count === 0) {
+      const current = await findCommandById(commandId);
+      return current ? toSummary(current) : null;
+    }
+
+    const updated = await findCommandById(commandId);
+    return updated ? toSummary(updated) : null;
   },
 
   async ingestCommandEvent(
@@ -757,14 +766,12 @@ export const desktopCommandStore = {
   },
 
   async markCommandExpired(commandId: string, reason?: string): Promise<void> {
-    const command = await findCommandById(commandId);
-    if (!command || isTerminalStatus(command.status)) {
-      return;
-    }
-
     await withDb((db) =>
-      db.desktopCommand.update({
-        where: { id: commandId },
+      db.desktopCommand.updateMany({
+        where: {
+          id: commandId,
+          status: { notIn: ["done", "failed", "cancelled", "expired"] },
+        },
         data: {
           status: "expired",
           finishedAt: new Date(),
