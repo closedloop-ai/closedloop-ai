@@ -39,12 +39,12 @@ function isRoutingMode(value: unknown): value is EngineerRoutingMode {
 }
 
 function hydrateFromStorage(): void {
-  if (hydrated || typeof window === "undefined") {
+  if (hydrated || globalThis.window === undefined) {
     return;
   }
   hydrated = true;
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = globalThis.localStorage.getItem(STORAGE_KEY);
   if (!raw) {
     return;
   }
@@ -71,10 +71,10 @@ function hydrateFromStorage(): void {
 }
 
 function persistSelection(next: EngineerRoutingSelection): void {
-  if (typeof window === "undefined") {
+  if (globalThis.window === undefined) {
     return;
   }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
 }
 
 function emitChange(): void {
@@ -165,7 +165,7 @@ export function resetEngineerRoutingSelectionForTests(): void {
   };
   hydrated = false;
   listeners.clear();
-  if (typeof window !== "undefined") {
-    window.localStorage.removeItem(STORAGE_KEY);
+  if (globalThis.window !== undefined) {
+    globalThis.localStorage.removeItem(STORAGE_KEY);
   }
 }

@@ -386,6 +386,30 @@ async function recoverDuplicateCommand(
   return { command: winnerCommand, deduped: true };
 }
 
+type PrismaTransactionClient = Parameters<Parameters<typeof withDb.tx>[0]>[0];
+
+async function createEventRow(
+  tx: PrismaTransactionClient,
+  input: IngestCommandEventInput,
+  sequence: number
+): Promise<{ createdAt: Date } | "duplicate"> {
+  try {
+    return await tx.desktopCommandEvent.create({
+      data: {
+        commandId: input.commandId,
+        sequence,
+        eventType: input.eventType,
+        eventPayload: input.data as unknown as Prisma.InputJsonValue,
+      },
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2002") {
+      return "duplicate";
+    }
+    throw error;
+  }
+}
+
 export const desktopCommandStore = {
   async createCommand(
     computeTargetId: string,
@@ -573,14 +597,11 @@ export const desktopCommandStore = {
         } as const;
       }
 
-      const createdEvent = await tx.desktopCommandEvent.create({
-        data: {
-          commandId: input.commandId,
-          sequence,
-          eventType: input.eventType,
-          eventPayload: input.data as unknown as Prisma.InputJsonValue,
-        },
-      });
+      const createResult = await createEventRow(tx, input, sequence);
+      if (createResult === "duplicate") {
+        return { accepted: true, duplicate: true, sequence } as const;
+      }
+      const createdEvent = createResult;
 
       const nextState = resolveCommandUpdate(
         command,

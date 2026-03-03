@@ -7,7 +7,7 @@ import {
 import { getEngineerRoutingSelection } from "./routing-store";
 
 type InterceptorWindow = Window & {
-  __engineerOriginalFetch?: typeof window.fetch;
+  __engineerOriginalFetch?: typeof globalThis.fetch;
   __engineerFetchInterceptorRefs?: number;
 };
 
@@ -70,8 +70,8 @@ function toRelayPath(pathname: string): string {
 }
 
 function createFetchInterceptor(
-  originalFetch: typeof window.fetch
-): typeof window.fetch {
+  originalFetch: typeof globalThis.fetch
+): typeof globalThis.fetch {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const request =
       input instanceof Request
@@ -79,10 +79,10 @@ function createFetchInterceptor(
         : input instanceof URL
           ? new Request(input.toString(), init)
           : new Request(
-              new URL(input, window.location.origin).toString(),
+              new URL(input, globalThis.location.origin).toString(),
               init
             );
-    const requestUrl = new URL(request.url, window.location.origin);
+    const requestUrl = new URL(request.url, globalThis.location.origin);
 
     if (!isEngineerRequest(requestUrl)) {
       return originalFetch(request);
@@ -96,7 +96,7 @@ function createFetchInterceptor(
     ) {
       const rewrittenUrl = new URL(
         `${toRelayPath(requestUrl.pathname)}${requestUrl.search}`,
-        window.location.origin
+        globalThis.location.origin
       );
       const rewrittenRequest = new Request(rewrittenUrl.toString(), request);
       const headers = withComputeTargetHeader(
@@ -137,15 +137,16 @@ function createFetchInterceptor(
  * Reference-counted to tolerate React Strict Mode remounts in development.
  */
 export function installEngineerFetchInterceptor(): () => void {
-  if (typeof window === "undefined") {
+  if (globalThis.window === undefined) {
     return () => {};
   }
 
-  const interceptorWindow = window as InterceptorWindow;
+  const interceptorWindow = globalThis.window as InterceptorWindow;
 
   if (!interceptorWindow.__engineerOriginalFetch) {
-    interceptorWindow.__engineerOriginalFetch = window.fetch.bind(window);
-    window.fetch = createFetchInterceptor(
+    interceptorWindow.__engineerOriginalFetch =
+      globalThis.fetch.bind(globalThis);
+    globalThis.fetch = createFetchInterceptor(
       interceptorWindow.__engineerOriginalFetch
     );
     interceptorWindow.__engineerFetchInterceptorRefs = 0;
@@ -163,19 +164,19 @@ export function installEngineerFetchInterceptor(): () => void {
       return;
     }
 
-    window.fetch = interceptorWindow.__engineerOriginalFetch;
+    globalThis.fetch = interceptorWindow.__engineerOriginalFetch;
     interceptorWindow.__engineerOriginalFetch = undefined;
     interceptorWindow.__engineerFetchInterceptorRefs = undefined;
   };
 }
 
 export function resetEngineerFetchInterceptorForTests(): void {
-  if (typeof window === "undefined") {
+  if (globalThis.window === undefined) {
     return;
   }
-  const interceptorWindow = window as InterceptorWindow;
+  const interceptorWindow = globalThis.window as InterceptorWindow;
   if (interceptorWindow.__engineerOriginalFetch) {
-    window.fetch = interceptorWindow.__engineerOriginalFetch;
+    globalThis.fetch = interceptorWindow.__engineerOriginalFetch;
   }
   interceptorWindow.__engineerOriginalFetch = undefined;
   interceptorWindow.__engineerFetchInterceptorRefs = undefined;

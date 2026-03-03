@@ -390,6 +390,7 @@ export class RelayClient {
       }
     } finally {
       clearTimeout(timeout);
+      abortController.abort();
     }
 
     throw new Error("Relay result stream ended without a terminal event");

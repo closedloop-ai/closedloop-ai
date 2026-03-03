@@ -191,7 +191,7 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     const stream = await relayClient.streamOperation(targetId, relayRequest);
     return new Response(stream, {
       headers: {
-        "Content-Type": "text/event-stream",
+        "Content-Type": "application/x-ndjson",
         "Cache-Control": "no-cache, no-transform",
       },
     });
