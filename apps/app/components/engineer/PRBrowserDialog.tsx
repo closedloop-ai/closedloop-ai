@@ -1041,7 +1041,7 @@ export function PRBrowserDialog({
         } else {
           toast.success(result.summary);
         }
-        setCommentStatusKey((k) => k + 1);
+        incrementCommentStatusKey();
 
         // Mark ALL findings as commented in the persisted file
         const findingsWithCommented = allFindings.map((f) => ({
@@ -1081,6 +1081,20 @@ export function PRBrowserDialog({
     },
     [reviews, selectedRepo, selectedPR, commitSha, queryClient, patchReview]
   );
+
+  const incrementCommentStatusKey = () => setCommentStatusKey((k) => k + 1);
+
+  const removeCommentChat = (key: string, commentId: string) => {
+    setCommentChats((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    if (selectedPR) {
+      resetCommentStatus(selectedPR.number, commentId);
+    }
+    incrementCommentStatusKey();
+  };
 
   // Repo picker dropdown items
   function renderRepoItems() {
@@ -1252,23 +1266,8 @@ export function PRBrowserDialog({
               comment={entry.comment}
               commentId={entry.comment.id}
               key={key}
-              onChatCleared={() => setCommentStatusKey((k) => k + 1)}
-              onDeselect={() => {
-                // Remove entry (unmount) — no left-pane card to return to,
-                // so keeping it hidden would just orphan a background stream.
-                setCommentChats((prev) => {
-                  const next = { ...prev };
-                  delete next[key];
-                  return next;
-                });
-                // Reset chatStarted so overflow menu re-shows "Fix with Claude/Codex".
-                // Unconditional: resolved comments are already removed from
-                // commentChats by onResolved, so this only fires for pending chats.
-                if (selectedPR) {
-                  resetCommentStatus(selectedPR.number, entry.comment.id);
-                }
-                setCommentStatusKey((k) => k + 1);
-              }}
+              onChatCleared={incrementCommentStatusKey}
+              onDeselect={() => removeCommentChat(key, entry.comment.id)}
               onResolved={() =>
                 handleCommentChatResolved(key, entry.comment.id)
               }
@@ -1291,7 +1290,7 @@ export function PRBrowserDialog({
             comment={previewComment.comment}
             commentId={previewComment.comment.id}
             key={`preview-${previewComment.comment.id}`}
-            onChatCleared={() => setCommentStatusKey((k) => k + 1)}
+            onChatCleared={incrementCommentStatusKey}
             onDeselect={() => {
               setPreviewComment(null);
             }}
@@ -1489,7 +1488,7 @@ export function PRBrowserDialog({
                     onCommentSelected={handleCommentSelected}
                     onReviewCodex={async (commentId) => {
                       markChatStarted(selectedPR.number, commentId);
-                      setCommentStatusKey((k) => k + 1);
+                      incrementCommentStatusKey();
                       await restoreOrShowSettings();
                     }}
                     prNumber={selectedPR.number}
@@ -1644,6 +1643,26 @@ async function fetchPRFiles(
   }
 }
 
+function classifyWithResolution(
+  finding: ReviewFinding,
+  shortPath: string,
+  prFiles: string[],
+  inline: Array<{ finding: ReviewFinding; fullPath: string }>,
+  general: ReviewFinding[]
+): void {
+  const fullPath = resolveFullPath(shortPath, prFiles);
+  if (fullPath === "ambiguous") {
+    // Multiple PR files match — fall back to general comment
+    general.push(finding);
+  } else if (fullPath) {
+    inline.push({ finding, fullPath });
+  } else if (prFiles.length === 0) {
+    // PR file list unavailable (fetch failed) — fall back to general comment
+    general.push(finding);
+  }
+  // else: file confirmed not in PR, drop the finding
+}
+
 function classifyFindings(
   findings: ReviewFinding[],
   commitSha: string | undefined,
@@ -1671,19 +1690,9 @@ function classifyFindings(
         }
       }
       inline.push({ finding, fullPath: finding.file });
-      continue;
+    } else {
+      classifyWithResolution(finding, shortPath, prFiles, inline, general);
     }
-    const fullPath = resolveFullPath(shortPath, prFiles);
-    if (fullPath === "ambiguous") {
-      // Multiple PR files match — fall back to general comment
-      general.push(finding);
-    } else if (fullPath) {
-      inline.push({ finding, fullPath });
-    } else if (prFiles.length === 0) {
-      // PR file list unavailable (fetch failed) — fall back to general comment
-      general.push(finding);
-    }
-    // else: file confirmed not in PR, drop the finding
   }
 
   return { inline, general };
@@ -1857,7 +1866,7 @@ function ReviewCard({
                   isDone
                     ? undefined
                     : {
-                        animation: `letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
+                        animation: `eng-letter-wave 5s ease-in-out ${i * 0.12}s infinite`,
                       }
                 }
               >

@@ -9,7 +9,7 @@ Handles all database operations and external service integrations. Port 3002.
 - **Routes** (`app/*/route.ts`): auth via `withAnyAuth()`, parse params/body, call service, return `NextResponse.json()`
 - **Services** (`app/*/service.ts`): business logic, `@repo/database` imports, `withDb()` queries, external APIs, transactions
 
-No database operations in routes — delegate to services.
+No database operations in routes — delegate to services. No type definitions or pure helper functions in route files — extract to co-located helpers (e.g., `relay-result-helpers.ts`) or `@/lib/`.
 
 ## Auth Wrappers
 
@@ -42,3 +42,4 @@ No database operations in routes — delegate to services.
 - **[pattern]**: Routes must transform service Result types to API contract flat types.
 - **[mistake]**: OAuth connect routes: verify service method signature before copying parameter destructuring.
 - **[mistake]**: Throttling via localStorage: write timestamp AFTER operation succeeds (in `.then()`), not before.
+- **[convention]**: Prisma ownership updates: use `db.model.update({ where: { id, organizationId, userId } })` with P2025 catch — not `updateMany` + `findUnique`. Matches existing `artifact.update` pattern.
