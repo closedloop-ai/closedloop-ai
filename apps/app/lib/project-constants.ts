@@ -32,6 +32,8 @@ export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
   [ArtifactStatus.Obsolete]: "Obsolete",
+  [ArtifactStatus.ReadyForReview]: "Ready for Review",
+  [ArtifactStatus.Executed]: "Executed",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
@@ -39,6 +41,8 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
   [ArtifactStatus.Approved]: "text-green-600 dark:text-green-400",
   [ArtifactStatus.Obsolete]: "text-muted-foreground",
+  [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
+  [ArtifactStatus.Executed]: "text-green-600 dark:text-green-400",
 };
 
 // Artifact type icons

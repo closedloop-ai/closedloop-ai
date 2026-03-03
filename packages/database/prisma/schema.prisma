@@ -75,6 +75,8 @@ enum ArtifactStatus {
   IN_REVIEW
   APPROVED
   OBSOLETE
+  READY_FOR_REVIEW
+  EXECUTED
 }
 
 enum ArtifactType {
