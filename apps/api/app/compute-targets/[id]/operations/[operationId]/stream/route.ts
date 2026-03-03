@@ -1,6 +1,4 @@
-import { auth } from "@repo/auth/server";
-import { organizationsService } from "@/app/organizations/service";
-import { usersService } from "@/app/users/service";
+import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { type RelayResultEvent, relayEventBus } from "@/lib/relay-event-bus";
 import {
   createSseResponse,
@@ -18,24 +16,11 @@ function isTerminal(event: RelayResultEvent): boolean {
  * Subscribe to relay result events for one operation.
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string; operationId: string }> }
 ): Promise<Response> {
-  const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
-  if (!(clerkUserId && clerkOrgId)) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const organization = await organizationsService.findByClerkId(clerkOrgId);
-  if (!organization) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const user = await usersService.findByClerkIdAndOrg(
-    clerkUserId,
-    organization.id
-  );
-  if (!user?.active) {
+  const authContext = await resolveAnyAuthContext(request);
+  if (!authContext) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -43,8 +28,8 @@ export async function GET(
 
   const target = await computeTargetsService.findOwnedById(
     targetId,
-    organization.id,
-    user.id
+    authContext.organizationId,
+    authContext.userId
   );
   if (!target) {
     return new Response("Forbidden", { status: 403 });

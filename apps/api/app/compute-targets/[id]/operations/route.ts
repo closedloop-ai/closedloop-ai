@@ -5,6 +5,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
+import { isRecord } from "@/lib/type-guards";
 import { computeTargetsService } from "../../service";
 import { relayOperationDispatchValidator } from "../../validators";
 
@@ -54,15 +55,14 @@ export const POST = withAnyAuth<
     );
     const operationWithCommandId: RelayOperationDispatchRequest = {
       ...operation,
-      params:
-        operation.params && typeof operation.params === "object"
-          ? ({
-              ...(operation.params as Record<string, unknown>),
-              commandId: createResult.command.commandId,
-            } as RelayOperationDispatchRequest["params"])
-          : ({
-              commandId: createResult.command.commandId,
-            } as RelayOperationDispatchRequest["params"]),
+      params: isRecord(operation.params)
+        ? ({
+            ...operation.params,
+            commandId: createResult.command.commandId,
+          } as RelayOperationDispatchRequest["params"])
+        : ({
+            commandId: createResult.command.commandId,
+          } as RelayOperationDispatchRequest["params"]),
     };
     const result = relayEventBus.publishOperation(
       target.id,

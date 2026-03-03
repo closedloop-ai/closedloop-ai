@@ -120,7 +120,7 @@ async function engineerGuard(
   const token = await authState.getToken();
   const hasComputeTarget =
     typeof token === "string" && token.length > 0
-      ? await fetchHasComputeTarget(request, token)
+      ? await fetchHasComputeTarget(request, token).catch(() => false)
       : false;
 
   computeTargetGuardCache.set(cacheKey, {

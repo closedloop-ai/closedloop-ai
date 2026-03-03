@@ -404,6 +404,10 @@ export class RelayClient {
     const { commandId } = await this.createCommand(targetId, commandInput);
 
     const upstreamController = new AbortController();
+    const timeout = setTimeout(
+      () => upstreamController.abort(),
+      RESULT_STREAM_TIMEOUT_MS
+    );
     const response = await this.openCommandEventsStream(
       targetId,
       commandId,
@@ -428,9 +432,12 @@ export class RelayClient {
           controller.close();
         } catch (error) {
           controller.error(error);
+        } finally {
+          clearTimeout(timeout);
         }
       },
       cancel() {
+        clearTimeout(timeout);
         upstreamController.abort();
       },
     });

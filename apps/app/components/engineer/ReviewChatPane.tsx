@@ -1038,7 +1038,7 @@ export function ReviewChatPane({
     setIsSubmittingDecline(true);
     try {
       await postDeclineComment(repoPath, prNumber, reason);
-      markReviewDeclined(ticketId, repoPath, config.provider, reason);
+      await markReviewDeclined(ticketId, repoPath, config.provider, reason);
       setDeclined(true);
       setFindingsRevealed(false);
       toast.success("Decline comment posted to PR");
@@ -1892,20 +1892,21 @@ async function postDeclineComment(
   }
 }
 
-function markReviewDeclined(
+async function markReviewDeclined(
   ticketId: string,
   repoPath: string,
   provider: string,
   reason: string
-): void {
+): Promise<void> {
   const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
-  fetch(url, {
+  const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ declined: true, declineReason: reason }),
-  }).catch((err) =>
-    console.warn("[review-findings] Failed to mark declined:", err)
-  );
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to persist decline (${response.status})`);
+  }
 }
 
 // --- Status pre-check for review resumption ---

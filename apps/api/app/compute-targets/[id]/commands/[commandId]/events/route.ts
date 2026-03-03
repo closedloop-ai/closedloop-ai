@@ -1,7 +1,5 @@
 import type { DesktopCommandEvent } from "@repo/api/src/types/compute-target";
-import { auth } from "@repo/auth/server";
-import { organizationsService } from "@/app/organizations/service";
-import { usersService } from "@/app/users/service";
+import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import {
@@ -35,29 +33,16 @@ export async function GET(
   { params }: { params: Promise<{ id: string; commandId: string }> }
 ): Promise<Response> {
   try {
-    const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
-    if (!(clerkUserId && clerkOrgId)) {
-      return new Response("Unauthorized", { status: 401 });
-    }
-
-    const organization = await organizationsService.findByClerkId(clerkOrgId);
-    if (!organization) {
-      return new Response("Unauthorized", { status: 401 });
-    }
-
-    const user = await usersService.findByClerkIdAndOrg(
-      clerkUserId,
-      organization.id
-    );
-    if (!user?.active) {
+    const authContext = await resolveAnyAuthContext(request);
+    if (!authContext) {
       return new Response("Unauthorized", { status: 401 });
     }
 
     const { id: targetId, commandId } = await params;
     const target = await computeTargetsService.findOwnedById(
       targetId,
-      organization.id,
-      user.id
+      authContext.organizationId,
+      authContext.userId
     );
     if (!target) {
       return new Response("Forbidden", { status: 403 });

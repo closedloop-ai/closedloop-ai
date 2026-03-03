@@ -5,6 +5,7 @@ import type {
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
 import { withDb } from "@repo/database";
+import { isRecord } from "@/lib/type-guards";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
 
@@ -22,12 +23,8 @@ type ComputeTargetRecord = {
   updatedAt: Date;
 };
 
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function toJsonObject(value: unknown): JsonObject {
-  return isJsonObject(value) ? value : {};
+  return isRecord(value) ? (value as JsonObject) : {};
 }
 
 function toStringArray(value: unknown): string[] {
