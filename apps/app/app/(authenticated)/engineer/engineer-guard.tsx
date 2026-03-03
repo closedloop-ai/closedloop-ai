@@ -3,12 +3,16 @@
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
+import { useEffect } from "react";
 import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
 import { EngineerDashboard } from "@/components/engineer/engineer-dashboard";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { DESKTOP_SETUP_URL } from "@/lib/engineer/constants";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
-import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
+import {
+  setEngineerRoutingAutoSelection,
+  useEngineerRoutingSelection,
+} from "@/lib/engineer/routing-store";
 import { appEnvironment } from "@/lib/environment";
 
 /**
@@ -37,6 +41,20 @@ export function EngineerGuard() {
     selectedCloudTargetOnline ||
     selectedLocalElectronReady ||
     selectedLocalDevReady;
+
+  // Auto-fallback: when running locally and the current selection is
+  // unreachable (e.g. stale CloudRelay/LocalElectron in localStorage),
+  // switch to LocalDev instead of showing the error screen.
+  useEffect(() => {
+    if (detection.loading || targetsLoading || canAccess) {
+      return;
+    }
+    if (appEnvironment === "local") {
+      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalDev, null, {
+        force: true,
+      });
+    }
+  }, [detection.loading, targetsLoading, canAccess]);
 
   if (canAccess) {
     return <EngineerDashboard />;
