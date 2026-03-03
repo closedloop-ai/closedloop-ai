@@ -38,13 +38,10 @@ export function ComputeTargetsCard() {
   });
   const deleteTarget = useDeleteComputeTarget();
 
-  const handleDelete = async (id: string, machineName: string) => {
-    try {
-      await deleteTarget.mutateAsync(id);
-      toast.success(`Removed ${machineName}`);
-    } catch {
-      toast.error("Failed to remove compute target");
-    }
+  const handleDelete = (id: string, machineName: string) => {
+    deleteTarget.mutate(id, {
+      onSuccess: () => toast.success(`Removed ${machineName}`),
+    });
   };
 
   let content: React.ReactNode;

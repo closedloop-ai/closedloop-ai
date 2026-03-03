@@ -88,6 +88,7 @@ type GatewaySocketData = {
 const serverInstances = new WeakMap<HttpServer, DesktopGatewaySocketServer>();
 const contextsBySocketId = new Map<string, SocketConnectionContext>();
 const socketIdsByTargetId = new Map<string, Set<string>>();
+const helloInFlight = new Set<string>();
 
 import { isRecord } from "@/lib/type-guards";
 
@@ -622,6 +623,7 @@ async function handleSocketHello(
 }
 
 async function handleSocketDisconnect(socketId: string): Promise<void> {
+  helloInFlight.delete(socketId);
   const context = contextsBySocketId.get(socketId);
   if (!context) {
     return;
@@ -657,6 +659,10 @@ function handleSocketConnection(socket: Socket): void {
   }
 
   socket.on("desktop.hello", (rawPayload: unknown) => {
+    if (helloInFlight.has(socket.id)) {
+      return;
+    }
+
     const helloStartedAt = Date.now();
     const payload = parseHelloPayload(rawPayload);
     if (!payload) {
@@ -664,25 +670,33 @@ function handleSocketConnection(socket: Socket): void {
       return;
     }
 
+    helloInFlight.add(socket.id);
     const socketData = getSocketData(socket);
     handleSocketHello(socket, authContext, payload, {
       connectStartedAt: socketData.connectStartedAt,
       authDurationMs: socketData.authDurationMs,
       helloStartedAt,
-    }).catch((error) => {
-      log.error("Failed processing desktop.hello after authenticated connect", {
-        socketId: socket.id,
-        organizationId: authContext.organizationId,
-        userId: authContext.userId,
-        helloProcessingMs: Date.now() - helloStartedAt,
-        authDurationMs: socketData.authDurationMs,
-        connectToHelloFailureMs: socketData.connectStartedAt
-          ? Date.now() - socketData.connectStartedAt
-          : undefined,
-        error,
+    })
+      .catch((error) => {
+        log.error(
+          "Failed processing desktop.hello after authenticated connect",
+          {
+            socketId: socket.id,
+            organizationId: authContext.organizationId,
+            userId: authContext.userId,
+            helloProcessingMs: Date.now() - helloStartedAt,
+            authDurationMs: socketData.authDurationMs,
+            connectToHelloFailureMs: socketData.connectStartedAt
+              ? Date.now() - socketData.connectStartedAt
+              : undefined,
+            error,
+          }
+        );
+        socket.disconnect(true);
+      })
+      .finally(() => {
+        helloInFlight.delete(socket.id);
       });
-      socket.disconnect(true);
-    });
   });
 
   socket.on("desktop.presence", () => {
@@ -702,13 +716,22 @@ function handleSocketConnection(socket: Socket): void {
   });
 
   socket.on("desktop.command.ack", (rawPayload: unknown) => {
+    const context = contextsBySocketId.get(socket.id);
+    if (!context) {
+      return;
+    }
     const payload = parseCommandAckPayload(rawPayload);
     if (!payload) {
       return;
     }
 
     desktopCommandStore
-      .acknowledgeCommand(payload.commandId, payload.accepted, payload.reason)
+      .acknowledgeCommand(
+        payload.commandId,
+        payload.accepted,
+        payload.reason,
+        context.targetId
+      )
       .catch((error) => {
         log.error("Failed handling desktop.command.ack", {
           socketId: socket.id,
@@ -719,6 +742,10 @@ function handleSocketConnection(socket: Socket): void {
   });
 
   socket.on("desktop.command.event", (rawPayload: unknown) => {
+    const context = contextsBySocketId.get(socket.id);
+    if (!context) {
+      return;
+    }
     const payload = parseCommandEventPayload(rawPayload);
     if (!payload) {
       return;
@@ -730,6 +757,7 @@ function handleSocketConnection(socket: Socket): void {
         eventType: payload.eventType,
         data: payload.data,
         sequence: payload.sequence,
+        computeTargetId: context.targetId,
       })
       .then(async (result) => {
         if (result.accepted) {

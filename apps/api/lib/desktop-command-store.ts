@@ -50,6 +50,8 @@ type IngestCommandEventInput = {
   eventType: DesktopCommandEventType;
   data: JsonValue;
   sequence?: number;
+  /** When provided, the command must belong to this target or the event is rejected. */
+  computeTargetId?: string;
 };
 
 type IngestCommandEventResult =
@@ -94,10 +96,15 @@ class IdempotencyConflictError extends Error {
 type EventSubscriber = (event: DesktopCommandEvent) => void;
 
 const eventSubscribers = new Map<string, Set<EventSubscriber>>();
-const operationIdCache = new Map<string, string>();
-const idempotencyCache = new Map<string, IdempotencyEntry>();
 
+import { BoundedCache } from "@/lib/bounded-cache";
 import { isRecord } from "@/lib/type-guards";
+
+const CACHE_MAX_SIZE = 10_000;
+const operationIdCache = new BoundedCache<string, string>(CACHE_MAX_SIZE);
+const idempotencyCache = new BoundedCache<string, IdempotencyEntry>(
+  CACHE_MAX_SIZE
+);
 
 function stableStringify(value: unknown): string {
   if (value === null || value === undefined) {
@@ -343,6 +350,21 @@ async function findCommandById(
   return toStoredCommand(command as StoredCommandRow);
 }
 
+async function findCommandByIdScoped(
+  commandId: string,
+  computeTargetId?: string
+): Promise<StoredCommand | null> {
+  if (!computeTargetId) {
+    return findCommandById(commandId);
+  }
+  const row = await withDb((db) =>
+    db.desktopCommand.findFirst({
+      where: { id: commandId, computeTargetId },
+    })
+  );
+  return row ? toStoredCommand(row as StoredCommandRow) : null;
+}
+
 async function recoverDuplicateCommand(
   computeTargetId: string,
   idempotencyKey: string,
@@ -461,9 +483,10 @@ export const desktopCommandStore = {
   async acknowledgeCommand(
     commandId: string,
     accepted: boolean,
-    reason?: string
+    reason?: string,
+    computeTargetId?: string
   ): Promise<DesktopCommandSummary | null> {
-    const command = await findCommandById(commandId);
+    const command = await findCommandByIdScoped(commandId, computeTargetId);
     if (!command) {
       return null;
     }
@@ -496,6 +519,7 @@ export const desktopCommandStore = {
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
+          ...(computeTargetId ? { computeTargetId } : {}),
           status: { notIn: ["done", "failed", "cancelled", "expired"] },
         },
         data,
@@ -504,11 +528,11 @@ export const desktopCommandStore = {
 
     // If no rows updated, re-fetch to return current state
     if (count === 0) {
-      const current = await findCommandById(commandId);
+      const current = await findCommandByIdScoped(commandId, computeTargetId);
       return current ? toSummary(current) : null;
     }
 
-    const updated = await findCommandById(commandId);
+    const updated = await findCommandByIdScoped(commandId, computeTargetId);
     return updated ? toSummary(updated) : null;
   },
 
@@ -516,9 +540,16 @@ export const desktopCommandStore = {
     input: IngestCommandEventInput
   ): Promise<IngestCommandEventResult> {
     const result = await withDb.tx(async (tx) => {
-      const row = await tx.desktopCommand.findUnique({
-        where: { id: input.commandId },
-      });
+      const row = input.computeTargetId
+        ? await tx.desktopCommand.findFirst({
+            where: {
+              id: input.commandId,
+              computeTargetId: input.computeTargetId,
+            },
+          })
+        : await tx.desktopCommand.findUnique({
+            where: { id: input.commandId },
+          });
       if (!row) {
         return { accepted: false, reason: "unknown_command" } as const;
       }
