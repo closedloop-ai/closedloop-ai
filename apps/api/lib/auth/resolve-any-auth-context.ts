@@ -1,5 +1,3 @@
-import "server-only";
-
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { auth } from "@repo/auth/server";
 import { apiKeysService } from "@/app/api-keys/service";

@@ -3,8 +3,9 @@ import type { Server as HttpServer } from "node:http";
 import { log } from "@repo/observability/log";
 import { Server, type Socket } from "socket.io";
 import { isRecord } from "@/lib/type-guards";
+import { apiKeysService } from "../app/api-keys/service";
 import { computeTargetsService } from "../app/compute-targets/service";
-import { resolveApiKeyTokenContext } from "./auth/resolve-any-auth-context";
+import { usersService } from "../app/users/service";
 import { desktopCommandStore } from "./desktop-command-store";
 import {
   type DesktopAuthContext,
@@ -59,15 +60,38 @@ function extractApiKey(socket: Socket): string | null {
   return token;
 }
 
-function resolveDesktopAuthContext(
+// Inlined API key auth — cannot import resolveApiKeyTokenContext because
+// resolve-any-auth-context.ts transitively pulls in clerk-service → server-only
+// which throws when running outside Next.js (the custom socket server via tsx).
+async function resolveDesktopAuthContext(
   socket: Socket
 ): Promise<DesktopAuthContext | null> {
   const apiKey = extractApiKey(socket);
   if (!apiKey) {
-    return Promise.resolve(null);
+    return null;
   }
 
-  return resolveApiKeyTokenContext(apiKey, ["write"]);
+  const keyContext = await apiKeysService.verifyKey(apiKey);
+  if (!keyContext) {
+    return null;
+  }
+
+  if (!keyContext.scopes.includes("write")) {
+    return null;
+  }
+
+  const user = await usersService.findById(
+    keyContext.userId,
+    keyContext.organizationId
+  );
+  if (!user?.active) {
+    return null;
+  }
+
+  return {
+    organizationId: keyContext.organizationId,
+    userId: keyContext.userId,
+  };
 }
 
 async function publishLegacyRelayEvent(
