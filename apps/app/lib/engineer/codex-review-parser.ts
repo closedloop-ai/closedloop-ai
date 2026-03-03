@@ -11,6 +11,7 @@ export type ReviewFindings = {
   summary: string;
   findings: ReviewFinding[];
   approved: boolean;
+  verdict?: ReviewVerdict;
 };
 
 /**
@@ -129,7 +130,7 @@ export function parseCodexReviewOutput(rawOutput: string): ReviewFindings {
     }
   }
 
-  return { summary, findings, approved };
+  return { summary, findings, approved, verdict: extractVerdictTag(rawOutput) };
 }
 
 function priorityToSeverity(priority: string): ReviewFinding["severity"] {
@@ -503,4 +504,38 @@ function parseClaudeFindings(text: string): ReviewFinding[] {
   }
 
   return findings;
+}
+
+export type ReviewVerdict = {
+  verdict: "decline" | "needs_attention" | "approve";
+  reason: string;
+};
+
+const VERDICT_TAG_RE = /<pr_verdict>([\s\S]*?)<\/pr_verdict>/;
+const VALID_VERDICTS = new Set(["decline", "needs_attention", "approve"]);
+
+export function extractVerdictTag(
+  rawOutput: string
+): ReviewVerdict | undefined {
+  const match = VERDICT_TAG_RE.exec(rawOutput);
+  if (!match) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+    if (
+      typeof parsed.verdict !== "string" ||
+      !VALID_VERDICTS.has(parsed.verdict) ||
+      typeof parsed.reason !== "string" ||
+      parsed.reason.length === 0
+    ) {
+      return undefined;
+    }
+    return {
+      verdict: parsed.verdict as ReviewVerdict["verdict"],
+      reason: parsed.reason,
+    };
+  } catch {
+    return undefined;
+  }
 }

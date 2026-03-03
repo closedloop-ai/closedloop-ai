@@ -137,6 +137,10 @@ export function mapArtifactStatusToType(
       return "completed";
     case ArtifactStatus.Obsolete:
       return "canceled";
+    case ArtifactStatus.ReadyForReview:
+      return "started";
+    case ArtifactStatus.Executed:
+      return "completed";
     default:
       return "unstarted";
   }
@@ -153,6 +157,10 @@ export function artifactStatusDisplayName(status: ArtifactStatus): string {
       return "Approved";
     case ArtifactStatus.Obsolete:
       return "Obsolete";
+    case ArtifactStatus.ReadyForReview:
+      return "Ready for Review";
+    case ArtifactStatus.Executed:
+      return "Executed";
     default:
       return status;
   }

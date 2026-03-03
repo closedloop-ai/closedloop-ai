@@ -32,7 +32,7 @@ const RootLayout = async ({ children, params }: RootLayoutProperties) => {
           <DesignSystemProvider>
             <Header dictionary={dictionary} />
             {children}
-            <Footer />
+            <Footer dictionary={dictionary} />
           </DesignSystemProvider>
           <Toolbar />
           <CMSToolbar />

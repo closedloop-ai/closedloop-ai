@@ -49,3 +49,7 @@ export function useEngineerMcp(): McpClient {
   }
   return ctx;
 }
+
+export function useOptionalEngineerMcp(): McpClient | null {
+  return useContext(EngineerMcpContext);
+}

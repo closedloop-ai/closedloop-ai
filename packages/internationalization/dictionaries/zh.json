@@ -10,7 +10,8 @@
       "docs": "文档",
       "contact": "联系",
       "signIn": "登录",
-      "signUp": "开始使用"
+      "signUp": "开始使用",
+      "developers": "开发者"
     },
     "home": {
       "meta": {
@@ -78,6 +79,149 @@
       "meta": {
         "title": "博客",
         "description": "想法、观点和意见。"
+      }
+    },
+    "developers": {
+      "meta": {
+        "title": "AI驱动的软件交付 | Claude Code插件",
+        "description": "开箱即用的最佳实践编排代理。完全可扩展——自动构建针对您代码库量身定制的开发代理工作台。"
+      },
+      "hero": {
+        "badge": "Claude Code Plugin",
+        "title": "Multi-Agent SDLC",
+        "titleHighlight": "Grounded in Your Codebase.",
+        "description": "Best-practice orchestration agents out of the box. Fully extensible — automatically builds a dev agent bench tailored to your codebase.",
+        "installButton": "Install in 30 Seconds",
+        "githubButton": "View on GitHub"
+      },
+      "features": {
+        "label": "Features",
+        "title": "Bootstrap, Plan, Ship",
+        "description": "Your SDLC, orchestrated dynamically at scale — including visual QA inspection.",
+        "items": [
+          {
+            "title": "Dynamic Agent Bench",
+            "description": "Automatically generates a bench of domain-expert agents tailored to your codebase. Detects languages, frameworks, and architecture patterns — your AI team understands your project from day one."
+          },
+          {
+            "title": "MECE Task Decomposition",
+            "description": "Work is atomically broken down into mutually exclusive, collectively exhaustive items. Each task is independent, fully scoped, and ready for parallel execution with no overlaps or gaps."
+          },
+          {
+            "title": "Battery of AI Code Review",
+            "description": "Every implementation is reviewed by 13 quality judges covering SOLID principles, DRY, KISS, readability, test quality, code organization, and technical accuracy. Excellent code, every time."
+          },
+          {
+            "title": "Shared Learnings",
+            "description": "Captures patterns from every run, validates them for quality, and shares them across your org. Teams build on each other's experience — the system gets smarter with every project."
+          },
+          {
+            "title": "Caching & Token Optimization",
+            "description": "Build validation, critic evaluations, cross-repo discovery, and agent results are all cached. Minimize token usage and skip redundant work — subsequent runs execute faster and cheaper."
+          },
+          {
+            "title": "Cross-Repo Orchestration",
+            "description": "Automatically discovers peer repositories and identifies cross-repo dependencies. Generates cross-repo PRDs for missing capabilities and coordinates changes across your entire stack."
+          }
+        ]
+      },
+      "commands": {
+        "label": "Slash Commands",
+        "title": "Powerful Workflows at Your Fingertips",
+        "description": "Simple commands orchestrate complex multi-agent workflows.",
+        "items": [
+          {
+            "name": "/bootstrap",
+            "description": "Analyze your repo and generate custom domain-expert agents"
+          },
+          {
+            "name": "/code",
+            "description": "Begin a coding session with full Symphony orchestration"
+          },
+          {
+            "name": "/code-review",
+            "description": "Run comprehensive code review with multi-agent validation"
+          },
+          {
+            "name": "/amend-plan",
+            "description": "Discuss and apply amendments to implementation plans"
+          },
+          {
+            "name": "/process-learnings",
+            "description": "Process pending learnings from a run into org patterns"
+          },
+          {
+            "name": "/goal-stats",
+            "description": "Analyze goal performance and improvement trends across runs"
+          }
+        ]
+      },
+      "agents": {
+        "label": "Specialized Agents",
+        "title": "Purpose-Built AI Teammates",
+        "description": "Pre-built agents for orchestration, plus custom agents generated from your codebase.",
+        "items": [
+          {
+            "name": "agent-prompt-generator",
+            "description": "Generates custom domain-expert agents tailored to your project"
+          },
+          {
+            "name": "plan-draft-writer",
+            "description": "Creates high-level implementation plan drafts from PRDs"
+          },
+          {
+            "name": "plan-writer",
+            "description": "Refines plans by merging critic feedback and implementation details"
+          },
+          {
+            "name": "code-reviewer",
+            "description": "Reviews code for quality, security, and best practices"
+          },
+          {
+            "name": "pre-explorer",
+            "description": "Pre-explores codebase to produce code maps and investigation logs"
+          },
+          {
+            "name": "implementation-subagent",
+            "description": "Implements requirements with self-verification gates"
+          },
+          {
+            "name": "build-validator",
+            "description": "Discovers and runs project validation commands"
+          },
+          {
+            "name": "visual-qa-subagent",
+            "description": "Performs visual QA inspection via Playwright automation"
+          }
+        ]
+      },
+      "installation": {
+        "label": "Get Started",
+        "title": "Install in 30 Seconds",
+        "description": "One plugin. Zero dependencies. Install via the plugin marketplace.",
+        "steps": [
+          {
+            "title": "Add the Plugin Marketplace",
+            "description": "Register the ClosedLoop marketplace with Claude Code:",
+            "code": "/plugin marketplace add https://github.com/closedloop-ai/claude_code"
+          },
+          {
+            "title": "Install ClosedLoop Core",
+            "description": "Install the plugin from the marketplace:",
+            "code": "/plugin install closedloop-core"
+          },
+          {
+            "title": "Bootstrap & Code",
+            "description": "Generate agents for your project, then start coding:",
+            "code": "/bootstrap && /code \"Path to your PRD\""
+          }
+        ]
+      },
+      "cta": {
+        "title": "CodeGen that Ships",
+        "description": "Generate code you can actually merge.",
+        "primaryButton": "Get Started Free",
+        "secondaryButton": "Read the Docs"
       }
     },
     "contact": {

@@ -17,16 +17,19 @@ import { LearningsDialog } from "@/components/engineer/LearningsDialog";
 import { MCPConnectionStatus } from "@/components/engineer/MCPConnectionStatus";
 import { TerminalChatDialog } from "@/components/engineer/TerminalChatDialog";
 import { TicketList } from "@/components/engineer/TicketList";
-import { useEngineerMcp } from "@/contexts/engineer-mcp-context";
+import { useOptionalEngineerMcp } from "@/contexts/engineer-mcp-context";
 import { useEngineerIssues } from "@/hooks/engineer/use-engineer-issues";
 import { useFeatureSeen } from "@/hooks/engineer/use-feature-seen";
 import { useTerminalStatus } from "@/hooks/engineer/useTerminalStatus";
+import { isEngineerMcpEnabled } from "@/lib/engineer/mcp-mode";
 import { terminalBus } from "@/lib/engineer/terminal-bus";
 import type { EngineerTicket } from "@/types/engineer";
+import { ComputeTargetSelector } from "./compute-target-selector";
 
 export function EngineerDashboard() {
   const router = useRouter();
-  const mcp = useEngineerMcp();
+  const mcp = useOptionalEngineerMcp();
+  const showMcpUi = isEngineerMcpEnabled && mcp !== null;
   const {
     tickets,
     isLoading,
@@ -44,6 +47,11 @@ export function EngineerDashboard() {
   const [showMcpStatus, setShowMcpStatus] = useState(false);
   const mcpWasReadyRef = useRef(false);
   useEffect(() => {
+    if (!(showMcpUi && mcp)) {
+      setShowMcpStatus(false);
+      return;
+    }
+
     if (mcp.isReady) {
       setShowMcpStatus(false);
       if (!mcpWasReadyRef.current) {
@@ -54,7 +62,7 @@ export function EngineerDashboard() {
     }
     const timer = setTimeout(() => setShowMcpStatus(true), 2000);
     return () => clearTimeout(timer);
-  }, [mcp.isReady]);
+  }, [showMcpUi, mcp?.isReady]);
 
   const [learningsOpen, setLearningsOpen] = useState(false);
   const [terminalChatOpen, setTerminalChatOpen] = useState(false);
@@ -192,18 +200,19 @@ export function EngineerDashboard() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {showMcpStatus && !mcp.isReady && (
+            {showMcpUi && mcp && showMcpStatus && !mcp.isReady && (
               <MCPConnectionStatus
                 error={mcp.error}
                 onAuthenticate={mcp.authenticate}
                 state={mcp.state}
               />
             )}
-            {mcp.isReady && !mcp.hasWriteScope && (
+            {showMcpUi && mcp && mcp.isReady && !mcp.hasWriteScope && (
               <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-500 text-xs">
                 read-only
               </span>
             )}
+            <ComputeTargetSelector />
             <Button
               className="gap-2"
               onClick={() => router.push("/")}

@@ -68,6 +68,7 @@ No sycophantic language. Brief, factual — state what changed.
 
 ## Code Style
 - Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums.
+- Define string enums as const objects, never arrays: `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];` — not `const FOOS = ["bar"] as const`.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
 - `globalThis` not `window` (S7764); SSR guards: `globalThis.window === undefined` in client-only, keep `typeof` if server-possible
@@ -107,6 +108,7 @@ Symphony: human-governed, AI-centric software delivery platform. AI produces art
 - **[mistake]**: Adding re-exports to index.ts triggers Biome's `noBarrelFile`. Use direct subpath imports (`@repo/github/execution-log-parser`).
 - **[insight]**: Subpath imports (`@repo/github/execution-log-parser`) resolve without explicit `exports` in package.json — pnpm workspace + TS handles it.
 - **[convention]**: Never use inline `import()` types. Always top-level imports.
+- **[pattern]**: ArtifactStatus has 4 synchronized layers — when adding values, update Prisma schema + TypeScript const (packages/api/src/types/artifact.ts); the Zod validator and status dropdown auto-derive from the const, but exhaustive Record<ArtifactStatus, string> maps in status-badge.tsx and project-constants.ts require manual updates. (context: typescript|enum|ArtifactStatus|record)
 
 ### React Query & Mutations
 - **[convention]**: Do not add `.catch()` error toasts when calling `mutateAsync`. The global `QueryClient` in `apps/app/lib/query-client.tsx` has a default `mutations.onError` handler that toasts the error message. Only catch rejections to suppress unhandled promise warnings or reset local state.

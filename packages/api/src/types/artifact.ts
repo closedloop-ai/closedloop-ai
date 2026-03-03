@@ -48,6 +48,8 @@ export const ArtifactStatus = {
   InReview: "IN_REVIEW",
   Approved: "APPROVED",
   Obsolete: "OBSOLETE",
+  ReadyForReview: "READY_FOR_REVIEW",
+  Executed: "EXECUTED",
 } as const;
 export type ArtifactStatus =
   (typeof ArtifactStatus)[keyof typeof ArtifactStatus];

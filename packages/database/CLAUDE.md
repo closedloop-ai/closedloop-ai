@@ -25,6 +25,7 @@ Explicit migration files for all schema changes. **Never use `prisma db push` fo
 - **relationMode = "prisma"** — no DB-level FK constraints. Cascade deletes only through Prisma client. Direct SQL deletes can orphan rows.
 
 ## Learned Patterns
+- **[pattern]**: Adding Prisma enum values in CI or environments without a live database connection — create the migration SQL file manually with ALTER TYPE ADD VALUE syntax, then run prisma generate to update the client. Use `pnpm migrate --create-only --name <name>` when a DB is available to let Prisma scaffold the file. (context: prisma|enum|migration|ci)
 - **[mistake]**: Typecheck "Property does not exist" on Prisma fields: run `pnpm install` + `just db-generate`. Verify fields exist in schema first — generated client may be stale.
 - **[convention]**: Verify Prisma enum values in `schema.prisma` — don't assume (e.g., `SUCCESS` not `COMPLETED`).
 - **[pattern]**: Filter Json fields: `{ path: ['key'], equals: value }` syntax, not dot notation.

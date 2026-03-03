@@ -3,8 +3,8 @@
 import type { ApiResult } from "@repo/api/src/types/common";
 import { useAuth } from "@repo/auth/client";
 import { useMemo } from "react";
-import { env } from "@/env";
 import { ApiError } from "@/lib/api-error";
+import { resolveApiOrigin } from "@/lib/api-origin";
 
 /**
  * This hook provides an HTTP client for interacting with the REST API.
@@ -41,37 +41,8 @@ export function useApiClient() {
   );
 }
 
-const LOCAL_API_FALLBACK = "http://localhost:3002";
-const APP_PREFIX_REGEX = /^app-/;
-
 export function resolveApiUrl(): string {
-  // Runtime detection for preview suffix domains (e.g., app-stage.preview.closedloop-stage.ai)
-  // This takes priority because build-time env vars point to .vercel.app URLs,
-  // not the custom preview suffix domain the user is actually on.
-  if (typeof window !== "undefined") {
-    const { protocol, hostname } = window.location;
-
-    // Preview suffix pattern: {project}.preview.{domain}
-    // e.g., app-stage.preview.closedloop-stage.ai → api-stage.preview.closedloop-stage.ai
-    if (hostname.includes(".preview.") && hostname.startsWith("app-")) {
-      return `${protocol}//${hostname.replace(APP_PREFIX_REGEX, "api-")}`;
-    }
-
-    // Vercel preview URLs: app-stage-git-{branch}-{team}.vercel.app
-    // e.g., app-stage-git-my-branch-team.vercel.app → api-stage-git-my-branch-team.vercel.app
-    if (hostname.includes(".vercel.app") && hostname.startsWith("app-")) {
-      return `${protocol}//${hostname.replace(APP_PREFIX_REGEX, "api-")}`;
-    }
-  }
-
-  // Use configured URL for staging/production
-  const configured = env.NEXT_PUBLIC_API_URL;
-  if (configured && configured !== LOCAL_API_FALLBACK) {
-    return configured;
-  }
-
-  // Local development fallback
-  return LOCAL_API_FALLBACK;
+  return resolveApiOrigin();
 }
 
 async function apiFetch<T>(

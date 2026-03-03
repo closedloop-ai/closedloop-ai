@@ -4,6 +4,7 @@ import type { ReviewFindings } from "@/lib/engineer/codex-review-parser";
 import { groupFindingsByPriority } from "./constants";
 import { FindingCard } from "./FindingCard";
 import { PriorityBadge } from "./PriorityBadge";
+import { VerdictBanner } from "./VerdictBanner";
 
 type FindingsPanelProps = {
   findings: ReviewFindings;
@@ -34,6 +35,9 @@ export function FindingsPanel({
 
   return (
     <div className="space-y-4">
+      {/* AI verdict banner */}
+      {findings.verdict && <VerdictBanner verdict={findings.verdict} />}
+
       {/* Summary */}
       <div
         className={cn(
