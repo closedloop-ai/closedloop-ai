@@ -3,7 +3,7 @@
 import { useAuth } from "@repo/auth/client";
 import type { QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { resolveApiUrl } from "@/hooks/use-api-client";
 import { computeTargetKeys } from "./use-compute-targets";
 
@@ -73,13 +73,12 @@ async function openStatusStream(
 export function useComputeTargetStatusStream() {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
-  const reconnectAttemptRef = useRef(0);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    reconnectAttemptRef.current = 0;
     let cancelled = false;
     let abortController: AbortController | null = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const isCancelled = () => cancelled;
 
@@ -87,13 +86,12 @@ export function useComputeTargetStatusStream() {
       if (cancelled) {
         return;
       }
-      const attempt = reconnectAttemptRef.current;
-      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
         return;
       }
-      reconnectAttemptRef.current = attempt + 1;
-      const delay = RECONNECT_BASE_DELAY_MS * 2 ** attempt;
-      reconnectTimerRef.current = setTimeout(connect, delay);
+      reconnectAttempts += 1;
+      const delay = RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1);
+      reconnectTimer = setTimeout(connect, delay);
     };
 
     const connect = () => {
@@ -108,18 +106,16 @@ export function useComputeTargetStatusStream() {
           if (cancelled) {
             return;
           }
-          reconnectAttemptRef.current = 0;
           const ok = await openStatusStream(
             token,
             abortController!.signal,
             queryClient,
             isCancelled
           );
-          if (!(ok || cancelled)) {
-            scheduleReconnect();
-            return;
+          if (ok) {
+            // Stream connected and ended naturally — reset counter and reconnect
+            reconnectAttempts = 0;
           }
-          // Stream ended — reconnect unless cancelled
           if (!cancelled) {
             scheduleReconnect();
           }
@@ -138,9 +134,9 @@ export function useComputeTargetStatusStream() {
 
     return () => {
       cancelled = true;
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
       }
       if (abortController) {
         abortController.abort();

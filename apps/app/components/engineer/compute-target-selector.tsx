@@ -165,33 +165,25 @@ function TargetStatusDot({ online }: { online: boolean }) {
   );
 }
 
-function OptionIcon({
-  option,
-  localElectronOnline,
-}: {
-  option: SelectorOption;
-  localElectronOnline: boolean;
-}) {
+function OptionIcon({ option }: { option: SelectorOption }) {
   if (isCloudOption(option)) {
     return <TargetStatusDot online={option.target.isOnline} />;
   }
   if (option.mode === EngineerRoutingMode.LocalElectron) {
-    return <TargetStatusDot online={localElectronOnline} />;
+    // LocalElectron routes directly to localhost — detection.detected is
+    // guaranteed true when this option is visible, so always show online.
+    return <TargetStatusDot online />;
   }
   return <Server className="size-3.5 text-muted-foreground" />;
 }
 
-function isOnlineOption(
-  option: SelectorOption,
-  localElectronOnline: boolean
-): boolean {
+function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  if (option.mode === EngineerRoutingMode.LocalElectron) {
-    return localElectronOnline;
-  }
-  return option.mode === EngineerRoutingMode.LocalDev;
+  // LocalElectron: detection.detected is guaranteed true when visible.
+  // LocalDev: always available in local environment.
+  return true;
 }
 
 export function ComputeTargetSelector() {
@@ -208,19 +200,6 @@ export function ComputeTargetSelector() {
     () => buildOptions(detection, targets),
     [detection, targets]
   );
-
-  // Cross-reference the cloud target for this machine to determine effective
-  // online state. The local health probe only confirms reachability — the
-  // matching cloud target's isOnline reflects WebSocket connectivity.
-  const localElectronOnline = useMemo(() => {
-    if (!detection.detected) {
-      return false;
-    }
-    const matchingTarget = targets.find((target) =>
-      isSameMachineTarget(target, detection.machineName)
-    );
-    return !matchingTarget || matchingTarget.isOnline;
-  }, [detection.detected, detection.machineName, targets]);
 
   const activeOption = useMemo(
     () => resolveActiveOption(options, routing.mode, routing.computeTargetId),
@@ -242,9 +221,7 @@ export function ComputeTargetSelector() {
         >
           <span className="flex items-center truncate">
             {activeOption ? (
-              <TargetStatusDot
-                online={isOnlineOption(activeOption, localElectronOnline)}
-              />
+              <TargetStatusDot online={isOnlineOption(activeOption)} />
             ) : null}
             <span className="truncate">
               {activeOption?.label ?? "Select compute target"}
@@ -291,10 +268,7 @@ export function ComputeTargetSelector() {
                       )}
                     />
                     <div className="flex min-w-0 flex-1 items-center gap-2">
-                      <OptionIcon
-                        localElectronOnline={localElectronOnline}
-                        option={option}
-                      />
+                      <OptionIcon option={option} />
                       <div className="min-w-0">
                         <p className="truncate text-sm">{option.label}</p>
                         <p className="truncate text-muted-foreground text-xs">

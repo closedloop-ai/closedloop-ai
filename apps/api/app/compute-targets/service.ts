@@ -5,7 +5,6 @@ import type {
   UpdateComputeTargetInput,
 } from "@repo/api/src/types/compute-target";
 import { withDb } from "@repo/database";
-import { publishStatusChange } from "@/lib/compute-target-status-bus";
 import { isRecord } from "@/lib/type-guards";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
@@ -116,7 +115,6 @@ export const computeTargetsService = {
       })
     );
 
-    publishStatusChange(organizationId, target.id, true);
     return toComputeTarget(target as ComputeTargetRecord) as ComputeTarget;
   },
 
@@ -246,9 +244,6 @@ export const computeTargetsService = {
             },
       })
     );
-    if (updated.count > 0) {
-      publishStatusChange(organizationId, id, isOnline);
-    }
     return updated.count > 0;
   },
 
