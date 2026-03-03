@@ -20,10 +20,7 @@ import { Check, ChevronDown, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useIsMounted } from "@/hooks/use-is-mounted";
-import {
-  ensureElectronDetection,
-  useElectronDetection,
-} from "@/lib/engineer/electron-detection";
+import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import {
   setEngineerRoutingManualSelection,
   useEngineerRoutingSelection,
@@ -168,24 +165,33 @@ function TargetStatusDot({ online }: { online: boolean }) {
   );
 }
 
-function OptionIcon({ option }: { option: SelectorOption }) {
+function OptionIcon({
+  option,
+  localElectronOnline,
+}: {
+  option: SelectorOption;
+  localElectronOnline: boolean;
+}) {
   if (isCloudOption(option)) {
     return <TargetStatusDot online={option.target.isOnline} />;
   }
   if (option.mode === EngineerRoutingMode.LocalElectron) {
-    return <TargetStatusDot online />;
+    return <TargetStatusDot online={localElectronOnline} />;
   }
   return <Server className="size-3.5 text-muted-foreground" />;
 }
 
-function isOnlineOption(option: SelectorOption): boolean {
+function isOnlineOption(
+  option: SelectorOption,
+  localElectronOnline: boolean
+): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  return (
-    option.mode === EngineerRoutingMode.LocalElectron ||
-    option.mode === EngineerRoutingMode.LocalDev
-  );
+  if (option.mode === EngineerRoutingMode.LocalElectron) {
+    return localElectronOnline;
+  }
+  return option.mode === EngineerRoutingMode.LocalDev;
 }
 
 export function ComputeTargetSelector() {
@@ -203,6 +209,19 @@ export function ComputeTargetSelector() {
     [detection, targets]
   );
 
+  // Cross-reference the cloud target for this machine to determine effective
+  // online state. The local health probe only confirms reachability — the
+  // matching cloud target's isOnline reflects WebSocket connectivity.
+  const localElectronOnline = useMemo(() => {
+    if (!detection.detected) {
+      return false;
+    }
+    const matchingTarget = targets.find((target) =>
+      isSameMachineTarget(target, detection.machineName)
+    );
+    return !matchingTarget || matchingTarget.isOnline;
+  }, [detection.detected, detection.machineName, targets]);
+
   const activeOption = useMemo(
     () => resolveActiveOption(options, routing.mode, routing.computeTargetId),
     [options, routing.mode, routing.computeTargetId]
@@ -213,15 +232,7 @@ export function ComputeTargetSelector() {
   }
 
   return (
-    <Popover
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (nextOpen) {
-          ensureElectronDetection({ force: true }).catch(() => undefined);
-        }
-      }}
-      open={open}
-    >
+    <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <Button
           className="min-w-[220px] justify-between"
@@ -231,7 +242,9 @@ export function ComputeTargetSelector() {
         >
           <span className="flex items-center truncate">
             {activeOption ? (
-              <TargetStatusDot online={isOnlineOption(activeOption)} />
+              <TargetStatusDot
+                online={isOnlineOption(activeOption, localElectronOnline)}
+              />
             ) : null}
             <span className="truncate">
               {activeOption?.label ?? "Select compute target"}
@@ -278,7 +291,10 @@ export function ComputeTargetSelector() {
                       )}
                     />
                     <div className="flex min-w-0 flex-1 items-center gap-2">
-                      <OptionIcon option={option} />
+                      <OptionIcon
+                        localElectronOnline={localElectronOnline}
+                        option={option}
+                      />
                       <div className="min-w-0">
                         <p className="truncate text-sm">{option.label}</p>
                         <p className="truncate text-muted-foreground text-xs">

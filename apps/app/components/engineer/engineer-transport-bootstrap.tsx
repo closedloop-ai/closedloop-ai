@@ -2,6 +2,7 @@
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useEffect } from "react";
+import { useComputeTargetStatusStream } from "@/hooks/queries/use-compute-target-status-stream";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import { installEngineerFetchInterceptor } from "@/lib/engineer/engineer-fetch-interceptor";
@@ -14,6 +15,7 @@ import { appEnvironment } from "@/lib/environment";
 export function EngineerTransportBootstrap() {
   // Prime detection cache on page load for Tier 2 fast-path routing.
   const detection = useElectronDetection();
+  useComputeTargetStatusStream();
   const { data: targets = [] } = useComputeTargets({
     staleTime: 30_000,
     refetchInterval: 30_000,

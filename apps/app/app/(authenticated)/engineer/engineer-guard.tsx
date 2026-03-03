@@ -42,17 +42,16 @@ export function EngineerGuard() {
     selectedLocalElectronReady ||
     selectedLocalDevReady;
 
-  // Auto-fallback: when running locally and the current selection is
-  // unreachable (e.g. stale CloudRelay/LocalElectron in localStorage),
+  // Auto-fallback: when running locally and a stale *auto* selection is
+  // unreachable (e.g. auto-detected CloudRelay/LocalElectron in localStorage),
   // switch to LocalDev instead of showing the error screen.
+  // Manual selections are respected — the user intentionally chose that mode.
   useEffect(() => {
     if (detection.loading || targetsLoading || canAccess) {
       return;
     }
     if (appEnvironment === "local") {
-      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalDev, null, {
-        force: true,
-      });
+      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalDev);
     }
   }, [detection.loading, targetsLoading, canAccess]);
 

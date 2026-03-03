@@ -15,6 +15,7 @@ export type ElectronDetectionState = {
 const PROBE_PORTS = [19_432, 19_433, 19_434, 19_435] as const;
 const PROBE_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 60_000;
+const POLL_INTERVAL_MS = 30_000;
 
 const DEFAULT_STATE: ElectronDetectionState = {
   detected: false,
@@ -132,8 +133,10 @@ export function ensureElectronDetection(options?: {
     return inFlight;
   }
 
-  snapshot = { ...snapshot, loading: true };
-  emitChange();
+  if (!snapshot.checkedAt) {
+    snapshot = { ...snapshot, loading: true };
+    emitChange();
+  }
 
   inFlight = probeElectron()
     .then((result) => {
@@ -177,12 +180,18 @@ export function useElectronDetection(): ElectronDetectionState {
   );
 
   useEffect(() => {
-    ensureElectronDetection().catch(() => {
-      // Detection failure is non-fatal and falls through to non-electron modes.
-    });
+    ensureElectronDetection().catch(() => undefined);
+    const id = setInterval(() => {
+      ensureElectronDetection({ force: true }).catch(() => undefined);
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
   }, []);
 
   return state;
+}
+
+export function invalidateElectronDetectionCache(): void {
+  expiresAt = 0;
 }
 
 export function resetElectronDetectionForTests(): void {
