@@ -1,6 +1,9 @@
 "use client";
 
-import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
+import type {
+  JudgeAggregateStats,
+  JudgesAnalyticsReportType,
+} from "@repo/api/src/types/judges-analytics";
 import {
   Table,
   TableBody,
@@ -18,12 +21,12 @@ import {
 import Link from "next/link";
 import { useMemo } from "react";
 import { useSortParams } from "@/hooks/use-sort-params";
-import judgeDescriptions from "@/lib/judge-descriptions.json";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
+  reportType: JudgesAnalyticsReportType;
 };
 
 function formatOrDash(value: number | null): string {
@@ -53,7 +56,10 @@ const JUDGE_SORT_CONFIGS: Record<
   stdDev: { key: "stdDev", columnType: "number" },
 };
 
-export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
+export function JudgeAnalyticsTable({
+  data,
+  reportType,
+}: JudgeAnalyticsTableProps) {
   const { sortBy, sortDir } = useSortParams<JudgeSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
@@ -98,14 +104,11 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
           <TableRow key={judge.judgeName}>
             <TableCell className="break-words">
               {(() => {
-                const description =
-                  judgeDescriptions[
-                    judge.judgeName as keyof typeof judgeDescriptions
-                  ];
+                const description = judge.description;
                 const nameLink = (
                   <Link
                     className="underline decoration-dotted hover:decoration-solid"
-                    href={`/judges-analytics/${judge.promptName}`}
+                    href={`/judges-analytics/${judge.promptName}?reportType=${reportType}`}
                   >
                     {judge.judgeName}
                   </Link>

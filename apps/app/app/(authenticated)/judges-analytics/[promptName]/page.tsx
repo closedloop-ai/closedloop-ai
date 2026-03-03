@@ -1,17 +1,27 @@
 "use client";
 
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
 import { PromptSection } from "./components/prompt-section";
 
 export default function JudgeDetailPage() {
   const params = useParams<{ promptName: string }>();
+  const searchParams = useSearchParams();
   const promptName = decodeURIComponent(params.promptName);
-  const { data, isLoading, isError, error } = useJudgeDetail(promptName);
+  const reportTypeParam = searchParams.get("reportType");
+  const reportType =
+    reportTypeParam === EvaluationReportType.Code
+      ? EvaluationReportType.Code
+      : EvaluationReportType.Plan;
+  const { data, isLoading, isError, error } = useJudgeDetail(
+    promptName,
+    reportType
+  );
 
   if (isLoading) {
     return (

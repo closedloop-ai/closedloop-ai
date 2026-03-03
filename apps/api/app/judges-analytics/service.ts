@@ -1,5 +1,9 @@
 import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  type EvaluationReportType,
+  EvaluationReportType as EvaluationReportTypeValues,
+} from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
@@ -143,6 +147,147 @@ export async function getHumanRatingsByArtifact(
   return scoresByArtifact;
 }
 
+/**
+ * Fetches CODE human ratings/comments counts per artifact type by traversing:
+ * Artifact (implementation plan) -> GitHubPullRequest -> PullRequestRating.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getCodeHumanCountsByType(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactTypeById: Map<string, ArtifactType>,
+  types: ArtifactType[]
+): Promise<{
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+}> {
+  const humanRatingsByType = new Map<ArtifactType, number>();
+  const humanCommentsByType = new Map<ArtifactType, number>();
+
+  for (const type of types) {
+    humanRatingsByType.set(type, 0);
+    humanCommentsByType.set(type, 0);
+  }
+
+  const artifactIds = Array.from(artifactTypeById.keys());
+  if (artifactIds.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const pullRequests = await withDb((db) =>
+    db.gitHubPullRequest.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+      },
+      select: { id: true, artifactId: true },
+    })
+  );
+
+  if (pullRequests.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const prIdToType = new Map<string, ArtifactType>();
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.artifactId == null) {
+      continue;
+    }
+    const type = artifactTypeById.get(pullRequest.artifactId);
+    if (type !== undefined) {
+      prIdToType.set(pullRequest.id, type);
+    }
+  }
+
+  const ratings = await withDb((db) =>
+    db.pullRequestRating.findMany({
+      where: {
+        organizationId,
+        pullRequestId: { in: Array.from(prIdToType.keys()) },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { pullRequestId: true, comment: true },
+    })
+  );
+
+  for (const rating of ratings) {
+    const type = prIdToType.get(rating.pullRequestId);
+    if (type === undefined) {
+      continue;
+    }
+    humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
+    if (rating.comment.trim() !== "") {
+      humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
+    }
+  }
+
+  return { humanRatingsByType, humanCommentsByType };
+}
+
+/**
+ * Fetches CODE human ratings and returns normalized scores (0-1) per artifact.
+ * Uses pull request ratings linked to the artifact via GitHubPullRequest.artifactId.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getCodeHumanRatingsByArtifact(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactIds: string[]
+): Promise<Map<string, number[]>> {
+  if (artifactIds.length === 0) {
+    return new Map();
+  }
+
+  const pullRequests = await withDb((db) =>
+    db.gitHubPullRequest.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+      },
+      select: { id: true, artifactId: true },
+    })
+  );
+
+  if (pullRequests.length === 0) {
+    return new Map();
+  }
+
+  const prIdToArtifactId = new Map<string, string>();
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.artifactId != null) {
+      prIdToArtifactId.set(pullRequest.id, pullRequest.artifactId);
+    }
+  }
+
+  const ratings = await withDb((db) =>
+    db.pullRequestRating.findMany({
+      where: {
+        organizationId,
+        pullRequestId: { in: Array.from(prIdToArtifactId.keys()) },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { pullRequestId: true, score: true },
+    })
+  );
+
+  const scoresByArtifact = new Map<string, number[]>();
+  for (const rating of ratings) {
+    const artifactId = prIdToArtifactId.get(rating.pullRequestId);
+    if (artifactId === undefined) {
+      continue;
+    }
+    const scores = scoresByArtifact.get(artifactId) ?? [];
+    scores.push(rating.score / 5);
+    scoresByArtifact.set(artifactId, scores);
+  }
+
+  return scoresByArtifact;
+}
+
 /** Shape of a JudgeScore row with evaluation and artifact relations for aggregation. */
 export type JudgeScoreInput = {
   caseId: string;
@@ -232,11 +377,29 @@ function collectAllArtifactIds(
   return Array.from(allIds);
 }
 
+function collectArtifactTypeById(
+  aggregator: Map<
+    ArtifactType,
+    Map<string, { scores: number[]; artifactIds: Set<string> }>
+  >
+): Map<string, ArtifactType> {
+  const artifactTypeById = new Map<string, ArtifactType>();
+  for (const [artifactType, judgeMap] of aggregator) {
+    for (const judgeData of judgeMap.values()) {
+      for (const artifactId of judgeData.artifactIds) {
+        artifactTypeById.set(artifactId, artifactType);
+      }
+    }
+  }
+  return artifactTypeById;
+}
+
 /** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
 function computeJudgeStats(
   judgeName: string,
   judgeData: { scores: number[]; artifactIds: Set<string> },
-  humanRatingsByArtifact: Map<string, number[]>
+  humanRatingsByArtifact: Map<string, number[]>,
+  judgeDescriptionByPromptName: Map<string, string>
 ): JudgeAggregateStats | null {
   const scores = judgeData.scores;
   const count = scores.length;
@@ -266,6 +429,8 @@ function computeJudgeStats(
   return {
     judgeName,
     promptName: normalizeJudgeName(judgeName),
+    description:
+      judgeDescriptionByPromptName.get(normalizeJudgeName(judgeName)) ?? null,
     artifactsEvaluated: judgeData.artifactIds.size,
     min,
     mean,
@@ -302,6 +467,98 @@ function computeHumanStats(scores: number[]): {
   return { humanMin, humanMax, humanMean, humanStdDev };
 }
 
+async function getPlanHumanData(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  types: ArtifactType[],
+  artifactIds: string[]
+): Promise<{
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByArtifact: Map<string, number[]>;
+}> {
+  const { humanRatingsByType, humanCommentsByType } =
+    await getHumanCountsByType(organizationId, startDate, endDate, types);
+  const humanRatingsByArtifact = await getHumanRatingsByArtifact(
+    organizationId,
+    startDate,
+    endDate,
+    artifactIds
+  );
+  return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
+}
+
+async function getCodeHumanData(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactTypeById: Map<string, ArtifactType>,
+  types: ArtifactType[],
+  artifactIds: string[]
+): Promise<{
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByArtifact: Map<string, number[]>;
+}> {
+  const { humanRatingsByType, humanCommentsByType } =
+    await getCodeHumanCountsByType(
+      organizationId,
+      startDate,
+      endDate,
+      artifactTypeById,
+      types
+    );
+  const humanRatingsByArtifact = await getCodeHumanRatingsByArtifact(
+    organizationId,
+    startDate,
+    endDate,
+    artifactIds
+  );
+  return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
+}
+
+async function getJudgeDescriptionByPromptName(
+  organizationId: string
+): Promise<Map<string, string>> {
+  const judgePrompts = await withDb((db) =>
+    db.prompt.findMany({
+      where: {
+        organizationId,
+        promptType: PromptType.JUDGE,
+      },
+      select: {
+        name: true,
+        description: true,
+        version: true,
+      },
+      orderBy: [{ version: "desc" }, { name: "asc" }],
+    })
+  );
+
+  const latestPromptByName = new Map<
+    string,
+    { version: number; description: string }
+  >();
+  for (const prompt of judgePrompts) {
+    const promptName = normalizeJudgeName(prompt.name);
+    const existing = latestPromptByName.get(promptName);
+    if (existing === undefined || prompt.version > existing.version) {
+      latestPromptByName.set(promptName, {
+        version: prompt.version,
+        description: prompt.description,
+      });
+    }
+  }
+
+  const promptDescriptions = new Map<string, string>();
+  for (const [promptName, latestPrompt] of latestPromptByName) {
+    promptDescriptions.set(promptName, latestPrompt.description);
+  }
+
+  return promptDescriptions;
+}
+
 /**
  * Aggregation service for judges analytics.
  *
@@ -320,13 +577,18 @@ export const judgesAnalyticsService = {
   async getAggregateStats(
     organizationId: string,
     startDate: Date,
-    endDate: Date
+    endDate: Date,
+    reportType: EvaluationReportType
   ): Promise<JudgeStatsResponse> {
+    const judgeDescriptionByPromptName =
+      await getJudgeDescriptionByPromptName(organizationId);
+
     // Query JudgeScore rows joined through ArtifactEvaluation → Artifact
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
           evaluation: {
+            reportType,
             artifact: { organizationId },
             createdAt: { gte: startDate, lte: endDate },
           },
@@ -349,6 +611,7 @@ export const judgesAnalyticsService = {
         organizationId,
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
+        reportType,
       });
     }
 
@@ -356,16 +619,26 @@ export const judgesAnalyticsService = {
     const aggregator = aggregateJudgeScoreRows(judgeScores);
 
     const types = Array.from(aggregator.keys());
-    const { humanRatingsByType, humanCommentsByType } =
-      await getHumanCountsByType(organizationId, startDate, endDate, types);
+    const artifactIds = collectAllArtifactIds(aggregator);
+    const artifactTypeById = collectArtifactTypeById(aggregator);
 
-    // Fetch per-artifact human ratings (all normalized 0-1 scores)
-    const humanRatingsByArtifact = await getHumanRatingsByArtifact(
-      organizationId,
-      startDate,
-      endDate,
-      collectAllArtifactIds(aggregator)
-    );
+    const { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact } =
+      reportType === EvaluationReportTypeValues.Code
+        ? await getCodeHumanData(
+            organizationId,
+            startDate,
+            endDate,
+            artifactTypeById,
+            types,
+            artifactIds
+          )
+        : await getPlanHumanData(
+            organizationId,
+            startDate,
+            endDate,
+            types,
+            artifactIds
+          );
 
     // Compute statistics for each judge within each artifact type
     const groups: ArtifactTypeGroup[] = [];
@@ -377,7 +650,8 @@ export const judgesAnalyticsService = {
         const stats = computeJudgeStats(
           judgeName,
           judgeData,
-          humanRatingsByArtifact
+          humanRatingsByArtifact,
+          judgeDescriptionByPromptName
         );
         if (stats) {
           judges.push(stats);
@@ -395,7 +669,7 @@ export const judgesAnalyticsService = {
       });
     }
 
-    return { groups };
+    return { reportType, groups };
   },
 
   /**
@@ -482,7 +756,8 @@ export const judgesAnalyticsService = {
    */
   async getJudgeDetail(
     organizationId: string,
-    promptName: string
+    promptName: string,
+    reportType: EvaluationReportType
   ): Promise<JudgeDetailResponse | null> {
     // 1. Resolve judge by promptName — find all JUDGE prompts in org and match normalized name
     const allJudgePrompts = await withDb((db) =>
@@ -532,6 +807,7 @@ export const judgesAnalyticsService = {
       db.judgeScore.findMany({
         where: {
           evaluation: {
+            reportType,
             artifact: { organizationId },
           },
           caseId: { in: Array.from(caseIdVariants) },
@@ -626,6 +902,7 @@ export const judgesAnalyticsService = {
 
     return {
       judge: {
+        reportType,
         promptName,
         displayName: latestPrompt.name,
         latestPromptId: latestPrompt.id,

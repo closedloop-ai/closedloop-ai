@@ -1,11 +1,12 @@
 "use client";
 
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, subDays } from "date-fns";
 import { useState } from "react";
 import { useJudgesAnalytics } from "@/hooks/queries/use-judges-analytics";
-import { ArtifactTypeSection } from "./components/artifact-type-section";
 import { DateRangeFilter } from "./components/date-range-filter";
+import { ReportTypeSection } from "./components/report-type-section";
 
 export default function JudgesAnalyticsPage() {
   // Initialize date state with Month preset default (last 30 days)
@@ -16,11 +17,20 @@ export default function JudgesAnalyticsPage() {
     format(new Date(), "yyyy-MM-dd")
   );
 
-  // Fetch analytics data
-  const { data, isLoading, isError, error } = useJudgesAnalytics(
+  const planQuery = useJudgesAnalytics(
     startDate,
-    endDate
+    endDate,
+    EvaluationReportType.Plan
   );
+  const codeQuery = useJudgesAnalytics(
+    startDate,
+    endDate,
+    EvaluationReportType.Code
+  );
+
+  const isLoading = planQuery.isLoading || codeQuery.isLoading;
+  const isError = planQuery.isError || codeQuery.isError;
+  const error = planQuery.error ?? codeQuery.error;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
@@ -63,19 +73,27 @@ export default function JudgesAnalyticsPage() {
         </div>
       )}
 
-      {data && data.groups.length === 0 && (
-        <div className="rounded-lg border border-border bg-muted/50 p-8 text-center">
-          <p className="text-muted-foreground">
-            No judge evaluations found for the selected date range.
-          </p>
-        </div>
-      )}
+      {planQuery.data &&
+        codeQuery.data &&
+        planQuery.data.groups.length === 0 &&
+        codeQuery.data.groups.length === 0 && (
+          <div className="rounded-lg border border-border bg-muted/50 p-8 text-center">
+            <p className="text-muted-foreground">
+              No judge evaluations found for the selected date range.
+            </p>
+          </div>
+        )}
 
-      {data && data.groups.length > 0 && (
+      {planQuery.data && codeQuery.data && (
         <div className="space-y-8">
-          {data.groups.map((group) => (
-            <ArtifactTypeSection group={group} key={group.artifactType} />
-          ))}
+          <ReportTypeSection
+            groups={planQuery.data.groups}
+            reportType={EvaluationReportType.Plan}
+          />
+          <ReportTypeSection
+            groups={codeQuery.data.groups}
+            reportType={EvaluationReportType.Code}
+          />
         </div>
       )}
     </div>
