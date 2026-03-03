@@ -3,9 +3,9 @@
 -- Context:
 -- A prior backfill expected final_status to already be EvalStatus enum text.
 -- Historical data stores status as numeric strings:
---   1 -> FAILED
+--   1 -> PASSED
 --   2 -> NEEDS_IMPROVEMENT
---   3 -> PASSED
+--   3 -> FAILED
 --
 -- This migration inserts only missing rows and remains idempotent.
 -- It keeps existing metric/case matching behavior from the original backfill.
@@ -42,9 +42,9 @@ SELECT
   COALESCE(metric_match->>'justification', ''),
   (
     CASE s->>'final_status'
-      WHEN '1' THEN 'FAILED'
+      WHEN '1' THEN 'PASSED'
       WHEN '2' THEN 'NEEDS_IMPROVEMENT'
-      WHEN '3' THEN 'PASSED'
+      WHEN '3' THEN 'FAILED'
       ELSE NULL
     END
   )::"EvalStatus",
