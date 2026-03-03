@@ -30,6 +30,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LOOPS_BOT_APP_ID }}
+          private-key: ${{ secrets.LOOPS_BOT_PRIVATE_KEY }}
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -66,7 +73,7 @@ jobs:
 
       - name: Build Changelog
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: node scripts/deploy/build-changelog.mjs
 
       - name: Check For Changes
@@ -118,7 +125,7 @@ jobs:
         id: deploy_pr
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           PR_URL=$(gh pr list \
             --base "$DEPLOY_BASE_BRANCH" \
@@ -172,7 +179,7 @@ jobs:
         id: merge
         if: steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
         run: |
           # Wait for required status checks to complete (with timeout + retry)
@@ -347,7 +354,7 @@ jobs:
         id: capture_errors
         if: failure() && steps.diff.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Determine which step failed
           FAILED_STEP="Unknown"
