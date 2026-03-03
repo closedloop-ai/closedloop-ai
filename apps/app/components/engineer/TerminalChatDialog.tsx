@@ -723,8 +723,12 @@ export function TerminalChatDialog({
 
         const response = await fetch(requestUrl, {
           method: "POST",
-          // Keep this as a CORS-simple request so hosted -> localhost does not
-          // require preflight before sending the actual POST.
+          // Omit Content-Type for local-electron to keep CORS-simple (no preflight).
+          // For same-origin modes, set it so the body is correctly labelled.
+          headers:
+            routing.mode === "local-electron"
+              ? {}
+              : { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed }),
           signal: abortController.signal,
           credentials:

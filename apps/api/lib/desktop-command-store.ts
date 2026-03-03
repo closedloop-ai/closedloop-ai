@@ -9,6 +9,8 @@ import type {
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
 import { type Prisma, withDb } from "@repo/database";
+import { BoundedCache } from "@/lib/bounded-cache";
+import { isRecord } from "@/lib/type-guards";
 
 type StoredCommand = {
   commandId: string;
@@ -96,9 +98,6 @@ class IdempotencyConflictError extends Error {
 type EventSubscriber = (event: DesktopCommandEvent) => void;
 
 const eventSubscribers = new Map<string, Set<EventSubscriber>>();
-
-import { BoundedCache } from "@/lib/bounded-cache";
-import { isRecord } from "@/lib/type-guards";
 
 const CACHE_MAX_SIZE = 10_000;
 const operationIdCache = new BoundedCache<string, string>(CACHE_MAX_SIZE);
@@ -538,13 +537,20 @@ export const desktopCommandStore = {
       data = {};
     }
 
-    // Use conditional update to prevent overwriting a concurrent terminal transition
+    // Use conditional update to prevent overwriting a concurrent terminal transition.
+    // When accepting a queued command, narrow the guard to "queued" to prevent
+    // regressing a command that has already progressed to "running".
+    const statusGuard: string | { notIn: string[] } =
+      accepted && command.status === "queued"
+        ? "queued"
+        : { notIn: ["done", "failed", "cancelled", "expired"] };
+
     const { count } = await withDb((db) =>
       db.desktopCommand.updateMany({
         where: {
           id: commandId,
           ...(computeTargetId ? { computeTargetId } : {}),
-          status: { notIn: ["done", "failed", "cancelled", "expired"] },
+          status: statusGuard,
         },
         data,
       })

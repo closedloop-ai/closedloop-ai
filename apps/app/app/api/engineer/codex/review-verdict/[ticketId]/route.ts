@@ -78,13 +78,12 @@ export async function POST(
     );
   }
 
-  const worktreeDir = getWorktreeDir(repoPath, ticketId);
-
-  console.log(
-    `[review-verdict] Starting verdict extraction for ${ticketId}, provider=${provider}, session=${sessionId}`
-  );
-
   try {
+    const worktreeDir = getWorktreeDir(repoPath, ticketId);
+
+    console.log(
+      `[review-verdict] Starting verdict extraction for ${ticketId}, provider=${provider}, session=${sessionId}`
+    );
     const collected =
       provider === "codex"
         ? await runCodexVerdict(worktreeDir, sessionId)

@@ -467,6 +467,7 @@ async function handleSocketHello(
     maxInFlightCommands: payload.maxInFlightCommands,
     allowedDirectoriesHash: payload.allowedDirectoriesHash ?? null,
     socketProtocolVersion: PROTOCOL_VERSION,
+    pluginVersion: payload.pluginVersion,
   };
 
   let targetId = payload.computeTargetId;

@@ -1008,6 +1008,10 @@ export function ReviewChatPane({
             }),
           }
         );
+        if (!res.ok) {
+          console.warn("[review-verdict] Server error:", res.status);
+          return;
+        }
         const data = await res.json();
         if (data.verdict) {
           console.log(

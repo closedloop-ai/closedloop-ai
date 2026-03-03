@@ -409,11 +409,18 @@ export class RelayClient {
       () => upstreamController.abort(),
       RESULT_STREAM_TIMEOUT_MS
     );
-    const response = await this.openCommandEventsStream(
-      targetId,
-      commandId,
-      upstreamController.signal
-    );
+
+    let response: Response;
+    try {
+      response = await this.openCommandEventsStream(
+        targetId,
+        commandId,
+        upstreamController.signal
+      );
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
+    }
 
     const encoder = new TextEncoder();
 

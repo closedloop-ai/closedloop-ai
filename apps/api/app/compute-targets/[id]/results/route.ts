@@ -174,8 +174,15 @@ export const POST = withAnyAuth<
       request,
       relayResultIngestValidator
     );
-    if (parseError || !body) {
+    if (parseError) {
       return parseError;
+    }
+    if (!body) {
+      return errorResponse(
+        "Invalid request body",
+        new Error("Empty body"),
+        400
+      );
     }
 
     const target = await computeTargetsService.findOwnedById(

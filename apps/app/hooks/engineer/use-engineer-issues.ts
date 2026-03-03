@@ -209,7 +209,7 @@ function useEngineerIssuesViaMcp(): EngineerIssuesResultWithUser {
       }
       refetchResolversRef.current.splice(0).forEach((resolve) => resolve());
     };
-  }, [mcp.isReady, refetchCounter, mcp]);
+  }, [mcp.isReady, refetchCounter]);
 
   const tickets: EngineerTicket[] = useMemo(() => {
     const issueTickets = mcpIssues.map(mcpIssueToEngineerTicket);
