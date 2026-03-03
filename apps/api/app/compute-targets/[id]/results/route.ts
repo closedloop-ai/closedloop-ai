@@ -1,18 +1,21 @@
-import type { JsonValue } from "@repo/api/src/types/common";
-import type {
-  DesktopCommandEventType,
-  RelayResultIngestRequest,
-} from "@repo/api/src/types/compute-target";
+import type { RelayResultIngestRequest } from "@repo/api/src/types/compute-target";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   errorResponse,
-  forbiddenResponse,
+  notFoundResponse,
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
 import { isRecord } from "@/lib/type-guards";
+import {
+  isOneShotRelayResult,
+  resolveEventType,
+  type StreamingRelayResult,
+  toCommandEventData,
+  toTerminalResultData,
+} from "../../relay-result-helpers";
 import { computeTargetsService } from "../../service";
 import { relayResultIngestValidator } from "../../validators";
 
@@ -20,87 +23,8 @@ type IngestResultResponse = {
   ok: true;
 };
 
-type OneShotRelayResult = Extract<
-  RelayResultIngestRequest,
-  { result: JsonValue }
->;
-type StreamingRelayResult = Extract<
-  RelayResultIngestRequest,
-  { event: JsonValue }
->;
-
-function isOneShotRelayResult(
-  payload: RelayResultIngestRequest
-): payload is OneShotRelayResult {
-  return "result" in payload;
-}
-
-function toJsonValue(value: unknown): JsonValue {
-  return value as JsonValue;
-}
-
-function toTerminalResultData(result: JsonValue): JsonValue {
-  if (isRecord(result)) {
-    return { ...result, terminal: true } as JsonValue;
-  }
-  return { value: result, terminal: true } as JsonValue;
-}
-
-function resolveEventType(
-  payload: Record<string, unknown>,
-  error?: string,
-  done?: boolean
-): DesktopCommandEventType {
-  let eventType: DesktopCommandEventType = "chunk";
-  const rawType = typeof payload.type === "string" ? payload.type : null;
-
-  if (
-    rawType === "status" ||
-    rawType === "chunk" ||
-    rawType === "result" ||
-    rawType === "error" ||
-    rawType === "done"
-  ) {
-    eventType = rawType;
-  } else if (rawType === "text") {
-    eventType = "chunk";
-  }
-
-  if (error) {
-    return "error";
-  }
-  if (done === true) {
-    return "done";
-  }
-
-  return eventType;
-}
-
-function toCommandEventData(
-  payload: Record<string, unknown>,
-  eventType: DesktopCommandEventType,
-  result: StreamingRelayResult
-): JsonValue {
-  if (eventType === "error") {
-    const error =
-      result.error ??
-      (typeof payload.error === "string" ? payload.error : "Command failed");
-    const terminal = result.done ?? payload.terminal ?? true;
-    return toJsonValue({ ...payload, error, terminal });
-  }
-
-  if (eventType === "done") {
-    if (isRecord(result.event)) {
-      return toJsonValue(result.event);
-    }
-    return toJsonValue({ cancelled: false });
-  }
-
-  return toJsonValue(result.event ?? {});
-}
-
 async function ingestOneShotResult(
-  payload: OneShotRelayResult
+  payload: Extract<RelayResultIngestRequest, { result: unknown }>
 ): Promise<boolean> {
   const commandId = await desktopCommandStore.findCommandIdByOperationId(
     payload.operationId
@@ -141,7 +65,9 @@ async function ingestStreamingResult(
   return result.accepted && !result.duplicate;
 }
 
-function publishOneShotResult(payload: OneShotRelayResult): void {
+function publishOneShotResult(
+  payload: Extract<RelayResultIngestRequest, { result: unknown }>
+): void {
   relayEventBus.publishResult(payload.operationId, {
     operationId: payload.operationId,
     result: payload.result,
@@ -191,7 +117,7 @@ export const POST = withAnyAuth<
       user.id
     );
     if (!target) {
-      return forbiddenResponse();
+      return notFoundResponse("Compute target");
     }
 
     await computeTargetsService.heartbeat(id, user.organizationId, user.id);

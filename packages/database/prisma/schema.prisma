@@ -357,7 +357,6 @@ model DesktopCommand {
 
   @@index([computeTargetId, status, createdAt])
   @@index([operationId])
-  @@index([computeTargetId, idempotencyKey])
   @@map("desktop_commands")
 }
 

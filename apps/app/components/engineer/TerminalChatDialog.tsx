@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -196,7 +197,7 @@ async function resolveTerminalChatRequestUrl(
   routingMode: string,
   requestPath: string
 ): Promise<string | null> {
-  if (routingMode !== "local-electron") {
+  if (routingMode !== EngineerRoutingMode.LocalElectron) {
     return requestPath;
   }
 
@@ -726,13 +727,15 @@ export function TerminalChatDialog({
           // Omit Content-Type for local-electron to keep CORS-simple (no preflight).
           // For same-origin modes, set it so the body is correctly labelled.
           headers:
-            routing.mode === "local-electron"
+            routing.mode === EngineerRoutingMode.LocalElectron
               ? {}
               : { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed }),
           signal: abortController.signal,
           credentials:
-            routing.mode === "local-electron" ? "omit" : "same-origin",
+            routing.mode === EngineerRoutingMode.LocalElectron
+              ? "omit"
+              : "same-origin",
         });
 
         if (!response.ok) {
@@ -762,7 +765,7 @@ export function TerminalChatDialog({
         if (err instanceof DOMException && err.name === "AbortError") {
           // User cancelled
         } else if (
-          routing.mode === "local-electron" &&
+          routing.mode === EngineerRoutingMode.LocalElectron &&
           isNetworkFetchFailure(err)
         ) {
           // Local Electron may have accepted the command while approval is still

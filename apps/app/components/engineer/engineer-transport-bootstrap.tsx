@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useEffect } from "react";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useElectronDetection } from "@/lib/engineer/electron-detection";
@@ -29,9 +30,11 @@ export function EngineerTransportBootstrap() {
       current.computeTargetId !== null &&
       onlineTargets.some((target) => target.id === current.computeTargetId);
     const currentSelectionValid =
-      (current.mode === "local-electron" && detection.detected) ||
-      (current.mode === "local-dev" && appEnvironment === "local") ||
-      (current.mode === "cloud-relay" &&
+      (current.mode === EngineerRoutingMode.LocalElectron &&
+        detection.detected) ||
+      (current.mode === EngineerRoutingMode.LocalDev &&
+        appEnvironment === "local") ||
+      (current.mode === EngineerRoutingMode.CloudRelay &&
         current.computeTargetId !== null &&
         selectedTargetOnline);
 
@@ -42,21 +45,27 @@ export function EngineerTransportBootstrap() {
     }
 
     if (detection.detected) {
-      setEngineerRoutingAutoSelection("local-electron", null, { force: true });
+      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalElectron, null, {
+        force: true,
+      });
       return;
     }
 
     if (appEnvironment === "local") {
-      setEngineerRoutingAutoSelection("local-dev", null, { force: true });
+      setEngineerRoutingAutoSelection(EngineerRoutingMode.LocalDev, null, {
+        force: true,
+      });
       return;
     }
 
     // Hosted fallback: do not auto-select a cloud target. Users must choose one.
-    if (current.mode === "cloud-relay") {
+    if (current.mode === EngineerRoutingMode.CloudRelay) {
       return;
     }
 
-    setEngineerRoutingAutoSelection("cloud-relay", null, { force: true });
+    setEngineerRoutingAutoSelection(EngineerRoutingMode.CloudRelay, null, {
+      force: true,
+    });
   }, [detection.detected, detection.loading, targets]);
 
   useEffect(() => installEngineerFetchInterceptor(), []);

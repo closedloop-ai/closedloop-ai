@@ -3,7 +3,6 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   errorResponse,
-  forbiddenResponse,
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
@@ -25,7 +24,7 @@ export const GET = withAnyAuth<
       user.id
     );
     if (!target) {
-      return forbiddenResponse();
+      return notFoundResponse("Compute target");
     }
 
     const command = await desktopCommandStore.getCommand(target.id, commandId);

@@ -1,6 +1,6 @@
 "use client";
 
-import type { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useSyncExternalStore } from "react";
 import { appEnvironment } from "@/lib/environment";
 
@@ -16,7 +16,7 @@ export type EngineerRoutingSelection = {
 };
 
 const DEFAULT_SELECTION: EngineerRoutingSelection = {
-  mode: "local-dev",
+  mode: EngineerRoutingMode.LocalDev,
   computeTargetId: null,
   source: "auto",
   updatedAt: 0,
@@ -24,18 +24,21 @@ const DEFAULT_SELECTION: EngineerRoutingSelection = {
 
 let snapshot: EngineerRoutingSelection = {
   ...DEFAULT_SELECTION,
-  mode: appEnvironment === "local" ? "local-dev" : "cloud-relay",
+  mode:
+    appEnvironment === "local"
+      ? EngineerRoutingMode.LocalDev
+      : EngineerRoutingMode.CloudRelay,
 };
 
 let hydrated = false;
 const listeners = new Set<() => void>();
 
+const ROUTING_MODE_VALUES: Set<string> = new Set(
+  Object.values(EngineerRoutingMode)
+);
+
 function isRoutingMode(value: unknown): value is EngineerRoutingMode {
-  return (
-    value === "local-dev" ||
-    value === "local-electron" ||
-    value === "cloud-relay"
-  );
+  return typeof value === "string" && ROUTING_MODE_VALUES.has(value);
 }
 
 function hydrateFromStorage(): void {
@@ -90,7 +93,8 @@ function normalizeSelection(
 ): EngineerRoutingSelection {
   return {
     mode,
-    computeTargetId: mode === "cloud-relay" ? computeTargetId : null,
+    computeTargetId:
+      mode === EngineerRoutingMode.CloudRelay ? computeTargetId : null,
     source,
     updatedAt: Date.now(),
   };
@@ -161,7 +165,10 @@ export function useEngineerRoutingSelection(): EngineerRoutingSelection {
 export function resetEngineerRoutingSelectionForTests(): void {
   snapshot = {
     ...DEFAULT_SELECTION,
-    mode: appEnvironment === "local" ? "local-dev" : "cloud-relay",
+    mode:
+      appEnvironment === "local"
+        ? EngineerRoutingMode.LocalDev
+        : EngineerRoutingMode.CloudRelay,
   };
   hydrated = false;
   listeners.clear();

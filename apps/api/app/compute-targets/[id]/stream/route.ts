@@ -1,7 +1,6 @@
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
-import { apiKeysService } from "@/app/api-keys/service";
-import { usersService } from "@/app/users/service";
+import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { relayEventBus } from "@/lib/relay-event-bus";
 import {
   createSseResponse,
@@ -9,44 +8,6 @@ import {
   encodeSseData,
 } from "@/lib/sse-stream";
 import { computeTargetsService } from "../../service";
-
-type ApiKeyAuthContext = {
-  organizationId: string;
-  userId: string;
-};
-
-async function resolveApiKeyAuthContext(
-  request: Request
-): Promise<ApiKeyAuthContext | null> {
-  const authHeader = request.headers.get("authorization");
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-
-  if (!token?.startsWith("sk_live_")) {
-    return null;
-  }
-
-  const keyContext = await apiKeysService.verifyKey(token);
-  if (!keyContext) {
-    return null;
-  }
-
-  if (!keyContext.scopes.includes("write")) {
-    return null;
-  }
-
-  const user = await usersService.findById(
-    keyContext.userId,
-    keyContext.organizationId
-  );
-  if (!user?.active) {
-    return null;
-  }
-
-  return {
-    organizationId: keyContext.organizationId,
-    userId: keyContext.userId,
-  };
-}
 
 /**
  * GET /compute-targets/:id/stream
@@ -56,7 +17,9 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
-  const authContext = await resolveApiKeyAuthContext(request);
+  const authContext = await resolveAnyAuthContext(request, {
+    requiredScopes: ["write"],
+  });
   if (!authContext) {
     return new Response("Unauthorized", { status: 401 });
   }

@@ -1,3 +1,4 @@
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockEnsureElectronDetection = vi.fn();
@@ -43,7 +44,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "local-electron",
+      mode: EngineerRoutingMode.LocalElectron,
       computeTargetId: null,
       source: "auto",
       updatedAt: Date.now(),
@@ -87,7 +88,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "cloud-relay",
+      mode: EngineerRoutingMode.CloudRelay,
       computeTargetId: "target-1",
       source: "manual",
       updatedAt: Date.now(),
@@ -113,7 +114,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "local-electron",
+      mode: EngineerRoutingMode.LocalElectron,
       computeTargetId: null,
       source: "auto",
       updatedAt: Date.now(),
@@ -148,7 +149,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "local-electron",
+      mode: EngineerRoutingMode.LocalElectron,
       computeTargetId: null,
       source: "auto",
       updatedAt: Date.now(),
@@ -190,7 +191,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "local-dev",
+      mode: EngineerRoutingMode.LocalDev,
       computeTargetId: null,
       source: "manual",
       updatedAt: Date.now(),
@@ -215,7 +216,7 @@ describe("engineer-fetch-interceptor", () => {
       value: originalFetch,
     });
     mockGetEngineerRoutingSelection.mockReturnValue({
-      mode: "local-electron",
+      mode: EngineerRoutingMode.LocalElectron,
       computeTargetId: null,
       source: "manual",
       updatedAt: Date.now(),

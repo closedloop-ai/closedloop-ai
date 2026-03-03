@@ -26,15 +26,23 @@ export function resolveAnyAuthContext(
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
   if (token?.startsWith("sk_live_")) {
-    return resolveApiKeyContext(token, options?.requiredScopes ?? ["read"]);
+    return resolveApiKeyTokenContext(
+      token,
+      options?.requiredScopes ?? ["read"]
+    );
   }
 
   return resolveClerkContext();
 }
 
-async function resolveApiKeyContext(
+/**
+ * Verifies an API key token and returns a lightweight auth context.
+ * Exported for non-standard auth paths (Socket.IO, SSE) that extract
+ * tokens outside the normal Request flow.
+ */
+export async function resolveApiKeyTokenContext(
   token: string,
-  requiredScopes: ApiKeyScope[]
+  requiredScopes: ApiKeyScope[] = ["read"]
 ): Promise<ResolvedAuthContext | null> {
   const keyContext = await apiKeysService.verifyKey(token);
   if (!keyContext) {
@@ -50,6 +58,13 @@ async function resolveApiKeyContext(
     keyContext.organizationId
   );
   if (!user?.active) {
+    return null;
+  }
+
+  const organization = await organizationsService.findById(
+    keyContext.organizationId
+  );
+  if (!organization) {
     return null;
   }
 

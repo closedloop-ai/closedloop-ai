@@ -1,6 +1,7 @@
 "use client";
 
 import type { ComputeTarget } from "@repo/api/src/types/compute-target";
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Command,
@@ -30,15 +31,19 @@ import {
 import { appEnvironment } from "@/lib/environment";
 
 type LocalOption = {
-  id: "local-electron" | "local-dev";
-  mode: "local-electron" | "local-dev";
+  id:
+    | typeof EngineerRoutingMode.LocalElectron
+    | typeof EngineerRoutingMode.LocalDev;
+  mode:
+    | typeof EngineerRoutingMode.LocalElectron
+    | typeof EngineerRoutingMode.LocalDev;
   label: string;
   description: string;
 };
 
 type CloudOption = {
   id: string;
-  mode: "cloud-relay";
+  mode: typeof EngineerRoutingMode.CloudRelay;
   label: string;
   description: string;
   target: ComputeTarget;
@@ -47,7 +52,7 @@ type CloudOption = {
 type SelectorOption = LocalOption | CloudOption;
 
 function isCloudOption(option: SelectorOption): option is CloudOption {
-  return option.mode === "cloud-relay";
+  return option.mode === EngineerRoutingMode.CloudRelay;
 }
 
 function normalizeMachineName(value: string): string {
@@ -78,8 +83,8 @@ function buildOptions(
 
   if (detection.detected) {
     options.push({
-      id: "local-electron",
-      mode: "local-electron",
+      id: EngineerRoutingMode.LocalElectron,
+      mode: EngineerRoutingMode.LocalElectron,
       label: "Local (Electron)",
       description: "Direct localhost execution",
     });
@@ -87,8 +92,8 @@ function buildOptions(
 
   if (appEnvironment === "local") {
     options.push({
-      id: "local-dev",
-      mode: "local-dev",
+      id: EngineerRoutingMode.LocalDev,
+      mode: EngineerRoutingMode.LocalDev,
       label: "Local (dev server)",
       description: "Run on local Next.js server",
     });
@@ -110,7 +115,7 @@ function buildOptions(
   for (const target of sortedTargets) {
     options.push({
       id: target.id,
-      mode: "cloud-relay",
+      mode: EngineerRoutingMode.CloudRelay,
       label: target.machineName,
       description: `${target.platform}${target.isOnline ? " • online" : " • offline"}`,
       target,
@@ -125,7 +130,7 @@ function resolveActiveOption(
   mode: string,
   computeTargetId: string | null
 ): SelectorOption | null {
-  if (mode === "cloud-relay") {
+  if (mode === EngineerRoutingMode.CloudRelay) {
     if (!computeTargetId) {
       return null;
     }
@@ -137,7 +142,10 @@ function resolveActiveOption(
     );
   }
 
-  if (mode === "local-electron" || mode === "local-dev") {
+  if (
+    mode === EngineerRoutingMode.LocalElectron ||
+    mode === EngineerRoutingMode.LocalDev
+  ) {
     return (
       options.find(
         (option) => !isCloudOption(option) && option.mode === mode
@@ -164,7 +172,7 @@ function OptionIcon({ option }: { option: SelectorOption }) {
   if (isCloudOption(option)) {
     return <TargetStatusDot online={option.target.isOnline} />;
   }
-  if (option.mode === "local-electron") {
+  if (option.mode === EngineerRoutingMode.LocalElectron) {
     return <TargetStatusDot online />;
   }
   return <Server className="size-3.5 text-muted-foreground" />;
@@ -174,7 +182,7 @@ function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  return option.mode === "local-electron";
+  return option.mode === EngineerRoutingMode.LocalElectron;
 }
 
 export function ComputeTargetSelector() {
@@ -250,7 +258,7 @@ export function ComputeTargetSelector() {
                     onSelect={() => {
                       if (isCloudOption(option)) {
                         setEngineerRoutingManualSelection(
-                          "cloud-relay",
+                          EngineerRoutingMode.CloudRelay,
                           option.target.id
                         );
                       } else {

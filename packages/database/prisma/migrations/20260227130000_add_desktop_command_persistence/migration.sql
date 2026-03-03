@@ -36,9 +36,7 @@ CREATE INDEX "desktop_commands_compute_target_id_status_created_at_idx" ON "desk
 CREATE INDEX "desktop_commands_operation_id_idx" ON "desktop_commands"("operation_id");
 
 -- CreateIndex
-CREATE INDEX "desktop_commands_compute_target_id_idempotency_key_idx" ON "desktop_commands"("compute_target_id", "idempotency_key");
-
--- CreateIndex
+-- Partial unique: only enforced when idempotency_key is present (nullable column).
 CREATE UNIQUE INDEX "desktop_commands_compute_target_id_idempotency_key_key" ON "desktop_commands"("compute_target_id", "idempotency_key") WHERE "idempotency_key" IS NOT NULL;
 
 -- CreateIndex

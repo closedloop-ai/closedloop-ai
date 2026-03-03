@@ -178,6 +178,64 @@ export function RepoFileAutocomplete({
     return null;
   }
 
+  let content: React.ReactNode;
+  if (isLoading) {
+    content = (
+      <div className="flex items-center justify-center py-4 text-muted-foreground">
+        <Loader2 className="mr-2 size-4 animate-spin" />
+        <span className="font-mono text-xs">Searching files...</span>
+      </div>
+    );
+  } else if (mergedFiles.length === 0) {
+    content = (
+      <div className="px-3 py-4 text-center">
+        <span className="font-mono text-muted-foreground text-xs">
+          {query ? `No files matching "${query}"` : "No files found"}
+        </span>
+      </div>
+    );
+  } else {
+    content = (
+      <div className="py-1">
+        {mergedFiles.map((file, index) => {
+          const Icon = getFileIcon(file.filePath);
+          const isSelected = index === selectedIndex;
+
+          return (
+            <button
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left",
+                "cursor-pointer transition-colors",
+                isSelected
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-muted/50"
+              )}
+              key={`${file.repoPath}:${file.filePath}`}
+              onClick={() =>
+                onSelect(file.display, file.repoPath, file.filePath)
+              }
+              onMouseEnter={() => onSelectedIndexChange(index)}
+              ref={(el) => {
+                itemRefs.current[index] = el;
+              }}
+            >
+              <Icon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="shrink-0 text-muted-foreground text-xs">
+                {file.repoName}/
+              </span>
+              <span
+                className="truncate font-mono text-xs"
+                title={file.filePath}
+              >
+                {file.filePath}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div
       className={cn(
@@ -188,56 +246,7 @@ export function RepoFileAutocomplete({
       )}
       ref={listRef}
     >
-      {isLoading ? (
-        <div className="flex items-center justify-center py-4 text-muted-foreground">
-          <Loader2 className="mr-2 size-4 animate-spin" />
-          <span className="font-mono text-xs">Searching files...</span>
-        </div>
-      ) : mergedFiles.length === 0 ? (
-        <div className="px-3 py-4 text-center">
-          <span className="font-mono text-muted-foreground text-xs">
-            {query ? `No files matching "${query}"` : "No files found"}
-          </span>
-        </div>
-      ) : (
-        <div className="py-1">
-          {mergedFiles.map((file, index) => {
-            const Icon = getFileIcon(file.filePath);
-            const isSelected = index === selectedIndex;
-
-            return (
-              <button
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left",
-                  "cursor-pointer transition-colors",
-                  isSelected
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-muted/50"
-                )}
-                key={`${file.repoPath}:${file.filePath}`}
-                onClick={() =>
-                  onSelect(file.display, file.repoPath, file.filePath)
-                }
-                onMouseEnter={() => onSelectedIndexChange(index)}
-                ref={(el) => {
-                  itemRefs.current[index] = el;
-                }}
-              >
-                <Icon className="size-4 shrink-0 text-muted-foreground" />
-                <span className="shrink-0 text-muted-foreground text-xs">
-                  {file.repoName}/
-                </span>
-                <span
-                  className="truncate font-mono text-xs"
-                  title={file.filePath}
-                >
-                  {file.filePath}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {content}
     </div>
   );
 }

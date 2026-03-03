@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
@@ -91,7 +92,7 @@ function createFetchInterceptor(
     const routingSelection = getEngineerRoutingSelection();
 
     if (
-      routingSelection.mode === "cloud-relay" &&
+      routingSelection.mode === EngineerRoutingMode.CloudRelay &&
       routingSelection.computeTargetId
     ) {
       const rewrittenUrl = new URL(
@@ -108,7 +109,7 @@ function createFetchInterceptor(
       return originalFetch(outgoing);
     }
 
-    if (routingSelection.mode !== "local-electron") {
+    if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {
       return originalFetch(request);
     }
 

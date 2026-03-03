@@ -195,7 +195,7 @@ describe("POST /compute-targets/:id/results", () => {
     });
   });
 
-  it("returns forbidden when target is not owned", async () => {
+  it("returns not found when target is not owned", async () => {
     vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(null);
 
     const response = await resultsPOST(
@@ -209,6 +209,6 @@ describe("POST /compute-targets/:id/results", () => {
       createMockRouteContext({ id: "target-2" })
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 });

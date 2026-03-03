@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { AlertCircle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { ComputeTargetSelector } from "@/components/engineer/compute-target-selector";
@@ -25,15 +26,15 @@ export function EngineerGuard() {
   });
 
   const selectedCloudTargetOnline =
-    routing.mode === "cloud-relay" &&
+    routing.mode === EngineerRoutingMode.CloudRelay &&
     routing.computeTargetId !== null &&
     targets.some(
       (target) => target.id === routing.computeTargetId && target.isOnline
     );
   const selectedLocalElectronReady =
-    routing.mode === "local-electron" && detection.detected;
+    routing.mode === EngineerRoutingMode.LocalElectron && detection.detected;
   const selectedLocalDevReady =
-    routing.mode === "local-dev" && appEnvironment === "local";
+    routing.mode === EngineerRoutingMode.LocalDev && appEnvironment === "local";
   const canAccess =
     selectedCloudTargetOnline ||
     selectedLocalElectronReady ||

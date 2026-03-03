@@ -149,7 +149,7 @@ describe("POST /compute-targets/:id/heartbeat", () => {
     expect(json.data).toEqual({ ok: true });
   });
 
-  it("returns forbidden when target is not user-owned", async () => {
+  it("returns not found when target is not user-owned", async () => {
     vi.mocked(computeTargetsService.heartbeat).mockResolvedValue(false);
 
     const response = await heartbeatPOST(
@@ -160,7 +160,7 @@ describe("POST /compute-targets/:id/heartbeat", () => {
       createMockRouteContext({ id: "target-2" })
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
   });
 });
 

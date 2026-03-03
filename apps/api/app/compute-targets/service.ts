@@ -167,30 +167,31 @@ export const computeTargetsService = {
     userId: string,
     payload: UpdateComputeTargetInput
   ): Promise<ComputeTarget | null> {
-    const result = await withDb((db) =>
-      db.computeTarget.updateMany({
-        where: { id, organizationId, userId },
-        data: {
-          ...(payload.machineName ? { machineName: payload.machineName } : {}),
-          ...(payload.platform ? { platform: payload.platform } : {}),
-          ...(payload.capabilities
-            ? { capabilities: payload.capabilities }
-            : {}),
-          ...(payload.supportedOperations
-            ? { supportedOperations: payload.supportedOperations }
-            : {}),
-        },
-      })
-    );
-
-    if (result.count === 0) {
-      return null;
+    try {
+      const updated = await withDb((db) =>
+        db.computeTarget.update({
+          where: { id, organizationId, userId },
+          data: {
+            ...(payload.machineName
+              ? { machineName: payload.machineName }
+              : {}),
+            ...(payload.platform ? { platform: payload.platform } : {}),
+            ...(payload.capabilities
+              ? { capabilities: payload.capabilities }
+              : {}),
+            ...(payload.supportedOperations
+              ? { supportedOperations: payload.supportedOperations }
+              : {}),
+          },
+        })
+      );
+      return toComputeTarget(updated as ComputeTargetRecord);
+    } catch (error) {
+      if ((error as { code?: string }).code === "P2025") {
+        return null;
+      }
+      throw error;
     }
-
-    const updated = await withDb((db) =>
-      db.computeTarget.findUnique({ where: { id } })
-    );
-    return toComputeTarget(updated as ComputeTargetRecord | null);
   },
 
   async deleteOwned(

@@ -1,6 +1,5 @@
 import { z } from "zod";
-
-const jsonObjectValidator = z.record(z.string(), z.unknown());
+import { jsonObjectValidator } from "@/lib/validators/json";
 
 export const registerComputeTargetValidator = z.object({
   machineName: z.string().trim().min(1).max(120),

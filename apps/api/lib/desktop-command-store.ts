@@ -8,7 +8,7 @@ import type {
   DesktopCommandSummary,
   RelayOperationDispatchRequest,
 } from "@repo/api/src/types/compute-target";
-import { type Prisma, withDb } from "@repo/database";
+import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { BoundedCache } from "@/lib/bounded-cache";
 import { isRecord } from "@/lib/type-guards";
 
@@ -385,10 +385,8 @@ async function recoverDuplicateCommand(
   return { command: winnerCommand, deduped: true };
 }
 
-type PrismaTransactionClient = Parameters<Parameters<typeof withDb.tx>[0]>[0];
-
 async function createEventRow(
-  tx: PrismaTransactionClient,
+  tx: TransactionClient,
   input: IngestCommandEventInput,
   sequence: number
 ): Promise<{ createdAt: Date } | "duplicate"> {

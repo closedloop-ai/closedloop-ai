@@ -24,7 +24,10 @@ import {
   shouldShowPlanningButton,
   WorkflowProgress,
 } from "@/components/engineer/TicketCard";
-import { prReviewsOptions } from "@/lib/engineer/queries/git";
+import {
+  type PRReviewsResponse,
+  prReviewsOptions,
+} from "@/lib/engineer/queries/git";
 
 /**
  * Status dot color mapping — matches the badge palette but as a filled circle.
@@ -48,6 +51,34 @@ function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   const match = /github\.com\/([^/]+)\/([^/]+)\/pull/.exec(url);
   if (match) {
     return { owner: match[1], repo: match[2] };
+  }
+  return null;
+}
+
+function reviewStatusColor(reviews: PRReviewsResponse): string {
+  if (reviews.approvalCount > 0) {
+    return "text-emerald-600 dark:text-emerald-400";
+  }
+  if (reviews.changesRequestedCount > 0) {
+    return "text-amber-600 dark:text-amber-400";
+  }
+  return "text-muted-foreground";
+}
+
+function reviewStatusLabel(reviews: PRReviewsResponse): React.ReactNode {
+  if (reviews.approvalCount > 0) {
+    return (
+      <>
+        <CheckCircle2 className="size-2.5" /> Approved
+      </>
+    );
+  }
+  if (reviews.changesRequestedCount > 0) {
+    return (
+      <>
+        <AlertCircle className="size-2.5" /> Changes
+      </>
+    );
   }
   return null;
 }
@@ -234,22 +265,10 @@ export function TicketListRow({
           <span
             className={cn(
               "inline-flex shrink-0 items-center gap-1 font-medium text-[10px]",
-              reviewsData.approvalCount > 0
-                ? "text-emerald-600 dark:text-emerald-400"
-                : reviewsData.changesRequestedCount > 0
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-muted-foreground"
+              reviewStatusColor(reviewsData)
             )}
           >
-            {reviewsData.approvalCount > 0 ? (
-              <>
-                <CheckCircle2 className="size-2.5" /> Approved
-              </>
-            ) : reviewsData.changesRequestedCount > 0 ? (
-              <>
-                <AlertCircle className="size-2.5" /> Changes
-              </>
-            ) : null}
+            {reviewStatusLabel(reviewsData)}
           </span>
         )}
 

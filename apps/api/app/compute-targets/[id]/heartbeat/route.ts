@@ -2,7 +2,7 @@ import type { ComputeTargetHeartbeatResponse } from "@repo/api/src/types/compute
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
-  forbiddenResponse,
+  notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
 import { computeTargetsService } from "../../service";
@@ -24,7 +24,7 @@ export const POST = withAnyAuth<
       user.id
     );
     if (!ok) {
-      return forbiddenResponse();
+      return notFoundResponse("Compute target");
     }
 
     return successResponse({ ok: true });

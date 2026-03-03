@@ -1166,7 +1166,7 @@ function ChatMessagesArea({
       const el = scrollContainerRef.current;
       // When hidden (display:none), clientHeight is 0 and scrollIntoView is a
       // no-op. Defer the scroll to the ResizeObserver recovery.
-      if (el && el.clientHeight === 0) {
+      if (el?.clientHeight === 0) {
         pendingScrollRef.current = true;
       } else if (isNearBottom()) {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1812,6 +1812,56 @@ function ChatInputArea({
   );
 }
 
+function isPushbackContent(content: string): boolean {
+  const lower = content.toLowerCase();
+  return (
+    content.includes("<pr_response>") ||
+    lower.includes("draft response to reviewer") ||
+    lower.includes("draft response:") ||
+    lower.includes("suggested response to reviewer") ||
+    lower.includes("suggested response:") ||
+    lower.includes("response to reviewer:") ||
+    (lower.includes("no change") && lower.includes("suggest")) ||
+    (lower.includes("no code change") && lower.includes("response"))
+  );
+}
+
+function hasCodeChangeContent(content: string): boolean {
+  const lower = content.toLowerCase();
+  return (
+    content.includes("```diff") ||
+    (content.includes("```") &&
+      (lower.includes("proposed change") ||
+        lower.includes("here's the fix") ||
+        lower.includes("here is the fix") ||
+        lower.includes("updated code") ||
+        lower.includes("modified code")))
+  );
+}
+
+function extractDraftResponse(content: string): string {
+  // Extract from <pr_response> tags (preferred)
+  const tagMatch = /<pr_response>([\s\S]*?)<\/pr_response>/.exec(content);
+  if (tagMatch) {
+    return tagMatch[1].trim();
+  }
+
+  // Fallback: try older patterns
+  const draftMatch =
+    /(?:draft response to reviewer|suggested response to reviewer|draft response|suggested response)[:\s]*\n+([\s\S]*?)(?:\n\n---|\n\n(?:Which option|Would you|Let me know|Note:)|$)/i.exec(
+      content
+    );
+  if (draftMatch && draftMatch[1].trim().length > 20) {
+    return draftMatch[1]
+      .split("\n")
+      .map((line) => line.replaceAll(/^>\s?/g, ""))
+      .join("\n")
+      .trim();
+  }
+
+  return "";
+}
+
 /**
  * Message bubble for comment chat
  */
@@ -1840,7 +1890,7 @@ const CommentMessageBubble = memo(
     contextPercent?: number | null;
   }>) {
     const isUser = message.role === "user";
-    const contentLower = message.content.toLowerCase();
+    const isAssistantDone = !(isUser || isStreaming);
 
     // Parse suggested actions from assistant messages
     const { actions: suggestedActions } = useMemo(
@@ -1856,30 +1906,13 @@ const CommentMessageBubble = memo(
 
     // Detect if this is a "pushback" response (declining to make changes, suggesting a reply instead)
     const isPushbackResponse =
-      !(isUser || isStreaming) &&
-      (message.content.includes("<pr_response>") ||
-        contentLower.includes("draft response to reviewer") ||
-        contentLower.includes("draft response:") ||
-        contentLower.includes("suggested response to reviewer") ||
-        contentLower.includes("suggested response:") ||
-        contentLower.includes("response to reviewer:") ||
-        (contentLower.includes("no change") &&
-          contentLower.includes("suggest")) ||
-        (contentLower.includes("no code change") &&
-          contentLower.includes("response")));
+      isAssistantDone && isPushbackContent(message.content);
 
     // Detect if this message contains actual code changes (not just inline code).
     // A message can have both code changes AND a pushback response (e.g., AI made
     // changes and also drafted a PR reply) — allow both buttons to coexist.
     const hasCodeChanges =
-      !(isUser || isStreaming) &&
-      (message.content.includes("```diff") ||
-        (message.content.includes("```") &&
-          (contentLower.includes("proposed change") ||
-            contentLower.includes("here's the fix") ||
-            contentLower.includes("here is the fix") ||
-            contentLower.includes("updated code") ||
-            contentLower.includes("modified code"))));
+      isAssistantDone && hasCodeChangeContent(message.content);
 
     const handleCopy = useCallback(async () => {
       const { contentWithoutActions } = parseSuggestedActions(message.content);
@@ -1922,7 +1955,7 @@ const CommentMessageBubble = memo(
         )}
         contextPercent={contextPercent}
         extraActions={
-          !(isUser || isStreaming) &&
+          isAssistantDone &&
           suggestedActions.length === 0 &&
           (hasCodeChanges || isPushbackResponse) ? (
             <div className="mt-2 flex items-center gap-2 px-1">
@@ -1947,29 +1980,7 @@ const CommentMessageBubble = memo(
                 <Button
                   className="h-7 text-xs"
                   onClick={() => {
-                    // Extract the draft response from <pr_response> tags (preferred)
-                    const tagMatch =
-                      /<pr_response>([\s\S]*?)<\/pr_response>/.exec(
-                        message.content
-                      );
-
-                    let responseText = tagMatch ? tagMatch[1].trim() : "";
-
-                    // Fallback: try older patterns if no tag found
-                    if (!responseText) {
-                      const draftMatch =
-                        /(?:draft response to reviewer|suggested response to reviewer|draft response|suggested response)[:\s]*\n+([\s\S]*?)(?:\n\n---|\n\n(?:Which option|Would you|Let me know|Note:)|$)/i.exec(
-                          message.content
-                        );
-                      if (draftMatch && draftMatch[1].trim().length > 20) {
-                        responseText = draftMatch[1]
-                          .split("\n")
-                          .map((line) => line.replace(/^>\s?/, ""))
-                          .join("\n")
-                          .trim();
-                      }
-                    }
-
+                    const responseText = extractDraftResponse(message.content);
                     if (responseText) {
                       onSendResponse(responseText, message.id);
                     } else {
@@ -1991,7 +2002,7 @@ const CommentMessageBubble = memo(
         messageRole={message.role}
         onAction={suggestedActions.length > 0 ? handleAction : undefined}
         onCopy={isStreaming ? undefined : handleCopy}
-        onForward={isUser || isStreaming ? undefined : onForward}
+        onForward={isAssistantDone ? onForward : undefined}
         roleClassName={
           isUser
             ? "text-blue-600 dark:text-blue-400"
