@@ -24,6 +24,8 @@ type FindingsFile = {
   provider: string;
   model: string;
   findings: PersistedFinding[];
+  declined?: boolean;
+  declineReason?: string;
 };
 
 function getFindingsPath(
@@ -89,9 +91,10 @@ export async function GET(
 /**
  * POST /api/engineer/codex/review-findings/[ticketId]?repo=...&provider=claude
  *
- * Two modes:
+ * Three modes:
  * - Save findings: body = { provider, model, findings }
  * - Mark commented: body = { commentedIndex: number }
+ * - Mark declined: body = { declined: true, declineReason: string }
  */
 export async function POST(
   request: NextRequest,
@@ -120,6 +123,10 @@ export async function POST(
 
   if (typeof body.commentedIndex === "number") {
     return markFindingCommented(findingsPath, body.commentedIndex);
+  }
+
+  if (body.declined === true && typeof body.declineReason === "string") {
+    return markDeclined(findingsPath, body.declineReason);
   }
 
   if (body.findings && Array.isArray(body.findings)) {
@@ -155,6 +162,30 @@ async function markFindingCommented(findingsPath: string, index: number) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
       { error: `Failed to update findings: ${msg}` },
+      { status: 500 }
+    );
+  }
+}
+
+async function markDeclined(findingsPath: string, reason: string) {
+  if (!existsSync(findingsPath)) {
+    return NextResponse.json(
+      { error: "No findings file found" },
+      { status: 404 }
+    );
+  }
+
+  try {
+    const content = await readFile(findingsPath, "utf-8");
+    const data: FindingsFile = JSON.parse(content);
+    data.declined = true;
+    data.declineReason = reason;
+    await writeFile(findingsPath, JSON.stringify(data, null, 2));
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json(
+      { error: `Failed to mark declined: ${msg}` },
       { status: 500 }
     );
   }

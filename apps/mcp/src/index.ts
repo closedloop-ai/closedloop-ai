@@ -983,26 +983,36 @@ function consumeOAuthRateLimit(
     });
 
     if (!record || record.windowExpiresAt <= now) {
-      await db.oAuthRateLimit.upsert({
-        where: {
-          bucket_subject: {
+      try {
+        await db.oAuthRateLimit.upsert({
+          where: {
+            bucket_subject: {
+              bucket,
+              subject: address,
+            },
+          },
+          create: {
             bucket,
             subject: address,
+            requestCount: 1,
+            windowStartedAt: now,
+            windowExpiresAt,
           },
-        },
-        create: {
-          bucket,
-          subject: address,
-          requestCount: 1,
-          windowStartedAt: now,
-          windowExpiresAt,
-        },
-        update: {
-          requestCount: 1,
-          windowStartedAt: now,
-          windowExpiresAt,
-        },
-      });
+          update: {
+            requestCount: 1,
+            windowStartedAt: now,
+            windowExpiresAt,
+          },
+        });
+      } catch (error: unknown) {
+        // P2002: concurrent request already created the row — safe to ignore
+        // since both requests reset the window to the same values.
+        if (
+          !(error instanceof Error && "code" in error && error.code === "P2002")
+        ) {
+          throw error;
+        }
+      }
       return { limited: false, retryAfterSeconds: 0 };
     }
 

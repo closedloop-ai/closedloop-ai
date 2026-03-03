@@ -68,6 +68,7 @@ No sycophantic language. Brief, factual — state what changed.
 
 ## Code Style
 - Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums.
+- Define string enums as const objects, never arrays: `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];` — not `const FOOS = ["bar"] as const`.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)
 - `globalThis` not `window` (S7764); SSR guards: `globalThis.window === undefined` in client-only, keep `typeof` if server-possible

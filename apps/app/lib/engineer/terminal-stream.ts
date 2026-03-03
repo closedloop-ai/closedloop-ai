@@ -4,6 +4,8 @@
  * Handles two modes: Claude (default) and Codex (@codex).
  */
 
+import { readNdjsonLines } from "./stream-utils";
+
 export type TerminalMode = "claude" | "codex";
 
 export type TerminalStreamEvent = {
@@ -53,25 +55,14 @@ export async function readTerminalStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   handlers: TerminalStreamHandlers
 ): Promise<void> {
-  const decoder = new TextDecoder();
   let accumulated = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n").filter((line) => line.trim());
-
-    for (const line of lines) {
-      try {
-        const event: TerminalStreamEvent = JSON.parse(line);
-        accumulated = dispatchTerminalEvent(event, accumulated, handlers);
-      } catch {
-        // Not JSON — ignore
-      }
+  for await (const line of readNdjsonLines(reader)) {
+    try {
+      const event: TerminalStreamEvent = JSON.parse(line);
+      accumulated = dispatchTerminalEvent(event, accumulated, handlers);
+    } catch {
+      // Not JSON — ignore
     }
   }
 }
