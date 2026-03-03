@@ -179,6 +179,9 @@ importers:
       svix:
         specifier: ^1.84.1
         version: 1.84.1
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -213,9 +216,6 @@ importers:
       dotenv:
         specifier: ^17.3.1
         version: 17.3.1
-      tsx:
-        specifier: ^4.21.0
-        version: 4.21.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
