@@ -131,6 +131,10 @@ const OAUTH_REDIRECT_URI_ALLOWLIST = (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const DEFAULT_OPENAI_REDIRECT_URI_ALLOWLIST = [
+  "https://chat.openai.com/aip/mcp/callback",
+  "https://chatgpt.com/aip/mcp/callback",
+];
 const INTERNAL_ENDPOINT_ALLOWLIST = (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
   .split(",")
   .map((value) => value.trim())
@@ -160,6 +164,21 @@ function getOAuthRedirectUriAllowlist(): string[] {
   return OAUTH_REDIRECT_URI_ALLOWLIST;
 }
 
+function getEffectiveOAuthRedirectUriAllowlist(): string[] {
+  const configuredAllowlist = getOAuthRedirectUriAllowlist();
+  if (configuredAllowlist.length > 0) {
+    return configuredAllowlist;
+  }
+
+  if (isLocalOauthEnvironment()) {
+    return [];
+  }
+
+  // Keep non-local DCR functional for ChatGPT connectors even when no custom
+  // redirect allowlist is configured.
+  return DEFAULT_OPENAI_REDIRECT_URI_ALLOWLIST;
+}
+
 function getInternalEndpointAllowlist(): string[] {
   return INTERNAL_ENDPOINT_ALLOWLIST;
 }
@@ -173,7 +192,7 @@ function requireRedirectAllowlistForEnvironment(): void {
     getOAuthRedirectUriAllowlist().length === 0
   ) {
     console.warn(
-      "MCP_OAUTH_REDIRECT_URIS is empty — only loopback redirect URIs will be accepted"
+      "MCP_OAUTH_REDIRECT_URIS is empty — using default OpenAI callback allowlist plus loopback redirect URIs"
     );
   }
 }
@@ -1736,8 +1755,8 @@ function isValidRedirectUri(uri: string): boolean {
       return true;
     }
 
-    // Non-loopback URIs must appear in the explicit allowlist
-    const allowlist = getOAuthRedirectUriAllowlist();
+    // Non-loopback URIs must appear in the effective allowlist.
+    const allowlist = getEffectiveOAuthRedirectUriAllowlist();
     if (allowlist.length > 0) {
       return allowlist.includes(uri);
     }
@@ -2883,6 +2902,7 @@ export const __testables = {
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
+  isValidRedirectUri,
   isInternalAddressAllowed,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,

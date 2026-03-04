@@ -39,7 +39,7 @@ describe.sequential("OAuth config", () => {
       mod.__testables.requireRedirectAllowlistForEnvironment()
     ).not.toThrow();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("MCP_OAUTH_REDIRECT_URIS is empty")
+      expect.stringContaining("default OpenAI callback allowlist")
     );
     warnSpy.mockRestore();
   });
@@ -53,6 +53,25 @@ describe.sequential("OAuth config", () => {
     expect(() =>
       mod.__testables.requireRedirectAllowlistForEnvironment()
     ).not.toThrow();
+  });
+
+  it("allows ChatGPT callback redirect URI in production when allowlist is unset", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.WEBAPP_ENV = "stage";
+    process.env.MCP_OAUTH_REDIRECT_URIS = "";
+    const mod = await import("../index.js");
+
+    expect(
+      mod.__testables.isValidRedirectUri("https://chatgpt.com/aip/mcp/callback")
+    ).toBe(true);
+    expect(
+      mod.__testables.isValidRedirectUri(
+        "https://chat.openai.com/aip/mcp/callback"
+      )
+    ).toBe(true);
+    expect(
+      mod.__testables.isValidRedirectUri("https://example.com/oauth/callback")
+    ).toBe(false);
   });
 
   it("allows startup in non-local env without internal IP allowlist but rejects requests", async () => {
