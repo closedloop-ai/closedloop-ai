@@ -25,6 +25,11 @@ const SUNDAY_INDEX = 0;
 /** Days from Sunday back to the previous Monday. */
 const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
 
+type HumanCountsByType = {
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+};
+
 function formatDateKey(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
@@ -42,6 +47,60 @@ function getISOWeekStartDate(date: Date): Date {
   );
 }
 
+function initializeHumanCountsByType(types: ArtifactType[]): HumanCountsByType {
+  const humanRatingsByType = new Map<ArtifactType, number>();
+  const humanCommentsByType = new Map<ArtifactType, number>();
+
+  for (const type of types) {
+    humanRatingsByType.set(type, 0);
+    humanCommentsByType.set(type, 0);
+  }
+
+  return { humanRatingsByType, humanCommentsByType };
+}
+
+function incrementHumanCountsByType<TRow>(
+  rows: TRow[],
+  typeById: Map<string, ArtifactType>,
+  humanRatingsByType: Map<ArtifactType, number>,
+  humanCommentsByType: Map<ArtifactType, number>,
+  getId: (row: TRow) => string,
+  getComment: (row: TRow) => string | null | undefined = (row) =>
+    (row as { comment?: string | null }).comment
+): void {
+  for (const row of rows) {
+    const type = typeById.get(getId(row));
+    if (type === undefined) {
+      continue;
+    }
+
+    humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
+
+    const comment = getComment(row);
+    if (comment != null && comment.trim() !== "") {
+      humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
+    }
+  }
+}
+
+function collectNormalizedScores<TRow>(
+  rows: TRow[],
+  getKey: (row: TRow) => string | undefined,
+  getScore: (row: TRow) => number = (row) => (row as { score: number }).score
+): Map<string, number[]> {
+  const scoresByKey = new Map<string, number[]>();
+  for (const row of rows) {
+    const key = getKey(row);
+    if (key === undefined) {
+      continue;
+    }
+    const scores = scoresByKey.get(key) ?? [];
+    scores.push(getScore(row) / 5);
+    scoresByKey.set(key, scores);
+  }
+  return scoresByKey;
+}
+
 /**
  * Fetches human ratings and comments counts per artifact type (same org and date range).
  * Returns maps with 0 for each type when there are no artifacts or no feedback.
@@ -53,20 +112,12 @@ export async function getHumanCountsByType(
   startDate: Date,
   endDate: Date,
   types: ArtifactType[]
-): Promise<{
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
-}> {
-  const humanRatingsByType = new Map<ArtifactType, number>();
-  const humanCommentsByType = new Map<ArtifactType, number>();
+): Promise<HumanCountsByType> {
+  const { humanRatingsByType, humanCommentsByType } =
+    initializeHumanCountsByType(types);
 
   if (types.length === 0) {
     return { humanRatingsByType, humanCommentsByType };
-  }
-
-  for (const type of types) {
-    humanRatingsByType.set(type, 0);
-    humanCommentsByType.set(type, 0);
   }
 
   const artifacts = await withDb((db) =>
@@ -97,15 +148,13 @@ export async function getHumanCountsByType(
     })
   );
 
-  for (const r of ratings) {
-    const type = idToType.get(r.artifactId);
-    if (type !== undefined) {
-      humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
-      if (r.comment != null && r.comment.trim() !== "") {
-        humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
-      }
-    }
-  }
+  incrementHumanCountsByType(
+    ratings,
+    idToType,
+    humanRatingsByType,
+    humanCommentsByType,
+    (rating) => rating.artifactId
+  );
 
   return { humanRatingsByType, humanCommentsByType };
 }
@@ -137,14 +186,7 @@ export async function getHumanRatingsByArtifact(
     })
   );
 
-  const scoresByArtifact = new Map<string, number[]>();
-  for (const r of ratings) {
-    const scores = scoresByArtifact.get(r.artifactId) ?? [];
-    scores.push(r.score / 5);
-    scoresByArtifact.set(r.artifactId, scores);
-  }
-
-  return scoresByArtifact;
+  return collectNormalizedScores(ratings, (rating) => rating.artifactId);
 }
 
 /**
@@ -159,17 +201,9 @@ export async function getCodeHumanCountsByType(
   endDate: Date,
   artifactTypeById: Map<string, ArtifactType>,
   types: ArtifactType[]
-): Promise<{
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
-}> {
-  const humanRatingsByType = new Map<ArtifactType, number>();
-  const humanCommentsByType = new Map<ArtifactType, number>();
-
-  for (const type of types) {
-    humanRatingsByType.set(type, 0);
-    humanCommentsByType.set(type, 0);
-  }
+): Promise<HumanCountsByType> {
+  const { humanRatingsByType, humanCommentsByType } =
+    initializeHumanCountsByType(types);
 
   const artifactIds = Array.from(artifactTypeById.keys());
   if (artifactIds.length === 0) {
@@ -212,16 +246,13 @@ export async function getCodeHumanCountsByType(
     })
   );
 
-  for (const rating of ratings) {
-    const type = prIdToType.get(rating.pullRequestId);
-    if (type === undefined) {
-      continue;
-    }
-    humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
-    if (rating.comment.trim() !== "") {
-      humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
-    }
-  }
+  incrementHumanCountsByType(
+    ratings,
+    prIdToType,
+    humanRatingsByType,
+    humanCommentsByType,
+    (rating) => rating.pullRequestId
+  );
 
   return { humanRatingsByType, humanCommentsByType };
 }
@@ -274,18 +305,9 @@ export async function getCodeHumanRatingsByArtifact(
     })
   );
 
-  const scoresByArtifact = new Map<string, number[]>();
-  for (const rating of ratings) {
-    const artifactId = prIdToArtifactId.get(rating.pullRequestId);
-    if (artifactId === undefined) {
-      continue;
-    }
-    const scores = scoresByArtifact.get(artifactId) ?? [];
-    scores.push(rating.score / 5);
-    scoresByArtifact.set(artifactId, scores);
-  }
-
-  return scoresByArtifact;
+  return collectNormalizedScores(ratings, (rating) =>
+    prIdToArtifactId.get(rating.pullRequestId)
+  );
 }
 
 /** Shape of a JudgeScore row with evaluation and artifact relations for aggregation. */
@@ -410,12 +432,8 @@ function computeJudgeStats(
 
   const min = Math.min(...scores);
   const max = Math.max(...scores);
-  const sum = scores.reduce((acc, score) => acc + score, 0);
-  const mean = sum / count;
-
-  const variance =
-    scores.reduce((acc, score) => acc + (score - mean) ** 2, 0) / count;
-  const stdDev = Math.sqrt(variance);
+  const mean = computeMean(scores);
+  const stdDev = computeStdDev(scores, mean);
 
   // Pool all human scores across this judge's artifacts
   const judgeHumanScores: number[] = [];
@@ -458,11 +476,8 @@ function computeHumanStats(scores: number[]): {
 
   const humanMin = Math.min(...scores);
   const humanMax = Math.max(...scores);
-  const humanSum = scores.reduce((acc, s) => acc + s, 0);
-  const humanMean = humanSum / scores.length;
-  const humanVariance =
-    scores.reduce((acc, s) => acc + (s - humanMean) ** 2, 0) / scores.length;
-  const humanStdDev = Math.sqrt(humanVariance);
+  const humanMean = computeMean(scores);
+  const humanStdDev = computeStdDev(scores, humanMean);
 
   return { humanMin, humanMax, humanMean, humanStdDev };
 }
@@ -835,12 +850,7 @@ export const judgesAnalyticsService = {
       const bimodality = computeBimodalityCoefficient(scoreValues);
       const certaintyFraction = computeCertaintyFraction(scoreValues);
 
-      radarAxes = {
-        stubbornness: 1 - clamp(stdDev / 0.5, 0, 1),
-        optimism: mean,
-        polarity: bimodality,
-        certainty: certaintyFraction,
-      };
+      radarAxes = toRadarAxes(stdDev, mean, bimodality, certaintyFraction);
 
       // 5. Derive characteristic labels from raw stats
       labels = deriveCharacteristicLabels(
@@ -879,12 +889,12 @@ export const judgesAnalyticsService = {
       if (versionScores.length >= JUDGE_THRESHOLDS.minScoreCount) {
         const vBimodality = computeBimodalityCoefficient(versionScores);
         const vCertaintyFraction = computeCertaintyFraction(versionScores);
-        versionRadarAxes = {
-          stubbornness: 1 - clamp(vStdDev / 0.5, 0, 1),
-          optimism: vMean,
-          polarity: vBimodality,
-          certainty: vCertaintyFraction,
-        };
+        versionRadarAxes = toRadarAxes(
+          vStdDev,
+          vMean,
+          vBimodality,
+          vCertaintyFraction
+        );
       }
 
       promptVersions.push({
@@ -997,6 +1007,20 @@ export function computeCertaintyFraction(values: number[]): number {
   }
   const extremeCount = values.filter((v) => v > 0.7 || v < 0.3).length;
   return extremeCount / values.length;
+}
+
+function toRadarAxes(
+  stdDev: number,
+  mean: number,
+  bimodality: number,
+  certaintyFraction: number
+): RadarAxes {
+  return {
+    stubbornness: 1 - clamp(stdDev / 0.5, 0, 1),
+    optimism: mean,
+    polarity: bimodality,
+    certainty: certaintyFraction,
+  };
 }
 
 export function deriveCharacteristicLabels(

@@ -1,13 +1,11 @@
-import type {
-  ArtifactTypeGroup,
-  JudgesAnalyticsReportType,
-} from "@repo/api/src/types/judges-analytics";
+import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import type { ArtifactTypeGroup } from "@repo/api/src/types/judges-analytics";
 import { JudgeAnalyticsChart } from "./judge-analytics-chart";
 import { JudgeAnalyticsTable } from "./judge-analytics-table";
 
 type ArtifactTypeSectionProps = {
   group: ArtifactTypeGroup;
-  reportType: JudgesAnalyticsReportType;
+  reportType: EvaluationReportType;
 };
 
 export function ArtifactTypeSection({

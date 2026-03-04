@@ -1,14 +1,11 @@
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import type {
-  JudgeStatsResponse,
-  JudgesAnalyticsReportType,
-} from "@repo/api/src/types/judges-analytics";
-import { withAuth } from "@/lib/auth/with-auth";
+import type { JudgeStatsResponse } from "@repo/api/src/types/judges-analytics";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { createJudgesAnalyticsHandler } from "./lib/route-handler";
 import { judgesAnalyticsService } from "./service";
 import { judgesAnalyticsQueryValidator } from "./validators";
 
-export const GET = withAuth<JudgeStatsResponse, "/judges-analytics">(
+export const GET = withAnyAuth<JudgeStatsResponse, "/judges-analytics">(
   createJudgesAnalyticsHandler({
     validator: judgesAnalyticsQueryValidator,
     parseExtra: (params) => ({ reportType: params.reportType }),
@@ -25,7 +22,7 @@ export const GET = withAuth<JudgeStatsResponse, "/judges-analytics">(
 
 function paramsReportType(extra?: Record<string, unknown>) {
   return (
-    (extra?.reportType as JudgesAnalyticsReportType | undefined) ??
+    (extra?.reportType as EvaluationReportType | undefined) ??
     EvaluationReportType.Plan
   );
 }

@@ -1,9 +1,7 @@
 "use client";
 
-import type {
-  JudgeAggregateStats,
-  JudgesAnalyticsReportType,
-} from "@repo/api/src/types/judges-analytics";
+import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import {
   Table,
   TableBody,
@@ -26,7 +24,7 @@ import { sortTableData } from "@/lib/table-utils";
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
-  reportType: JudgesAnalyticsReportType;
+  reportType: EvaluationReportType;
 };
 
 function formatOrDash(value: number | null): string {

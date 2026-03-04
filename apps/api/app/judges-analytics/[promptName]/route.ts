@@ -1,5 +1,5 @@
+import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
 import type { JudgeDetailResponse } from "@repo/api/src/types/judges-analytics";
-import { JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -13,7 +13,7 @@ import { judgesAnalyticsService } from "../service";
 
 const PROMPT_NAME_PATTERN = /^[a-z0-9_]+$/;
 const judgeDetailQueryValidator = z.object({
-  reportType: z.enum(JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS),
+  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
 });
 
 export const GET = withAnyAuth<

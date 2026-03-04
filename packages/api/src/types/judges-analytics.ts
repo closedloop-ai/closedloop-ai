@@ -6,17 +6,9 @@
 
 import type { ArtifactType } from "./artifact";
 import {
+  EVALUATION_REPORT_TYPE_OPTIONS,
   type EvaluationReportType,
-  EvaluationReportType as EvaluationReportTypeValues,
 } from "./evaluation";
-
-export const JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS = [
-  EvaluationReportTypeValues.Plan,
-  EvaluationReportTypeValues.Code,
-] as const;
-
-export type JudgesAnalyticsReportType =
-  (typeof JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS)[number];
 
 /**
  * Aggregate statistics for a single judge within an artifact type group.
@@ -76,7 +68,7 @@ export type ArtifactTypeGroup = {
  * - groups: Array of artifact type groups, each containing judge statistics
  */
 export type JudgeStatsResponse = {
-  reportType?: EvaluationReportType;
+  reportType: EvaluationReportType;
   groups: ArtifactTypeGroup[];
 };
 
@@ -163,7 +155,7 @@ export type CharacteristicLabel =
  * Full detail payload for a single judge, keyed by normalized prompt name.
  */
 export type JudgeDetail = {
-  reportType?: EvaluationReportType;
+  reportType: EvaluationReportType;
   promptName: string; // normalized, stable cross-version key
   displayName: string; // raw prompt name for display
   latestPromptId: string | null;
@@ -178,3 +170,7 @@ export type JudgeDetail = {
 export type JudgeDetailResponse = {
   judge: JudgeDetail;
 };
+
+/** Backward-compatible export for judges analytics report type validation. */
+export const JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS =
+  EVALUATION_REPORT_TYPE_OPTIONS;

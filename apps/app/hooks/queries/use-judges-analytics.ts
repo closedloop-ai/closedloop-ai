@@ -1,11 +1,11 @@
 "use client";
 
+import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountsGroupBy as ArtifactCountsGroupByType,
   ArtifactCountsResponse,
   JudgeDetailResponse,
   JudgeStatsResponse,
-  JudgesAnalyticsReportType,
 } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
@@ -18,7 +18,7 @@ export const judgesAnalyticsKeys = {
   dateRange: (
     startDate: string,
     endDate: string,
-    reportType: JudgesAnalyticsReportType
+    reportType: EvaluationReportType
   ) => [...judgesAnalyticsKeys.all, startDate, endDate, reportType] as const,
   artifactCounts: (
     startDate: string,
@@ -32,7 +32,7 @@ export const judgesAnalyticsKeys = {
       endDate,
       groupBy,
     ] as const,
-  detail: (promptName: string, reportType: JudgesAnalyticsReportType) =>
+  detail: (promptName: string, reportType: EvaluationReportType) =>
     [...judgesAnalyticsKeys.all, "detail", promptName, reportType] as const,
 };
 
@@ -40,7 +40,7 @@ export const judgesAnalyticsKeys = {
 export function useJudgesAnalytics(
   startDate: string,
   endDate: string,
-  reportType: JudgesAnalyticsReportType,
+  reportType: EvaluationReportType,
   options?: Omit<UseQueryOptions<JudgeStatsResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
@@ -92,7 +92,7 @@ export function useArtifactCounts(
 
 export function useJudgeDetail(
   promptName: string,
-  reportType: JudgesAnalyticsReportType,
+  reportType: EvaluationReportType,
   options?: Omit<UseQueryOptions<JudgeDetailResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();

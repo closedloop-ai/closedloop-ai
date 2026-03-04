@@ -2,12 +2,12 @@ import type {
   ArtifactCountsGroupBy,
   ArtifactCountsResponse,
 } from "@repo/api/src/types/judges-analytics";
-import { withAuth } from "@/lib/auth/with-auth";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { createJudgesAnalyticsHandler } from "../lib/route-handler";
 import { judgesAnalyticsService } from "../service";
 import { artifactCountsQueryValidator } from "../validators";
 
-export const GET = withAuth<
+export const GET = withAnyAuth<
   ArtifactCountsResponse,
   "/judges-analytics/artifact-counts"
 >(

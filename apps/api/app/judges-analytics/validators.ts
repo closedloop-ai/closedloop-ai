@@ -1,8 +1,6 @@
 import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
-import {
-  ARTIFACT_COUNTS_GROUP_BY_OPTIONS,
-  JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS,
-} from "@repo/api/src/types/judges-analytics";
+import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
+import { ARTIFACT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 
 const dateRangeQueryValidator = z
@@ -13,17 +11,14 @@ const dateRangeQueryValidator = z
     endDate: z
       .string()
       .regex(DATE_ONLY_REGEX, "endDate must be in YYYY-MM-DD format"),
-    reportType: z.enum(JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS),
   })
   .refine((data) => data.startDate <= data.endDate, {
     message: "startDate must be less than or equal to endDate",
   });
 
-export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.safeExtend(
-  {
-    reportType: z.enum(JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS),
-  }
-);
+export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.extend({
+  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+});
 
 export const artifactCountsQueryValidator = dateRangeQueryValidator.safeExtend({
   groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),

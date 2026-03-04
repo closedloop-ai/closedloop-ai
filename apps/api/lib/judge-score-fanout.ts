@@ -10,9 +10,10 @@ import { normalizeJudgeName } from "./judge-name-utils";
 /**
  * Fan out judge scores from a JudgesReport into JudgeScore rows.
  *
- * For each case in report.stats, reads the first metric and writes a JudgeScore
- * row linked to the ArtifactEvaluation. promptId is resolved by matching
- * normalized judge names to organization JUDGE prompts in prompt_registry.
+ * For each case in report.stats, selects the metric whose normalized name matches
+ * case_id (falling back to the first metric) and writes a JudgeScore row linked
+ * to the ArtifactEvaluation. promptId is resolved by matching normalized judge
+ * names to organization JUDGE prompts in prompt_registry.
  *
  * @param params.evaluationId - The ArtifactEvaluation id to link scores to
  * @param params.organizationId - The org id (reserved for prompt lookup when PR 1 lands)
