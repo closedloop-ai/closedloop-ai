@@ -20,7 +20,7 @@ import {
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
-import { JudgeRadarChart } from "./radar-chart";
+import { AXIS_LABELS, JudgeRadarChart } from "./radar-chart";
 
 type CharacteristicsPanelProps = {
   judge: JudgeDetail;
@@ -110,29 +110,37 @@ function MetricsHelpButton() {
   );
 }
 
-const AXIS_HELP_ITEMS = [
-  {
-    axis: "Stubbornness",
+type AxisLabel = (typeof AXIS_LABELS)[number];
+
+const AXIS_HELP_BY_LABEL: Record<
+  AxisLabel,
+  { formula: string; interpretation: string }
+> = {
+  Stubbornness: {
     formula: "1 - clamp(stdDev / 0.5, 0, 1)",
     interpretation:
       "Higher means the judge scores more consistently across artifacts.",
   },
-  {
-    axis: "Optimism",
+  Optimism: {
     formula: "mean",
     interpretation:
       "Higher means the judge tends to score artifacts more positively.",
   },
-  {
-    axis: "Polarity",
+  Polarity: {
     formula: "bimodalityCoefficient",
     interpretation:
       "Higher means the judge tends to split between very different score groups.",
   },
-  {
-    axis: "Certainty",
+  Certainty: {
     formula: "count(score > 0.7 or score < 0.3) / totalScores",
     interpretation:
       "Higher means the judge more often gives decisive extreme scores rather than middle scores.",
   },
+};
+
+const AXIS_HELP_ITEMS = [
+  ...AXIS_LABELS.map((axis) => ({
+    axis,
+    ...AXIS_HELP_BY_LABEL[axis],
+  })),
 ] as const;
