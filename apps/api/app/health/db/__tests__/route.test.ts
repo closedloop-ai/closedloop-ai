@@ -40,7 +40,8 @@ describe("GET /health/db", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    process.env.DB_HEALTH_TOKEN = undefined;
+    // biome-ignore lint/performance/noDelete: test cleanup must remove env var (not set string "undefined")
+    delete process.env.DB_HEALTH_TOKEN;
   });
 
   it("returns 401 when token is missing", async () => {
@@ -148,6 +149,23 @@ describe("GET /health/db", () => {
     expect(body.checks.migrations).toMatchObject({
       status: "ok",
       note: "No migrations table (first deploy)",
+    });
+  });
+
+  it("does not treat unrelated does-not-exist errors as first deploy", async () => {
+    mockWithDb.mockResolvedValueOnce(undefined);
+    mockWithDb.mockRejectedValueOnce(
+      new Error('column "finished_at" does not exist')
+    );
+    mockWithDb.mockResolvedValueOnce([{ count: 3n }]);
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(body.ok).toBe(false);
+    expect(body.checks.migrations).toMatchObject({
+      status: "error",
+      error: "db_migration_check_failed",
     });
   });
 });

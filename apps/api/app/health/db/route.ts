@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { withDb } from "@repo/database";
 
 type CheckResult = {
@@ -21,7 +21,11 @@ const GENERIC_ERRORS = {
 
 function isMissingTableError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return message.toLowerCase().includes("does not exist");
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("does not exist") &&
+    normalized.includes("_prisma_migrations")
+  );
 }
 
 function tokenMatches(actual: string | null, expected: string): boolean {
@@ -29,12 +33,12 @@ function tokenMatches(actual: string | null, expected: string): boolean {
     return false;
   }
 
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  if (actualBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-  return timingSafeEqual(actualBuffer, expectedBuffer);
+  const digest = (value: string) =>
+    createHash("sha256").update(value, "utf8").digest();
+
+  const actualDigest = digest(actual);
+  const expectedDigest = digest(expected);
+  return timingSafeEqual(actualDigest, expectedDigest);
 }
 
 export const GET = async (request: Request) => {

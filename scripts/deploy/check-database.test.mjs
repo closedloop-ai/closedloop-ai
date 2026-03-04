@@ -176,3 +176,29 @@ test("runDatabaseHealthCheck does not retry authentication failures", async () =
   assert.equal(code, 1);
   assert.equal(attempts, 1);
 });
+
+test("runDatabaseHealthCheck does not retry 503 endpoint misconfiguration", async () => {
+  let attempts = 0;
+
+  const code = await runDatabaseHealthCheck({
+    healthUrl: "https://api.example.com/health/db",
+    healthToken: "correct-token",
+    outputPath: "ignored.json",
+    maxWaitSeconds: 2,
+    pollIntervalSeconds: 0,
+    logger: makeLogger(),
+    fetchImpl: async () => {
+      attempts += 1;
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        json: async () => ({ ok: false, error: "service_unavailable" }),
+      };
+    },
+    writeFileImpl: async () => {},
+  });
+
+  assert.equal(code, 1);
+  assert.equal(attempts, 1);
+});

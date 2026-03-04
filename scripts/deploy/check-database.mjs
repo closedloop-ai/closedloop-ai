@@ -9,6 +9,9 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
+class AuthError extends Error {}
+class MisconfiguredEndpointError extends Error {}
+
 function parseSeconds(value, fallbackSeconds) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackSeconds;
@@ -95,7 +98,12 @@ export async function runDatabaseHealthCheck({
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
-          throw new Error(`Authentication failed with status ${response.status}`);
+          throw new AuthError(`Authentication failed with status ${response.status}`);
+        }
+        if (response.status === 503) {
+          throw new MisconfiguredEndpointError(
+            `Health endpoint misconfigured with status ${response.status}`
+          );
         }
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -125,10 +133,7 @@ export async function runDatabaseHealthCheck({
       logger.error(
         `\n✗ Database health check attempt ${attempt} failed: ${getErrorMessage(error)}`
       );
-      if (
-        error instanceof Error &&
-        error.message.toLowerCase().includes("authentication failed")
-      ) {
+      if (error instanceof AuthError || error instanceof MisconfiguredEndpointError) {
         break;
       }
     }
