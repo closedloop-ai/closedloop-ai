@@ -5,10 +5,7 @@
 // grouped by artifact type and judge name.
 
 import type { ArtifactType } from "./artifact";
-import {
-  EVALUATION_REPORT_TYPE_OPTIONS,
-  type EvaluationReportType,
-} from "./evaluation";
+import type { EvaluationReportType } from "./evaluation";
 
 /**
  * Aggregate statistics for a single judge within an artifact type group.
@@ -170,7 +167,3 @@ export type JudgeDetail = {
 export type JudgeDetailResponse = {
   judge: JudgeDetail;
 };
-
-/** Backward-compatible export for judges analytics report type validation. */
-export const JUDGES_ANALYTICS_REPORT_TYPE_OPTIONS =
-  EVALUATION_REPORT_TYPE_OPTIONS;
