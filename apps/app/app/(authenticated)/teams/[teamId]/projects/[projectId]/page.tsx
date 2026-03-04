@@ -59,11 +59,13 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
+import { useTabParam } from "@/hooks/use-tab-param";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
 import { ArtifactsThreadedView } from "./components/artifacts-threaded-view";
 import { CreateArtifactModal } from "./components/create-artifact-modal";
 import { CreateFeatureModal } from "./components/create-feature-modal";
+import { FeaturesList } from "./components/features-list";
 import { PropertiesPanel } from "./components/properties-panel";
 import { useMergeNotification } from "./hooks/use-merge-notification";
 
@@ -83,7 +85,10 @@ export default function ProjectDetailPage() {
   const teamId = params.teamId as string;
   const projectId = params.projectId as string;
 
-  const [activeTab, setActiveTab] = useState("documents");
+  const { activeTab, setActiveTab } = useTabParam({
+    validTabs: ["documents", "features", "workflows", "branches"] as const,
+    defaultTab: "documents",
+  });
   const [createArtifactOpen, setCreateArtifactOpen] = useState(false);
   const [createFeatureOpen, setCreateFeatureOpen] = useState(false);
   const [selectedArtifactType, setSelectedArtifactType] =
@@ -390,9 +395,7 @@ export default function ProjectDetailPage() {
                 )}
               </TabsContent>
               <TabsContent className="mt-0" value="features">
-                <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">
-                  Features coming soon
-                </div>
+                <FeaturesList projectId={projectId} />
               </TabsContent>
               <TabsContent className="mt-0" value="workflows">
                 <div className="flex flex-1 items-center justify-center p-8 text-muted-foreground">

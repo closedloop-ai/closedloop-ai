@@ -1,5 +1,6 @@
 "use client";
 
+import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { Dialog, DialogTitle } from "@repo/design-system/components/ui/dialog";
 import { cn } from "@repo/design-system/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,12 +10,17 @@ import type { ContentBlock } from "@/components/engineer/chat";
 import { MessageContent } from "@/components/engineer/chat";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
 import { formatTime } from "@/lib/engineer/chat-utils";
+import {
+  ensureElectronDetection,
+  getElectronDetectionSnapshot,
+} from "@/lib/engineer/electron-detection";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import type {
   TerminalMessage,
   TerminalMessageMode,
 } from "@/lib/engineer/queries/terminal";
 import { terminalChatHistoryOptions } from "@/lib/engineer/queries/terminal";
+import { useEngineerRoutingSelection } from "@/lib/engineer/routing-store";
 import { readTerminalStream } from "@/lib/engineer/terminal-stream";
 
 type TerminalChatDialogProps = {
@@ -38,6 +44,14 @@ type ActiveStream = {
   textContent: string;
   blocks: ContentBlock[];
   error?: string;
+};
+
+type PendingRemoteResponse = {
+  requestId: string;
+  startedAt: number;
+  initialAssistantCount: number;
+  requestPersistedAt: number | null;
+  expectedUserMessage: string;
 };
 
 /**
@@ -71,6 +85,10 @@ function historyToEntries(messages: TerminalMessage[]): TerminalEntry[] {
 const LAYOUT_KEY = "terminalChatLayout";
 const DEFAULT_SIZE = { width: 768, height: 600 };
 const MIN_SIZE = { width: 400, height: 300 };
+const REMOTE_RESPONSE_POLL_INTERVAL_MS = 1500;
+const PENDING_STATUS_TICK_MS = 1000;
+const REMOTE_REQUEST_ACK_TIMEOUT_MS = 10_000;
+const REMOTE_RESPONSE_WAIT_TIMEOUT_MS = 90_000;
 
 type DialogLayout = { width: number; height: number; x: number; y: number };
 
@@ -154,6 +172,89 @@ function saveLayout(layout: DialogLayout): void {
   }
 }
 
+function isNetworkFetchFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    /failed to fetch|networkerror/i.test(error.message)
+  );
+}
+
+function createRelayRequestId(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  return `relay-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildTerminalChatRequestPath(requestId: string): string {
+  return `/api/engineer/terminal-chat?__relayRid=${encodeURIComponent(requestId)}`;
+}
+
+async function resolveTerminalChatRequestUrl(
+  routingMode: string,
+  requestPath: string
+): Promise<string | null> {
+  if (routingMode !== EngineerRoutingMode.LocalElectron) {
+    return requestPath;
+  }
+
+  const detectionSnapshot = getElectronDetectionSnapshot();
+  const detection =
+    detectionSnapshot.checkedAt === null
+      ? await ensureElectronDetection()
+      : detectionSnapshot;
+
+  if (!(detection.detected && detection.port)) {
+    return null;
+  }
+
+  return new URL(requestPath, `http://localhost:${detection.port}`).toString();
+}
+
+function countAssistantMessages(
+  messages: TerminalMessage[] | undefined
+): number {
+  if (!messages) {
+    return 0;
+  }
+  return messages.filter((message) => message.role === "assistant").length;
+}
+
+function hasPersistedUserMessage(
+  messages: TerminalMessage[],
+  pending: PendingRemoteResponse
+): boolean {
+  const earliestExpectedTimestamp = pending.startedAt - 2000;
+  return messages.some((message) => {
+    if (message.role !== "user") {
+      return false;
+    }
+
+    const timestamp = Date.parse(message.timestamp);
+    if (Number.isNaN(timestamp) || timestamp < earliestExpectedTimestamp) {
+      return false;
+    }
+
+    return message.content.trim() === pending.expectedUserMessage;
+  });
+}
+
+function getInputPlaceholder(
+  isStreaming: boolean,
+  isPendingRemote: boolean
+): string {
+  if (isStreaming) {
+    return "Waiting for response...";
+  }
+  if (isPendingRemote) {
+    return "Waiting for local gateway response...";
+  }
+  return "Ask Claude anything, or @codex...";
+}
+
 /**
  * TerminalChatDialog - A chat interface with Claude (default) and @codex routing.
  */
@@ -161,11 +262,15 @@ export function TerminalChatDialog({
   open,
   onOpenChange,
 }: Readonly<TerminalChatDialogProps>) {
+  const routing = useEngineerRoutingSelection();
   const [input, setInput] = useState("");
   const [isExpanded, setIsExpanded] = useState(false);
   const [entries, setEntries] = useState<TerminalEntry[]>([]);
   const [activeStream, setActiveStream] = useState<ActiveStream | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [pendingRemoteResponse, setPendingRemoteResponse] =
+    useState<PendingRemoteResponse | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -211,6 +316,9 @@ export function TerminalChatDialog({
   const { data: history, isLoading: isLoadingHistory } = useQuery({
     ...terminalChatHistoryOptions(),
     enabled: open,
+    refetchInterval: pendingRemoteResponse
+      ? REMOTE_RESPONSE_POLL_INTERVAL_MS
+      : false,
   });
 
   // Sync entries from history when it loads/updates
@@ -219,6 +327,70 @@ export function TerminalChatDialog({
       setEntries(historyToEntries(history.messages));
     }
   }, [history]);
+
+  useEffect(() => {
+    if (!(pendingRemoteResponse && history?.messages)) {
+      return;
+    }
+
+    const assistantCount = countAssistantMessages(history.messages);
+    const requestPersisted = hasPersistedUserMessage(
+      history.messages,
+      pendingRemoteResponse
+    );
+
+    if (assistantCount > pendingRemoteResponse.initialAssistantCount) {
+      setPendingRemoteResponse(null);
+      return;
+    }
+
+    if (requestPersisted && pendingRemoteResponse.requestPersistedAt === null) {
+      setPendingRemoteResponse((current) =>
+        current
+          ? {
+              ...current,
+              requestPersistedAt: Date.now(),
+            }
+          : null
+      );
+    }
+  }, [history, pendingRemoteResponse]);
+
+  useEffect(() => {
+    if (!pendingRemoteResponse) {
+      return;
+    }
+
+    const evaluatePendingState = () => {
+      const now = Date.now();
+
+      if (pendingRemoteResponse.requestPersistedAt === null) {
+        if (
+          now - pendingRemoteResponse.startedAt >=
+          REMOTE_REQUEST_ACK_TIMEOUT_MS
+        ) {
+          setPendingRemoteResponse(null);
+          setRequestError("Failed to connect to local gateway.");
+        }
+        return;
+      }
+
+      if (
+        now - pendingRemoteResponse.requestPersistedAt >=
+        REMOTE_RESPONSE_WAIT_TIMEOUT_MS
+      ) {
+        setPendingRemoteResponse(null);
+        setRequestError("No response from local gateway.");
+      }
+    };
+
+    evaluatePendingState();
+    const intervalId = setInterval(
+      evaluatePendingState,
+      PENDING_STATUS_TICK_MS
+    );
+    return () => clearInterval(intervalId);
+  }, [pendingRemoteResponse]);
 
   // Auto-scroll
   const scrollToBottom = useCallback((instant?: boolean) => {
@@ -513,12 +685,16 @@ export function TerminalChatDialog({
   // Send a message
   const sendMessage = useCallback(
     async (messageText: string) => {
-      if (!messageText.trim() || isStreaming) {
+      if (!messageText.trim() || isStreaming || pendingRemoteResponse) {
         return;
       }
 
       const trimmed = messageText.trim();
       const mode = detectInputMode(trimmed);
+      const requestId = createRelayRequestId();
+      const requestPath = buildTerminalChatRequestPath(requestId);
+      setRequestError(null);
+      setPendingRemoteResponse(null);
 
       // Add user entry immediately
       const userEntry: TerminalEntry = {
@@ -536,20 +712,37 @@ export function TerminalChatDialog({
       abortControllerRef.current = abortController;
 
       try {
-        const response = await fetch("/api/engineer/terminal-chat", {
+        const requestUrl = await resolveTerminalChatRequestUrl(
+          routing.mode,
+          requestPath
+        );
+        if (!requestUrl) {
+          setRequestError("Local Electron gateway not detected.");
+          setIsStreaming(false);
+          return;
+        }
+
+        const response = await fetch(requestUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          // Omit Content-Type for local-electron to keep CORS-simple (no preflight).
+          // For same-origin modes, set it so the body is correctly labelled.
+          headers:
+            routing.mode === EngineerRoutingMode.LocalElectron
+              ? {}
+              : { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed }),
           signal: abortController.signal,
+          credentials:
+            routing.mode === EngineerRoutingMode.LocalElectron
+              ? "omit"
+              : "same-origin",
         });
 
         if (!response.ok) {
           const err = await response
             .json()
             .catch(() => ({ error: "Request failed" }));
-          setActiveStream((prev) =>
-            prev ? { ...prev, error: err.error || "Request failed" } : null
-          );
+          setRequestError(err.error || "Request failed");
           setIsStreaming(false);
           return;
         }
@@ -571,16 +764,31 @@ export function TerminalChatDialog({
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           // User cancelled
+        } else if (
+          routing.mode === EngineerRoutingMode.LocalElectron &&
+          isNetworkFetchFailure(err)
+        ) {
+          // Local Electron may have accepted the command while approval is still
+          // pending; avoid surfacing a hard send error for transient fetch
+          // failures here. Explicit deny/error responses are still shown from the
+          // stream or non-2xx API response path above.
+          if (!history?.messages) {
+            setRequestError("Failed to connect to local gateway.");
+            return;
+          }
+          setPendingRemoteResponse({
+            requestId,
+            startedAt: Date.now(),
+            initialAssistantCount: countAssistantMessages(history?.messages),
+            requestPersistedAt: null,
+            expectedUserMessage: trimmed,
+          });
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.terminalChatHistory(),
+          });
         } else {
-          console.error("Terminal stream error:", err);
-          setActiveStream((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  error:
-                    err instanceof Error ? err.message : "Connection failed",
-                }
-              : null
+          setRequestError(
+            err instanceof Error ? err.message : "Connection failed"
           );
         }
       } finally {
@@ -592,11 +800,17 @@ export function TerminalChatDialog({
         });
       }
     },
-    [isStreaming, queryClient]
+    [
+      history?.messages,
+      isStreaming,
+      pendingRemoteResponse,
+      queryClient,
+      routing.mode,
+    ]
   );
 
   const handleSend = () => {
-    if (input.trim() && !isStreaming) {
+    if (input.trim() && !isStreaming && !pendingRemoteResponse) {
       const msg = input;
       setInput("");
       sendMessage(msg);
@@ -613,6 +827,8 @@ export function TerminalChatDialog({
   const handleClear = async () => {
     setEntries([]);
     setActiveStream(null);
+    setRequestError(null);
+    setPendingRemoteResponse(null);
     try {
       await fetch("/api/engineer/terminal-chat", { method: "DELETE" });
       queryClient.invalidateQueries({
@@ -923,9 +1139,14 @@ export function TerminalChatDialog({
                     </div>
                   )}
 
-                {activeStream?.error && (
+                {requestError && (
                   <div className="text-red-400 text-xs">
-                    Error: {activeStream.error}
+                    Error: {requestError}
+                  </div>
+                )}
+                {pendingRemoteResponse && !requestError && (
+                  <div className="text-muted-foreground text-xs">
+                    Waiting for response from local gateway...
                   </div>
                 )}
 
@@ -953,14 +1174,13 @@ export function TerminalChatDialog({
                     "focus:outline-none focus:ring-0",
                     "disabled:cursor-not-allowed disabled:opacity-50"
                   )}
-                  disabled={isStreaming}
+                  disabled={isStreaming || !!pendingRemoteResponse}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={
-                    isStreaming
-                      ? "Waiting for response..."
-                      : "Ask Claude anything, or @codex..."
-                  }
+                  placeholder={getInputPlaceholder(
+                    isStreaming,
+                    !!pendingRemoteResponse
+                  )}
                   ref={inputRef}
                   rows={1}
                   style={{
@@ -987,11 +1207,11 @@ export function TerminalChatDialog({
                     className={cn(
                       "absolute right-0 bottom-1.5 flex size-7 items-center justify-center rounded-lg",
                       "cursor-pointer transition-all duration-200",
-                      input.trim()
+                      input.trim() && !pendingRemoteResponse
                         ? "bg-green-500 text-black shadow-green-500/20 shadow-lg hover:bg-green-400"
                         : "cursor-not-allowed bg-muted text-muted-foreground/50"
                     )}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() || !!pendingRemoteResponse}
                     onClick={handleSend}
                     title="Send"
                   >

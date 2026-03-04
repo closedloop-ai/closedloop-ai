@@ -1,5 +1,6 @@
 "use client";
 
+import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import {
   Table,
@@ -15,14 +16,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
+import Link from "next/link";
 import { useMemo } from "react";
 import { useSortParams } from "@/hooks/use-sort-params";
-import judgeDescriptions from "@/lib/judge-descriptions.json";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
 
 type JudgeAnalyticsTableProps = {
   data: JudgeAggregateStats[];
+  reportType: EvaluationReportType;
 };
 
 function formatOrDash(value: number | null): string {
@@ -52,7 +54,10 @@ const JUDGE_SORT_CONFIGS: Record<
   stdDev: { key: "stdDev", columnType: "number" },
 };
 
-export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
+export function JudgeAnalyticsTable({
+  data,
+  reportType,
+}: JudgeAnalyticsTableProps) {
   const { sortBy, sortDir } = useSortParams<JudgeSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
@@ -97,23 +102,24 @@ export function JudgeAnalyticsTable({ data }: JudgeAnalyticsTableProps) {
           <TableRow key={judge.judgeName}>
             <TableCell className="break-words">
               {(() => {
-                const description =
-                  judgeDescriptions[
-                    judge.judgeName as keyof typeof judgeDescriptions
-                  ];
+                const description = judge.description;
+                const nameLink = (
+                  <Link
+                    className="underline decoration-dotted hover:decoration-solid"
+                    href={`/judges-analytics/${judge.promptName}?reportType=${reportType}`}
+                  >
+                    {judge.judgeName}
+                  </Link>
+                );
                 return description ? (
                   <TooltipProvider>
                     <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="cursor-help underline decoration-dotted">
-                          {judge.judgeName}
-                        </span>
-                      </TooltipTrigger>
+                      <TooltipTrigger asChild>{nameLink}</TooltipTrigger>
                       <TooltipContent>{description}</TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
                 ) : (
-                  judge.judgeName
+                  nameLink
                 );
               })()}
             </TableCell>

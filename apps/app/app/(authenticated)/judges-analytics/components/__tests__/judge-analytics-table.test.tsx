@@ -1,5 +1,7 @@
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type { JudgeAggregateStats } from "@repo/api/src/types/judges-analytics";
 import { cleanup, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { JudgeAnalyticsTable } from "../judge-analytics-table";
 
@@ -9,11 +11,22 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+vi.mock("@repo/design-system/components/ui/tooltip", () => ({
+  TooltipProvider: ({ children }: { children: ReactNode }) => children,
+  Tooltip: ({ children }: { children: ReactNode }) => children,
+  TooltipTrigger: ({ children }: { children: ReactNode }) => children,
+  TooltipContent: ({ children }: { children: ReactNode }) => (
+    <span>{children}</span>
+  ),
+}));
+
 function makeJudge(
   overrides?: Partial<JudgeAggregateStats>
 ): JudgeAggregateStats {
   return {
     judgeName: "gpt-4o",
+    promptName: "gpt-4o",
+    description: null,
     artifactsEvaluated: 10,
     min: 1.5,
     mean: 3.5,
@@ -33,14 +46,18 @@ afterEach(() => {
 
 describe("JudgeAnalyticsTable - grouped column headers", () => {
   test("renders Eval and Human group headers", () => {
-    render(<JudgeAnalyticsTable data={[]} />);
+    render(
+      <JudgeAnalyticsTable data={[]} reportType={EvaluationReportType.Plan} />
+    );
 
     expect(screen.getByText("Eval")).toBeInTheDocument();
     expect(screen.getByText("Human")).toBeInTheDocument();
   });
 
   test("renders sub-column headers for both groups", () => {
-    render(<JudgeAnalyticsTable data={[]} />);
+    render(
+      <JudgeAnalyticsTable data={[]} reportType={EvaluationReportType.Plan} />
+    );
 
     expect(screen.getAllByText("Min")).toHaveLength(2);
     expect(screen.getAllByText("Max")).toHaveLength(2);
@@ -49,7 +66,9 @@ describe("JudgeAnalyticsTable - grouped column headers", () => {
   });
 
   test("renders Judge Name and Artifacts Evaluated headers", () => {
-    render(<JudgeAnalyticsTable data={[]} />);
+    render(
+      <JudgeAnalyticsTable data={[]} reportType={EvaluationReportType.Plan} />
+    );
 
     expect(screen.getByText("Judge Name")).toBeInTheDocument();
     expect(screen.getByText("Artifacts Evaluated")).toBeInTheDocument();
@@ -70,6 +89,7 @@ describe("JudgeAnalyticsTable - eval stats columns", () => {
             artifactsEvaluated: 20,
           }),
         ]}
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -84,7 +104,12 @@ describe("JudgeAnalyticsTable - eval stats columns", () => {
 
 describe("JudgeAnalyticsTable - human stats columns", () => {
   test("shows dashes when judge has no human ratings", () => {
-    render(<JudgeAnalyticsTable data={[makeJudge()]} />);
+    render(
+      <JudgeAnalyticsTable
+        data={[makeJudge()]}
+        reportType={EvaluationReportType.Plan}
+      />
+    );
 
     const rows = screen.getAllByRole("row");
     // Row 0 = group header, Row 1 = sub-header, Row 2 = judge
@@ -107,6 +132,7 @@ describe("JudgeAnalyticsTable - human stats columns", () => {
             humanStdDev: 0.15,
           }),
         ]}
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -127,6 +153,7 @@ describe("JudgeAnalyticsTable - judge rows", () => {
           makeJudge({ judgeName: "clarity-judge" }),
           makeJudge({ judgeName: "brevity-judge" }),
         ]}
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -136,9 +163,48 @@ describe("JudgeAnalyticsTable - judge rows", () => {
 
   test("renders artifactsEvaluated count", () => {
     render(
-      <JudgeAnalyticsTable data={[makeJudge({ artifactsEvaluated: 10 })]} />
+      <JudgeAnalyticsTable
+        data={[makeJudge({ artifactsEvaluated: 10 })]}
+        reportType={EvaluationReportType.Plan}
+      />
     );
 
     expect(screen.getByText("10")).toBeInTheDocument();
+  });
+
+  test("includes reportType in judge detail links", () => {
+    render(
+      <JudgeAnalyticsTable
+        data={[
+          makeJudge({ judgeName: "clarity-judge", promptName: "clarity" }),
+        ]}
+        reportType={EvaluationReportType.Code}
+      />
+    );
+
+    const link = screen.getByRole("link", { name: "clarity-judge" });
+    expect(link).toHaveAttribute(
+      "href",
+      "/judges-analytics/clarity?reportType=CODE"
+    );
+  });
+
+  test("shows tooltip content from API description", () => {
+    render(
+      <JudgeAnalyticsTable
+        data={[
+          makeJudge({
+            judgeName: "clarity-judge",
+            promptName: "clarity",
+            description: "Judge description from prompt registry",
+          }),
+        ]}
+        reportType={EvaluationReportType.Plan}
+      />
+    );
+
+    expect(
+      screen.getByText("Judge description from prompt registry")
+    ).toBeInTheDocument();
   });
 });

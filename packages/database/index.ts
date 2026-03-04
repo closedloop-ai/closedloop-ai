@@ -1,5 +1,3 @@
-import "server-only";
-
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Signer } from "@aws-sdk/rds-signer";
 import { PrismaPg } from "@prisma/adapter-pg";

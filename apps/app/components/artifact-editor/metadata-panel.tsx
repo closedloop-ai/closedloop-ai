@@ -10,9 +10,9 @@ import { cn } from "@repo/design-system/lib/utils";
 
 type MetadataPanelProps = {
   /**
-   * Title to display at the top of the panel
+   * Optional title to display at the top of the panel
    */
-  title: string;
+  title?: string;
   /**
    * Main metadata content (status, approver, artifact-specific fields)
    */
@@ -48,7 +48,7 @@ export function MetadataPanel({
         className
       )}
     >
-      <h3 className="mb-4 font-semibold">{title}</h3>
+      {title && <h3 className="mb-4 font-semibold">{title}</h3>}
       <div className="space-y-4">{children}</div>
     </div>
   );

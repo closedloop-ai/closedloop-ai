@@ -108,12 +108,14 @@ describe("ProjectsTable — status tooltip", () => {
   it("renders tooltip content with the correct explanatory text", () => {
     render(<ProjectsTable projects={[makeProject()]} teamId="team-1" />);
 
-    const tooltip = screen.getByTestId("tooltip-content");
-    expect(tooltip).toBeInTheDocument();
-    expect(tooltip).toHaveTextContent('% of artifacts in "Complete" status');
+    const tooltips = screen.getAllByTestId("tooltip-content");
+    const statusTooltip = tooltips.find((el) =>
+      el.textContent?.includes('% of artifacts in "Complete" status')
+    );
+    expect(statusTooltip).toBeInTheDocument();
   });
 
-  it("renders one tooltip per project row", () => {
+  it("renders one status tooltip per project row", () => {
     const projects = [
       makeProject({ id: "01PROJECT000000000000001", name: "Alpha" }),
       makeProject({ id: "01PROJECT000000000000002", name: "Beta" }),
@@ -121,7 +123,11 @@ describe("ProjectsTable — status tooltip", () => {
 
     render(<ProjectsTable projects={projects} teamId="team-1" />);
 
-    expect(screen.getAllByTestId("tooltip-content")).toHaveLength(2);
+    const tooltips = screen.getAllByTestId("tooltip-content");
+    const statusTooltips = tooltips.filter((el) =>
+      el.textContent?.includes('% of artifacts in "Complete" status')
+    );
+    expect(statusTooltips).toHaveLength(2);
   });
 
   it("renders the empty state when projects list is empty", () => {

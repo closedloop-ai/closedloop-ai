@@ -139,10 +139,7 @@ const engineerNavItem: NavItem = {
   disabled: false,
 };
 
-const workspaceItems: NavItem[] =
-  appEnvironment === "local"
-    ? [...baseWorkspaceItems, engineerNavItem]
-    : baseWorkspaceItems;
+const workspaceItems: NavItem[] = [...baseWorkspaceItems, engineerNavItem];
 
 const data: {
   workspace: NavItem[];

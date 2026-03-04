@@ -3,6 +3,8 @@
  * Matches: -judge, _judge, _score, -score
  */
 export const JUDGE_SUFFIX_PATTERN = /(-judge|_judge|_score|-score)$/;
+/** Canonical URL-safe judge prompt name format. */
+export const CANONICAL_JUDGE_PROMPT_NAME_PATTERN = /^[a-z0-9_]+$/;
 
 /**
  * Normalizes judge names to a canonical stem format.
@@ -26,4 +28,13 @@ export function normalizeJudgeName(name: string): string {
     .toLowerCase()
     .replace(JUDGE_SUFFIX_PATTERN, "")
     .replaceAll("-", "_");
+}
+
+/**
+ * Checks whether a judge prompt name is already canonical for URL usage.
+ *
+ * Canonical names are lowercase alphanumeric with underscores only.
+ */
+export function isCanonicalJudgePromptName(name: string): boolean {
+  return CANONICAL_JUDGE_PROMPT_NAME_PATTERN.exec(name) !== null;
 }

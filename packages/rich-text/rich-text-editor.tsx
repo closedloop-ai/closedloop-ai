@@ -1,7 +1,6 @@
 "use client";
 
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { cn } from "@repo/design-system/lib/utils";
 import dynamic from "next/dynamic";
 import type { RichTextEditorProps } from "./types";
 
@@ -33,10 +32,12 @@ export function RichTextEditor({
   contentResetValue,
   scrollMode = "inner",
   externalToolbar,
+  toolbarMode = "always",
 }: Readonly<RichTextEditorProps>) {
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
+    <div className="flex min-h-0 flex-1 flex-col">
       <TiptapEditorCore
+        className={className}
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
         externalToolbar={externalToolbar}
@@ -47,6 +48,7 @@ export function RichTextEditor({
         placeholder={placeholder}
         readOnly={readOnly}
         scrollMode={scrollMode}
+        toolbarMode={toolbarMode}
         value={value}
       />
     </div>

@@ -1,7 +1,7 @@
 /**
- * Unit tests for extractJudgeScores -- the pure aggregation function that
- * converts raw evaluation records into a nested Map keyed by
- * ArtifactType -> judgeName -> { scores, artifactIds }.
+ * Unit tests for aggregateJudgeScoreRows -- the pure aggregation function that
+ * converts JudgeScore rows into a nested Map keyed by
+ * ArtifactType -> caseId -> { scores, artifactIds }.
  *
  * Uses scenario-registry pattern with describe.each for parametrized execution.
  */
@@ -13,25 +13,34 @@ vi.mock("@repo/database", async () => {
   return createDatabaseMock();
 });
 
-import { EvalStatus } from "@repo/api/src/types/evaluation";
 import {
-  type EvaluationInput,
-  extractJudgeScores,
+  aggregateJudgeScoreRows,
+  type JudgeScoreInput,
 } from "@/app/judges-analytics/service";
-import { normalizeJudgeName } from "@/lib/judge-name-utils";
-import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
+import {
+  isCanonicalJudgePromptName,
+  normalizeJudgeName,
+} from "@/lib/judge-name-utils";
 
 // ---------------------------------------------------------------------------
 // Factory helpers
 // ---------------------------------------------------------------------------
 
-/** Builds an EvaluationInput ready for extractJudgeScores. */
-function buildEvaluation(
+/** Builds a JudgeScoreInput ready for aggregateJudgeScoreRows. */
+function buildJudgeScoreInput(
   artifactId: string,
   type: ArtifactType,
-  reportData: unknown
-): EvaluationInput {
-  return { artifactId, artifact: { type }, reportData };
+  caseId: string,
+  score: number
+): JudgeScoreInput {
+  return {
+    caseId,
+    score,
+    evaluation: {
+      artifactId,
+      artifact: { type },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +55,7 @@ type FlatResult = {
 };
 
 /**
- * Converts the nested Map returned by extractJudgeScores into a flat, sorted
+ * Converts the nested Map returned by aggregateJudgeScoreRows into a flat, sorted
  * array so deep equality assertions are order-insensitive and readable.
  */
 function flattenResults(
@@ -80,71 +89,25 @@ function flattenResults(
 type ScenarioConfig = {
   name: string;
   description: string;
-  evaluations: EvaluationInput[];
+  judgeScores: JudgeScoreInput[];
   expected: FlatResult[];
 };
 
 const SCENARIO_REGISTRY: ScenarioConfig[] = [
   // 1. Base case
   {
-    name: "empty_evaluations",
-    description: "Returns an empty Map when given no evaluations",
-    evaluations: [],
+    name: "empty_judge_scores",
+    description: "Returns an empty Map when given no judge score rows",
+    judgeScores: [],
     expected: [],
   },
 
-  // 2. Invalid reportData variants
+  // 2. Happy path -- single row, single judge
   {
-    name: "invalid_report_data_skipped",
-    description:
-      "Evaluations with null, non-object, or stats-missing reportData are silently skipped",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.Prd, null),
-      buildEvaluation("a2", ArtifactType.Prd, "not-an-object"),
-      buildEvaluation("a3", ArtifactType.Prd, { noStats: true }),
-      buildEvaluation("a4", ArtifactType.Prd, { stats: "not-an-array" }),
-    ],
-    expected: [],
-  },
-
-  // 3. No matching metric
-  {
-    name: "no_matching_metric_skipped",
-    description:
-      "CaseScore whose metrics do not include a metric_name matching case_id is skipped",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.Prd, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [
-          {
-            type: "case_score",
-            case_id: "judge-A",
-            final_status: EvalStatus.Passed,
-            metrics: [
-              buildMetric({
-                metric_name: "completely_different_name",
-                score: 0.9,
-              }),
-            ],
-          },
-        ],
-      }),
-    ],
-    expected: [],
-  },
-
-  // 4. Happy path -- single evaluation, single judge
-  {
-    name: "single_evaluation_single_judge",
-    description:
-      "One evaluation with one matching metric produces a single Map entry",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.Prd, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [buildCaseScore("judge-A", 0.85)],
-      }),
+    name: "single_row_single_judge",
+    description: "One JudgeScore row produces a single Map entry",
+    judgeScores: [
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-A", 0.85),
     ],
     expected: [
       {
@@ -156,28 +119,31 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     ],
   },
 
-  // 5. Multiple evaluations -- same type, same judge
+  // 3. Multiple rows -- same type, same judge
   {
-    name: "multiple_evaluations_same_type_same_judge",
+    name: "multiple_rows_same_type_same_judge",
     description:
       "Scores accumulate and artifact IDs are de-duplicated within the same judge",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.ImplementationPlan, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [buildCaseScore("judge-B", 0.7)],
-      }),
-      buildEvaluation("a2", ArtifactType.ImplementationPlan, {
-        report_id: "r2",
-        timestamp: "2026-01-02T00:00:00Z",
-        stats: [buildCaseScore("judge-B", 0.9)],
-      }),
+    judgeScores: [
+      buildJudgeScoreInput(
+        "a1",
+        ArtifactType.ImplementationPlan,
+        "judge-B",
+        0.7
+      ),
+      buildJudgeScoreInput(
+        "a2",
+        ArtifactType.ImplementationPlan,
+        "judge-B",
+        0.9
+      ),
       // Duplicate artifact ID -- should NOT duplicate in artifactIds set
-      buildEvaluation("a1", ArtifactType.ImplementationPlan, {
-        report_id: "r3",
-        timestamp: "2026-01-03T00:00:00Z",
-        stats: [buildCaseScore("judge-B", 0.6)],
-      }),
+      buildJudgeScoreInput(
+        "a1",
+        ArtifactType.ImplementationPlan,
+        "judge-B",
+        0.6
+      ),
     ],
     expected: [
       {
@@ -189,25 +155,20 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     ],
   },
 
-  // 6. Multiple types and judges
+  // 4. Multiple types and judges
   {
     name: "multiple_types_and_judges",
     description:
-      "Evaluations spanning different types and judges produce correctly partitioned Map entries",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.Prd, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [
-          buildCaseScore("judge-A", 0.8),
-          buildCaseScore("judge-B", 0.75),
-        ],
-      }),
-      buildEvaluation("a2", ArtifactType.ImplementationPlan, {
-        report_id: "r2",
-        timestamp: "2026-01-02T00:00:00Z",
-        stats: [buildCaseScore("judge-A", 0.9)],
-      }),
+      "Rows spanning different types and judges produce correctly partitioned Map entries",
+    judgeScores: [
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-A", 0.8),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "judge-B", 0.75),
+      buildJudgeScoreInput(
+        "a2",
+        ArtifactType.ImplementationPlan,
+        "judge-A",
+        0.9
+      ),
     ],
     expected: [
       {
@@ -231,85 +192,14 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
     ],
   },
 
-  // 7. Mixed valid and invalid
-  {
-    name: "mixed_valid_and_invalid_evaluations",
-    description:
-      "Only valid evaluations contribute to results when mixed with invalid ones",
-    evaluations: [
-      // Invalid -- null reportData
-      buildEvaluation("a1", ArtifactType.Prd, null),
-      // Valid
-      buildEvaluation("a2", ArtifactType.Prd, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [buildCaseScore("judge-A", 0.95)],
-      }),
-      // Invalid -- no matching metric
-      buildEvaluation("a3", ArtifactType.ImplementationPlan, {
-        report_id: "r2",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [
-          {
-            type: "case_score",
-            case_id: "judge-X",
-            final_status: EvalStatus.Passed,
-            metrics: [buildMetric({ metric_name: "wrong_name", score: 0.5 })],
-          },
-        ],
-      }),
-      // Valid
-      buildEvaluation("a4", ArtifactType.ImplementationPlan, {
-        report_id: "r3",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [buildCaseScore("judge-C", 0.88)],
-      }),
-    ],
-    expected: [
-      {
-        type: ArtifactType.ImplementationPlan,
-        judgeName: "judge-C",
-        scores: [0.88],
-        artifactIds: ["a4"],
-      },
-      {
-        type: ArtifactType.Prd,
-        judgeName: "judge-A",
-        scores: [0.95],
-        artifactIds: ["a2"],
-      },
-    ],
-  },
-
-  // This scenario uses production-style naming conventions and would fail with the old exact-match code
+  // 5. Production-style naming (case IDs as-is)
   {
     name: "realistic_production_naming",
     description:
-      "Production-style naming with case_id not ending in -judge and metric_name following snake_case convention",
-    evaluations: [
-      buildEvaluation("a1", ArtifactType.Prd, {
-        report_id: "r1",
-        timestamp: "2026-01-01T00:00:00Z",
-        stats: [
-          {
-            type: "case_score",
-            case_id: "dry-judge",
-            final_status: EvalStatus.Passed,
-            metrics: [buildMetric({ metric_name: "dry_score", score: 0.92 })],
-          },
-          {
-            type: "case_score",
-            case_id: "solid-isp-dip-judge",
-            final_status: EvalStatus.Passed,
-            metrics: [
-              buildMetric({
-                metric_name: "solid_isp_dip_score",
-                score: 0.87,
-              }),
-            ],
-          },
-        ],
-      }),
+      "Production-style case IDs (dry-judge, solid-isp-dip-judge) are used as-is for judge names",
+    judgeScores: [
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "dry-judge", 0.92),
+      buildJudgeScoreInput("a1", ArtifactType.Prd, "solid-isp-dip-judge", 0.87),
     ],
     expected: [
       {
@@ -326,20 +216,55 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
       },
     ],
   },
+
+  // 6. Same judge, multiple artifacts
+  {
+    name: "same_judge_multiple_artifacts",
+    description:
+      "Multiple artifacts with the same judge accumulate correctly with unique artifact IDs",
+    judgeScores: [
+      buildJudgeScoreInput(
+        "a1",
+        ArtifactType.ImplementationPlan,
+        "clarity-judge",
+        0.8
+      ),
+      buildJudgeScoreInput(
+        "a2",
+        ArtifactType.ImplementationPlan,
+        "clarity-judge",
+        0.9
+      ),
+      buildJudgeScoreInput(
+        "a3",
+        ArtifactType.ImplementationPlan,
+        "clarity-judge",
+        0.7
+      ),
+    ],
+    expected: [
+      {
+        type: ArtifactType.ImplementationPlan,
+        judgeName: "clarity-judge",
+        scores: [0.8, 0.9, 0.7],
+        artifactIds: ["a1", "a2", "a3"],
+      },
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
 // Parametrized test
 // ---------------------------------------------------------------------------
 
-describe("extractJudgeScores", () => {
+describe("aggregateJudgeScoreRows", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   describe.each(SCENARIO_REGISTRY)("$name", (scenario) => {
     it(scenario.description, () => {
-      const result = extractJudgeScores(scenario.evaluations);
+      const result = aggregateJudgeScoreRows(scenario.judgeScores);
       const flat = flattenResults(result);
       expect(flat).toEqual(scenario.expected);
     });
@@ -362,5 +287,23 @@ describe("normalizeJudgeName", () => {
     Object.entries(NORMALIZATION_TEST_CASES)
   )("%s: normalizeJudgeName(%p) → %p", (_, [input, expected]) => {
     expect(normalizeJudgeName(input)).toBe(expected);
+  });
+});
+
+describe("isCanonicalJudgePromptName", () => {
+  const CANONICALITY_CASES = {
+    valid_simple: ["clarity", true],
+    valid_with_underscore: ["solid_isp_dip", true],
+    valid_with_number: ["judge_v2", true],
+    invalid_hyphen: ["clarity-judge", false],
+    invalid_uppercase: ["Clarity", false],
+    invalid_space: ["clarity judge", false],
+    invalid_empty: ["", false],
+  } as const satisfies Record<string, readonly [string, boolean]>;
+
+  it.each(
+    Object.entries(CANONICALITY_CASES)
+  )("%s: isCanonicalJudgePromptName(%p) → %p", (_, [input, expected]) => {
+    expect(isCanonicalJudgePromptName(input)).toBe(expected);
   });
 });

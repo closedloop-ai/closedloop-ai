@@ -12,6 +12,8 @@ vi.mock("@repo/database", () => ({
 
 import { withDb } from "@repo/database";
 import {
+  getCodeHumanCountsByType,
+  getCodeHumanRatingsByArtifact,
   getHumanCountsByType,
   getHumanRatingsByArtifact,
 } from "@/app/judges-analytics/service";
@@ -294,5 +296,108 @@ describe("getHumanRatingsByArtifact", () => {
         Object.keys(scenario.expected).length
       );
     });
+  });
+});
+
+describe("getCodeHumanCountsByType", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("counts pull request ratings/comments per artifact type", async () => {
+    const mockDb = {
+      artifact: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "a1", type: ArtifactType.ImplementationPlan },
+          { id: "a2", type: ArtifactType.Prd },
+        ]),
+      },
+      gitHubPullRequest: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "pr-1", artifactId: "a1" },
+          { id: "pr-2", artifactId: "a1" },
+          { id: "pr-3", artifactId: "a2" },
+        ]),
+      },
+      pullRequestRating: {
+        findMany: vi.fn().mockResolvedValue([
+          { pullRequestId: "pr-1", comment: "looks good" },
+          { pullRequestId: "pr-2", comment: " " },
+          { pullRequestId: "pr-3", comment: "great" },
+        ]),
+      },
+    };
+
+    vi.mocked(withDb).mockImplementation((callback) =>
+      Promise.resolve(
+        callback(
+          mockDb as unknown as Parameters<Parameters<typeof withDb>[0]>[0]
+        )
+      )
+    );
+
+    const result = await getCodeHumanCountsByType(
+      "org-1",
+      new Date("2026-01-01"),
+      new Date("2026-01-31"),
+      [ArtifactType.ImplementationPlan, ArtifactType.Prd]
+    );
+
+    expect(
+      mapToObject(result.humanRatingsByType as Map<string, number>)
+    ).toEqual({
+      [ArtifactType.ImplementationPlan]: 2,
+      [ArtifactType.Prd]: 1,
+    });
+    expect(
+      mapToObject(result.humanCommentsByType as Map<string, number>)
+    ).toEqual({
+      [ArtifactType.ImplementationPlan]: 1,
+      [ArtifactType.Prd]: 1,
+    });
+  });
+});
+
+describe("getCodeHumanRatingsByArtifact", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("normalizes pull request scores and maps them back to artifacts", async () => {
+    const mockDb = {
+      gitHubPullRequest: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "pr-1", artifactId: "a1" },
+          { id: "pr-2", artifactId: "a1" },
+          { id: "pr-3", artifactId: "a2" },
+        ]),
+      },
+      pullRequestRating: {
+        findMany: vi.fn().mockResolvedValue([
+          { pullRequestId: "pr-1", score: 5 },
+          { pullRequestId: "pr-2", score: 3 },
+          { pullRequestId: "pr-3", score: 1 },
+        ]),
+      },
+    };
+
+    vi.mocked(withDb).mockImplementation((callback) =>
+      Promise.resolve(
+        callback(
+          mockDb as unknown as Parameters<Parameters<typeof withDb>[0]>[0]
+        )
+      )
+    );
+
+    const result = await getCodeHumanRatingsByArtifact(
+      "org-1",
+      new Date("2026-01-01"),
+      new Date("2026-01-31"),
+      ["a1", "a2"]
+    );
+
+    const actual = Object.fromEntries(result);
+    expect(actual.a1).toEqual([1, 0.6]);
+    expect(actual.a2).toEqual([0.2]);
   });
 });

@@ -28,7 +28,11 @@ export async function GET(
       return notFoundResponse("Dashboard");
     }
 
-    return NextResponse.json(success(result));
+    const response = NextResponse.json(success(result));
+    // Allow cross-origin pages to load this resource even when the browser
+    // defaults Cross-Origin-Embedder-Policy to same-origin.
+    response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    return response;
   } catch (error) {
     return errorResponse("Failed to fetch public dashboard", error);
   }

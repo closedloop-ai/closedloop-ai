@@ -1,20 +1,15 @@
-import type {
-  CreateEntityLinkInput,
-  EntityLink,
+import {
+  type CreateEntityLinkInput,
+  type EntityLink,
   EntityType,
-  LinkType,
-  ResolvedEntity,
+  LinkDirection,
+  type LinkedEntity,
+  type LinkType,
+  type ResolvedEntity,
 } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
-
-export class EntityOrganizationMismatchError extends Error {
-  constructor(entityType: EntityType, id: string) {
-    super(`${entityType} ${id} not found in the authenticated organization`);
-    this.name = "EntityOrganizationMismatchError";
-  }
-}
 
 export const entityLinksService = {
   async createLink(
@@ -128,7 +123,7 @@ export const entityLinksService = {
     entityType: EntityType
   ): Promise<ResolvedEntity | null> {
     switch (entityType) {
-      case "ARTIFACT": {
+      case EntityType.Artifact: {
         const artifact = await withDb((db) =>
           db.artifact.findUnique({
             where: { id, organizationId },
@@ -141,9 +136,9 @@ export const entityLinksService = {
         if (!artifact) {
           return null;
         }
-        return { type: "ARTIFACT", entity: artifact };
+        return { type: EntityType.Artifact, entity: artifact };
       }
-      case "ISSUE": {
+      case EntityType.Issue: {
         const issue = await withDb((db) =>
           db.issue.findUnique({
             where: { id, organizationId },
@@ -156,9 +151,9 @@ export const entityLinksService = {
         if (!issue) {
           return null;
         }
-        return { type: "ISSUE", entity: issue };
+        return { type: EntityType.Issue, entity: issue };
       }
-      case "EXTERNAL_LINK": {
+      case EntityType.ExternalLink: {
         const link = await withDb((db) =>
           db.externalLink.findUnique({ where: { id, organizationId } })
         );
@@ -166,13 +161,125 @@ export const entityLinksService = {
           return null;
         }
         return {
-          type: "EXTERNAL_LINK",
+          type: EntityType.ExternalLink,
           entity: link as ExternalLink,
         };
       }
       default:
         return null;
     }
+  },
+
+  /**
+   * Traverse the link graph via BFS, collecting all EntityLink records
+   * reachable from the starting entity up to maxDepth hops.
+   *
+   * Each link is annotated with the ID of the BFS node that discovered it,
+   * so callers can determine the "other" side for resolution.
+   */
+  async findLinkTree(
+    organizationId: string,
+    entityId: string,
+    entityType: EntityType,
+    direction: LinkDirection,
+    maxDepth: number,
+    linkType?: LinkType
+  ): Promise<AnnotatedLink[]> {
+    const visitedEntities = new Set<string>([`${entityId}:${entityType}`]);
+    const collectedLinkIds = new Set<string>();
+    const collectedLinks: AnnotatedLink[] = [];
+
+    const queue: QueueEntry[] = [{ id: entityId, type: entityType, depth: 0 }];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.depth >= maxDepth) {
+        continue;
+      }
+
+      const links = await this.findLinksByDirection(
+        organizationId,
+        current.id,
+        current.type,
+        direction,
+        linkType
+      );
+
+      for (const link of links) {
+        if (collectedLinkIds.has(link.id)) {
+          continue;
+        }
+        collectedLinkIds.add(link.id);
+        collectedLinks.push({ link, fromEntityId: current.id });
+
+        enqueueNeighbors(link, current, visitedEntities, queue);
+      }
+    }
+
+    return collectedLinks;
+  },
+
+  findLinksByDirection(
+    organizationId: string,
+    entityId: string,
+    entityType: EntityType,
+    direction: LinkDirection,
+    linkType?: LinkType
+  ): Promise<EntityLink[]> {
+    if (direction === LinkDirection.Source) {
+      return this.findSourceLinks(
+        organizationId,
+        entityId,
+        entityType,
+        linkType
+      );
+    }
+    if (direction === LinkDirection.Target) {
+      return this.findTargetLinks(
+        organizationId,
+        entityId,
+        entityType,
+        linkType
+      );
+    }
+    return this.findLinks(organizationId, entityId, entityType, linkType);
+  },
+
+  /**
+   * Resolve the "other" entity on each link.
+   *
+   * Each AnnotatedLink carries the ID of the entity that was the "known" side
+   * when the link was discovered. For direct queries this is always the queried
+   * entityId; for tree traversals it is the BFS node that found the link.
+   */
+  async resolveLinkedEntities(
+    organizationId: string,
+    annotatedLinks: AnnotatedLink[]
+  ): Promise<LinkedEntity[]> {
+    const entityRefs = new Map<string, { id: string; type: EntityType }>();
+
+    for (const { link, fromEntityId } of annotatedLinks) {
+      const other = getOtherSide(link, fromEntityId);
+      entityRefs.set(`${other.id}:${other.type}`, other);
+    }
+
+    const resolved = new Map<string, ResolvedEntity | null>();
+    await Promise.all(
+      [...entityRefs.entries()].map(async ([key, ref]) => {
+        const entity = await this.resolveEntity(
+          organizationId,
+          ref.id,
+          ref.type
+        );
+        resolved.set(key, entity);
+      })
+    );
+
+    return annotatedLinks.map(({ link, fromEntityId }) => {
+      const other = getOtherSide(link, fromEntityId);
+      const key = `${other.id}:${other.type}`;
+      return { ...link, resolvedEntity: resolved.get(key) ?? null };
+    });
   },
 
   async deleteLink(id: string, organizationId: string): Promise<void> {
@@ -205,6 +312,15 @@ export const entityLinksService = {
   },
 };
 
+export class EntityOrganizationMismatchError extends Error {
+  constructor(entityType: EntityType, id: string) {
+    super(`${entityType} ${id} not found in the authenticated organization`);
+    this.name = "EntityOrganizationMismatchError";
+  }
+}
+
+export type AnnotatedLink = { link: EntityLink; fromEntityId: string };
+
 async function assertEntityInOrganization(
   organizationId: string,
   id: string,
@@ -212,17 +328,17 @@ async function assertEntityInOrganization(
 ): Promise<void> {
   const exists = await withDb((db) => {
     switch (entityType) {
-      case "ARTIFACT":
+      case EntityType.Artifact:
         return db.artifact.findFirst({
           where: { id, organizationId },
           select: { id: true },
         });
-      case "ISSUE":
+      case EntityType.Issue:
         return db.issue.findFirst({
           where: { id, organizationId },
           select: { id: true },
         });
-      case "EXTERNAL_LINK":
+      case EntityType.ExternalLink:
         return db.externalLink.findFirst({
           where: { id, organizationId },
           select: { id: true },
@@ -234,5 +350,47 @@ async function assertEntityInOrganization(
 
   if (!exists) {
     throw new EntityOrganizationMismatchError(entityType, id);
+  }
+}
+
+type QueueEntry = { id: string; type: EntityType; depth: number };
+
+/**
+ * Given a link and the entity that was the "known" side, return the other side.
+ */
+function getOtherSide(
+  link: EntityLink,
+  fromEntityId: string
+): { id: string; type: EntityType } {
+  if (link.sourceId === fromEntityId) {
+    return { id: link.targetId, type: link.targetType };
+  }
+  return { id: link.sourceId, type: link.sourceType };
+}
+
+function enqueueNeighbors(
+  link: EntityLink,
+  current: QueueEntry,
+  visitedEntities: Set<string>,
+  queue: QueueEntry[]
+): void {
+  const neighbors: { id: string; type: EntityType }[] = [];
+  if (link.sourceId === current.id && link.sourceType === current.type) {
+    neighbors.push({ id: link.targetId, type: link.targetType });
+  }
+  if (link.targetId === current.id && link.targetType === current.type) {
+    neighbors.push({ id: link.sourceId, type: link.sourceType });
+  }
+
+  for (const neighbor of neighbors) {
+    const key = `${neighbor.id}:${neighbor.type}`;
+    if (!visitedEntities.has(key)) {
+      visitedEntities.add(key);
+      queue.push({
+        id: neighbor.id,
+        type: neighbor.type,
+        depth: current.depth + 1,
+      });
+    }
   }
 }

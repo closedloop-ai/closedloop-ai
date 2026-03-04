@@ -1,6 +1,7 @@
 "use client";
 
 import { Textarea } from "@repo/design-system/components/ui/textarea";
+import { useUpdateProject } from "@/hooks/queries/use-projects";
 import { useInlineEdit } from "@/hooks/use-inline-edit";
 
 type EditableProjectDescriptionProps = {
@@ -14,6 +15,8 @@ export function EditableProjectDescription({
   initialDescription,
   onDescriptionChange,
 }: EditableProjectDescriptionProps) {
+  const updateProject = useUpdateProject();
+
   const {
     inputValue,
     setInputValue,
@@ -22,14 +25,14 @@ export function EditableProjectDescription({
     handleSave,
     handleCancel,
   } = useInlineEdit<HTMLTextAreaElement>({
-    projectId,
     initialValue: initialDescription,
-    buildPayload: (trimmedValue) => ({
-      description: trimmedValue || undefined,
-    }),
+    onSave: (trimmedValue) =>
+      updateProject.mutateAsync({
+        id: projectId,
+        description: trimmedValue || undefined,
+      }),
     onChange: onDescriptionChange,
     allowEmpty: true,
-    saveErrorMessage: "Failed to update project description. Please try again.",
   });
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

@@ -53,6 +53,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
@@ -289,10 +290,15 @@ function ArtifactSection({
                     onSelectChange={onSelectChange}
                     selectedIds={selectedIds}
                   >
-                    <TableCell>
+                    <TableCell className="max-w-[300px]">
                       <div className="flex items-center gap-2">
-                        <Icon className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{artifact.title}</span>
+                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span
+                          className="truncate font-medium"
+                          title={artifact.title}
+                        >
+                          {artifact.title}
+                        </span>
                         <GenerationStatusIndicator
                           generationStatus={artifact.generationStatus}
                         />
@@ -339,11 +345,7 @@ function ArtifactSection({
                       </Select>
                     </TableCell>
                     <TableCell>
-                      <span className="text-muted-foreground text-sm">
-                        {artifact.assignee
-                          ? getUserDisplayName(artifact.assignee)
-                          : "-"}
-                      </span>
+                      <AssigneeAvatar assignee={artifact.assignee} />
                     </TableCell>
                     <TableCell>
                       <span className="text-muted-foreground text-sm">

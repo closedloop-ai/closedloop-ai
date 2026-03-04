@@ -28,6 +28,7 @@ import { isAdminRole } from "@/lib/role-utils";
 import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
 import { ApiKeysSettingsPanel } from "./components/api-keys-settings-panel";
 import { ComputeModeCard } from "./components/compute-mode-card";
+import { ComputeTargetsCard } from "./components/compute-targets-card";
 import { GitHubIntegrationCard } from "./components/github-integration-card";
 import { GoogleIntegrationCard } from "./components/google-integration-card";
 import { LinearIntegrationCard } from "./components/linear-integration-card";
@@ -148,11 +149,11 @@ export default function SettingsPage() {
         </TabsList>
 
         <TabsContent className="mt-6 space-y-6" value="profile">
-          <UserProfile appearance={clerkAppearance} />
+          <UserProfile appearance={clerkAppearance} routing="hash" />
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="organization">
-          <OrganizationProfile appearance={clerkAppearance} />
+          <OrganizationProfile appearance={clerkAppearance} routing="hash" />
         </TabsContent>
 
         <TabsContent className="mt-6 space-y-6" value="admin">
@@ -199,6 +200,7 @@ export default function SettingsPage() {
 
         <TabsContent className="mt-6 space-y-6" value="integrations">
           <ComputeModeCard />
+          <ComputeTargetsCard />
           <AnthropicApiKeyCard />
           <GitHubIntegrationCard />
           <GoogleIntegrationCard />

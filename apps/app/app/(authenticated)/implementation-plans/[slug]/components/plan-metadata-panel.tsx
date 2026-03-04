@@ -6,7 +6,7 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
-import type { JudgesReport } from "@repo/api/src/types/evaluation";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
@@ -49,8 +49,8 @@ export type PlanMetadataPanelProps = {
   previewDeployment: PreviewDeploymentInfo | null;
   onPreviewRefresh: () => void;
   isPreviewRefreshing: boolean;
-  judgesReport: JudgesReport | null;
-  codeJudgesReport: JudgesReport | null;
+  judgeItems: JudgeFeedbackItem[] | null;
+  codeJudgeItems: JudgeFeedbackItem[] | null;
   onStatusChange: (status: ArtifactStatus) => void;
   onApproverSelect: (user: User | null) => void;
   onAssigneeChange: (user: User | null) => void;
@@ -69,8 +69,8 @@ export function PlanMetadataPanel({
   previewDeployment,
   onPreviewRefresh,
   isPreviewRefreshing,
-  judgesReport,
-  codeJudgesReport,
+  judgeItems,
+  codeJudgeItems,
   onStatusChange,
   onApproverSelect,
   onAssigneeChange,
@@ -169,11 +169,11 @@ export function PlanMetadataPanel({
             />
           </CollapsibleSection>
 
-          <EvaluationSection judgesReport={judgesReport} />
+          <EvaluationSection judgeItems={judgeItems} />
 
           <EvaluationSection
             emptyMessage="Code judge feedback is not available yet"
-            judgesReport={codeJudgesReport}
+            judgeItems={codeJudgeItems}
             title="Code Evaluation"
           />
 

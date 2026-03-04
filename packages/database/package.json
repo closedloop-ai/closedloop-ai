@@ -12,7 +12,7 @@
     "seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
-    "@aws-sdk/rds-signer": "^3.985.0",
+    "@aws-sdk/rds-signer": "^3.1000.0",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "7.3.0",
     "@prisma/client-runtime-utils": "^7.3.0",
@@ -27,7 +27,7 @@
     "@types/node": "^25.2.2",
     "@types/pg": "^8.16.0",
     "bufferutil": "^4.1.0",
-    "dotenv": "^17.2.4",
+    "dotenv": "^17.3.1",
     "prisma": "7.3.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"

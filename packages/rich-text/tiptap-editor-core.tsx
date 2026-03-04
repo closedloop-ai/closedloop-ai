@@ -29,6 +29,7 @@ export function TiptapEditorCore({
   liveblocksIsReady,
   scrollMode = "inner",
   externalToolbar = false,
+  toolbarMode = "always",
 }: Readonly<RichTextEditorProps>) {
   const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
   const hasSeededContent = useRef(false);
@@ -47,7 +48,8 @@ export function TiptapEditorCore({
         codeBlock: {
           languageClassPrefix: "language-",
         },
-        undoRedo: false,
+        // Disable built-in history when Liveblocks provides its own undo/redo via Yjs
+        ...(liveblocksExtension && { undoRedo: false }),
       }),
       Markdown.configure({
         markedOptions: {
@@ -169,16 +171,24 @@ export function TiptapEditorCore({
   return (
     <>
       <div
-        className="flex min-h-0 flex-1 flex-col"
+        className="group flex min-h-0 flex-1 flex-col"
         data-liveblocks-editor-boundary
       >
         {!(readOnly || externalToolbar) && (
-          <TiptapToolbar
-            editor={editor}
-            hasLiveblocksExtension={!!liveblocksExtension}
-            onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
-            readOnly={readOnly}
-          />
+          <div
+            className={
+              toolbarMode === "focus"
+                ? "hidden group-focus-within:block"
+                : undefined
+            }
+          >
+            <TiptapToolbar
+              editor={editor}
+              hasLiveblocksExtension={!!liveblocksExtension}
+              onPasteMarkdown={() => setShowPasteMarkdownDialog(true)}
+              readOnly={readOnly}
+            />
+          </div>
         )}
         <div
           className={cn("min-h-0", !isOuterScroll && "flex-1 overflow-y-auto")}

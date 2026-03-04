@@ -1,7 +1,12 @@
+import type { Dictionary } from "@repo/internationalization";
 import Link from "next/link";
 import { env } from "@/env";
 
-export const Footer = () => {
+type FooterProps = {
+  dictionary: Dictionary;
+};
+
+export const Footer = ({ dictionary }: FooterProps) => {
   const navigationItems: Array<{ title: string; href: string }> = [
     {
       title: "Home",
@@ -12,6 +17,11 @@ export const Footer = () => {
       href: "/contact",
     },
   ];
+
+  navigationItems.push({
+    title: dictionary.web.header.developers,
+    href: "/developers",
+  });
 
   if (env.NEXT_PUBLIC_DOCS_URL) {
     navigationItems.push({

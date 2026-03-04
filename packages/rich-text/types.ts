@@ -26,4 +26,10 @@ export type RichTextEditorProps = {
    * Use with the exported TiptapToolbar to render the toolbar elsewhere.
    */
   externalToolbar?: boolean;
+  /**
+   * Controls toolbar visibility.
+   * "always" (default) shows the toolbar whenever the editor is not read-only.
+   * "focus" hides the toolbar until the editor receives focus.
+   */
+  toolbarMode?: "always" | "focus";
 };

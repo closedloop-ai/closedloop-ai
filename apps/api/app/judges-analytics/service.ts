@@ -1,39 +1,345 @@
+import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
-import type { CaseScore, JudgesReport } from "@repo/api/src/types/evaluation";
+import {
+  type EvaluationReportType,
+  EvaluationReportType as EvaluationReportTypeValues,
+} from "@repo/api/src/types/evaluation";
 import type {
   ArtifactCountBucket,
   ArtifactCountsGroupBy,
   ArtifactCountsResponse,
   ArtifactTypeGroup,
+  CharacteristicLabel,
   JudgeAggregateStats,
+  JudgeDetailResponse,
+  JudgePromptVersion,
   JudgeStatsResponse,
+  RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
-import { withDb } from "@repo/database";
+import { PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
-/** Validates and extracts a JudgesReport from unknown reportData. Returns null if invalid. */
-function parseJudgesReport(reportData: unknown): JudgesReport | null {
-  if (
-    !(reportData && typeof reportData === "object" && "stats" in reportData)
-  ) {
-    return null;
-  }
-  const report = reportData as JudgesReport;
-  return report?.stats && Array.isArray(report.stats) ? report : null;
+/** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
+const SUNDAY_INDEX = 0;
+/** Days from Sunday back to the previous Monday. */
+const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
+
+type HumanCountsByType = {
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+};
+
+function formatDateKey(year: number, month: number, day: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-/** Extracts judge name and score from a CaseScore. Returns null if no matching metric. */
-function extractJudgeMetric(
-  caseScore: CaseScore
-): { name: string; score: number } | null {
-  const judgeName = caseScore.case_id;
-  const normalizedCaseId = normalizeJudgeName(caseScore.case_id);
-  const judgeMetric = caseScore.metrics?.find(
-    (metric) => normalizeJudgeName(metric.metric_name) === normalizedCaseId
+function getISOWeekStartDate(date: Date): Date {
+  const dow = date.getUTCDay();
+  const mondayOffset =
+    dow === SUNDAY_INDEX ? ISO_WEEK_OFFSET_FROM_SUNDAY : 1 - dow;
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate() + mondayOffset
+    )
   );
-  return judgeMetric ? { name: judgeName, score: judgeMetric.score } : null;
 }
+
+function initializeHumanCountsByType(types: ArtifactType[]): HumanCountsByType {
+  const humanRatingsByType = new Map<ArtifactType, number>();
+  const humanCommentsByType = new Map<ArtifactType, number>();
+
+  for (const type of types) {
+    humanRatingsByType.set(type, 0);
+    humanCommentsByType.set(type, 0);
+  }
+
+  return { humanRatingsByType, humanCommentsByType };
+}
+
+function incrementHumanCountsByType<TRow>(
+  rows: TRow[],
+  typeById: Map<string, ArtifactType>,
+  humanRatingsByType: Map<ArtifactType, number>,
+  humanCommentsByType: Map<ArtifactType, number>,
+  getId: (row: TRow) => string,
+  getComment: (row: TRow) => string | null | undefined = (row) =>
+    (row as { comment?: string | null }).comment
+): void {
+  for (const row of rows) {
+    const type = typeById.get(getId(row));
+    if (type === undefined) {
+      continue;
+    }
+
+    humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
+
+    const comment = getComment(row);
+    if (comment != null && comment.trim() !== "") {
+      humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
+    }
+  }
+}
+
+function collectNormalizedScores<TRow>(
+  rows: TRow[],
+  getKey: (row: TRow) => string | undefined,
+  getScore: (row: TRow) => number = (row) => (row as { score: number }).score
+): Map<string, number[]> {
+  const scoresByKey = new Map<string, number[]>();
+  for (const row of rows) {
+    const key = getKey(row);
+    if (key === undefined) {
+      continue;
+    }
+    const scores = scoresByKey.get(key) ?? [];
+    scores.push(getScore(row) / 5);
+    scoresByKey.set(key, scores);
+  }
+  return scoresByKey;
+}
+
+/**
+ * Fetches human ratings and comments counts per artifact type (same org and date range).
+ * Returns maps with 0 for each type when there are no artifacts or no feedback.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getHumanCountsByType(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  types: ArtifactType[]
+): Promise<HumanCountsByType> {
+  const { humanRatingsByType, humanCommentsByType } =
+    initializeHumanCountsByType(types);
+
+  if (types.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: { in: types },
+      },
+      select: { id: true, type: true },
+    })
+  );
+
+  const idToType = new Map(artifacts.map((a) => [a.id, a.type] as const));
+  const orgArtifactIds = artifacts.map((a) => a.id);
+
+  if (orgArtifactIds.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const ratings = await withDb((db) =>
+    db.artifactRating.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: orgArtifactIds },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { artifactId: true, comment: true },
+    })
+  );
+
+  incrementHumanCountsByType(
+    ratings,
+    idToType,
+    humanRatingsByType,
+    humanCommentsByType,
+    (rating) => rating.artifactId
+  );
+
+  return { humanRatingsByType, humanCommentsByType };
+}
+
+/**
+ * Fetches human ratings and returns all normalized scores (0-1) per artifact.
+ * Each score is raw_score / 5. Multiple ratings per artifact are preserved as an array.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getHumanRatingsByArtifact(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactIds: string[]
+): Promise<Map<string, number[]>> {
+  if (artifactIds.length === 0) {
+    return new Map();
+  }
+
+  const ratings = await withDb((db) =>
+    db.artifactRating.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { artifactId: true, score: true },
+    })
+  );
+
+  return collectNormalizedScores(ratings, (rating) => rating.artifactId);
+}
+
+/**
+ * Fetches CODE human ratings/comments counts per artifact type by traversing:
+ * Artifact (implementation plan) -> GitHubPullRequest -> PullRequestRating.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getCodeHumanCountsByType(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  types: ArtifactType[]
+): Promise<HumanCountsByType> {
+  const { humanRatingsByType, humanCommentsByType } =
+    initializeHumanCountsByType(types);
+
+  if (types.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: { in: types },
+      },
+      select: { id: true, type: true },
+    })
+  );
+
+  if (artifacts.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const idToType = new Map(
+    artifacts.map((artifact) => [artifact.id, artifact.type] as const)
+  );
+  const artifactIds = artifacts.map((artifact) => artifact.id);
+
+  const pullRequests = await withDb((db) =>
+    db.gitHubPullRequest.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+      },
+      select: { id: true, artifactId: true },
+    })
+  );
+
+  if (pullRequests.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const prIdToType = new Map<string, ArtifactType>();
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.artifactId == null) {
+      continue;
+    }
+    const type = idToType.get(pullRequest.artifactId);
+    if (type !== undefined) {
+      prIdToType.set(pullRequest.id, type);
+    }
+  }
+
+  if (prIdToType.size === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const ratings = await withDb((db) =>
+    db.pullRequestRating.findMany({
+      where: {
+        organizationId,
+        pullRequestId: { in: Array.from(prIdToType.keys()) },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { pullRequestId: true, comment: true },
+    })
+  );
+
+  incrementHumanCountsByType(
+    ratings,
+    prIdToType,
+    humanRatingsByType,
+    humanCommentsByType,
+    (rating) => rating.pullRequestId
+  );
+
+  return { humanRatingsByType, humanCommentsByType };
+}
+
+/**
+ * Fetches CODE human ratings and returns normalized scores (0-1) per artifact.
+ * Uses pull request ratings linked to the artifact via GitHubPullRequest.artifactId.
+ *
+ * @internal Exported for unit testing.
+ */
+export async function getCodeHumanRatingsByArtifact(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  artifactIds: string[]
+): Promise<Map<string, number[]>> {
+  if (artifactIds.length === 0) {
+    return new Map();
+  }
+
+  const pullRequests = await withDb((db) =>
+    db.gitHubPullRequest.findMany({
+      where: {
+        organizationId,
+        artifactId: { in: artifactIds },
+      },
+      select: { id: true, artifactId: true },
+    })
+  );
+
+  if (pullRequests.length === 0) {
+    return new Map();
+  }
+
+  const prIdToArtifactId = new Map<string, string>();
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.artifactId != null) {
+      prIdToArtifactId.set(pullRequest.id, pullRequest.artifactId);
+    }
+  }
+
+  const ratings = await withDb((db) =>
+    db.pullRequestRating.findMany({
+      where: {
+        organizationId,
+        pullRequestId: { in: Array.from(prIdToArtifactId.keys()) },
+        createdAt: { gte: startDate, lte: endDate },
+      },
+      select: { pullRequestId: true, score: true },
+    })
+  );
+
+  return collectNormalizedScores(ratings, (rating) =>
+    prIdToArtifactId.get(rating.pullRequestId)
+  );
+}
+
+/** Shape of a JudgeScore row with evaluation and artifact relations for aggregation. */
+export type JudgeScoreInput = {
+  caseId: string;
+  score: number;
+  evaluation: {
+    artifactId: string;
+    artifact: { type: ArtifactType };
+  };
+};
 
 /** Aggregates judge scores by artifact type and judge name. */
 class JudgeScoreAggregator {
@@ -70,175 +376,30 @@ class JudgeScoreAggregator {
   }
 }
 
-export type EvaluationInput = {
-  artifactId: string;
-  artifact: { type: ArtifactType };
-  reportData: unknown;
-};
-
 /**
- * Extracts judge scores from evaluation reportData and aggregates them by artifact type and judge name.
+ * Aggregates JudgeScore rows into a nested map keyed by artifact type and judge name.
  *
- * @param evaluations - Array of artifact evaluations with their artifact type
- * @returns Nested map structure: artifactType -> judgeName -> { scores, artifactIds }
+ * @param judgeScores - Array of JudgeScore rows with evaluation and artifact relations
+ * @returns Nested map structure: artifactType -> caseId -> { scores, artifactIds }
  */
-export function extractJudgeScores(
-  evaluations: EvaluationInput[]
+export function aggregateJudgeScoreRows(
+  judgeScores: JudgeScoreInput[]
 ): Map<
   ArtifactType,
   Map<string, { scores: number[]; artifactIds: Set<string> }>
 > {
   const aggregator = new JudgeScoreAggregator();
 
-  for (const evaluation of evaluations) {
-    const report = parseJudgesReport(evaluation.reportData);
-    if (!report) {
-      continue;
-    }
-
-    for (const caseScore of report.stats) {
-      const metric = extractJudgeMetric(caseScore);
-      if (!metric) {
-        continue;
-      }
-
-      aggregator.addScore(
-        evaluation.artifact.type,
-        metric.name,
-        metric.score,
-        evaluation.artifactId
-      );
-    }
+  for (const row of judgeScores) {
+    aggregator.addScore(
+      row.evaluation.artifact.type,
+      row.caseId,
+      row.score,
+      row.evaluation.artifactId
+    );
   }
 
   return aggregator.getResults();
-}
-
-/** getUTCDay() returns 0 for Sunday; ISO week starts on Monday. */
-const SUNDAY_INDEX = 0;
-/** Days from Sunday back to the previous Monday. */
-const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
-
-function formatDateKey(year: number, month: number, day: number): string {
-  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function getISOWeekStartDate(date: Date): Date {
-  const dow = date.getUTCDay();
-  const mondayOffset =
-    dow === SUNDAY_INDEX ? ISO_WEEK_OFFSET_FROM_SUNDAY : 1 - dow;
-  return new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate() + mondayOffset
-    )
-  );
-}
-
-/**
- * Fetches human ratings and comments counts per artifact type (same org and date range).
- * Returns maps with 0 for each type when there are no artifacts or no feedback.
- *
- * @internal Exported for unit testing.
- */
-export async function getHumanCountsByType(
-  organizationId: string,
-  startDate: Date,
-  endDate: Date,
-  types: ArtifactType[]
-): Promise<{
-  humanRatingsByType: Map<ArtifactType, number>;
-  humanCommentsByType: Map<ArtifactType, number>;
-}> {
-  const humanRatingsByType = new Map<ArtifactType, number>();
-  const humanCommentsByType = new Map<ArtifactType, number>();
-
-  if (types.length === 0) {
-    return { humanRatingsByType, humanCommentsByType };
-  }
-
-  for (const type of types) {
-    humanRatingsByType.set(type, 0);
-    humanCommentsByType.set(type, 0);
-  }
-
-  const artifacts = await withDb((db) =>
-    db.artifact.findMany({
-      where: {
-        organizationId,
-        type: { in: types },
-      },
-      select: { id: true, type: true },
-    })
-  );
-
-  const idToType = new Map(artifacts.map((a) => [a.id, a.type] as const));
-  const orgArtifactIds = artifacts.map((a) => a.id);
-
-  if (orgArtifactIds.length === 0) {
-    return { humanRatingsByType, humanCommentsByType };
-  }
-
-  const ratings = await withDb((db) =>
-    db.artifactRating.findMany({
-      where: {
-        organizationId,
-        artifactId: { in: orgArtifactIds },
-        createdAt: { gte: startDate, lte: endDate },
-      },
-      select: { artifactId: true, comment: true },
-    })
-  );
-
-  for (const r of ratings) {
-    const type = idToType.get(r.artifactId);
-    if (type !== undefined) {
-      humanRatingsByType.set(type, (humanRatingsByType.get(type) ?? 0) + 1);
-      if (r.comment != null && r.comment.trim() !== "") {
-        humanCommentsByType.set(type, (humanCommentsByType.get(type) ?? 0) + 1);
-      }
-    }
-  }
-
-  return { humanRatingsByType, humanCommentsByType };
-}
-
-/**
- * Fetches human ratings and returns all normalized scores (0-1) per artifact.
- * Each score is raw_score / 5. Multiple ratings per artifact are preserved as an array.
- *
- * @internal Exported for unit testing.
- */
-export async function getHumanRatingsByArtifact(
-  organizationId: string,
-  startDate: Date,
-  endDate: Date,
-  artifactIds: string[]
-): Promise<Map<string, number[]>> {
-  if (artifactIds.length === 0) {
-    return new Map();
-  }
-
-  const ratings = await withDb((db) =>
-    db.artifactRating.findMany({
-      where: {
-        organizationId,
-        artifactId: { in: artifactIds },
-        createdAt: { gte: startDate, lte: endDate },
-      },
-      select: { artifactId: true, score: true },
-    })
-  );
-
-  const scoresByArtifact = new Map<string, number[]>();
-  for (const r of ratings) {
-    const scores = scoresByArtifact.get(r.artifactId) ?? [];
-    scores.push(r.score / 5);
-    scoresByArtifact.set(r.artifactId, scores);
-  }
-
-  return scoresByArtifact;
 }
 
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
@@ -263,7 +424,8 @@ function collectAllArtifactIds(
 function computeJudgeStats(
   judgeName: string,
   judgeData: { scores: number[]; artifactIds: Set<string> },
-  humanRatingsByArtifact: Map<string, number[]>
+  humanRatingsByArtifact: Map<string, number[]>,
+  judgeDescriptionByPromptName: Map<string, string>
 ): JudgeAggregateStats | null {
   const scores = judgeData.scores;
   const count = scores.length;
@@ -274,12 +436,8 @@ function computeJudgeStats(
 
   const min = Math.min(...scores);
   const max = Math.max(...scores);
-  const sum = scores.reduce((acc, score) => acc + score, 0);
-  const mean = sum / count;
-
-  const variance =
-    scores.reduce((acc, score) => acc + (score - mean) ** 2, 0) / count;
-  const stdDev = Math.sqrt(variance);
+  const mean = computeMean(scores);
+  const stdDev = computeStdDev(scores, mean);
 
   // Pool all human scores across this judge's artifacts
   const judgeHumanScores: number[] = [];
@@ -292,6 +450,9 @@ function computeJudgeStats(
 
   return {
     judgeName,
+    promptName: normalizeJudgeName(judgeName),
+    description:
+      judgeDescriptionByPromptName.get(normalizeJudgeName(judgeName)) ?? null,
     artifactsEvaluated: judgeData.artifactIds.size,
     min,
     mean,
@@ -319,21 +480,102 @@ function computeHumanStats(scores: number[]): {
 
   const humanMin = Math.min(...scores);
   const humanMax = Math.max(...scores);
-  const humanSum = scores.reduce((acc, s) => acc + s, 0);
-  const humanMean = humanSum / scores.length;
-  const humanVariance =
-    scores.reduce((acc, s) => acc + (s - humanMean) ** 2, 0) / scores.length;
-  const humanStdDev = Math.sqrt(humanVariance);
+  const humanMean = computeMean(scores);
+  const humanStdDev = computeStdDev(scores, humanMean);
 
   return { humanMin, humanMax, humanMean, humanStdDev };
+}
+
+async function getPlanHumanData(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  types: ArtifactType[],
+  artifactIds: string[]
+): Promise<{
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByArtifact: Map<string, number[]>;
+}> {
+  const { humanRatingsByType, humanCommentsByType } =
+    await getHumanCountsByType(organizationId, startDate, endDate, types);
+  const humanRatingsByArtifact = await getHumanRatingsByArtifact(
+    organizationId,
+    startDate,
+    endDate,
+    artifactIds
+  );
+  return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
+}
+
+async function getCodeHumanData(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  types: ArtifactType[],
+  artifactIds: string[]
+): Promise<{
+  humanRatingsByType: Map<ArtifactType, number>;
+  humanCommentsByType: Map<ArtifactType, number>;
+  humanRatingsByArtifact: Map<string, number[]>;
+}> {
+  const { humanRatingsByType, humanCommentsByType } =
+    await getCodeHumanCountsByType(organizationId, startDate, endDate, types);
+  const humanRatingsByArtifact = await getCodeHumanRatingsByArtifact(
+    organizationId,
+    startDate,
+    endDate,
+    artifactIds
+  );
+  return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
+}
+
+async function getJudgeDescriptionByPromptName(
+  organizationId: string
+): Promise<Map<string, string>> {
+  const judgePrompts = await withDb((db) =>
+    db.prompt.findMany({
+      where: {
+        organizationId,
+        promptType: PromptType.JUDGE,
+      },
+      select: {
+        name: true,
+        description: true,
+        version: true,
+      },
+      orderBy: [{ version: "desc" }, { name: "asc" }],
+    })
+  );
+
+  const latestPromptByName = new Map<
+    string,
+    { version: number; description: string }
+  >();
+  for (const prompt of judgePrompts) {
+    const promptName = normalizeJudgeName(prompt.name);
+    const existing = latestPromptByName.get(promptName);
+    if (existing === undefined || prompt.version > existing.version) {
+      latestPromptByName.set(promptName, {
+        version: prompt.version,
+        description: prompt.description,
+      });
+    }
+  }
+
+  const promptDescriptions = new Map<string, string>();
+  for (const [promptName, latestPrompt] of latestPromptByName) {
+    promptDescriptions.set(promptName, latestPrompt.description);
+  }
+
+  return promptDescriptions;
 }
 
 /**
  * Aggregation service for judges analytics.
  *
- * Queries ArtifactEvaluation records within a date range, extracts judge scores
- * from the reportData JSON, and computes aggregate statistics (min, mean, max, stdDev)
- * grouped by artifact type and judge name.
+ * Queries JudgeScore rows within a date range and computes aggregate statistics
+ * (min, mean, max, stdDev) grouped by artifact type and judge name (caseId).
  */
 export const judgesAnalyticsService = {
   /**
@@ -347,53 +589,66 @@ export const judgesAnalyticsService = {
   async getAggregateStats(
     organizationId: string,
     startDate: Date,
-    endDate: Date
+    endDate: Date,
+    reportType: EvaluationReportType
   ): Promise<JudgeStatsResponse> {
-    // Query ArtifactEvaluation records with artifact type, filtered by date range and organization
-    const evaluations = await withDb((db) =>
-      db.artifactEvaluation.findMany({
+    const judgeDescriptionByPromptName =
+      await getJudgeDescriptionByPromptName(organizationId);
+
+    // Query JudgeScore rows joined through ArtifactEvaluation → Artifact
+    const judgeScores = await withDb((db) =>
+      db.judgeScore.findMany({
         where: {
-          artifact: {
-            organizationId,
-          },
-          createdAt: {
-            gte: startDate,
-            lte: endDate,
+          evaluation: {
+            reportType,
+            artifact: { organizationId },
+            createdAt: { gte: startDate, lte: endDate },
           },
         },
         select: {
-          artifactId: true,
-          reportData: true,
-          artifact: { select: { type: true } },
-        },
-        orderBy: {
-          createdAt: "desc",
+          caseId: true,
+          score: true,
+          evaluation: {
+            select: {
+              artifactId: true,
+              artifact: { select: { type: true } },
+            },
+          },
         },
       })
     );
 
-    if (evaluations.length === 0) {
-      log.warn("No evaluations found for judges analytics query", {
+    if (judgeScores.length === 0) {
+      log.warn("No judge scores found for judges analytics query", {
         organizationId,
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
+        reportType,
       });
     }
 
-    // Extract scores from reportData JSON using the "metric_name === case_id" rule
-    const aggregator = extractJudgeScores(evaluations);
+    // Aggregate scores by artifact type and judge name (caseId)
+    const aggregator = aggregateJudgeScoreRows(judgeScores);
 
     const types = Array.from(aggregator.keys());
-    const { humanRatingsByType, humanCommentsByType } =
-      await getHumanCountsByType(organizationId, startDate, endDate, types);
+    const artifactIds = collectAllArtifactIds(aggregator);
 
-    // Fetch per-artifact human ratings (all normalized 0-1 scores)
-    const humanRatingsByArtifact = await getHumanRatingsByArtifact(
-      organizationId,
-      startDate,
-      endDate,
-      collectAllArtifactIds(aggregator)
-    );
+    const { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact } =
+      reportType === EvaluationReportTypeValues.Code
+        ? await getCodeHumanData(
+            organizationId,
+            startDate,
+            endDate,
+            types,
+            artifactIds
+          )
+        : await getPlanHumanData(
+            organizationId,
+            startDate,
+            endDate,
+            types,
+            artifactIds
+          );
 
     // Compute statistics for each judge within each artifact type
     const groups: ArtifactTypeGroup[] = [];
@@ -405,7 +660,8 @@ export const judgesAnalyticsService = {
         const stats = computeJudgeStats(
           judgeName,
           judgeData,
-          humanRatingsByArtifact
+          humanRatingsByArtifact,
+          judgeDescriptionByPromptName
         );
         if (stats) {
           judges.push(stats);
@@ -423,19 +679,7 @@ export const judgesAnalyticsService = {
       });
     }
 
-    if (groups.length === 0 && evaluations.length > 0) {
-      log.warn(
-        "No judge score groups extracted despite having evaluations - possible reportData format issue",
-        {
-          organizationId,
-          evaluationCount: evaluations.length,
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString(),
-        }
-      );
-    }
-
-    return { groups };
+    return { reportType, groups };
   },
 
   /**
@@ -512,4 +756,297 @@ export const judgesAnalyticsService = {
       });
     return { buckets };
   },
+
+  /**
+   * Get detailed statistics for a single judge identified by normalized prompt name.
+   *
+   * @param organizationId - Organization ID to scope the query
+   * @param promptName - URL-safe normalized judge name (e.g. "clarity")
+   * @returns Full judge detail or null if not found
+   */
+  async getJudgeDetail(
+    organizationId: string,
+    promptName: string,
+    reportType: EvaluationReportType
+  ): Promise<JudgeDetailResponse | null> {
+    // 1. Resolve judge by promptName — find all JUDGE prompts in org and match normalized name
+    const allJudgePrompts = await withDb((db) =>
+      db.prompt.findMany({
+        where: {
+          organizationId,
+          promptType: PromptType.JUDGE,
+        },
+        select: {
+          id: true,
+          name: true,
+          version: true,
+          content: true,
+          createdAt: true,
+        },
+        orderBy: { version: "desc" },
+      })
+    );
+
+    // Group prompts by normalized name
+    const matchingPrompts = allJudgePrompts.filter(
+      (p) => normalizeJudgeName(p.name) === promptName
+    );
+
+    if (matchingPrompts.length === 0) {
+      return null;
+    }
+
+    // 2. Latest prompt is first (ordered by version DESC)
+    const latestPrompt = matchingPrompts[0];
+
+    // Collect all raw names for this judge (different versions may have slightly different raw names)
+    const rawNames = new Set(matchingPrompts.map((p) => p.name));
+    const promptIds = matchingPrompts.map((p) => p.id);
+    const promptIdSet = new Set(promptIds);
+
+    // Expand to include hyphen/underscore variants so we match stored caseIds
+    const caseIdVariants = new Set<string>();
+    for (const name of rawNames) {
+      caseIdVariants.add(name);
+      caseIdVariants.add(name.replaceAll("_", "-"));
+      caseIdVariants.add(name.replaceAll("-", "_"));
+    }
+
+    // 3. Load score rows — match by caseId (any raw name variant) scoped to org
+    const allScores = await withDb((db) =>
+      db.judgeScore.findMany({
+        where: {
+          evaluation: {
+            reportType,
+            artifact: { organizationId },
+          },
+          caseId: { in: Array.from(caseIdVariants) },
+        },
+        select: {
+          promptId: true,
+          score: true,
+          threshold: true,
+          finalStatus: true,
+          createdAt: true,
+        },
+      })
+    );
+
+    const scoreValues = allScores.map((s) => s.score);
+    const scoreCount = scoreValues.length;
+
+    // 4. Compute radar axes (null when insufficient scores)
+    let radarAxes: RadarAxes | null = null;
+    let labels: CharacteristicLabel[] = [];
+
+    if (scoreCount >= JUDGE_THRESHOLDS.minScoreCount) {
+      const mean = computeMean(scoreValues);
+      const stdDev = computeStdDev(scoreValues, mean);
+      const bimodality = computeBimodalityCoefficient(scoreValues);
+      const certaintyFraction = computeCertaintyFraction(scoreValues);
+
+      radarAxes = toRadarAxes(stdDev, mean, bimodality, certaintyFraction);
+
+      // 5. Derive characteristic labels from raw stats
+      labels = deriveCharacteristicLabels(
+        stdDev,
+        mean,
+        bimodality,
+        certaintyFraction
+      );
+    }
+
+    // 6. Build per-version stats
+    const scoresByPromptId = new Map<string, number[]>();
+    let unknownVersionScoreCount = 0;
+
+    for (const s of allScores) {
+      if (s.promptId && promptIdSet.has(s.promptId)) {
+        const bucket = scoresByPromptId.get(s.promptId) ?? [];
+        bucket.push(s.score);
+        scoresByPromptId.set(s.promptId, bucket);
+      } else {
+        unknownVersionScoreCount++;
+      }
+    }
+
+    const promptVersions: JudgePromptVersion[] = [];
+    for (const prompt of matchingPrompts) {
+      const versionScores = scoresByPromptId.get(prompt.id);
+      if (!versionScores || versionScores.length === 0) {
+        continue;
+      }
+
+      const vMean = computeMean(versionScores);
+      const vStdDev = computeStdDev(versionScores, vMean);
+
+      let versionRadarAxes: RadarAxes | null = null;
+      if (versionScores.length >= JUDGE_THRESHOLDS.minScoreCount) {
+        const vBimodality = computeBimodalityCoefficient(versionScores);
+        const vCertaintyFraction = computeCertaintyFraction(versionScores);
+        versionRadarAxes = toRadarAxes(
+          vStdDev,
+          vMean,
+          vBimodality,
+          vCertaintyFraction
+        );
+      }
+
+      promptVersions.push({
+        promptId: prompt.id,
+        version: prompt.version,
+        scoreCount: versionScores.length,
+        mean: vMean,
+        stdDev: vStdDev,
+        min: Math.min(...versionScores),
+        max: Math.max(...versionScores),
+        createdAt: prompt.createdAt.toISOString(),
+        radarAxes: versionRadarAxes,
+      });
+    }
+
+    return {
+      judge: {
+        reportType,
+        promptName,
+        displayName: latestPrompt.name,
+        latestPromptId: latestPrompt.id,
+        scoreCount,
+        radarAxes,
+        labels,
+        promptText: latestPrompt.content,
+        promptVersions,
+        unknownVersionScoreCount,
+      },
+    };
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Statistical helper functions
+// ---------------------------------------------------------------------------
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function computeMean(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+export function computeStdDev(values: number[], mean: number): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const variance =
+    values.reduce((acc, v) => acc + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+export function computeSkewness(
+  values: number[],
+  mean: number,
+  stdDev: number
+): number {
+  const n = values.length;
+  if (n < 3 || stdDev === 0) {
+    return 0;
+  }
+  const m3 = values.reduce((acc, v) => acc + ((v - mean) / stdDev) ** 3, 0) / n;
+  return m3;
+}
+
+export function computeExcessKurtosis(
+  values: number[],
+  mean: number,
+  stdDev: number
+): number {
+  const n = values.length;
+  if (n < 4 || stdDev === 0) {
+    return 0;
+  }
+  const m4 = values.reduce((acc, v) => acc + ((v - mean) / stdDev) ** 4, 0) / n;
+  return m4 - 3;
+}
+
+export function computeBimodalityCoefficient(values: number[]): number {
+  const n = values.length;
+  if (n < 4) {
+    return 0;
+  }
+
+  const mean = computeMean(values);
+  const stdDev = computeStdDev(values, mean);
+  if (stdDev === 0) {
+    return 0;
+  }
+
+  const skewness = computeSkewness(values, mean, stdDev);
+  const excessKurtosis = computeExcessKurtosis(values, mean, stdDev);
+
+  const denominator = excessKurtosis + (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
+  if (denominator <= 0) {
+    return 0;
+  }
+
+  const bc = (skewness ** 2 + 1) / denominator;
+  return clamp(bc, 0, 1);
+}
+
+export function computeCertaintyFraction(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const extremeCount = values.filter((v) => v > 0.7 || v < 0.3).length;
+  return extremeCount / values.length;
+}
+
+function toRadarAxes(
+  stdDev: number,
+  mean: number,
+  bimodality: number,
+  certaintyFraction: number
+): RadarAxes {
+  return {
+    stubbornness: 1 - clamp(stdDev / 0.5, 0, 1),
+    optimism: mean,
+    polarity: bimodality,
+    certainty: certaintyFraction,
+  };
+}
+
+export function deriveCharacteristicLabels(
+  stdDev: number,
+  mean: number,
+  bimodality: number,
+  certaintyFraction: number
+): CharacteristicLabel[] {
+  const labels: CharacteristicLabel[] = [];
+
+  if (stdDev < JUDGE_THRESHOLDS.stubbornness.stubborn) {
+    labels.push("Stubborn");
+  } else if (stdDev > JUDGE_THRESHOLDS.stubbornness.openMinded) {
+    labels.push("Open-Minded");
+  }
+
+  if (mean > JUDGE_THRESHOLDS.optimism.optimistic) {
+    labels.push("Optimistic");
+  } else if (mean < JUDGE_THRESHOLDS.optimism.critical) {
+    labels.push("Critical");
+  }
+
+  if (bimodality > JUDGE_THRESHOLDS.polarity.polarizing) {
+    labels.push("Polarizing");
+  }
+
+  if (certaintyFraction > JUDGE_THRESHOLDS.certainty.decisive) {
+    labels.push("Decisive");
+  } else if (certaintyFraction < JUDGE_THRESHOLDS.certainty.uncertain) {
+    labels.push("Uncertain");
+  }
+
+  return labels;
+}

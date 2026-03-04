@@ -50,7 +50,7 @@
     "react-dom": "19.2.1",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.0",
-    "recharts": "^2.15.4",
+    "recharts": "^3.7.0",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "require-in-the-middle": "8.0.1",

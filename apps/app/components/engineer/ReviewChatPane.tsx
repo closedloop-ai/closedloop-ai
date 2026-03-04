@@ -31,21 +31,28 @@ import {
   SlashCommandDropdown,
   UserMessageContent,
 } from "@/components/engineer/chat";
+import { VerdictBanner } from "@/components/engineer/codex-review/VerdictBanner";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import {
   type SlashCommand,
   useSlashCommands,
 } from "@/hooks/engineer/use-slash-commands";
 import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
-import type { LearningUsed } from "@/lib/engineer/chat-utils";
+import {
+  type LearningUsed,
+  parseSuggestedActions,
+  type SuggestedAction,
+} from "@/lib/engineer/chat-utils";
 import {
   formatFindingContextForChat,
   formatReviewContextForChat,
 } from "@/lib/engineer/codex-review-context";
 import {
+  extractVerdictTag,
   parseClaudeReviewOutput,
   parseCodexReviewOutput,
   type ReviewFinding,
+  type ReviewVerdict,
 } from "@/lib/engineer/codex-review-parser";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { symphonyChatHistoryOptions } from "@/lib/engineer/queries/symphony";
@@ -130,6 +137,10 @@ export function ReviewChatPane({
   const [submittingFindings, setSubmittingFindings] = useState<Set<number>>(
     new Set()
   );
+  const [declined, setDeclined] = useState(false);
+  const [findingsRevealed, setFindingsRevealed] = useState(false);
+  const [isSubmittingDecline, setIsSubmittingDecline] = useState(false);
+  const [asyncVerdict, setAsyncVerdict] = useState<ReviewVerdict | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const findingsSavedRef = useRef(false);
   const [reviewCommand, setReviewCommand] = useState<string | null>(null);
@@ -168,13 +179,15 @@ export function ReviewChatPane({
   const findingsUrl = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
   const { data: savedFindings } = useQuery<{
     findings: Array<{ commented: boolean }>;
+    declined?: boolean;
+    declineReason?: string;
   }>({
     queryKey: ["review-findings", ticketId, repoPath, config.provider],
     queryFn: () => fetch(findingsUrl).then((r) => r.json()),
     enabled: reviewDone,
   });
 
-  // Sync submitted findings from persisted data
+  // Sync submitted findings and declined status from persisted data
   useEffect(() => {
     if (!savedFindings?.findings) {
       return;
@@ -193,6 +206,9 @@ export function ReviewChatPane({
         }
         return merged;
       });
+    }
+    if (savedFindings.declined) {
+      setDeclined(true);
     }
   }, [savedFindings]);
 
@@ -229,7 +245,11 @@ export function ReviewChatPane({
             return resolved !== null && resolved !== "ambiguous";
           })
         : annotated;
-    return { processLog: split.processLog, findings: filtered };
+    return {
+      processLog: split.processLog,
+      findings: filtered,
+      verdict: split.verdict,
+    };
   }, [reviewDone, reviewOutput, config.provider, prFiles]);
 
   // Notify parent when all findings have been individually commented (fire once)
@@ -457,6 +477,12 @@ export function ReviewChatPane({
       ) {
         triggerExtraction(sessionIdRef.current);
       }
+
+      // Extract verdict via session resumption when the review output
+      // doesn't already contain a <pr_verdict> tag (e.g. codex reviews).
+      if (!split.verdict && sessionIdRef.current) {
+        triggerVerdictExtraction(sessionIdRef.current);
+      }
     } catch (err) {
       // User tapped "Stop Review" — mark as done with partial output
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -523,6 +549,10 @@ export function ReviewChatPane({
               config.model,
               split.findings
             );
+          }
+          // Extract verdict via session resumption when not in output
+          if (!split.verdict && sessionIdRef.current) {
+            triggerVerdictExtraction(sessionIdRef.current);
           }
           return;
         }
@@ -770,6 +800,54 @@ export function ReviewChatPane({
     onLearningsUsed,
   ]);
 
+  const handleChatAction = useCallback(
+    (action: SuggestedAction) => {
+      if (stream.isStreaming) {
+        return;
+      }
+      const userMsg = {
+        id: crypto.randomUUID(),
+        role: "user" as const,
+        content: action.message,
+        timestamp: new Date().toISOString(),
+      };
+      stream.setPendingUserMessage(userMsg);
+      if (config.provider !== "claude") {
+        persistMessage(userMsg);
+      }
+      const { url, body } = buildChatRequest(action.message);
+      stream.sendMessage(url, body, {
+        onComplete: async (accumulatedText) => {
+          if (accumulatedText && config.provider !== "claude") {
+            await persistMessage({
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: accumulatedText,
+              timestamp: new Date().toISOString(),
+              sender: "codex",
+            });
+          }
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+          });
+        },
+        onLearnings,
+        onLearningsUsed,
+      });
+    },
+    [
+      stream,
+      config.provider,
+      buildChatRequest,
+      persistMessage,
+      ticketId,
+      repoPath,
+      queryClient,
+      onLearnings,
+      onLearningsUsed,
+    ]
+  );
+
   const slash = useSlashCommands(REVIEW_SLASH_COMMANDS, (command) => {
     if (command === "/reflect") {
       setChatInput("");
@@ -911,6 +989,78 @@ export function ReviewChatPane({
     },
     [ticketId, repoPath, config.provider, config.model]
   );
+
+  const triggerVerdictExtraction = useCallback(
+    async (sid: string) => {
+      try {
+        console.log(
+          `[review-verdict] Triggering verdict extraction with session ${sid}`
+        );
+        const res = await fetch(
+          `/api/engineer/codex/review-verdict/${encodeURIComponent(ticketId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              repoPath,
+              sessionId: sid,
+              provider: config.provider,
+            }),
+          }
+        );
+        if (!res.ok) {
+          console.warn("[review-verdict] Server error:", res.status);
+          return;
+        }
+        const data = await res.json();
+        if (data.verdict) {
+          console.log(
+            `[review-verdict] Got verdict: ${data.verdict.verdict} — ${data.verdict.reason}`
+          );
+          setAsyncVerdict(data.verdict);
+        } else {
+          console.log("[review-verdict] No verdict returned", data.error ?? "");
+        }
+      } catch (err) {
+        console.warn("[review-verdict] Extraction failed silently:", err);
+      }
+    },
+    [ticketId, repoPath, config.provider]
+  );
+
+  // Merge async verdict into reviewSplit — async verdict takes priority
+  const effectiveVerdict = asyncVerdict ?? reviewSplit?.verdict;
+
+  const hasDeclineVerdict = effectiveVerdict?.verdict === "decline";
+  const showFindings = !hasDeclineVerdict || (!declined && findingsRevealed);
+
+  const handleDecline = useCallback(async () => {
+    const reason = asyncVerdict?.reason ?? reviewSplit?.verdict?.reason;
+    if (!reason) {
+      return;
+    }
+    setIsSubmittingDecline(true);
+    try {
+      // Persist state first so the button is disabled even if the PR
+      // comment fails — prevents duplicate comments on retry.
+      await markReviewDeclined(ticketId, repoPath, config.provider, reason);
+      setDeclined(true);
+      setFindingsRevealed(false);
+      await postDeclineComment(repoPath, prNumber, reason);
+      toast.success("Decline comment posted to PR");
+    } catch {
+      toast.error("Failed to post decline comment");
+    } finally {
+      setIsSubmittingDecline(false);
+    }
+  }, [
+    asyncVerdict?.reason,
+    reviewSplit?.verdict?.reason,
+    repoPath,
+    prNumber,
+    ticketId,
+    config.provider,
+  ]);
 
   const handleChatAboutFinding = useCallback(
     (index: number, finding: ReviewFinding) => {
@@ -1084,7 +1234,31 @@ export function ReviewChatPane({
                 }
               />
             </ChatBubble>
-            {reviewSplit.findings.length > 0 && (
+            {effectiveVerdict && (
+              <div className="pl-2">
+                <VerdictBanner
+                  isDeclined={declined}
+                  isSubmitting={isSubmittingDecline}
+                  onDecline={handleDecline}
+                  verdict={effectiveVerdict}
+                />
+              </div>
+            )}
+            {hasDeclineVerdict &&
+              !declined &&
+              !findingsRevealed &&
+              reviewSplit.findings.length > 0 && (
+                <div className="pl-2">
+                  <Button
+                    onClick={() => setFindingsRevealed(true)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    See findings ({reviewSplit.findings.length})
+                  </Button>
+                </div>
+              )}
+            {showFindings && reviewSplit.findings.length > 0 && (
               <div className="space-y-2 pl-2">
                 {reviewSplit.findings.map((finding) => {
                   const idx = finding.originalIndex;
@@ -1119,8 +1293,18 @@ export function ReviewChatPane({
                 .slice(idx + 1)
                 .some((m) => m.role === "assistant") &&
               !stream.isStreaming;
+            const { actions, contentWithoutActions } =
+              msg.role === "assistant"
+                ? parseSuggestedActions(msg.content)
+                : {
+                    actions: [] as SuggestedAction[],
+                    contentWithoutActions: msg.content,
+                  };
+            const effectiveActions =
+              isLastAssistant && !stream.isStreaming ? actions : [];
             return (
               <ChatBubble
+                actions={effectiveActions}
                 bubbleClassName={
                   msg.role === "user"
                     ? "bg-blue-500/10 dark:bg-blue-500/10 text-blue-900 dark:text-blue-100 border border-blue-500/20"
@@ -1135,6 +1319,15 @@ export function ReviewChatPane({
                 }
                 key={msg.id}
                 messageRole={msg.role}
+                onAction={handleChatAction}
+                onCopy={async () => {
+                  try {
+                    await navigator.clipboard.writeText(contentWithoutActions);
+                    toast.success("Copied to clipboard");
+                  } catch {
+                    toast.error("Failed to copy");
+                  }
+                }}
                 roleClassName={
                   msg.role === "user"
                     ? "text-blue-600 dark:text-blue-400"
@@ -1153,7 +1346,10 @@ export function ReviewChatPane({
                 {msg.role === "user" ? (
                   <UserMessageContent content={msg.content} />
                 ) : (
-                  <MessageContent blocks={msg.blocks} content={msg.content} />
+                  <MessageContent
+                    blocks={msg.blocks}
+                    content={contentWithoutActions}
+                  />
                 )}
               </ChatBubble>
             );
@@ -1176,7 +1372,10 @@ export function ReviewChatPane({
             >
               <MessageContent
                 blocks={stream.streamingBlocks}
-                content={stream.streamingContent}
+                content={
+                  parseSuggestedActions(stream.streamingContent)
+                    .contentWithoutActions
+                }
                 isStreaming
               />
             </ChatBubble>
@@ -1317,19 +1516,25 @@ const FINDINGS_HEADER = /^(?:Full )?[Rr]eview comments?:\s*$/m;
 export function splitReviewOutput(
   output: string,
   provider?: "claude" | "codex"
-): { processLog: string; findings: ReviewFinding[] } {
+): { processLog: string; findings: ReviewFinding[]; verdict?: ReviewVerdict } {
+  const verdict = extractVerdictTag(output);
+
   if (provider === "claude") {
-    return parseClaudeReviewOutput(output);
+    return { ...parseClaudeReviewOutput(output), verdict };
   }
 
   const match = FINDINGS_HEADER.exec(output);
   if (!match) {
-    return { processLog: output, findings: [] };
+    return { processLog: output, findings: [], verdict };
   }
 
   const processLog = output.slice(0, match.index).trim();
   const findingsText = output.slice(match.index + match[0].length).trim();
-  return { processLog, findings: parseFullReviewComments(findingsText) };
+  return {
+    processLog,
+    findings: parseFullReviewComments(findingsText),
+    verdict,
+  };
 }
 
 /**
@@ -1675,6 +1880,39 @@ function markFindingCommented(
   }).catch((err) =>
     console.warn("[review-findings] Failed to mark commented:", err)
   );
+}
+
+async function postDeclineComment(
+  repoPath: string,
+  prNumber: number,
+  reason: string
+): Promise<void> {
+  const body = `\u26D4 **Review Recommendation: Decline**\n\n${reason}`;
+  const res = await fetch("/api/engineer/git/pr/reply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoPath, prNumber, body, requestChanges: true }),
+  });
+  if (!res.ok) {
+    throw new Error("Failed to request changes");
+  }
+}
+
+async function markReviewDeclined(
+  ticketId: string,
+  repoPath: string,
+  provider: string,
+  reason: string
+): Promise<void> {
+  const url = `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ declined: true, declineReason: reason }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to persist decline (${response.status})`);
+  }
 }
 
 // --- Status pre-check for review resumption ---

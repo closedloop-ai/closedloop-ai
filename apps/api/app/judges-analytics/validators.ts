@@ -1,8 +1,9 @@
 import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
+import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
 import { ARTIFACT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 
-export const judgesAnalyticsQueryValidator = z
+const dateRangeQueryValidator = z
   .object({
     startDate: z
       .string()
@@ -15,10 +16,13 @@ export const judgesAnalyticsQueryValidator = z
     message: "startDate must be less than or equal to endDate",
   });
 
-export const artifactCountsQueryValidator =
-  judgesAnalyticsQueryValidator.extend({
-    groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
-  });
+export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.extend({
+  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+});
+
+export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
+  groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
+});
 
 /** Parse YYYY-MM-DD strings to UTC start-of-day and end-of-day Date objects. */
 export function parseDateRange(startDate: string, endDate: string) {

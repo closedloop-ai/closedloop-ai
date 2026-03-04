@@ -6,6 +6,13 @@
  */
 import { vi } from "vitest";
 
+const mockLog = vi.hoisted(() => ({
+  warn: vi.fn(),
+  info: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+}));
+
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
   PromptType: {
@@ -13,10 +20,14 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+vi.mock("@repo/observability/log", () => ({
+  log: mockLog,
+}));
+
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import { EvalStatus } from "@repo/api/src/types/evaluation";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { buildCaseScore } from "../fixtures/evaluation";
+import { buildCaseScore, buildMetric } from "../fixtures/evaluation";
 
 // ---------------------------------------------------------------------------
 // Mock tx factory
@@ -245,5 +256,202 @@ describe("fanOutJudgeScores", () => {
     });
 
     expect(tx.judgeScore.createMany).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Bug 1: Metric selected by normalized name match (not position)
+  // -------------------------------------------------------------------------
+
+  it("selects metric by normalized name match, not by position", async () => {
+    // case_id = "clarity-judge" normalizes to "clarity"
+    // metrics[0] = "brevity_score" (does NOT match), metrics[1] = "clarity_score" (matches)
+    const report: JudgesReport = {
+      report_id: "r-metric-match",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "clarity-judge",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            buildMetric({ metric_name: "brevity_score", score: 0.5 }),
+            buildMetric({ metric_name: "clarity_score", score: 0.95 }),
+          ],
+        },
+      ],
+    };
+
+    const tx = createMockTx();
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    expect(data).toHaveLength(1);
+    // Should pick clarity_score (0.95), NOT brevity_score (0.5)
+    expect(data[0]).toMatchObject({
+      caseId: "clarity-judge",
+      score: 0.95,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Bug 1 fallback: No metric name matches case_id → falls back to first
+  // -------------------------------------------------------------------------
+
+  it("falls back to first metric and logs warning when no metric name matches case_id", async () => {
+    const report: JudgesReport = {
+      report_id: "r-metric-fallback",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "clarity-judge",
+          final_status: EvalStatus.Passed,
+          metrics: [
+            buildMetric({ metric_name: "unrelated_metric", score: 0.6 }),
+            buildMetric({ metric_name: "another_metric", score: 0.7 }),
+          ],
+        },
+      ],
+    };
+
+    const tx = createMockTx();
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    // Falls back to first metric
+    expect(data[0]).toMatchObject({
+      caseId: "clarity-judge",
+      score: 0.6,
+    });
+
+    // Logs metric name mismatch warning
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      "judge_metric_name_mismatch",
+      expect.objectContaining({
+        caseId: "clarity-judge",
+        availableMetrics: ["unrelated_metric", "another_metric"],
+      })
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Bug 2: Prompt collision — highest version wins, warning logged
+  // -------------------------------------------------------------------------
+
+  it("logs collision warning when multiple prompt names normalize to same key", async () => {
+    const report: JudgesReport = {
+      report_id: "r-collision",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [buildCaseScore("clarity-judge", 0.9)],
+    };
+
+    const tx = createMockTx();
+    tx.prompt.findMany.mockResolvedValue([
+      { id: "prompt-v1", name: "clarity-judge", version: 1 },
+      { id: "prompt-v2", name: "clarity-score", version: 2 },
+      { id: "prompt-v4", name: "clarity_judge", version: 4 },
+    ]);
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    // Highest version wins
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    expect(call[0].data[0]).toMatchObject({
+      promptId: "prompt-v4",
+    });
+
+    // Collision warning logged
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      "judge_prompt_name_collision",
+      expect.objectContaining({
+        normalizedName: "clarity",
+        collidingNames: expect.arrayContaining(["clarity-judge"]),
+        selected: "clarity_judge",
+      })
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Bug 3: Prompt unmatched — promptId is null, structured log emitted
+  // -------------------------------------------------------------------------
+
+  it("logs structured warning when no prompt matches a case", async () => {
+    const report: JudgesReport = {
+      report_id: "r-unmatched",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [buildCaseScore("orphan-judge", 0.8)],
+    };
+
+    const tx = createMockTx();
+    // No prompts returned — no matches possible
+    tx.prompt.findMany.mockResolvedValue([]);
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    expect(call[0].data[0]).toMatchObject({
+      promptId: null,
+    });
+
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      "judge_prompt_id_unmatched",
+      expect.objectContaining({
+        caseId: "orphan-judge",
+        organizationId: ORG_ID,
+        event: "prompt_id_unmatched",
+      })
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Transaction rollback: createMany failure propagates
+  // -------------------------------------------------------------------------
+
+  it("propagates error when createMany throws (transaction rollback)", async () => {
+    const report: JudgesReport = {
+      report_id: "r-fail",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [buildCaseScore("fail-judge", 0.5)],
+    };
+
+    const tx = createMockTx();
+    tx.judgeScore.createMany.mockRejectedValue(
+      new Error("Simulated DB failure")
+    );
+
+    await expect(
+      fanOutJudgeScores({
+        evaluationId: EVALUATION_ID,
+        organizationId: ORG_ID,
+        report,
+        tx: tx as any,
+      })
+    ).rejects.toThrow("Simulated DB failure");
   });
 });

@@ -28,6 +28,12 @@ export const EvaluationReportType = {
 export type EvaluationReportType =
   (typeof EvaluationReportType)[keyof typeof EvaluationReportType];
 
+/** Canonical tuple of allowed evaluation report type values. */
+export const EVALUATION_REPORT_TYPE_OPTIONS = [
+  EvaluationReportType.Plan,
+  EvaluationReportType.Code,
+] as const;
+
 /**
  * Statistics for a single metric (judge score).
  *
@@ -75,10 +81,32 @@ export type JudgesReport = {
 };
 
 /**
+ * Single judge's feedback item in API responses.
+ * Normalized from JudgeScore rows for use in judges feedback endpoints.
+ *
+ * Attributes:
+ * - caseId: Judge identifier (maps to JudgeScore.caseId)
+ * - score: The judge score value
+ * - threshold: Pass/fail threshold
+ * - justification: Explanation for the score
+ * - finalStatus: Final evaluation status (FAILED | NEEDS_IMPROVEMENT | PASSED)
+ * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
+ */
+export type JudgeFeedbackItem = {
+  caseId: string;
+  score: number;
+  threshold: number;
+  justification: string;
+  finalStatus: EvalStatus;
+  promptName: string | null;
+};
+
+/**
  * API response wrapper for judges feedback.
- * Returns the report, or null if judges.json not found, or error details if malformed.
+ * Returns normalized JudgeScore rows as JudgeFeedbackItem array on success,
+ * or null if no evaluation found, or error details on failure.
  */
 export type JudgesFeedbackResponse =
-  | { status: "success"; data: JudgesReport }
+  | { status: "success"; data: JudgeFeedbackItem[] }
   | { status: "not_found"; data: null }
   | { status: "error"; error: string };

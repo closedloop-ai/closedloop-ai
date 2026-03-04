@@ -744,10 +744,11 @@ describe("ArtifactsTable - Merge Selection", () => {
     expect(mergeButton).toBeDisabled();
 
     // Tooltip should explain why
-    const tooltip = screen.getByTestId("tooltip-content");
-    expect(tooltip).toHaveTextContent(
-      "Both artifacts must be from the same project"
+    const tooltips = screen.getAllByTestId("tooltip-content");
+    const mergeTooltip = tooltips.find((el) =>
+      el.textContent?.includes("Both artifacts must be from the same project")
     );
+    expect(mergeTooltip).toBeInTheDocument();
   });
 
   test("3+ artifacts selected disables Merge button", () => {
@@ -794,8 +795,11 @@ describe("ArtifactsTable - Merge Selection", () => {
     expect(mergeButton).toBeDisabled();
 
     // Tooltip should explain why
-    const tooltip = screen.getByTestId("tooltip-content");
-    expect(tooltip).toHaveTextContent("Merge requires exactly 2 artifacts");
+    const tooltips = screen.getAllByTestId("tooltip-content");
+    const mergeTooltip = tooltips.find((el) =>
+      el.textContent?.includes("Merge requires exactly 2 artifacts")
+    );
+    expect(mergeTooltip).toBeInTheDocument();
   });
 
   test("Clear Selection button removes all selections", () => {

@@ -35,6 +35,41 @@ function isProcessRunning(pid: number): boolean {
   }
 }
 
+/** If state says "running" but the process is dead, mark it "stopped". */
+function reconcileProcessStatus(state: ReviewState): boolean {
+  if (state.status !== "running" || !state.pid) {
+    return false;
+  }
+  const alive = isProcessRunning(state.pid);
+  if (!alive) {
+    state.status = "stopped";
+  }
+  return alive;
+}
+
+const MAX_LOG_BYTES = 100 * 1024;
+
+/** Read the log file, tailing to the last 100 KB for large files. */
+async function readLogTail(
+  logPath: string
+): Promise<{ log: string; logSize: number }> {
+  if (!existsSync(logPath)) {
+    return { log: "", logSize: 0 };
+  }
+  const logStats = await stat(logPath);
+  const logSize = logStats.size;
+  if (logSize <= MAX_LOG_BYTES) {
+    return { log: await readFile(logPath, "utf-8"), logSize };
+  }
+  const buffer = Buffer.alloc(MAX_LOG_BYTES);
+  const fd = await import("node:fs/promises").then((fs) =>
+    fs.open(logPath, "r")
+  );
+  await fd.read(buffer, 0, buffer.length, logSize - buffer.length);
+  await fd.close();
+  return { log: buffer.toString("utf-8"), logSize };
+}
+
 /**
  * GET /api/codex/status/[ticketId]?repo=~/Source/claude_code
  *
@@ -112,36 +147,8 @@ export async function GET(
   try {
     const stateContent = await readFile(statePath, "utf-8");
     const state: ReviewState = JSON.parse(stateContent);
-
-    // Check if process is still running
-    let processRunning = false;
-    if (state.status === "running" && state.pid) {
-      processRunning = isProcessRunning(state.pid);
-      // If state says running but process is dead, update status
-      if (!processRunning) {
-        state.status = "stopped";
-      }
-    }
-
-    // Read log file if it exists
-    let log = "";
-    let logSize = 0;
-    if (existsSync(logPath)) {
-      const logStats = await stat(logPath);
-      logSize = logStats.size;
-      // Read last 100KB of log for large files
-      if (logSize > 100 * 1024) {
-        const buffer = Buffer.alloc(100 * 1024);
-        const fd = await import("node:fs/promises").then((fs) =>
-          fs.open(logPath, "r")
-        );
-        await fd.read(buffer, 0, buffer.length, logSize - buffer.length);
-        await fd.close();
-        log = buffer.toString("utf-8");
-      } else {
-        log = await readFile(logPath, "utf-8");
-      }
-    }
+    const processRunning = reconcileProcessStatus(state);
+    const { log, logSize } = await readLogTail(logPath);
 
     return NextResponse.json({
       hasReview: true,

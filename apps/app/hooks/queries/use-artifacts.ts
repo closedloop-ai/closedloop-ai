@@ -12,6 +12,7 @@ import type {
   UpdateArtifactInput,
 } from "@repo/api/src/types/artifact";
 import type { ArtifactVersion } from "@repo/api/src/types/artifact-version";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import {
   type UseQueryOptions,
@@ -23,6 +24,7 @@ import { useRef } from "react";
 import { useIsLoopsEnabled } from "@/hooks/queries/use-compute-mode";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
+import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { executionLogKeys } from "./use-execution-log";
 import { judgesKeys } from "./use-judges";
 import { projectKeys } from "./use-projects";
@@ -233,6 +235,7 @@ export function useUpdateArtifact() {
       if (input.projectId) {
         queryClient.invalidateQueries({ queryKey: projectKeys.all });
       }
+      invalidateEntityLinkQueries(queryClient, input.id, EntityType.Artifact);
     },
   });
 }
@@ -244,9 +247,10 @@ export function useDeleteArtifact() {
   return useMutation({
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/artifacts/${id}`),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: artifactKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      invalidateEntityLinkQueries(queryClient, id, EntityType.Artifact);
     },
   });
 }

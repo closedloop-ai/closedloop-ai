@@ -75,6 +75,8 @@ enum ArtifactStatus {
   IN_REVIEW
   APPROVED
   OBSOLETE
+  READY_FOR_REVIEW
+  EXECUTED
 }
 
 enum ArtifactType {
@@ -261,6 +263,7 @@ model Organization {
   githubInstallation GitHubInstallation?
   loops              Loop[]
   prompts            Prompt[]
+  computeTargets     ComputeTarget[]
 
   @@map("organizations")
 }
@@ -301,6 +304,7 @@ model User {
   createdWorkstreams  Workstream[] @relation("WorkstreamCreatedBy")
   assignedWorkstreams Workstream[] @relation("WorkstreamAssignee")
   loops               Loop[]
+  computeTargets      ComputeTarget[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -309,6 +313,67 @@ model User {
   @@index([slackId])
   @@index([githubUsername])
   @@map("users")
+}
+
+model ComputeTarget {
+  id                  String   @id @default(uuid(7)) @db.Uuid
+  organizationId      String   @map("organization_id") @db.Uuid
+  userId              String   @map("user_id") @db.Uuid
+  machineName         String   @map("machine_name")
+  platform            String
+  capabilities        Json     @default("{}")
+  supportedOperations Json     @default("[]") @map("supported_operations")
+  lastSeenAt          DateTime @default(now()) @map("last_seen_at")
+  isOnline            Boolean  @default(false) @map("is_online")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  desktopCommands DesktopCommand[]
+
+  @@unique([userId, machineName])
+  @@index([organizationId, userId])
+  @@index([userId, isOnline])
+  @@map("compute_targets")
+}
+
+model DesktopCommand {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  computeTargetId  String   @map("compute_target_id") @db.Uuid
+  idempotencyKey   String?  @map("idempotency_key")
+  requestFingerprint String @map("request_fingerprint")
+  operationId      String   @map("operation_id")
+  requestPayload   Json     @map("request_payload")
+  status           String
+  error            String?
+  lastSequenceAcked Int     @default(0) @map("last_sequence_acked")
+  queuedTimeoutMs  Int?     @map("queued_timeout_ms")
+  runningTimeoutMs Int?     @map("running_timeout_ms")
+  createdAt        DateTime @default(now()) @map("created_at")
+  startedAt        DateTime? @map("started_at")
+  finishedAt       DateTime? @map("finished_at")
+
+  computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  events       DesktopCommandEvent[]
+
+  @@index([computeTargetId, status, createdAt])
+  @@index([operationId])
+  @@map("desktop_commands")
+}
+
+model DesktopCommandEvent {
+  commandId   String   @map("command_id") @db.Uuid
+  sequence    Int
+  eventType   String   @map("event_type")
+  eventPayload Json    @map("event_payload")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  command DesktopCommand @relation(fields: [commandId], references: [id], onDelete: Cascade)
+
+  @@id([commandId, sequence])
+  @@index([commandId, createdAt])
+  @@map("desktop_command_events")
 }
 
 model Project {
@@ -561,6 +626,7 @@ model ArtifactEvaluation {
   judgeScores JudgeScore[]
 
   @@unique([artifactId, reportId])
+  @@index([artifactId, createdAt])
   @@map("artifact_evaluations")
 }
 

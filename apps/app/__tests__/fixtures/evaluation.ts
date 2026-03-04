@@ -1,6 +1,7 @@
 import {
   type CaseScore,
   EvalStatus,
+  type JudgeFeedbackItem,
   type JudgesReport,
   type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
@@ -67,6 +68,24 @@ export const createMockJudgesReport = (
   report_id: "test-report",
   timestamp: new Date().toISOString(),
   stats: [createMockCaseScore()],
+  ...overrides,
+});
+
+/**
+ * Factory for creating mock JudgeFeedbackItem objects.
+ * Use this for Option B response type test data.
+ *
+ * @param overrides - Optional overrides for fields
+ */
+export const createMockJudgeFeedbackItem = (
+  overrides?: Partial<JudgeFeedbackItem>
+): JudgeFeedbackItem => ({
+  caseId: "test-judge",
+  score: 0.92,
+  threshold: 0.8,
+  justification: "Default test justification",
+  finalStatus: EvalStatus.Passed,
+  promptName: null,
   ...overrides,
 });
 

@@ -136,10 +136,8 @@ function spawnCodexReview(
     `model_reasoning_effort=${reasoningEffort}`
   );
 
-  // codex review v0.104+ doesn't allow [PROMPT] with --base/--uncommitted.
-  // Custom instructions cannot be passed as a positional arg or via stdin.
-  // The contextPreamble and user instructions are dropped — codex uses its
-  // own built-in review prompt which produces good results without them.
+  // codex review doesn't allow [PROMPT] with --base/--uncommitted.
+  // Verdict is extracted post-review via session resumption (review-verdict route).
 
   return spawn("codex", args, {
     cwd,

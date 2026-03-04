@@ -32,6 +32,8 @@ export const ARTIFACT_STATUS_LABELS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
   [ArtifactStatus.Obsolete]: "Obsolete",
+  [ArtifactStatus.ReadyForReview]: "Ready for Review",
+  [ArtifactStatus.Executed]: "Executed",
 };
 
 export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
@@ -39,6 +41,8 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.InReview]: "text-yellow-600 dark:text-yellow-400",
   [ArtifactStatus.Approved]: "text-green-600 dark:text-green-400",
   [ArtifactStatus.Obsolete]: "text-muted-foreground",
+  [ArtifactStatus.ReadyForReview]: "text-yellow-600 dark:text-yellow-400",
+  [ArtifactStatus.Executed]: "text-green-600 dark:text-green-400",
 };
 
 // Artifact type icons
@@ -72,6 +76,13 @@ export const ARTIFACT_TYPE_COLORS: Record<
     bg: "bg-indigo-100 dark:bg-indigo-900/50",
     text: "text-indigo-700 dark:text-indigo-300",
   },
+};
+
+// Artifact type short badge labels (for compact displays like Context table)
+export const ARTIFACT_TYPE_BADGE_LABELS: Record<ArtifactType, string> = {
+  [ArtifactType.Prd]: "PRD",
+  [ArtifactType.ImplementationPlan]: "Plan",
+  [ArtifactType.Template]: "Template",
 };
 
 // Issue status labels and colors
@@ -126,6 +137,14 @@ export const EXTERNAL_LINK_TYPE_COLORS: Record<
     text: "text-slate-700 dark:text-slate-300",
   },
 };
+
+// External link type short badge labels (for compact displays like Context table)
+export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
+  {
+    [ExternalLinkType.PullRequest]: "PR",
+    [ExternalLinkType.FigmaDesign]: "Figma",
+    [ExternalLinkType.PreviewDeployment]: "Preview",
+  };
 
 // Issue icon
 export const ISSUE_ICON: React.ElementType = AlertCircleIcon;

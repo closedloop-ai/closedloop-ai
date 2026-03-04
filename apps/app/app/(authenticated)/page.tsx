@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { DashboardStatsGrid } from "./components/dashboard-stats-grid";
-import { EngineerRedirect } from "./components/engineer-redirect";
 import { Header } from "./components/header";
 import { InProgressWorkstreamsTable } from "./components/in-progress-workstreams-table";
 
@@ -15,7 +14,6 @@ export const metadata: Metadata = {
 export default async function App() {
   return (
     <>
-      <EngineerRedirect />
       <Header
         breadcrumbs={[{ label: "Home", href: "/" }, { label: "Dashboard" }]}
       />

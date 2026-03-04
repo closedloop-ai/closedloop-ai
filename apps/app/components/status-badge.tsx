@@ -98,6 +98,8 @@ export const artifactStatusColors: Record<ArtifactStatus, string> = {
     "bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-800",
   [ArtifactStatus.Obsolete]:
     "bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700",
+  [ArtifactStatus.ReadyForReview]: COLOR_PENDING,
+  [ArtifactStatus.Executed]: COLOR_SUCCESS,
 };
 
 export const artifactStatusLabels: Record<ArtifactStatus, string> = {
@@ -105,6 +107,8 @@ export const artifactStatusLabels: Record<ArtifactStatus, string> = {
   [ArtifactStatus.InReview]: "In Review",
   [ArtifactStatus.Approved]: "Approved",
   [ArtifactStatus.Obsolete]: "Obsolete",
+  [ArtifactStatus.ReadyForReview]: "Ready for Review",
+  [ArtifactStatus.Executed]: "Executed",
 };
 
 export function ArtifactStatusBadge({
