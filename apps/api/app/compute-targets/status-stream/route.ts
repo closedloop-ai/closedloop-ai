@@ -1,25 +1,33 @@
-import { withDb } from "@repo/database";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import {
   createSseResponse,
   createSseStream,
   encodeSseData,
 } from "@/lib/sse-stream";
+import { computeTargetsService } from "../service";
 
 const POLL_INTERVAL_MS = 5000;
 
 type StatusSnapshot = Map<string, boolean>;
+type SendFn = (chunk: Uint8Array) => void;
 
-async function fetchStatusSnapshot(
-  organizationId: string
-): Promise<StatusSnapshot> {
-  const targets = await withDb((db) =>
-    db.computeTarget.findMany({
-      where: { organizationId },
-      select: { id: true, isOnline: true },
-    })
-  );
-  return new Map(targets.map((t) => [t.id, t.isOnline]));
+function emitChanges(
+  lastSnapshot: StatusSnapshot,
+  current: StatusSnapshot,
+  send: SendFn
+): void {
+  for (const [targetId, isOnline] of current) {
+    if (lastSnapshot.get(targetId) !== isOnline) {
+      send(encodeSseData({ targetId, isOnline }));
+    }
+  }
+
+  // Detect removed targets (went offline / deleted)
+  for (const [targetId] of lastSnapshot) {
+    if (!current.has(targetId)) {
+      send(encodeSseData({ targetId, isOnline: false }));
+    }
+  }
 }
 
 /**
@@ -37,36 +45,34 @@ export async function GET(request: Request): Promise<Response> {
     return new Response("Unauthorized", { status: 401 });
   }
 
+  let lastSnapshot: StatusSnapshot;
+  try {
+    lastSnapshot = await computeTargetsService.getStatusSnapshot(
+      authContext.organizationId
+    );
+  } catch {
+    return new Response("Failed to load initial status", { status: 500 });
+  }
+
   const stream = createSseStream(
-    async ({ send, close }) => {
-      let lastSnapshot: StatusSnapshot;
-      try {
-        lastSnapshot = await fetchStatusSnapshot(authContext.organizationId);
-      } catch {
-        close();
-        return null;
-      }
+    ({ send }) => {
+      let polling = false;
 
       const timer = setInterval(async () => {
+        if (polling) {
+          return;
+        }
+        polling = true;
         try {
-          const current = await fetchStatusSnapshot(authContext.organizationId);
-
-          for (const [targetId, isOnline] of current) {
-            if (lastSnapshot.get(targetId) !== isOnline) {
-              send(encodeSseData({ targetId, isOnline }));
-            }
-          }
-
-          // Detect removed targets (went offline / deleted)
-          for (const [targetId] of lastSnapshot) {
-            if (!current.has(targetId)) {
-              send(encodeSseData({ targetId, isOnline: false }));
-            }
-          }
-
+          const current = await computeTargetsService.getStatusSnapshot(
+            authContext.organizationId
+          );
+          emitChanges(lastSnapshot, current, send);
           lastSnapshot = current;
         } catch {
           // Swallow transient DB errors; keepalive will maintain connection.
+        } finally {
+          polling = false;
         }
       }, POLL_INTERVAL_MS);
 
