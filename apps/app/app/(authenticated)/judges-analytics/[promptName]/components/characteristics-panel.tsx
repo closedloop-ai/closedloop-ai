@@ -21,7 +21,7 @@ import {
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
-import { AXIS_LABELS, type AxisLabel, JudgeRadarChart } from "./radar-chart";
+import { type AxisLabel, AxisLabels, JudgeRadarChart } from "./radar-chart";
 
 type CharacteristicsPanelProps = {
   judge: JudgeDetail;
@@ -138,7 +138,7 @@ const AXIS_HELP_BY_LABEL: Record<
 };
 
 const AXIS_HELP_ITEMS = [
-  ...AXIS_LABELS.map((axis) => ({
+  ...Object.values(AxisLabels).map((axis) => ({
     axis,
     ...AXIS_HELP_BY_LABEL[axis],
   })),

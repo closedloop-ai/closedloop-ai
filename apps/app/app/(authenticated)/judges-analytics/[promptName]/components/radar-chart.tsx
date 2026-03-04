@@ -23,12 +23,14 @@ type JudgeRadarChartProps = {
   promptVersions: JudgePromptVersion[];
 };
 
-export const AXIS_LABELS = [
-  "Stubbornness",
-  "Optimism",
-  "Polarity",
-  "Certainty",
-] as const;
+export const AxisLabels = {
+  Stubbornness: "Stubbornness",
+  Optimism: "Optimism",
+  Polarity: "Polarity",
+  Certainty: "Certainty",
+} as const;
+
+export type AxisLabel = (typeof AxisLabels)[keyof typeof AxisLabels];
 
 const CHART_COLOR_TOKEN_COUNT = 5;
 const LATEST_COLOR = "var(--chart-1)";
@@ -39,11 +41,13 @@ function getOverlayColor(index: number): string {
   return `var(--chart-${tokenIndex})`;
 }
 
+const AXIS_LABELS_ORDERED = Object.values(AxisLabels);
+
 function buildAxesData(axes: RadarAxes | null) {
   if (!axes) {
-    return AXIS_LABELS.map((axis) => ({ axis, latest: 0 }));
+    return AXIS_LABELS_ORDERED.map((axis) => ({ axis, latest: 0 }));
   }
-  return AXIS_LABELS.map((axis) => ({
+  return AXIS_LABELS_ORDERED.map((axis) => ({
     axis,
     latest: axes[AXIS_KEY_BY_LABEL[axis]],
   }));
@@ -212,8 +216,6 @@ type RadarChartDatum = {
 type RadarTooltipPayloadItem = {
   payload?: RadarChartDatum;
 };
-
-export type AxisLabel = (typeof AXIS_LABELS)[number];
 
 const AXIS_KEY_BY_LABEL: Record<AxisLabel, keyof RadarAxes> = {
   Stubbornness: "stubbornness",
