@@ -9,7 +9,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -125,6 +125,15 @@ export function PRDEditor({
 
   // Comments panel toggle state
   const [showComments, setShowComments] = useState(true);
+  const prevThreadCount = useRef(session.openThreadCount);
+
+  // Auto-reveal comments when threads reappear after being fully resolved
+  useEffect(() => {
+    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
+      setShowComments(true);
+    }
+    prevThreadCount.current = session.openThreadCount;
+  }, [session.openThreadCount]);
 
   // Determine if any operation is pending
   const isPending =

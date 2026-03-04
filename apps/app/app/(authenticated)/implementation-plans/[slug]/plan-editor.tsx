@@ -8,7 +8,7 @@ import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
 import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
 import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
@@ -107,6 +107,15 @@ export function PlanEditor({
 
   // Comments panel toggle state
   const [showComments, setShowComments] = useState(true);
+  const prevThreadCount = useRef(session.openThreadCount);
+
+  // Auto-reveal comments when threads reappear after being fully resolved
+  useEffect(() => {
+    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
+      setShowComments(true);
+    }
+    prevThreadCount.current = session.openThreadCount;
+  }, [session.openThreadCount]);
 
   // Fetch generation status and pull request data
   const { data: generationStatus } = useArtifactGenerationStatus(plan.id);

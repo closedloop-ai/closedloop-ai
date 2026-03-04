@@ -7,7 +7,6 @@ import {
 
 type CollaborativeEditorProps = Omit<EditorWithCommentsProps, "scrollMode"> & {
   onOpenThreadCountChange?: (count: number) => void;
-  showComments?: boolean;
 };
 
 /**
@@ -29,6 +28,11 @@ function ThreadCountReporter({
   return null;
 }
 
+/**
+ * Collaborative editor with optional Liveblocks comment threads.
+ * When `liveblocksRoomId` is provided, this component must be rendered
+ * inside an `OptionalArtifactRoom` (or equivalent Liveblocks RoomProvider).
+ */
 export function CollaborativeEditor({
   liveblocksRoomId,
   readOnly,
