@@ -31,8 +31,7 @@ function getBrowserStorage(): StorageLike | null {
     return null;
   }
 
-  const browserStorage =
-    globalThis.window.localStorage ?? globalThis.localStorage;
+  const browserStorage = globalThis.localStorage;
   if (!isStorageLike(browserStorage)) {
     return null;
   }
