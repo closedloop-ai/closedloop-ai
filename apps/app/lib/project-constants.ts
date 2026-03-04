@@ -78,6 +78,13 @@ export const ARTIFACT_TYPE_COLORS: Record<
   },
 };
 
+// Artifact type short badge labels (for compact displays like Context table)
+export const ARTIFACT_TYPE_BADGE_LABELS: Record<ArtifactType, string> = {
+  [ArtifactType.Prd]: "PRD",
+  [ArtifactType.ImplementationPlan]: "Plan",
+  [ArtifactType.Template]: "Template",
+};
+
 // Issue status labels and colors
 export const ISSUE_STATUS_LABELS: Record<IssueStatus, string> = {
   [IssueStatus.NotStarted]: "Not Started",
@@ -130,6 +137,14 @@ export const EXTERNAL_LINK_TYPE_COLORS: Record<
     text: "text-slate-700 dark:text-slate-300",
   },
 };
+
+// External link type short badge labels (for compact displays like Context table)
+export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
+  {
+    [ExternalLinkType.PullRequest]: "PR",
+    [ExternalLinkType.FigmaDesign]: "Figma",
+    [ExternalLinkType.PreviewDeployment]: "Preview",
+  };
 
 // Issue icon
 export const ISSUE_ICON: React.ElementType = AlertCircleIcon;

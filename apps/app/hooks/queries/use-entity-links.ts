@@ -154,6 +154,7 @@ export function useEntityLinkTree(
       return apiClient.get<EntityLink[]>(`/entity-links?${params.toString()}`);
     },
     enabled: !!entityId,
+    staleTime: 5 * 60 * 1000,
     ...queryOptions,
   });
 }
@@ -207,6 +208,7 @@ export function useLinkedEntities(
       );
     },
     enabled: !!entityId,
+    staleTime: 5 * 60 * 1000,
     ...queryOptions,
   });
 }
@@ -234,6 +236,45 @@ export function useDeleteEntityLink() {
       apiClient.delete<{ deleted: true }>(`/entity-links/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: entityLinkKeys.all });
+    },
+  });
+}
+
+/**
+ * Invalidate only the entity-link list queries whose cached data references
+ * the given entity — either as a link endpoint (sourceId / targetId) or as a
+ * resolved entity.
+ *
+ * Usage:
+ *   const queryClient = useQueryClient();
+ *   invalidateEntityLinkQueries(queryClient, editedEntityId);
+ */
+export function invalidateEntityLinkQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  entityId: string,
+  entityType: EntityType
+) {
+  queryClient.invalidateQueries({
+    queryKey: entityLinkKeys.lists(),
+    predicate: (query) => {
+      if (query.queryKey.length !== 3) {
+        return false;
+      }
+      const [, , filters] = query.queryKey as ReturnType<
+        typeof entityLinkKeys.list
+      >;
+      if (!filters.resolved) {
+        return false;
+      }
+      const data = query.state.data as LinkedEntity[];
+      if (!Array.isArray(data)) {
+        return false;
+      }
+      return data.some(
+        (link) =>
+          (link.sourceType === entityType && link.sourceId === entityId) ||
+          (link.targetType === entityType && link.targetId === entityId)
+      );
     },
   });
 }

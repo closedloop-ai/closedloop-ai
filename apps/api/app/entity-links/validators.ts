@@ -25,7 +25,7 @@ export const findEntityLinksQueryValidator = z.object({
   entityId: z.uuidv7(),
   entityType: entityTypeEnum,
   linkType: linkTypeEnum.optional(),
-  direction: z.enum(LinkDirection).optional().default("both"),
-  mode: z.enum(LinkQueryMode).optional().default("direct"),
+  direction: z.enum(LinkDirection).optional().default(LinkDirection.Both),
+  mode: z.enum(LinkQueryMode).optional().default(LinkQueryMode.Direct),
   maxDepth: z.coerce.number().int().min(1).max(50).optional().default(10),
 });
