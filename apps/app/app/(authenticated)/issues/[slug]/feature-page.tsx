@@ -1,14 +1,6 @@
 "use client";
 
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@repo/design-system/components/ui/breadcrumb";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -16,7 +8,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
 import {
@@ -29,6 +20,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
+import { Header } from "@/app/(authenticated)/components/header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import {
   UnderlineTabsList,
@@ -71,56 +63,39 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
 
   return (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SidebarTrigger className="-ml-1" />
-        <Breadcrumb>
-          <BreadcrumbList>
-            {teamId && teamName ? (
-              <>
-                <BreadcrumbItem>
-                  <BreadcrumbLink href={`/teams/${teamId}/projects`}>
-                    {teamName}
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-              </>
-            ) : null}
-            {teamId && projectId && projectName ? (
-              <>
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href={`/teams/${teamId}/projects/${projectId}`}
-                  >
-                    {projectName}
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-              </>
-            ) : null}
-            <BreadcrumbItem>
-              <BreadcrumbPage>{issue.title}</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
-        <div className="ml-auto">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon-sm" variant="ghost">
-                <MoreHorizontalIcon className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-[160px]">
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <TrashIcon className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
+      <Header
+        breadcrumbs={[
+          ...(teamId && teamName
+            ? [{ label: teamName, href: `/teams/${teamId}/projects` }]
+            : []),
+          ...(teamId && projectId && projectName
+            ? [
+                {
+                  label: projectName,
+                  href: `/teams/${teamId}/projects/${projectId}`,
+                },
+              ]
+            : []),
+          { label: issue.title },
+        ]}
+      >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon-sm" variant="ghost">
+              <MoreHorizontalIcon className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-[160px]">
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              <TrashIcon className="mr-2 h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Header>
 
       <main className="flex-1 overflow-auto">
         <div className="flex h-full">

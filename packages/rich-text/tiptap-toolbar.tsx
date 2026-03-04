@@ -86,7 +86,7 @@ export function TiptapToolbar({
 
   return (
     <TooltipProvider>
-      <div className="flex flex-wrap gap-1 border-b bg-muted/50 p-2">
+      <div className="flex flex-wrap gap-1 border-b bg-background p-2">
         <ToolbarButton
           disabled={readOnly || !canUndo}
           icon={Undo}

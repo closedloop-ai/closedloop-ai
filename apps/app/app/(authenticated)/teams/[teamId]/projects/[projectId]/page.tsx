@@ -7,14 +7,6 @@ import {
 } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@repo/design-system/components/ui/breadcrumb";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -24,7 +16,6 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Separator } from "@repo/design-system/components/ui/separator";
-import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
 import {
   ToggleGroup,
@@ -37,12 +28,14 @@ import {
   FileTextIcon,
   Loader2Icon,
   MoreHorizontalIcon,
+  PanelRightIcon,
   SearchIcon,
   StarIcon,
   TrashIcon,
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
+import { Header } from "@/app/(authenticated)/components/header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
@@ -98,6 +91,7 @@ export default function ProjectDetailPage() {
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useState(true);
 
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();
@@ -216,104 +210,102 @@ export default function ProjectDetailPage() {
 
   return (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SidebarTrigger className="-ml-1" />
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbLink href={`/teams/${teamId}/projects`}>
-                {team.name}
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage>{project.name}</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
+      <Header
+        afterBreadcrumbs={
+          <Button
+            className="ml-1 h-6 w-6"
+            disabled={toggleFavorite.isPending}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleFavorite.mutate({
+                projectId: project.id,
+                isFavorite,
+              });
+            }}
+            size="icon"
+            variant="ghost"
+          >
+            <StarIcon
+              className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
+            />
+            <span className="sr-only">
+              {isFavorite ? "Remove from favorites" : "Add to favorites"}
+            </span>
+          </Button>
+        }
+        breadcrumbs={[
+          { label: team.name, href: `/teams/${teamId}/projects` },
+          { label: project.name },
+        ]}
+      >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="icon" variant="ghost">
+              <MoreHorizontalIcon className="h-4 w-4" />
+              <span className="sr-only">Actions</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              disabled={toggleFavorite.isPending}
+              onClick={() =>
+                toggleFavorite.mutate({
+                  projectId: project.id,
+                  isFavorite,
+                })
+              }
+            >
+              <StarIcon
+                className={`mr-2 h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
+              />
+              {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+              onClick={() => setDeleteDialogOpen(true)}
+            >
+              <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button>
+              Create
+              <ChevronDownIcon className="ml-2 h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+            >
+              <FileTextIcon className="mr-2 h-4 w-4" />
+              PRD
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                handleCreateArtifact(ArtifactType.ImplementationPlan)
+              }
+            >
+              <ClipboardListIcon className="mr-2 h-4 w-4" />
+              Implementation Plan
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
+              <CircleDotIcon className="mr-2 h-4 w-4" />
+              Feature
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
-          className="ml-1 h-6 w-6"
-          disabled={toggleFavorite.isPending}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleFavorite.mutate({
-              projectId: project.id,
-              isFavorite,
-            });
-          }}
+          onClick={() => setShowPropertiesPanel((prev) => !prev)}
           size="icon"
-          variant="ghost"
+          variant={showPropertiesPanel ? "secondary" : "ghost"}
         >
-          <StarIcon
-            className={`h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground"}`}
-          />
-          <span className="sr-only">
-            {isFavorite ? "Remove from favorites" : "Add to favorites"}
-          </span>
+          <PanelRightIcon className="h-4 w-4" />
         </Button>
-        <div className="ml-auto flex items-center gap-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost">
-                <MoreHorizontalIcon className="h-4 w-4" />
-                <span className="sr-only">Actions</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                disabled={toggleFavorite.isPending}
-                onClick={() =>
-                  toggleFavorite.mutate({
-                    projectId: project.id,
-                    isFavorite,
-                  })
-                }
-              >
-                <StarIcon
-                  className={`mr-2 h-4 w-4 ${isFavorite ? "fill-yellow-400 text-yellow-400" : ""}`}
-                />
-                {isFavorite ? "Remove from Favorites" : "Add to Favorites"}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                onClick={() => setDeleteDialogOpen(true)}
-              >
-                <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button>
-                Create
-                <ChevronDownIcon className="ml-2 h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={() => handleCreateArtifact(ArtifactType.Prd)}
-              >
-                <FileTextIcon className="mr-2 h-4 w-4" />
-                PRD
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() =>
-                  handleCreateArtifact(ArtifactType.ImplementationPlan)
-                }
-              >
-                <ClipboardListIcon className="mr-2 h-4 w-4" />
-                Implementation Plan
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
-                <CircleDotIcon className="mr-2 h-4 w-4" />
-                Feature
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </header>
+      </Header>
       <main className="flex-1 overflow-auto">
         <div className="flex h-full">
           {/* Main Content Area */}
@@ -416,17 +408,19 @@ export default function ProjectDetailPage() {
           </Tabs>
 
           {/* Right Sidebar */}
-          <div className="w-[300px] space-y-4 border-l p-4">
-            {/* TODO: Add the several missing event handlers for the properties panel */}
-            <PropertiesPanel
-              onUpdateAssignee={handleUpdateAssignee}
-              onUpdatePriority={handleUpdatePriority}
-              onUpdateTargetDate={handleUpdateTargetDate}
-              project={project}
-            />
-            <Separator />
-            <ActivityPanel activities={activities} />
-          </div>
+          {showPropertiesPanel ? (
+            <div className="w-[300px] space-y-4 border-l p-4">
+              {/* TODO: Add the several missing event handlers for the properties panel */}
+              <PropertiesPanel
+                onUpdateAssignee={handleUpdateAssignee}
+                onUpdatePriority={handleUpdatePriority}
+                onUpdateTargetDate={handleUpdateTargetDate}
+                project={project}
+              />
+              <Separator />
+              <ActivityPanel activities={activities} />
+            </div>
+          ) : null}
         </div>
       </main>
       <CreateArtifactModal

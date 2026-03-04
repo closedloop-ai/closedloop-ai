@@ -21,4 +21,9 @@ export type RichTextEditorProps = {
    * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
    */
   scrollMode?: "inner" | "outer";
+  /**
+   * When true, the formatting toolbar is not rendered inline.
+   * Use with the exported TiptapToolbar to render the toolbar elsewhere.
+   */
+  externalToolbar?: boolean;
 };

@@ -44,7 +44,7 @@ export function MetadataPanel({
   return (
     <div
       className={cn(
-        "min-h-0 w-80 overflow-auto border-l bg-muted/30 p-4",
+        "min-h-0 w-80 overflow-auto border-l bg-background p-4",
         className
       )}
     >
@@ -112,7 +112,7 @@ export function TabbedMetadataPanel({
 }: Readonly<TabbedMetadataPanelProps>) {
   return (
     <div
-      className={cn("w-80 overflow-auto border-l bg-muted/30 p-4", className)}
+      className={cn("w-80 overflow-auto border-l bg-background p-4", className)}
     >
       <Tabs defaultValue={defaultTab ?? tabs[0]?.id}>
         <TabsList className="mb-4 w-full">

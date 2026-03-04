@@ -28,6 +28,7 @@ export function TiptapEditorCore({
   liveblocksExtension,
   liveblocksIsReady,
   scrollMode = "inner",
+  externalToolbar = false,
 }: Readonly<RichTextEditorProps>) {
   const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
   const hasSeededContent = useRef(false);
@@ -74,7 +75,7 @@ export function TiptapEditorCore({
     editorProps: {
       attributes: {
         class: cn(
-          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none p-4 focus:outline-none",
+          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-10 pb-8 focus:outline-none",
           className
         ),
       },
@@ -171,7 +172,7 @@ export function TiptapEditorCore({
         className="flex min-h-0 flex-1 flex-col"
         data-liveblocks-editor-boundary
       >
-        {!readOnly && (
+        {!(readOnly || externalToolbar) && (
           <TiptapToolbar
             editor={editor}
             hasLiveblocksExtension={!!liveblocksExtension}

@@ -50,6 +50,10 @@ type EditorContentProps = {
    * "inner" keeps scroll inside the editor; "outer" lets a parent container scroll.
    */
   scrollMode?: "inner" | "outer";
+  /**
+   * When true, the formatting toolbar is not rendered inline.
+   */
+  externalToolbar?: boolean;
 };
 
 export function EditorContent({
@@ -63,6 +67,7 @@ export function EditorContent({
   contentResetKey,
   contentResetValue,
   scrollMode = "inner",
+  externalToolbar,
 }: Readonly<EditorContentProps>) {
   const shouldUseLiveblocks = !!liveblocksRoomId;
 
@@ -79,6 +84,7 @@ export function EditorContent({
         <RichTextEditor
           contentResetKey={contentResetKey}
           contentResetValue={contentResetValue}
+          externalToolbar={externalToolbar}
           onChange={onChange}
           placeholder={placeholder}
           readOnly={readOnly}
@@ -95,6 +101,7 @@ export function EditorContent({
       className={className}
       contentResetKey={contentResetKey}
       contentResetValue={contentResetValue}
+      externalToolbar={externalToolbar}
       onChange={onChange}
       onEditorReady={onEditorReady}
       placeholder={placeholder}
@@ -124,6 +131,7 @@ function EditorContentWithLiveblocks({
   contentResetKey,
   contentResetValue,
   scrollMode = "inner",
+  externalToolbar,
 }: Readonly<EditorContentWithLiveblocksProps>) {
   const liveblocksExtension = useLiveblocksExtension();
   const isEditorReady = useIsEditorReady();
@@ -151,6 +159,7 @@ function EditorContentWithLiveblocks({
       <RichTextEditor
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
+        externalToolbar={externalToolbar}
         key={editorKeyRef.current}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={isEditorReady}

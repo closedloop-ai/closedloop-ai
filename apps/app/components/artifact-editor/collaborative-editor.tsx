@@ -1,4 +1,3 @@
-import { OptionalArtifactRoom, Presence } from "@repo/collaboration";
 import { useThreads } from "@repo/collaboration/hooks";
 import { Suspense, useEffect } from "react";
 import {
@@ -7,9 +6,8 @@ import {
 } from "./editor-with-comments";
 
 type CollaborativeEditorProps = Omit<EditorWithCommentsProps, "scrollMode"> & {
-  showMetadataPanel: boolean;
-  metadataPanel: React.ReactNode;
   onOpenThreadCountChange?: (count: number) => void;
+  showComments?: boolean;
 };
 
 /**
@@ -34,20 +32,12 @@ function ThreadCountReporter({
 export function CollaborativeEditor({
   liveblocksRoomId,
   readOnly,
-  showMetadataPanel,
-  metadataPanel,
   onOpenThreadCountChange,
+  showComments,
   ...props
 }: Readonly<CollaborativeEditorProps>) {
   return (
-    <OptionalArtifactRoom roomId={liveblocksRoomId}>
-      {/* Presence Indicators (suspends on useOthers/useSelf) */}
-      {!!liveblocksRoomId && (
-        <Suspense fallback={null}>
-          <Presence />
-        </Suspense>
-      )}
-
+    <>
       {/* Thread count reporter — suspends on useThreads */}
       {!!liveblocksRoomId && onOpenThreadCountChange && (
         <Suspense fallback={null}>
@@ -55,18 +45,13 @@ export function CollaborativeEditor({
         </Suspense>
       )}
 
-      {/* Content Area with Optional Metadata Panel */}
-      <div className="flex min-h-0 flex-1">
-        <EditorWithComments
-          liveblocksRoomId={liveblocksRoomId}
-          readOnly={readOnly}
-          scrollMode="outer"
-          {...props}
-        />
-
-        {/* Metadata Panel */}
-        {showMetadataPanel ? metadataPanel : null}
-      </div>
-    </OptionalArtifactRoom>
+      <EditorWithComments
+        liveblocksRoomId={liveblocksRoomId}
+        readOnly={readOnly}
+        scrollMode="outer"
+        showComments={showComments}
+        {...props}
+      />
+    </>
   );
 }

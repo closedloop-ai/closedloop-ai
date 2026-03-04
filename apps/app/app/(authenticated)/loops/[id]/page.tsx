@@ -16,7 +16,12 @@ export default async function LoopDetailPage({ params }: LoopDetailPageProps) {
 
   return (
     <>
-      <Header page="Loop Detail" pages={["Workspace", "Loops"]} />
+      <Header
+        breadcrumbs={[
+          { label: "Loops", href: "/loops" },
+          { label: "Loop Detail" },
+        ]}
+      />
       <main className="flex flex-1 flex-col p-4 pt-0">
         <LoopDetailContainer id={id} />
       </main>
