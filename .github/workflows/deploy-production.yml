@@ -404,14 +404,6 @@ jobs:
           MERGE_SHA=$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid')
           echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Install Health Check Dependencies
-        if: steps.diff.outputs.has_changes == 'true'
-        run: |
-          # Install in /tmp to avoid npm workspace parsing in repo root.
-          mkdir -p /tmp/health-check-deps
-          npm --prefix /tmp/health-check-deps init -y
-          npm --prefix /tmp/health-check-deps install --no-save pg
-
       - name: Run Post-Deploy Health Checks
         id: health_checks
         if: steps.diff.outputs.has_changes == 'true'
@@ -420,44 +412,33 @@ jobs:
           VERCEL_PROJECT_IDS: ${{ secrets.VERCEL_PROJECT_IDS }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
           DEPLOY_SHA: ${{ steps.merge.outputs.merge_sha }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DB_SSL_CA_B64: ${{ secrets.DB_SSL_CA_B64 }}
-          DB_SSL_REJECT_UNAUTHORIZED: ${{ secrets.DB_SSL_REJECT_UNAUTHORIZED }}
+          DB_HEALTH_URL: https://api.closedloop.ai/health/db
+          DB_HEALTH_TOKEN: ${{ secrets.DB_HEALTH_TOKEN }}
+          DB_HEALTH_MAX_WAIT_SECONDS: "90"
+          DB_HEALTH_POLL_INTERVAL_SECONDS: "10"
         run: |
-          # Run Vercel and Database checks in parallel
-          VERCEL_PID=""
-          DB_PID=""
-
-          # Start Vercel check (if configured)
+          # Run Vercel check first so DB health check doesn't race production alias cutover.
           if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_PROJECT_IDS" ]; then
-            echo "Starting Vercel deployment check..."
-            node scripts/deploy/check-vercel.mjs &
-            VERCEL_PID=$!
+            echo "Running Vercel deployment check..."
+            if ! node scripts/deploy/check-vercel.mjs; then
+              echo "::error::Vercel deployment check failed"
+              exit 1
+            fi
           else
             echo "Vercel not configured, skipping"
             echo '{"skipped": true}' > vercel-status.json
           fi
 
-          # Start Database check (if configured)
-          if [ -n "$DATABASE_URL" ]; then
-            echo "Starting database health check..."
-            NODE_PATH=/tmp/health-check-deps/node_modules node scripts/deploy/check-database.mjs &
-            DB_PID=$!
+          # Run database check after Vercel readiness.
+          if [ -n "$DB_HEALTH_URL" ]; then
+            echo "Running database health check..."
+            if ! node scripts/deploy/check-database.mjs; then
+              echo "::error::Database health check failed"
+              exit 1
+            fi
           else
-            echo "Database URL not configured, skipping"
+            echo "DB health URL not configured, skipping"
             echo '{"skipped": true}' > db-status.json
-          fi
-
-          # Wait for checks to complete
-          VERCEL_EXIT=0
-          DB_EXIT=0
-
-          if [ -n "$VERCEL_PID" ]; then
-            wait $VERCEL_PID || VERCEL_EXIT=$?
-          fi
-
-          if [ -n "$DB_PID" ]; then
-            wait $DB_PID || DB_EXIT=$?
           fi
 
           # Report results
@@ -468,16 +449,6 @@ jobs:
           fi
           if [ -f db-status.json ]; then
             echo "Database: $(jq -r 'if .ok then "✓ Healthy" elif .skipped then "⊘ Skipped" else "✗ Issues detected" end' db-status.json)"
-          fi
-
-          # Fail if any check failed
-          if [ $VERCEL_EXIT -ne 0 ]; then
-            echo "::error::Vercel deployment check failed"
-            exit 1
-          fi
-          if [ $DB_EXIT -ne 0 ]; then
-            echo "::error::Database health check failed"
-            exit 1
           fi
 
       - name: Post Success

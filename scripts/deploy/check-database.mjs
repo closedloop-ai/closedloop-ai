@@ -1,214 +1,175 @@
 /**
- * Database Health Check
+ * Database Health Check (via API endpoint)
  *
- * Verifies database connectivity and migration status after deploy.
- * Runs in parallel with Vercel deployment checks.
+ * Calls the deployed API's /health/db endpoint instead of connecting
+ * directly to the database. This avoids needing the GitHub runner's
+ * dynamic IP whitelisted in the RDS security group.
  */
 
-const databaseUrl = process.env.DATABASE_URL;
-const outputPath = process.env.DB_STATUS_PATH || "db-status.json";
+import { writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
-import { readFile, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-
-if (!databaseUrl) {
-  console.log("DATABASE_URL not set, skipping database health check");
-  await writeFile(
-    outputPath,
-    JSON.stringify({ skipped: true, reason: "DATABASE_URL not set" })
-  );
-  process.exit(0);
+function parseSeconds(value, fallbackSeconds) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackSeconds;
 }
 
-// Parse connection string to get host for display (hide password)
-function sanitizeUrl(url) {
-  try {
-    const parsed = new URL(url);
-    parsed.password = "***";
-    return parsed.toString();
-  } catch {
-    return "[invalid url]";
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getResultSummary(result) {
+  const connectivity = result?.checks?.connectivity?.status ?? "unknown";
+  const migrations = result?.checks?.migrations?.status ?? "unknown";
+  const tables = result?.checks?.tables?.count ?? "unknown";
+  return { connectivity, migrations, tables };
+}
+
+export async function runDatabaseHealthCheck({
+  healthUrl = process.env.DB_HEALTH_URL,
+  healthToken = process.env.DB_HEALTH_TOKEN,
+  outputPath = process.env.DB_STATUS_PATH || "db-status.json",
+  maxWaitSeconds = parseSeconds(process.env.DB_HEALTH_MAX_WAIT_SECONDS, 90),
+  pollIntervalSeconds = parseSeconds(process.env.DB_HEALTH_POLL_INTERVAL_SECONDS, 10),
+  requestTimeoutMs = parseSeconds(process.env.DB_HEALTH_REQUEST_TIMEOUT_SECONDS, 30) * 1000,
+  fetchImpl = fetch,
+  writeFileImpl = writeFile,
+  logger = console,
+} = {}) {
+  if (!healthUrl) {
+    logger.log("DB_HEALTH_URL not set, skipping database health check");
+    await writeFileImpl(
+      outputPath,
+      JSON.stringify({ skipped: true, reason: "DB_HEALTH_URL not set" })
+    );
+    return 0;
   }
-}
 
-console.log("Checking database health...");
-console.log(`Connection: ${sanitizeUrl(databaseUrl)}`);
-
-const checks = {
-  connectivity: { status: "pending", latencyMs: null, error: null },
-  migrations: { status: "pending", pending: null, error: null },
-};
-
-// Load pg via CommonJS resolution so NODE_PATH can be honored in CI
-let pg;
-try {
-  const require = createRequire(import.meta.url);
-  pg = require("pg");
-} catch {
-  console.log("pg module not available, skipping database checks");
-  await writeFile(
-    outputPath,
-    JSON.stringify({
-      skipped: true,
-      reason: "pg module not installed in CI environment",
-    })
-  );
-  process.exit(0);
-}
-
-const { Client } = pg;
-
-const sslRejectUnauthorizedEnv = process.env.DB_SSL_REJECT_UNAUTHORIZED;
-const sslRejectUnauthorized =
-  sslRejectUnauthorizedEnv == null || sslRejectUnauthorizedEnv === ""
-    ? true
-    : sslRejectUnauthorizedEnv.toLowerCase() !== "false";
-
-let sslCa;
-let sslCaSource;
-const sslCaCandidates = [
-  process.env.DB_SSL_CA_B64 ? "DB_SSL_CA_B64" : null,
-  process.env.DB_SSL_CA_PATH ? "DB_SSL_CA_PATH" : null,
-  process.env.PGSSLROOTCERT ? "PGSSLROOTCERT" : null,
-].filter(Boolean);
-if (sslCaCandidates.length > 1) {
-  console.warn(
-    `Multiple DB SSL CA sources set (${sslCaCandidates.join(
-      ", "
-    )}); using highest-precedence value.`
-  );
-}
-try {
-  if (process.env.DB_SSL_CA_B64) {
-    sslCa = Buffer.from(process.env.DB_SSL_CA_B64, "base64").toString("utf8");
-    sslCaSource = "DB_SSL_CA_B64";
-  } else if (process.env.DB_SSL_CA_PATH) {
-    sslCa = await readFile(process.env.DB_SSL_CA_PATH, "utf8");
-    sslCaSource = `DB_SSL_CA_PATH (${process.env.DB_SSL_CA_PATH})`;
-  } else if (process.env.PGSSLROOTCERT) {
-    sslCa = await readFile(process.env.PGSSLROOTCERT, "utf8");
-    sslCaSource = `PGSSLROOTCERT (${process.env.PGSSLROOTCERT})`;
+  if (!healthToken) {
+    logger.error("DB_HEALTH_TOKEN not set, cannot authenticate to database health endpoint");
+    await writeFileImpl(
+      outputPath,
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ok: false,
+        error: "DB_HEALTH_TOKEN not set",
+        checks: {
+          connectivity: {
+            status: "error",
+            error: "db_health_token_missing",
+          },
+        },
+      })
+    );
+    return 1;
   }
-} catch (error) {
-  console.error(`Failed to load DB SSL CA from ${sslCaSource || "env"}`);
-  console.error(error?.message || error);
-  process.exit(1);
-}
 
-if (!sslRejectUnauthorized) {
-  console.log("Database SSL: rejectUnauthorized=false (NOT recommended)");
-} else if (sslCa) {
-  console.log(`Database SSL: custom CA provided (${sslCaSource})`);
-}
+  logger.log("Checking database health...");
+  logger.log(`Endpoint: ${healthUrl}`);
+  logger.log(
+    `Max wait: ${maxWaitSeconds}s, Poll interval: ${pollIntervalSeconds}s, Request timeout: ${Math.round(
+      requestTimeoutMs / 1000
+    )}s`
+  );
 
-// Strip sslmode from the URL so the pg connection-string parser doesn't
-// override our explicit ssl config (pg now treats sslmode=require as verify-full).
-// We preserve the original sslmode to ensure SSL stays enabled.
-const parsedUrl = new URL(databaseUrl);
-const originalSslMode = parsedUrl.searchParams.get("sslmode");
-parsedUrl.searchParams.delete("sslmode");
+  const deadline = Date.now() + maxWaitSeconds * 1000;
+  const pollIntervalMs = pollIntervalSeconds * 1000;
+  let attempt = 0;
+  let lastError = null;
+  let lastResult = null;
 
-const clientConfig = { connectionString: parsedUrl.toString() };
-if (
-  (originalSslMode && originalSslMode !== "disable") ||
-  sslCa ||
-  !sslRejectUnauthorized
-) {
-  clientConfig.ssl = { rejectUnauthorized: sslRejectUnauthorized };
-  if (sslCa) {
-    clientConfig.ssl.ca = sslCa;
-  }
-}
+  while (Date.now() <= deadline) {
+    attempt += 1;
 
-const client = new Client(clientConfig);
+    try {
+      const response = await fetchImpl(healthUrl, {
+        headers: {
+          Authorization: `Bearer ${healthToken}`,
+        },
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
 
-try {
-  // Check 1: Connectivity
-  console.log("\n1. Testing connectivity...");
-  const connectStart = Date.now();
-  await client.connect();
-  checks.connectivity.latencyMs = Date.now() - connectStart;
-  checks.connectivity.status = "ok";
-  console.log(`   ✓ Connected in ${checks.connectivity.latencyMs}ms`);
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`Authentication failed with status ${response.status}`);
+        }
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
-  // Check 2: Basic query
-  console.log("\n2. Running basic query...");
-  const queryStart = Date.now();
-  await client.query("SELECT 1 as health_check");
-  const queryLatency = Date.now() - queryStart;
-  console.log(`   ✓ Query successful in ${queryLatency}ms`);
+      const result = await response.json();
+      if (!result || typeof result !== "object") {
+        throw new Error("Health endpoint returned invalid JSON payload");
+      }
 
-  // Check 3: Migration status (if _prisma_migrations table exists)
-  console.log("\n3. Checking migration status...");
-  try {
-    const migrationResult = await client.query(`
-      SELECT COUNT(*) as total,
-             COUNT(*) FILTER (WHERE finished_at IS NULL AND rolled_back_at IS NULL) as pending
-      FROM _prisma_migrations
-    `);
-    const { total, pending } = migrationResult.rows[0];
-    checks.migrations.total = Number.parseInt(total, 10);
-    checks.migrations.pending = Number.parseInt(pending, 10);
+      lastResult = result;
+      await writeFileImpl(outputPath, JSON.stringify(result, null, 2));
 
-    if (pending > 0) {
-      checks.migrations.status = "error";
-      checks.migrations.error = `${pending} pending migration(s) out of ${total}`;
-    } else {
-      checks.migrations.status = "ok";
+      const summary = getResultSummary(result);
+      logger.log("\n--- Summary ---");
+      logger.log(`Connectivity: ${summary.connectivity}`);
+      logger.log(`Migrations: ${summary.migrations}`);
+      logger.log(`Tables: ${summary.tables}`);
+      logger.log(`Overall: ${result.ok ? "✓ Healthy" : "✗ Issues detected"}`);
+
+      if (result.ok) {
+        return 0;
+      }
+
+      lastError = new Error("Health endpoint returned ok=false");
+    } catch (error) {
+      lastError = error;
+      logger.error(
+        `\n✗ Database health check attempt ${attempt} failed: ${getErrorMessage(error)}`
+      );
+      if (
+        error instanceof Error &&
+        error.message.toLowerCase().includes("authentication failed")
+      ) {
+        break;
+      }
     }
 
-    if (pending > 0) {
-      console.log(`   ✗ ${pending} pending migration(s) out of ${total}`);
-    } else {
-      console.log(`   ✓ All ${total} migrations applied`);
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      break;
     }
-  } catch (migrationError) {
-    // Table might not exist if this is first deploy
-    if (migrationError.message.includes("does not exist")) {
-      checks.migrations.status = "ok";
-      checks.migrations.note = "No migrations table (might be first deploy)";
-      console.log("   ✓ No migrations table found (OK for first deploy)");
-    } else {
-      checks.migrations.status = "error";
-      checks.migrations.error = migrationError.message;
-      console.log(`   ✗ Error checking migrations: ${migrationError.message}`);
-    }
+
+    logger.log(
+      `Retrying in ${Math.min(pollIntervalMs, remainingMs) / 1000}s (time remaining: ${Math.ceil(
+        remainingMs / 1000
+      )}s)...`
+    );
+    await sleep(Math.min(pollIntervalMs, remainingMs));
   }
 
-  // Check 4: Table count (sanity check)
-  console.log("\n4. Counting tables...");
-  const tableResult = await client.query(`
-    SELECT COUNT(*) as count
-    FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-  `);
-  const tableCount = Number.parseInt(tableResult.rows[0].count, 10);
-  console.log(`   ✓ Found ${tableCount} tables in public schema`);
-} catch (error) {
-  console.error(`\n✗ Database check failed: ${error.message}`);
-  checks.connectivity.status = "error";
-  checks.connectivity.error = error.message;
-} finally {
-  try {
-    await client.end();
-  } catch {
-    // Ignore close errors
-  }
+  const errorMessage = getErrorMessage(lastError || "Database health check timed out");
+  const summary = lastResult
+    ? {
+        ...lastResult,
+        ok: false,
+        error: `Database health check did not become healthy before timeout (${maxWaitSeconds}s): ${errorMessage}`,
+      }
+    : {
+        timestamp: new Date().toISOString(),
+        ok: false,
+        error: `Database health check failed after ${maxWaitSeconds}s: ${errorMessage}`,
+        checks: {
+          connectivity: {
+            status: "error",
+            error: "db_health_endpoint_unreachable",
+          },
+        },
+      };
+
+  await writeFileImpl(outputPath, JSON.stringify(summary, null, 2));
+  return 1;
 }
 
-const summary = {
-  timestamp: new Date().toISOString(),
-  ok: checks.connectivity.status === "ok" && checks.migrations.status === "ok",
-  checks,
-};
-
-await writeFile(outputPath, JSON.stringify(summary, null, 2));
-
-console.log("\n--- Summary ---");
-console.log(`Connectivity: ${checks.connectivity.status}`);
-console.log(`Migrations: ${checks.migrations.status}`);
-console.log(`Overall: ${summary.ok ? "✓ Healthy" : "✗ Issues detected"}`);
-
-if (!summary.ok) {
-  process.exit(1);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const code = await runDatabaseHealthCheck();
+  process.exit(code);
 }
