@@ -2,6 +2,7 @@ import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
 import type { JudgeDetailResponse } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { isCanonicalJudgePromptName } from "@/lib/judge-name-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -11,7 +12,6 @@ import {
 } from "@/lib/route-utils";
 import { judgesAnalyticsService } from "../service";
 
-const PROMPT_NAME_PATTERN = /^[a-z0-9_]+$/;
 const judgeDetailQueryValidator = z.object({
   reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
 });
@@ -31,7 +31,7 @@ export const GET = withAnyAuth<
     let promptName = decodeURIComponent(rawPromptName);
     promptName = promptName.toLowerCase();
 
-    if (!PROMPT_NAME_PATTERN.exec(promptName)) {
+    if (!isCanonicalJudgePromptName(promptName)) {
       return badRequestResponse(
         "Invalid promptName format: must be alphanumeric with underscores"
       );
