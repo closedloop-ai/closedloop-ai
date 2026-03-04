@@ -1,5 +1,6 @@
 "use client";
 
+import { JUDGE_RADAR_METRICS } from "@repo/api/src/constants";
 import type { JudgeDetail } from "@repo/api/src/types/judges-analytics";
 import {
   Alert,
@@ -20,7 +21,7 @@ import {
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
-import { AXIS_LABELS, JudgeRadarChart } from "./radar-chart";
+import { AXIS_LABELS, type AxisLabel, JudgeRadarChart } from "./radar-chart";
 
 type CharacteristicsPanelProps = {
   judge: JudgeDetail;
@@ -110,14 +111,12 @@ function MetricsHelpButton() {
   );
 }
 
-type AxisLabel = (typeof AXIS_LABELS)[number];
-
 const AXIS_HELP_BY_LABEL: Record<
   AxisLabel,
   { formula: string; interpretation: string }
 > = {
   Stubbornness: {
-    formula: "1 - clamp(stdDev / 0.5, 0, 1)",
+    formula: `1 - clamp(stdDev / ${JUDGE_RADAR_METRICS.stubbornness.stdDevNormalizationDivisor}, 0, 1)`,
     interpretation:
       "Higher means the judge scores more consistently across artifacts.",
   },
@@ -132,7 +131,7 @@ const AXIS_HELP_BY_LABEL: Record<
       "Higher means the judge tends to split between very different score groups.",
   },
   Certainty: {
-    formula: "count(score > 0.7 or score < 0.3) / totalScores",
+    formula: `count(score > ${JUDGE_RADAR_METRICS.certainty.extremeHighScore} or score < ${JUDGE_RADAR_METRICS.certainty.extremeLowScore}) / totalScores`,
     interpretation:
       "Higher means the judge more often gives decisive extreme scores rather than middle scores.",
   },

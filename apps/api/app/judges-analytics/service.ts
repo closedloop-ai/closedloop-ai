@@ -1,4 +1,4 @@
-import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
+import { JUDGE_RADAR_METRICS, JUDGE_THRESHOLDS } from "@repo/api/src/constants";
 import type { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   type EvaluationReportType,
@@ -1000,7 +1000,11 @@ export function computeCertaintyFraction(values: number[]): number {
   if (values.length === 0) {
     return 0;
   }
-  const extremeCount = values.filter((v) => v > 0.7 || v < 0.3).length;
+  const extremeCount = values.filter(
+    (v) =>
+      v > JUDGE_RADAR_METRICS.certainty.extremeHighScore ||
+      v < JUDGE_RADAR_METRICS.certainty.extremeLowScore
+  ).length;
   return extremeCount / values.length;
 }
 
@@ -1011,7 +1015,13 @@ function toRadarAxes(
   certaintyFraction: number
 ): RadarAxes {
   return {
-    stubbornness: 1 - clamp(stdDev / 0.5, 0, 1),
+    stubbornness:
+      1 -
+      clamp(
+        stdDev / JUDGE_RADAR_METRICS.stubbornness.stdDevNormalizationDivisor,
+        0,
+        1
+      ),
     optimism: mean,
     polarity: bimodality,
     certainty: certaintyFraction,

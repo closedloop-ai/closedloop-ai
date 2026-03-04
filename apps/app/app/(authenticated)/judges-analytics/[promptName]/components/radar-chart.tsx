@@ -213,7 +213,7 @@ type RadarTooltipPayloadItem = {
   payload?: RadarChartDatum;
 };
 
-type AxisLabel = (typeof AXIS_LABELS)[number];
+export type AxisLabel = (typeof AXIS_LABELS)[number];
 
 const AXIS_KEY_BY_LABEL: Record<AxisLabel, keyof RadarAxes> = {
   Stubbornness: "stubbornness",

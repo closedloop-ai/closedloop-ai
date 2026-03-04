@@ -9,3 +9,14 @@ export const JUDGE_THRESHOLDS = {
   polarity: { polarizing: 0.65 },
   minScoreCount: 10,
 } as const;
+
+/** Canonical constants for judge radar-axis calculations and documentation text. */
+export const JUDGE_RADAR_METRICS = {
+  certainty: {
+    extremeHighScore: 0.7,
+    extremeLowScore: 0.3,
+  },
+  stubbornness: {
+    stdDevNormalizationDivisor: 0.5,
+  },
+} as const;
