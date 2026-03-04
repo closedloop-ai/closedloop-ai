@@ -180,12 +180,30 @@ jobs:
           # legacy branch protection), so we let GitHub handle the gating natively.
           gh pr merge "$PR_URL" --auto --merge --delete-branch=false
 
+          get_pr_state() {
+            local attempt state
+            for attempt in 1 2 3; do
+              if state=$(gh pr view "$PR_URL" --json state --jq '.state'); then
+                echo "$state"
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "Failed to fetch PR state (attempt $attempt/3), retrying in 5s..."
+                sleep 5
+              fi
+            done
+            return 1
+          }
+
           # Poll until the PR is actually merged (timeout after 35 minutes)
           TIMEOUT=2100
           INTERVAL=15
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
-            STATE=$(gh pr view "$PR_URL" --json state --jq '.state')
+            if ! STATE=$(get_pr_state); then
+              echo "::error::Unable to fetch PR state from GitHub after retries."
+              exit 1
+            fi
             if [ "$STATE" = "MERGED" ]; then
               echo "PR merged successfully."
               break
@@ -201,10 +219,21 @@ jobs:
           done
 
           if [ $ELAPSED -ge $TIMEOUT ]; then
-            # Disable auto-merge on timeout so it doesn't merge unexpectedly later
-            gh pr merge "$PR_URL" --disable-auto
-            echo "::error::Timed out waiting for PR to merge (${TIMEOUT}s). Auto-merge disabled."
-            exit 1
+            # Final state check prevents false timeout failures if merge happened during last sleep.
+            if ! FINAL_STATE=$(get_pr_state); then
+              echo "::error::Unable to fetch PR state from GitHub after timeout."
+              exit 1
+            fi
+            if [ "$FINAL_STATE" = "MERGED" ]; then
+              echo "PR merged successfully at timeout boundary."
+            else
+              # Disable auto-merge on timeout so it doesn't merge unexpectedly later.
+              if [ "$FINAL_STATE" = "OPEN" ]; then
+                gh pr merge "$PR_URL" --disable-auto
+              fi
+              echo "::error::Timed out waiting for PR to merge (${TIMEOUT}s). Final PR state: $FINAL_STATE."
+              exit 1
+            fi
           fi
 
           MERGE_SHA=$(gh pr view "$PR_URL" --json mergeCommit --jq '.mergeCommit.oid')
