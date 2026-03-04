@@ -4,6 +4,7 @@ import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import {
   ensureElectronDetection,
   getElectronDetectionSnapshot,
+  invalidateElectronDetectionCache,
 } from "./electron-detection";
 import { getEngineerRoutingSelection } from "./routing-store";
 
@@ -129,7 +130,14 @@ function createFetchInterceptor(
     );
 
     const outgoing = await buildLocalhostRequest(request, localhostUrl);
-    return originalFetch(outgoing);
+    try {
+      return await originalFetch(outgoing);
+    } catch (error) {
+      if (error instanceof TypeError) {
+        invalidateElectronDetectionCache();
+      }
+      throw error;
+    }
   };
 }
 

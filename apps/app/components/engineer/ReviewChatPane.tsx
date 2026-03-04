@@ -1999,16 +1999,27 @@ async function streamReviewOutput(
         } else if (event.type === "sessionId" && event.sessionId) {
           console.log(`[stream-reader] Session ID: ${event.sessionId}`);
           onSessionId?.(event.sessionId);
-        } else if (event.type === "output" && event.content) {
+        } else if (
+          (event.type === "output" || event.type === "text") &&
+          event.content
+        ) {
           accumulated += event.content;
           setOutput(accumulated);
+        } else if (event.type === "status" && event.sessionId) {
+          // Electron sends session ID as a "status" event
+          console.log(
+            `[stream-reader] Session ID (status): ${event.sessionId}`
+          );
+          onSessionId?.(event.sessionId);
         } else if (event.type === "usage" && event.contextPercent != null) {
           onContextPercent?.(event.contextPercent);
         } else if (event.type === "done") {
           console.log(`[stream-reader] Done event, exitCode=${event.exitCode}`);
           receivedDone = true;
         } else if (event.type === "error") {
-          toast.error("Review error", { description: event.content });
+          toast.error("Review error", {
+            description: event.content ?? event.error,
+          });
         }
       } catch {
         console.log(`[stream-reader] Non-JSON line: ${line.slice(0, 200)}`);

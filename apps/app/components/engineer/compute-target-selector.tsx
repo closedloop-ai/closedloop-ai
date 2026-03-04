@@ -20,10 +20,7 @@ import { Check, ChevronDown, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useComputeTargets } from "@/hooks/queries/use-compute-targets";
 import { useIsMounted } from "@/hooks/use-is-mounted";
-import {
-  ensureElectronDetection,
-  useElectronDetection,
-} from "@/lib/engineer/electron-detection";
+import { useElectronDetection } from "@/lib/engineer/electron-detection";
 import {
   setEngineerRoutingManualSelection,
   useEngineerRoutingSelection,
@@ -173,6 +170,8 @@ function OptionIcon({ option }: { option: SelectorOption }) {
     return <TargetStatusDot online={option.target.isOnline} />;
   }
   if (option.mode === EngineerRoutingMode.LocalElectron) {
+    // LocalElectron routes directly to localhost — detection.detected is
+    // guaranteed true when this option is visible, so always show online.
     return <TargetStatusDot online />;
   }
   return <Server className="size-3.5 text-muted-foreground" />;
@@ -182,10 +181,9 @@ function isOnlineOption(option: SelectorOption): boolean {
   if (isCloudOption(option)) {
     return option.target.isOnline;
   }
-  return (
-    option.mode === EngineerRoutingMode.LocalElectron ||
-    option.mode === EngineerRoutingMode.LocalDev
-  );
+  // LocalElectron: detection.detected is guaranteed true when visible.
+  // LocalDev: always available in local environment.
+  return true;
 }
 
 export function ComputeTargetSelector() {
@@ -213,15 +211,7 @@ export function ComputeTargetSelector() {
   }
 
   return (
-    <Popover
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (nextOpen) {
-          ensureElectronDetection({ force: true }).catch(() => undefined);
-        }
-      }}
-      open={open}
-    >
+    <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
         <Button
           className="min-w-[220px] justify-between"
