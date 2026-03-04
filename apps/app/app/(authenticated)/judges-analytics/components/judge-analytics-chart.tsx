@@ -33,19 +33,6 @@ type BoxPlotDataPoint = {
 const EVAL_COLOR = "#2563EB";
 const HUMAN_COLOR = "#EAB308";
 
-const RechartsBarChart = BarChart as unknown as React.ComponentType<
-  Record<string, unknown>
->;
-const RechartsXAxis = XAxis as unknown as React.ComponentType<
-  Record<string, unknown>
->;
-const RechartsYAxis = YAxis as unknown as React.ComponentType<
-  Record<string, unknown>
->;
-const RechartsBar = Bar as unknown as React.ComponentType<
-  Record<string, unknown>
->;
-
 // Box plot vertical positions use the chart's global Y scale; the Bar slot is only for x/width.
 type BoxPlotShapeProps = {
   x?: number;
@@ -397,13 +384,13 @@ export function JudgeAnalyticsChart({
 
   return (
     <ChartContainer className="h-64 w-full" config={chartConfig}>
-      <RechartsBarChart
+      <BarChart
         accessibilityLayer
         aria-label={`Box plot showing judge score distributions for ${artifactType}`}
         data={boxPlotData}
         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
       >
-        <RechartsXAxis
+        <XAxis
           angle={-45}
           dataKey="name"
           height={80}
@@ -411,20 +398,20 @@ export function JudgeAnalyticsChart({
           textAnchor="end"
           tick={{ fontSize: 12 }}
         />
-        <RechartsYAxis
+        <YAxis
           domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
           tickFormatter={(v: number) => v.toFixed(1)}
         />
         <ChartTooltip content={<BoxPlotTooltip />} />
-        <RechartsBar
+        <Bar
           dataKey="median"
           fill={EVAL_COLOR}
           shape={(props: unknown) => (
             <BoxPlotShape {...(props as BoxPlotShapeProps)} yDomain={yDomain} />
           )}
         />
-      </RechartsBarChart>
+      </BarChart>
     </ChartContainer>
   );
 }

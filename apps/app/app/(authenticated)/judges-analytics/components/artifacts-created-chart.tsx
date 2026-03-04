@@ -19,8 +19,8 @@ import {
 } from "@repo/design-system/components/ui/chart";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, parse } from "date-fns";
-import { type ComponentType, useMemo, useState } from "react";
-import { Bar, BarChart, type LegendProps, XAxis, YAxis } from "recharts";
+import { useMemo, useState } from "react";
+import { Bar, BarChart, XAxis, YAxis } from "recharts";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
@@ -47,16 +47,6 @@ function formatBucketLabel(
 }
 
 const CHART_COLORS = 5;
-const RechartsBarChart = BarChart as unknown as ComponentType<
-  Record<string, unknown>
->;
-const RechartsXAxis = XAxis as unknown as ComponentType<
-  Record<string, unknown>
->;
-const RechartsYAxis = YAxis as unknown as ComponentType<
-  Record<string, unknown>
->;
-const RechartsBar = Bar as unknown as ComponentType<Record<string, unknown>>;
 
 export function ArtifactsCreatedChart({
   startDate,
@@ -159,24 +149,17 @@ export function ArtifactsCreatedChart({
         typeKeys.length > 0 && (
           <div className="space-y-0">
             <ChartContainer className="h-64 w-full" config={chartConfig}>
-              <RechartsBarChart
+              <BarChart
                 accessibilityLayer
                 aria-label="Artifacts created per period by type"
                 data={chartData}
                 margin={{ bottom: 60, left: 20, right: 30, top: 20 }}
               >
                 <ChartLegend
-                  content={
-                    (({ payload }: Pick<LegendProps, "payload">) => (
-                      <ChartLegendContent
-                        payload={payload}
-                        verticalAlign="top"
-                      />
-                    )) as LegendProps["content"]
-                  }
+                  content={<ChartLegendContent verticalAlign="top" />}
                   verticalAlign="top"
                 />
-                <RechartsXAxis
+                <XAxis
                   angle={-45}
                   dataKey="label"
                   height={80}
@@ -184,7 +167,7 @@ export function ArtifactsCreatedChart({
                   textAnchor="end"
                   tick={{ fontSize: 12 }}
                 />
-                <RechartsYAxis
+                <YAxis
                   allowDecimals={false}
                   label={{
                     value: "Count",
@@ -194,14 +177,14 @@ export function ArtifactsCreatedChart({
                 />
                 <ChartTooltip content={<ChartTooltipContent />} />
                 {typeKeys.map((type) => (
-                  <RechartsBar
+                  <Bar
                     dataKey={type}
                     fill={`var(--color-${type})`}
                     key={type}
                     radius={[4, 4, 0, 0]}
                   />
                 ))}
-              </RechartsBarChart>
+              </BarChart>
             </ChartContainer>
           </div>
         )}
