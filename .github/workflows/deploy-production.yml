@@ -220,14 +220,25 @@ jobs:
             : > "$output_file"
 
             while true; do
-              if ! THREAD_RESPONSE=$(gh api graphql \
-                -f query="$QUERY" \
-                -F owner="$REPO_OWNER" \
-                -F name="$REPO_NAME" \
-                -F number="$PR_NUMBER" \
-                -F cursor="$cursor" 2>/dev/null); then
-                echo "::warning::Failed to fetch review thread page ${page} for PR #${PR_NUMBER}. Continuing deploy."
-                return 1
+              if [ -n "$cursor" ]; then
+                if ! THREAD_RESPONSE=$(gh api graphql \
+                  -f query="$QUERY" \
+                  -F owner="$REPO_OWNER" \
+                  -F name="$REPO_NAME" \
+                  -F number="$PR_NUMBER" \
+                  -F cursor="$cursor" 2>/dev/null); then
+                  echo "::warning::Failed to fetch review thread page ${page} for PR #${PR_NUMBER}. Continuing deploy."
+                  return 1
+                fi
+              else
+                if ! THREAD_RESPONSE=$(gh api graphql \
+                  -f query="$QUERY" \
+                  -F owner="$REPO_OWNER" \
+                  -F name="$REPO_NAME" \
+                  -F number="$PR_NUMBER" 2>/dev/null); then
+                  echo "::warning::Failed to fetch review thread page ${page} for PR #${PR_NUMBER}. Continuing deploy."
+                  return 1
+                fi
               fi
 
               if ! PAGE_THREAD_IDS=$(echo "$THREAD_RESPONSE" | jq -r --arg bot_re "$CLAUDE_BOT_REGEX" '
