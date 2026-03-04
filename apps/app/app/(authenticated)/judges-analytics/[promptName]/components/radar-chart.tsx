@@ -22,7 +22,14 @@ type JudgeRadarChartProps = {
 
 const AXIS_LABELS = ["Stubbornness", "Optimism", "Polarity", "Certainty"];
 
-const VERSION_COLORS = ["#3b82f6", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6"];
+const CHART_COLOR_TOKEN_COUNT = 5;
+const LATEST_COLOR = "var(--chart-1)";
+
+function getOverlayColor(index: number): string {
+  // Start from chart-2 to keep "Latest" visually distinct from overlays by default.
+  const tokenIndex = ((index + 1) % CHART_COLOR_TOKEN_COUNT) + 1;
+  return `var(--chart-${tokenIndex})`;
+}
 
 function buildAxesData(axes: RadarAxes | null) {
   if (!axes) {
@@ -85,10 +92,10 @@ export function JudgeRadarChart({
             <PolarAngleAxis dataKey="axis" />
             <Radar
               dataKey="latest"
-              fill="#3b82f6"
+              fill={LATEST_COLOR}
               fillOpacity={0.2}
               name="Latest"
-              stroke="#3b82f6"
+              stroke={LATEST_COLOR}
               strokeWidth={2}
             />
             {selectedVersionIds.map((versionId, index) => {
@@ -98,7 +105,7 @@ export function JudgeRadarChart({
               if (!version) {
                 return null;
               }
-              const color = VERSION_COLORS[(index + 1) % VERSION_COLORS.length];
+              const color = getOverlayColor(index);
               return (
                 <Radar
                   dataKey={`v${version.version}`}

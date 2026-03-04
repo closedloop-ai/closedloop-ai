@@ -199,16 +199,33 @@ export async function getCodeHumanCountsByType(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  artifactTypeById: Map<string, ArtifactType>,
   types: ArtifactType[]
 ): Promise<HumanCountsByType> {
   const { humanRatingsByType, humanCommentsByType } =
     initializeHumanCountsByType(types);
 
-  const artifactIds = Array.from(artifactTypeById.keys());
-  if (artifactIds.length === 0) {
+  if (types.length === 0) {
     return { humanRatingsByType, humanCommentsByType };
   }
+
+  const artifacts = await withDb((db) =>
+    db.artifact.findMany({
+      where: {
+        organizationId,
+        type: { in: types },
+      },
+      select: { id: true, type: true },
+    })
+  );
+
+  if (artifacts.length === 0) {
+    return { humanRatingsByType, humanCommentsByType };
+  }
+
+  const idToType = new Map(
+    artifacts.map((artifact) => [artifact.id, artifact.type] as const)
+  );
+  const artifactIds = artifacts.map((artifact) => artifact.id);
 
   const pullRequests = await withDb((db) =>
     db.gitHubPullRequest.findMany({
@@ -229,10 +246,14 @@ export async function getCodeHumanCountsByType(
     if (pullRequest.artifactId == null) {
       continue;
     }
-    const type = artifactTypeById.get(pullRequest.artifactId);
+    const type = idToType.get(pullRequest.artifactId);
     if (type !== undefined) {
       prIdToType.set(pullRequest.id, type);
     }
+  }
+
+  if (prIdToType.size === 0) {
+    return { humanRatingsByType, humanCommentsByType };
   }
 
   const ratings = await withDb((db) =>
@@ -399,23 +420,6 @@ function collectAllArtifactIds(
   return Array.from(allIds);
 }
 
-function collectArtifactTypeById(
-  aggregator: Map<
-    ArtifactType,
-    Map<string, { scores: number[]; artifactIds: Set<string> }>
-  >
-): Map<string, ArtifactType> {
-  const artifactTypeById = new Map<string, ArtifactType>();
-  for (const [artifactType, judgeMap] of aggregator) {
-    for (const judgeData of judgeMap.values()) {
-      for (const artifactId of judgeData.artifactIds) {
-        artifactTypeById.set(artifactId, artifactType);
-      }
-    }
-  }
-  return artifactTypeById;
-}
-
 /** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
 function computeJudgeStats(
   judgeName: string,
@@ -508,7 +512,6 @@ async function getCodeHumanData(
   organizationId: string,
   startDate: Date,
   endDate: Date,
-  artifactTypeById: Map<string, ArtifactType>,
   types: ArtifactType[],
   artifactIds: string[]
 ): Promise<{
@@ -517,13 +520,7 @@ async function getCodeHumanData(
   humanRatingsByArtifact: Map<string, number[]>;
 }> {
   const { humanRatingsByType, humanCommentsByType } =
-    await getCodeHumanCountsByType(
-      organizationId,
-      startDate,
-      endDate,
-      artifactTypeById,
-      types
-    );
+    await getCodeHumanCountsByType(organizationId, startDate, endDate, types);
   const humanRatingsByArtifact = await getCodeHumanRatingsByArtifact(
     organizationId,
     startDate,
@@ -635,7 +632,6 @@ export const judgesAnalyticsService = {
 
     const types = Array.from(aggregator.keys());
     const artifactIds = collectAllArtifactIds(aggregator);
-    const artifactTypeById = collectArtifactTypeById(aggregator);
 
     const { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact } =
       reportType === EvaluationReportTypeValues.Code
@@ -643,7 +639,6 @@ export const judgesAnalyticsService = {
             organizationId,
             startDate,
             endDate,
-            artifactTypeById,
             types,
             artifactIds
           )

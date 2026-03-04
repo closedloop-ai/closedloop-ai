@@ -20,7 +20,7 @@ export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.extend({
   reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
 });
 
-export const artifactCountsQueryValidator = dateRangeQueryValidator.safeExtend({
+export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
   groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
 });
 

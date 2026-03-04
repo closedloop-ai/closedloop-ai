@@ -84,18 +84,21 @@ export default function JudgesAnalyticsPage() {
           </div>
         )}
 
-      {planQuery.data && codeQuery.data && (
-        <div className="space-y-8">
-          <ReportTypeSection
-            groups={planQuery.data.groups}
-            reportType={EvaluationReportType.Plan}
-          />
-          <ReportTypeSection
-            groups={codeQuery.data.groups}
-            reportType={EvaluationReportType.Code}
-          />
-        </div>
-      )}
+      {planQuery.data &&
+        codeQuery.data &&
+        (planQuery.data.groups.length > 0 ||
+          codeQuery.data.groups.length > 0) && (
+          <div className="space-y-8">
+            <ReportTypeSection
+              groups={planQuery.data.groups}
+              reportType={EvaluationReportType.Plan}
+            />
+            <ReportTypeSection
+              groups={codeQuery.data.groups}
+              reportType={EvaluationReportType.Code}
+            />
+          </div>
+        )}
     </div>
   );
 }

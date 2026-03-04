@@ -305,12 +305,13 @@ describe("getCodeHumanCountsByType", () => {
   });
 
   it("counts pull request ratings/comments per artifact type", async () => {
-    const artifactTypeById = new Map<string, ArtifactType>([
-      ["a1", ArtifactType.ImplementationPlan],
-      ["a2", ArtifactType.Prd],
-    ]);
-
     const mockDb = {
+      artifact: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "a1", type: ArtifactType.ImplementationPlan },
+          { id: "a2", type: ArtifactType.Prd },
+        ]),
+      },
       gitHubPullRequest: {
         findMany: vi.fn().mockResolvedValue([
           { id: "pr-1", artifactId: "a1" },
@@ -339,7 +340,6 @@ describe("getCodeHumanCountsByType", () => {
       "org-1",
       new Date("2026-01-01"),
       new Date("2026-01-31"),
-      artifactTypeById,
       [ArtifactType.ImplementationPlan, ArtifactType.Prd]
     );
 
