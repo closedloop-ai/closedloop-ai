@@ -214,7 +214,7 @@ export function PRDEditor({
                         onClick={session.handlePublish}
                         size="sm"
                       >
-                        {isPending ? "Publishing..." : "Publish"}
+                        {content.isSaving ? "Publishing..." : "Publish"}
                       </Button>
                     </>
                   ) : (

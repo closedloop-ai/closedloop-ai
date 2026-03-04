@@ -94,7 +94,7 @@ export function EditorWithComments({
           {liveblocksEnabled && (
             <Suspense fallback={null}>
               {/* Floating comments on mobile/tablet (< 1280px) */}
-              <div className="xl:hidden">
+              <div className={showComments ? "xl:hidden" : "hidden"}>
                 <OptionalComments
                   editor={editor}
                   mode="floating"

@@ -200,7 +200,7 @@ export function TiptapEditorCore({
         </div>
       </div>
 
-      {!readOnly && (
+      {!(readOnly || externalToolbar) && (
         <TiptapPasteMarkdownDialog
           onOpenChange={setShowPasteMarkdownDialog}
           onSetContent={setMarkdownContent}

@@ -10,7 +10,7 @@ import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { cn } from "@repo/design-system/lib/utils";
 import { Fragment, type ReactNode } from "react";
 
-type BreadcrumbEntry = {
+export type BreadcrumbEntry = {
   label: string;
   href?: string;
 };
@@ -68,5 +68,3 @@ export const Header = ({
     ) : null}
   </header>
 );
-
-export type { BreadcrumbEntry };
