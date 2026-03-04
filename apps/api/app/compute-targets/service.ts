@@ -283,4 +283,16 @@ export const computeTargetsService = {
     );
     return Boolean(target);
   },
+
+  async getStatusSnapshot(
+    organizationId: string
+  ): Promise<Map<string, boolean>> {
+    const targets = await withDb((db) =>
+      db.computeTarget.findMany({
+        where: { organizationId },
+        select: { id: true, isOnline: true },
+      })
+    );
+    return new Map(targets.map((t) => [t.id, t.isOnline]));
+  },
 };
