@@ -28,6 +28,12 @@ export const EvaluationReportType = {
 export type EvaluationReportType =
   (typeof EvaluationReportType)[keyof typeof EvaluationReportType];
 
+/** Canonical tuple of allowed evaluation report type values. */
+export const EVALUATION_REPORT_TYPE_OPTIONS = [
+  EvaluationReportType.Plan,
+  EvaluationReportType.Code,
+] as const;
+
 /**
  * Statistics for a single metric (judge score).
  *

@@ -2,6 +2,11 @@
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { useSyncExternalStore } from "react";
+import {
+  getStorageItem,
+  removeStorageItem,
+  setStorageItem,
+} from "@/lib/engineer/storage";
 import { appEnvironment } from "@/lib/environment";
 
 const STORAGE_KEY = "engineer-routing-selection:v1";
@@ -47,7 +52,7 @@ function hydrateFromStorage(): void {
   }
   hydrated = true;
 
-  const raw = globalThis.localStorage.getItem(STORAGE_KEY);
+  const raw = getStorageItem(STORAGE_KEY);
   if (!raw) {
     return;
   }
@@ -77,7 +82,7 @@ function persistSelection(next: EngineerRoutingSelection): void {
   if (globalThis.window === undefined) {
     return;
   }
-  globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  setStorageItem(STORAGE_KEY, JSON.stringify(next));
 }
 
 function emitChange(): void {
@@ -172,7 +177,5 @@ export function resetEngineerRoutingSelectionForTests(): void {
   };
   hydrated = false;
   listeners.clear();
-  if (globalThis.window !== undefined) {
-    globalThis.localStorage.removeItem(STORAGE_KEY);
-  }
+  removeStorageItem(STORAGE_KEY);
 }

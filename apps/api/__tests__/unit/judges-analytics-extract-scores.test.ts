@@ -17,7 +17,10 @@ import {
   aggregateJudgeScoreRows,
   type JudgeScoreInput,
 } from "@/app/judges-analytics/service";
-import { normalizeJudgeName } from "@/lib/judge-name-utils";
+import {
+  isCanonicalJudgePromptName,
+  normalizeJudgeName,
+} from "@/lib/judge-name-utils";
 
 // ---------------------------------------------------------------------------
 // Factory helpers
@@ -284,5 +287,23 @@ describe("normalizeJudgeName", () => {
     Object.entries(NORMALIZATION_TEST_CASES)
   )("%s: normalizeJudgeName(%p) → %p", (_, [input, expected]) => {
     expect(normalizeJudgeName(input)).toBe(expected);
+  });
+});
+
+describe("isCanonicalJudgePromptName", () => {
+  const CANONICALITY_CASES = {
+    valid_simple: ["clarity", true],
+    valid_with_underscore: ["solid_isp_dip", true],
+    valid_with_number: ["judge_v2", true],
+    invalid_hyphen: ["clarity-judge", false],
+    invalid_uppercase: ["Clarity", false],
+    invalid_space: ["clarity judge", false],
+    invalid_empty: ["", false],
+  } as const satisfies Record<string, readonly [string, boolean]>;
+
+  it.each(
+    Object.entries(CANONICALITY_CASES)
+  )("%s: isCanonicalJudgePromptName(%p) → %p", (_, [input, expected]) => {
+    expect(isCanonicalJudgePromptName(input)).toBe(expected);
   });
 });
