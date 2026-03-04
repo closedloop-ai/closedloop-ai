@@ -31,6 +31,7 @@ export function RichTextEditor({
   contentResetKey,
   contentResetValue,
   scrollMode = "inner",
+  externalToolbar,
   toolbarMode = "always",
 }: Readonly<RichTextEditorProps>) {
   return (
@@ -39,6 +40,7 @@ export function RichTextEditor({
         className={className}
         contentResetKey={contentResetKey}
         contentResetValue={contentResetValue}
+        externalToolbar={externalToolbar}
         liveblocksExtension={liveblocksExtension}
         liveblocksIsReady={liveblocksIsReady}
         onChange={onChange}

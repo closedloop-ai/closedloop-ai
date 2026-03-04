@@ -13,6 +13,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MermaidExtension } from "./mermaid-extension";
+import { setEditorMarkdown } from "./set-editor-markdown";
 import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
 import { TiptapToolbar } from "./tiptap-toolbar";
 import type { RichTextEditorProps } from "./types";
@@ -28,6 +29,7 @@ export function TiptapEditorCore({
   liveblocksExtension,
   liveblocksIsReady,
   scrollMode = "inner",
+  externalToolbar = false,
   toolbarMode = "always",
 }: Readonly<RichTextEditorProps>) {
   const [showPasteMarkdownDialog, setShowPasteMarkdownDialog] = useState(false);
@@ -76,7 +78,7 @@ export function TiptapEditorCore({
     editorProps: {
       attributes: {
         class: cn(
-          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none p-4 focus:outline-none",
+          "prose prose-sm sm:prose-base dark:prose-invert min-h-[200px] max-w-none px-5 pt-10 pb-8 focus:outline-none",
           className
         ),
       },
@@ -91,12 +93,7 @@ export function TiptapEditorCore({
 
   const setMarkdownContent = useCallback(
     (markdown: string) => {
-      if (editor) {
-        // Defer to microtask to avoid flushSync inside React lifecycle
-        queueMicrotask(() => {
-          editor.commands.setContent(markdown, { contentType: "markdown" });
-        });
-      }
+      setEditorMarkdown(editor, markdown);
     },
     [editor]
   );
@@ -173,7 +170,7 @@ export function TiptapEditorCore({
         className="group flex min-h-0 flex-1 flex-col"
         data-liveblocks-editor-boundary
       >
-        {!readOnly && (
+        {!(readOnly || externalToolbar) && (
           <div
             className={
               toolbarMode === "focus"
@@ -199,7 +196,7 @@ export function TiptapEditorCore({
         </div>
       </div>
 
-      {!readOnly && (
+      {!(readOnly || externalToolbar) && (
         <TiptapPasteMarkdownDialog
           onOpenChange={setShowPasteMarkdownDialog}
           onSetContent={setMarkdownContent}

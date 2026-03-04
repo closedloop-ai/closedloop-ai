@@ -4,11 +4,17 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
+import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { useState } from "react";
+import { Toggle } from "@repo/design-system/components/ui/toggle";
+import { MessageSquareDotIcon } from "lucide-react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
+import { EditorToolbarRow } from "@/components/artifact-editor/editor-toolbar-row";
+import { SaveIndicator } from "@/components/artifact-editor/save-indicator";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { GenerationStatusBanner } from "@/components/generation-status-banner";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
@@ -117,6 +123,18 @@ export function PRDEditor({
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
 
+  // Comments panel toggle state
+  const [showComments, setShowComments] = useState(true);
+  const prevThreadCount = useRef(session.openThreadCount);
+
+  // Auto-reveal comments when threads reappear after being fully resolved
+  useEffect(() => {
+    if (prevThreadCount.current === 0 && session.openThreadCount > 0) {
+      setShowComments(true);
+    }
+    prevThreadCount.current = session.openThreadCount;
+  }, [session.openThreadCount]);
+
   // Determine if any operation is pending
   const isPending =
     content.isSaving ||
@@ -140,80 +158,141 @@ export function PRDEditor({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {/* Header */}
       <PRDEditorHeader
-        canEdit={!session.isViewingHistorical}
-        isEditing={session.isEditing}
         isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
-        isSaving={content.isSaving}
-        lastSaved={content.lastSaved}
         onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
-        onDiscard={session.handleDiscard}
-        onEdit={session.handleEdit}
         onExport={actions.handleDownload}
         onGeneratePlan={openGeneratePlanModal}
         onMove={() => setShowMoveDialog(true)}
         onQuickGenerate={handleQuickGenerate}
         onRename={openRenameDialog}
         onRestoreVersion={session.handleRestoreVersion}
-        onSave={session.handlePublish}
         onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        openThreadCount={session.openThreadCount}
         prd={prd}
         showMetadataPanel={uiState.showMetadataPanel}
         showRestore={session.isViewingHistorical}
-        status={metadata.status}
-        versionDisplay={versionDisplay}
       />
 
-      {/* Generation Status Banner */}
-      <GenerationStatusBanner artifactId={prd.id} />
-
-      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
-      <div
-        className="flex min-h-0 flex-1 flex-col"
-        onClick={
-          session.isEditing || session.isViewingHistorical
-            ? undefined
-            : session.handleEdit
-        }
-        onKeyDown={
-          session.isEditing || session.isViewingHistorical
-            ? undefined
-            : session.handleEdit
-        }
-      >
-        <CollaborativeEditor
-          contentResetKey={session.contentResetKey}
-          contentResetValue={session.contentResetValue}
-          key={session.latestVersion}
-          liveblocksRoomId={session.liveblocksRoomId}
-          metadataPanel={
-            <PRDMetadataPanel
-              approver={metadata.approver}
-              assignee={metadata.assignee}
-              onApproverSelect={metadata.handleApproverSelect}
-              onAssigneeChange={metadata.handleAssigneeChange}
-              onStatusChange={metadata.handleStatusChange}
-              onTargetBranchBlur={metadata.handleTargetBranchBlur}
-              onTargetBranchChange={metadata.handleTargetBranchChange}
-              onTargetRepoBlur={metadata.handleTargetRepoBlur}
-              onTargetRepoChange={metadata.handleTargetRepoChange}
-              prd={prd}
-              status={metadata.status}
-              targetBranch={metadata.targetBranch}
-              targetRepo={metadata.targetRepo}
-              teamMembers={metadata.teamMembers}
+      {/* Content area: toolbar + editor on left, metadata panel on right */}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <OptionalArtifactRoom roomId={session.liveblocksRoomId}>
+            {/* Toolbar Row */}
+            <EditorToolbarRow
+              leftContent={
+                <>
+                  {session.isEditing && session.liveblocksRoomId && (
+                    <Suspense fallback={null}>
+                      <InlinePresence />
+                    </Suspense>
+                  )}
+                  {versionDisplay}
+                  <SaveIndicator
+                    isSaving={content.isSaving}
+                    lastSaved={content.lastSaved}
+                  />
+                </>
+              }
+              rightContent={
+                <>
+                  {session.openThreadCount > 0 && (
+                    <Toggle
+                      className="px-3"
+                      onPressedChange={setShowComments}
+                      pressed={showComments}
+                      size="sm"
+                      variant="outline"
+                    >
+                      <MessageSquareDotIcon className="h-4 w-4" />
+                      {session.openThreadCount}
+                    </Toggle>
+                  )}
+                  {session.isEditing ? (
+                    <>
+                      <Button
+                        disabled={isPending}
+                        onClick={session.handleDiscard}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Discard
+                      </Button>
+                      <Button
+                        disabled={isPending}
+                        onClick={session.handlePublish}
+                        size="sm"
+                      >
+                        {content.isSaving ? "Publishing..." : "Publish"}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      disabled={session.isViewingHistorical}
+                      onClick={session.handleEdit}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      Edit
+                    </Button>
+                  )}
+                </>
+              }
             />
-          }
-          onChange={content.updateContent}
-          onEditorInstance={session.handleEditorInstance}
-          onOpenThreadCountChange={session.handleThreadCountChange}
-          readOnly={!session.isEditing}
-          showMetadataPanel={uiState.showMetadataPanel}
-          value={content.content}
-        />
+
+            {/* Generation Status Banner */}
+            <GenerationStatusBanner artifactId={prd.id} />
+
+            {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: wraps TipTap rich text editor */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              onClick={
+                session.isEditing || session.isViewingHistorical
+                  ? undefined
+                  : session.handleEdit
+              }
+              onKeyDown={
+                session.isEditing || session.isViewingHistorical
+                  ? undefined
+                  : session.handleEdit
+              }
+            >
+              <CollaborativeEditor
+                contentResetKey={session.contentResetKey}
+                contentResetValue={session.contentResetValue}
+                key={session.latestVersion}
+                liveblocksRoomId={session.liveblocksRoomId}
+                onChange={content.updateContent}
+                onEditorInstance={session.handleEditorInstance}
+                onOpenThreadCountChange={session.handleThreadCountChange}
+                readOnly={!session.isEditing}
+                showComments={showComments}
+                value={content.content}
+              />
+            </div>
+          </OptionalArtifactRoom>
+        </div>
+
+        {/* Metadata Panel — spans full height from header down */}
+        {uiState.showMetadataPanel ? (
+          <PRDMetadataPanel
+            approver={metadata.approver}
+            assignee={metadata.assignee}
+            onApproverSelect={metadata.handleApproverSelect}
+            onAssigneeChange={metadata.handleAssigneeChange}
+            onStatusChange={metadata.handleStatusChange}
+            onTargetBranchBlur={metadata.handleTargetBranchBlur}
+            onTargetBranchChange={metadata.handleTargetBranchChange}
+            onTargetRepoBlur={metadata.handleTargetRepoBlur}
+            onTargetRepoChange={metadata.handleTargetRepoChange}
+            prd={prd}
+            status={metadata.status}
+            targetBranch={metadata.targetBranch}
+            targetRepo={metadata.targetRepo}
+            teamMembers={metadata.teamMembers}
+          />
+        ) : null}
       </div>
 
       {/* Rename Dialog */}

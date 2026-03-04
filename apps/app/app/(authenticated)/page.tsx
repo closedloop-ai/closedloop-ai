@@ -14,7 +14,9 @@ export const metadata: Metadata = {
 export default async function App() {
   return (
     <>
-      <Header page="Dashboard" pages={["Home"]} />
+      <Header
+        breadcrumbs={[{ label: "Home", href: "/" }, { label: "Dashboard" }]}
+      />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
         <div className="space-y-8">
           <section>

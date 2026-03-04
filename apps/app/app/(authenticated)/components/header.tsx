@@ -7,35 +7,64 @@ import {
   BreadcrumbSeparator,
 } from "@repo/design-system/components/ui/breadcrumb";
 import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
+import { cn } from "@repo/design-system/lib/utils";
 import { Fragment, type ReactNode } from "react";
 
-type HeaderProps = {
-  pages: string[];
-  page: string;
-  children?: ReactNode;
+export type BreadcrumbEntry = {
+  label: string;
+  href?: string;
 };
 
-export const Header = ({ pages, page, children }: HeaderProps) => (
-  <header className="flex shrink-0 items-center justify-between gap-2 py-2">
-    <div className="flex items-center gap-2 px-4">
+type HeaderProps = {
+  breadcrumbs: BreadcrumbEntry[];
+  afterBreadcrumbs?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+};
+
+export const Header = ({
+  breadcrumbs,
+  afterBreadcrumbs,
+  children,
+  className,
+}: HeaderProps) => (
+  <header
+    className={cn(
+      "flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2",
+      className
+    )}
+  >
+    <div className="flex items-center gap-2">
       <SidebarTrigger className="-ml-1" />
       <Breadcrumb>
         <BreadcrumbList>
-          {pages.map((breadcrumbPage, index) => (
-            <Fragment key={breadcrumbPage}>
-              {index > 0 && <BreadcrumbSeparator className="hidden md:block" />}
-              <BreadcrumbItem className="hidden md:block">
-                <BreadcrumbLink href="#">{breadcrumbPage}</BreadcrumbLink>
-              </BreadcrumbItem>
-            </Fragment>
-          ))}
-          <BreadcrumbSeparator className="hidden md:block" />
-          <BreadcrumbItem>
-            <BreadcrumbPage>{page}</BreadcrumbPage>
-          </BreadcrumbItem>
+          {breadcrumbs.map((entry, index) => {
+            const isLast = index === breadcrumbs.length - 1;
+            return (
+              <Fragment key={`${entry.label}-${index}`}>
+                {index > 0 && (
+                  <BreadcrumbSeparator className="hidden md:block" />
+                )}
+                <BreadcrumbItem
+                  className={isLast ? undefined : "hidden md:block"}
+                >
+                  {isLast || !entry.href ? (
+                    <BreadcrumbPage>{entry.label}</BreadcrumbPage>
+                  ) : (
+                    <BreadcrumbLink href={entry.href}>
+                      {entry.label}
+                    </BreadcrumbLink>
+                  )}
+                </BreadcrumbItem>
+              </Fragment>
+            );
+          })}
         </BreadcrumbList>
       </Breadcrumb>
+      {afterBreadcrumbs}
     </div>
-    {children}
+    {children ? (
+      <div className="flex items-center gap-2">{children}</div>
+    ) : null}
   </header>
 );

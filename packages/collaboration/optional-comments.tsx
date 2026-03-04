@@ -78,7 +78,7 @@ function Threads({
 
   if (mode === "anchored") {
     return hasThreads ? (
-      <div className="px-4">
+      <div className="pr-4 pl-2">
         <AnchoredThreads
           className="lb-collab-anchored-threads"
           editor={editor}

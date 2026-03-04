@@ -123,3 +123,49 @@ function getInitials(name: string): string {
 }
 
 const whitespaceRegex = /\s+/;
+
+/**
+ * Inline avatar stack for use in toolbars. No border/padding wrapper.
+ * Returns null when no other users are present.
+ */
+export function InlinePresence() {
+  const others = useOthers();
+  const currentUser = useSelf();
+
+  if (others.length === 0) {
+    return null;
+  }
+
+  const hasMoreUsers = others.length > 3;
+  const displayedOthers = hasMoreUsers ? others.slice(0, 3) : others;
+
+  return (
+    <div className="flex items-center">
+      {currentUser && (
+        <UserAvatar
+          avatar={currentUser.info.avatar}
+          color={currentUser.info.color}
+          isCurrentUser
+          name={currentUser.info.name || "You"}
+        />
+      )}
+
+      <div className="ml-2 flex -space-x-2">
+        {displayedOthers.map(({ connectionId, info }) => (
+          <UserAvatar
+            avatar={info.avatar}
+            color={info.color}
+            key={connectionId}
+            name={info.name || "Anonymous"}
+          />
+        ))}
+
+        {hasMoreUsers && (
+          <div className="flex size-8 items-center justify-center rounded-full border-2 border-background bg-muted font-medium text-xs">
+            +{others.length - 3}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

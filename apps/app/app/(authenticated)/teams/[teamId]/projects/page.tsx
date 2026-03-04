@@ -1,17 +1,9 @@
 "use client";
 
 import type { CreateProjectInput } from "@repo/api/src/types/project";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@repo/design-system/components/ui/breadcrumb";
-import { SidebarTrigger } from "@repo/design-system/components/ui/sidebar";
 import { Loader2Icon } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
+import { Header } from "@/app/(authenticated)/components/header";
 import {
   useCreateProject,
   useDeleteProject,
@@ -91,33 +83,19 @@ export default function TeamProjectsPage() {
 
   return (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SidebarTrigger className="-ml-1" />
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem>
-              <BreadcrumbLink href="/">Home</BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbLink href={`/teams/${teamId}/projects`}>
-                {team.name}
-              </BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator />
-            <BreadcrumbItem>
-              <BreadcrumbPage>Projects</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
-        <div className="ml-auto">
-          <CreateProjectModal
-            onCreateProject={handleCreateProject}
-            teamId={teamId}
-            teamName={team.name}
-          />
-        </div>
-      </header>
+      <Header
+        breadcrumbs={[
+          { label: "Home", href: "/" },
+          { label: team.name, href: `/teams/${teamId}/projects` },
+          { label: "Projects" },
+        ]}
+      >
+        <CreateProjectModal
+          onCreateProject={handleCreateProject}
+          teamId={teamId}
+          teamName={team.name}
+        />
+      </Header>
       <main className="flex-1 overflow-auto p-6">
         <div className="mb-6">
           <h1 className="font-semibold text-2xl">Projects</h1>

@@ -16,7 +16,12 @@ export default async function WorkstreamPage({ params }: WorkstreamPageProps) {
 
   return (
     <>
-      <Header page="Workstream" pages={["Workstreams", "Details"]} />
+      <Header
+        breadcrumbs={[
+          { label: "Workstreams", href: "/workstreams" },
+          { label: "Details" },
+        ]}
+      />
       <main className="flex min-h-0 flex-1 flex-col overflow-auto p-4 pt-0">
         <WorkstreamDetailContainer id={id} />
       </main>

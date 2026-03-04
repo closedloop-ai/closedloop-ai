@@ -4,7 +4,7 @@ import { OrganizationList } from "./components/organization-list";
 export default function OrganizationPage() {
   return (
     <>
-      <Header page="Organization" pages={["Organization"]} />
+      <Header breadcrumbs={[{ label: "Organization" }]} />
       <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
         <div className="flex items-center justify-between">
           <div>
