@@ -10,17 +10,27 @@ import { useState } from "react";
 import {
   PolarAngleAxis,
   PolarGrid,
+  PolarRadiusAxis,
   Radar,
   RadarChart as RechartsRadarChart,
   ResponsiveContainer,
+  Tooltip,
 } from "recharts";
+import { TooltipRow, TooltipShell } from "../../components/chart-tooltip";
 
 type JudgeRadarChartProps = {
   radarAxes: RadarAxes | null;
   promptVersions: JudgePromptVersion[];
 };
 
-const AXIS_LABELS = ["Stubbornness", "Optimism", "Polarity", "Certainty"];
+export const AxisLabels = {
+  Stubbornness: "Stubbornness",
+  Optimism: "Optimism",
+  Polarity: "Polarity",
+  Certainty: "Certainty",
+} as const;
+
+export type AxisLabel = (typeof AxisLabels)[keyof typeof AxisLabels];
 
 const CHART_COLOR_TOKEN_COUNT = 5;
 const LATEST_COLOR = "var(--chart-1)";
@@ -31,20 +41,60 @@ function getOverlayColor(index: number): string {
   return `var(--chart-${tokenIndex})`;
 }
 
+const AXIS_LABELS_ORDERED = Object.values(AxisLabels);
+
 function buildAxesData(axes: RadarAxes | null) {
   if (!axes) {
-    return AXIS_LABELS.map((axis) => ({ axis, latest: 0 }));
+    return AXIS_LABELS_ORDERED.map((axis) => ({ axis, latest: 0 }));
   }
-  return [
-    { axis: "Stubbornness", latest: axes.stubbornness },
-    { axis: "Optimism", latest: axes.optimism },
-    { axis: "Polarity", latest: axes.polarity },
-    { axis: "Certainty", latest: axes.certainty },
-  ];
+  return AXIS_LABELS_ORDERED.map((axis) => ({
+    axis,
+    latest: axes[AXIS_KEY_BY_LABEL[axis]],
+  }));
 }
 
 function getVersionAxes(version: JudgePromptVersion): RadarAxes | null {
   return version.radarAxes;
+}
+
+function RadarAxisTooltip({
+  active,
+  payload,
+  selectedVersions,
+}: {
+  active?: boolean;
+  payload?: RadarTooltipPayloadItem[];
+  selectedVersions: JudgePromptVersion[];
+}) {
+  if (!(active && payload) || payload.length === 0) {
+    return null;
+  }
+
+  const datum = payload[0]?.payload;
+  if (!datum) {
+    return null;
+  }
+
+  return (
+    <TooltipShell title={datum.axis}>
+      <TooltipRow label="Latest" value={datum.latest.toFixed(2)} />
+      {selectedVersions.map((version) => {
+        const dataKey = `v${version.version}`;
+        const value = datum[dataKey];
+        if (typeof value !== "number") {
+          return null;
+        }
+
+        return (
+          <TooltipRow
+            key={dataKey}
+            label={`v${version.version}`}
+            value={value.toFixed(2)}
+          />
+        );
+      })}
+    </TooltipShell>
+  );
 }
 
 export function JudgeRadarChart({
@@ -53,6 +103,11 @@ export function JudgeRadarChart({
 }: JudgeRadarChartProps) {
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
   const insufficientData = radarAxes === null;
+  const selectedVersions = selectedVersionIds
+    .map((versionId) =>
+      promptVersions.find((version) => version.promptId === versionId)
+    )
+    .filter((version): version is JudgePromptVersion => version !== undefined);
 
   const baseData = buildAxesData(insufficientData ? null : radarAxes);
 
@@ -62,14 +117,10 @@ export function JudgeRadarChart({
       axis: point.axis,
       latest: point.latest,
     };
-    for (const versionId of selectedVersionIds) {
-      const version = promptVersions.find((v) => v.promptId === versionId);
-      if (version) {
-        const axes = getVersionAxes(version);
-        if (axes) {
-          const key = point.axis.toLowerCase() as keyof typeof axes;
-          entry[`v${version.version}`] = axes[key] ?? 0;
-        }
+    for (const version of selectedVersions) {
+      const axes = getVersionAxes(version);
+      if (axes) {
+        entry[`v${version.version}`] = axes[AXIS_KEY_BY_LABEL[point.axis]] ?? 0;
       }
     }
     return entry;
@@ -90,6 +141,11 @@ export function JudgeRadarChart({
           <RechartsRadarChart data={chartData}>
             <PolarGrid />
             <PolarAngleAxis dataKey="axis" />
+            <PolarRadiusAxis domain={[0, 1]} tick={false} />
+            <Tooltip
+              content={<RadarAxisTooltip selectedVersions={selectedVersions} />}
+              cursor={false}
+            />
             <Radar
               dataKey="latest"
               fill={LATEST_COLOR}
@@ -98,20 +154,14 @@ export function JudgeRadarChart({
               stroke={LATEST_COLOR}
               strokeWidth={2}
             />
-            {selectedVersionIds.map((versionId, index) => {
-              const version = promptVersions.find(
-                (v) => v.promptId === versionId
-              );
-              if (!version) {
-                return null;
-              }
+            {selectedVersions.map((version, index) => {
               const color = getOverlayColor(index);
               return (
                 <Radar
                   dataKey={`v${version.version}`}
                   fill={color}
                   fillOpacity={0.1}
-                  key={versionId}
+                  key={version.promptId}
                   name={`v${version.version}`}
                   stroke={color}
                   strokeDasharray="4 4"
@@ -157,3 +207,19 @@ export function JudgeRadarChart({
     </div>
   );
 }
+
+type RadarChartDatum = {
+  axis: AxisLabel;
+  latest: number;
+} & Record<string, number | string | undefined>;
+
+type RadarTooltipPayloadItem = {
+  payload?: RadarChartDatum;
+};
+
+const AXIS_KEY_BY_LABEL: Record<AxisLabel, keyof RadarAxes> = {
+  Stubbornness: "stubbornness",
+  Optimism: "optimism",
+  Polarity: "polarity",
+  Certainty: "certainty",
+};

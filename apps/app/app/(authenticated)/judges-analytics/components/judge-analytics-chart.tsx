@@ -7,6 +7,7 @@ import {
 } from "@repo/design-system/components/ui/chart";
 import type React from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
+import { TooltipRow, TooltipShell } from "./chart-tooltip";
 
 type JudgeAnalyticsChartProps = {
   data: JudgeAggregateStats[];
@@ -215,22 +216,6 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
   );
 };
 
-// Tooltip stat row helper
-function TooltipRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): React.ReactElement {
-  return (
-    <div className="flex justify-between gap-4">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium font-mono">{value}</span>
-    </div>
-  );
-}
-
 // Custom tooltip component
 const BoxPlotTooltip: React.FC<{
   active?: boolean;
@@ -243,50 +228,41 @@ const BoxPlotTooltip: React.FC<{
   const data = payload[0].payload;
 
   return (
-    <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
-      <p className="mb-2 font-medium">{data.name}</p>
-      <div className="grid gap-1.5">
-        <p className="font-medium text-xs" style={{ color: EVAL_COLOR }}>
-          Eval
-        </p>
-        <TooltipRow label="Max:" value={data.upperWhisker.toFixed(2)} />
-        <TooltipRow label="Mean + 1σ:" value={data.upperBox.toFixed(2)} />
-        <TooltipRow label="Mean:" value={data.median.toFixed(2)} />
-        <TooltipRow label="Mean - 1σ:" value={data.lowerBox.toFixed(2)} />
-        <TooltipRow label="Min:" value={data.lowerWhisker.toFixed(2)} />
-        {data.humanMedian !== null && (
-          <>
-            <p
-              className="mt-1 border-border/50 border-t pt-1 font-medium text-xs"
-              style={{ color: HUMAN_COLOR }}
-            >
-              Human
-            </p>
-            <TooltipRow
-              label="Max:"
-              value={data.humanUpperWhisker!.toFixed(2)}
-            />
-            <TooltipRow
-              label="Mean + 1σ:"
-              value={data.humanUpperBox!.toFixed(2)}
-            />
-            <TooltipRow label="Mean:" value={data.humanMedian.toFixed(2)} />
-            <TooltipRow
-              label="Mean - 1σ:"
-              value={data.humanLowerBox!.toFixed(2)}
-            />
-            <TooltipRow
-              label="Min:"
-              value={data.humanLowerWhisker!.toFixed(2)}
-            />
-          </>
-        )}
-        <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
-          <span className="text-muted-foreground">Count:</span>
-          <span className="font-medium font-mono">{data.count}</span>
-        </div>
+    <TooltipShell title={data.name}>
+      <p className="font-medium text-xs" style={{ color: EVAL_COLOR }}>
+        Eval
+      </p>
+      <TooltipRow label="Max:" value={data.upperWhisker.toFixed(2)} />
+      <TooltipRow label="Mean + 1σ:" value={data.upperBox.toFixed(2)} />
+      <TooltipRow label="Mean:" value={data.median.toFixed(2)} />
+      <TooltipRow label="Mean - 1σ:" value={data.lowerBox.toFixed(2)} />
+      <TooltipRow label="Min:" value={data.lowerWhisker.toFixed(2)} />
+      {data.humanMedian !== null && (
+        <>
+          <p
+            className="mt-1 border-border/50 border-t pt-1 font-medium text-xs"
+            style={{ color: HUMAN_COLOR }}
+          >
+            Human
+          </p>
+          <TooltipRow label="Max:" value={data.humanUpperWhisker!.toFixed(2)} />
+          <TooltipRow
+            label="Mean + 1σ:"
+            value={data.humanUpperBox!.toFixed(2)}
+          />
+          <TooltipRow label="Mean:" value={data.humanMedian.toFixed(2)} />
+          <TooltipRow
+            label="Mean - 1σ:"
+            value={data.humanLowerBox!.toFixed(2)}
+          />
+          <TooltipRow label="Min:" value={data.humanLowerWhisker!.toFixed(2)} />
+        </>
+      )}
+      <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
+        <span className="text-muted-foreground">Count:</span>
+        <span className="font-medium font-mono">{data.count}</span>
       </div>
-    </div>
+    </TooltipShell>
   );
 };
 
