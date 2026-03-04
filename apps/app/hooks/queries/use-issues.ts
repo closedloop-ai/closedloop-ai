@@ -1,5 +1,6 @@
 "use client";
 
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type {
   CreateIssueInput,
   FindIssuesOptions,
@@ -14,6 +15,7 @@ import {
 } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
+import { invalidateEntityLinkQueries } from "./use-entity-links";
 import { projectKeys } from "./use-projects";
 
 // Query keys
@@ -113,6 +115,7 @@ export function useUpdateIssue() {
       if (input.projectId) {
         queryClient.invalidateQueries({ queryKey: projectKeys.all });
       }
+      invalidateEntityLinkQueries(queryClient, input.id, EntityType.Issue);
     },
   });
 }
@@ -124,9 +127,10 @@ export function useDeleteIssue() {
   return useMutation({
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/issues/${id}`),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: issueKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      invalidateEntityLinkQueries(queryClient, id, EntityType.Issue);
     },
   });
 }

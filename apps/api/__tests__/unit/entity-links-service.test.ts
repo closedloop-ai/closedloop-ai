@@ -1,4 +1,8 @@
-import type { EntityLink, EntityType } from "@repo/api/src/types/entity-link";
+import {
+  type EntityLink,
+  type EntityType,
+  LinkType,
+} from "@repo/api/src/types/entity-link";
 import { vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
 
@@ -17,7 +21,7 @@ function makeLink(
   sourceType: EntityType,
   targetId: string,
   targetType: EntityType,
-  linkType: "PRODUCES" | "BLOCKS" | "RELATES_TO" = "PRODUCES"
+  linkType: LinkType = LinkType.Produces
 ): EntityLink {
   return {
     id,

@@ -1,11 +1,11 @@
-import type {
-  CreateEntityLinkInput,
-  EntityLink,
+import {
+  type CreateEntityLinkInput,
+  type EntityLink,
   EntityType,
   LinkDirection,
-  LinkedEntity,
-  LinkType,
-  ResolvedEntity,
+  type LinkedEntity,
+  type LinkType,
+  type ResolvedEntity,
 } from "@repo/api/src/types/entity-link";
 import type { ExternalLink } from "@repo/api/src/types/external-link";
 import { Prisma, withDb } from "@repo/database";
@@ -123,7 +123,7 @@ export const entityLinksService = {
     entityType: EntityType
   ): Promise<ResolvedEntity | null> {
     switch (entityType) {
-      case "ARTIFACT": {
+      case EntityType.Artifact: {
         const artifact = await withDb((db) =>
           db.artifact.findUnique({
             where: { id, organizationId },
@@ -136,9 +136,9 @@ export const entityLinksService = {
         if (!artifact) {
           return null;
         }
-        return { type: "ARTIFACT", entity: artifact };
+        return { type: EntityType.Artifact, entity: artifact };
       }
-      case "ISSUE": {
+      case EntityType.Issue: {
         const issue = await withDb((db) =>
           db.issue.findUnique({
             where: { id, organizationId },
@@ -151,9 +151,9 @@ export const entityLinksService = {
         if (!issue) {
           return null;
         }
-        return { type: "ISSUE", entity: issue };
+        return { type: EntityType.Issue, entity: issue };
       }
-      case "EXTERNAL_LINK": {
+      case EntityType.ExternalLink: {
         const link = await withDb((db) =>
           db.externalLink.findUnique({ where: { id, organizationId } })
         );
@@ -161,7 +161,7 @@ export const entityLinksService = {
           return null;
         }
         return {
-          type: "EXTERNAL_LINK",
+          type: EntityType.ExternalLink,
           entity: link as ExternalLink,
         };
       }
@@ -226,7 +226,7 @@ export const entityLinksService = {
     direction: LinkDirection,
     linkType?: LinkType
   ): Promise<EntityLink[]> {
-    if (direction === "source") {
+    if (direction === LinkDirection.Source) {
       return this.findSourceLinks(
         organizationId,
         entityId,
@@ -234,7 +234,7 @@ export const entityLinksService = {
         linkType
       );
     }
-    if (direction === "target") {
+    if (direction === LinkDirection.Target) {
       return this.findTargetLinks(
         organizationId,
         entityId,
@@ -328,17 +328,17 @@ async function assertEntityInOrganization(
 ): Promise<void> {
   const exists = await withDb((db) => {
     switch (entityType) {
-      case "ARTIFACT":
+      case EntityType.Artifact:
         return db.artifact.findFirst({
           where: { id, organizationId },
           select: { id: true },
         });
-      case "ISSUE":
+      case EntityType.Issue:
         return db.issue.findFirst({
           where: { id, organizationId },
           select: { id: true },
         });
-      case "EXTERNAL_LINK":
+      case EntityType.ExternalLink:
         return db.externalLink.findFirst({
           where: { id, organizationId },
           select: { id: true },

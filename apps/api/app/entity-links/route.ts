@@ -1,4 +1,7 @@
-import type { EntityLink } from "@repo/api/src/types/entity-link";
+import {
+  type EntityLink,
+  LinkQueryMode,
+} from "@repo/api/src/types/entity-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
@@ -27,7 +30,7 @@ export const GET = withAnyAuth<EntityLink[], "/entity-links">(
       const { entityId, entityType, linkType, direction, mode, maxDepth } =
         params;
 
-      if (mode === "tree") {
+      if (mode === LinkQueryMode.Tree) {
         const annotatedLinks = await entityLinksService.findLinkTree(
           user.organizationId,
           entityId,

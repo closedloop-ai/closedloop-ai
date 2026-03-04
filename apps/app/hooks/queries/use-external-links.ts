@@ -1,5 +1,6 @@
 "use client";
 
+import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   type CreateExternalLinkInput,
   type ExternalLink,
@@ -20,6 +21,7 @@ import {
 import { useMemo } from "react";
 import { useApiClient } from "@/hooks/use-api-client";
 import { dashboardKeys } from "./use-dashboard-stats";
+import { invalidateEntityLinkQueries } from "./use-entity-links";
 
 // Query keys
 export const externalLinkKeys = {
@@ -147,6 +149,11 @@ export function useUpdateExternalLink() {
         queryKey: externalLinkKeys.detail(input.id),
       });
       queryClient.invalidateQueries({ queryKey: externalLinkKeys.lists() });
+      invalidateEntityLinkQueries(
+        queryClient,
+        input.id,
+        EntityType.ExternalLink
+      );
     },
   });
 }
@@ -158,9 +165,10 @@ export function useDeleteExternalLink() {
   return useMutation({
     mutationFn: (id: string) =>
       apiClient.delete<{ deleted: true }>(`/external-links/${id}`),
-    onSuccess: () => {
+    onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: externalLinkKeys.all });
       queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+      invalidateEntityLinkQueries(queryClient, id, EntityType.ExternalLink);
     },
   });
 }

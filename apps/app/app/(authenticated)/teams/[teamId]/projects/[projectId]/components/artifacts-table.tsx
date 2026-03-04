@@ -290,10 +290,15 @@ function ArtifactSection({
                     onSelectChange={onSelectChange}
                     selectedIds={selectedIds}
                   >
-                    <TableCell>
+                    <TableCell className="max-w-[300px]">
                       <div className="flex items-center gap-2">
-                        <Icon className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{artifact.title}</span>
+                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span
+                          className="truncate font-medium"
+                          title={artifact.title}
+                        >
+                          {artifact.title}
+                        </span>
                         <GenerationStatusIndicator
                           generationStatus={artifact.generationStatus}
                         />

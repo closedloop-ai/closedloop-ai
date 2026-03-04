@@ -35,6 +35,7 @@ import {
   UnderlineTabsTrigger,
 } from "@/components/underline-tabs";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
+import { ContextTable } from "./components/context-table";
 import { EditableIssueDescription } from "./components/editable-issue-description";
 import { EditableIssueTitle } from "./components/editable-issue-title";
 import { FeatureBuildTab } from "./components/feature-build-tab";
@@ -163,6 +164,7 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
                     initialDescription={issue.description || ""}
                     issueId={issue.id}
                   />
+                  <ContextTable issueId={issue.id} separator />
                 </div>
               </TabsContent>
               <TabsContent className="mt-0" value="plan">

@@ -1,4 +1,7 @@
-import type { LinkedEntity } from "@repo/api/src/types/entity-link";
+import {
+  type LinkedEntity,
+  LinkQueryMode,
+} from "@repo/api/src/types/entity-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
@@ -25,7 +28,7 @@ export const GET = withAnyAuth<LinkedEntity[], "/entity-links/resolved">(
 
       let annotatedLinks: AnnotatedLink[];
 
-      if (mode === "tree") {
+      if (mode === LinkQueryMode.Tree) {
         annotatedLinks = await entityLinksService.findLinkTree(
           user.organizationId,
           entityId,
