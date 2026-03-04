@@ -70,6 +70,7 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.checks.connectivity.status).toBe("ok");
     expect(body.checks.migrations).toMatchObject({
@@ -90,6 +91,7 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.connectivity.status).toBe("ok");
     expect(body.checks.migrations.status).toBe("ok");
@@ -107,6 +109,7 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.migrations).toMatchObject({
       status: "error",
@@ -127,6 +130,7 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.migrations).toMatchObject({
       status: "error",
@@ -145,6 +149,7 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(200);
     expect(body.ok).toBe(true);
     expect(body.checks.migrations).toMatchObject({
       status: "ok",
@@ -162,10 +167,33 @@ describe("GET /health/db", () => {
     const response = await GET(makeRequest());
     const body = await response.json();
 
+    expect(response.status).toBe(503);
     expect(body.ok).toBe(false);
     expect(body.checks.migrations).toMatchObject({
       status: "error",
       error: "db_migration_check_failed",
+    });
+  });
+
+  it("returns full checks shape when connectivity fails before other checks run", async () => {
+    mockWithDb.mockRejectedValueOnce(new Error("connect timeout"));
+
+    const response = await GET(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.ok).toBe(false);
+    expect(body.checks.connectivity).toMatchObject({
+      status: "error",
+      error: "db_connectivity_check_failed",
+    });
+    expect(body.checks.migrations).toMatchObject({
+      status: "error",
+      error: "not_run",
+    });
+    expect(body.checks.tables).toMatchObject({
+      status: "error",
+      error: "not_run",
     });
   });
 });

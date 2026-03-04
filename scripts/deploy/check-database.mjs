@@ -11,6 +11,7 @@ import { pathToFileURL } from "node:url";
 
 class AuthError extends Error {}
 class MisconfiguredEndpointError extends Error {}
+class UnhealthyResponseError extends Error {}
 
 function parseSeconds(value, fallbackSeconds) {
   const parsed = Number(value);
@@ -30,6 +31,19 @@ function getResultSummary(result) {
   const migrations = result?.checks?.migrations?.status ?? "unknown";
   const tables = result?.checks?.tables?.count ?? "unknown";
   return { connectivity, migrations, tables };
+}
+
+function buildFailureMessage(error, elapsedSeconds, maxWaitSeconds) {
+  if (error instanceof AuthError) {
+    return `Database health check failed immediately due to authentication error after ${elapsedSeconds}s: ${error.message}`;
+  }
+  if (error instanceof MisconfiguredEndpointError) {
+    return `Database health endpoint misconfiguration detected after ${elapsedSeconds}s: ${error.message}`;
+  }
+  if (error instanceof UnhealthyResponseError) {
+    return `Database health check did not become healthy within ${maxWaitSeconds}s (elapsed ${elapsedSeconds}s): ${error.message}`;
+  }
+  return `Database health check failed after ${elapsedSeconds}s: ${getErrorMessage(error)}`;
 }
 
 export async function runDatabaseHealthCheck({
@@ -80,6 +94,7 @@ export async function runDatabaseHealthCheck({
   );
 
   const deadline = Date.now() + maxWaitSeconds * 1000;
+  const startedAt = Date.now();
   const pollIntervalMs = pollIntervalSeconds * 1000;
   let attempt = 0;
   let lastError = null;
@@ -96,19 +111,35 @@ export async function runDatabaseHealthCheck({
         signal: AbortSignal.timeout(requestTimeoutMs),
       });
 
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          throw new AuthError(`Authentication failed with status ${response.status}`);
-        }
-        if (response.status === 503) {
-          throw new MisconfiguredEndpointError(
-            `Health endpoint misconfigured with status ${response.status}`
-          );
-        }
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      let result = null;
+      try {
+        result = await response.json();
+      } catch {
+        // Non-JSON response body is handled below.
       }
 
-      const result = await response.json();
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthError(`Authentication failed with status ${response.status}`);
+      }
+
+      if (
+        response.status === 503 &&
+        result &&
+        typeof result === "object" &&
+        result.error === "service_unavailable" &&
+        !result.checks
+      ) {
+        throw new MisconfiguredEndpointError(
+          `Health endpoint misconfigured with status ${response.status}`
+        );
+      }
+
+      if (!response.ok) {
+        if (!result || typeof result !== "object") {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+      }
+
       if (!result || typeof result !== "object") {
         throw new Error("Health endpoint returned invalid JSON payload");
       }
@@ -127,7 +158,7 @@ export async function runDatabaseHealthCheck({
         return 0;
       }
 
-      lastError = new Error("Health endpoint returned ok=false");
+      lastError = new UnhealthyResponseError("Health endpoint returned ok=false");
     } catch (error) {
       lastError = error;
       logger.error(
@@ -151,17 +182,27 @@ export async function runDatabaseHealthCheck({
     await sleep(Math.min(pollIntervalMs, remainingMs));
   }
 
-  const errorMessage = getErrorMessage(lastError || "Database health check timed out");
+  const elapsedSeconds = Math.max(
+    0,
+    Number(((Date.now() - startedAt) / 1000).toFixed(1))
+  );
+  const finalError =
+    lastError || new UnhealthyResponseError("Database health check timed out");
+  const failureMessage = buildFailureMessage(
+    finalError,
+    elapsedSeconds,
+    maxWaitSeconds
+  );
   const summary = lastResult
     ? {
         ...lastResult,
         ok: false,
-        error: `Database health check did not become healthy before timeout (${maxWaitSeconds}s): ${errorMessage}`,
+        error: failureMessage,
       }
     : {
         timestamp: new Date().toISOString(),
         ok: false,
-        error: `Database health check failed after ${maxWaitSeconds}s: ${errorMessage}`,
+        error: failureMessage,
         checks: {
           connectivity: {
             status: "error",

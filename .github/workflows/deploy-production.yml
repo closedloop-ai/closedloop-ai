@@ -430,15 +430,10 @@ jobs:
           fi
 
           # Run database check after Vercel readiness.
-          if [ -n "$DB_HEALTH_URL" ]; then
-            echo "Running database health check..."
-            if ! node scripts/deploy/check-database.mjs; then
-              echo "::error::Database health check failed"
-              exit 1
-            fi
-          else
-            echo "DB health URL not configured, skipping"
-            echo '{"skipped": true}' > db-status.json
+          echo "Running database health check..."
+          if ! node scripts/deploy/check-database.mjs; then
+            echo "::error::Database health check failed"
+            exit 1
           fi
 
           # Report results

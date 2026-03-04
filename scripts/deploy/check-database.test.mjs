@@ -125,7 +125,7 @@ test("runDatabaseHealthCheck fails when endpoint stays unhealthy", async () => {
   assert.equal(code, 1);
   assert.equal(writes.length >= 1, true);
   assert.equal(writes.at(-1).ok, false);
-  assert.match(writes.at(-1).error, /did not become healthy before timeout/);
+  assert.match(writes.at(-1).error, /did not become healthy within/);
 });
 
 test("runDatabaseHealthCheck fails immediately when token is missing", async () => {
@@ -201,4 +201,52 @@ test("runDatabaseHealthCheck does not retry 503 endpoint misconfiguration", asyn
 
   assert.equal(code, 1);
   assert.equal(attempts, 1);
+});
+
+test("runDatabaseHealthCheck retries 503 unhealthy payloads with checks", async () => {
+  let attempts = 0;
+
+  const code = await runDatabaseHealthCheck({
+    healthUrl: "https://api.example.com/health/db",
+    healthToken: "correct-token",
+    outputPath: "ignored.json",
+    maxWaitSeconds: 2,
+    pollIntervalSeconds: 0,
+    logger: makeLogger(),
+    fetchImpl: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return {
+          ok: false,
+          status: 503,
+          statusText: "Service Unavailable",
+          json: async () => ({
+            ok: false,
+            checks: {
+              connectivity: { status: "error", error: "db_connectivity_check_failed" },
+              migrations: { status: "error", error: "not_run" },
+              tables: { status: "error", error: "not_run" },
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          ok: true,
+          checks: {
+            connectivity: { status: "ok" },
+            migrations: { status: "ok" },
+            tables: { status: "ok", count: 12 },
+          },
+        }),
+      };
+    },
+    writeFileImpl: async () => {},
+  });
+
+  assert.equal(code, 0);
+  assert.equal(attempts, 2);
 });
