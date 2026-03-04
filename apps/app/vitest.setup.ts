@@ -22,7 +22,51 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 
+const localStorageStore = new Map<string, string>();
+const stableLocalStorage = createStableLocalStorage(localStorageStore);
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: stableLocalStorage,
+});
+if (globalThis.window !== undefined) {
+  Object.defineProperty(globalThis.window, "localStorage", {
+    configurable: true,
+    value: stableLocalStorage,
+  });
+}
+
 afterEach(cleanup);
+afterEach(() => {
+  localStorageStore.clear();
+});
 
 // Mock scrollIntoView which is not implemented in jsdom
 Element.prototype.scrollIntoView = () => {};
+
+function createStableLocalStorage(
+  store: Map<string, string>
+): Pick<
+  Storage,
+  "clear" | "getItem" | "key" | "length" | "removeItem" | "setItem"
+> {
+  return {
+    get length() {
+      return store.size;
+    },
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.get(String(key)) ?? null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(String(key));
+    },
+    setItem(key: string, value: string) {
+      store.set(String(key), String(value));
+    },
+  };
+}
