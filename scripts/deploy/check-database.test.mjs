@@ -10,6 +10,34 @@ function makeLogger() {
   };
 }
 
+test("runDatabaseHealthCheck fails immediately when URL is missing", async () => {
+  const writes = [];
+  let attempts = 0;
+
+  const code = await runDatabaseHealthCheck({
+    healthUrl: "",
+    healthToken: "top-secret-token",
+    outputPath: "ignored.json",
+    logger: makeLogger(),
+    fetchImpl: async () => {
+      attempts += 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ ok: true }),
+      };
+    },
+    writeFileImpl: async (_path, content) => {
+      writes.push(JSON.parse(content));
+    },
+  });
+
+  assert.equal(code, 1);
+  assert.equal(attempts, 0);
+  assert.equal(writes.at(-1).error, "DB_HEALTH_URL not set");
+});
+
 test("runDatabaseHealthCheck succeeds when endpoint is healthy", async () => {
   const writes = [];
   let attempts = 0;
@@ -25,7 +53,8 @@ test("runDatabaseHealthCheck succeeds when endpoint is healthy", async () => {
     logger: makeLogger(),
     fetchImpl: async (_url, init) => {
       attempts += 1;
-      authHeader = init?.headers?.Authorization ?? init?.headers?.authorization ?? null;
+      authHeader =
+        init?.headers?.Authorization ?? init?.headers?.authorization ?? null;
       return {
         ok: true,
         status: 200,
@@ -139,7 +168,12 @@ test("runDatabaseHealthCheck fails immediately when token is missing", async () 
     logger: makeLogger(),
     fetchImpl: async () => {
       attempts += 1;
-      return { ok: true, status: 200, statusText: "OK", json: async () => ({ ok: true }) };
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ ok: true }),
+      };
     },
     writeFileImpl: async (_path, content) => {
       writes.push(JSON.parse(content));
@@ -223,7 +257,10 @@ test("runDatabaseHealthCheck retries 503 unhealthy payloads with checks", async 
           json: async () => ({
             ok: false,
             checks: {
-              connectivity: { status: "error", error: "db_connectivity_check_failed" },
+              connectivity: {
+                status: "error",
+                error: "db_connectivity_check_failed",
+              },
               migrations: { status: "error", error: "not_run" },
               tables: { status: "error", error: "not_run" },
             },

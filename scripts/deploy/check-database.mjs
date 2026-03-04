@@ -51,23 +51,43 @@ export async function runDatabaseHealthCheck({
   healthToken = process.env.DB_HEALTH_TOKEN,
   outputPath = process.env.DB_STATUS_PATH || "db-status.json",
   maxWaitSeconds = parseSeconds(process.env.DB_HEALTH_MAX_WAIT_SECONDS, 90),
-  pollIntervalSeconds = parseSeconds(process.env.DB_HEALTH_POLL_INTERVAL_SECONDS, 10),
-  requestTimeoutMs = parseSeconds(process.env.DB_HEALTH_REQUEST_TIMEOUT_SECONDS, 30) * 1000,
+  pollIntervalSeconds = parseSeconds(
+    process.env.DB_HEALTH_POLL_INTERVAL_SECONDS,
+    10
+  ),
+  requestTimeoutMs = parseSeconds(
+    process.env.DB_HEALTH_REQUEST_TIMEOUT_SECONDS,
+    30
+  ) * 1000,
   fetchImpl = fetch,
   writeFileImpl = writeFile,
   logger = console,
 } = {}) {
   if (!healthUrl) {
-    logger.log("DB_HEALTH_URL not set, skipping database health check");
+    logger.error(
+      "DB_HEALTH_URL not set, cannot run database health check endpoint"
+    );
     await writeFileImpl(
       outputPath,
-      JSON.stringify({ skipped: true, reason: "DB_HEALTH_URL not set" })
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ok: false,
+        error: "DB_HEALTH_URL not set",
+        checks: {
+          connectivity: {
+            status: "error",
+            error: "db_health_url_missing",
+          },
+        },
+      })
     );
-    return 0;
+    return 1;
   }
 
   if (!healthToken) {
-    logger.error("DB_HEALTH_TOKEN not set, cannot authenticate to database health endpoint");
+    logger.error(
+      "DB_HEALTH_TOKEN not set, cannot authenticate to database health endpoint"
+    );
     await writeFileImpl(
       outputPath,
       JSON.stringify({
@@ -119,7 +139,9 @@ export async function runDatabaseHealthCheck({
       }
 
       if (response.status === 401 || response.status === 403) {
-        throw new AuthError(`Authentication failed with status ${response.status}`);
+        throw new AuthError(
+          `Authentication failed with status ${response.status}`
+        );
       }
 
       if (
@@ -134,10 +156,8 @@ export async function runDatabaseHealthCheck({
         );
       }
 
-      if (!response.ok) {
-        if (!result || typeof result !== "object") {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+      if (!response.ok && (!result || typeof result !== "object")) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
       if (!result || typeof result !== "object") {
@@ -158,13 +178,18 @@ export async function runDatabaseHealthCheck({
         return 0;
       }
 
-      lastError = new UnhealthyResponseError("Health endpoint returned ok=false");
+      lastError = new UnhealthyResponseError(
+        "Health endpoint returned ok=false"
+      );
     } catch (error) {
       lastError = error;
       logger.error(
         `\n✗ Database health check attempt ${attempt} failed: ${getErrorMessage(error)}`
       );
-      if (error instanceof AuthError || error instanceof MisconfiguredEndpointError) {
+      if (
+        error instanceof AuthError ||
+        error instanceof MisconfiguredEndpointError
+      ) {
         break;
       }
     }
@@ -215,7 +240,10 @@ export async function runDatabaseHealthCheck({
   return 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const code = await runDatabaseHealthCheck();
   process.exit(code);
 }

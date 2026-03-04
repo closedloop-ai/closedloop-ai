@@ -13,11 +13,9 @@ const TEST_TOKEN = "test-db-health-token";
 
 function makeRequest({
   token = TEST_TOKEN,
-  forwardedFor = "203.0.113.10",
   useLegacyTokenHeader = false,
 }: {
   token?: string | null;
-  forwardedFor?: string;
   useLegacyTokenHeader?: boolean;
 } = {}) {
   const headers = new Headers();
@@ -27,7 +25,6 @@ function makeRequest({
   if (token !== null && useLegacyTokenHeader) {
     headers.set("x-db-health-token", token);
   }
-  headers.set("x-forwarded-for", forwardedFor);
   return new Request("https://api.closedloop.ai/health/db", { headers });
 }
 
