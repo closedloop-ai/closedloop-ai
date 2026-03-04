@@ -13,6 +13,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MermaidExtension } from "./mermaid-extension";
+import { setEditorMarkdown } from "./set-editor-markdown";
 import { TiptapPasteMarkdownDialog } from "./tiptap-paste-markdown-dialog";
 import { TiptapToolbar } from "./tiptap-toolbar";
 import type { RichTextEditorProps } from "./types";
@@ -92,12 +93,7 @@ export function TiptapEditorCore({
 
   const setMarkdownContent = useCallback(
     (markdown: string) => {
-      if (editor) {
-        // Defer to microtask to avoid flushSync inside React lifecycle
-        queueMicrotask(() => {
-          editor.commands.setContent(markdown, { contentType: "markdown" });
-        });
-      }
+      setEditorMarkdown(editor, markdown);
     },
     [editor]
   );

@@ -1,7 +1,11 @@
 "use client";
 
 import { OptionalComments } from "@repo/collaboration";
-import { TiptapPasteMarkdownDialog, TiptapToolbar } from "@repo/rich-text";
+import {
+  setEditorMarkdown,
+  TiptapPasteMarkdownDialog,
+  TiptapToolbar,
+} from "@repo/rich-text";
 import type { Editor } from "@tiptap/react";
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { EditorContent } from "@/components/artifact-editor/editor-content";
@@ -42,11 +46,7 @@ export function EditorWithComments({
 
   const handleSetContent = useCallback(
     (markdown: string) => {
-      if (editor) {
-        queueMicrotask(() => {
-          editor.commands.setContent(markdown, { contentType: "markdown" });
-        });
-      }
+      setEditorMarkdown(editor, markdown);
     },
     [editor]
   );
