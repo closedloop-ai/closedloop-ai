@@ -10,9 +10,11 @@ import { useState } from "react";
 import {
   PolarAngleAxis,
   PolarGrid,
+  PolarRadiusAxis,
   Radar,
   RadarChart as RechartsRadarChart,
   ResponsiveContainer,
+  Tooltip,
 } from "recharts";
 
 type JudgeRadarChartProps = {
@@ -24,6 +26,15 @@ const AXIS_LABELS = ["Stubbornness", "Optimism", "Polarity", "Certainty"];
 
 const CHART_COLOR_TOKEN_COUNT = 5;
 const LATEST_COLOR = "var(--chart-1)";
+
+type RadarChartDatum = {
+  axis: string;
+  latest: number;
+} & Record<string, number | string | undefined>;
+
+type RadarTooltipPayloadItem = {
+  payload?: RadarChartDatum;
+};
 
 function getOverlayColor(index: number): string {
   // Start from chart-2 to keep "Latest" visually distinct from overlays by default.
@@ -47,12 +58,67 @@ function getVersionAxes(version: JudgePromptVersion): RadarAxes | null {
   return version.radarAxes;
 }
 
+function RadarAxisTooltip({
+  active,
+  payload,
+  selectedVersions,
+}: {
+  active?: boolean;
+  payload?: RadarTooltipPayloadItem[];
+  selectedVersions: JudgePromptVersion[];
+}) {
+  if (!(active && payload) || payload.length === 0) {
+    return null;
+  }
+
+  const datum = payload[0]?.payload;
+  if (!datum) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-background px-3 py-2 text-xs shadow-xl">
+      <p className="mb-2 font-medium">{datum.axis}</p>
+      <div className="grid gap-1">
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-muted-foreground">Latest</span>
+          <span className="font-medium font-mono">
+            {datum.latest.toFixed(2)}
+          </span>
+        </div>
+        {selectedVersions.map((version) => {
+          const dataKey = `v${version.version}`;
+          const value = datum[dataKey];
+          if (typeof value !== "number") {
+            return null;
+          }
+
+          return (
+            <div
+              className="flex items-center justify-between gap-4"
+              key={dataKey}
+            >
+              <span className="text-muted-foreground">v{version.version}</span>
+              <span className="font-medium font-mono">{value.toFixed(2)}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function JudgeRadarChart({
   radarAxes,
   promptVersions,
 }: JudgeRadarChartProps) {
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
   const insufficientData = radarAxes === null;
+  const selectedVersions = selectedVersionIds
+    .map((versionId) =>
+      promptVersions.find((version) => version.promptId === versionId)
+    )
+    .filter((version): version is JudgePromptVersion => version !== undefined);
 
   const baseData = buildAxesData(insufficientData ? null : radarAxes);
 
@@ -90,6 +156,11 @@ export function JudgeRadarChart({
           <RechartsRadarChart data={chartData}>
             <PolarGrid />
             <PolarAngleAxis dataKey="axis" />
+            <PolarRadiusAxis domain={[0, 1]} tick={false} />
+            <Tooltip
+              content={<RadarAxisTooltip selectedVersions={selectedVersions} />}
+              cursor={false}
+            />
             <Radar
               dataKey="latest"
               fill={LATEST_COLOR}

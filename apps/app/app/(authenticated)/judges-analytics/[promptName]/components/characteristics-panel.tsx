@@ -7,13 +7,19 @@ import {
   AlertTitle,
 } from "@repo/design-system/components/ui/alert";
 import { Badge } from "@repo/design-system/components/ui/badge";
+import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@repo/design-system/components/ui/card";
-import { AlertCircleIcon } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
+import { AlertCircleIcon, InfoIcon } from "lucide-react";
 import { JudgeRadarChart } from "./radar-chart";
 
 type CharacteristicsPanelProps = {
@@ -26,7 +32,10 @@ export function CharacteristicsPanel({ judge }: CharacteristicsPanelProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Characteristics</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardTitle>Characteristics</CardTitle>
+          <MetricsHelpButton />
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {insufficientData && (
@@ -64,3 +73,66 @@ export function CharacteristicsPanel({ judge }: CharacteristicsPanelProps) {
     </Card>
   );
 }
+
+function MetricsHelpButton() {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          aria-label="Explain judge chart metrics"
+          className="h-6 w-6 rounded-full"
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <InfoIcon className="h-3.5 w-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[420px] space-y-3 p-4">
+        <p className="font-medium text-sm">How to interpret the chart axes</p>
+        <div className="space-y-2 text-xs">
+          {AXIS_HELP_ITEMS.map((item) => (
+            <div className="space-y-1" key={item.axis}>
+              <p className="font-medium">{item.axis}</p>
+              <p className="text-muted-foreground">
+                <span className="font-medium text-foreground">Math:</span>{" "}
+                {item.formula}
+              </p>
+              <p className="text-muted-foreground">
+                <span className="font-medium text-foreground">Business:</span>{" "}
+                {item.interpretation}
+              </p>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+const AXIS_HELP_ITEMS = [
+  {
+    axis: "Stubbornness",
+    formula: "1 - clamp(stdDev / 0.5, 0, 1)",
+    interpretation:
+      "Higher means the judge scores more consistently across artifacts.",
+  },
+  {
+    axis: "Optimism",
+    formula: "mean",
+    interpretation:
+      "Higher means the judge tends to score artifacts more positively.",
+  },
+  {
+    axis: "Polarity",
+    formula: "bimodalityCoefficient",
+    interpretation:
+      "Higher means the judge tends to split between very different score groups.",
+  },
+  {
+    axis: "Certainty",
+    formula: "count(score > 0.7 or score < 0.3) / totalScores",
+    interpretation:
+      "Higher means the judge more often gives decisive extreme scores rather than middle scores.",
+  },
+] as const;
