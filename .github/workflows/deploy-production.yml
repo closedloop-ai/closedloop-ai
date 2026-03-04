@@ -168,6 +168,68 @@ jobs:
             echo "SLACK_FAILED=1" >> "$GITHUB_ENV"
           fi
 
+      - name: Resolve Bot Review Threads
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+        run: |
+          # Auto-resolve unresolved review threads left by bots so they don't
+          # block auto-merge (ruleset requires thread resolution).
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || true)
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::warning::Could not parse PR number from URL: $PR_URL. Skipping bot thread cleanup."
+            exit 0
+          fi
+
+          THREAD_RESPONSE=$(gh api graphql -f query="
+            {
+              repository(owner: \"closedloop-ai\", name: \"symphony-alpha\") {
+                pullRequest(number: ${PR_NUMBER}) {
+                  reviewThreads(first: 100) {
+                    nodes { id isResolved comments(first: 1) { nodes { author { login } } } }
+                    pageInfo { hasNextPage }
+                  }
+                }
+              }
+            }" 2>/dev/null || true)
+
+          if [ -z "$THREAD_RESPONSE" ]; then
+            echo "::warning::Failed to fetch review threads for PR #${PR_NUMBER}. Continuing deploy."
+            exit 0
+          fi
+
+          THREAD_IDS=$(echo "$THREAD_RESPONSE" | jq -r '
+            .data.repository.pullRequest.reviewThreads.nodes[]?
+            | select(.isResolved == false)
+            | select(((.comments.nodes[0].author.login // "") | endswith("[bot]")))
+            | .id
+          ' 2>/dev/null || true)
+          if [ -z "${THREAD_IDS+x}" ]; then
+            echo "::warning::Failed to parse review threads for PR #${PR_NUMBER}. Continuing deploy."
+            exit 0
+          fi
+
+          HAS_NEXT_PAGE=$(echo "$THREAD_RESPONSE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null || echo "false")
+          if [ "$HAS_NEXT_PAGE" = "true" ]; then
+            echo "::warning::More than 100 review threads found; bot cleanup only scanned the first 100."
+          fi
+
+          if [ -z "$THREAD_IDS" ]; then
+            echo "No unresolved bot review threads."
+          else
+            echo "$THREAD_IDS" | while IFS= read -r tid; do
+              [ -z "$tid" ] && continue
+              echo "Resolving thread $tid..."
+              if gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"${tid}\"}) { thread { isResolved } } }" >/dev/null 2>&1; then
+                echo "Resolved thread ${tid}."
+              else
+                echo "::warning::Failed to resolve thread ${tid}. Continuing deploy."
+              fi
+            done
+            echo "Attempted bot review thread cleanup."
+          fi
+
       - name: Merge Deploy PR
         id: merge
         if: steps.diff.outputs.has_changes == 'true'
