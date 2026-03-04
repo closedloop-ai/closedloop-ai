@@ -180,62 +180,158 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           PR_URL: ${{ steps.deploy_pr.outputs.pr_url }}
+          REPO: ${{ github.repository }}
+          CLAUDE_BOT_REGEX: '^(claude\[bot\]|claude-code-review\[bot\])$'
         run: |
-          # Auto-resolve unresolved review threads left by bots so they don't
-          # block auto-merge (ruleset requires thread resolution).
-          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$' || true)
+          # Auto-resolve unresolved Claude review threads so they do not block
+          # auto-merge on required-thread-resolution rules.
+          PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq '.number' 2>/dev/null || true)
           if [ -z "$PR_NUMBER" ]; then
             echo "::warning::Could not parse PR number from URL: $PR_URL. Skipping bot thread cleanup."
             exit 0
           fi
 
-          THREAD_RESPONSE=$(gh api graphql -f query="
-            {
-              repository(owner: \"closedloop-ai\", name: \"symphony-alpha\") {
-                pullRequest(number: ${PR_NUMBER}) {
-                  reviewThreads(first: 100) {
-                    nodes { id isResolved comments(first: 1) { nodes { author { login } } } }
-                    pageInfo { hasNextPage }
+          REPO_OWNER="${REPO%/*}"
+          REPO_NAME="${REPO#*/}"
+          QUERY='query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                reviewThreads(first: 100, after: $cursor) {
+                  nodes {
+                    id
+                    isResolved
+                    comments(first: 100) {
+                      nodes { author { login } }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
                   }
                 }
               }
-            }" 2>/dev/null || true)
+            }
+          }'
 
-          if [ -z "$THREAD_RESPONSE" ]; then
-            echo "::warning::Failed to fetch review threads for PR #${PR_NUMBER}. Continuing deploy."
-            exit 0
-          fi
+          collect_unresolved_claude_thread_ids() {
+            local output_file="$1"
+            local cursor=""
+            local page=1
+            : > "$output_file"
 
-          THREAD_IDS=$(echo "$THREAD_RESPONSE" | jq -r '
-            .data.repository.pullRequest.reviewThreads.nodes[]?
-            | select(.isResolved == false)
-            | select(((.comments.nodes[0].author.login // "") | endswith("[bot]")))
-            | .id
-          ' 2>/dev/null || true)
-          if [ -z "${THREAD_IDS+x}" ]; then
-            echo "::warning::Failed to parse review threads for PR #${PR_NUMBER}. Continuing deploy."
-            exit 0
-          fi
-
-          HAS_NEXT_PAGE=$(echo "$THREAD_RESPONSE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null || echo "false")
-          if [ "$HAS_NEXT_PAGE" = "true" ]; then
-            echo "::warning::More than 100 review threads found; bot cleanup only scanned the first 100."
-          fi
-
-          if [ -z "$THREAD_IDS" ]; then
-            echo "No unresolved bot review threads."
-          else
-            echo "$THREAD_IDS" | while IFS= read -r tid; do
-              [ -z "$tid" ] && continue
-              echo "Resolving thread $tid..."
-              if gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"${tid}\"}) { thread { isResolved } } }" >/dev/null 2>&1; then
-                echo "Resolved thread ${tid}."
+            while true; do
+              if [ -n "$cursor" ]; then
+                if ! THREAD_RESPONSE=$(gh api graphql \
+                  -f query="$QUERY" \
+                  -F owner="$REPO_OWNER" \
+                  -F name="$REPO_NAME" \
+                  -F number="$PR_NUMBER" \
+                  -F cursor="$cursor" 2>/dev/null); then
+                  echo "::warning::Failed to fetch review thread page ${page} for PR #${PR_NUMBER}. Continuing deploy."
+                  return 1
+                fi
               else
+                if ! THREAD_RESPONSE=$(gh api graphql \
+                  -f query="$QUERY" \
+                  -F owner="$REPO_OWNER" \
+                  -F name="$REPO_NAME" \
+                  -F number="$PR_NUMBER" 2>/dev/null); then
+                  echo "::warning::Failed to fetch review thread page ${page} for PR #${PR_NUMBER}. Continuing deploy."
+                  return 1
+                fi
+              fi
+
+              if ! PAGE_THREAD_IDS=$(echo "$THREAD_RESPONSE" | jq -r --arg bot_re "$CLAUDE_BOT_REGEX" '
+                .data.repository.pullRequest.reviewThreads.nodes[]?
+                | select(.isResolved == false)
+                | select(any(.comments.nodes[]?; ((.author.login // "") | test($bot_re))))
+                | .id
+              ' 2>/dev/null); then
+                echo "::warning::Failed to parse review threads on page ${page} for PR #${PR_NUMBER}. Continuing deploy."
+                return 1
+              fi
+
+              if [ -n "$PAGE_THREAD_IDS" ]; then
+                printf '%s\n' "$PAGE_THREAD_IDS" >> "$output_file"
+              fi
+
+              if ! HAS_NEXT_PAGE=$(echo "$THREAD_RESPONSE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false' 2>/dev/null); then
+                echo "::warning::Failed to parse pagination for PR #${PR_NUMBER}. Continuing deploy."
+                return 1
+              fi
+              if [ "$HAS_NEXT_PAGE" != "true" ]; then
+                break
+              fi
+
+              if ! cursor=$(echo "$THREAD_RESPONSE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // ""' 2>/dev/null); then
+                echo "::warning::Failed to parse pagination cursor for PR #${PR_NUMBER}. Continuing deploy."
+                return 1
+              fi
+              if [ -z "$cursor" ]; then
+                echo "::warning::Pagination ended unexpectedly for PR #${PR_NUMBER}. Continuing deploy."
+                return 1
+              fi
+
+              page=$((page + 1))
+            done
+
+            sort -u "$output_file" -o "$output_file"
+            return 0
+          }
+
+          THREAD_IDS_FILE=$(mktemp 2>/dev/null || true)
+          if [ -z "$THREAD_IDS_FILE" ]; then
+            echo "::warning::Unable to create temporary file for thread cleanup. Continuing deploy."
+            exit 0
+          fi
+
+          FETCH_OK=1
+          if ! collect_unresolved_claude_thread_ids "$THREAD_IDS_FILE"; then
+            FETCH_OK=0
+          fi
+
+          if [ ! -s "$THREAD_IDS_FILE" ]; then
+            echo "No unresolved Claude review threads found."
+          else
+            ATTEMPTED=0
+            SUCCEEDED=0
+            FAILED=0
+            while IFS= read -r tid; do
+              [ -z "$tid" ] && continue
+              ATTEMPTED=$((ATTEMPTED + 1))
+              echo "Resolving Claude thread $tid..."
+              if gh api graphql -f query="mutation { resolveReviewThread(input: {threadId: \"${tid}\"}) { thread { isResolved } } }" >/dev/null 2>&1; then
+                SUCCEEDED=$((SUCCEEDED + 1))
+              else
+                FAILED=$((FAILED + 1))
                 echo "::warning::Failed to resolve thread ${tid}. Continuing deploy."
               fi
-            done
-            echo "Attempted bot review thread cleanup."
+            done < "$THREAD_IDS_FILE"
+            echo "Claude thread cleanup attempted=${ATTEMPTED} succeeded=${SUCCEEDED} failed=${FAILED}."
           fi
+
+          VERIFY_FILE=$(mktemp 2>/dev/null || true)
+          if [ -n "$VERIFY_FILE" ]; then
+            if collect_unresolved_claude_thread_ids "$VERIFY_FILE"; then
+              REMAINING=$(wc -l < "$VERIFY_FILE" | tr -d ' ')
+              if [ "$REMAINING" -gt 0 ]; then
+                echo "::warning::${REMAINING} unresolved Claude review thread(s) remain on PR #${PR_NUMBER}. Auto-merge may continue waiting."
+              else
+                echo "No unresolved Claude review threads remain."
+              fi
+            else
+              echo "::warning::Could not verify unresolved Claude review threads after cleanup. Continuing deploy."
+            fi
+            rm -f "$VERIFY_FILE"
+          else
+            echo "::warning::Unable to create verification temp file. Continuing deploy."
+          fi
+
+          if [ "$FETCH_OK" -eq 0 ]; then
+            echo "::warning::Initial thread fetch was incomplete; attempted best-effort Claude thread cleanup."
+          fi
+
+          rm -f "$THREAD_IDS_FILE"
 
       - name: Merge Deploy PR
         id: merge
