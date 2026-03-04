@@ -429,6 +429,152 @@ describe("fanOutJudgeScores", () => {
     );
   });
 
+  it("maps numeric final_status values (1/2/3) to EvalStatus strings", async () => {
+    const report = {
+      report_id: "r-numeric-status",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "judge-passed",
+          final_status: 1,
+          metrics: [
+            buildMetric({ metric_name: "judge_passed_score", score: 0.95 }),
+          ],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-needs-improvement",
+          final_status: 2,
+          metrics: [
+            buildMetric({
+              metric_name: "judge_needs_improvement_score",
+              score: 0.65,
+            }),
+          ],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-failed",
+          final_status: 3,
+          metrics: [
+            buildMetric({ metric_name: "judge_failed_score", score: 0.2 }),
+          ],
+        },
+      ],
+    } as unknown as JudgesReport;
+
+    const tx = createMockTx();
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    expect(data).toHaveLength(3);
+    expect(data.map((row: { finalStatus: string }) => row.finalStatus)).toEqual(
+      [EvalStatus.Passed, EvalStatus.NeedsImprovement, EvalStatus.Failed]
+    );
+  });
+
+  it("preserves canonical string final_status values", async () => {
+    const report = {
+      report_id: "r-string-status",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "judge-a",
+          final_status: "PASSED",
+          metrics: [buildMetric({ metric_name: "judge_a_score", score: 0.9 })],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-b",
+          final_status: "NEEDS_IMPROVEMENT",
+          metrics: [buildMetric({ metric_name: "judge_b_score", score: 0.55 })],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-c",
+          final_status: "FAILED",
+          metrics: [buildMetric({ metric_name: "judge_c_score", score: 0.25 })],
+        },
+      ],
+    } as unknown as JudgesReport;
+
+    const tx = createMockTx();
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    expect(data.map((row: { finalStatus: string }) => row.finalStatus)).toEqual(
+      [EvalStatus.Passed, EvalStatus.NeedsImprovement, EvalStatus.Failed]
+    );
+  });
+
+  it("skips rows with invalid final_status and logs warning", async () => {
+    const report = {
+      report_id: "r-invalid-status",
+      timestamp: "2026-02-25T00:00:00Z",
+      stats: [
+        {
+          type: "case_score",
+          case_id: "judge-valid",
+          final_status: 1,
+          metrics: [
+            buildMetric({ metric_name: "judge_valid_score", score: 0.9 }),
+          ],
+        },
+        {
+          type: "case_score",
+          case_id: "judge-invalid",
+          final_status: 999,
+          metrics: [
+            buildMetric({ metric_name: "judge_invalid_score", score: 0.1 }),
+          ],
+        },
+      ],
+    } as unknown as JudgesReport;
+
+    const tx = createMockTx();
+
+    await fanOutJudgeScores({
+      evaluationId: EVALUATION_ID,
+      organizationId: ORG_ID,
+      report,
+      tx: tx as any,
+    });
+
+    const [call] = tx.judgeScore.createMany.mock.calls;
+    const { data } = call[0];
+
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({
+      caseId: "judge-valid",
+      finalStatus: EvalStatus.Passed,
+    });
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      "judge_final_status_invalid",
+      expect.objectContaining({
+        caseId: "judge-invalid",
+        rawFinalStatus: 999,
+      })
+    );
+  });
+
   // -------------------------------------------------------------------------
   // Transaction rollback: createMany failure propagates
   // -------------------------------------------------------------------------

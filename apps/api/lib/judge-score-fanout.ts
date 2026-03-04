@@ -1,6 +1,7 @@
-import type {
-  JudgesReport,
-  MetricStatistics,
+import {
+  EvalStatus,
+  type JudgesReport,
+  type MetricStatistics,
 } from "@repo/api/src/types/evaluation";
 import type { Prisma, TransactionClient } from "@repo/database";
 import { PromptType } from "@repo/database";
@@ -55,6 +56,15 @@ export async function fanOutJudgeScores(params: {
       continue;
     }
 
+    const finalStatus = normalizeFinalStatus(caseScore.final_status as unknown);
+    if (finalStatus === null) {
+      log.warn("judge_final_status_invalid", {
+        caseId: caseScore.case_id,
+        rawFinalStatus: caseScore.final_status,
+      });
+      continue;
+    }
+
     const normalizedCaseId = normalizeJudgeName(caseScore.case_id);
     const promptId = promptLookup.get(normalizedCaseId) ?? null;
 
@@ -73,7 +83,7 @@ export async function fanOutJudgeScores(params: {
       threshold: metric.threshold,
       score: metric.score,
       justification: metric.justification,
-      finalStatus: caseScore.final_status,
+      finalStatus,
     });
   }
 
@@ -159,4 +169,45 @@ function buildPromptLookup(
   }
 
   return lookup;
+}
+
+const STATUS_FROM_NUMERIC: Record<number, EvalStatus> = {
+  // Legacy harness encoding used in some judges reports.
+  1: EvalStatus.Passed,
+  2: EvalStatus.NeedsImprovement,
+  3: EvalStatus.Failed,
+};
+
+const STATUS_FROM_SYMBOLIC_KEY: Record<string, EvalStatus> = {
+  Failed: EvalStatus.Failed,
+  NeedsImprovement: EvalStatus.NeedsImprovement,
+  Passed: EvalStatus.Passed,
+};
+
+const EVAL_STATUS_VALUES = new Set<EvalStatus>(Object.values(EvalStatus));
+
+function normalizeFinalStatus(rawFinalStatus: unknown): EvalStatus | null {
+  if (typeof rawFinalStatus === "number") {
+    return STATUS_FROM_NUMERIC[rawFinalStatus] ?? null;
+  }
+
+  if (typeof rawFinalStatus !== "string") {
+    return null;
+  }
+
+  const trimmedStatus = rawFinalStatus.trim();
+  if (trimmedStatus.length === 0) {
+    return null;
+  }
+
+  const numericStatus = Number(trimmedStatus);
+  if (Number.isInteger(numericStatus)) {
+    return STATUS_FROM_NUMERIC[numericStatus] ?? null;
+  }
+
+  if (EVAL_STATUS_VALUES.has(trimmedStatus as EvalStatus)) {
+    return trimmedStatus as EvalStatus;
+  }
+
+  return STATUS_FROM_SYMBOLIC_KEY[trimmedStatus] ?? null;
 }
