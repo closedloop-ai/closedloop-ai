@@ -1,3 +1,5 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import {
   cleanup,
   fireEvent,
@@ -8,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockArtifact } from "@/__tests__/fixtures/artifacts";
 import { NewPlanModal } from "../new-plan-modal";
+import type { PlanSource } from "../plan-source";
 
 // Mock the hooks
 const mockUseRouter = vi.fn();
@@ -37,6 +40,24 @@ vi.mock("@/hooks/queries/use-projects", async () => {
     useProjects: () => mockUseProjects(),
   };
 });
+
+vi.mock("@/hooks/queries/use-github-integration", () => ({
+  useGitHubIntegrationStatus: () => ({
+    data: { connected: false },
+    isLoading: false,
+  }),
+  useGitHubRepositories: () => ({ data: [], isLoading: false }),
+  useGitHubBranches: () => ({ data: undefined, isLoading: false }),
+}));
+
+function createMockSource(overrides?: Partial<PlanSource>): PlanSource {
+  return {
+    id: "source-1",
+    title: "Test Source",
+    sourceType: EntityType.Artifact,
+    ...overrides,
+  } as PlanSource;
+}
 
 // Regex constants for testing
 const TITLE_REGEX = /title/i;
@@ -130,7 +151,7 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: "PRD",
+          type: ArtifactType.Prd,
           projectId: "project-1",
         }),
       ];
@@ -203,40 +224,36 @@ describe("NewPlanModal", () => {
     });
   });
 
-  describe("Modal with source artifact (PRD mode)", () => {
-    it("should pre-fill title and fileName from source artifact", () => {
-      const mockSourceArtifact = createMockArtifact({
+  describe("Modal with source (PRD mode)", () => {
+    it("should pre-fill title and fileName from source", () => {
+      const mockSource = createMockSource({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        type: "PRD",
         fileName: "dashboard-redesign.md",
       });
 
-      render(<NewPlanModal open={true} sourceArtifact={mockSourceArtifact} />);
+      render(<NewPlanModal open={true} source={mockSource} />);
 
       // Verify title is pre-filled
       const titleInput = screen.getByLabelText(TITLE_REGEX) as HTMLInputElement;
-      expect(titleInput.value).toBe(
-        "Implementation Plan: Dashboard Redesign PRD"
-      );
+      expect(titleInput.value).toBe("Plan: Dashboard Redesign PRD");
 
       // Verify fileName is pre-filled
       const fileNameInput = screen.getByLabelText(
         FILE_NAME_REGEX
       ) as HTMLInputElement;
-      expect(fileNameInput.value).toBe("dashboard-redesign-impl-plan.md");
+      expect(fileNameInput.value).toBe("dashboard-redesign-plan.md");
     });
 
-    it("should show source artifact as read-only field", () => {
-      const mockSourceArtifact = createMockArtifact({
+    it("should show source as read-only field", () => {
+      const mockSource = createMockSource({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        type: "PRD",
       });
 
-      render(<NewPlanModal open={true} sourceArtifact={mockSourceArtifact} />);
+      render(<NewPlanModal open={true} source={mockSource} />);
 
-      // Verify source artifact is displayed but not selectable
+      // Verify source is displayed but not selectable
       expect(screen.getByText("Dashboard Redesign PRD")).toBeInTheDocument();
 
       // Verify there's no PRD dropdown (PrdSelector should not render)
@@ -247,15 +264,14 @@ describe("NewPlanModal", () => {
       expect(sourceLabel.textContent).toContain("(optional)");
     });
 
-    it("should not show project selector when source artifact is provided", () => {
-      const mockSourceArtifact = createMockArtifact({
+    it("should not show project selector when source is provided", () => {
+      const mockSource = createMockSource({
         id: "prd-1",
         title: "Dashboard Redesign PRD",
-        type: "PRD",
         projectId: "project-1",
       });
 
-      render(<NewPlanModal open={true} sourceArtifact={mockSourceArtifact} />);
+      render(<NewPlanModal open={true} source={mockSource} />);
 
       // Project selector should not be rendered
       expect(
@@ -270,10 +286,9 @@ describe("NewPlanModal", () => {
         isPending: false,
       });
 
-      const mockSourceArtifact = createMockArtifact({
+      const mockSource = createMockSource({
         id: "prd-1",
         title: "Dashboard PRD",
-        type: "PRD",
         projectId: "project-1",
         workstreamId: "ws-1",
         targetRepo: "org/repo",
@@ -284,11 +299,11 @@ describe("NewPlanModal", () => {
         options?.onSuccess?.({
           ...input,
           id: "new-plan-123",
-          slug: "dashboard-impl-plan",
+          slug: "dashboard-plan",
         });
       });
 
-      render(<NewPlanModal open={true} sourceArtifact={mockSourceArtifact} />);
+      render(<NewPlanModal open={true} source={mockSource} />);
 
       // Submit the form (title is already pre-filled)
       const submitButton = screen.getByRole("button", {
@@ -319,12 +334,12 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: "PRD",
+          type: ArtifactType.Prd,
         }),
         createMockArtifact({
           id: "prd-2",
           title: "Authentication PRD",
-          type: "PRD",
+          type: ArtifactType.Prd,
         }),
       ];
 
@@ -352,7 +367,7 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard Redesign",
-          type: "PRD",
+          type: ArtifactType.Prd,
           fileName: "dashboard-redesign.md",
         }),
       ];
@@ -379,13 +394,13 @@ describe("NewPlanModal", () => {
         const titleInput = screen.getByLabelText(
           TITLE_REGEX
         ) as HTMLInputElement;
-        expect(titleInput.value).toContain("Implementation Plan:");
+        expect(titleInput.value).toContain("Plan:");
         expect(titleInput.value).toContain("Dashboard Redesign");
 
         const fileNameInput = screen.getByLabelText(
           FILE_NAME_REGEX
         ) as HTMLInputElement;
-        expect(fileNameInput.value).toBe("dashboard-redesign-impl-plan.md");
+        expect(fileNameInput.value).toBe("dashboard-redesign-plan.md");
       });
     });
 
@@ -394,7 +409,7 @@ describe("NewPlanModal", () => {
         createMockArtifact({
           id: "prd-1",
           title: "Dashboard PRD",
-          type: "PRD",
+          type: ArtifactType.Prd,
           targetRepo: "org/repo",
           targetBranch: "main",
         }),
@@ -471,7 +486,7 @@ describe("NewPlanModal", () => {
         const fileNameInput = screen.getByLabelText(
           FILE_NAME_REGEX
         ) as HTMLInputElement;
-        expect(fileNameInput.value).toBe("my-dashboard-plan-impl-plan.md");
+        expect(fileNameInput.value).toBe("my-dashboard-plan-plan.md");
       });
     });
   });

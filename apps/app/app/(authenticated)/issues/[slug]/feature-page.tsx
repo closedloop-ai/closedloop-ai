@@ -127,31 +127,29 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
                 Preview
               </UnderlineTabsTrigger>
             </UnderlineTabsList>
-            <div className="p-6">
-              <TabsContent className="mt-0" value="description">
-                <div className="mx-auto flex max-w-[750px] flex-col gap-4 py-2">
-                  <EditableIssueTitle
-                    initialTitle={issue.title}
-                    issueId={issue.id}
-                    onTitleChange={setDisplayTitle}
-                  />
-                  <EditableIssueDescription
-                    initialDescription={issue.description || ""}
-                    issueId={issue.id}
-                  />
-                  <ContextTable issueId={issue.id} separator />
-                </div>
-              </TabsContent>
-              <TabsContent className="mt-0" value="plan">
-                <FeaturePlanTab />
-              </TabsContent>
-              <TabsContent className="mt-0" value="build">
-                <FeatureBuildTab />
-              </TabsContent>
-              <TabsContent className="mt-0" value="preview">
-                <FeaturePreviewTab />
-              </TabsContent>
-            </div>
+            <TabsContent className="mt-0" value="description">
+              <div className="mx-auto flex max-w-[750px] flex-col gap-4 py-6">
+                <EditableIssueTitle
+                  initialTitle={issue.title}
+                  issueId={issue.id}
+                  onTitleChange={setDisplayTitle}
+                />
+                <EditableIssueDescription
+                  initialDescription={issue.description || ""}
+                  issueId={issue.id}
+                />
+                <ContextTable issueId={issue.id} separator />
+              </div>
+            </TabsContent>
+            <TabsContent className="mt-0" value="plan">
+              <FeaturePlanTab issue={issue} />
+            </TabsContent>
+            <TabsContent className="mt-0" value="build">
+              <FeatureBuildTab />
+            </TabsContent>
+            <TabsContent className="mt-0" value="preview">
+              <FeaturePreviewTab />
+            </TabsContent>
           </Tabs>
 
           {/* Right Sidebar */}

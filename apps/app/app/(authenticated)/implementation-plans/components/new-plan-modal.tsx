@@ -1,6 +1,6 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -13,238 +13,34 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { LoaderIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useArtifacts,
   useCreateAndGenerateArtifact,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
 import { useProjects } from "@/hooks/queries/use-projects";
-import { getUserDisplayName } from "@/lib/user-utils";
+import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
+import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
+import {
+  generateFileNameFromTitle,
+  generatePlanFileName,
+  getFinalFileName,
+  type PlanSource,
+} from "./plan-source";
+import { RepositoryBranchFields } from "./repository-branch-fields";
 
 type NewPlanModalProps = {
-  sourceArtifact?: ArtifactWithWorkstream;
+  source?: PlanSource;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
 
-function generatePlanFileName(prd: ArtifactWithWorkstream): string {
-  if (prd.fileName) {
-    return prd.fileName.replace(".md", "-impl-plan.md");
-  }
-  return `${prd.title
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9\s]/g, "")
-    .replaceAll(/\s+/g, "-")}-impl-plan.md`;
-}
-
-function generateFileNameFromTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9\s]/g, "")
-    .replaceAll(/\s+/g, "-")
-    .concat("-impl-plan.md");
-}
-
-function getFinalFileName(
-  fileName: string,
-  title: string,
-  selectedSource?: ArtifactWithWorkstream
-): string {
-  if (fileName.trim()) {
-    return fileName.trim();
-  }
-  if (selectedSource) {
-    return generatePlanFileName(selectedSource);
-  }
-  return generateFileNameFromTitle(title);
-}
-
-function PrdSelector({
-  prds,
-  isLoading,
-  selectedPrdId,
-  onSelect,
-}: {
-  prds: ArtifactWithWorkstream[];
-  isLoading: boolean;
-  selectedPrdId: string;
-  onSelect: (id: string) => void;
-}) {
-  const placeholder = isLoading ? "Loading PRDs..." : "Select a PRD";
-  const isEmpty = prds.length === 0 && !isLoading;
-
-  return (
-    <Select onValueChange={onSelect} value={selectedPrdId}>
-      <SelectTrigger id="source-prd">
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        {isEmpty ? (
-          <div className="p-2 text-center text-muted-foreground text-sm">
-            No PRDs available. Create a PRD first.
-          </div>
-        ) : null}
-        {prds.map((prd) => (
-          <SelectItem key={prd.id} value={prd.id}>
-            {prd.title}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function ProjectSelector({
-  projects,
-  isLoading,
-  selectedProjectId,
-  onSelect,
-}: {
-  projects: { id: string; name: string }[];
-  isLoading: boolean;
-  selectedProjectId: string;
-  onSelect: (id: string) => void;
-}) {
-  const placeholder = isLoading ? "Loading projects..." : "Select a project";
-  const isEmpty = projects.length === 0 && !isLoading;
-
-  return (
-    <Select onValueChange={onSelect} value={selectedProjectId}>
-      <SelectTrigger id="project">
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        {isEmpty ? (
-          <div className="p-2 text-center text-muted-foreground text-sm">
-            No projects available. Create a project first.
-          </div>
-        ) : null}
-        {projects.map((project) => (
-          <SelectItem key={project.id} value={project.id}>
-            {project.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function PlanPreview({
-  prd,
-  title,
-  fileName,
-}: {
-  prd: ArtifactWithWorkstream;
-  title: string;
-  fileName: string;
-}) {
-  return (
-    <div className="rounded-md border bg-muted/50 p-3 text-sm">
-      <p className="mb-1 font-medium">Plan will be created with:</p>
-      <ul className="space-y-1 text-muted-foreground">
-        <li>
-          <span className="font-medium text-foreground">Title:</span>{" "}
-          {title || (
-            <span className="text-muted-foreground italic">
-              No title entered
-            </span>
-          )}
-        </li>
-        <li>
-          <span className="font-medium text-foreground">File name:</span>{" "}
-          {fileName || (
-            <span className="text-muted-foreground italic">Auto-generated</span>
-          )}
-        </li>
-        {prd.approver ? (
-          <li>
-            <span className="font-medium text-foreground">Approver:</span>{" "}
-            {getUserDisplayName(prd.approver)}
-          </li>
-        ) : null}
-        {prd.targetRepo ? (
-          <li>
-            <span className="font-medium text-foreground">Target Repo:</span>{" "}
-            {prd.targetRepo}
-          </li>
-        ) : null}
-        {prd.targetBranch ? (
-          <li>
-            <span className="font-medium text-foreground">Target Branch:</span>{" "}
-            {prd.targetBranch}
-          </li>
-        ) : null}
-      </ul>
-    </div>
-  );
-}
-
-type FormState = {
-  selectedSourceId: string;
-  selectedProjectId: string;
-  title: string;
-  fileName: string;
-  content: string;
-};
-
-function buildCreateInput(
-  formState: FormState,
-  finalFileName: string,
-  selectedSource: ArtifactWithWorkstream | undefined
-) {
-  const baseInput = {
-    type: "IMPLEMENTATION_PLAN" as const,
-    title: formState.title.trim(),
-    fileName: finalFileName,
-    approverId: selectedSource?.approver?.id,
-    status: "DRAFT" as const,
-    content: formState.content.trim() || "",
-    projectId:
-      selectedSource?.projectId ?? (formState.selectedProjectId || undefined),
-  };
-
-  if (!selectedSource) {
-    return { type: "create" as const, input: baseInput };
-  }
-
-  return {
-    type: "createAndGenerate" as const,
-    input: {
-      ...baseInput,
-      sourceId: selectedSource.id,
-      sourceType: "ARTIFACT" as const,
-      sourceVersion: selectedSource.latestVersion,
-      workstreamId: selectedSource.workstreamId ?? undefined,
-      targetRepo: selectedSource.targetRepo ?? undefined,
-      targetBranch: selectedSource.targetBranch ?? undefined,
-    },
-  };
-}
-
-function useModalOpenState(
-  controlledOpen?: boolean,
-  controlledOnOpenChange?: (open: boolean) => void
-) {
-  const [internalOpen, setInternalOpen] = useState(false);
-  const isControlled = controlledOpen !== undefined;
-  const open = isControlled ? controlledOpen : internalOpen;
-  const setOpen = controlledOnOpenChange ?? setInternalOpen;
-  return { open, setOpen, isControlled };
-}
-
 export function NewPlanModal({
-  sourceArtifact,
+  source,
   open: controlledOpen,
   onOpenChange: controlledOnOpenChange,
 }: NewPlanModalProps = {}) {
@@ -258,23 +54,26 @@ export function NewPlanModal({
   const [error, setError] = useState<string | null>(null);
 
   // Form state
-  const [selectedSourceId, setSelectedSourceId] = useState(
-    sourceArtifact?.id ?? ""
-  );
+  const [selectedSourceId, setSelectedSourceId] = useState(source?.id ?? "");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [title, setTitle] = useState(() =>
-    sourceArtifact ? `Implementation Plan: ${sourceArtifact.title}` : ""
+    source ? `Plan: ${source.title}` : ""
   );
   const [fileName, setFileName] = useState(() =>
-    sourceArtifact ? generatePlanFileName(sourceArtifact) : ""
+    source ? generatePlanFileName(source) : ""
   );
   const [content, setContent] = useState("");
+  const [targetRepo, setTargetRepo] = useState(() => source?.targetRepo ?? "");
+  const [targetBranch, setTargetBranch] = useState(
+    () => source?.targetBranch ?? ""
+  );
+  const [selectedRepoId, setSelectedRepoId] = useState("");
 
-  // Fetch PRDs when modal opens (skip if we have a source artifact)
+  // Fetch PRDs when modal opens (skip if we have a source)
   const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
     { type: "PRD", projectId: selectedProjectId },
     {
-      enabled: open && !!selectedProjectId && !sourceArtifact,
+      enabled: open && !!selectedProjectId && !source,
     }
   );
 
@@ -284,17 +83,33 @@ export function NewPlanModal({
     { enabled: open }
   );
 
-  // Get the selected source (either from prop or from dropdown)
-  const selectedSource =
-    sourceArtifact ?? prds.find((p) => p.id === selectedSourceId);
+  // Get the selected source (either from prop or from dropdown PRD)
+  const selectedPrd = prds.find((p) => p.id === selectedSourceId);
+  const selectedSource: PlanSource | undefined = useMemo(() => {
+    return (
+      source ??
+      (selectedPrd
+        ? {
+            ...selectedPrd,
+            sourceType: EntityType.Artifact,
+          }
+        : undefined)
+    );
+  }, [source, selectedPrd]);
 
-  // Update title and filename when source is selected from dropdown
+  // Update title, filename, and repo/branch when source is selected from dropdown
   useEffect(() => {
-    if (selectedSource && !sourceArtifact) {
-      setTitle(`Implementation Plan: ${selectedSource.title}`);
+    if (selectedSource && !source) {
+      setTitle(`Plan: ${selectedSource.title}`);
       setFileName(generatePlanFileName(selectedSource));
+      if (selectedSource.targetRepo) {
+        setTargetRepo(selectedSource.targetRepo);
+      }
+      if (selectedSource.targetBranch) {
+        setTargetBranch(selectedSource.targetBranch);
+      }
     }
-  }, [selectedSource, sourceArtifact]);
+  }, [selectedSource, source]);
 
   const handleTitleChange = (value: string): void => {
     setTitle(value);
@@ -306,11 +121,14 @@ export function NewPlanModal({
   };
 
   const resetForm = () => {
-    setSelectedSourceId(sourceArtifact?.id ?? "");
+    setSelectedSourceId(source?.id ?? "");
     setSelectedProjectId("");
     setTitle("");
     setFileName("");
     setContent("");
+    setTargetRepo(source?.targetRepo ?? "");
+    setTargetBranch(source?.targetBranch ?? "");
+    setSelectedRepoId("");
     setError(null);
   };
 
@@ -322,12 +140,14 @@ export function NewPlanModal({
       return;
     }
 
-    const formState: FormState = {
+    const formState = {
       selectedSourceId,
       selectedProjectId,
       title,
       fileName,
       content,
+      targetRepo,
+      targetBranch,
     };
 
     const finalFileName = getFinalFileName(
@@ -341,7 +161,7 @@ export function NewPlanModal({
       selectedSource
     );
 
-    const onSuccess = (artifact: ArtifactWithWorkstream) => {
+    const onSuccess = (artifact: { slug: string }) => {
       setOpen(false);
       resetForm();
       router.push(`/implementation-plans/${artifact.slug}`);
@@ -361,7 +181,7 @@ export function NewPlanModal({
     }
   };
 
-  const showProjectSelector = !(sourceArtifact || selectedSourceId);
+  const showProjectSelector = !selectedSource?.projectId;
   const isSubmitting = createPlan.isPending || createAndGeneratePlan.isPending;
 
   return (
@@ -382,7 +202,7 @@ export function NewPlanModal({
               Generate Implementation Plan
             </div>
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="sr-only">
             Create an implementation plan from a PRD or Issue.
           </DialogDescription>
         </DialogHeader>
@@ -407,7 +227,7 @@ export function NewPlanModal({
               aria-invalid={error ? "true" : "false"}
               id="new-title"
               onChange={(e) => handleTitleChange(e.target.value)}
-              placeholder="Implementation Plan: Dashboard Redesign"
+              placeholder="Plan: Dashboard Redesign"
               value={title}
             />
           </div>
@@ -417,19 +237,19 @@ export function NewPlanModal({
             <Input
               id="new-filename"
               onChange={(e) => setFileName(e.target.value)}
-              placeholder={fileName || "dashboard-redesign-impl-plan.md"}
+              placeholder={fileName}
               value={fileName}
             />
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="source-prd">
-              Source{sourceArtifact ? "" : " PRD"}{" "}
+              Source{source ? "" : " PRD"}{" "}
               <span className="text-muted-foreground">(optional)</span>
             </Label>
-            {sourceArtifact ? (
+            {source ? (
               <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted px-3 py-2 text-sm">
-                {sourceArtifact.title}
+                {source.title}
               </div>
             ) : (
               <PrdSelector
@@ -456,10 +276,23 @@ export function NewPlanModal({
             </div>
           ) : null}
 
+          <RepositoryBranchFields
+            onBranchChange={setTargetBranch}
+            onRepositoryChange={(repoId, fullName) => {
+              setSelectedRepoId(repoId);
+              setTargetRepo(fullName);
+              setTargetBranch("");
+            }}
+            selectedRepoId={selectedRepoId}
+            targetBranch={targetBranch}
+          />
+
           {selectedSource ? (
             <PlanPreview
               fileName={fileName}
-              prd={selectedSource}
+              source={selectedSource}
+              targetBranch={targetBranch}
+              targetRepo={targetRepo}
               title={title}
             />
           ) : null}
@@ -467,7 +300,7 @@ export function NewPlanModal({
           <div className="space-y-2">
             <Label htmlFor="new-content">Additional context</Label>
             <Textarea
-              className="min-h-[150px] font-mono text-sm"
+              className="min-h-[75px] font-mono text-sm"
               id="new-content"
               onChange={(e) => setContent(e.target.value)}
               value={content}

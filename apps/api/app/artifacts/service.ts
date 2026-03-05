@@ -548,7 +548,9 @@ export const artifactsService = {
 
     // Fallback: title matching (strips "Implementation Plan: " prefix)
     if (!foundSource?.content) {
-      const titleFallback = artifact.title.replace("Implementation Plan: ", "");
+      const titleFallback = artifact.title
+        .replace("Implementation Plan: ", "")
+        .replace("Plan: ", "");
       const matchedArtifact = await withDb((db) =>
         db.artifact.findFirst({
           where: {
@@ -2167,7 +2169,7 @@ Please try again or contact support if the issue persists.`
         // No linked plan exists — create a new IMPLEMENTATION_PLAN from the PRD
         const newPlan = await this.create(organizationId, userId, {
           type: ArtifactType.ImplementationPlan,
-          title: `Implementation Plan: ${prd.title}`,
+          title: `Plan: ${prd.title}`,
           content: "",
           sourceId: prd.id,
           sourceType: "ARTIFACT",
@@ -2854,7 +2856,7 @@ function isGitHubConfigured(): boolean {
 }
 
 function getPlaceholderContent(title: string, version: number): string {
-  return `# Implementation Plan: ${title}
+  return `# ${title}
 
 ## Overview
 
