@@ -854,18 +854,27 @@ function findExistingRunDir(workDir) {
  * Content priority:
  * 1. contextPack.prompt — explicit user prompt (e.g., request-changes text)
  * 2. First PRD artifact in contextPack.artifacts — the source PRD passed via contextRefs
+ * 3. First FEATURE artifact — issue description used as plan input
  *
  * Without this, PLAN commands get no --prd flag and produce empty plans.
  */
 function writePrdFile(targetDir, contextPack) {
   let prdContent = contextPack?.prompt ?? null;
 
-  // Fall back to the first PRD-type artifact from context refs
+  // Fall back to the first PRD-type artifact, then FEATURE-type
   if (!prdContent && Array.isArray(contextPack?.artifacts)) {
     const prdArtifact = contextPack.artifacts.find((a) => a.type === "PRD");
-    if (prdArtifact?.content) {
-      prdContent = prdArtifact.content;
-      log("info", `Using PRD artifact (${prdArtifact.id}) as prd.md content`);
+    const featureArtifact = prdArtifact
+      ? null
+      : contextPack.artifacts.find((a) => a.type === "FEATURE");
+    const source = prdArtifact || featureArtifact;
+
+    if (source?.content) {
+      prdContent = source.content;
+      log(
+        "info",
+        `Using ${source.type} artifact (${source.id}) as prd.md content`
+      );
     }
   }
 
@@ -884,16 +893,21 @@ function writePrdFile(targetDir, contextPack) {
  * editor (stored as artifact versions in the DB) are reflected in plan.json
  * before amend-plan or execute runs.
  *
- * The context pack's primary artifact (artifacts[0]) contains the latest
- * artifact version content from the platform.
+ * The context pack's primary artifact (found by type, not index) contains
+ * the latest artifact version content from the platform.
  */
 function syncPlanFromContextPack(runDir, contextPack) {
   if (!contextPack?.artifacts?.length) {
     return;
   }
 
-  // The primary artifact is the plan content (latest version from DB)
-  const primaryArtifact = contextPack.artifacts[0];
+  // Find the plan artifact by type — ref artifacts (PRD/Issue) may precede
+  // the primary artifact in the array, so index 0 is not reliable.
+  const primaryArtifact =
+    contextPack.artifacts.find((a) => a.type === "IMPLEMENTATION_PLAN") ??
+    contextPack.artifacts.find(
+      (a) => !["PRD", "FEATURE"].includes(a.type)
+    );
   if (!primaryArtifact?.content) {
     return;
   }

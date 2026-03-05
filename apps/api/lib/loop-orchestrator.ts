@@ -3,6 +3,7 @@ import {
   RunTaskCommand,
   StopTaskCommand,
 } from "@aws-sdk/client-ecs";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import type {
   LoopEvent,
   LoopEventCompleted,
@@ -14,6 +15,7 @@ import { log } from "@repo/observability/log";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService, getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
+import { issuesService } from "@/app/issues/service";
 import {
   isInvalidStatusTransitionError,
   loopsService,
@@ -191,7 +193,8 @@ type LoopForContextPack = {
   parentLoopId: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
-    artifactId: string;
+    sourceId: string;
+    sourceType?: EntityType;
     include: "full" | "summary";
   }> | null;
 };
@@ -243,36 +246,76 @@ async function fetchContextRefArtifacts(
     return [];
   }
 
+  // Exclude the primary artifact from context refs to avoid duplication
   const refs = loop.contextRefs.filter(
-    (ref) => ref.artifactId !== loop.artifactId
+    (ref) =>
+      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Issue
   );
 
-  const artifacts = await Promise.all(
-    refs.map(async (ref) => {
-      const artifact = await artifactsService.findByIdSimple(
-        ref.artifactId,
-        organizationId
-      );
-      if (!artifact) {
-        return null;
+  const results = await Promise.all(
+    refs.map((ref) => {
+      if (ref.sourceType === EntityType.Issue) {
+        return fetchIssueRef(ref, organizationId, loop.id);
       }
-
-      const latestVersion = await artifactVersionService.getLatest(artifact.id);
-      const content = latestVersion?.content ?? "";
-
-      return {
-        id: artifact.id,
-        type: String(artifact.type),
-        title: artifact.title,
-        content:
-          ref.include === "summary" ? truncateForSummary(content) : content,
-      };
+      return fetchArtifactRef(ref, organizationId, loop.id);
     })
   );
 
-  return artifacts.filter(
-    (artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact)
+  return results.filter((item): item is NonNullable<typeof item> =>
+    Boolean(item)
   );
+}
+
+async function fetchIssueRef(
+  ref: { sourceId: string; include: "full" | "summary" },
+  organizationId: string,
+  loopId: string
+): Promise<ContextPack["artifacts"][number] | null> {
+  const issue = await issuesService.findById(ref.sourceId, organizationId);
+  if (!issue) {
+    log.warn("[loop-orchestrator] Issue not found for context ref", {
+      loopId,
+      issueId: ref.sourceId,
+    });
+    return null;
+  }
+
+  const content = issue.description ?? "";
+
+  return {
+    id: issue.id,
+    type: "FEATURE",
+    title: issue.title,
+    content: ref.include === "summary" ? truncateForSummary(content) : content,
+  };
+}
+
+async function fetchArtifactRef(
+  ref: { sourceId: string; include: "full" | "summary" },
+  organizationId: string,
+  loopId: string
+): Promise<ContextPack["artifacts"][number] | null> {
+  const artifact = await artifactsService.findByIdSimple(
+    ref.sourceId,
+    organizationId
+  );
+  if (!artifact) {
+    log.warn("[loop-orchestrator] Artifact not found for context ref", {
+      loopId,
+      artifactId: ref.sourceId,
+    });
+    return null;
+  }
+
+  const latestVersion = await artifactVersionService.getLatest(artifact.id);
+  const content = latestVersion?.content ?? "";
+
+  return {
+    id: artifact.id,
+    type: String(artifact.type),
+    title: artifact.title,
+    content: ref.include === "summary" ? truncateForSummary(content) : content,
+  };
 }
 
 async function fetchParentLoopSummary(
@@ -320,7 +363,8 @@ export async function buildContextPack(
       fetchParentLoopSummary(loop, organizationId),
     ]);
 
-  const artifacts = [...primaryArtifacts, ...refArtifacts];
+  // Context ref artifacts first (Issue/PRD), then primary artifact
+  const artifacts = [...refArtifacts, ...primaryArtifacts];
 
   const contextPack: ContextPack = {
     command: loop.command,

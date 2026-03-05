@@ -2,6 +2,7 @@
 // These are explicitly defined to keep packages/api independent of database
 
 import type { JsonObject } from "./common";
+import type { EntityType } from "./entity-link";
 
 // Loop Status
 export const LoopStatus = {
@@ -25,6 +26,11 @@ export const LoopCommand = {
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
+export type SourceContextType = (typeof EntityType)[keyof Pick<
+  typeof EntityType,
+  "Artifact" | "Issue"
+>];
+
 // Core Loop entity
 export type Loop = {
   id: string;
@@ -38,7 +44,8 @@ export type Loop = {
   prompt: string | null;
   repo: { fullName: string; branch: string } | null;
   contextRefs: Array<{
-    artifactId: string;
+    sourceId: string;
+    sourceType?: SourceContextType;
     include: "full" | "summary";
   }> | null;
   containerId: string | null;
@@ -82,7 +89,8 @@ export type CreateLoopRequest = {
     branch: string;
   };
   contextRefs?: Array<{
-    artifactId: string;
+    sourceId: string;
+    sourceType?: SourceContextType;
     include: "full" | "summary";
   }>;
 };

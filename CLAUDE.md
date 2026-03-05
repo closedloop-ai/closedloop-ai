@@ -67,7 +67,7 @@ No sycophantic language. Brief, factual — state what changed.
 `turbo.json` (tasks) · `biome.jsonc` (lint config) · `packages/*/keys.ts` (env validation)
 
 ## Code Style
-- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums.
+- Use enum/const references, not hardcoded strings — `ArtifactType.IMPLEMENTATION_PLAN` not `"IMPLEMENTATION_PLAN"`, `EntityType.Issue` not `"ISSUE"`. This applies everywhere: type annotations, runtime comparisons, test fixtures, and object literals. Import from `packages/api/src/types/` or `@repo/database` for Prisma enums. For type annotations use `import type` with the const object's type alias (e.g., `sourceType?: EntityType`).
 - Define string enums as const objects, never arrays: `export const Foo = { Bar: "bar" } as const; export type Foo = (typeof Foo)[keyof typeof Foo];` — not `const FOOS = ["bar"] as const`.
 - `RegExp.exec(str)` not `str.match(regex)` (S6594)
 - `String#replaceAll()` not `.replace()` with global regex (S7781)

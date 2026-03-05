@@ -68,10 +68,10 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         }
       }
 
-      // Use findOrCreateWorkstream for robust PRD discovery via entity links,
+      // Use findOrCreateWorkstream for robust source discovery via entity links,
       // title matching, and auto-workstream creation — matching the pattern
       // used by regenerate/requestChanges/executePlan service methods.
-      const { workstream: resolvedWorkstream, sourceArtifact } =
+      const { workstream: resolvedWorkstream, source } =
         await artifactsService.findOrCreateWorkstream(
           user.organizationId,
           artifact,
@@ -80,7 +80,9 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
 
       const workstream = resolvedWorkstream ?? artifact.workstream;
 
-      const targetRepo = sourceArtifact?.targetRepo ?? artifact.targetRepo;
+      // Resolve repo: body override → source → artifact fallback
+      const targetRepo =
+        body.repo?.fullName ?? source?.targetRepo ?? artifact.targetRepo;
 
       if (!targetRepo) {
         return badRequestResponse(
@@ -89,12 +91,20 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       }
 
       const targetBranch =
-        sourceArtifact?.targetBranch ?? artifact.targetBranch ?? "main";
+        body.repo?.branch ??
+        source?.targetBranch ??
+        artifact.targetBranch ??
+        "main";
 
-      // Build context refs: include the source PRD so the harness can write prd.md
+      // Build context refs based on source type
       const contextRefs: NonNullable<CreateLoopRequest["contextRefs"]> = [];
-      if (sourceArtifact) {
-        contextRefs.push({ artifactId: sourceArtifact.id, include: "full" });
+
+      if (source) {
+        contextRefs.push({
+          sourceId: source.id,
+          sourceType: source.type,
+          include: "full",
+        });
       }
 
       // Find parent loop for non-PLAN commands
