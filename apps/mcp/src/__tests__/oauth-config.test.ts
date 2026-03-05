@@ -85,3 +85,140 @@ describe.sequential("OAuth config", () => {
     );
   });
 });
+
+describe.sequential("Redirect URI wildcard matching", () => {
+  it("matches exact URIs", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/aip/mcp/callback",
+        "https://chatgpt.com/aip/mcp/callback"
+      )
+    ).toBe(true);
+  });
+
+  it("rejects non-matching exact URIs", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://evil.com/aip/mcp/callback",
+        "https://chatgpt.com/aip/mcp/callback"
+      )
+    ).toBe(false);
+  });
+
+  it("matches wildcard suffix patterns", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/connector/oauth/KS-YULLcRxJz",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(true);
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/connector/oauth/abc123",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(true);
+  });
+
+  it("rejects URIs that do not match the wildcard prefix", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/connector/other/abc123",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://evil.com/connector/oauth/abc123",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+  });
+
+  it("does not treat entries without * as wildcards", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/aip/mcp/callback/extra",
+        "https://chatgpt.com/aip/mcp/callback"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects wildcard when origin differs (different host)", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com.evil.com/connector/oauth/abc",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects wildcard when origin differs (different scheme)", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "http://chatgpt.com/connector/oauth/abc",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects wildcard when origin differs (different port)", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com:8443/connector/oauth/abc",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+  });
+
+  it("rejects wildcard with invalid URIs", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    const mod = await import("../index.js");
+    const { isRedirectUriAllowedByEntry } = mod.__testables;
+
+    expect(
+      isRedirectUriAllowedByEntry(
+        "not-a-url",
+        "https://chatgpt.com/connector/oauth/*"
+      )
+    ).toBe(false);
+    expect(
+      isRedirectUriAllowedByEntry(
+        "https://chatgpt.com/connector/oauth/abc",
+        "not-a-url/*"
+      )
+    ).toBe(false);
+  });
+});

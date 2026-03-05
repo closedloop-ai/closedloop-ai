@@ -182,8 +182,18 @@ function isRedirectUriAllowedByEntry(
   allowlistEntry: string
 ): boolean {
   if (allowlistEntry.endsWith("*")) {
-    const prefix = allowlistEntry.slice(0, -1);
-    return uri.startsWith(prefix);
+    let entryUrl: URL;
+    let uriUrl: URL;
+    try {
+      entryUrl = new URL(allowlistEntry.slice(0, -1));
+      uriUrl = new URL(uri);
+    } catch {
+      return false;
+    }
+    if (uriUrl.origin !== entryUrl.origin) {
+      return false;
+    }
+    return uriUrl.pathname.startsWith(entryUrl.pathname);
   }
   return uri === allowlistEntry;
 }
@@ -1105,6 +1115,54 @@ function logMcpEvent(
   console.log(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
 }
 
+type InMemoryRateLimitEntry = {
+  count: number;
+  windowStartMs: number;
+};
+
+const inMemoryRateLimits = new Map<string, InMemoryRateLimitEntry>();
+
+function pruneExpiredInMemoryRateLimits(nowMs: number): void {
+  for (const [key, entry] of inMemoryRateLimits.entries()) {
+    if (nowMs - entry.windowStartMs >= OAUTH_RATE_LIMIT_WINDOW_MS) {
+      inMemoryRateLimits.delete(key);
+    }
+  }
+}
+
+function consumeInMemoryRateLimit(
+  req: import("node:http").IncomingMessage,
+  bucket: "authorize" | "token"
+): { limited: boolean; retryAfterSeconds: number } {
+  const limit =
+    bucket === "authorize"
+      ? OAUTH_RATE_LIMIT_AUTHORIZE_MAX
+      : OAUTH_RATE_LIMIT_TOKEN_MAX;
+  const address = getClientAddress(req);
+  const key = `${bucket}:${address}`;
+  const nowMs = Date.now();
+
+  pruneExpiredInMemoryRateLimits(nowMs);
+  const entry = inMemoryRateLimits.get(key);
+  if (!entry || nowMs - entry.windowStartMs >= OAUTH_RATE_LIMIT_WINDOW_MS) {
+    inMemoryRateLimits.set(key, { count: 1, windowStartMs: nowMs });
+    return { limited: false, retryAfterSeconds: 0 };
+  }
+
+  entry.count += 1;
+  if (entry.count > limit) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil(
+        (entry.windowStartMs + OAUTH_RATE_LIMIT_WINDOW_MS - nowMs) / 1000
+      )
+    );
+    return { limited: true, retryAfterSeconds };
+  }
+
+  return { limited: false, retryAfterSeconds: 0 };
+}
+
 function consumeOAuthRateLimit(
   req: import("node:http").IncomingMessage,
   bucket: "authorize" | "token"
@@ -1197,10 +1255,10 @@ async function consumeOAuthRateLimitSafe(
     );
   } catch (error) {
     console.error(
-      `[oauth] rate-limit lookup failed for ${bucket}; continuing without rate-limit`,
+      `[oauth] rate-limit lookup failed for ${bucket}; falling back to in-memory limiter`,
       error
     );
-    return { limited: false, retryAfterSeconds: 0 };
+    return consumeInMemoryRateLimit(req, bucket);
   }
 }
 
@@ -3085,11 +3143,16 @@ export const __testables = {
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
+  verifyApiKeyLocally,
   isInternalAddressAllowed,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
+  isRedirectUriAllowedByEntry,
+  consumeInMemoryRateLimit,
+  inMemoryRateLimits,
   resetInMemorySecurityState: () => {
     lastOAuthCleanupMs = 0;
     mcpSessions.clear();
+    inMemoryRateLimits.clear();
   },
 };

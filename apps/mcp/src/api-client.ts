@@ -12,9 +12,10 @@ function requireEnv(name: string): string {
 }
 
 const INTERNAL_API_SECRET = requireEnv("INTERNAL_API_SECRET");
-const VERIFY_API_KEY_TIMEOUT_MS = Number(
-  process.env.MCP_VERIFY_API_KEY_TIMEOUT_MS ?? 10_000
-);
+const VERIFY_API_KEY_TIMEOUT_MS = (() => {
+  const v = Number(process.env.MCP_VERIFY_API_KEY_TIMEOUT_MS ?? 10_000);
+  return Number.isFinite(v) && v > 0 ? v : 10_000;
+})();
 
 async function getResponseErrorMessage(response: Response): Promise<string> {
   const body = await response.text().catch(() => "");
