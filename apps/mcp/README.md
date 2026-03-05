@@ -66,11 +66,13 @@ Use these steps to connect Claude Code CLI to ClosedLoop MCP:
 - `MCP_OAUTH_AUTH_CODE_TTL_SECONDS` (optional)
   - Defaults to `600`.
   - Values less than `1` are treated as invalid and fallback to default.
-- `MCP_OAUTH_REDIRECT_URIS` (comma-separated, exact-match allowlist)
+- `MCP_OAUTH_REDIRECT_URIS` (comma-separated allowlist, supports exact-match and `*` suffix wildcard)
   - Example: `https://app.example.com/oauth/callback,https://admin.example.com/oauth/callback`
   - For ChatGPT connector support, include:
     - `https://chat.openai.com/aip/mcp/callback`
     - `https://chatgpt.com/aip/mcp/callback`
+    - `https://chat.openai.com/connector/oauth/*`
+    - `https://chatgpt.com/connector/oauth/*`
 - `MCP_OAUTH_RATE_LIMIT_WINDOW_MS` (optional)
   - Defaults to `60000`.
 - `MCP_OAUTH_RATE_LIMIT_AUTHORIZE_MAX` (optional)
@@ -100,11 +102,14 @@ Use these steps to connect Claude Code CLI to ClosedLoop MCP:
   - If `MCP_OAUTH_REDIRECT_URIS` is unset, localhost loopback redirects are allowed (`localhost`, `127.0.0.1`, `[::1]`).
 - Stage/prod behavior:
   - Loopback redirects are allowed without an allowlist (`localhost`, `127.0.0.1`, `[::1]`), which supports native/CLI OAuth clients.
-  - If `MCP_OAUTH_REDIRECT_URIS` is set, non-loopback redirects must exactly match an entry.
+  - If `MCP_OAUTH_REDIRECT_URIS` is set, non-loopback redirects must match an allowlist entry.
+  - Entries ending with `*` are treated as prefix matches (for example, `https://chatgpt.com/connector/oauth/*`).
   - If `MCP_OAUTH_REDIRECT_URIS` is empty, the server accepts only:
     - OpenAI connector callbacks:
       - `https://chat.openai.com/aip/mcp/callback`
       - `https://chatgpt.com/aip/mcp/callback`
+      - `https://chat.openai.com/connector/oauth/*`
+      - `https://chatgpt.com/connector/oauth/*`
     - Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`).
 
 ## Environment Detection For Policy

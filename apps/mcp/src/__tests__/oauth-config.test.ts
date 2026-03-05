@@ -70,6 +70,21 @@ describe.sequential("OAuth config", () => {
       )
     ).toBe(true);
     expect(
+      mod.__testables.isValidRedirectUri(
+        "https://chatgpt.com/connector/oauth/0AOLizd_UNO2"
+      )
+    ).toBe(true);
+    expect(
+      mod.__testables.isValidRedirectUri(
+        "https://chat.openai.com/connector/oauth/abc123"
+      )
+    ).toBe(true);
+    expect(
+      mod.__testables.isValidRedirectUri(
+        "https://chatgpt.com/connector/other/0AOLizd_UNO2"
+      )
+    ).toBe(false);
+    expect(
       mod.__testables.isValidRedirectUri("https://example.com/oauth/callback")
     ).toBe(false);
   });
