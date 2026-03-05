@@ -238,11 +238,6 @@ jobs:
           github_token: ${{ steps.generate_token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           show_full_output: true
-          plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
-          plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
           allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
           prompt: |
             This is an automated Dependabot PR auto-fix workflow.

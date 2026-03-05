@@ -35,7 +35,7 @@ runs:
         fi
 
         WORKFLOW_URL="${{ github.server_url }}/${{ inputs.repository }}/actions/runs/${{ github.run_id }}"
-        MESSAGE="Symphony failed to ${{ inputs.action_name }}. Check the [workflow logs]($WORKFLOW_URL) for details."
+        MESSAGE="ClosedLoop failed to ${{ inputs.action_name }}. Check the [workflow logs]($WORKFLOW_URL) for details."
 
         gh api -X PATCH "repos/${{ inputs.repository }}/issues/comments/$COMMENT_ID" \
           -f body="$MESSAGE" || true

@@ -172,7 +172,17 @@ export function ensureElectronDetection(options?: {
   return inFlight;
 }
 
-export function useElectronDetection(): ElectronDetectionState {
+const DISABLED_STATE: ElectronDetectionState = {
+  detected: false,
+  loading: false,
+  port: null,
+  version: null,
+  machineName: null,
+  capabilities: null,
+  checkedAt: null,
+};
+
+export function useElectronDetection(enabled = true): ElectronDetectionState {
   const state = useSyncExternalStore(
     subscribeElectronDetection,
     getElectronDetectionSnapshot,
@@ -180,12 +190,19 @@ export function useElectronDetection(): ElectronDetectionState {
   );
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     ensureElectronDetection().catch(() => undefined);
     const id = setInterval(() => {
       ensureElectronDetection({ force: true }).catch(() => undefined);
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [enabled]);
+
+  if (!enabled) {
+    return DISABLED_STATE;
+  }
 
   return state;
 }

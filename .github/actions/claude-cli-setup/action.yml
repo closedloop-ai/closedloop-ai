@@ -6,7 +6,7 @@ inputs:
     required: true
 outputs:
   run_loop_path:
-    description: 'Path to run-loop.sh script from experimental plugin'
+    description: 'Path to run-loop.sh script from code plugin'
     value: ${{ steps.resolve_run_loop.outputs.run_loop_path }}
 
 runs:
@@ -66,9 +66,12 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
       run: |
         set -e
-        claude plugin marketplace add closedloop-ai/claude_code
-        claude plugin install experimental@closedloop
-        claude plugin install symphony-core@closedloop
+        claude plugin marketplace add closedloop-ai/claude-plugins
+        claude plugin install code@closedloop-ai
+        claude plugin install judges@closedloop-ai
+        claude plugin install self-learning@closedloop-ai
+        claude plugin install code-review@closedloop-ai
+        claude plugin install platform@closedloop-ai
 
     - name: Resolve run-loop.sh Path
       id: resolve_run_loop
@@ -76,10 +79,10 @@ runs:
       run: |
         set -e
 
-        PLUGIN_CACHE="$HOME/.claude/plugins/cache/closedloop/experimental"
+        PLUGIN_CACHE="$HOME/.claude/plugins/cache/closedloop-ai"
 
         if [ ! -d "$PLUGIN_CACHE" ]; then
-          echo "::error::Experimental plugin cache not found at $PLUGIN_CACHE"
+          echo "::error::ClosedLoop plugin cache not found at $PLUGIN_CACHE"
           exit 1
         fi
 
@@ -92,7 +95,7 @@ runs:
         fi
 
         if [ -z "$RUN_LOOP_PATH" ] || [ ! -f "$RUN_LOOP_PATH" ]; then
-          echo "::error::run-loop.sh not found in experimental plugin cache"
+          echo "::error::run-loop.sh not found in code plugin cache"
           exit 1
         fi
 

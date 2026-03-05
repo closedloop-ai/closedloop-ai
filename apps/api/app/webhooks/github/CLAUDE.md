@@ -47,7 +47,7 @@ zip-parser.ts (artifact extraction)
   - `findPlanInZip()` - Searches zip for plan content (plan.json, implementation-plan.md)
   - `parseExecutionResult()` - Extract PR info from execution-result.json
   - `parseJudgesReport()` - Extract evaluation report from judges.json
-  - Priority: `plan.json` (experimental plugin) > `implementation-plan.md` (legacy)
+  - Priority: `plan.json` (code plugin) > `implementation-plan.md` (legacy)
 
 ### Handler Directory (`handlers/`)
 

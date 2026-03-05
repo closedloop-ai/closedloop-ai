@@ -9,12 +9,16 @@ import { installEngineerFetchInterceptor } from "@/lib/engineer/engineer-fetch-i
 import {
   getEngineerRoutingSelection,
   setEngineerRoutingAutoSelection,
+  useEngineerRoutingSelection,
 } from "@/lib/engineer/routing-store";
 import { appEnvironment } from "@/lib/environment";
 
 export function EngineerTransportBootstrap() {
-  // Prime detection cache on page load for Tier 2 fast-path routing.
-  const detection = useElectronDetection();
+  // Skip Electron detection probes in LocalDev mode — no Electron relay running.
+  const routing = useEngineerRoutingSelection();
+  const detection = useElectronDetection(
+    routing.mode !== EngineerRoutingMode.LocalDev
+  );
   useComputeTargetStatusStream();
   const { data: targets = [] } = useComputeTargets({
     staleTime: 30_000,

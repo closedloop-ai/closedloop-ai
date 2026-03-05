@@ -60,7 +60,7 @@ export function parseJudgesReport(
 }
 
 /**
- * Parse plan.json from experimental plugin artifacts.
+ * Parse plan.json from code plugin artifacts.
  * Returns the markdown content from the JSON structure, or null if parsing fails.
  */
 function parsePlanJson(content: Buffer, entryName: string): string | null {
@@ -83,7 +83,7 @@ function parsePlanJson(content: Buffer, entryName: string): string | null {
  * Returns the content if found, null otherwise.
  *
  * Priority for plan content:
- * 1. plan.json (experimental plugin artifact)
+ * 1. plan.json (code plugin artifact)
  * 2. implementation-plan.md (legacy)
  */
 export function findPlanInZip(zip: AdmZip): ZipContent {
@@ -172,7 +172,7 @@ function parseZipEntryContent(
   let perfSummary = currentPerfSummary;
   let promptsSnapshot = currentPromptsSnapshot;
 
-  // Priority 1: plan.json from experimental plugin
+  // Priority 1: plan.json from code plugin
   if (name.endsWith("plan.json") && !planContent) {
     planContent = parsePlanJson(data, name);
   }

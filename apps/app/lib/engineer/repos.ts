@@ -341,7 +341,7 @@ export function getWorktreeParentDir(): string {
 
 /**
  * Auto-discover the Symphony run-loop.sh script path.
- * Scans $HOME/.claude/plugins/cache/closedloop/experimental/ for the latest
+ * Scans $HOME/.claude/plugins/cache/closedloop-ai/code/ for the latest
  * semver version directory containing scripts/run-loop.sh.
  * Returns undefined if not found.
  */
@@ -351,8 +351,8 @@ export function getSymphonyScriptPath(): string | undefined {
     ".claude",
     "plugins",
     "cache",
-    "closedloop",
-    "experimental"
+    "closedloop-ai",
+    "code"
   );
 
   if (!existsSync(pluginDir)) {

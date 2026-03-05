@@ -271,6 +271,7 @@ $RECYCLE.BIN/
 
 # Symphony
 .symphony
+.closedloop-ai
 .agent-types
 CLAUDE.md.backup
 
@@ -305,7 +306,7 @@ packages/database/generated
 # Claude Code
 .claude/.token-stats/
 .claude/work/
-.claude/symphony-loop.local.md
+.claude/closedloop-loop.local.md
 plan-docs
 
 # Review artifacts

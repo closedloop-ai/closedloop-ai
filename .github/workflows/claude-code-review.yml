@@ -41,8 +41,8 @@ jobs:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
-          # Access to claude_code repo required for private plugin marketplace (symphony-core, symphony-fe plugins)
-          repositories: ${{ github.event.repository.name }},claude_code
+          # Access to claude-plugins repo required for private plugin marketplace (code, code-review plugins)
+          repositories: ${{ github.event.repository.name }},claude-plugins
           permission-contents: read
           permission-issues: write
           permission-pull-requests: write
@@ -93,16 +93,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
           show_full_output: true
           plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
+            https://github.com/closedloop-ai/claude-plugins.git
           plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-            experimental@closedloop
+            judges@closedloop-ai
+            code@closedloop-ai
+            code-review@closedloop-ai
 
           # Allow bot actors like Dependabot to trigger Claude code review
           allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
 
-          prompt: "/experimental:code-review${{ github.event.pull_request.number && format(' --github {0}', github.event.pull_request.number) || '' }}"
+          prompt: "/code-review:github-review${{ github.event.pull_request.number && format(' {0}', github.event.pull_request.number) || '' }}"
 
           claude_args: |
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
@@ -122,7 +122,7 @@ jobs:
             echo "No threads file — skipping."
             exit 0
           fi
-          HELPERS=$(find "$HOME/.claude" -name "code_review_helpers.py" -path "*/experimental/*" 2>/dev/null | head -1)
+          HELPERS=$(find "$HOME/.claude" -name "code_review_helpers.py" -path "*/code-review/*" 2>/dev/null | head -1)
           if [ -z "$HELPERS" ]; then
             echo "Warning: helpers not found — skipping."
             exit 0
@@ -141,7 +141,7 @@ jobs:
             echo "No findings file — skipping."
             exit 0
           fi
-          HELPERS=$(find "$HOME/.claude" -name "code_review_helpers.py" -path "*/experimental/*" 2>/dev/null | head -1)
+          HELPERS=$(find "$HOME/.claude" -name "code_review_helpers.py" -path "*/code-review/*" 2>/dev/null | head -1)
           if [ -z "$HELPERS" ]; then
             echo "Warning: helpers not found — skipping."
             exit 0

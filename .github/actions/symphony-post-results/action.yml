@@ -54,7 +54,7 @@ runs:
           local dir="${1%/}/"  # Ensure trailing slash
           local skip_questions="${2:-false}"
 
-          # Priority 1: plan.json (experimental format)
+          # Priority 1: plan.json (code format)
           if [ -f "${dir}plan.json" ]; then
             # Validate JSON first
             if ! jq empty "${dir}plan.json" 2>/dev/null; then
@@ -110,12 +110,12 @@ runs:
           TITLE="Open Questions"
           EMOJI="❓"
           NEXT_STEPS="**Next steps:** Answer the questions above, then comment \`@symphony-cl answer\` followed by your answers."
-          STATUS_MSG="Symphony has identified some open questions that need answers before planning can continue. See below."
+          STATUS_MSG="ClosedLoop has identified some open questions that need answers before planning can continue. See below."
         else
           TITLE="Implementation Plan"
           EMOJI="📋"
           NEXT_STEPS="**Next steps:** Review the plan above. When ready, comment \`@symphony-cl execute\` to implement it."
-          STATUS_MSG="Symphony has generated an implementation plan. See below."
+          STATUS_MSG="ClosedLoop has generated an implementation plan. See below."
         fi
 
         # Build comment body
@@ -123,7 +123,7 @@ runs:
 
         # Add artifact link if provided
         if [ -n "${{ inputs.artifact_url }}" ]; then
-          BODY=$(printf '%s\n\n---\n[View Symphony Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
+          BODY=$(printf '%s\n\n---\n[View ClosedLoop Artifact](%s)' "$BODY" "${{ inputs.artifact_url }}")
         fi
 
         # Add next steps

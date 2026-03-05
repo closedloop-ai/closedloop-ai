@@ -584,7 +584,7 @@ export async function POST(
           cwd: paths.effectiveDir,
           env: {
             ...process.env,
-            SYMPHONY_WORKDIR: paths.claudeWorkDir,
+            CLOSEDLOOP_WORKDIR: paths.claudeWorkDir,
             PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
           },
           stdio: ["pipe", "pipe", "pipe"],

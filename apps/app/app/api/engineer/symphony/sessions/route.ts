@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { migrateLegacySessions } from "@/lib/engineer/migrate-sessions";
 
 type ActiveSession = {
   ticketId: string;
@@ -21,15 +22,15 @@ type SessionsConfig = {
   sessions: ActiveSession[];
 };
 
-const SYMPHONY_DIR = join(homedir(), ".symphony");
-const SESSIONS_FILE = join(SYMPHONY_DIR, "sessions.json");
+const CLOSEDLOOP_DIR = join(homedir(), ".closedloop-ai");
+const SESSIONS_FILE = join(CLOSEDLOOP_DIR, "sessions.json");
 
 /**
- * Ensure ~/.symphony directory exists
+ * Ensure ~/.closedloop-ai directory exists
  */
 function ensureDir() {
-  if (!existsSync(SYMPHONY_DIR)) {
-    mkdirSync(SYMPHONY_DIR, { recursive: true });
+  if (!existsSync(CLOSEDLOOP_DIR)) {
+    mkdirSync(CLOSEDLOOP_DIR, { recursive: true });
   }
 }
 
@@ -38,6 +39,7 @@ function ensureDir() {
  */
 function loadSessions(): SessionsConfig {
   ensureDir();
+  migrateLegacySessions();
   if (!existsSync(SESSIONS_FILE)) {
     return { sessions: [] };
   }

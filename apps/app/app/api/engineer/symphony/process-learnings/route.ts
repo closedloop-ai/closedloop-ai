@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
   const runLoopPath = getSymphonyScriptPath();
   if (!runLoopPath) {
     return new Response(
-      JSON.stringify({ error: "Symphony scripts not found in plugin cache" }),
+      JSON.stringify({ error: "ClosedLoop scripts not found in plugin cache" }),
       {
         status: 404,
         headers: { "Content-Type": "application/json" },
@@ -164,7 +164,7 @@ export async function POST(request: NextRequest) {
       cwd: worktreeDir,
       env: {
         ...process.env,
-        SYMPHONY_WORKDIR: claudeWorkDir,
+        CLOSEDLOOP_WORKDIR: claudeWorkDir,
         PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
       },
     });
@@ -199,7 +199,7 @@ function spawnWaitingWrapper(
   const runLoopPath = getSymphonyScriptPath();
   if (!runLoopPath) {
     return new Response(
-      JSON.stringify({ error: "Symphony scripts not found in plugin cache" }),
+      JSON.stringify({ error: "ClosedLoop scripts not found in plugin cache" }),
       {
         status: 404,
         headers: { "Content-Type": "application/json" },
@@ -281,7 +281,7 @@ function spawnWaitingWrapper(
       cwd: worktreeDir,
       env: {
         ...process.env,
-        SYMPHONY_WORKDIR: claudeWorkDir,
+        CLOSEDLOOP_WORKDIR: claudeWorkDir,
         PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
       },
     });

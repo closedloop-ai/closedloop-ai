@@ -293,6 +293,7 @@ export function deriveAgentLabel(firstPrompt: string): string {
 
     // Map known patterns
     const labelMap: Record<string, string> = {
+      "/code:code": "Orchestrator",
       "/experimental:code": "Orchestrator",
       "plan-writer": "Plan Writer",
       "implementation-subagent": "Implementation",

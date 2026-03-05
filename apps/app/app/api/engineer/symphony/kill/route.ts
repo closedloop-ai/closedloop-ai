@@ -104,7 +104,7 @@ function deletePidFile(pidFilePath: string | null): void {
  * between iterations, and update_iteration() will fail under set -e when it's gone.
  */
 function cancelLoop(worktreeDir: string): boolean {
-  const stateFile = join(worktreeDir, ".claude", "symphony-loop.local.md");
+  const stateFile = join(worktreeDir, ".claude", "closedloop-loop.local.md");
   try {
     if (existsSync(stateFile)) {
       unlinkSync(stateFile);

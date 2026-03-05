@@ -7,6 +7,7 @@ import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
+import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import {
   type ContentBlock,
   createStreamState,
@@ -53,7 +54,7 @@ function getChatHistoryPath(ticketId: string): string {
   return join(
     homedir(),
     ".claude",
-    ".symphony",
+    ".closedloop",
     "chats",
     sanitizedTicket,
     "chat-history.json"
@@ -67,6 +68,16 @@ function loadChatHistory(
   historyPath: string,
   ticketId: string
 ): TicketChatHistory {
+  const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const legacyPath = join(
+    homedir(),
+    ".claude",
+    ".symphony",
+    "chats",
+    sanitizedTicket,
+    "chat-history.json"
+  );
+  migrateLegacyChatHistory(legacyPath, historyPath);
   if (!existsSync(historyPath)) {
     return { messages: [], ticketId };
   }

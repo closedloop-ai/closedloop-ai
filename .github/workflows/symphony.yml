@@ -62,7 +62,7 @@ jobs:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},claude_code
+          repositories: ${{ github.event.repository.name }},claude-plugins
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -170,7 +170,7 @@ jobs:
           } > "$WORKDIR/prd.md"
           echo "PRD written to $WORKDIR/prd.md"
 
-      - name: Run Symphony Plan (experimental)
+      - name: Run Symphony Plan
         id: symphony
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_NEW }}
@@ -186,7 +186,7 @@ jobs:
             echo "Copied attachments to $WORKDIR/attachments/"
           fi
 
-          # Run the experimental loop
+          # Run the code loop
           "$RUN_LOOP" "$WORKDIR" --prd "$WORKDIR/prd.md" --max-iterations 50 2>&1 | tee "$WORKDIR/run-loop.log"
 
           echo "Run loop completed. Workdir: $WORKDIR"
@@ -249,7 +249,7 @@ jobs:
           ls -la "$WORKDIR"
 
           # Check for minimum viable output
-          # The experimental run-loop deletes its state file (.claude/symphony-loop.local.md) on
+          # The code run-loop deletes its state file (.claude/closedloop-loop.local.md) on
           # successful completion, so we verify success by checking for expected output artifacts
           if [ ! -f "$WORKDIR/plan.json" ]; then
             echo "::error::plan.json not found in $WORKDIR"
@@ -373,7 +373,7 @@ jobs:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},claude_code
+          repositories: ${{ github.event.repository.name }},claude-plugins
           permission-contents: read
           permission-issues: write
           permission-actions: write
@@ -479,7 +479,7 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           allowed_bots: "closedloop-ai-stage,closedloop-ai"
           prompt: |
-            You are processing user answers to open questions in a Symphony implementation plan.
+            You are processing user answers to open questions in a ClosedLoop implementation plan.
 
             **Plan file location:** ${{ steps.download.outputs.run_dir }}/plan.json
             **User answers file:** ${{ steps.download.outputs.run_dir }}/user-answers.txt
@@ -606,7 +606,7 @@ jobs:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},claude_code
+          repositories: ${{ github.event.repository.name }},claude-plugins
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -637,7 +637,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: "Symphony is orchestrating agents to implement the plan..."
+          message: "ClosedLoop is orchestrating agents to implement the plan..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Download Run Artifact
@@ -699,7 +699,7 @@ jobs:
           echo "$BODY" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-      - name: Run Symphony Implementation (experimental)
+      - name: Run Symphony Implementation
         id: symphony
         timeout-minutes: 120
         continue-on-error: false
@@ -720,7 +720,7 @@ jobs:
             exit 1
           fi
 
-          echo "Running Symphony implementation from: $RUN_DIR"
+          echo "Running ClosedLoop implementation from: $RUN_DIR"
           echo "Using run-loop.sh: $RUN_LOOP"
 
           # Export run directory for downstream steps
@@ -729,7 +729,7 @@ jobs:
           # Invoke run-loop.sh with workdir and PRD path
           "$RUN_LOOP" "$RUN_DIR" --prd "$RUN_DIR/prd.md" --max-iterations 150 2>&1 | tee "$RUN_DIR/run-loop.log"
 
-          echo "Symphony implementation completed"
+          echo "ClosedLoop implementation completed"
 
       - name: Sanitize Run Loop Log
         if: always()
@@ -764,7 +764,7 @@ jobs:
 
           Closes #${{ github.event.issue.number }}
 
-          Generated with Symphony"
+          Generated with ClosedLoop"
 
           git commit -m "$COMMIT_MSG"
           git push origin issue-${{ github.event.issue.number }}
@@ -788,12 +788,12 @@ jobs:
           See the implementation plan and code changes for details.
 
           ---
-          Generated with Symphony"
+          Generated with ClosedLoop"
 
           PR_URL=$(gh pr create \
             --title "Implement #${{ github.event.issue.number }}: ${{ steps.issue_content.outputs.title }}" \
             --body "$PR_BODY" \
-            --label symphony \
+            --label closedloop \
             --head issue-${{ github.event.issue.number }} \
             --base main)
 
@@ -837,7 +837,7 @@ jobs:
             COMMENT_ID=$(echo "$COMMENT_URL" | grep -oE '[0-9]+$')
             if [ -n "$COMMENT_ID" ]; then
               gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" \
-                -f body="✅ Symphony completed, but no code changes were made. The implementation plan may have already been applied or no changes were needed." || true
+                -f body="✅ ClosedLoop completed, but no code changes were made. The implementation plan may have already been applied or no changes were needed." || true
             fi
           fi
         env:
@@ -884,7 +884,7 @@ jobs:
   # ============================================================================
   # CHAT: Fallback for any @symphony-cl mention without a recognized command
   # Triggered by: @symphony-cl <anything not plan/answer/execute>
-  # If implementation-plan.md exists: Uses /symphony-core:amend-plan for plan amendments
+  # If implementation-plan.md exists: Uses /code:amend-plan for plan amendments
   # Otherwise: Attempts to respond to freeform questions
   # ============================================================================
   chat:
@@ -909,7 +909,7 @@ jobs:
           app-id: ${{ secrets.CLOSEDLOOP_APP_ID_STAGE }}
           private-key: ${{ secrets.CLOSEDLOOP_APP_SECRET_STAGE }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},claude_code
+          repositories: ${{ github.event.repository.name }},claude-plugins
           permission-contents: write
           permission-issues: write
           permission-actions: write
@@ -933,7 +933,7 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           repository: ${{ github.repository }}
-          message: "Symphony is processing your request..."
+          message: "ClosedLoop is processing your request..."
           github_token: ${{ steps.token.outputs.token }}
 
       - name: Try Download Previous Run Artifact
@@ -1000,12 +1000,12 @@ jobs:
           show_full_output: true
           allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
+            https://github.com/closedloop-ai/claude-plugins.git
           plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-            experimental@closedloop
-          prompt: /experimental:amend-plan --workdir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
+            code@closedloop-ai
+            judges@closedloop-ai
+            self-learning@closedloop-ai
+          prompt: /code:amend-plan --workdir ${{ steps.context.outputs.run_dir }} --message "${{ steps.context.outputs.comment }}"
           claude_args: |
             --max-turns 200
             --allowedTools "Bash,Glob,Grep,Read,Write,Edit,Task,Skill,SlashCommand,TodoWrite"
@@ -1052,7 +1052,7 @@ jobs:
             - Highlight the key changes or actions taken
             - Use markdown formatting
             - NOT include raw JSON or technical details about tool calls
-            - Be written from the perspective of reporting what Symphony did
+            - Be written from the perspective of reporting what ClosedLoop did
 
             Write ONLY the summary file, no other output.
           claude_args: |
@@ -1125,13 +1125,13 @@ jobs:
           show_full_output: true
           allowed_bots: "closedloop-ai-stage,closedloop-ai"
           plugin_marketplaces: |
-            https://github.com/closedloop-ai/claude_code.git
+            https://github.com/closedloop-ai/claude-plugins.git
           plugins: |
-            symphony-core@closedloop
-            symphony-fe@closedloop
-            experimental@closedloop
+            code@closedloop-ai
+            judges@closedloop-ai
+            self-learning@closedloop-ai
           prompt: |
-            You are Symphony, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
+            You are ClosedLoop, an AI assistant helping with GitHub issue #${{ github.event.issue.number }}.
 
             Issue Title: ${{ steps.context.outputs.title }}
             Issue Body: ${{ steps.context.outputs.body }}

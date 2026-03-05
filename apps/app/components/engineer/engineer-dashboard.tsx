@@ -35,6 +35,7 @@ export function EngineerDashboard() {
     isLoading,
     isFetching,
     error,
+    isMcpFailed,
     user,
     updateTicketStatus,
     getFullTicket,
@@ -200,13 +201,17 @@ export function EngineerDashboard() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            {showMcpUi && mcp && showMcpStatus && !mcp.isReady && (
-              <MCPConnectionStatus
-                error={mcp.error}
-                onAuthenticate={mcp.authenticate}
-                state={mcp.state}
-              />
-            )}
+            {showMcpUi &&
+              mcp &&
+              showMcpStatus &&
+              !mcp.isReady &&
+              mcp.state !== "failed" && (
+                <MCPConnectionStatus
+                  error={mcp.error}
+                  onAuthenticate={mcp.authenticate}
+                  state={mcp.state}
+                />
+              )}
             {showMcpUi && mcp && mcp.isReady && !mcp.hasWriteScope && (
               <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-500 text-xs">
                 read-only
@@ -268,8 +273,20 @@ export function EngineerDashboard() {
           </div>
         </header>
 
-        {/* Error state with retry */}
-        {error && (
+        {/* MCP unavailable notice — non-alarming hint for local dev */}
+        {isMcpFailed && (
+          <div className="mb-8 rounded-xl border border-border bg-muted/50 p-5">
+            <p className="font-medium text-muted-foreground text-sm">
+              MCP server not connected. Start with:{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                pnpm turbo dev --filter=mcp
+              </code>
+            </p>
+          </div>
+        )}
+
+        {/* Error state with retry (non-MCP errors) */}
+        {error && !isMcpFailed && (
           <div className="mb-8 rounded-xl border border-destructive/20 bg-destructive/10 p-5">
             <div className="flex items-start justify-between gap-4">
               <div className="text-destructive">

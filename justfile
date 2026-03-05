@@ -4,7 +4,7 @@ default:
 
 # Start the main app and API
 dev:
-    pnpm turbo dev --filter=app --filter=api
+    pnpm turbo dev --filter=app --filter=api --filter=mcp
 
 # Start all apps (may fail if mintlify/stripe not installed)
 dev-all:

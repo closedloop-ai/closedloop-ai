@@ -54,7 +54,8 @@ export function ComputeTargetsCard() {
       <div className="space-y-3 rounded-lg border border-dashed p-4">
         <p className="text-sm">No compute targets registered yet.</p>
         <p className="text-muted-foreground text-sm">
-          Install the Symphony Desktop client, then connect with an API key from{" "}
+          Install the ClosedLoop Desktop client, then connect with an API key
+          from{" "}
           <Link className="underline" href="/settings?tab=api-keys">
             Settings - API Keys
           </Link>

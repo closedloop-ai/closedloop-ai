@@ -297,7 +297,7 @@ function buildCodexPrompt(
   const parts: string[] = [];
 
   parts.push(
-    "You are OpenAI Codex, assisting with a Symphony planning session.",
+    "You are OpenAI Codex, assisting with a ClosedLoop planning session.",
     "The user is chatting with you in a development assistant alongside Claude (Anthropic). You share the same workspace and codebase.",
     `\nWork directory: ${paths.claudeWorkDir}`,
     `Worktree directory: ${paths.worktreeDir}`,

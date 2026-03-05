@@ -124,7 +124,7 @@ Symphony: human-governed, AI-centric software delivery platform. AI produces art
 - **[mistake]**: After rebase/dep updates, check Stripe apiVersion in `packages/payments/index.ts` matches installed stripe package.
 
 ### Symphony CI/CD
-- **[pattern]**: run-loop.sh state: `.symphony-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
+- **[pattern]**: run-loop.sh state: `.closedloop-loop.local.md` with YAML frontmatter (active, iteration, max_iterations, etc.) — not state.json.
 - **[insight]**: run-loop.sh deletes state file on success. Check output artifacts (plan.json, plan.md) for success, not file existence.
-- **[convention]**: State file at `.claude/symphony-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.
-- **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude_code.git`.
+- **[convention]**: State file at `.claude/closedloop-loop.local.md` (repo root), NOT inside `.claude/runs/`. Not part of artifact bundle.
+- **[convention]**: closedloop-ai plugins installed from `https://github.com/closedloop-ai/claude-plugins.git`.

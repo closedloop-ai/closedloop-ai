@@ -89,7 +89,10 @@ function parseMcpResult<T>(result: McpCallToolResult): T {
 // ---------------------------------------------------------------------------
 
 const MCP_SERVER_URL =
-  process.env.NEXT_PUBLIC_MCP_SERVER_URL ?? "https://mcp.closedloop.ai/mcp";
+  process.env.NEXT_PUBLIC_MCP_SERVER_URL ??
+  (process.env.NODE_ENV === "development"
+    ? "http://localhost:3010/mcp"
+    : "https://mcp.closedloop.ai/mcp");
 
 const RECONNECT_DELAY_MS = 5000;
 
