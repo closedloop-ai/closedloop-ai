@@ -998,6 +998,7 @@ export const judgesAnalyticsService = {
         userRatingCount > 0 ? Math.abs(avgUserRating - js.score) : 0;
 
       return {
+        judgeScoreId: js.id,
         artifactId: js.evaluation.artifact.id,
         artifactType: js.evaluation.artifact.type,
         artifactTitle: js.evaluation.artifact.title,

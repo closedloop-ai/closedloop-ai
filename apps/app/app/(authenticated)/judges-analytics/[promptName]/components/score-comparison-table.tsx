@@ -89,7 +89,7 @@ export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
         </TableHeader>
         <TableBody>
           {rows.map((row) => (
-            <TableRow key={row.artifactId}>
+            <TableRow key={row.judgeScoreId}>
               <TableCell>
                 <Link
                   className="text-primary hover:underline"

@@ -178,6 +178,8 @@ export type JudgeDetailResponse = {
  * Concurrence default: when userRatingCount = 0, avgUserRating = judgeScore and delta = 0.
  */
 export type JudgeScoreRow = {
+  /** Unique ID of the JudgeScore row; use for React keys when artifactId can repeat. */
+  judgeScoreId: string;
   artifactId: string;
   artifactType: ArtifactType;
   artifactTitle: string;
@@ -233,6 +235,10 @@ export type SubmitJudgeRatingRequest = {
 export type SubmitJudgeRatingResponse = {
   rating: number;
   isUpdate: boolean;
+  /** URL-safe normalized prompt name for targeted cache invalidation. Null when judge score has no linked prompt. */
+  promptName?: string | null;
+  /** Evaluation report type for targeted cache invalidation. */
+  reportType?: EvaluationReportType | null;
 };
 
 // ---------------------------------------------------------------------------

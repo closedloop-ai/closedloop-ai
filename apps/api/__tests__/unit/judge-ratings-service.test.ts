@@ -5,6 +5,7 @@
  * isUpdate flag on create vs update, upsert call shape.
  * Validator: boundary values for rating [0, 1], UUID check for judgeScoreId.
  */
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   getMockWithDb,
@@ -32,10 +33,20 @@ const ARTIFACT_ID = "artifact-test";
 const JUDGE_SCORE_ID = "a0000000-0000-7000-8000-000000000001";
 const EVAL_ID = "b0000000-0000-7000-8000-000000000002";
 
-function makeJudgeScoreRecord(overrides?: { evaluationId?: string }) {
+function makeJudgeScoreRecord(overrides?: {
+  evaluationId?: string;
+  evaluation?: { reportType: string };
+  prompt?: { name: string } | null;
+}) {
+  const defaultPrompt = { name: "Clarity-Judge" };
   return {
     id: JUDGE_SCORE_ID,
     evaluationId: overrides?.evaluationId ?? EVAL_ID,
+    evaluation: overrides?.evaluation ?? {
+      reportType: EvaluationReportType.Plan,
+    },
+    prompt:
+      overrides && "prompt" in overrides ? overrides.prompt : defaultPrompt,
   };
 }
 
@@ -69,7 +80,12 @@ describe("submitJudgeRating", () => {
       0.8
     );
 
-    expect(result).toEqual({ rating: 0.8, isUpdate: false });
+    expect(result).toEqual({
+      rating: 0.8,
+      isUpdate: false,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
+    });
   });
 
   it("updates existing rating and returns isUpdate=true", async () => {
@@ -92,7 +108,12 @@ describe("submitJudgeRating", () => {
       0.6
     );
 
-    expect(result).toEqual({ rating: 0.6, isUpdate: true });
+    expect(result).toEqual({
+      rating: 0.6,
+      isUpdate: true,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
+    });
   });
 
   it("accepts rating = 0 (minimum boundary)", async () => {
@@ -115,7 +136,12 @@ describe("submitJudgeRating", () => {
       0
     );
 
-    expect(result).toEqual({ rating: 0, isUpdate: false });
+    expect(result).toEqual({
+      rating: 0,
+      isUpdate: false,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
+    });
   });
 
   it("accepts rating = 1 (maximum boundary)", async () => {
@@ -138,7 +164,12 @@ describe("submitJudgeRating", () => {
       1
     );
 
-    expect(result).toEqual({ rating: 1, isUpdate: false });
+    expect(result).toEqual({
+      rating: 1,
+      isUpdate: false,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
+    });
   });
 
   it("returns null when judgeScoreId is not found", async () => {
@@ -245,6 +276,36 @@ describe("submitJudgeRating", () => {
         score: 0.75,
       },
       update: { score: 0.75 },
+    });
+  });
+
+  it("returns promptName null and reportType when judge score has no linked prompt", async () => {
+    const db = {
+      judgeScore: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue(makeJudgeScoreRecord({ prompt: null })),
+      },
+      judgeHumanScore: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({}),
+      },
+    };
+    mockWithDbTx(db);
+
+    const result = await submitJudgeRating(
+      ORG_ID,
+      USER_ID,
+      ARTIFACT_ID,
+      JUDGE_SCORE_ID,
+      0.5
+    );
+
+    expect(result).toEqual({
+      rating: 0.5,
+      isUpdate: false,
+      promptName: null,
+      reportType: EvaluationReportType.Plan,
     });
   });
 });

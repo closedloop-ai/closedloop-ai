@@ -25,6 +25,7 @@ afterEach(() => {
 
 function makeRow(overrides?: Partial<JudgeScoreRow>): JudgeScoreRow {
   return {
+    judgeScoreId: "js-1",
     artifactId: "artifact-1",
     artifactType: "IMPLEMENTATION_PLAN",
     artifactTitle: "My Implementation Plan",
@@ -89,11 +90,13 @@ describe("ScoreComparisonTable — artifact links", () => {
       <ScoreComparisonTable
         rows={[
           makeRow({
+            judgeScoreId: "js-a1",
             artifactId: "a1",
             artifactTitle: "Plan A",
             artifactSlug: "plan-a",
           }),
           makeRow({
+            judgeScoreId: "js-a2",
             artifactId: "a2",
             artifactTitle: "Plan B",
             artifactSlug: "plan-b",
@@ -231,16 +234,19 @@ describe("ScoreComparisonTable — table structure", () => {
       <ScoreComparisonTable
         rows={[
           makeRow({
+            judgeScoreId: "js-a1",
             artifactId: "a1",
             artifactTitle: "Plan A",
             artifactSlug: "plan-a",
           }),
           makeRow({
+            judgeScoreId: "js-a2",
             artifactId: "a2",
             artifactTitle: "Plan B",
             artifactSlug: "plan-b",
           }),
           makeRow({
+            judgeScoreId: "js-a3",
             artifactId: "a3",
             artifactTitle: "Plan C",
             artifactSlug: "plan-c",

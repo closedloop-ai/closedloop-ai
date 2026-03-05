@@ -80,7 +80,11 @@ export default function JudgeDetailPage() {
 
       <CharacteristicsPanel judge={judge} />
       <PromptSection judge={judge} />
-      <ScoreComparisonSection promptName={promptName} reportType={reportType} />
+      <ScoreComparisonSection
+        key={`${reportType}-${promptName}`}
+        promptName={promptName}
+        reportType={reportType}
+      />
     </div>
   );
 }

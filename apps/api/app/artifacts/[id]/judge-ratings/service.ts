@@ -4,6 +4,7 @@ import type {
   UserJudgeRatingsResponse,
 } from "@repo/api/src/types/judges-analytics";
 import { withDb } from "@repo/database";
+import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
 /**
  * Submit or update a human rating for a specific judge score.
@@ -25,7 +26,12 @@ export function submitJudgeRating(
           artifact: { organizationId },
         },
       },
-      select: { id: true, evaluationId: true },
+      select: {
+        id: true,
+        evaluationId: true,
+        evaluation: { select: { reportType: true } },
+        prompt: { select: { name: true } },
+      },
     });
 
     if (!judgeScore) {
@@ -65,7 +71,12 @@ export function submitJudgeRating(
       },
     });
 
-    return { rating, isUpdate };
+    const promptName = judgeScore.prompt
+      ? normalizeJudgeName(judgeScore.prompt.name)
+      : null;
+    const reportType = judgeScore.evaluation.reportType;
+
+    return { rating, isUpdate, promptName, reportType };
   });
 }
 

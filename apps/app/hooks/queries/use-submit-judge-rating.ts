@@ -20,10 +20,14 @@ export function useSubmitJudgeRating(artifactId: string) {
         `/artifacts/${artifactId}/judge-ratings`,
         body
       ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: judgeScoreKeys.all,
-      });
+    onSuccess: (data) => {
+      if (data.promptName != null && data.reportType != null) {
+        queryClient.invalidateQueries({
+          queryKey: judgeScoreKeys.list(data.promptName, data.reportType),
+        });
+      } else {
+        queryClient.invalidateQueries({ queryKey: judgeScoreKeys.all });
+      }
       queryClient.invalidateQueries({
         queryKey: myJudgeRatingsKeys.detail(artifactId),
       });

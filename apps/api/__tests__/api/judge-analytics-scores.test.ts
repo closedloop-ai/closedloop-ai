@@ -4,6 +4,8 @@
  * Tests GET /judges-analytics/[promptName]/scores and
  * POST /artifacts/[artifactId]/judge-ratings with mocked services.
  */
+import { ArtifactType } from "@repo/api/src/types/artifact";
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import {
   GET as ratingsGET,
@@ -42,8 +44,9 @@ vi.mock("@/app/artifacts/[id]/judge-ratings/service");
 
 function makeJudgeScoreRow(overrides = {}) {
   return {
+    judgeScoreId: "js-artifact-1",
     artifactId: "artifact-1",
-    artifactType: "IMPLEMENTATION_PLAN",
+    artifactType: ArtifactType.ImplementationPlan,
     artifactTitle: "My Plan",
     artifactSlug: "my-plan",
     judgeScore: 0.8,
@@ -221,6 +224,8 @@ describe("POST /api/artifacts/[artifactId]/judge-ratings", () => {
     vi.mocked(submitJudgeRating).mockResolvedValue({
       rating: 0.75,
       isUpdate: false,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
     });
 
     const request = createMockRequest({
@@ -236,7 +241,12 @@ describe("POST /api/artifacts/[artifactId]/judge-ratings", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual({ rating: 0.75, isUpdate: false });
+    expect(json.data).toEqual({
+      rating: 0.75,
+      isUpdate: false,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
+    });
     expect(submitJudgeRating).toHaveBeenCalledWith(
       mockAuthContext.user.organizationId,
       mockAuthContext.user.id,
@@ -250,6 +260,8 @@ describe("POST /api/artifacts/[artifactId]/judge-ratings", () => {
     vi.mocked(submitJudgeRating).mockResolvedValue({
       rating: 0.5,
       isUpdate: true,
+      promptName: "clarity",
+      reportType: EvaluationReportType.Plan,
     });
 
     const request = createMockRequest({
