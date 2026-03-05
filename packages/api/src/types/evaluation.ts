@@ -93,6 +93,7 @@ export type JudgesReport = {
  * - promptName: Human-readable prompt name from the prompt registry, or null if not linked
  */
 export type JudgeFeedbackItem = {
+  judgeScoreId: string;
   caseId: string;
   score: number;
   threshold: number;

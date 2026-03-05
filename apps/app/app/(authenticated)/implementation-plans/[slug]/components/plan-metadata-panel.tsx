@@ -17,6 +17,7 @@ import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-versi
 import { AttachmentsSection } from "@/components/artifact-editor/attachments-section";
 import { CollapsibleSection } from "@/components/artifact-editor/collapsible-section";
 import { CommentsSection } from "@/components/artifact-editor/comments-section";
+import { EvaluationSection } from "@/components/artifact-editor/evaluation-section";
 import {
   MetadataPanel,
   MetadataSection,
@@ -31,7 +32,6 @@ import {
   getUserDisplayName,
   transformApiUserToSelectUser,
 } from "@/lib/user-utils";
-import { EvaluationSection } from "./evaluation-section";
 import { PerformanceSection } from "./performance-section";
 import { PreviewDeploymentSection } from "./preview-deployment-section";
 import { PullRequestFeedbackSection } from "./pull-request-feedback-section";
@@ -169,9 +169,10 @@ export function PlanMetadataPanel({
             />
           </CollapsibleSection>
 
-          <EvaluationSection judgeItems={judgeItems} />
+          <EvaluationSection artifactId={plan.id} judgeItems={judgeItems} />
 
           <EvaluationSection
+            artifactId={plan.id}
             emptyMessage="Code judge feedback is not available yet"
             judgeItems={codeJudgeItems}
             title="Code Evaluation"

@@ -80,6 +80,7 @@ export const createMockJudgesReport = (
 export const createMockJudgeFeedbackItem = (
   overrides?: Partial<JudgeFeedbackItem>
 ): JudgeFeedbackItem => ({
+  judgeScoreId: "js-00000000-0000-0000-0000-000000000001",
   caseId: "test-judge",
   score: 0.92,
   threshold: 0.8,

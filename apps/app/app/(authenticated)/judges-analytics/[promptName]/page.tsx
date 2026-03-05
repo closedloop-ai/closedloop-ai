@@ -8,6 +8,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
 import { PromptSection } from "./components/prompt-section";
+import { ScoreComparisonSection } from "./components/score-comparison-section";
 
 export default function JudgeDetailPage() {
   const params = useParams<{ promptName: string }>();
@@ -79,6 +80,7 @@ export default function JudgeDetailPage() {
 
       <CharacteristicsPanel judge={judge} />
       <PromptSection judge={judge} />
+      <ScoreComparisonSection promptName={promptName} reportType={reportType} />
     </div>
   );
 }
