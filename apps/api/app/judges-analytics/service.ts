@@ -802,24 +802,18 @@ export const judgesAnalyticsService = {
 
     // 2. Latest prompt is first (ordered by version DESC)
     const latestPrompt = matchingPrompts[0];
-
-    // Collect all raw names for this judge (different versions may have slightly different raw names)
-    const rawNames = new Set(matchingPrompts.map((p) => p.name));
     const promptIds = matchingPrompts.map((p) => p.id);
     const promptIdSet = new Set(promptIds);
 
-    // Expand to include hyphen/underscore variants so we match stored caseIds
-    const caseIdVariants = buildCaseIdVariants(rawNames);
-
-    // 3. Load score rows — match by caseId (any raw name variant) scoped to org
+    // 3. Load score rows — match by promptId (relational) scoped to org
     const allScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
+          promptId: { in: promptIds },
           evaluation: {
             reportType,
             artifact: { organizationId },
           },
-          caseId: { in: Array.from(caseIdVariants) },
         },
         select: {
           promptId: true,
@@ -934,34 +928,30 @@ export const judgesAnalyticsService = {
     page: number,
     pageSize: number
   ): Promise<JudgeScoresResponse | null> {
-    // 1. Resolve caseId variants for this prompt name
+    // 1. Resolve prompts by normalized name and collect prompt IDs
     const allJudgePrompts = await withDb((db) =>
       db.prompt.findMany({
         where: {
           organizationId,
           promptType: PromptType.JUDGE,
         },
-        select: { name: true },
+        select: { id: true, name: true },
       })
     );
 
-    const rawNames = new Set(
-      allJudgePrompts
-        .filter((p) => normalizeJudgeName(p.name) === promptName)
-        .map((p) => p.name)
-    );
+    const promptIds = allJudgePrompts
+      .filter((p) => normalizeJudgeName(p.name) === promptName)
+      .map((p) => p.id);
 
-    if (rawNames.size === 0) {
+    if (promptIds.length === 0) {
       return null;
     }
 
-    const caseIdVariants = buildCaseIdVariants(rawNames);
-
-    // 2. Load all judge scores for this judge, scoped to org and reportType
+    // 2. Load judge scores by promptId (relational), scoped to org and reportType
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
-          caseId: { in: Array.from(caseIdVariants) },
+          promptId: { in: promptIds },
           evaluation: {
             reportType,
             artifact: { organizationId },
@@ -1082,18 +1072,6 @@ export function computeSkewness(
   }
   const m3 = values.reduce((acc, v) => acc + ((v - mean) / stdDev) ** 3, 0) / n;
   return m3;
-}
-
-function buildCaseIdVariants(rawNames: Iterable<string>): Set<string> {
-  const variants = new Set<string>();
-
-  for (const name of rawNames) {
-    variants.add(name);
-    variants.add(name.replaceAll("_", "-"));
-    variants.add(name.replaceAll("-", "_"));
-  }
-
-  return variants;
 }
 
 export function computeExcessKurtosis(

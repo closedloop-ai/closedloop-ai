@@ -51,7 +51,9 @@ function mockDb(
     prompt: {
       findMany: vi
         .fn()
-        .mockResolvedValue(promptNames.map((name) => ({ name }))),
+        .mockResolvedValue(
+          promptNames.map((name, i) => ({ id: `prompt-${i}`, name }))
+        ),
     },
     judgeScore: {
       findMany: vi.fn().mockResolvedValue(judgeScores),
@@ -255,7 +257,9 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     const evaluatedAt = new Date("2026-03-01T12:00:00.000Z");
     const db = {
       prompt: {
-        findMany: vi.fn().mockResolvedValue([{ name: "clarity_judge" }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
       },
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([
@@ -285,10 +289,12 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     expect(result?.rows[0].evaluatedAt).toBe("2026-03-01T12:00:00.000Z");
   });
 
-  it("builds caseId variants (hyphen/underscore) from prompt names", async () => {
+  it("filters judge scores by promptId (relational)", async () => {
     const db = {
       prompt: {
-        findMany: vi.fn().mockResolvedValue([{ name: "clarity_judge" }]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
       },
       judgeScore: {
         findMany: vi.fn().mockResolvedValue([]),
@@ -305,10 +311,9 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     const judgeScoreFindManyCall = db.judgeScore.findMany.mock.calls[0][0];
-    const caseIdVariants: string[] = judgeScoreFindManyCall.where.caseId.in;
+    const promptIds: string[] = judgeScoreFindManyCall.where.promptId.in;
 
-    // clarity_judge → clarity_judge, clarity-judge (hyphen variant)
-    expect(caseIdVariants).toContain("clarity_judge");
-    expect(caseIdVariants).toContain("clarity-judge");
+    expect(promptIds).toContain("prompt-clarity");
+    expect(judgeScoreFindManyCall.where.caseId).toBeUndefined();
   });
 });
