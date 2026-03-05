@@ -63,8 +63,7 @@ USER runner
 # Local:  docker build --build-arg GITHUB_TOKEN=$(gh auth token) ...
 # CI:     uses secrets.PLUGIN_REPO_TOKEN or a GitHub App token
 ARG GITHUB_TOKEN
-RUN set -ex && \
-    git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" && \
+RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" && \
     git config --global --add url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
     claude plugin marketplace add closedloop-ai/claude-plugins && \
     claude plugin install code@closedloop-ai && \
