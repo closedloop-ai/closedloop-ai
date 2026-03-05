@@ -31,8 +31,8 @@ RUN pip3 install --no-cache-dir --break-system-packages pyyaml
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install GitHub CLI
+ENV GH_VERSION=2.87.3
 RUN ARCH=$(dpkg --print-architecture) && \
-    GH_VERSION=$(curl -sL https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//') && \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" -o gh.tar.gz && \
     tar -xzf gh.tar.gz && \
     mv "gh_${GH_VERSION}_linux_${ARCH}/bin/gh" /usr/local/bin/gh && \
