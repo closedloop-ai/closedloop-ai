@@ -144,12 +144,6 @@ const OAUTH_REDIRECT_URI_ALLOWLIST = (process.env.MCP_OAUTH_REDIRECT_URIS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
-const DEFAULT_OPENAI_REDIRECT_URI_ALLOWLIST = [
-  "https://chat.openai.com/aip/mcp/callback",
-  "https://chatgpt.com/aip/mcp/callback",
-  "https://chat.openai.com/connector/oauth/*",
-  "https://chatgpt.com/connector/oauth/*",
-];
 const INTERNAL_ENDPOINT_ALLOWLIST = (process.env.MCP_INTERNAL_ALLOWED_IPS ?? "")
   .split(",")
   .map((value) => value.trim())
@@ -204,21 +198,6 @@ function getOAuthRedirectUriAllowlist(): string[] {
   return OAUTH_REDIRECT_URI_ALLOWLIST;
 }
 
-function getEffectiveOAuthRedirectUriAllowlist(): string[] {
-  const configuredAllowlist = getOAuthRedirectUriAllowlist();
-  if (configuredAllowlist.length > 0) {
-    return configuredAllowlist;
-  }
-
-  if (isLocalOauthEnvironment()) {
-    return [];
-  }
-
-  // Keep non-local DCR functional for ChatGPT connectors even when no custom
-  // redirect allowlist is configured.
-  return DEFAULT_OPENAI_REDIRECT_URI_ALLOWLIST;
-}
-
 function isRedirectUriAllowedByEntry(
   uri: string,
   allowlistEntry: string
@@ -243,7 +222,7 @@ function requireRedirectAllowlistForEnvironment(): void {
     getOAuthRedirectUriAllowlist().length === 0
   ) {
     console.warn(
-      "MCP_OAUTH_REDIRECT_URIS is empty — using default OpenAI callback allowlist plus loopback redirect URIs"
+      "MCP_OAUTH_REDIRECT_URIS is empty — only loopback redirect URIs will be accepted"
     );
   }
 }
@@ -1945,8 +1924,8 @@ function isValidRedirectUri(uri: string): boolean {
       return true;
     }
 
-    // Non-loopback URIs must appear in the effective allowlist.
-    const allowlist = getEffectiveOAuthRedirectUriAllowlist();
+    // Non-loopback URIs must appear in the explicit allowlist
+    const allowlist = getOAuthRedirectUriAllowlist();
     if (allowlist.length > 0) {
       return allowlist.some((entry) => isRedirectUriAllowedByEntry(uri, entry));
     }
@@ -3156,7 +3135,6 @@ export const __testables = {
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
-  isValidRedirectUri,
   isInternalAddressAllowed,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
