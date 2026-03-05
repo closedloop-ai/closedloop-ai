@@ -7,6 +7,7 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 import { useJudgeScores } from "@/hooks/queries/use-judge-scores";
+import { JUDGES_ANALYTICS_SCORE_PAGE_SIZE } from "@/lib/config/judges-analytics";
 import { ScoreComparisonTable } from "./score-comparison-table";
 
 type ScoreComparisonSectionProps = {
@@ -43,7 +44,7 @@ export function ScoreComparisonSection({
   }
 
   const { pagination } = data;
-  const visibleRows = data.rows.slice(0, MAX_VISUALIZED_ARTIFACTS);
+  const visibleRows = data.rows.slice(0, JUDGES_ANALYTICS_SCORE_PAGE_SIZE);
   const avgJudgeScore = computeMean(visibleRows.map((row) => row.judgeScore));
   const avgHumanScore = computeMean(
     visibleRows.map((row) => row.avgUserRating)
@@ -92,5 +93,3 @@ export function ScoreComparisonSection({
     </div>
   );
 }
-
-const MAX_VISUALIZED_ARTIFACTS = 20;

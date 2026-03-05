@@ -27,8 +27,6 @@ import { normalizeJudgeName } from "@/lib/judge-name-utils";
 const SUNDAY_INDEX = 0;
 /** Days from Sunday back to the previous Monday. */
 const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
-const MAX_JUDGE_SCORE_ROWS_FETCH = 10_000;
-
 type HumanCountsByType = {
   humanRatingsByType: Map<ArtifactType, number>;
   humanCommentsByType: Map<ArtifactType, number>;
@@ -974,7 +972,6 @@ export const judgesAnalyticsService = {
           },
         },
         // TODO: Move sorting and pagination into SQL once score ordering is DB-backed.
-        take: MAX_JUDGE_SCORE_ROWS_FETCH,
       })
     );
 

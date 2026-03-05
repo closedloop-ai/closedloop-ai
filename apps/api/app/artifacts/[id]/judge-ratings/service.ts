@@ -38,38 +38,42 @@ export function submitJudgeRating(
       return null;
     }
 
-    const existing = await tx.judgeHumanScore.findUnique({
-      where: {
-        judgeScoreId_userId_organizationId: {
-          judgeScoreId,
-          userId,
-          organizationId,
-        },
-      },
-      select: { id: true },
-    });
-
-    const isUpdate = existing !== null;
-
-    await tx.judgeHumanScore.upsert({
-      where: {
-        judgeScoreId_userId_organizationId: {
-          judgeScoreId,
-          userId,
-          organizationId,
-        },
-      },
-      create: {
-        evaluationId: judgeScore.evaluationId,
+    const where = {
+      judgeScoreId_userId_organizationId: {
         judgeScoreId,
         userId,
         organizationId,
-        score: rating,
       },
-      update: {
-        score: rating,
-      },
-    });
+    };
+
+    let isUpdate = false;
+
+    try {
+      await tx.judgeHumanScore.create({
+        data: {
+          evaluationId: judgeScore.evaluationId,
+          judgeScoreId,
+          userId,
+          organizationId,
+          score: rating,
+        },
+      });
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error) ||
+        error.code !== "P2002"
+      ) {
+        throw error;
+      }
+
+      isUpdate = true;
+      await tx.judgeHumanScore.update({
+        where,
+        data: {
+          score: rating,
+        },
+      });
+    }
 
     const promptName = judgeScore.prompt
       ? normalizeJudgeName(judgeScore.prompt.name)

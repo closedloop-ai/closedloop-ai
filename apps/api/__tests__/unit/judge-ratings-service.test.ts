@@ -2,7 +2,7 @@
  * Unit tests for submitJudgeRating and submitJudgeRatingValidator.
  *
  * Service behavior: null return on not-found/cross-org/cross-artifact,
- * isUpdate flag on create vs update, upsert call shape.
+ * isUpdate flag on create vs update, create/update call shape.
  * Validator: boundary values for rating [0, 1], UUID check for judgeScoreId.
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
@@ -66,8 +66,8 @@ describe("submitJudgeRating", () => {
         findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);
@@ -89,13 +89,16 @@ describe("submitJudgeRating", () => {
   });
 
   it("updates existing rating and returns isUpdate=true", async () => {
+    const uniqueViolation = Object.assign(new Error("Unique violation"), {
+      code: "P2002",
+    });
     const db = {
       judgeScore: {
         findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue({ id: "existing-rating" }),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockRejectedValue(uniqueViolation),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);
@@ -122,8 +125,8 @@ describe("submitJudgeRating", () => {
         findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);
@@ -150,8 +153,8 @@ describe("submitJudgeRating", () => {
         findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);
@@ -244,7 +247,7 @@ describe("submitJudgeRating", () => {
     );
   });
 
-  it("calls upsert with correct keys and score", async () => {
+  it("calls create with correct keys and score", async () => {
     const db = {
       judgeScore: {
         findFirst: vi
@@ -252,30 +255,22 @@ describe("submitJudgeRating", () => {
           .mockResolvedValue(makeJudgeScoreRecord({ evaluationId: EVAL_ID })),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);
 
     await submitJudgeRating(ORG_ID, USER_ID, ARTIFACT_ID, JUDGE_SCORE_ID, 0.75);
 
-    expect(db.judgeHumanScore.upsert).toHaveBeenCalledWith({
-      where: {
-        judgeScoreId_userId_organizationId: {
-          judgeScoreId: JUDGE_SCORE_ID,
-          userId: USER_ID,
-          organizationId: ORG_ID,
-        },
-      },
-      create: {
+    expect(db.judgeHumanScore.create).toHaveBeenCalledWith({
+      data: {
         evaluationId: EVAL_ID,
         judgeScoreId: JUDGE_SCORE_ID,
         userId: USER_ID,
         organizationId: ORG_ID,
         score: 0.75,
       },
-      update: { score: 0.75 },
     });
   });
 
@@ -287,8 +282,8 @@ describe("submitJudgeRating", () => {
           .mockResolvedValue(makeJudgeScoreRecord({ prompt: null })),
       },
       judgeHumanScore: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockResolvedValue({}),
+        update: vi.fn().mockResolvedValue({}),
       },
     };
     mockWithDbTx(db);

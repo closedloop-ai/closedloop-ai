@@ -7,6 +7,10 @@ import {
 } from "@repo/design-system/components/ui/chart";
 import type React from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
+import {
+  JUDGES_ANALYTICS_EVAL_COLOR,
+  JUDGES_ANALYTICS_HUMAN_COLOR,
+} from "@/lib/config/judges-analytics";
 import { TooltipRow, TooltipShell } from "./chart-tooltip";
 
 type JudgeAnalyticsChartProps = {
@@ -30,9 +34,6 @@ type BoxPlotDataPoint = {
   humanUpperBox: number | null;
   humanUpperWhisker: number | null;
 };
-
-const EVAL_COLOR = "#2563EB";
-const HUMAN_COLOR = "#EAB308";
 
 // Box plot vertical positions use the chart's global Y scale; the Bar slot is only for x/width.
 type BoxPlotShapeProps = {
@@ -202,7 +203,7 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
         median: payload.median,
         upperBox: payload.upperBox,
         upperWhisker: payload.upperWhisker,
-        color: EVAL_COLOR,
+        color: JUDGES_ANALYTICS_EVAL_COLOR,
       })}
       {humanStats &&
         renderCandlestick({
@@ -210,7 +211,7 @@ const BoxPlotShape: React.FC<BoxPlotShapeProps> = ({
           halfWidth,
           valueToY,
           ...humanStats,
-          color: HUMAN_COLOR,
+          color: JUDGES_ANALYTICS_HUMAN_COLOR,
         })}
     </g>
   );
@@ -229,7 +230,10 @@ const BoxPlotTooltip: React.FC<{
 
   return (
     <TooltipShell title={data.name}>
-      <p className="font-medium text-xs" style={{ color: EVAL_COLOR }}>
+      <p
+        className="font-medium text-xs"
+        style={{ color: JUDGES_ANALYTICS_EVAL_COLOR }}
+      >
         Eval
       </p>
       <TooltipRow label="Max:" value={data.upperWhisker.toFixed(2)} />
@@ -241,7 +245,7 @@ const BoxPlotTooltip: React.FC<{
         <>
           <p
             className="mt-1 border-border/50 border-t pt-1 font-medium text-xs"
-            style={{ color: HUMAN_COLOR }}
+            style={{ color: JUDGES_ANALYTICS_HUMAN_COLOR }}
           >
             Human
           </p>
@@ -382,7 +386,7 @@ export function JudgeAnalyticsChart({
         <ChartTooltip content={<BoxPlotTooltip />} />
         <Bar
           dataKey="median"
-          fill={EVAL_COLOR}
+          fill={JUDGES_ANALYTICS_EVAL_COLOR}
           shape={(props: unknown) => (
             <BoxPlotShape {...(props as BoxPlotShapeProps)} yDomain={yDomain} />
           )}

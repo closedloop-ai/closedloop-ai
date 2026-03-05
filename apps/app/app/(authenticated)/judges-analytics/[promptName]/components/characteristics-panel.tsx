@@ -1,6 +1,5 @@
 "use client";
 
-import { JUDGE_RADAR_METRICS } from "@repo/api/src/constants";
 import type { JudgeDetail } from "@repo/api/src/types/judges-analytics";
 import {
   Alert,
@@ -21,7 +20,8 @@ import {
   PopoverTrigger,
 } from "@repo/design-system/components/ui/popover";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
-import { type AxisLabel, AxisLabels, JudgeRadarChart } from "./radar-chart";
+import { JUDGES_ANALYTICS_AXIS_HELP_ITEMS } from "@/lib/config/judges-analytics";
+import { JudgeRadarChart } from "./radar-chart";
 
 type CharacteristicsPanelProps = {
   judge: JudgeDetail;
@@ -92,7 +92,7 @@ function MetricsHelpButton() {
       <PopoverContent align="start" className="w-[420px] space-y-3 p-4">
         <p className="font-medium text-sm">How to interpret the chart axes</p>
         <div className="space-y-2 text-xs">
-          {AXIS_HELP_ITEMS.map((item) => (
+          {JUDGES_ANALYTICS_AXIS_HELP_ITEMS.map((item) => (
             <div className="space-y-1" key={item.axis}>
               <p className="font-medium">{item.axis}</p>
               <p className="text-muted-foreground">
@@ -110,36 +110,3 @@ function MetricsHelpButton() {
     </Popover>
   );
 }
-
-const AXIS_HELP_BY_LABEL: Record<
-  AxisLabel,
-  { formula: string; interpretation: string }
-> = {
-  Stubbornness: {
-    formula: `1 - clamp(stdDev / ${JUDGE_RADAR_METRICS.stubbornness.stdDevNormalizationDivisor}, 0, 1)`,
-    interpretation:
-      "Higher means the judge scores more consistently across artifacts.",
-  },
-  Optimism: {
-    formula: "mean",
-    interpretation:
-      "Higher means the judge tends to score artifacts more positively.",
-  },
-  Polarity: {
-    formula: "bimodalityCoefficient",
-    interpretation:
-      "Higher means the judge tends to split between very different score groups.",
-  },
-  Certainty: {
-    formula: `count(score > ${JUDGE_RADAR_METRICS.certainty.extremeHighScore} or score < ${JUDGE_RADAR_METRICS.certainty.extremeLowScore}) / totalScores`,
-    interpretation:
-      "Higher means the judge more often gives decisive extreme scores rather than middle scores.",
-  },
-};
-
-const AXIS_HELP_ITEMS = [
-  ...Object.values(AxisLabels).map((axis) => ({
-    axis,
-    ...AXIS_HELP_BY_LABEL[axis],
-  })),
-] as const;

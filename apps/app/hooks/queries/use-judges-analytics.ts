@@ -9,6 +9,7 @@ import type {
 } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { useApiClient } from "@/hooks/use-api-client";
+import { JUDGES_ANALYTICS_QUERY_STALE_TIME_MS } from "@/lib/config/judges-analytics";
 
 export type { ArtifactCountsGroupBy } from "@repo/api/src/types/judges-analytics";
 
@@ -57,7 +58,7 @@ export function useJudgesAnalytics(
       );
     },
     enabled: !!startDate && !!endDate && !!reportType,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
   });
 }
@@ -85,7 +86,7 @@ export function useArtifactCounts(
       );
     },
     enabled: !!startDate && !!endDate && !!groupBy,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
   });
 }
@@ -107,7 +108,7 @@ export function useJudgeDetail(
       );
     },
     enabled: Boolean(promptName) && Boolean(reportType),
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
   });
 }

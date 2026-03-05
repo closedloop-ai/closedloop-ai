@@ -16,6 +16,10 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from "recharts";
+import {
+  JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT,
+  JUDGES_ANALYTICS_LATEST_RADAR_COLOR,
+} from "@/lib/config/judges-analytics";
 import { TooltipRow, TooltipShell } from "../../components/chart-tooltip";
 
 type JudgeRadarChartProps = {
@@ -32,12 +36,10 @@ export const AxisLabels = {
 
 export type AxisLabel = (typeof AxisLabels)[keyof typeof AxisLabels];
 
-const CHART_COLOR_TOKEN_COUNT = 5;
-const LATEST_COLOR = "var(--chart-1)";
-
 function getOverlayColor(index: number): string {
   // Start from chart-2 to keep "Latest" visually distinct from overlays by default.
-  const tokenIndex = ((index + 1) % CHART_COLOR_TOKEN_COUNT) + 1;
+  const tokenIndex =
+    ((index + 1) % JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT) + 1;
   return `var(--chart-${tokenIndex})`;
 }
 
@@ -148,10 +150,10 @@ export function JudgeRadarChart({
             />
             <Radar
               dataKey="latest"
-              fill={LATEST_COLOR}
+              fill={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
               fillOpacity={0.2}
               name="Latest"
-              stroke={LATEST_COLOR}
+              stroke={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
               strokeWidth={2}
             />
             {selectedVersions.map((version, index) => {

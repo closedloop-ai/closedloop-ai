@@ -22,6 +22,7 @@ import { format, parse } from "date-fns";
 import { useMemo, useState } from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
 import { useArtifactCounts } from "@/hooks/queries/use-judges-analytics";
+import { JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT } from "@/lib/config/judges-analytics";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
 
 type ArtifactsCreatedChartProps = {
@@ -45,8 +46,6 @@ function formatBucketLabel(
       return bucket;
   }
 }
-
-const CHART_COLORS = 5;
 
 export function ArtifactsCreatedChart({
   startDate,
@@ -82,7 +81,7 @@ export function ArtifactsCreatedChart({
     const chartConfig: ChartConfig = {};
     for (let i = 0; i < typeKeys.length; i++) {
       const type = typeKeys[i];
-      const colorIndex = (i % CHART_COLORS) + 1;
+      const colorIndex = (i % JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT) + 1;
       chartConfig[type] = {
         label: ARTIFACT_TYPE_LABELS[type as ArtifactType] ?? type,
         color: `var(--chart-${colorIndex})`,

@@ -19,16 +19,21 @@ import {
 import { cn } from "@repo/design-system/lib/utils";
 import { InfoIcon } from "lucide-react";
 import Link from "next/link";
+import {
+  JUDGES_ANALYTICS_DELTA_CRITICAL_THRESHOLD,
+  JUDGES_ANALYTICS_DELTA_WARNING_THRESHOLD,
+  JUDGES_ANALYTICS_SCORE_TABLE_MAX_HEIGHT_CLASS,
+} from "@/lib/config/judges-analytics";
 
 type ScoreComparisonTableProps = {
   rows: JudgeScoreRow[];
 };
 
 function getDeltaClassName(delta: number): string {
-  if (delta > 0.6) {
+  if (delta > JUDGES_ANALYTICS_DELTA_CRITICAL_THRESHOLD) {
     return "text-red-600 dark:text-red-400 font-medium";
   }
-  if (delta > 0.3) {
+  if (delta > JUDGES_ANALYTICS_DELTA_WARNING_THRESHOLD) {
     return "text-amber-600 dark:text-amber-400 font-medium";
   }
   return "";
@@ -58,7 +63,10 @@ export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
 
   return (
     <div
-      className="max-h-[28rem] overflow-y-auto rounded-md border"
+      className={cn(
+        JUDGES_ANALYTICS_SCORE_TABLE_MAX_HEIGHT_CLASS,
+        "overflow-y-auto rounded-md border"
+      )}
       data-testid="score-comparison-scroll-container"
     >
       <Table>
