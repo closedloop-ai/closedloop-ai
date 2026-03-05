@@ -1,6 +1,4 @@
-import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
-import type { JudgeDetailResponse } from "@repo/api/src/types/judges-analytics";
-import { z } from "zod";
+import type { JudgeScoresResponse } from "@repo/api/src/types/judges-analytics";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { parsePromptNameParam } from "@/lib/judge-name-utils";
 import {
@@ -10,19 +8,16 @@ import {
   parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
-import { judgesAnalyticsService } from "../service";
-
-const judgeDetailQueryValidator = z.object({
-  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
-});
+import { judgesAnalyticsService } from "../../service";
+import { scoreComparisonQueryValidator } from "../../validators";
 
 export const GET = withAnyAuth<
-  JudgeDetailResponse,
-  "/judges-analytics/[promptName]"
+  JudgeScoresResponse,
+  "/judges-analytics/[promptName]/scores"
 >(async ({ user }, _request, params) => {
   try {
     const { params: query, errorResponse: queryErrorResponse } =
-      parseQueryParams(_request, judgeDetailQueryValidator);
+      parseQueryParams(_request, scoreComparisonQueryValidator);
     if (queryErrorResponse) {
       return queryErrorResponse;
     }
@@ -35,10 +30,12 @@ export const GET = withAnyAuth<
       );
     }
 
-    const result = await judgesAnalyticsService.getJudgeDetail(
+    const result = await judgesAnalyticsService.getJudgeScores(
       user.organizationId,
       promptName,
-      query.reportType
+      query.reportType,
+      query.page,
+      query.pageSize
     );
 
     if (!result) {
@@ -47,6 +44,6 @@ export const GET = withAnyAuth<
 
     return successResponse(result);
   } catch (error) {
-    return errorResponse("Failed to fetch judge detail", error);
+    return errorResponse("Failed to fetch judge scores", error);
   }
 });

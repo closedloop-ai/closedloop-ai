@@ -13,9 +13,12 @@ import type {
   JudgeAggregateStats,
   JudgeDetailResponse,
   JudgePromptVersion,
+  JudgeScoreRow,
+  JudgeScoresResponse,
   JudgeStatsResponse,
   RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
+import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
 import { PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
@@ -24,7 +27,6 @@ import { normalizeJudgeName } from "@/lib/judge-name-utils";
 const SUNDAY_INDEX = 0;
 /** Days from Sunday back to the previous Monday. */
 const ISO_WEEK_OFFSET_FROM_SUNDAY = -6;
-
 type HumanCountsByType = {
   humanRatingsByType: Map<ArtifactType, number>;
   humanCommentsByType: Map<ArtifactType, number>;
@@ -530,6 +532,53 @@ async function getCodeHumanData(
   return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
 }
 
+/** Resolved judge prompts for a given promptName. null when no match. */
+type ResolvedJudgePrompts = {
+  promptIds: string[];
+  matchingPrompts: Array<{
+    id: string;
+    name: string;
+    version: number;
+    content: string;
+    createdAt: Date;
+  }>;
+};
+
+async function resolveJudgePromptIds(
+  organizationId: string,
+  promptName: string
+): Promise<ResolvedJudgePrompts | null> {
+  const allJudgePrompts = await withDb((db) =>
+    db.prompt.findMany({
+      where: {
+        organizationId,
+        promptType: PromptType.JUDGE,
+      },
+      select: {
+        id: true,
+        name: true,
+        version: true,
+        content: true,
+        createdAt: true,
+      },
+      orderBy: { version: "desc" },
+    })
+  );
+
+  const matchingPrompts = allJudgePrompts.filter(
+    (p) => normalizeJudgeName(p.name) === promptName
+  );
+
+  if (matchingPrompts.length === 0) {
+    return null;
+  }
+
+  return {
+    promptIds: matchingPrompts.map((p) => p.id),
+    matchingPrompts,
+  };
+}
+
 async function getJudgeDescriptionByPromptName(
   organizationId: string
 ): Promise<Map<string, string>> {
@@ -769,58 +818,24 @@ export const judgesAnalyticsService = {
     promptName: string,
     reportType: EvaluationReportType
   ): Promise<JudgeDetailResponse | null> {
-    // 1. Resolve judge by promptName — find all JUDGE prompts in org and match normalized name
-    const allJudgePrompts = await withDb((db) =>
-      db.prompt.findMany({
-        where: {
-          organizationId,
-          promptType: PromptType.JUDGE,
-        },
-        select: {
-          id: true,
-          name: true,
-          version: true,
-          content: true,
-          createdAt: true,
-        },
-        orderBy: { version: "desc" },
-      })
-    );
-
-    // Group prompts by normalized name
-    const matchingPrompts = allJudgePrompts.filter(
-      (p) => normalizeJudgeName(p.name) === promptName
-    );
-
-    if (matchingPrompts.length === 0) {
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
       return null;
     }
 
-    // 2. Latest prompt is first (ordered by version DESC)
+    const { promptIds, matchingPrompts } = resolved;
     const latestPrompt = matchingPrompts[0];
-
-    // Collect all raw names for this judge (different versions may have slightly different raw names)
-    const rawNames = new Set(matchingPrompts.map((p) => p.name));
-    const promptIds = matchingPrompts.map((p) => p.id);
     const promptIdSet = new Set(promptIds);
 
-    // Expand to include hyphen/underscore variants so we match stored caseIds
-    const caseIdVariants = new Set<string>();
-    for (const name of rawNames) {
-      caseIdVariants.add(name);
-      caseIdVariants.add(name.replaceAll("_", "-"));
-      caseIdVariants.add(name.replaceAll("-", "_"));
-    }
-
-    // 3. Load score rows — match by caseId (any raw name variant) scoped to org
+    // 3. Load score rows — match by promptId (relational) scoped to org
     const allScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
+          promptId: { in: promptIds },
           evaluation: {
             reportType,
             artifact: { organizationId },
           },
-          caseId: { in: Array.from(caseIdVariants) },
         },
         select: {
           promptId: true,
@@ -920,6 +935,119 @@ export const judgesAnalyticsService = {
       },
     };
   },
+
+  /**
+   * Get paginated judge scores for a single judge, with human rating comparison.
+   *
+   * For each artifact scored by this judge, computes avg human rating and delta.
+   * Concurrence default: when no human ratings exist, avgUserRating = judgeScore, delta = 0.
+   * Sorted by delta DESC then judgeScore DESC (unrated rows last).
+   */
+  async getJudgeScores(
+    organizationId: string,
+    promptName: string,
+    reportType: EvaluationReportType,
+    page: number,
+    pageSize: number
+  ): Promise<JudgeScoresResponse | null> {
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
+      return null;
+    }
+
+    const { promptIds } = resolved;
+
+    // Load judge scores by promptId (relational), scoped to org and reportType
+    const judgeScores = await withDb((db) =>
+      db.judgeScore.findMany({
+        where: {
+          promptId: { in: promptIds },
+          evaluation: {
+            reportType,
+            artifact: { organizationId },
+          },
+        },
+        select: {
+          id: true,
+          score: true,
+          createdAt: true,
+          evaluation: {
+            select: {
+              artifactId: true,
+              artifact: {
+                select: { id: true, type: true, title: true, slug: true },
+              },
+            },
+          },
+          judgeHumanScores: {
+            select: { score: true },
+          },
+        },
+        // TODO: Move sorting and pagination into SQL once score ordering is DB-backed.
+      })
+    );
+
+    if (judgeScores.length === 0) {
+      return {
+        rows: [],
+        totalArtifacts: 0,
+        ratedArtifacts: 0,
+        coveragePct: 0,
+        pagination: { page, pageSize, totalRows: 0, totalPages: 0 },
+      };
+    }
+
+    // 3. Build rows with concurrence default
+    const rows: JudgeScoreRow[] = judgeScores.map((js) => {
+      const humanScores = js.judgeHumanScores.map((hs) => hs.score);
+      const userRatingCount = humanScores.length;
+      const avgUserRating =
+        userRatingCount > 0 ? computeMean(humanScores) : js.score;
+      const delta =
+        userRatingCount > 0 ? Math.abs(avgUserRating - js.score) : 0;
+
+      return {
+        judgeScoreId: js.id,
+        artifactId: js.evaluation.artifact.id,
+        artifactType: js.evaluation.artifact.type,
+        artifactTitle: js.evaluation.artifact.title,
+        artifactSlug: js.evaluation.artifact.slug,
+        judgeScore: js.score,
+        avgUserRating,
+        userRatingCount,
+        delta,
+        evaluatedAt: js.createdAt.toISOString(),
+      };
+    });
+
+    // 4. Sort: delta DESC, then judgeScore DESC (delta=0 rows last)
+    rows.sort((a, b) => {
+      if (a.delta !== b.delta) {
+        return b.delta - a.delta;
+      }
+      return b.judgeScore - a.judgeScore;
+    });
+
+    // 5. Summary counts
+    const totalArtifacts = rows.length;
+    const ratedArtifacts = rows.filter((r) => r.userRatingCount > 0).length;
+    const coveragePct =
+      totalArtifacts > 0 ? (ratedArtifacts / totalArtifacts) * 100 : 0;
+
+    // 6. Paginate
+    const totalRows = rows.length;
+    const totalPages = Math.ceil(totalRows / pageSize);
+    const start = (page - 1) * pageSize;
+    const paginatedRows = rows.slice(start, start + pageSize);
+
+    return {
+      rows: paginatedRows,
+      totalArtifacts,
+      ratedArtifacts,
+      coveragePct,
+      pagination: { page, pageSize, totalRows, totalPages },
+    };
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -931,10 +1059,7 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 export function computeMean(values: number[]): number {
-  if (values.length === 0) {
-    return 0;
-  }
-  return values.reduce((acc, v) => acc + v, 0) / values.length;
+  return computeMeanFromUtils(values);
 }
 
 export function computeStdDev(values: number[], mean: number): number {

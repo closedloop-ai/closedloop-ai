@@ -4,8 +4,10 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { format, parse, subDays } from "date-fns";
 import { useState } from "react";
-
-const ALL_TIME_START = "2000-01-01";
+import {
+  JUDGES_ANALYTICS_ALL_TIME_START_DATE,
+  JUDGES_ANALYTICS_DATE_RANGE_DAYS,
+} from "@/lib/config/judges-analytics";
 
 /** Parse "yyyy-MM-dd" as local midnight (not UTC) */
 const toLocalDate = (dateStr: string) =>
@@ -38,7 +40,10 @@ export function DateRangeFilter({
 
   const handleAllTimeClick = () => {
     setActivePreset("all");
-    onRangeChange(ALL_TIME_START, format(new Date(), "yyyy-MM-dd"));
+    onRangeChange(
+      JUDGES_ANALYTICS_ALL_TIME_START_DATE,
+      format(new Date(), "yyyy-MM-dd")
+    );
   };
 
   const handleCustomDateChange = (
@@ -59,28 +64,36 @@ export function DateRangeFilter({
       <div className="flex gap-2">
         <Button
           className={activePreset === "day" ? "bg-accent" : ""}
-          onClick={() => handlePresetClick("day", 1)}
+          onClick={() =>
+            handlePresetClick("day", JUDGES_ANALYTICS_DATE_RANGE_DAYS.day)
+          }
           variant="outline"
         >
           Day
         </Button>
         <Button
           className={activePreset === "week" ? "bg-accent" : ""}
-          onClick={() => handlePresetClick("week", 7)}
+          onClick={() =>
+            handlePresetClick("week", JUDGES_ANALYTICS_DATE_RANGE_DAYS.week)
+          }
           variant="outline"
         >
           Week
         </Button>
         <Button
           className={activePreset === "month" ? "bg-accent" : ""}
-          onClick={() => handlePresetClick("month", 30)}
+          onClick={() =>
+            handlePresetClick("month", JUDGES_ANALYTICS_DATE_RANGE_DAYS.month)
+          }
           variant="outline"
         >
           Month
         </Button>
         <Button
           className={activePreset === "year" ? "bg-accent" : ""}
-          onClick={() => handlePresetClick("year", 365)}
+          onClick={() =>
+            handlePresetClick("year", JUDGES_ANALYTICS_DATE_RANGE_DAYS.year)
+          }
           variant="outline"
         >
           Year

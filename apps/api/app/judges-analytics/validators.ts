@@ -24,6 +24,16 @@ export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
   groupBy: z.enum(ARTIFACT_COUNTS_GROUP_BY_OPTIONS),
 });
 
+export const scoreComparisonQueryValidator = z.object({
+  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+  page: z.string().default("1").transform(Number).pipe(z.number().int().min(1)),
+  pageSize: z
+    .string()
+    .default("20")
+    .transform(Number)
+    .pipe(z.number().int().min(1).max(100)),
+});
+
 /** Parse YYYY-MM-DD strings to UTC start-of-day and end-of-day Date objects. */
 export function parseDateRange(startDate: string, endDate: string) {
   return {

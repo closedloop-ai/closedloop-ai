@@ -48,6 +48,7 @@ const MOCK_JUDGE_SCORE_ROW = createMockJudgeScoreRow({
 
 const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
   {
+    judgeScoreId: "judge-score-123",
     caseId: "test-judge",
     score: 0.95,
     threshold: 0.8,

@@ -167,3 +167,95 @@ export type JudgeDetail = {
 export type JudgeDetailResponse = {
   judge: JudgeDetail;
 };
+
+// ---------------------------------------------------------------------------
+// Score comparison types (GET /judges-analytics/:promptName/scores)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single row in the score comparison table showing judge vs human rating.
+ *
+ * Concurrence default: when userRatingCount = 0, avgUserRating = judgeScore and delta = 0.
+ */
+export type JudgeScoreRow = {
+  /** Unique ID of the JudgeScore row; use for React keys when artifactId can repeat. */
+  judgeScoreId: string;
+  artifactId: string;
+  artifactType: ArtifactType;
+  artifactTitle: string;
+  artifactSlug: string;
+  judgeScore: number;
+  /** Average human rating (0-1). Defaults to judgeScore when no human ratings. */
+  avgUserRating: number;
+  /** Number of human ratings for this judge score. */
+  userRatingCount: number;
+  /** |avgUserRating - judgeScore|. 0 when no human ratings. */
+  delta: number;
+  /** ISO date string of when the evaluation was created. */
+  evaluatedAt: string;
+};
+
+/**
+ * Pagination metadata for score comparison results.
+ */
+export type ScorePaginationMeta = {
+  page: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+};
+
+/**
+ * Response for the score comparison endpoint.
+ */
+export type JudgeScoresResponse = {
+  rows: JudgeScoreRow[];
+  totalArtifacts: number;
+  ratedArtifacts: number;
+  /** Percentage of artifacts with at least one human rating. */
+  coveragePct: number;
+  pagination: ScorePaginationMeta;
+};
+
+// ---------------------------------------------------------------------------
+// Judge rating submission types (POST /artifacts/:artifactId/judge-ratings)
+// ---------------------------------------------------------------------------
+
+/**
+ * Request body for submitting a human rating on a specific judge score.
+ */
+export type SubmitJudgeRatingRequest = {
+  judgeScoreId: string;
+  rating: number;
+};
+
+/**
+ * Response after submitting or updating a judge rating.
+ */
+export type SubmitJudgeRatingResponse = {
+  rating: number;
+  isUpdate: boolean;
+  /** URL-safe normalized prompt name for targeted cache invalidation. Null when judge score has no linked prompt. */
+  promptName?: string | null;
+  /** Evaluation report type for targeted cache invalidation. */
+  reportType?: EvaluationReportType | null;
+};
+
+// ---------------------------------------------------------------------------
+// User judge ratings types (GET /artifacts/:artifactId/judge-ratings)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single user rating for a judge score.
+ */
+export type UserJudgeRating = {
+  judgeScoreId: string;
+  rating: number;
+};
+
+/**
+ * Response containing all of the current user's ratings for judge scores on an artifact.
+ */
+export type UserJudgeRatingsResponse = {
+  ratings: UserJudgeRating[];
+};

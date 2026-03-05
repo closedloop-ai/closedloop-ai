@@ -905,9 +905,7 @@ function syncPlanFromContextPack(runDir, contextPack) {
   // the primary artifact in the array, so index 0 is not reliable.
   const primaryArtifact =
     contextPack.artifacts.find((a) => a.type === "IMPLEMENTATION_PLAN") ??
-    contextPack.artifacts.find(
-      (a) => !["PRD", "FEATURE"].includes(a.type)
-    );
+    contextPack.artifacts.find((a) => !["PRD", "FEATURE"].includes(a.type));
   if (!primaryArtifact?.content) {
     return;
   }

@@ -264,6 +264,7 @@ model Organization {
   loops              Loop[]
   prompts            Prompt[]
   computeTargets     ComputeTarget[]
+  judgeHumanScores   JudgeHumanScore[]
 
   @@map("organizations")
 }
@@ -305,6 +306,7 @@ model User {
   assignedWorkstreams Workstream[] @relation("WorkstreamAssignee")
   loops               Loop[]
   computeTargets      ComputeTarget[]
+  judgeHumanScores    JudgeHumanScore[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -621,9 +623,10 @@ model ArtifactEvaluation {
   reportData  Json?    @map("report_data")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  artifact    Artifact     @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  loop        Loop?        @relation(fields: [loopId], references: [id], onDelete: SetNull)
-  judgeScores JudgeScore[]
+  artifact         Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  loop             Loop?             @relation(fields: [loopId], references: [id], onDelete: SetNull)
+  judgeScores      JudgeScore[]
+  judgeHumanScores JudgeHumanScore[]
 
   @@unique([artifactId, reportId])
   @@index([artifactId, createdAt])
@@ -645,13 +648,38 @@ model JudgeScore {
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Relations
-  evaluation ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
-  prompt     Prompt?            @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  evaluation       ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  prompt           Prompt?            @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  judgeHumanScores JudgeHumanScore[]
 
   @@unique([evaluationId, caseId])
   @@index([promptId])
   @@index([caseId, createdAt])
   @@map("judge_scores")
+}
+
+model JudgeHumanScore {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  // Denormalized from judgeScore.evaluationId for query performance.
+  evaluationId   String   @map("evaluation_id") @db.Uuid
+  judgeScoreId   String   @map("judge_score_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  score          Float
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  evaluation   ArtifactEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  judgeScore   JudgeScore         @relation(fields: [judgeScoreId], references: [id], onDelete: Cascade)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([judgeScoreId, userId, organizationId])
+  @@index([evaluationId])
+  @@index([organizationId])
+  @@index([organizationId, userId])
+  @@map("judge_human_scores")
 }
 
 // SECURITY: No organizationId column — org isolation is enforced exclusively

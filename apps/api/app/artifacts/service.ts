@@ -1647,6 +1647,7 @@ Please try again or contact support if the issue persists.`
       }
 
       const data: JudgeFeedbackItem[] = evaluation.judgeScores.map((js) => ({
+        judgeScoreId: js.id,
         caseId: js.caseId,
         score: js.score,
         threshold: js.threshold,

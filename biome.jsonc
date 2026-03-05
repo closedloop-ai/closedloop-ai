@@ -77,6 +77,22 @@
           }
         }
       }
+    },
+    {
+      "includes": ["containers/**", "scripts/deploy/**"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "off"
+          },
+          "suspicious": {
+            "useAwait": "off"
+          },
+          "performance": {
+            "useTopLevelRegex": "off"
+          }
+        }
+      }
     }
   ],
   "files": {

@@ -38,3 +38,14 @@ export function normalizeJudgeName(name: string): string {
 export function isCanonicalJudgePromptName(name: string): boolean {
   return CANONICAL_JUDGE_PROMPT_NAME_PATTERN.exec(name) !== null;
 }
+
+/**
+ * Parses and validates the promptName path segment used by judges analytics routes.
+ */
+export function parsePromptNameParam(rawPromptName: string): string | null {
+  const promptName = decodeURIComponent(rawPromptName).toLowerCase();
+  if (!isCanonicalJudgePromptName(promptName)) {
+    return null;
+  }
+  return promptName;
+}
