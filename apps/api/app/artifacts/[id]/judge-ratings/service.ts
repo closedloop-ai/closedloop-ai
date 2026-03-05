@@ -17,30 +17,18 @@ export function submitJudgeRating(
   rating: number
 ): Promise<SubmitJudgeRatingResponse | null> {
   return withDb.tx(async (tx) => {
-    // Verify the judge score exists and belongs to the given artifact.
-    const judgeScore = await tx.judgeScore.findUnique({
-      where: { id: judgeScoreId },
-      select: {
-        id: true,
-        evaluationId: true,
+    const judgeScore = await tx.judgeScore.findFirst({
+      where: {
+        id: judgeScoreId,
         evaluation: {
-          select: {
-            artifactId: true,
-            artifact: { select: { organizationId: true } },
-          },
+          artifactId,
+          artifact: { organizationId },
         },
       },
+      select: { id: true, evaluationId: true },
     });
 
     if (!judgeScore) {
-      return null;
-    }
-
-    // Verify org ownership and artifact match.
-    if (
-      judgeScore.evaluation.artifact.organizationId !== organizationId ||
-      judgeScore.evaluation.artifactId !== artifactId
-    ) {
       return null;
     }
 

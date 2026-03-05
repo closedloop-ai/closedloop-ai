@@ -32,18 +32,10 @@ const ARTIFACT_ID = "artifact-test";
 const JUDGE_SCORE_ID = "a0000000-0000-7000-8000-000000000001";
 const EVAL_ID = "b0000000-0000-7000-8000-000000000002";
 
-function makeJudgeScoreRecord(overrides?: {
-  artifactId?: string;
-  organizationId?: string;
-  evaluationId?: string;
-}) {
+function makeJudgeScoreRecord(overrides?: { evaluationId?: string }) {
   return {
     id: JUDGE_SCORE_ID,
     evaluationId: overrides?.evaluationId ?? EVAL_ID,
-    evaluation: {
-      artifactId: overrides?.artifactId ?? ARTIFACT_ID,
-      artifact: { organizationId: overrides?.organizationId ?? ORG_ID },
-    },
   };
 }
 
@@ -60,7 +52,7 @@ describe("submitJudgeRating", () => {
   it("creates new rating and returns isUpdate=false", async () => {
     const db = {
       judgeScore: {
-        findUnique: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
         findUnique: vi.fn().mockResolvedValue(null),
@@ -83,7 +75,7 @@ describe("submitJudgeRating", () => {
   it("updates existing rating and returns isUpdate=true", async () => {
     const db = {
       judgeScore: {
-        findUnique: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
         findUnique: vi.fn().mockResolvedValue({ id: "existing-rating" }),
@@ -106,7 +98,7 @@ describe("submitJudgeRating", () => {
   it("accepts rating = 0 (minimum boundary)", async () => {
     const db = {
       judgeScore: {
-        findUnique: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
         findUnique: vi.fn().mockResolvedValue(null),
@@ -129,7 +121,7 @@ describe("submitJudgeRating", () => {
   it("accepts rating = 1 (maximum boundary)", async () => {
     const db = {
       judgeScore: {
-        findUnique: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
+        findFirst: vi.fn().mockResolvedValue(makeJudgeScoreRecord()),
       },
       judgeHumanScore: {
         findUnique: vi.fn().mockResolvedValue(null),
@@ -151,7 +143,7 @@ describe("submitJudgeRating", () => {
 
   it("returns null when judgeScoreId is not found", async () => {
     const db = {
-      judgeScore: { findUnique: vi.fn().mockResolvedValue(null) },
+      judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
     mockWithDbTx(db);
 
@@ -164,18 +156,12 @@ describe("submitJudgeRating", () => {
     );
 
     expect(result).toBeNull();
-    expect(db.judgeScore.findUnique).toHaveBeenCalledOnce();
+    expect(db.judgeScore.findFirst).toHaveBeenCalledOnce();
   });
 
   it("returns null when judgeScore belongs to a different artifact", async () => {
     const db = {
-      judgeScore: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue(
-            makeJudgeScoreRecord({ artifactId: "different-artifact" })
-          ),
-      },
+      judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
     mockWithDbTx(db);
 
@@ -188,17 +174,22 @@ describe("submitJudgeRating", () => {
     );
 
     expect(result).toBeNull();
+    expect(db.judgeScore.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: JUDGE_SCORE_ID,
+          evaluation: expect.objectContaining({
+            artifactId: ARTIFACT_ID,
+            artifact: { organizationId: ORG_ID },
+          }),
+        }),
+      })
+    );
   });
 
   it("returns null when judgeScore belongs to a different organization", async () => {
     const db = {
-      judgeScore: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue(
-            makeJudgeScoreRecord({ organizationId: "other-org" })
-          ),
-      },
+      judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
     mockWithDbTx(db);
 
@@ -211,12 +202,21 @@ describe("submitJudgeRating", () => {
     );
 
     expect(result).toBeNull();
+    expect(db.judgeScore.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          evaluation: expect.objectContaining({
+            artifact: { organizationId: ORG_ID },
+          }),
+        }),
+      })
+    );
   });
 
   it("calls upsert with correct keys and score", async () => {
     const db = {
       judgeScore: {
-        findUnique: vi
+        findFirst: vi
           .fn()
           .mockResolvedValue(makeJudgeScoreRecord({ evaluationId: EVAL_ID })),
       },
