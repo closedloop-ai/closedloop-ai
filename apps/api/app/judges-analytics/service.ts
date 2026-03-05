@@ -532,6 +532,53 @@ async function getCodeHumanData(
   return { humanRatingsByType, humanCommentsByType, humanRatingsByArtifact };
 }
 
+/** Resolved judge prompts for a given promptName. null when no match. */
+type ResolvedJudgePrompts = {
+  promptIds: string[];
+  matchingPrompts: Array<{
+    id: string;
+    name: string;
+    version: number;
+    content: string;
+    createdAt: Date;
+  }>;
+};
+
+async function resolveJudgePromptIds(
+  organizationId: string,
+  promptName: string
+): Promise<ResolvedJudgePrompts | null> {
+  const allJudgePrompts = await withDb((db) =>
+    db.prompt.findMany({
+      where: {
+        organizationId,
+        promptType: PromptType.JUDGE,
+      },
+      select: {
+        id: true,
+        name: true,
+        version: true,
+        content: true,
+        createdAt: true,
+      },
+      orderBy: { version: "desc" },
+    })
+  );
+
+  const matchingPrompts = allJudgePrompts.filter(
+    (p) => normalizeJudgeName(p.name) === promptName
+  );
+
+  if (matchingPrompts.length === 0) {
+    return null;
+  }
+
+  return {
+    promptIds: matchingPrompts.map((p) => p.id),
+    matchingPrompts,
+  };
+}
+
 async function getJudgeDescriptionByPromptName(
   organizationId: string
 ): Promise<Map<string, string>> {
@@ -771,36 +818,13 @@ export const judgesAnalyticsService = {
     promptName: string,
     reportType: EvaluationReportType
   ): Promise<JudgeDetailResponse | null> {
-    // 1. Resolve judge by promptName — find all JUDGE prompts in org and match normalized name
-    const allJudgePrompts = await withDb((db) =>
-      db.prompt.findMany({
-        where: {
-          organizationId,
-          promptType: PromptType.JUDGE,
-        },
-        select: {
-          id: true,
-          name: true,
-          version: true,
-          content: true,
-          createdAt: true,
-        },
-        orderBy: { version: "desc" },
-      })
-    );
-
-    // Group prompts by normalized name
-    const matchingPrompts = allJudgePrompts.filter(
-      (p) => normalizeJudgeName(p.name) === promptName
-    );
-
-    if (matchingPrompts.length === 0) {
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
       return null;
     }
 
-    // 2. Latest prompt is first (ordered by version DESC)
+    const { promptIds, matchingPrompts } = resolved;
     const latestPrompt = matchingPrompts[0];
-    const promptIds = matchingPrompts.map((p) => p.id);
     const promptIdSet = new Set(promptIds);
 
     // 3. Load score rows — match by promptId (relational) scoped to org
@@ -926,26 +950,14 @@ export const judgesAnalyticsService = {
     page: number,
     pageSize: number
   ): Promise<JudgeScoresResponse | null> {
-    // 1. Resolve prompts by normalized name and collect prompt IDs
-    const allJudgePrompts = await withDb((db) =>
-      db.prompt.findMany({
-        where: {
-          organizationId,
-          promptType: PromptType.JUDGE,
-        },
-        select: { id: true, name: true },
-      })
-    );
-
-    const promptIds = allJudgePrompts
-      .filter((p) => normalizeJudgeName(p.name) === promptName)
-      .map((p) => p.id);
-
-    if (promptIds.length === 0) {
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
       return null;
     }
 
-    // 2. Load judge scores by promptId (relational), scoped to org and reportType
+    const { promptIds } = resolved;
+
+    // Load judge scores by promptId (relational), scoped to org and reportType
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
