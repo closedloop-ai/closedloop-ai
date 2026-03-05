@@ -128,6 +128,9 @@ const OAUTH_RATE_LIMIT_TIMEOUT_MS = Number(
 const OAUTH_VERIFY_FALLBACK_TIMEOUT_MS = Number(
   process.env.MCP_OAUTH_VERIFY_FALLBACK_TIMEOUT_MS ?? 5000
 );
+const OAUTH_TOKEN_GRANT_TIMEOUT_MS = Number(
+  process.env.MCP_OAUTH_TOKEN_GRANT_TIMEOUT_MS ?? 8000
+);
 const MCP_SERVER_CACHE_TTL_MS = Number(
   process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
 );
@@ -163,6 +166,24 @@ class TimeoutError extends Error {
     super(message);
     this.name = "TimeoutError";
   }
+}
+
+function isPrismaTimeoutError(error: unknown): boolean {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "P1008"
+  ) {
+    return true;
+  }
+  if (error instanceof Error) {
+    return (
+      error.message.includes("SocketTimeout") ||
+      error.message.includes("Operation has timed out")
+    );
+  }
+  return false;
 }
 
 function isLocalOauthEnvironment(): boolean {
@@ -2710,18 +2731,47 @@ async function handleOAuthToken(
     throw error;
   }
 
+  const runGrantHandler = async (
+    grantType: string,
+    handler: () => Promise<void>
+  ): Promise<void> => {
+    try {
+      await withTimeout(
+        handler(),
+        OAUTH_TOKEN_GRANT_TIMEOUT_MS,
+        `oauth token grant (${grantType})`
+      );
+    } catch (error) {
+      if (error instanceof TimeoutError || isPrismaTimeoutError(error)) {
+        console.error(`[oauth/token] ${grantType} grant timed out`, error);
+        sendOAuthJson(res, 503, {
+          error: "temporarily_unavailable",
+          error_description: "Token service temporarily unavailable",
+        });
+        return;
+      }
+      throw error;
+    }
+  };
+
   if (body.grant_type === "client_credentials") {
-    await handleClientCredentialsGrant(body, res);
+    await runGrantHandler("client_credentials", () =>
+      handleClientCredentialsGrant(body, res)
+    );
     return;
   }
 
   if (body.grant_type === "authorization_code") {
-    await handleAuthorizationCodeGrant(body, res);
+    await runGrantHandler("authorization_code", () =>
+      handleAuthorizationCodeGrant(body, res)
+    );
     return;
   }
 
   if (body.grant_type === "refresh_token") {
-    await handleRefreshTokenGrant(body, res);
+    await runGrantHandler("refresh_token", () =>
+      handleRefreshTokenGrant(body, res)
+    );
     return;
   }
 
