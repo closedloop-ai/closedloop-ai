@@ -1,6 +1,7 @@
 "use client";
 
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
+import { hasAtMostDecimalPlaces } from "@repo/api/src/utils/math";
 import {
   Collapsible,
   CollapsibleContent,
@@ -77,7 +78,7 @@ export function JudgeResultCard({ item, artifactId }: JudgeResultCardProps) {
       setValidationError("Must be between 0 and 1");
       return;
     }
-    if (Number((parsed * 100).toFixed(0)) !== parsed * 100) {
+    if (!hasAtMostDecimalPlaces(parsed, 2)) {
       setValidationError("Must have at most 2 decimal places");
       return;
     }

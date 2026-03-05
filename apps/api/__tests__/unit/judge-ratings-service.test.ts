@@ -429,4 +429,27 @@ describe("submitJudgeRatingValidator", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts ratings with up to two decimal places", () => {
+    const firstResult = submitJudgeRatingValidator.safeParse({
+      judgeScoreId: VALID_UUID,
+      rating: 0.3,
+    });
+    const secondResult = submitJudgeRatingValidator.safeParse({
+      judgeScoreId: VALID_UUID,
+      rating: 0.57,
+    });
+
+    expect(firstResult.success).toBe(true);
+    expect(secondResult.success).toBe(true);
+  });
+
+  it("rejects ratings with more than two decimal places", () => {
+    const result = submitJudgeRatingValidator.safeParse({
+      judgeScoreId: VALID_UUID,
+      rating: 0.333,
+    });
+
+    expect(result.success).toBe(false);
+  });
 });
