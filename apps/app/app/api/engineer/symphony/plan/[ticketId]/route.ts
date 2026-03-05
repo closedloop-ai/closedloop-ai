@@ -29,7 +29,7 @@ function generateMarkdownFromPlan(plan: Record<string, unknown>): string {
   const parts: string[] = [];
 
   parts.push(
-    `# Implementation Plan: ${plan.title ?? "Untitled"}`,
+    `# Plan: ${plan.title ?? "Untitled"}`,
     "",
     "## Summary",
     "",

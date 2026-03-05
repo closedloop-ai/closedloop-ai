@@ -22,10 +22,10 @@ import {
   ToggleGroupItem,
 } from "@repo/design-system/components/ui/toggle-group";
 import {
+  BoxIcon,
   ChevronDownIcon,
-  CircleDotIcon,
-  ClipboardListIcon,
-  FileTextIcon,
+  FileCode2Icon,
+  FileIcon,
   Loader2Icon,
   MoreHorizontalIcon,
   PanelRightIcon,
@@ -246,6 +246,34 @@ export default function ProjectDetailPage() {
       >
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
+            <Button>
+              Actions
+              <ChevronDownIcon className="ml-2 h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => handleCreateArtifact(ArtifactType.Prd)}
+            >
+              <FileIcon className="mr-2 h-4 w-4" />
+              Create PRD
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
+              <BoxIcon className="mr-2 h-4 w-4" />
+              Create Feature
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                handleCreateArtifact(ArtifactType.ImplementationPlan)
+              }
+            >
+              <FileCode2Icon className="mr-2 h-4 w-4" />
+              Create Implementation Plan
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <Button size="icon" variant="ghost">
               <MoreHorizontalIcon className="h-4 w-4" />
               <span className="sr-only">Actions</span>
@@ -272,34 +300,6 @@ export default function ProjectDetailPage() {
             >
               <TrashIcon className="mr-2 h-4 w-4 text-destructive" />
               Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button>
-              Create
-              <ChevronDownIcon className="ml-2 h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onClick={() => handleCreateArtifact(ArtifactType.Prd)}
-            >
-              <FileTextIcon className="mr-2 h-4 w-4" />
-              PRD
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() =>
-                handleCreateArtifact(ArtifactType.ImplementationPlan)
-              }
-            >
-              <ClipboardListIcon className="mr-2 h-4 w-4" />
-              Implementation Plan
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setCreateFeatureOpen(true)}>
-              <CircleDotIcon className="mr-2 h-4 w-4" />
-              Feature
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

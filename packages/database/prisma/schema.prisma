@@ -898,7 +898,7 @@ model Loop {
   // Execution context
   prompt      String? @db.Text
   repo        Json? // { fullName: string, branch: string }
-  contextRefs Json?   @map("context_refs") // Array<{ artifactId, include }>
+  contextRefs Json?   @map("context_refs") // Array<{ sourceId, sourceType, include }>
 
   // Container tracking
   containerId String? @map("container_id") // ECS task ARN

@@ -43,6 +43,7 @@ type PlanEditorProps = {
   currentVersion: number;
   latestVersion: number;
   onVersionChange: (version: number) => void;
+  showHeader?: boolean;
 };
 
 export function PlanEditor({
@@ -50,6 +51,7 @@ export function PlanEditor({
   currentVersion,
   latestVersion,
   onVersionChange,
+  showHeader = true,
 }: PlanEditorProps) {
   const content = useArtifactContent({
     artifact: plan,
@@ -149,6 +151,7 @@ export function PlanEditor({
   // Derived state
   const isDraft = metadata.status === "DRAFT";
   const isApproved = metadata.status === "APPROVED";
+  const isReadOnly = session.isEditing || session.isViewingHistorical;
   const isPending =
     content.isSaving ||
     metadata.isUpdating ||
@@ -170,30 +173,33 @@ export function PlanEditor({
     />
   );
 
+  const header = showHeader ? (
+    <PlanEditorHeader
+      isApproved={isApproved}
+      isDraft={isDraft}
+      isExecuting={planActions.isExecuting}
+      isPending={isPending}
+      onApprove={planActions.handleApprove}
+      onCopyMarkdown={actions.handleCopy}
+      onDelete={uiState.openDeleteDialog}
+      onExecute={openExecuteModal}
+      onExportMarkdown={actions.handleDownload}
+      onExportToLinear={openLinearExportDialog}
+      onMove={() => setShowMoveDialog(true)}
+      onRegenerate={planActions.handleRegenerate}
+      onRequestChanges={openRequestChangesModal}
+      onRestoreVersion={session.handleRestoreVersion}
+      onToggleMetadataPanel={uiState.toggleMetadataPanel}
+      plan={plan}
+      pullRequest={pullRequest ?? null}
+      showMetadataPanel={uiState.showMetadataPanel}
+      showRestore={session.isViewingHistorical}
+    />
+  ) : null;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Header */}
-      <PlanEditorHeader
-        isApproved={isApproved}
-        isDraft={isDraft}
-        isExecuting={planActions.isExecuting}
-        isPending={isPending}
-        onApprove={planActions.handleApprove}
-        onCopyMarkdown={actions.handleCopy}
-        onDelete={uiState.openDeleteDialog}
-        onExecute={openExecuteModal}
-        onExportMarkdown={actions.handleDownload}
-        onExportToLinear={openLinearExportDialog}
-        onMove={() => setShowMoveDialog(true)}
-        onRegenerate={planActions.handleRegenerate}
-        onRequestChanges={openRequestChangesModal}
-        onRestoreVersion={session.handleRestoreVersion}
-        onToggleMetadataPanel={uiState.toggleMetadataPanel}
-        plan={plan}
-        pullRequest={pullRequest ?? null}
-        showMetadataPanel={uiState.showMetadataPanel}
-        showRestore={session.isViewingHistorical}
-      />
+      {header}
 
       {/* Content area: toolbar + editor on left, metadata panel on right */}
       <div className="flex min-h-0 flex-1">
@@ -268,16 +274,8 @@ export function PlanEditor({
             {/* biome-ignore lint/a11y/noStaticElementInteractions: wraps TipTap rich text editor */}
             <div
               className="flex min-h-0 flex-1 flex-col"
-              onClick={
-                session.isEditing || session.isViewingHistorical
-                  ? undefined
-                  : session.handleEdit
-              }
-              onKeyDown={
-                session.isEditing || session.isViewingHistorical
-                  ? undefined
-                  : session.handleEdit
-              }
+              onClick={isReadOnly ? undefined : session.handleEdit}
+              onKeyDown={isReadOnly ? undefined : session.handleEdit}
             >
               <CollaborativeEditor
                 contentResetKey={session.contentResetKey}

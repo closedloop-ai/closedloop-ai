@@ -4,12 +4,13 @@ import {
   type ArtifactDetail,
   ArtifactType,
 } from "@repo/api/src/types/artifact";
+import { EntityType } from "@repo/api/src/types/entity-link";
 import { InlinePresence, OptionalArtifactRoom } from "@repo/collaboration";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import { MessageSquareDotIcon } from "lucide-react";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
 import { VersionSelector } from "@/app/(authenticated)/implementation-plans/components/version-selector";
 import { CollaborativeEditor } from "@/components/artifact-editor/collaborative-editor";
@@ -28,6 +29,7 @@ import {
   useInlineGeneratePRD,
   useRegenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
 
@@ -44,6 +46,19 @@ export function PRDEditor({
   latestVersion,
   onVersionChange,
 }: PRDEditorProps) {
+  // Move dialog state
+  const [showMoveDialog, setShowMoveDialog] = useState(false);
+
+  // Comments panel toggle state
+  const [showComments, setShowComments] = useState(true);
+
+  const newPlanSource: PlanSource = useMemo(() => {
+    return {
+      ...prd,
+      sourceType: EntityType.Artifact,
+    };
+  }, [prd]);
+
   const content = useArtifactContent({
     artifact: prd,
     onVersionCreated: () => {
@@ -59,6 +74,7 @@ export function PRDEditor({
     latestVersion,
     content,
   });
+  const prevThreadCount = useRef(session.openThreadCount);
 
   const metadata = useArtifactMetadata({
     artifact: prd,
@@ -119,13 +135,6 @@ export function PRDEditor({
       }
     );
   };
-
-  // Move dialog state
-  const [showMoveDialog, setShowMoveDialog] = useState(false);
-
-  // Comments panel toggle state
-  const [showComments, setShowComments] = useState(true);
-  const prevThreadCount = useRef(session.openThreadCount);
 
   // Auto-reveal comments when threads reappear after being fully resolved
   useEffect(() => {
@@ -328,7 +337,7 @@ export function PRDEditor({
       <NewPlanModal
         onOpenChange={setShowGeneratePlanModal}
         open={showGeneratePlanModal}
-        sourceArtifact={prd}
+        source={newPlanSource}
       />
     </div>
   );

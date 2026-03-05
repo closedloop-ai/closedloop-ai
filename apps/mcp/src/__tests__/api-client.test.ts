@@ -146,4 +146,52 @@ describe.sequential("ApiClient", () => {
       client.get<Array<{ id: string }>>("/artifacts")
     ).resolves.toEqual([{ id: "legacy" }]);
   });
+
+  it("falls back to default timeout when MCP_VERIFY_API_KEY_TIMEOUT_MS is invalid", async () => {
+    process.env.MCP_VERIFY_API_KEY_TIMEOUT_MS = "not-a-number";
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: { userId: "u1", organizationId: "o1", scopes: ["read"] },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const { verifyApiKey } = await import("../api-client.js");
+    // Should not throw RangeError from AbortSignal.timeout(NaN)
+    await expect(verifyApiKey("sk_live_test123")).resolves.toEqual({
+      userId: "u1",
+      organizationId: "o1",
+      scopes: ["read"],
+    });
+
+    const requestInit = fetchSpy.mock.calls[0]?.[1];
+    expect(requestInit?.signal).toBeDefined();
+  });
+
+  it("falls back to default timeout when MCP_VERIFY_API_KEY_TIMEOUT_MS is negative", async () => {
+    process.env.MCP_VERIFY_API_KEY_TIMEOUT_MS = "-5000";
+
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: { userId: "u1", organizationId: "o1", scopes: ["read"] },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { verifyApiKey } = await import("../api-client.js");
+    await expect(verifyApiKey("sk_live_test123")).resolves.toEqual({
+      userId: "u1",
+      organizationId: "o1",
+      scopes: ["read"],
+    });
+  });
 });

@@ -21,6 +21,7 @@ import {
 } from "./api-client.js";
 import {
   API_KEY_SCOPES,
+  type ApiKeyScope,
   type VerifiedApiKeyContext,
 } from "./api-key-contract.js";
 import { registerBatchCreateArtifacts } from "./tools/batch-create-artifacts.js";
@@ -118,6 +119,15 @@ const OAUTH_RATE_LIMIT_TOKEN_MAX = Number(
 const OAUTH_CLEANUP_INTERVAL_MS = Number(
   process.env.MCP_OAUTH_CLEANUP_INTERVAL_MS ?? 300_000
 );
+const OAUTH_CLEANUP_TIMEOUT_MS = Number(
+  process.env.MCP_OAUTH_CLEANUP_TIMEOUT_MS ?? 1500
+);
+const OAUTH_RATE_LIMIT_TIMEOUT_MS = Number(
+  process.env.MCP_OAUTH_RATE_LIMIT_TIMEOUT_MS ?? 1500
+);
+const OAUTH_VERIFY_FALLBACK_TIMEOUT_MS = Number(
+  process.env.MCP_OAUTH_VERIFY_FALLBACK_TIMEOUT_MS ?? 5000
+);
 const MCP_SERVER_CACHE_TTL_MS = Number(
   process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
 );
@@ -142,6 +152,13 @@ class RequestBodyTooLargeError extends Error {
   }
 }
 
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
 function isLocalOauthEnvironment(): boolean {
   if (
     NODE_ENV === "production" ||
@@ -158,6 +175,27 @@ function isLocalOauthEnvironment(): boolean {
 
 function getOAuthRedirectUriAllowlist(): string[] {
   return OAUTH_REDIRECT_URI_ALLOWLIST;
+}
+
+function isRedirectUriAllowedByEntry(
+  uri: string,
+  allowlistEntry: string
+): boolean {
+  if (allowlistEntry.endsWith("*")) {
+    let entryUrl: URL;
+    let uriUrl: URL;
+    try {
+      entryUrl = new URL(allowlistEntry.slice(0, -1));
+      uriUrl = new URL(uri);
+    } catch {
+      return false;
+    }
+    if (uriUrl.origin !== entryUrl.origin) {
+      return false;
+    }
+    return uriUrl.pathname.startsWith(entryUrl.pathname);
+  }
+  return uri === allowlistEntry;
 }
 
 function getInternalEndpointAllowlist(): string[] {
@@ -481,6 +519,79 @@ function effectiveKeyScopes(scopes: string[]): string[] {
   return scopes.length > 0 ? scopes : [...API_KEY_SCOPES];
 }
 
+function normalizeApiKeyScopes(scopes: unknown): ApiKeyScope[] {
+  if (!Array.isArray(scopes)) {
+    return [];
+  }
+  const sanitized = scopes.filter(
+    (scope): scope is ApiKeyScope =>
+      typeof scope === "string" && API_KEY_SCOPE_SET.has(scope)
+  );
+  return [...new Set(sanitized)];
+}
+
+async function verifyApiKeyLocally(
+  plaintextKey: string
+): Promise<VerifiedApiKeyContext | null> {
+  const hash = createHash("sha256").update(plaintextKey, "utf8").digest("hex");
+  const now = new Date();
+  const record = await withDb((db) =>
+    db.apiKey.findFirst({
+      where: {
+        keyHash: hash,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: {
+        id: true,
+        userId: true,
+        organizationId: true,
+        scopes: true,
+      },
+    })
+  );
+
+  if (!record) {
+    return null;
+  }
+
+  withDb((db) =>
+    db.apiKey.update({
+      where: { id: record.id },
+      data: { lastUsedAt: now },
+    })
+  ).catch((error: unknown) => {
+    console.warn(
+      "[oauth] failed to update API key lastUsedAt after local verify",
+      error
+    );
+  });
+
+  return {
+    userId: record.userId,
+    organizationId: record.organizationId,
+    scopes: normalizeApiKeyScopes(record.scopes),
+  };
+}
+
+async function verifyApiKeyWithFallback(
+  plaintextKey: string
+): Promise<VerifiedApiKeyContext | null> {
+  try {
+    return await verifyApiKey(plaintextKey);
+  } catch (error) {
+    console.warn(
+      "[oauth] upstream API key verification failed, falling back to local DB verification",
+      error
+    );
+    return withTimeout(
+      verifyApiKeyLocally(plaintextKey),
+      OAUTH_VERIFY_FALLBACK_TIMEOUT_MS,
+      "oauth local api-key verification"
+    );
+  }
+}
+
 function hasWriteScope(scopes: string[]): boolean {
   return scopes.includes("write");
 }
@@ -503,6 +614,31 @@ function resolveGrantedScopes(
 
 let lastOAuthCleanupMs = 0;
 const OAUTH_CLEANUP_LOCK_ID = 8_173_421;
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  context: string
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(new TimeoutError(`${context} timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
 
 async function maybeCleanupOAuthSecurityTables(): Promise<void> {
   const nowMs = Date.now();
@@ -537,6 +673,23 @@ async function maybeCleanupOAuthSecurityTables(): Promise<void> {
   lastOAuthCleanupMs = nowMs;
 }
 
+async function maybeCleanupOAuthSecurityTablesSafe(
+  context: "authorize" | "token" | "introspect" | "revoke"
+): Promise<void> {
+  try {
+    await withTimeout(
+      maybeCleanupOAuthSecurityTables(),
+      OAUTH_CLEANUP_TIMEOUT_MS,
+      `oauth cleanup (${context})`
+    );
+  } catch (error) {
+    console.error(
+      `[oauth] cleanup failed during ${context}; continuing without cleanup`,
+      error
+    );
+  }
+}
+
 async function runOAuthCleanupQueries(
   nowMs: number,
   db: OAuthCleanupDbClient
@@ -568,6 +721,7 @@ async function storeAuthorizationCode(
   await withDb((db) =>
     db.oAuthAuthorizationCode.create({
       data: {
+        id: randomUUID(),
         code,
         encryptedApiKey: record.encryptedApiKey,
         keyId: record.keyId,
@@ -659,6 +813,7 @@ async function revokeAccessToken(
     db.oAuthRevokedToken.upsert({
       where: { tokenFingerprint: fingerprint },
       create: {
+        id: randomUUID(),
         tokenFingerprint: fingerprint,
         expiresAt: new Date(expiresAtMs),
       },
@@ -685,6 +840,7 @@ type OAuthRefreshTokenDbClient = {
   oAuthRefreshToken: {
     create(args: {
       data: {
+        id: string;
         tokenFingerprint: string;
         encryptedApiKey: string;
         keyId: string;
@@ -733,6 +889,7 @@ async function createRefreshTokenRecord(
   const tokenFingerprint = getTokenFingerprint(token);
   const created = await client.oAuthRefreshToken.create({
     data: {
+      id: randomUUID(),
       tokenFingerprint,
       encryptedApiKey: input.encryptedApiKey,
       keyId: input.keyId,
@@ -958,6 +1115,54 @@ function logMcpEvent(
   console.log(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
 }
 
+type InMemoryRateLimitEntry = {
+  count: number;
+  windowStartMs: number;
+};
+
+const inMemoryRateLimits = new Map<string, InMemoryRateLimitEntry>();
+
+function pruneExpiredInMemoryRateLimits(nowMs: number): void {
+  for (const [key, entry] of inMemoryRateLimits.entries()) {
+    if (nowMs - entry.windowStartMs >= OAUTH_RATE_LIMIT_WINDOW_MS) {
+      inMemoryRateLimits.delete(key);
+    }
+  }
+}
+
+function consumeInMemoryRateLimit(
+  req: import("node:http").IncomingMessage,
+  bucket: "authorize" | "token"
+): { limited: boolean; retryAfterSeconds: number } {
+  const limit =
+    bucket === "authorize"
+      ? OAUTH_RATE_LIMIT_AUTHORIZE_MAX
+      : OAUTH_RATE_LIMIT_TOKEN_MAX;
+  const address = getClientAddress(req);
+  const key = `${bucket}:${address}`;
+  const nowMs = Date.now();
+
+  pruneExpiredInMemoryRateLimits(nowMs);
+  const entry = inMemoryRateLimits.get(key);
+  if (!entry || nowMs - entry.windowStartMs >= OAUTH_RATE_LIMIT_WINDOW_MS) {
+    inMemoryRateLimits.set(key, { count: 1, windowStartMs: nowMs });
+    return { limited: false, retryAfterSeconds: 0 };
+  }
+
+  entry.count += 1;
+  if (entry.count > limit) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil(
+        (entry.windowStartMs + OAUTH_RATE_LIMIT_WINDOW_MS - nowMs) / 1000
+      )
+    );
+    return { limited: true, retryAfterSeconds };
+  }
+
+  return { limited: false, retryAfterSeconds: 0 };
+}
+
 function consumeOAuthRateLimit(
   req: import("node:http").IncomingMessage,
   bucket: "authorize" | "token"
@@ -992,6 +1197,7 @@ function consumeOAuthRateLimit(
             },
           },
           create: {
+            id: randomUUID(),
             bucket,
             subject: address,
             requestCount: 1,
@@ -1035,6 +1241,25 @@ function consumeOAuthRateLimit(
 
     return { limited: false, retryAfterSeconds: 0 };
   });
+}
+
+async function consumeOAuthRateLimitSafe(
+  req: import("node:http").IncomingMessage,
+  bucket: "authorize" | "token"
+): Promise<{ limited: boolean; retryAfterSeconds: number }> {
+  try {
+    return await withTimeout(
+      consumeOAuthRateLimit(req, bucket),
+      OAUTH_RATE_LIMIT_TIMEOUT_MS,
+      `oauth rate-limit (${bucket})`
+    );
+  } catch (error) {
+    console.error(
+      `[oauth] rate-limit lookup failed for ${bucket}; falling back to in-memory limiter`,
+      error
+    );
+    return consumeInMemoryRateLimit(req, bucket);
+  }
 }
 
 function b64urlEncode(input: string): string {
@@ -1313,7 +1538,7 @@ async function resolveMcpAuth(
 ): Promise<ResolvedMcpAuth | null> {
   const apiKeyFromHeader = extractApiKey(authorizationHeader);
   if (apiKeyFromHeader) {
-    const context = await verifyApiKey(apiKeyFromHeader);
+    const context = await verifyApiKeyWithFallback(apiKeyFromHeader);
     if (!context) {
       return null;
     }
@@ -1342,7 +1567,7 @@ async function resolveMcpAuth(
     return null;
   }
 
-  const context = await verifyApiKey(plaintextKey);
+  const context = await verifyApiKeyWithFallback(plaintextKey);
   if (!context) {
     return null;
   }
@@ -1739,7 +1964,7 @@ function isValidRedirectUri(uri: string): boolean {
     // Non-loopback URIs must appear in the explicit allowlist
     const allowlist = getOAuthRedirectUriAllowlist();
     if (allowlist.length > 0) {
-      return allowlist.includes(uri);
+      return allowlist.some((entry) => isRedirectUriAllowedByEntry(uri, entry));
     }
 
     // No allowlist and not loopback — deny in non-local envs, allow in local
@@ -1941,6 +2166,62 @@ function isValidOAuthClientId(clientId: string | null): boolean {
   );
 }
 
+type AuthorizeContextResult = {
+  apiKey: string;
+  context: VerifiedApiKeyContext;
+};
+
+async function resolveAuthorizeContext(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  url: URL
+): Promise<AuthorizeContextResult | null> {
+  const apiKey = await extractApiKeyFromRequest(req);
+  if (!apiKey) {
+    sendAuthorizeHtmlForm(
+      res,
+      url,
+      req.method === "POST" ? "Invalid API key. Please try again." : undefined
+    );
+    return null;
+  }
+
+  try {
+    const context = await verifyApiKeyWithFallback(apiKey);
+    if (!context) {
+      if (req.method === "POST") {
+        sendAuthorizeHtmlForm(
+          res,
+          url,
+          "Invalid API key. Please check and try again."
+        );
+        return null;
+      }
+      sendJson(res, 401, {
+        error: "invalid_client",
+        error_description: "Invalid API key",
+      });
+      return null;
+    }
+    return { apiKey, context };
+  } catch (error) {
+    console.error("[oauth/authorize] API key verification failed", error);
+    if (req.method === "POST") {
+      sendAuthorizeHtmlForm(
+        res,
+        url,
+        "Unable to verify API key right now. Please try again."
+      );
+      return null;
+    }
+    sendJson(res, 503, {
+      error: "temporarily_unavailable",
+      error_description: "API key verification is temporarily unavailable",
+    });
+    return null;
+  }
+}
+
 async function handleOAuthAuthorize(
   req: import("node:http").IncomingMessage,
   res: import("node:http").ServerResponse
@@ -1950,8 +2231,8 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  await maybeCleanupOAuthSecurityTables();
-  const authorizeRateLimit = await consumeOAuthRateLimit(req, "authorize");
+  await maybeCleanupOAuthSecurityTablesSafe("authorize");
+  const authorizeRateLimit = await consumeOAuthRateLimitSafe(req, "authorize");
   if (authorizeRateLimit.limited) {
     sendJson(
       res,
@@ -1969,32 +2250,11 @@ async function handleOAuthAuthorize(
   const redirectUri = url.searchParams.get("redirect_uri");
   const state = url.searchParams.get("state") ?? undefined;
 
-  const apiKey = await extractApiKeyFromRequest(req);
-  if (!apiKey) {
-    sendAuthorizeHtmlForm(
-      res,
-      url,
-      req.method === "POST" ? "Invalid API key. Please try again." : undefined
-    );
+  const authorizeContext = await resolveAuthorizeContext(req, res, url);
+  if (!authorizeContext) {
     return;
   }
-
-  const context = await verifyApiKey(apiKey);
-  if (!context) {
-    if (req.method === "POST") {
-      sendAuthorizeHtmlForm(
-        res,
-        url,
-        "Invalid API key. Please check and try again."
-      );
-      return;
-    }
-    sendJson(res, 401, {
-      error: "invalid_client",
-      error_description: "Invalid API key",
-    });
-    return;
-  }
+  const { apiKey, context } = authorizeContext;
 
   if (!(redirectUri && isValidRedirectUri(redirectUri))) {
     sendJson(res, 400, {
@@ -2096,7 +2356,7 @@ async function handleClientCredentialsGrant(
     return;
   }
 
-  const context = await verifyApiKey(apiKey);
+  const context = await verifyApiKeyWithFallback(apiKey);
   if (!context) {
     sendInvalidClient(res, "Invalid client credentials");
     return;
@@ -2197,7 +2457,7 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const context = await verifyApiKey(codeApiKey);
+  const context = await verifyApiKeyWithFallback(codeApiKey);
   if (!context) {
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
@@ -2354,7 +2614,7 @@ async function handleRefreshTokenGrant(
     return;
   }
 
-  const context = await verifyApiKey(plaintextKey);
+  const context = await verifyApiKeyWithFallback(plaintextKey);
   if (!context) {
     await revokeRefreshTokenFamily(refreshRecord.familyId);
     sendOAuthJson(res, 400, {
@@ -2434,8 +2694,8 @@ async function handleOAuthToken(
     return;
   }
 
-  await maybeCleanupOAuthSecurityTables();
-  const tokenRateLimit = await consumeOAuthRateLimit(req, "token");
+  await maybeCleanupOAuthSecurityTablesSafe("token");
+  const tokenRateLimit = await consumeOAuthRateLimitSafe(req, "token");
   if (tokenRateLimit.limited) {
     sendOAuthJson(
       res,
@@ -2522,7 +2782,7 @@ async function handleOAuthIntrospect(
     return;
   }
 
-  await maybeCleanupOAuthSecurityTables();
+  await maybeCleanupOAuthSecurityTablesSafe("introspect");
   if (!isInternalRequestAuthorized(req)) {
     sendInternalUnauthorized(res);
     return;
@@ -2561,7 +2821,7 @@ async function handleOAuthIntrospect(
     return;
   }
 
-  const keyContext = await verifyApiKey(plaintextKey);
+  const keyContext = await verifyApiKeyWithFallback(plaintextKey);
   if (!keyContext) {
     sendOAuthJson(res, 200, { active: false });
     return;
@@ -2587,7 +2847,7 @@ async function handleOAuthRevoke(
     return;
   }
 
-  await maybeCleanupOAuthSecurityTables();
+  await maybeCleanupOAuthSecurityTablesSafe("revoke");
   if (!isInternalRequestAuthorized(req)) {
     sendInternalUnauthorized(res);
     return;
@@ -2883,11 +3143,16 @@ export const __testables = {
   handleOAuthToken,
   handleOAuthIntrospect,
   handleOAuthRevoke,
+  verifyApiKeyLocally,
   isInternalAddressAllowed,
   requireRedirectAllowlistForEnvironment,
   requireInternalAllowlistForEnvironment,
+  isRedirectUriAllowedByEntry,
+  consumeInMemoryRateLimit,
+  inMemoryRateLimits,
   resetInMemorySecurityState: () => {
     lastOAuthCleanupMs = 0;
     mcpSessions.clear();
+    inMemoryRateLimits.clear();
   },
 };
