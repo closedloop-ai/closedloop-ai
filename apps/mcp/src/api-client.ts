@@ -12,6 +12,10 @@ function requireEnv(name: string): string {
 }
 
 const INTERNAL_API_SECRET = requireEnv("INTERNAL_API_SECRET");
+const VERIFY_API_KEY_TIMEOUT_MS = (() => {
+  const v = Number(process.env.MCP_VERIFY_API_KEY_TIMEOUT_MS ?? 10_000);
+  return Number.isFinite(v) && v > 0 ? v : 10_000;
+})();
 
 async function getResponseErrorMessage(response: Response): Promise<string> {
   const body = await response.text().catch(() => "");
@@ -144,14 +148,22 @@ export async function verifyApiKey(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
   const verifyUrl = new URL("/internal/api-keys/verify", CLOSEDLOOP_API_URL);
-  const response = await fetch(verifyUrl.toString(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Secret": INTERNAL_API_SECRET,
-    },
-    body: JSON.stringify({ key: plaintextKey }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(verifyUrl.toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Internal-Secret": INTERNAL_API_SECRET,
+      },
+      body: JSON.stringify({ key: plaintextKey }),
+      signal: AbortSignal.timeout(VERIFY_API_KEY_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const reason =
+      error instanceof Error ? error.message : "unknown verification error";
+    throw new Error(`API key verification request failed: ${reason}`);
+  }
   if (!response.ok) {
     // 401 means the key is invalid; 5xx means the server is broken
     if (response.status >= 500) {
