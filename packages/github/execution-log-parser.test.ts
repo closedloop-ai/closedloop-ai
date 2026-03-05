@@ -239,7 +239,7 @@ describe("deriveAgentLabel", () => {
   it("extracts known command names from <command-name> tags", () => {
     expect(
       deriveAgentLabel(
-        "Some preamble <command-name>/experimental:code</command-name> rest"
+        "Some preamble <command-name>/code:code</command-name> rest"
       )
     ).toBe("Orchestrator");
 
@@ -348,8 +348,7 @@ describe("parseExecutionLogs", () => {
     const sessionContent = makeJsonlLines([
       {
         role: "user",
-        content:
-          "<command-name>/experimental:code</command-name> Build a feature",
+        content: "<command-name>/code:code</command-name> Build a feature",
         timestamp: "2025-01-01T00:00:00Z",
       },
       {
@@ -435,8 +434,7 @@ describe("parseExecutionLogs", () => {
     const orchestratorContent = makeJsonlLines([
       {
         role: "user",
-        content:
-          "<command-name>/experimental:code</command-name> Implement feature",
+        content: "<command-name>/code:code</command-name> Implement feature",
         timestamp: "2025-01-01T00:00:00Z",
       },
       {

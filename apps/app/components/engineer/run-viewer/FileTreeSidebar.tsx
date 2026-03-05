@@ -18,7 +18,7 @@ type FileTreeSidebarProps = {
   onSelectFile: (path: string | null) => void;
 };
 
-const HIDDEN_DIRS = new Set([".learnings", ".symphony"]);
+const HIDDEN_DIRS = new Set([".learnings", ".closedloop"]);
 
 function getFileIcon(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() || "";

@@ -54,6 +54,7 @@ export type EngineerIssuesResultWithUser = EngineerTicketsResult & {
   ) => Promise<boolean>;
   getFullTicket: (ticketId: string) => Promise<FullTicketDetails>;
   postComment: (ticketIdentifier: string, body: string) => Promise<void>;
+  isMcpFailed: boolean;
 };
 
 /** Map closedloop-dev status names to Symphony IssueStatus */
@@ -328,11 +329,16 @@ function useEngineerIssuesViaMcp(): EngineerIssuesResultWithUser {
     });
   }, [mcp.isReady]);
 
+  // When MCP has exhausted retries and is in "failed" state, stop reporting
+  // isLoading so the dashboard renders an empty state instead of spinning forever.
+  const mcpFailed = mcp.state === "failed" && !mcp.isReady;
+  const effectiveLoading = mcpFailed ? false : isLoading || !mcp.isReady;
   return {
     tickets,
-    isLoading: isLoading || !mcp.isReady,
+    isLoading: effectiveLoading,
     isFetching,
     error,
+    isMcpFailed: mcpFailed,
     refetch,
     user,
     logout,
@@ -543,6 +549,7 @@ function useEngineerIssuesViaApi(): EngineerIssuesResultWithUser {
     isLoading,
     isFetching,
     error,
+    isMcpFailed: false,
     refetch,
     user,
     logout,

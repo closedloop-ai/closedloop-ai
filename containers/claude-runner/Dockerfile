@@ -8,8 +8,8 @@ FROM node:20-slim
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-# gawk: required by experimental plugin hooks (FPAT support — mawk doesn't have it)
-# python3 + pip: required by experimental plugin post-iteration scripts
+# gawk: required by code plugin hooks (FPAT support — mawk doesn't have it)
+# python3 + pip: required by code plugin post-iteration scripts
 # xxd: required by run-loop.sh for run ID generation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -24,10 +24,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xxd \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages required by experimental plugin
+# Install Python packages required by code plugin
 RUN pip3 install --no-cache-dir --break-system-packages pyyaml
 
-# Install uv (fast Python package manager — used by experimental plugin)
+# Install uv (fast Python package manager — used by code plugin)
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install GitHub CLI
@@ -65,15 +65,18 @@ USER runner
 ARG GITHUB_TOKEN
 RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" && \
     git config --global --add url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "git@github.com:" && \
-    claude plugin marketplace add closedloop-ai/claude_code && \
-    claude plugin install experimental@closedloop && \
-    claude plugin install symphony-core@closedloop && \
+    claude plugin marketplace add closedloop-ai/claude-plugins && \
+    claude plugin install code@closedloop-ai && \
+    claude plugin install judges@closedloop-ai && \
+    claude plugin install self-learning@closedloop-ai && \
+    claude plugin install code-review@closedloop-ai && \
+    claude plugin install platform@closedloop-ai && \
     (git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null || true)
 
 # Enable weaker nested sandbox for Docker — the container IS the sandbox.
 # Standard bwrap can't create user namespaces inside an unprivileged container,
 # which breaks access to system binaries like /usr/bin/python3 that plugins
-# (experimental) depend on. This setting adjusts bwrap for nested execution.
+# code depend on. This setting adjusts bwrap for nested execution.
 # IMPORTANT: Must MERGE into existing settings.json, not overwrite it —
 # claude plugin install writes enabledPlugins there. Overwriting nukes plugin config.
 RUN jq '. + {"sandbox":{"enableWeakerNestedSandbox":true}}' /home/runner/.claude/settings.json > /tmp/settings.json && \

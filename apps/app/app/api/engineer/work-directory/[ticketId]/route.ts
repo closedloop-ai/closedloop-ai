@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import { migrateLegacySessions } from "@/lib/engineer/migrate-sessions";
 import {
   expandHome,
   getConfiguredReposList,
@@ -9,7 +10,7 @@ import {
 } from "@/lib/engineer/repos";
 
 /**
- * Interface for session data stored in ~/.symphony/sessions.json
+ * Interface for session data stored in ~/.closedloop-ai/sessions.json
  */
 type SessionData = {
   sessions: Array<{
@@ -94,7 +95,7 @@ function checkBranchStatus(
  * GET /api/work-directory/[ticketId]
  *
  * Checks in order:
- * 1. Sessions file (~/.symphony/sessions.json) for existing worktreePath
+ * 1. Sessions file (~/.closedloop-ai/sessions.json) for existing worktreePath
  * 2. Configured repo worktree patterns ({worktreeParentDir}/{repoName}-{ticketId})
  *
  * Returns:
@@ -120,7 +121,8 @@ export async function GET(
     const sanitizedTicket = ticketId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
 
     // 1. First check sessions file for existing worktreePath
-    const sessionsPath = expandHome("~/.symphony/sessions.json");
+    migrateLegacySessions();
+    const sessionsPath = expandHome("~/.closedloop-ai/sessions.json");
     if (existsSync(sessionsPath)) {
       try {
         const sessionsContent = readFileSync(sessionsPath, "utf-8");

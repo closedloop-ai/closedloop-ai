@@ -1476,8 +1476,8 @@ function findRunLoop() {
     ".claude",
     "plugins",
     "cache",
-    "closedloop",
-    "experimental"
+    "closedloop-ai",
+    "code"
   );
   const runLoopPath = path.join(pluginCachePath, "run-loop.sh");
 
@@ -1493,9 +1493,9 @@ function findRunLoop() {
       ".claude",
       "plugins",
       "marketplaces",
-      "closedloop",
-      "closedloop",
-      "experimental",
+      "closedloop-ai",
+      "plugins",
+      "code",
       "scripts",
       "run-loop.sh"
     ),
@@ -1504,20 +1504,20 @@ function findRunLoop() {
       ".claude",
       "plugins",
       "marketplaces",
-      "closedloop",
-      "closedloop",
-      "experimental",
+      "closedloop-ai",
+      "plugins",
+      "code",
       "run-loop.sh"
     ),
     path.join(
       os.homedir(),
       ".claude",
       "plugins",
-      "closedloop",
-      "experimental",
+      "closedloop-ai",
+      "code",
       "run-loop.sh"
     ),
-    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/plugins/closedloop/experimental/run-loop.sh",
+    "/usr/local/lib/node_modules/@anthropic-ai/claude-code/plugins/closedloop-ai/code/run-loop.sh",
   ];
 
   for (const p of fallbackPaths) {
@@ -1948,7 +1948,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       // if we pass --workdir / --message as separate argv entries, the CLI
       // interprets them as its own flags and errors with "unknown option".
       // The dispatch workflow sends the equivalent as one prompt field:
-      //   /experimental:amend-plan --workdir $RUN_DIR --message "$MESSAGE"
+      //   /code:amend-plan --workdir $RUN_DIR --message "$MESSAGE"
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "Please amend the plan based on the requested changes.";
@@ -1962,7 +1962,7 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
         .replace(/\s{2,}/g, " ")
         .replace(/"/g, '\\"');
       args.push(
-        `/experimental:amend-plan --workdir ${symphonyWD || workDir} --message "${sanitized}"`
+        `/code:amend-plan --workdir ${symphonyWD || workDir} --message "${sanitized}"`
       );
       break;
     }

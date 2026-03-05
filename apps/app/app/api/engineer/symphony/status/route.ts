@@ -8,7 +8,7 @@ import { type NextRequest, NextResponse } from "next/server";
  * GET /api/symphony/status?workDir=/path/to/workdir
  *
  * Checks if Symphony is still running by examining the state.json file
- * in the .symphony directory of the work directory.
+ * in the .closedloop directory of the work directory.
  */
 export function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
@@ -22,7 +22,7 @@ export function GET(request: NextRequest) {
   }
 
   try {
-    // Orchestrator writes state.json to $SYMPHONY_WORKDIR (.claude/work)
+    // Orchestrator writes state.json to $CLOSEDLOOP_WORKDIR (.claude/work)
     const stateFile = join(workDir, ".claude", "work", "state.json");
 
     // Check if state file exists

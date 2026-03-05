@@ -137,7 +137,8 @@ function checkSymphonyPlugin(): CheckResult {
     required: true,
     passed: false,
     error: "Not found",
-    remediation: "Install the closedloop/experimental plugin in Claude Code",
+    remediation:
+      "Install the closedloop-ai/claude-plugins plugin in Claude Code",
   };
 }
 

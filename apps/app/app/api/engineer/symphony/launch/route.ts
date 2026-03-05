@@ -421,7 +421,7 @@ export async function POST(request: NextRequest) {
     );
   } catch (err) {
     return NextResponse.json(
-      { error: `Failed to launch Symphony: ${getErrorMessage(err)}` },
+      { error: `Failed to launch ClosedLoop: ${getErrorMessage(err)}` },
       { status: 500 }
     );
   }
@@ -444,7 +444,7 @@ function launchSymphony(
       {
         error: "run-loop.sh not found",
         detail:
-          "No closedloop/experimental plugin found in ~/.claude/plugins/cache/. Make sure the plugin is installed.",
+          "No closedloop-ai/code plugin found in ~/.claude/plugins/cache/. Make sure the plugin is installed.",
       },
       { status: 404 }
     );
@@ -462,7 +462,7 @@ function launchSymphony(
 
   // Create log file for script stdout/stderr (echo statements, progress messages)
   // JSON output from claude CLI is written separately to claude-output.jsonl by run-loop.sh
-  const logFile = join(claudeWorkDir, "symphony-launch.log");
+  const logFile = join(claudeWorkDir, "closedloop-launch.log");
   const logFd = openSync(logFile, "a");
 
   // Spawn the run-loop.sh process
@@ -474,7 +474,7 @@ function launchSymphony(
     cwd: workDir,
     env: {
       ...process.env,
-      SYMPHONY_WORKDIR: claudeWorkDir,
+      CLOSEDLOOP_WORKDIR: claudeWorkDir,
       // Ensure PATH includes common tool locations
       PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
     },
@@ -495,7 +495,7 @@ function launchSymphony(
     workDir,
     pid: child.pid,
     logFile,
-    message: "Symphony loop launched successfully",
+    message: "ClosedLoop loop launched successfully",
     baseBranch,
     parentTicketId: parentTicketId ?? undefined,
   });

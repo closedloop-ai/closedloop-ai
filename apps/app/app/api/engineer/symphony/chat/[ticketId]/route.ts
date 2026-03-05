@@ -256,7 +256,7 @@ function buildContextPrompt(
     );
   } else {
     parts.push(
-      "You are assisting with a Symphony planning session.",
+      "You are assisting with a ClosedLoop planning session.",
       `\nWork directory: ${paths.claudeWorkDir}`,
       `Worktree directory: ${paths.worktreeDir}`
     );
@@ -535,7 +535,7 @@ export async function POST(
           cwd: paths.worktreeDir,
           env: {
             ...process.env,
-            SYMPHONY_WORKDIR: paths.claudeWorkDir,
+            CLOSEDLOOP_WORKDIR: paths.claudeWorkDir,
             PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
           },
           stdio: ["pipe", "pipe", "pipe"],

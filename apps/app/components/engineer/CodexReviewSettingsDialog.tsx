@@ -202,8 +202,8 @@ export function CodexReviewSettingsDialog({
               </Select>
               {provider === "claude" && (
                 <p className="text-muted-foreground text-xs">
-                  With /experimental:code-review, this model runs the
-                  orchestrator only — review agents use their own routing.
+                  With /code-review:review, this model runs the orchestrator
+                  only — review agents use their own routing.
                 </p>
               )}
             </div>

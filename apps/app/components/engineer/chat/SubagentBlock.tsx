@@ -14,7 +14,7 @@ import type { ContentBlock } from "./types";
 
 export type SubagentBlockProps = {
   description: string;
-  /** e.g. "experimental:implementation-subagent" */
+  /** e.g. "code:implementation-subagent" */
   agentType?: string;
   content: ContentBlock[];
   searchQuery?: string;

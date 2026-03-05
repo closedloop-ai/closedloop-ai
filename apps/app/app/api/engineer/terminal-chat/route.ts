@@ -8,6 +8,7 @@ import {
   getLearningAttributionInstruction,
   getOrgPatternsContext,
 } from "@/lib/engineer/learnings";
+import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import { expandHome, loadReposConfig } from "@/lib/engineer/repos";
 import {
   type ContentBlock,
@@ -36,6 +37,15 @@ type TerminalChatHistory = {
 const HISTORY_PATH = join(
   homedir(),
   ".claude",
+  ".closedloop",
+  "chats",
+  "_terminal",
+  "chat-history.json"
+);
+
+const LEGACY_HISTORY_PATH = join(
+  homedir(),
+  ".claude",
   ".symphony",
   "chats",
   "_terminal",
@@ -43,6 +53,7 @@ const HISTORY_PATH = join(
 );
 
 function loadChatHistory(): TerminalChatHistory {
+  migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }

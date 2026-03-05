@@ -49,7 +49,7 @@ async function readProcessPid(worktreeDir: string): Promise<number | null> {
 async function detectCompletionFromLogs(
   worktreeDir: string
 ): Promise<{ completed: boolean; awaitingUser: boolean; timestamp?: string }> {
-  const logPath = join(worktreeDir, ".claude", "work", "symphony-launch.log");
+  const logPath = join(worktreeDir, ".claude", "work", "closedloop-launch.log");
 
   if (!existsSync(logPath)) {
     return { completed: false, awaitingUser: false };
@@ -314,7 +314,7 @@ export async function GET(
         stateExists: false,
         phase: "Initializing",
         status: "STARTING",
-        message: "Symphony is starting up...",
+        message: "ClosedLoop is starting up...",
       });
     }
 

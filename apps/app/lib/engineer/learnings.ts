@@ -49,19 +49,19 @@ export function getOrgPatternsContext(): string {
  * Agent attribution mapping from active tab or state phase.
  */
 const TAB_AGENT_MAP: Record<string, string[]> = {
-  plan: ["experimental:plan-writer"],
-  changes: ["experimental:implementation-subagent"],
-  comments: ["symphony-core:code-reviewer"],
+  plan: ["code:plan-writer"],
+  changes: ["code:implementation-subagent"],
+  comments: ["code:code-reviewer"],
 };
 
 const PHASE_AGENT_MAP: Record<string, string[]> = {
-  "1": ["experimental:plan-writer"],
-  "1.1": ["experimental:plan-writer"],
-  "1.2": ["experimental:plan-writer"],
-  "1.2a": ["experimental:plan-writer"],
-  "3": ["experimental:implementation-subagent"],
+  "1": ["code:plan-writer"],
+  "1.1": ["code:plan-writer"],
+  "1.2": ["code:plan-writer"],
+  "1.2a": ["code:plan-writer"],
+  "3": ["code:implementation-subagent"],
   "4": ["code-simplifier:code-simplifier"],
-  "5": ["experimental:build-validator"],
+  "5": ["code:build-validator"],
 };
 
 function resolveAgentAttribution(activeTab?: string, phase?: string): string {
@@ -121,9 +121,9 @@ export function getLearningCaptureInstruction(
     "```",
     "",
     "Agent attribution guidance:",
-    '- Plan/PRD issues → applies_to: ["experimental:plan-writer"]',
-    '- Code/implementation issues → applies_to: ["experimental:implementation-subagent"]',
-    '- Code review issues → applies_to: ["symphony-core:code-reviewer"]',
+    '- Plan/PRD issues → applies_to: ["code:plan-writer"]',
+    '- Code/implementation issues → applies_to: ["code:implementation-subagent"]',
+    '- Code review issues → applies_to: ["code:code-reviewer"]',
     "- File context: plan.json/plan.md → plan-writer, test files → test-engineer, source code → implementation-subagent",
     "",
     "Only capture genuine learnings — not every interaction needs one.",
@@ -205,11 +205,11 @@ Your task:
    These cross-model corrections are high-confidence learnings.
 3. For each genuine learning, determine the responsible agent:
    - Active tab hint: ${activeTab || "none"} → default agent: ${defaultAgent}
-   - If the conversation is about plan issues → applies_to: ["experimental:plan-writer"]
-   - If about code/implementation → applies_to: ["experimental:implementation-subagent"]
-   - If about code review → applies_to: ["symphony-core:code-reviewer"]
-   - If about plan.json or plan.md files → applies_to: ["experimental:plan-writer"]
-   - If about test files → applies_to: ["experimental:build-validator"]
+   - If the conversation is about plan issues → applies_to: ["code:plan-writer"]
+   - If about code/implementation → applies_to: ["code:implementation-subagent"]
+   - If about code review → applies_to: ["code:code-reviewer"]
+   - If about plan.json or plan.md files → applies_to: ["code:plan-writer"]
+   - If about test files → applies_to: ["code:build-validator"]
    - Otherwise → applies_to: ["*"]
 4. Write the learnings JSON file to: ${join(pendingDir, outputFile)}
 5. After writing, read the file back to verify it was written correctly
@@ -252,7 +252,7 @@ Be selective — only capture things that would help agents do better in the fut
         cwd: worktreeDir,
         env: {
           ...process.env,
-          SYMPHONY_WORKDIR: symphonyWorkDir,
+          CLOSEDLOOP_WORKDIR: symphonyWorkDir,
           PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin`,
         },
         stdio: ["pipe", "ignore", "ignore"],

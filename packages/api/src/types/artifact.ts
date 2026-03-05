@@ -226,7 +226,7 @@ export function isActiveGenerationStatus(
   );
 }
 
-// Plan JSON types for experimental plugin artifacts
+// Plan JSON types for code plugin artifacts
 export type PlanAcceptanceCriterion = {
   id: string;
   criterion: string;

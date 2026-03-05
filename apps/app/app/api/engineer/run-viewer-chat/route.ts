@@ -13,6 +13,7 @@ import {
   READONLY_CODEBASE_TOOLS,
   WEB_ONLY_TOOLS,
 } from "@/lib/engineer/allowed-tools";
+import { migrateLegacyChatHistory } from "@/lib/engineer/migrate-chat-history";
 import {
   type ContentBlock,
   createStreamState,
@@ -36,6 +37,15 @@ type ChatHistory = {
 const HISTORY_PATH = join(
   homedir(),
   ".claude",
+  ".closedloop",
+  "chats",
+  "_run-viewer",
+  "chat-history.json"
+);
+
+const LEGACY_HISTORY_PATH = join(
+  homedir(),
+  ".claude",
   ".symphony",
   "chats",
   "_run-viewer",
@@ -43,6 +53,7 @@ const HISTORY_PATH = join(
 );
 
 function loadChatHistory(): ChatHistory {
+  migrateLegacyChatHistory(LEGACY_HISTORY_PATH, HISTORY_PATH);
   if (!existsSync(HISTORY_PATH)) {
     return { messages: [] };
   }
@@ -114,7 +125,7 @@ function buildSystemPrompt(
   const parts: string[] = [];
 
   parts.push(
-    "You are analyzing artifacts from a Symphony AI planning run.",
+    "You are analyzing artifacts from a ClosedLoop AI planning run.",
     "The user is viewing files from a zip archive containing plans, judge scores, logs, and conversation traces.",
     "Help them understand the run results.",
     "",
