@@ -15,7 +15,9 @@ import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const CODEX_MODEL = "gpt-5.3-codex";
+const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
+const MODEL_ERROR_REGEX =
+  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
 
 type ChatHistoryMessage = {
   role: string;
@@ -39,6 +41,7 @@ type ChatRequest = {
   activeTab?: string;
   contextRepoPaths?: string[];
   commentContext?: CommentContext;
+  model?: string;
 };
 
 type CodexChatState = {
@@ -479,7 +482,10 @@ export async function POST(
     activeTab,
     contextRepoPaths,
     commentContext,
+    model: requestedModel,
   } = body;
+
+  const codexModel = requestedModel || DEFAULT_CODEX_MODEL;
 
   const repoPath = repoParam || bodyRepoPath;
   if (!repoPath) {
@@ -574,7 +580,7 @@ export async function POST(
           "--full-auto",
           "--json",
           "-m",
-          CODEX_MODEL,
+          codexModel,
           "-c",
           "model_reasoning_effort=high",
         ];
@@ -618,28 +624,55 @@ export async function POST(
       }
 
       // --- New session (or retry after stale resume) ---
-      const newArgs = [
+      const buildNewArgs = (model: string) => [
         "exec",
         "--full-auto",
         "--json",
         "-m",
-        CODEX_MODEL,
+        model,
         "-c",
         "model_reasoning_effort=high",
         fullPrompt,
       ];
 
       console.log(
-        `[codex-chat] Starting new session for ${ticketId}, prompt length: ${fullPrompt.length}`
+        `[codex-chat] Starting new session for ${ticketId}, model: ${codexModel}, prompt length: ${fullPrompt.length}`
       );
 
-      const result = await runCodex(
-        newArgs,
+      let result = await runCodex(
+        buildNewArgs(codexModel),
         worktreeDir,
         chatState,
         paths.chatStatePath,
         enqueue
       );
+
+      // If the requested model isn't available, fall back to the default
+      if (
+        result.exitCode !== 0 &&
+        !result.accumulated.trim() &&
+        codexModel !== DEFAULT_CODEX_MODEL &&
+        MODEL_ERROR_REGEX.test(result.stderrText)
+      ) {
+        console.log(
+          `[codex-chat] Model ${codexModel} unavailable, falling back to ${DEFAULT_CODEX_MODEL}`
+        );
+        enqueue(
+          JSON.stringify({
+            type: "status",
+            status: "model_fallback",
+            requestedModel: codexModel,
+            fallbackModel: DEFAULT_CODEX_MODEL,
+          })
+        );
+        result = await runCodex(
+          buildNewArgs(DEFAULT_CODEX_MODEL),
+          worktreeDir,
+          chatState,
+          paths.chatStatePath,
+          enqueue
+        );
+      }
 
       chatState.messageCount += 1;
       saveChatState(paths.chatStatePath, chatState);

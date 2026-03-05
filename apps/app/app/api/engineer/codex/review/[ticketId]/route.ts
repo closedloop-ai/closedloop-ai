@@ -33,6 +33,9 @@ export const maxDuration = 300; // 5 minutes max for long reviews
 const PR_PREFIX_REGEX = /^pr-/;
 const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
 const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
+const MODEL_ERROR_REGEX =
+  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
+const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 
 type ReviewRequest = {
   instructions?: string;
@@ -194,9 +197,11 @@ function setupProcessLifecycle(
   worktreeDir: string,
   initialState: ReviewState,
   pidPath: string,
-  sessionIdHolder: { value: string | null }
+  sessionIdHolder: { value: string | null },
+  onModelError?: () => void
 ) {
   const provider = initialState.provider;
+  let stderrText = "";
 
   if (provider === "claude") {
     // For Claude, extract text from stream-json events before writing to log.
@@ -251,13 +256,25 @@ function setupProcessLifecycle(
   }
 
   childProcess.stderr?.on("data", async (data: Buffer) => {
-    await appendReviewLog(worktreeDir, provider, data.toString());
+    const text = data.toString();
+    stderrText += text;
+    await appendReviewLog(worktreeDir, provider, text);
   });
 
   childProcess.on("close", async (code) => {
     console.log(
       `[codex-review] Process closed with code ${code} (provider: ${provider})`
     );
+
+    // Model unavailable: re-spawn with default model instead of writing failure
+    if (code !== 0 && onModelError && MODEL_ERROR_REGEX.test(stderrText)) {
+      console.log(
+        `[codex-review] Model error detected, triggering fallback to ${DEFAULT_CODEX_MODEL}`
+      );
+      onModelError();
+      return;
+    }
+
     const finalState: ReviewState = {
       ...initialState,
       status: code === 0 ? "completed" : "failed",
@@ -764,13 +781,58 @@ export async function POST(
   // Universal: Claude extracts from stream-json events, Codex parses from startup banner.
   const sessionIdHolder: { value: string | null } = { value: null };
 
+  // Model fallback: if the requested model is unavailable, re-spawn with the default.
+  // Only applies to Codex reviews with a non-default model.
+  const modelFallbackHandler =
+    provider === "codex" && model !== DEFAULT_CODEX_MODEL
+      ? () => {
+          console.log(
+            `[codex-review] Re-spawning review with fallback model ${DEFAULT_CODEX_MODEL}`
+          );
+          clearReviewLog(worktreeDir, provider).then(() => {
+            const fallbackProcess = spawnCodexReview(
+              reviewCwd,
+              DEFAULT_CODEX_MODEL,
+              reasoningEffort,
+              effectiveReviewMode,
+              baseBranch,
+              instructions
+            );
+            const fallbackState: ReviewState = {
+              ...initialState,
+              pid: fallbackProcess.pid,
+              config: { ...initialState.config, model: DEFAULT_CODEX_MODEL },
+            };
+            writeReviewState(worktreeDir, provider, fallbackState);
+            if (fallbackProcess.pid) {
+              writeFile(pidPath, String(fallbackProcess.pid));
+            }
+            const fallbackSessionId: { value: string | null } = { value: null };
+            // No further model fallback — pass undefined to prevent infinite retry
+            setupProcessLifecycle(
+              fallbackProcess,
+              worktreeDir,
+              fallbackState,
+              pidPath,
+              fallbackSessionId
+            );
+            appendReviewLog(
+              worktreeDir,
+              provider,
+              `\n[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
+            );
+          });
+        }
+      : undefined;
+
   // Set up lifecycle handlers (log capture, state updates on close/error)
   setupProcessLifecycle(
     childProcess,
     worktreeDir,
     initialState,
     pidPath,
-    sessionIdHolder
+    sessionIdHolder,
+    modelFallbackHandler
   );
 
   // Create the appropriate streaming response

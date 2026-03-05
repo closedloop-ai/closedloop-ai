@@ -10,6 +10,9 @@ export const maxDuration = 300;
 
 const STALE_SESSION_REGEX =
   /state db missing|rollout.*missing|thread.*not found/i;
+const MODEL_ERROR_REGEX =
+  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
+const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 
 type DebateRequest = {
   claudeArgument: string;
@@ -275,6 +278,7 @@ export async function POST(
         let accumulated = "";
         let stdoutBuffer = "";
         let staleSession = false;
+        let modelError = false;
 
         codex.stdout?.on("data", (data: Buffer) => {
           stdoutBuffer += data.toString();
@@ -308,6 +312,13 @@ export async function POST(
               return;
             }
           }
+          // Detect model availability errors
+          if (MODEL_ERROR_REGEX.test(text)) {
+            modelError = true;
+            if (canRetry) {
+              return;
+            }
+          }
           enqueue(JSON.stringify({ type: "error", error: text }));
         });
 
@@ -329,6 +340,48 @@ export async function POST(
             debateState.rounds = 0;
             saveDebateState(worktreeDir, debateState);
             runCodex(freshArgs, false);
+            return;
+          }
+
+          // Model unavailable: retry with default model
+          if (
+            modelError &&
+            canRetry &&
+            code !== 0 &&
+            model !== DEFAULT_CODEX_MODEL
+          ) {
+            console.log(
+              `[codex-argue] Model ${model} unavailable, retrying with ${DEFAULT_CODEX_MODEL}`
+            );
+            enqueue(
+              JSON.stringify({
+                type: "status",
+                status: "model_fallback",
+                requestedModel: model,
+                fallbackModel: DEFAULT_CODEX_MODEL,
+              })
+            );
+            const fallbackPrompt = buildCodexPrompt(
+              findingSummary,
+              claudeArgument,
+              debateHistory || [],
+              DEFAULT_CODEX_MODEL
+            );
+            const fallbackArgs = [
+              "exec",
+              "--full-auto",
+              "--json",
+              "-m",
+              DEFAULT_CODEX_MODEL,
+              fallbackPrompt,
+            ];
+            if (reasoningEffort) {
+              fallbackArgs.push(
+                "-c",
+                `model_reasoning_effort=${reasoningEffort}`
+              );
+            }
+            runCodex(fallbackArgs, false);
             return;
           }
 
