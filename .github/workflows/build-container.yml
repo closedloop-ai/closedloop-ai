@@ -36,6 +36,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Generate plugin repo token
+        id: plugin-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PLUGIN_APP_ID }}
+          private-key: ${{ secrets.PLUGIN_APP_PRIVATE_KEY }}
+          owner: closedloop-ai
+          repositories: claude-plugins
+
       - name: Configure AWS Credentials (${{ matrix.environment }})
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -58,7 +67,7 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           build-args: |
-            GITHUB_TOKEN=${{ secrets.PLUGIN_REPO_TOKEN }}
+            GITHUB_TOKEN=${{ steps.plugin-token.outputs.token }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
