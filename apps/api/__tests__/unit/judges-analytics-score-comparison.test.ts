@@ -4,6 +4,7 @@
  * Tests concurrence default (no human ratings → avgUserRating = judgeScore, delta = 0),
  * average computation, delta, sort order, coverage, and pagination.
  */
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
@@ -34,7 +35,7 @@ function makeJudgeScoreRow(
       artifactId: id,
       artifact: {
         id,
-        type: "IMPLEMENTATION_PLAN",
+        type: ArtifactType.ImplementationPlan,
         title: `Artifact ${id}`,
         slug: id,
       },
@@ -269,7 +270,12 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
             createdAt: evaluatedAt,
             evaluation: {
               artifactId: "a1",
-              artifact: { id: "a1", title: "A1", slug: "a1" },
+              artifact: {
+                id: "a1",
+                type: ArtifactType.ImplementationPlan,
+                title: "A1",
+                slug: "a1",
+              },
             },
             judgeHumanScores: [],
           },
@@ -286,7 +292,11 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
       20
     );
 
-    expect(result?.rows[0].evaluatedAt).toBe("2026-03-01T12:00:00.000Z");
+    expect(result?.rows[0]).toMatchObject({
+      artifactId: "a1",
+      artifactType: ArtifactType.ImplementationPlan,
+      evaluatedAt: "2026-03-01T12:00:00.000Z",
+    });
   });
 
   it("filters judge scores by promptId (relational)", async () => {

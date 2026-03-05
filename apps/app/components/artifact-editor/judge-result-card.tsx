@@ -72,6 +72,9 @@ export function JudgeResultCard({ item, artifactId }: JudgeResultCardProps) {
     if (!isEditable) {
       return;
     }
+    if (submitRating.isPending) {
+      return;
+    }
 
     const parsed = Number.parseFloat(inputValue);
     if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
