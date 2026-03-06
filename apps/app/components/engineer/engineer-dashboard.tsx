@@ -179,9 +179,16 @@ export function EngineerDashboard() {
 
   const handleProcessPending = useCallback(async () => {
     try {
-      await fetch("/api/engineer/symphony/process-all-learnings", {
+      const res = await fetch("/api/engineer/symphony/process-all-learnings", {
         method: "POST",
       });
+      if (!res.ok) {
+        return;
+      }
+      const data = await res.json();
+      if (data.status !== "processing") {
+        return;
+      }
       setProcessingLearnings({ ticketId: "__batch__", repoPath: "" });
       terminalBus.send("processing all learnings...", {
         persistId: "learnings",
