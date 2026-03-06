@@ -4,7 +4,7 @@ import {
   spawn,
   spawnSync,
 } from "node:child_process";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   mkdir,
@@ -20,6 +20,10 @@ import {
   extractClaudeSessionId,
   extractClaudeText,
 } from "@/lib/engineer/claude-stream-utils";
+import {
+  DEFAULT_CODEX_MODEL,
+  MODEL_ERROR_REGEX,
+} from "@/lib/engineer/codex-models";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -194,9 +198,11 @@ function setupProcessLifecycle(
   worktreeDir: string,
   initialState: ReviewState,
   pidPath: string,
-  sessionIdHolder: { value: string | null }
+  sessionIdHolder: { value: string | null },
+  onModelError?: () => void
 ) {
   const provider = initialState.provider;
+  let stderrText = "";
 
   if (provider === "claude") {
     // For Claude, extract text from stream-json events before writing to log.
@@ -251,13 +257,25 @@ function setupProcessLifecycle(
   }
 
   childProcess.stderr?.on("data", async (data: Buffer) => {
-    await appendReviewLog(worktreeDir, provider, data.toString());
+    const text = data.toString();
+    stderrText += text;
+    await appendReviewLog(worktreeDir, provider, text);
   });
 
   childProcess.on("close", async (code) => {
     console.log(
       `[codex-review] Process closed with code ${code} (provider: ${provider})`
     );
+
+    // Model unavailable: re-spawn with default model instead of writing failure
+    if (code !== 0 && onModelError && MODEL_ERROR_REGEX.test(stderrText)) {
+      console.log(
+        `[codex-review] Model error detected, triggering fallback to ${DEFAULT_CODEX_MODEL}`
+      );
+      onModelError();
+      return;
+    }
+
     const finalState: ReviewState = {
       ...initialState,
       status: code === 0 ? "completed" : "failed",
@@ -514,7 +532,7 @@ function createClaudeStream(
 }
 
 /**
- * Try spawning Claude with /code-review:review skill first.
+ * Try spawning Claude with /code-review:start skill first.
  * If the process exits without producing real model output (only system/init/result
  * events), fall back to /review <prNum>.
  *
@@ -530,9 +548,9 @@ async function resolveClaudeReviewProcess(
   provider: string
 ): Promise<{ process: ChildProcess; command: string }> {
   const first = spawnClaudeReview(cwd, model);
-  first.stdin?.write("/code-review:review");
+  first.stdin?.write("/code-review:start");
   first.stdin?.end();
-  console.log(`[codex-review] Trying /code-review:review (pid: ${first.pid})`);
+  console.log(`[codex-review] Trying /code-review:start (pid: ${first.pid})`);
 
   type ProbeResult = { type: "working" } | { type: "exited"; code: number };
 
@@ -593,16 +611,16 @@ async function resolveClaudeReviewProcess(
   });
 
   if (result.type === "working") {
-    console.log("[codex-review] /code-review:review is producing output");
+    console.log("[codex-review] /code-review:start is producing output");
     // Put consumed probe data back in reverse order so stream consumers see it
     for (const chunk of probeChunks.reverse()) {
       first.stdout?.unshift(chunk);
     }
-    return { process: first, command: "/code-review:review" };
+    return { process: first, command: "/code-review:start" };
   }
 
   console.log(
-    `[codex-review] /code-review:review exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
+    `[codex-review] /code-review:start exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
   );
   await clearReviewLog(stateDir, provider);
 
@@ -764,13 +782,69 @@ export async function POST(
   // Universal: Claude extracts from stream-json events, Codex parses from startup banner.
   const sessionIdHolder: { value: string | null } = { value: null };
 
+  // Model fallback: if the requested model is unavailable, re-spawn with the default.
+  // Only applies to Codex reviews with a non-default model.
+  //
+  // Uses synchronous writes (writeFileSync) so the status endpoint immediately
+  // sees "running" with the new PID — prevents the poller from catching a gap
+  // between the original process exiting and the fallback state being written.
+  const { statePath: reviewStatePath, logPath: reviewLogPath } = getReviewPaths(
+    worktreeDir,
+    provider
+  );
+  const modelFallbackHandler =
+    provider === "codex" && model !== DEFAULT_CODEX_MODEL
+      ? () => {
+          console.log(
+            `[codex-review] Re-spawning review with fallback model ${DEFAULT_CODEX_MODEL}`
+          );
+          // Synchronous writes to close the race window with the status poller
+          // and ensure the log is clean before the fallback process starts writing
+          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
+          writeFileSync(
+            reviewLogPath,
+            `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
+          );
+          const fallbackProcess = spawnCodexReview(
+            reviewCwd,
+            DEFAULT_CODEX_MODEL,
+            reasoningEffort,
+            effectiveReviewMode,
+            baseBranch,
+            instructions
+          );
+          const fallbackState: ReviewState = {
+            ...initialState,
+            pid: fallbackProcess.pid,
+            config: { ...initialState.config, model: DEFAULT_CODEX_MODEL },
+          };
+          writeFileSync(
+            reviewStatePath,
+            JSON.stringify(fallbackState, null, 2)
+          );
+          if (fallbackProcess.pid) {
+            writeFileSync(pidPath, String(fallbackProcess.pid));
+          }
+          const fallbackSessionId: { value: string | null } = { value: null };
+          // No further model fallback — pass undefined to prevent infinite retry
+          setupProcessLifecycle(
+            fallbackProcess,
+            worktreeDir,
+            fallbackState,
+            pidPath,
+            fallbackSessionId
+          );
+        }
+      : undefined;
+
   // Set up lifecycle handlers (log capture, state updates on close/error)
   setupProcessLifecycle(
     childProcess,
     worktreeDir,
     initialState,
     pidPath,
-    sessionIdHolder
+    sessionIdHolder,
+    modelFallbackHandler
   );
 
   // Create the appropriate streaming response

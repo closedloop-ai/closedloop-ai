@@ -46,6 +46,7 @@ import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
 import { LearningsUsedDialog } from "@/components/engineer/chat/LearningsUsedDialog";
 import { MessageContent } from "@/components/engineer/chat/MessageContent";
 import { SlashCommandDropdown } from "@/components/engineer/chat/SlashCommandDropdown";
+import { DEFAULT_CODEX_MODEL } from "@/components/engineer/codex-review/constants";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
 import { FileMentionAutocomplete } from "@/components/engineer/FileMentionAutocomplete";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
@@ -187,11 +188,11 @@ export function SymphonyChat({
     refetchOnWindowFocus: false,
   });
 
-  // Debate hook (Codex model defaults to gpt-5.3-codex)
+  // Debate hook (Codex model defaults to DEFAULT_CODEX_MODEL)
   const debate = useCodexDebate({
     ticketId,
     repoPath,
-    model: "gpt-5.3-codex",
+    model: DEFAULT_CODEX_MODEL,
     chatHistory: history,
     claudeStream: stream,
   });
@@ -580,6 +581,7 @@ export function SymphonyChat({
             chatHistory: recentHistory,
             activeTab,
             contextRepoPaths,
+            model: DEFAULT_CODEX_MODEL,
           }),
         });
       } catch (err) {
