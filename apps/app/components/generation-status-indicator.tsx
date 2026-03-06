@@ -4,6 +4,7 @@ import {
   type GenerationStatus,
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   CheckCircle,
   ExternalLinkIcon,
@@ -15,10 +16,12 @@ import { getStatusMessage } from "@/lib/generation-status-utils";
 
 type GenerationStatusIndicatorProps = {
   generationStatus?: GenerationStatus;
+  className?: string;
 };
 
 export function GenerationStatusIndicator({
   generationStatus,
+  className,
 }: Readonly<GenerationStatusIndicatorProps>) {
   if (!generationStatus || generationStatus.status === "NONE") {
     return null;
@@ -53,7 +56,11 @@ export function GenerationStatusIndicator({
     return (
       <Link
         aria-label={`${message} - View loop`}
-        className={`inline-flex items-center gap-1 text-sm hover:underline ${colorClass}`}
+        className={cn(
+          "inline-flex items-center gap-1 text-sm hover:underline",
+          colorClass,
+          className
+        )}
         href={`/loops/${generationStatus.loopId}`}
       >
         {icon}
@@ -67,7 +74,11 @@ export function GenerationStatusIndicator({
     return (
       <a
         aria-label={`${message} - View workflow`}
-        className={`inline-flex items-center gap-1 text-sm hover:underline ${colorClass}`}
+        className={cn(
+          "inline-flex items-center gap-1 text-sm hover:underline",
+          colorClass,
+          className
+        )}
         href={htmlUrl}
         rel="noopener noreferrer"
         target="_blank"
@@ -80,7 +91,13 @@ export function GenerationStatusIndicator({
   }
 
   return (
-    <span className={`inline-flex items-center gap-1 text-sm ${colorClass}`}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-sm",
+        colorClass,
+        className
+      )}
+    >
       {icon}
       <span>{message}</span>
     </span>
