@@ -532,7 +532,7 @@ function createClaudeStream(
 }
 
 /**
- * Try spawning Claude with /code-review:review skill first.
+ * Try spawning Claude with /code-review:start skill first.
  * If the process exits without producing real model output (only system/init/result
  * events), fall back to /review <prNum>.
  *
@@ -548,9 +548,9 @@ async function resolveClaudeReviewProcess(
   provider: string
 ): Promise<{ process: ChildProcess; command: string }> {
   const first = spawnClaudeReview(cwd, model);
-  first.stdin?.write("/code-review:review");
+  first.stdin?.write("/code-review:start");
   first.stdin?.end();
-  console.log(`[codex-review] Trying /code-review:review (pid: ${first.pid})`);
+  console.log(`[codex-review] Trying /code-review:start (pid: ${first.pid})`);
 
   type ProbeResult = { type: "working" } | { type: "exited"; code: number };
 
@@ -611,16 +611,16 @@ async function resolveClaudeReviewProcess(
   });
 
   if (result.type === "working") {
-    console.log("[codex-review] /code-review:review is producing output");
+    console.log("[codex-review] /code-review:start is producing output");
     // Put consumed probe data back in reverse order so stream consumers see it
     for (const chunk of probeChunks.reverse()) {
       first.stdout?.unshift(chunk);
     }
-    return { process: first, command: "/code-review:review" };
+    return { process: first, command: "/code-review:start" };
   }
 
   console.log(
-    `[codex-review] /code-review:review exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
+    `[codex-review] /code-review:start exited (code: ${result.code}) without producing review content, falling back to /review ${prNum}`
   );
   await clearReviewLog(stateDir, provider);
 

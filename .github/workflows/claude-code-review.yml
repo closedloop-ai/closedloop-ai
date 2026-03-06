@@ -102,7 +102,7 @@ jobs:
           # Allow bot actors like Dependabot to trigger Claude code review
           allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
 
-          prompt: "/code-review:review --github${{ github.event.pull_request.number && format(' {0}', github.event.pull_request.number) || '' }}"
+          prompt: "/code-review:start --github${{ github.event.pull_request.number && format(' {0}', github.event.pull_request.number) || '' }}"
 
           claude_args: |
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
