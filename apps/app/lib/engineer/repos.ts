@@ -499,9 +499,14 @@ export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings
   }
 
   const config = loadReposConfig();
-  const repoNames = new Set(
-    config.repos.map((r) => basename(expandHome(r.path)))
-  );
+  const repos = config.repos.map((r) => {
+    const expanded = expandHome(r.path);
+    return {
+      name: basename(expanded),
+      path: expanded,
+      parent: dirname(expanded),
+    };
+  });
 
   let entries: string[];
   try {
@@ -513,15 +518,21 @@ export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings
   const results: WorktreeWithPendingLearnings[] = [];
 
   for (const entry of entries) {
-    // Match worktree directories: {repoName}-{suffix}
-    const isWorktree = [...repoNames].some(
-      (name) => entry === name || entry.startsWith(`${name}-`)
-    );
-    if (!isWorktree) {
+    // Match worktree directories by name prefix, then validate git linkage
+    const entryPath = join(worktreeParentDir, entry);
+    const matchedRepo = repos.some((repo) => {
+      if (entry === repo.name) {
+        return repo.parent === worktreeParentDir;
+      }
+      return (
+        entry.startsWith(`${repo.name}-`) && isWorktreeOf(entryPath, repo.path)
+      );
+    });
+    if (!matchedRepo) {
       continue;
     }
 
-    const worktreeDir = join(worktreeParentDir, entry);
+    const worktreeDir = entryPath;
     const pendingDir = join(
       worktreeDir,
       ".claude",
