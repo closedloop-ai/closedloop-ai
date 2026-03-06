@@ -165,7 +165,7 @@ export function POST() {
   const perWorktreeCommands = worktrees
     .map((w, i) =>
       [
-        `echo "[batch] Processing ${w.worktreeDir}..."`,
+        `echo "[batch] Processing" ${JSON.stringify(w.worktreeDir)}`,
         `${JSON.stringify(scriptPath)} ${JSON.stringify(w.claudeWorkDir)} || true`,
         `printf '{"status":"processing","worktreeCount":${worktrees.length},"totalPending":${totalPending},"processedWorktrees":${i + 1},"startedAt":"%s"}' "${startedAt}" > ${statusPathEscaped}`,
       ].join(" && ")
