@@ -552,7 +552,7 @@ model Artifact {
   id              String         @id @default(uuid(7)) @db.Uuid
   organizationId  String         @map("organization_id") @db.Uuid
   workstreamId    String?        @map("workstream_id") @db.Uuid
-  projectId       String?        @map("project_id") @db.Uuid
+  projectId       String?        @map("project_id") @db.Uuid // template artifacts don't have a project
   type            ArtifactType   @map("type")
   title           String
   slug            String
@@ -766,7 +766,7 @@ model Issue {
   id             String        @id @default(uuid(7)) @db.Uuid
   organizationId String        @map("organization_id") @db.Uuid
   workstreamId   String?       @map("workstream_id") @db.Uuid
-  projectId      String?       @map("project_id") @db.Uuid
+  projectId      String        @map("project_id") @db.Uuid
   title          String
   slug           String
   description    String?       @db.Text
@@ -799,7 +799,7 @@ model ExternalLink {
   id             String           @id @default(uuid(7)) @db.Uuid
   organizationId String           @map("organization_id") @db.Uuid
   workstreamId   String?          @map("workstream_id") @db.Uuid
-  projectId      String?          @map("project_id") @db.Uuid
+  projectId      String           @map("project_id") @db.Uuid
   type           ExternalLinkType
   title          String
   externalUrl    String           @map("external_url")

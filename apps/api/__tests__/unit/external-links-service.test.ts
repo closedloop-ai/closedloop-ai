@@ -57,6 +57,7 @@ describe("externalLinksService", () => {
         label: "null",
         input: {
           type: "FIGMA_DESIGN" as const,
+          projectId: "01935b3e-0000-7000-8000-000000000001",
           title: "Design",
           externalUrl: "https://figma.com/file/abc",
           metadata: null,
@@ -66,6 +67,7 @@ describe("externalLinksService", () => {
         label: "undefined",
         input: {
           type: "FIGMA_DESIGN" as const,
+          projectId: "01935b3e-0000-7000-8000-000000000001",
           title: "Design",
           externalUrl: "https://figma.com/file/abc",
         },

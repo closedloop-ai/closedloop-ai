@@ -15,7 +15,7 @@ export type ExternalLink = {
   id: string;
   organizationId: string;
   workstreamId: string | null;
-  projectId: string | null;
+  projectId: string;
   type: ExternalLinkType;
   title: string;
   externalUrl: string;
@@ -32,7 +32,7 @@ export type FindExternalLinksOptions = {
 
 export type CreateExternalLinkInput = {
   workstreamId?: string;
-  projectId?: string;
+  projectId: string;
   type: ExternalLinkType;
   title: string;
   externalUrl: string;

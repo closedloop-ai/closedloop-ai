@@ -15,7 +15,7 @@ export type Issue = {
   id: string;
   organizationId: string;
   workstreamId: string | null;
-  projectId: string | null;
+  projectId: string;
   title: string;
   slug: string;
   description: string | null;
@@ -52,7 +52,7 @@ export type FindIssuesOptions = {
 
 export type CreateIssueInput = {
   workstreamId?: string;
-  projectId?: string;
+  projectId: string;
   title: string;
   description?: string;
   status?: IssueStatus;
@@ -67,5 +67,5 @@ export type UpdateIssueInput = {
   status?: IssueStatus;
   priority?: Priority;
   assigneeId?: string | null;
-  projectId?: string | null;
+  projectId?: string;
 };

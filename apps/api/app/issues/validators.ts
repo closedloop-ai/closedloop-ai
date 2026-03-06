@@ -5,19 +5,15 @@ import { z } from "zod";
 const issueStatusEnum = z.enum(IssueStatus);
 const priorityEnum = z.enum(Priority);
 
-export const createIssueValidator = z
-  .object({
-    workstreamId: z.uuidv7().optional(),
-    projectId: z.uuidv7().optional(),
-    title: z.string().min(1, "Title is required"),
-    description: z.string().optional(),
-    status: issueStatusEnum.optional(),
-    priority: priorityEnum.optional(),
-    assigneeId: z.uuidv7().optional(),
-  })
-  .refine((data) => data.workstreamId || data.projectId, {
-    message: "Either workstreamId or projectId is required",
-  });
+export const createIssueValidator = z.object({
+  workstreamId: z.uuidv7().optional(),
+  projectId: z.uuidv7(),
+  title: z.string().min(1, "Title is required"),
+  description: z.string().optional(),
+  status: issueStatusEnum.optional(),
+  priority: priorityEnum.optional(),
+  assigneeId: z.uuidv7().optional(),
+});
 
 export const updateIssueValidator = z.object({
   title: z.string().min(1).optional(),
@@ -25,7 +21,7 @@ export const updateIssueValidator = z.object({
   status: issueStatusEnum.optional(),
   priority: priorityEnum.optional(),
   assigneeId: z.uuidv7().nullable().optional(),
-  projectId: z.uuidv7().nullable().optional(),
+  projectId: z.uuidv7().optional(),
 });
 
 export const findIssuesQueryValidator = z.object({

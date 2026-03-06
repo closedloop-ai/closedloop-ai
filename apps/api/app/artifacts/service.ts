@@ -2175,7 +2175,7 @@ Please try again or contact support if the issue persists.`
           sourceId: prd.id,
           sourceType: "ARTIFACT",
           sourceVersion: prd.latestVersion,
-          projectId: prd.projectId ?? undefined,
+          projectId: prd.projectId!,
           workstreamId: prd.workstreamId ?? undefined,
           targetRepo: prd.targetRepo ?? undefined,
           targetBranch: prd.targetBranch ?? undefined,

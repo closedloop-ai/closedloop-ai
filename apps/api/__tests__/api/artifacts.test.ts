@@ -1,3 +1,4 @@
+import { ArtifactType } from "@repo/api/src/types/artifact";
 import { v7 as uuidv7 } from "uuid";
 import { vi } from "vitest";
 import { GET, POST } from "@/app/artifacts/route";
@@ -268,7 +269,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        type: ArtifactType.Prd,
         title: "Standalone PRD",
         content: "# Standalone",
       },
@@ -279,9 +280,6 @@ describe("POST /api/artifacts", () => {
     expect(response.status).toBe(400);
     const json = await response.json();
     expect(json.success).toBe(false);
-    expect(json.error).toContain(
-      "Either workstreamId or projectId is required (except for templates)"
-    );
   });
 
   it("returns 400 when service returns null", async () => {
@@ -290,7 +288,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        type: ArtifactType.Prd,
         title: "Test PRD",
         content: "# Test",
         projectId: uuidv7(),
@@ -313,7 +311,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        type: ArtifactType.Prd,
         title: "Test PRD",
         content: "# Test",
         projectId: uuidv7(),
@@ -341,7 +339,7 @@ describe("POST /api/artifacts", () => {
     const request = createMockRequest({
       method: "POST",
       body: {
-        type: "PRD",
+        type: ArtifactType.Prd,
         title: "Test PRD",
         content: "# Test",
         projectId,
@@ -356,7 +354,7 @@ describe("POST /api/artifacts", () => {
       "test-org-id",
       "user-123",
       expect.objectContaining({
-        type: "PRD",
+        type: ArtifactType.Prd,
         title: "Test PRD",
         content: "# Test",
         projectId,

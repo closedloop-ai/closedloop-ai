@@ -152,7 +152,7 @@ export async function handleExecutionSuccess(
       data: {
         organizationId: planArtifact.organizationId,
         workstreamId,
-        projectId: planArtifact.projectId,
+        projectId: planArtifact.projectId!,
         type: ExternalLinkType.PullRequest,
         title: prTitle,
         externalUrl: executionResult.pr_url,
@@ -191,7 +191,7 @@ export async function handleExecutionSuccess(
       data: {
         organizationId: planArtifact.organizationId,
         workstreamId,
-        projectId: planArtifact.projectId,
+        projectId: planArtifact.projectId!,
         type: ExternalLinkType.PreviewDeployment,
         title: `Preview: ${executionResult.branch_name}`,
         externalUrl: "",

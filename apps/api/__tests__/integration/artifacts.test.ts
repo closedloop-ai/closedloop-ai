@@ -40,12 +40,13 @@ describe.skipIf(!hasDatabase)("Artifacts Service Integration", () => {
     const testUserId = uuidv7();
 
     // Create artifact without projectId or workstreamId - should throw error
+    // Type assertion needed to test runtime validation of missing projectId
     await expect(
       artifactsService.create(testOrgId, testUserId, {
         type: "PRD",
         title: "Standalone Feature",
         content: "Feature details...",
-      })
+      } as Parameters<typeof artifactsService.create>[2])
     ).rejects.toThrow(
       "Artifacts (except templates) must be associated with a project or workstream"
     );

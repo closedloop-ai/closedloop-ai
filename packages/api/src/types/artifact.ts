@@ -126,7 +126,7 @@ export type FindArtifactsOptions = {
 
 export type CreateArtifactInput = {
   workstreamId?: string;
-  projectId?: string;
+  projectId: string;
   sourceId?: string;
   sourceType?: EntityType;
   sourceVersion?: number;
@@ -146,7 +146,7 @@ export type UpdateArtifactInput = {
   id: string;
   title?: string;
   fileName?: string;
-  projectId?: string | null;
+  projectId?: string;
   approverId?: string | null;
   status?: ArtifactStatus;
   targetRepo?: string | null;

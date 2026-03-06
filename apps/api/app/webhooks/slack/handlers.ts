@@ -121,12 +121,19 @@ export async function handleCreateIdea(
   if (!title) {
     return {
       response_type: "ephemeral",
-      text: "Please provide a title for the idea. Usage: `/symphony create-idea [projectId] <title>`",
+      text: "Please provide a title for the idea. Usage: `/symphony create-idea <projectId> <title>`",
     };
   }
 
-  // Step 4: If projectId provided, validate it belongs to the org
-  if (projectId) {
+  if (!projectId) {
+    return {
+      response_type: "ephemeral",
+      text: "A project ID is required. Usage: `/symphony create-idea <projectId> <title>`",
+    };
+  }
+
+  // Step 4: Validate projectId belongs to the org
+  {
     const project = await withDb((db) =>
       db.project.findFirst({
         where: { id: projectId, organizationId },
@@ -148,7 +155,7 @@ export async function handleCreateIdea(
       type: ArtifactType.Prd,
       title,
       content: "",
-      ...(projectId ? { projectId } : {}),
+      projectId,
     });
 
     if (!artifact) {

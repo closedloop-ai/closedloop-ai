@@ -153,7 +153,7 @@ type RawIssueWithContext = {
   id: string;
   organizationId: string;
   workstreamId: string | null;
-  projectId: string | null;
+  projectId: string;
   title: string;
   slug: string;
   description: string | null;

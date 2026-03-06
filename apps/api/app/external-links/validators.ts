@@ -6,7 +6,7 @@ const externalLinkTypeEnum = z.enum(EXTERNAL_LINK_TYPE_OPTIONS);
 
 export const createExternalLinkValidator = z.object({
   workstreamId: z.uuidv7().optional(),
-  projectId: z.uuidv7().optional(),
+  projectId: z.uuidv7(),
   type: externalLinkTypeEnum,
   title: z.string().min(1, "Title is required"),
   externalUrl: z.url(),

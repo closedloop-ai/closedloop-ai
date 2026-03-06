@@ -9,33 +9,25 @@ const entityTypeEnum = z.enum(EntityType);
 // Validate owner/repo format (e.g., "closedloop/astoria-service")
 const OWNER_REPO_REGEX = /^[^/]+\/[^/]+$/;
 
-export const createArtifactValidator = z
-  .object({
-    workstreamId: z.uuidv7().optional(),
-    projectId: z.uuidv7().optional(),
-    sourceId: z.uuidv7().optional(),
-    sourceType: entityTypeEnum.optional(),
-    sourceVersion: z.number().int().positive().optional(),
-    type: artifactTypeEnum,
-    title: z.string().min(1, "Title is required"),
-    fileName: z.string().optional(),
-    approverId: z.uuidv7().nullable().optional(),
-    status: artifactStatusEnum.optional(),
-    content: z.string(),
-    targetRepo: z
-      .string()
-      .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
-      .optional(),
-    targetBranch: z.string().optional(),
-    assigneeId: z.uuidv7().nullable().optional(),
-  })
-  .refine(
-    (data) => data.type === "TEMPLATE" || data.workstreamId || data.projectId,
-    {
-      message:
-        "Either workstreamId or projectId is required (except for templates)",
-    }
-  );
+export const createArtifactValidator = z.object({
+  workstreamId: z.uuidv7().optional(),
+  projectId: z.uuidv7(),
+  sourceId: z.uuidv7().optional(),
+  sourceType: entityTypeEnum.optional(),
+  sourceVersion: z.number().int().positive().optional(),
+  type: artifactTypeEnum,
+  title: z.string().min(1, "Title is required"),
+  fileName: z.string().optional(),
+  approverId: z.uuidv7().nullable().optional(),
+  status: artifactStatusEnum.optional(),
+  content: z.string(),
+  targetRepo: z
+    .string()
+    .regex(OWNER_REPO_REGEX, "Must be owner/repo format")
+    .optional(),
+  targetBranch: z.string().optional(),
+  assigneeId: z.uuidv7().nullable().optional(),
+});
 
 export const updateArtifactValidator = z.object({
   title: z.string().min(1).optional(),
@@ -48,7 +40,7 @@ export const updateArtifactValidator = z.object({
     .nullable()
     .optional(),
   targetBranch: z.string().nullable().optional(),
-  projectId: z.uuidv7().nullable().optional(),
+  projectId: z.uuidv7().optional(),
   assigneeId: z.uuidv7().nullable().optional(),
   sortOrder: z.number().nullable().optional(),
 });

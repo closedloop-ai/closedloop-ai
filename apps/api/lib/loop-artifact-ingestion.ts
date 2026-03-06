@@ -436,7 +436,7 @@ export async function ingestExecutionArtifacts(
       data: {
         organizationId: artifact.organizationId,
         workstreamId: loop.workstreamId!,
-        projectId: artifact.projectId,
+        projectId: artifact.projectId!,
         type: ExternalLinkType.PullRequest,
         title: prTitle,
         externalUrl: executionResult.pr_url,
@@ -474,7 +474,7 @@ export async function ingestExecutionArtifacts(
       data: {
         organizationId: artifact.organizationId,
         workstreamId: loop.workstreamId!,
-        projectId: artifact.projectId,
+        projectId: artifact.projectId!,
         type: ExternalLinkType.PreviewDeployment,
         title: `Preview: ${executionResult.branch_name}`,
         externalUrl: "",

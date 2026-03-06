@@ -138,6 +138,7 @@ describe("Artifact Mutation Hooks", () => {
         title: "New PRD",
         type: "PRD",
         content: "Content here",
+        projectId: "01935b3e-0000-7000-8000-000000000001",
       });
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -146,6 +147,7 @@ describe("Artifact Mutation Hooks", () => {
         title: "New PRD",
         type: "PRD",
         content: "Content here",
+        projectId: "01935b3e-0000-7000-8000-000000000001",
       });
       expect(result.current.data).toEqual(mockArtifact);
     });
@@ -162,6 +164,7 @@ describe("Artifact Mutation Hooks", () => {
         title: "New PRD",
         type: "PRD",
         content: "Content",
+        projectId: "01935b3e-0000-7000-8000-000000000001",
       });
 
       await waitFor(() => expect(result.current.isError).toBe(true));

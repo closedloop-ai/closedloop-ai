@@ -21,9 +21,10 @@ async function setupTestData() {
 describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
   it("creates and retrieves an external link", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
+      const { testOrgId, testProjectId } = await setupTestData();
 
       const link = await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PULL_REQUEST",
         title: "PR #42",
         externalUrl: "https://github.com/org/repo/pull/42",
@@ -57,6 +58,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
       );
 
       const link = await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PREVIEW_DEPLOYMENT",
         title: "Preview",
         externalUrl: "https://preview.vercel.app",
@@ -87,6 +89,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
       );
 
       await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PULL_REQUEST",
         title: "PR #1",
         externalUrl: "https://github.com/org/repo/pull/1",
@@ -94,6 +97,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
       });
 
       await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PREVIEW_DEPLOYMENT",
         title: "Preview",
         externalUrl: "https://preview.vercel.app",
@@ -116,15 +120,17 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
 
   it("finds links with org and type filters", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
+      const { testOrgId, testProjectId } = await setupTestData();
 
       await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PULL_REQUEST",
         title: "PR #1",
         externalUrl: "https://github.com/org/repo/pull/1",
       });
 
       await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "FIGMA_DESIGN",
         title: "Design File",
         externalUrl: "https://figma.com/file/abc",
@@ -146,9 +152,10 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
 
   it("updates external link", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
+      const { testOrgId, testProjectId } = await setupTestData();
 
       const link = await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PULL_REQUEST",
         title: "PR #42",
         externalUrl: "https://github.com/org/repo/pull/42",
@@ -168,9 +175,10 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
 
   it("deletes external link", async () => {
     await autoRollbackTransaction(async () => {
-      const testOrgId = await createTestOrganization();
+      const { testOrgId, testProjectId } = await setupTestData();
 
       const link = await externalLinksService.create(testOrgId, {
+        projectId: testProjectId,
         type: "PULL_REQUEST",
         title: "PR #42",
         externalUrl: "https://github.com/org/repo/pull/42",
@@ -190,6 +198,8 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
         name: "Org 1",
         slug: "org-1",
       });
+      const org1User = await createTestUser(org1Id);
+      const org1ProjectId = await createTestProject(org1Id, org1User.id);
       const org2Id = await createTestOrganization({
         clerkId: "org_2",
         name: "Org 2",
@@ -197,6 +207,7 @@ describe.skipIf(!hasDatabase)("External Links Service Integration", () => {
       });
 
       const link = await externalLinksService.create(org1Id, {
+        projectId: org1ProjectId,
         type: "PULL_REQUEST",
         title: "PR #42",
         externalUrl: "https://github.com/org/repo/pull/42",

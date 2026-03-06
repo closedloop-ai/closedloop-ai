@@ -24,8 +24,7 @@ export function buildCreateInput(
     approverId: selectedSource?.approver?.id,
     status: ArtifactStatus.Draft,
     content: formState.content.trim() || "",
-    projectId:
-      selectedSource?.projectId ?? (formState.selectedProjectId || undefined),
+    projectId: selectedSource?.projectId ?? formState.selectedProjectId,
     targetRepo: formState.targetRepo || undefined,
     targetBranch: formState.targetBranch || undefined,
   };
