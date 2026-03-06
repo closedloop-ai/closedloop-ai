@@ -296,3 +296,55 @@ function getEntryIconColor(
   }
   return "text-muted-foreground";
 }
+
+/** Shared mention autocomplete state shape. */
+export type MentionState = {
+  isOpen: boolean;
+  query: string;
+  startIndex: number;
+  selectedIndex: number;
+};
+
+/** Dispatch mention-autocomplete key events. Returns true if the event was consumed. */
+export function dispatchMentionKeyDown(
+  e: React.KeyboardEvent,
+  mentionState: { selectedIndex: number },
+  mentionFiles: string[],
+  setMentionState: React.Dispatch<React.SetStateAction<MentionState | null>>,
+  handleFileSelect: (file: string) => void
+): boolean {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    setMentionState(null);
+    return true;
+  }
+  if (e.key === "Tab" || e.key === "Enter") {
+    e.preventDefault();
+    const selectedFile = mentionFiles[mentionState.selectedIndex];
+    if (selectedFile) {
+      handleFileSelect(selectedFile);
+    }
+    return true;
+  }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    setMentionState((prev) =>
+      prev ? { ...prev, selectedIndex: prev.selectedIndex + 1 } : null
+    );
+    return true;
+  }
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    setMentionState((prev) =>
+      prev
+        ? { ...prev, selectedIndex: Math.max(0, prev.selectedIndex - 1) }
+        : null
+    );
+    return true;
+  }
+  if (e.key === " ") {
+    setMentionState(null);
+    return true;
+  }
+  return false;
+}

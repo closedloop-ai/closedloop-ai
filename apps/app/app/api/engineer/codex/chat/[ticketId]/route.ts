@@ -370,7 +370,17 @@ function buildCodexPrompt(
     "",
     '**MANDATORY:** Always include a "Send to Claude" action as the LAST action in every response:',
     '<action label="Send to Claude">__send_to_claude__</action>',
-    "Never omit this action."
+    "Never omit this action.",
+    "\n## Conferral with Claude",
+    "If a specific sub-question would benefit from Claude's perspective (e.g., verifying an approach, getting a second opinion on architecture, checking a nuanced language feature), you may confer by including this on its own line near the end of your response (before any action buttons):",
+    "",
+    "@claude [your specific question here]",
+    "",
+    "Rules:",
+    "- Give your own analysis first — never defer your entire answer",
+    "- Use sparingly — only when Claude adds distinct value",
+    "- One focused question per conferral",
+    "- Place on its own line near the end, before <suggested-actions>"
   );
 
   appendChatHistory(parts, chatHistory);

@@ -116,6 +116,8 @@ export type StreamEventHandlers = {
   onPid?: (pid: number) => void;
   onLearnings?: () => void;
   onUsage?: (contextPercent: number) => void;
+  /** Called for every raw parsed JSON event before dispatch. */
+  onEvent?: (event: Record<string, unknown>) => void;
 };
 
 /**
@@ -156,6 +158,12 @@ function dispatchStreamEvent(
   ) {
     handlers.onThinking(event.content);
   } else if (
+    event.type === "reasoning" &&
+    event.content &&
+    handlers.onThinking
+  ) {
+    handlers.onThinking(event.content);
+  } else if (
     event.type === "learnings" &&
     event.status === "triggered" &&
     handlers.onLearnings
@@ -183,11 +191,9 @@ export async function readChatStream(
 
   for await (const line of readNdjsonLines(reader)) {
     try {
-      accumulated = dispatchStreamEvent(
-        JSON.parse(line),
-        handlers,
-        accumulated
-      );
+      const parsed = JSON.parse(line);
+      handlers.onEvent?.(parsed);
+      accumulated = dispatchStreamEvent(parsed, handlers, accumulated);
     } catch {
       // Not JSON - ignore
     }
@@ -369,4 +375,92 @@ export function formatToolResultContent(content: unknown): string {
       .join("\n");
   }
   return JSON.stringify(content, null, 2);
+}
+
+/**
+ * Sentinel strings used as user message content to mark status transitions.
+ * These are never displayed as chat text — they render as StatusNote indicators.
+ */
+export const CHAT_SENTINEL = {
+  DEBATE_STARTED: "__debate_started__",
+  DEBATE_ENDED: "__debate_ended__",
+  FORWARDED_TO_CLAUDE: "__forwarded_to_claude__",
+  FORWARDED_TO_CODEX: "__forwarded_to_codex__",
+  CLAUDE_CONFERRED_TO_CODEX: "__claude_conferred_to_codex__",
+  CODEX_CONFERRED_TO_CLAUDE: "__codex_conferred_to_claude__",
+} as const;
+
+/**
+ * Detect an @codex or @claude conferral mention near the end of an LLM response.
+ * Only detects the *other* LLM (Claude → @codex, Codex → @claude).
+ *
+ * Returns the mention info with cleaned content, or null if no mention found.
+ */
+export function parseConferralMention(
+  content: string,
+  currentSender: "claude" | "codex"
+): { target: "claude" | "codex"; prompt: string; cleanContent: string } | null {
+  const targetTag = currentSender === "claude" ? "@codex" : "@claude";
+  const target: "claude" | "codex" =
+    currentSender === "claude" ? "codex" : "claude";
+
+  // Strip fenced code blocks before scanning to avoid false positives
+  const stripped = content.replaceAll(/```[\s\S]*?```/g, "");
+
+  // Only scan the last 500 chars (LLMs are instructed to put conferrals at end)
+  const tail = stripped.slice(-500);
+
+  // Line-start anchor: the @mention must start at the beginning of a line
+  const pattern = new RegExp(`(?:^|\\n)${targetTag}\\s+(.{5,})`, "i");
+  const match = pattern.exec(tail);
+  if (!match) {
+    return null;
+  }
+
+  const prompt = match[1].trim();
+
+  // Remove the @mention line from original content
+  const mentionLinePattern = new RegExp(
+    `\\n?${targetTag}\\s+${match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+    "i"
+  );
+  const cleanContent = content.replace(mentionLinePattern, "").trim();
+
+  return { target, prompt, cleanContent };
+}
+
+/**
+ * Strip all protocol metadata from assistant content.
+ * Removes suggested actions, context blocks, learnings, and conferral mentions.
+ */
+export function stripAssistantProtocol(content: string): string {
+  let cleaned = parseSuggestedActions(content).contentWithoutActions;
+  cleaned = stripContextBlocks(cleaned);
+  cleaned = stripLearningsUsed(cleaned);
+  // Reuse parseConferralMention detection for both directions
+  for (const sender of ["claude", "codex"] as const) {
+    const mention = parseConferralMention(cleaned, sender);
+    if (mention) {
+      cleaned = mention.cleanContent;
+    }
+  }
+  return cleaned.trim();
+}
+
+const SENTINEL_VALUES: Set<string> = new Set(Object.values(CHAT_SENTINEL));
+
+/**
+ * Sanitize persisted message arrays before sending as context to Claude/Codex.
+ * Drops sentinel-only user messages and strips protocol from assistant content.
+ */
+export function sanitizeHistoryForModel(
+  messages: { role: string; content: string; sender?: string }[]
+): { role: string; content: string; sender?: string }[] {
+  return messages
+    .filter((m) => !(m.role === "user" && SENTINEL_VALUES.has(m.content)))
+    .map((m) =>
+      m.role === "assistant"
+        ? { ...m, content: stripAssistantProtocol(m.content) }
+        : m
+    );
 }

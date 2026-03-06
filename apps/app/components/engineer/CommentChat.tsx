@@ -31,7 +31,10 @@ import {
 } from "@/components/engineer/chat";
 import { ChatBubble } from "@/components/engineer/chat/ChatBubble";
 import { LearningsUsedDialog } from "@/components/engineer/chat/LearningsUsedDialog";
-import { FileMentionAutocomplete } from "@/components/engineer/FileMentionAutocomplete";
+import {
+  dispatchMentionKeyDown,
+  FileMentionAutocomplete,
+} from "@/components/engineer/FileMentionAutocomplete";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import { useCodexAvailable } from "@/hooks/engineer/use-codex-available";
@@ -42,11 +45,18 @@ import {
 } from "@/hooks/engineer/use-slash-commands";
 import { useCommentChat } from "@/hooks/engineer/useCommentChat";
 import {
+  CHAT_SENTINEL,
+  parseConferralMention,
   parseLearningsUsed,
   parseSuggestedActions,
   type SuggestedAction,
-  stripContextBlocks,
+  sanitizeHistoryForModel,
+  stripAssistantProtocol,
 } from "@/lib/engineer/chat-utils";
+import {
+  createCodexStreamState,
+  readCodexStream,
+} from "@/lib/engineer/codex-stream";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import type { ChatMessage } from "@/lib/engineer/queries/symphony";
 import { getTextContent } from "@/lib/engineer/utils";
@@ -88,6 +98,9 @@ export function CommentChat({
   autoProvider = "claude",
   className,
 }: Readonly<CommentChatProps>) {
+  // Ref for debate mode check in onStreamComplete (debate defined after useCommentChat)
+  const debateModeRef = useRef(false);
+
   const chat = useCommentChat({
     commentId,
     ticketId,
@@ -100,6 +113,19 @@ export function CommentChat({
     autoStart: autoProvider === "codex" ? false : autoStart,
     onResolved,
     onChatCleared,
+    onStreamComplete: useCallback((accumulatedText: string) => {
+      if (debateModeRef.current) {
+        return;
+      }
+      const mention = parseConferralMention(accumulatedText, "claude");
+      if (mention) {
+        conferralTimerRef.current = setTimeout(
+          () =>
+            sendConferralToCodexRef.current(mention.prompt, accumulatedText),
+          0
+        );
+      }
+    }, []),
   });
 
   const queryClient = useQueryClient();
@@ -124,9 +150,25 @@ export function CommentChat({
     saveEndpoint: commentApiBase,
     invalidateKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
   });
+  debateModeRef.current = debate.debateMode;
 
   const hadChangesRef = useRef(false);
   const hasCodexAutoStartedRef = useRef(false);
+
+  // --- Conferral infrastructure ---
+  const MAX_CONFERRAL_DEPTH = 3;
+  const conferralDepthRef = useRef(0);
+  const conferralInProgressRef = useRef(false);
+  const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up conferral timer on unmount
+  useEffect(() => {
+    return () => {
+      if (conferralTimerRef.current) {
+        clearTimeout(conferralTimerRef.current);
+      }
+    };
+  }, []);
 
   // Latch: once we see changes, remember it for the rest of the session
   useEffect(() => {
@@ -208,7 +250,7 @@ export function CommentChat({
       toast("Already in debate mode");
       return;
     }
-    await saveStatusMessage("__debate_started__");
+    await saveStatusMessage(CHAT_SENTINEL.DEBATE_STARTED);
     await debate.startDebateMode();
   }, [codexData?.available, debate, saveStatusMessage]);
 
@@ -218,7 +260,7 @@ export function CommentChat({
       toast("Not in debate mode");
       return;
     }
-    await saveStatusMessage("__debate_ended__");
+    await saveStatusMessage(CHAT_SENTINEL.DEBATE_ENDED);
     debate.handleEndDebate();
     toast.success("Debate ended");
   }, [debate, saveStatusMessage]);
@@ -249,14 +291,14 @@ export function CommentChat({
 
       const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
-      // Build recent chat history for context
-      const recentHistory = (chat.history?.messages || [])
-        .slice(-10)
-        .map((m) => ({
+      // Build recent chat history for context (sanitize protocol metadata)
+      const recentHistory = sanitizeHistoryForModel(
+        (chat.history?.messages || []).slice(-10).map((m) => ({
           role: m.role,
           content: m.content,
           sender: m.sender,
-        }));
+        }))
+      );
 
       let response: Response;
       try {
@@ -298,27 +340,46 @@ export function CommentChat({
         return;
       }
 
-      const state: CodexStreamState = {
-        accumulated: "",
-        receivedAnyText: false,
-        reasoningBlocks: [],
-      };
-      const saveFinalMessage = async (msg: ChatMessage) => {
-        await fetch(commentApiBase, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: msg }),
-        });
-        await queryClient.invalidateQueries({
-          queryKey: queryKeys.commentChatHistory(ticketId, commentId, repoPath),
-        });
-      };
-      await readCodexStream(
-        reader,
-        state,
-        codexChatStream.setPendingUserMessage,
-        saveFinalMessage
-      );
+      const state = createCodexStreamState();
+      await readCodexStream(reader, state, {
+        setPending: codexChatStream.setPendingUserMessage,
+        saveFinalMessage: async (msg: ChatMessage) => {
+          await fetch(commentApiBase, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: msg }),
+          });
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.commentChatHistory(
+              ticketId,
+              commentId,
+              repoPath
+            ),
+          });
+        },
+        onError: (error) => {
+          console.error("[codex-chat] Server error:", error);
+          toast.error("Codex error", { description: error });
+        },
+        onEmptyResponse: (exitCode) => {
+          toast.error("Codex returned no response", {
+            description: `Exit code: ${exitCode ?? "unknown"}`,
+          });
+        },
+        onComplete: (finalContent) => {
+          if (debateModeRef.current) {
+            return;
+          }
+          const mention = parseConferralMention(finalContent, "codex");
+          if (mention) {
+            conferralTimerRef.current = setTimeout(
+              () =>
+                sendConferralToClaudeRef.current(mention.prompt, finalContent),
+              0
+            );
+          }
+        },
+      });
     },
     [
       ticketId,
@@ -331,6 +392,73 @@ export function CommentChat({
       comment,
     ]
   );
+
+  // Reset conferral state on fresh user interactions
+  const resetConferral = useCallback(() => {
+    conferralDepthRef.current = 0;
+    if (conferralTimerRef.current) {
+      clearTimeout(conferralTimerRef.current);
+      conferralTimerRef.current = null;
+    }
+  }, []);
+
+  // --- Conferral callbacks (use refs to avoid circular deps) ---
+  const sendConferralToCodexRef = useRef<
+    (prompt: string, context: string) => void
+  >(() => {});
+  const sendConferralToClaudeRef = useRef<
+    (prompt: string, context: string) => void
+  >(() => {});
+
+  const sendConferralToCodex = useCallback(
+    async (prompt: string, claudeContext: string) => {
+      if (
+        conferralDepthRef.current >= MAX_CONFERRAL_DEPTH ||
+        conferralInProgressRef.current ||
+        debate.debateMode
+      ) {
+        return;
+      }
+      conferralDepthRef.current += 1;
+      conferralInProgressRef.current = true;
+      try {
+        const wrappedPrompt = `Claude has asked for your input on the following:\n\n${prompt}\n\n<context source="claude-response">\n${claudeContext}\n</context>`;
+        await sendToCodex(
+          wrappedPrompt,
+          CHAT_SENTINEL.CLAUDE_CONFERRED_TO_CODEX
+        );
+      } finally {
+        conferralInProgressRef.current = false;
+      }
+    },
+    [debate.debateMode, sendToCodex]
+  );
+  sendConferralToCodexRef.current = sendConferralToCodex;
+
+  const sendConferralToClaude = useCallback(
+    async (prompt: string, codexContext: string) => {
+      if (
+        conferralDepthRef.current >= MAX_CONFERRAL_DEPTH ||
+        conferralInProgressRef.current ||
+        debate.debateMode
+      ) {
+        return;
+      }
+      conferralDepthRef.current += 1;
+      conferralInProgressRef.current = true;
+      try {
+        const wrappedPrompt = `Codex has asked for your input on the following:\n\n${prompt}\n\n<context source="codex-response">\n${codexContext}\n</context>`;
+        await chat.sendMessage(
+          wrappedPrompt,
+          CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE
+        );
+      } finally {
+        conferralInProgressRef.current = false;
+      }
+    },
+    [debate.debateMode, chat]
+  );
+  sendConferralToClaudeRef.current = sendConferralToClaude;
 
   // Auto-start Codex when autoProvider is "codex"
   useEffect(() => {
@@ -346,6 +474,7 @@ export function CommentChat({
       return;
     }
     hasCodexAutoStartedRef.current = true;
+    resetConferral();
     const prompt =
       "Investigate this PR comment and propose a fix. Show what you found before proposing changes.";
     sendToCodex(prompt, `@codex ${prompt}`);
@@ -363,13 +492,12 @@ export function CommentChat({
       if (chat.isStreaming || debateClaudeStream.isStreaming) {
         return;
       }
+      resetConferral();
       setIsForwarding(true);
 
-      const { contentWithoutActions } = parseSuggestedActions(
-        targetMsg.content
-      );
-      const claudePrompt = `Codex (OpenAI) provided the following feedback:\n\n${contentWithoutActions}\n\nPlease review and provide your perspective.`;
-      await chat.sendMessage(claudePrompt, "__forwarded_to_claude__");
+      const cleanedContent = stripAssistantProtocol(targetMsg.content);
+      const claudePrompt = `Codex (OpenAI) provided the following feedback:\n\n${cleanedContent}\n\nPlease review and provide your perspective.`;
+      await chat.sendMessage(claudePrompt, CHAT_SENTINEL.FORWARDED_TO_CLAUDE);
     },
     [chat, debateClaudeStream.isStreaming]
   );
@@ -384,6 +512,7 @@ export function CommentChat({
       if (isAnyStreaming) {
         return;
       }
+      resetConferral();
       setIsForwarding(true);
       if (!codexData?.available) {
         toast.error("Codex is not available", {
@@ -391,8 +520,7 @@ export function CommentChat({
         });
         return;
       }
-      const { contentWithoutActions } = parseSuggestedActions(msg.content);
-      const cleanContent = stripContextBlocks(contentWithoutActions);
+      const cleanContent = stripAssistantProtocol(msg.content);
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nPlease review and provide your perspective.`;
       // Scroll after the next render (query invalidation inside sendToCodex
       // adds the forwarded message, then React re-renders).
@@ -402,7 +530,7 @@ export function CommentChat({
         );
       // Fire once the PATCH + invalidation lands (before stream completes)
       setTimeout(scrollAfterRender, 300);
-      await sendToCodex(codexPrompt, "__forwarded_to_codex__");
+      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX);
     },
     [
       chat.messages,
@@ -442,6 +570,7 @@ export function CommentChat({
 
   // Intercept handleSend for @codex / @claude prefix and provider-aware routing
   const handleSend = useCallback(() => {
+    resetConferral();
     const trimmedInput = chat.input.trim();
 
     // Detect @codex prefix — explicit Codex routing
@@ -494,7 +623,14 @@ export function CommentChat({
     }
 
     chat.handleSend();
-  }, [chat, codexData?.available, debate, sendToCodex, autoProvider]);
+  }, [
+    chat,
+    codexData?.available,
+    debate,
+    sendToCodex,
+    autoProvider,
+    resetConferral,
+  ]);
 
   // Intercept key down to use our handleSend
   const handleKeyDown = useCallback(
@@ -822,130 +958,47 @@ type DebateHandle = ReturnType<typeof useCodexDebate>;
  * Status note rendered for forwarded/debate-start/debate-end indicators.
  */
 
-type CodexStreamState = {
-  accumulated: string;
-  receivedAnyText: boolean;
-  reasoningBlocks: ContentBlock[];
-};
-
-function makeStreamingCodexMessage(state: CodexStreamState): ChatMessage {
-  return {
-    id: "codex-chat-streaming",
-    role: "assistant",
-    content: state.accumulated,
-    timestamp: new Date().toISOString(),
-    sender: "codex",
-    blocks:
-      state.reasoningBlocks.length > 0 ? [...state.reasoningBlocks] : undefined,
-  };
-}
-
-async function processCodexStreamEvent(
-  event: Record<string, unknown>,
-  state: CodexStreamState,
-  setPending: (msg: ChatMessage | null) => void,
-  saveFinalMessage: (msg: ChatMessage) => Promise<void>
-): Promise<void> {
-  if (event.type === "reasoning" && event.content) {
-    state.reasoningBlocks.push({
-      type: "thinking",
-      id: `reasoning-${Date.now()}-${state.reasoningBlocks.length}`,
-      thinking: event.content as string,
-    });
-    setPending(makeStreamingCodexMessage(state));
-    return;
-  }
-  if (event.type === "text" && event.content) {
-    state.receivedAnyText = true;
-    state.accumulated += event.content as string;
-    setPending(makeStreamingCodexMessage(state));
-    return;
-  }
-  if (event.type === "error") {
-    console.error("[codex-chat] Server error:", event.error);
-    toast.error("Codex error", {
-      description: String(event.error).slice(0, 200),
-    });
-    return;
-  }
-  if (event.type !== "done") {
-    return;
-  }
-
-  const finalContent = (event.content as string) || state.accumulated;
-  setPending(null);
-  if (finalContent.trim()) {
-    await saveFinalMessage({
-      id: `codex-${Date.now()}`,
-      role: "assistant",
-      content: finalContent.trim(),
-      timestamp: new Date().toISOString(),
-      sender: "codex",
-      blocks:
-        state.reasoningBlocks.length > 0 ? state.reasoningBlocks : undefined,
-    });
-  } else if (!state.receivedAnyText) {
-    toast.error("Codex returned no response", {
-      description: `Exit code: ${(event.exitCode as number) ?? "unknown"}`,
-    });
-  }
-}
-
-async function readCodexStream(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  state: CodexStreamState,
-  setPending: (msg: ChatMessage | null) => void,
-  saveFinalMessage: (msg: ChatMessage) => Promise<void>
-): Promise<void> {
-  const decoder = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n").filter((l) => l.trim());
-    for (const line of lines) {
-      let event: Record<string, unknown>;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      await processCodexStreamEvent(event, state, setPending, saveFinalMessage);
-    }
-  }
-}
-
 function StatusNote({
   id,
   idx,
   text,
-  color = "muted-foreground/60",
-}: Readonly<{ id: string; idx: number; text: string; color?: string }>) {
+  className = "text-muted-foreground/60",
+}: Readonly<{ id: string; idx: number; text: string; className?: string }>) {
   return (
     <div
       className="fade-in flex animate-in justify-center py-1 duration-300"
       key={id}
       style={{ animationDelay: `${idx * 50}ms` }}
     >
-      <span className={`font-mono text-[11px] text-${color} italic`}>
+      <span className={cn("font-mono text-[11px] italic", className)}>
         {text}
       </span>
     </div>
   );
 }
 
-const STATUS_NOTES: Record<string, { text: string; color?: string }> = {
-  __forwarded_to_claude__: { text: "Forwarded Codex response to Claude" },
-  __forwarded_to_codex__: { text: "Forwarded Claude response to Codex" },
-  __debate_started__: {
-    text: "Debate mode started",
-    color: "amber-600/70 dark:text-amber-400/70",
+const STATUS_NOTES: Record<string, { text: string; className?: string }> = {
+  [CHAT_SENTINEL.FORWARDED_TO_CLAUDE]: {
+    text: "Forwarded Codex response to Claude",
   },
-  __debate_ended__: {
+  [CHAT_SENTINEL.FORWARDED_TO_CODEX]: {
+    text: "Forwarded Claude response to Codex",
+  },
+  [CHAT_SENTINEL.DEBATE_STARTED]: {
+    text: "Debate mode started",
+    className: "text-amber-600/70 dark:text-amber-400/70",
+  },
+  [CHAT_SENTINEL.DEBATE_ENDED]: {
     text: "Debate mode ended",
-    color: "amber-600/70 dark:text-amber-400/70",
+    className: "text-amber-600/70 dark:text-amber-400/70",
+  },
+  [CHAT_SENTINEL.CLAUDE_CONFERRED_TO_CODEX]: {
+    text: "Claude asked Codex for input",
+    className: "text-blue-600/70 dark:text-blue-400/70",
+  },
+  [CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE]: {
+    text: "Codex asked Claude for input",
+    className: "text-blue-600/70 dark:text-blue-400/70",
   },
 };
 
@@ -973,7 +1026,7 @@ function renderSenderBubble(
   ctx: MessageRenderContext
 ): React.ReactNode {
   const isCodex = sender === "codex";
-  const { contentWithoutActions } = parseSuggestedActions(msg.content);
+  const cleanedContent = stripAssistantProtocol(msg.content);
   const forwardHandler = isCodex
     ? ctx.onForwardCodexMessage
     : ctx.onForwardMessage;
@@ -987,7 +1040,7 @@ function renderSenderBubble(
       onAction={debateActions.length > 0 ? ctx.onAction : undefined}
       onCopy={async () => {
         try {
-          await navigator.clipboard.writeText(contentWithoutActions);
+          await navigator.clipboard.writeText(cleanedContent);
           toast.success("Copied to clipboard");
         } catch {
           toast.error("Failed to copy");
@@ -1001,7 +1054,7 @@ function renderSenderBubble(
       sender={sender}
       timestamp={msg.timestamp}
     >
-      <MessageContent blocks={msg.blocks} content={contentWithoutActions} />
+      <MessageContent blocks={msg.blocks} content={cleanedContent} />
     </ChatBubble>
   );
 }
@@ -1015,7 +1068,7 @@ function renderChatMessage(
   if (statusNote) {
     return (
       <StatusNote
-        color={statusNote.color}
+        className={statusNote.className}
         id={msg.id}
         idx={idx}
         key={msg.id}
@@ -1481,6 +1534,7 @@ function ChatInputArea({
     startIndex: number;
     selectedIndex: number;
   } | null>(null);
+  const [mentionFiles, setMentionFiles] = useState<string[]>([]);
 
   // Slash command autocomplete
   const slashHandler = useCallback(
@@ -1584,38 +1638,21 @@ function ChatInputArea({
         return;
       }
 
-      if (mentionState?.isOpen) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setMentionState(null);
-          return;
-        }
-        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-          // Let FileMentionAutocomplete handle the selection via selectedIndex
-          // But we need to prevent the default send on Enter
-          // The autocomplete doesn't have a ref-based API; we rely on selectedIndex state.
-          // For simplicity, just close mention on Enter and let parent handle it.
-        }
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setMentionState((prev) =>
-            prev ? { ...prev, selectedIndex: prev.selectedIndex + 1 } : null
-          );
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setMentionState((prev) =>
-            prev
-              ? { ...prev, selectedIndex: Math.max(0, prev.selectedIndex - 1) }
-              : null
-          );
-          return;
-        }
+      if (
+        mentionState?.isOpen &&
+        dispatchMentionKeyDown(
+          e,
+          mentionState,
+          mentionFiles,
+          setMentionState,
+          handleFileSelect
+        )
+      ) {
+        return;
       }
       onKeyDown(e);
     },
-    [mentionState, slash, onKeyDown]
+    [mentionState, mentionFiles, slash, onKeyDown, handleFileSelect]
   );
 
   // Whether to show the @codex, @claude, or /slash highlight overlay
@@ -1658,6 +1695,7 @@ function ChatInputArea({
               <FileMentionAutocomplete
                 isOpen={mentionState.isOpen}
                 onClose={closeMention}
+                onFilesChange={setMentionFiles}
                 onSelect={handleFileSelect}
                 onSelectedIndexChange={(idx) =>
                   setMentionState((prev) =>
@@ -1915,9 +1953,10 @@ const CommentMessageBubble = memo(
       isAssistantDone && hasCodeChangeContent(message.content);
 
     const handleCopy = useCallback(async () => {
-      const { contentWithoutActions } = parseSuggestedActions(message.content);
       try {
-        await navigator.clipboard.writeText(contentWithoutActions);
+        await navigator.clipboard.writeText(
+          stripAssistantProtocol(message.content)
+        );
         toast.success("Copied to clipboard");
       } catch {
         toast.error("Failed to copy");
@@ -2057,10 +2096,22 @@ function CommentAssistantContent({
     [content]
   );
 
-  // Parse learnings from content (clean content + extracted learnings)
+  // Strip conferral mentions (@codex/@claude) — not handled by MessageContent
+  const strippedContent = useMemo(() => {
+    let c = contentWithoutActions;
+    for (const sender of ["claude", "codex"] as const) {
+      const mention = parseConferralMention(c, sender);
+      if (mention) {
+        c = mention.cleanContent;
+      }
+    }
+    return c.trim();
+  }, [contentWithoutActions]);
+
+  // Parse learnings from stripped content (clean content + extracted learnings)
   const { cleanContent, learnings } = useMemo(
-    () => parseLearningsUsed(contentWithoutActions),
-    [contentWithoutActions]
+    () => parseLearningsUsed(strippedContent),
+    [strippedContent]
   );
 
   // Check if content has pr_response tags
@@ -2126,7 +2177,7 @@ function CommentAssistantContent({
   return (
     <MessageContent
       blocks={blocks}
-      content={contentWithoutActions}
+      content={strippedContent}
       isStreaming={isStreaming}
       markdownComponents={commentBubbleMarkdownComponents}
     />

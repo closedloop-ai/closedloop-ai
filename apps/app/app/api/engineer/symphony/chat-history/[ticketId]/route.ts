@@ -64,18 +64,24 @@ export async function GET(
 
   const historyPath = getChatHistoryPath(ticketId, repoPath);
 
+  // Compute once before any early return — Codex review may have completed
+  // even before any chat messages exist (no chat-history.json yet).
+  const codexStatePath = join(historyPath, "..", "codex-chat.json");
+  const codexSessionExists = existsSync(codexStatePath);
+
   if (!existsSync(historyPath)) {
     return NextResponse.json({
       messages: [],
       ticketId,
       repoPath,
+      codexSessionExists,
     });
   }
 
   try {
     const content = readFileSync(historyPath, "utf-8");
     const history = JSON.parse(content) as ChatHistory;
-    return NextResponse.json(history);
+    return NextResponse.json({ ...history, codexSessionExists });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(

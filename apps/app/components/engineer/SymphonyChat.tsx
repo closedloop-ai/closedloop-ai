@@ -48,7 +48,11 @@ import { MessageContent } from "@/components/engineer/chat/MessageContent";
 import { SlashCommandDropdown } from "@/components/engineer/chat/SlashCommandDropdown";
 import { DEFAULT_CODEX_MODEL } from "@/components/engineer/codex-review/constants";
 import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogContent";
-import { FileMentionAutocomplete } from "@/components/engineer/FileMentionAutocomplete";
+import {
+  dispatchMentionKeyDown,
+  FileMentionAutocomplete,
+  type MentionState,
+} from "@/components/engineer/FileMentionAutocomplete";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
 import { RepoFileAutocomplete } from "@/components/engineer/RepoFileAutocomplete";
@@ -59,15 +63,22 @@ import { useLearnings } from "@/hooks/engineer/use-learnings";
 import { useSlashCommands } from "@/hooks/engineer/use-slash-commands";
 import { useIsMobile } from "@/hooks/engineer/useMediaQuery";
 import {
+  CHAT_SENTINEL,
   formatTime,
   getWorktreePath,
   type LearningUsed,
+  parseConferralMention,
   parseDebateStatus,
   parseLearningsUsed,
   parseSuggestedActions,
   type SuggestedAction,
-  stripContextBlocks,
+  sanitizeHistoryForModel,
+  stripAssistantProtocol,
 } from "@/lib/engineer/chat-utils";
+import {
+  createCodexStreamState,
+  readCodexStream,
+} from "@/lib/engineer/codex-stream";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import {
   type PlanResponse,
@@ -305,6 +316,37 @@ export function SymphonyChat({
       document.removeEventListener("selectionchange", handleSelectionChange);
   }, [isOpen, activeTab, currentDiffFile]);
 
+  // --- Conferral infrastructure ---
+  const MAX_CONFERRAL_DEPTH = 3;
+  const conferralDepthRef = useRef(0);
+  const conferralInProgressRef = useRef(false);
+  const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up conferral timer on unmount
+  useEffect(() => {
+    return () => {
+      if (conferralTimerRef.current) {
+        clearTimeout(conferralTimerRef.current);
+      }
+    };
+  }, []);
+
+  const resetConferral = useCallback(() => {
+    conferralDepthRef.current = 0;
+    if (conferralTimerRef.current) {
+      clearTimeout(conferralTimerRef.current);
+      conferralTimerRef.current = null;
+    }
+  }, []);
+
+  // Conferral callback refs (defined after sendToCodex, assigned below)
+  const sendConferralToCodexRef = useRef<
+    (prompt: string, context: string) => void
+  >(() => {});
+  const sendConferralToClaudeRef = useRef<
+    (prompt: string, context: string) => void
+  >(() => {});
+
   // Invalidate queries after a response or stop.
   // Awaits chat history so streaming content stays visible until fresh data arrives.
   const invalidateAfterResponse = useCallback(async () => {
@@ -337,7 +379,23 @@ export function SymphonyChat({
   // Shared callbacks for stream.sendMessage
   const streamCallbacks = useMemo(
     () => ({
-      onComplete: invalidateAfterResponse,
+      onComplete: async (accumulatedText: string) => {
+        await invalidateAfterResponse();
+        // Detect Claude → Codex conferral
+        if (!debate.debateMode) {
+          const mention = parseConferralMention(accumulatedText, "claude");
+          if (mention) {
+            conferralTimerRef.current = setTimeout(
+              () =>
+                sendConferralToCodexRef.current(
+                  mention.prompt,
+                  accumulatedText
+                ),
+              0
+            );
+          }
+        }
+      },
       onPid: (pid: number) => {
         streamingPidRef.current = pid;
       },
@@ -350,7 +408,13 @@ export function SymphonyChat({
         }).catch((err) => console.error("Failed to record learning use:", err));
       },
     }),
-    [invalidateAfterResponse, learnings.poll, ticketId, repoPath]
+    [
+      invalidateAfterResponse,
+      learnings.poll,
+      ticketId,
+      repoPath,
+      debate.debateMode,
+    ]
   );
 
   // Handle /merge and /rebase slash commands
@@ -410,131 +474,6 @@ export function SymphonyChat({
   // Send a message to Codex via the freeform chat endpoint
   const sendToCodex = useCallback(
     async (codexPrompt: string, displayContent: string) => {
-      // Process a single NDJSON event from the Codex chat stream
-      const processCodexEvent = (
-        event: { type: string; content?: string; error?: string },
-        state: {
-          accumulated: string;
-          receivedAnyText: boolean;
-          reasoningBlocks: ContentBlock[];
-        }
-      ) => {
-        if (event.type === "reasoning" && event.content) {
-          state.reasoningBlocks.push({
-            type: "thinking",
-            id: `reasoning-${Date.now()}-${state.reasoningBlocks.length}`,
-            thinking: event.content,
-          });
-          codexChatStream.setPendingUserMessage({
-            id: "codex-chat-streaming",
-            role: "assistant",
-            content: state.accumulated,
-            timestamp: new Date().toISOString(),
-            sender: "codex",
-            blocks: [...state.reasoningBlocks],
-          });
-          return;
-        }
-        if (event.type === "text" && event.content) {
-          state.receivedAnyText = true;
-          state.accumulated += event.content;
-          codexChatStream.setPendingUserMessage({
-            id: "codex-chat-streaming",
-            role: "assistant",
-            content: state.accumulated,
-            timestamp: new Date().toISOString(),
-            sender: "codex",
-            blocks:
-              state.reasoningBlocks.length > 0
-                ? [...state.reasoningBlocks]
-                : undefined,
-          });
-          return;
-        }
-        if (event.type === "error") {
-          console.error("[codex-chat] Server error:", event.error);
-          toast.error("Codex error", {
-            description: String(event.error).slice(0, 200),
-          });
-        }
-      };
-
-      // Handle the "done" event — saves final message to history
-      const handleCodexDone = async (
-        event: { content?: string; exitCode?: number },
-        state: {
-          accumulated: string;
-          receivedAnyText: boolean;
-          reasoningBlocks: ContentBlock[];
-        }
-      ) => {
-        const finalContent = event.content || state.accumulated;
-        codexChatStream.setPendingUserMessage(null);
-        if (finalContent.trim()) {
-          const msg: ChatMessage = {
-            id: `codex-${Date.now()}`,
-            role: "assistant",
-            content: finalContent.trim(),
-            timestamp: new Date().toISOString(),
-            sender: "codex",
-            blocks:
-              state.reasoningBlocks.length > 0
-                ? state.reasoningBlocks
-                : undefined,
-          };
-          await fetch(
-            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ message: msg }),
-            }
-          );
-          await queryClient.invalidateQueries({
-            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
-          });
-        } else if (!state.receivedAnyText) {
-          toast.error("Codex returned no response", {
-            description: `Exit code: ${event.exitCode ?? "unknown"}`,
-          });
-        }
-      };
-
-      // Read NDJSON stream from Codex and dispatch events
-      const readCodexStream = async (
-        reader: ReadableStreamDefaultReader<Uint8Array>
-      ) => {
-        const decoder = new TextDecoder();
-        const state = {
-          accumulated: "",
-          receivedAnyText: false,
-          reasoningBlocks: [] as ContentBlock[],
-        };
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          const lines = decoder
-            .decode(value)
-            .split("\n")
-            .filter((l) => l.trim());
-
-          for (const line of lines) {
-            try {
-              const event = JSON.parse(line);
-              if (event.type === "done") {
-                await handleCodexDone(event, state);
-              } else {
-                processCodexEvent(event, state);
-              }
-            } catch {
-              // Not JSON
-            }
-          }
-        }
-      };
       const userMsg = {
         id: `user-${Date.now()}`,
         role: "user" as const,
@@ -563,12 +502,14 @@ export function SymphonyChat({
 
       const url = `/api/engineer/codex/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
 
-      // Build recent chat history for context (last 10 messages, excluding blocks)
-      const recentHistory = (history?.messages || []).slice(-10).map((m) => ({
-        role: m.role,
-        content: m.content,
-        sender: m.sender,
-      }));
+      // Build recent chat history for context (last 10 messages, sanitize protocol metadata)
+      const recentHistory = sanitizeHistoryForModel(
+        (history?.messages || []).slice(-10).map((m) => ({
+          role: m.role,
+          content: m.content,
+          sender: m.sender,
+        }))
+      );
 
       let response: Response;
       try {
@@ -607,7 +548,47 @@ export function SymphonyChat({
         return;
       }
 
-      await readCodexStream(reader);
+      const state = createCodexStreamState();
+      await readCodexStream(reader, state, {
+        setPending: codexChatStream.setPendingUserMessage,
+        saveFinalMessage: async (msg) => {
+          await fetch(
+            `/api/engineer/symphony/chat-history/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: msg }),
+            }
+          );
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
+          });
+        },
+        onError: (error) => {
+          console.error("[codex-chat] Server error:", error);
+          toast.error("Codex error", { description: error });
+        },
+        onEmptyResponse: (exitCode) => {
+          toast.error("Codex returned no response", {
+            description: `Exit code: ${exitCode ?? "unknown"}`,
+          });
+        },
+        onComplete: (finalContent) => {
+          if (!debate.debateMode) {
+            const mention = parseConferralMention(finalContent, "codex");
+            if (mention) {
+              conferralTimerRef.current = setTimeout(
+                () =>
+                  sendConferralToClaudeRef.current(
+                    mention.prompt,
+                    finalContent
+                  ),
+                0
+              );
+            }
+          }
+        },
+      });
 
       // Clean up pending user message
       stream.setPendingUserMessage(null);
@@ -621,8 +602,83 @@ export function SymphonyChat({
       activeTab,
       contextRepoPaths,
       history?.messages,
+      debate.debateMode,
     ]
   );
+
+  // --- Conferral callbacks ---
+  const sendConferralToCodex = useCallback(
+    async (prompt: string, claudeContext: string) => {
+      if (
+        conferralDepthRef.current >= MAX_CONFERRAL_DEPTH ||
+        conferralInProgressRef.current ||
+        debate.debateMode
+      ) {
+        return;
+      }
+      conferralDepthRef.current += 1;
+      conferralInProgressRef.current = true;
+      try {
+        const wrappedPrompt = `Claude has asked for your input on the following:\n\n${prompt}\n\n<context source="claude-response">\n${claudeContext}\n</context>`;
+        await sendToCodex(
+          wrappedPrompt,
+          CHAT_SENTINEL.CLAUDE_CONFERRED_TO_CODEX
+        );
+      } finally {
+        conferralInProgressRef.current = false;
+      }
+    },
+    [debate.debateMode, sendToCodex]
+  );
+  sendConferralToCodexRef.current = sendConferralToCodex;
+
+  const sendConferralToClaude = useCallback(
+    async (prompt: string, codexContext: string) => {
+      if (
+        conferralDepthRef.current >= MAX_CONFERRAL_DEPTH ||
+        conferralInProgressRef.current ||
+        debate.debateMode
+      ) {
+        return;
+      }
+      conferralDepthRef.current += 1;
+      conferralInProgressRef.current = true;
+      try {
+        const wrappedPrompt = `Codex has asked for your input on the following:\n\n${prompt}\n\n<context source="codex-response">\n${codexContext}\n</context>`;
+        stream.setPendingUserMessage({
+          id: `user-${Date.now()}`,
+          role: "user",
+          content: CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE,
+          timestamp: new Date().toISOString(),
+        });
+        const url = `/api/engineer/symphony/chat/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
+        await stream.sendMessage(
+          url,
+          {
+            message: wrappedPrompt,
+            displayContent: CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE,
+            activeTab,
+            contextRepoPaths,
+            codexAvailable: codexData?.available,
+          },
+          streamCallbacks
+        );
+      } finally {
+        conferralInProgressRef.current = false;
+      }
+    },
+    [
+      debate.debateMode,
+      stream,
+      ticketId,
+      repoPath,
+      activeTab,
+      contextRepoPaths,
+      codexData?.available,
+      streamCallbacks,
+    ]
+  );
+  sendConferralToClaudeRef.current = sendConferralToClaude;
 
   // Start debate mode from /debate command — just enters the mode with a status message
   const startDebateFromSlash = useCallback(async () => {
@@ -639,7 +695,7 @@ export function SymphonyChat({
     const statusMsg: ChatMessage = {
       id: `status-${Date.now()}`,
       role: "user",
-      content: "__debate_started__",
+      content: CHAT_SENTINEL.DEBATE_STARTED,
       timestamp: new Date().toISOString(),
     };
     await fetch(
@@ -667,7 +723,7 @@ export function SymphonyChat({
     const statusMsg: ChatMessage = {
       id: `status-${Date.now()}`,
       role: "user",
-      content: "__debate_ended__",
+      content: CHAT_SENTINEL.DEBATE_ENDED,
       timestamp: new Date().toISOString(),
     };
     await fetch(
@@ -765,6 +821,7 @@ export function SymphonyChat({
 
   // Handle sending a message
   const handleSend = async () => {
+    resetConferral();
     const trimmedInput = input.trim();
 
     if (await handleSlashInput(trimmedInput)) {
@@ -879,20 +936,19 @@ export function SymphonyChat({
       if (stream.isStreaming) {
         return;
       }
+      resetConferral();
       setIsForwarding(true);
 
       setInput("");
 
-      // Strip <suggested-actions> from Codex's content
-      const { contentWithoutActions } = parseSuggestedActions(
-        targetMsg.content
-      );
+      // Strip all protocol metadata from Codex's content
+      const contentWithoutActions = stripAssistantProtocol(targetMsg.content);
 
       // Show a subtle forwarded indicator (not a full user bubble)
       const forwardedMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
-        content: "__forwarded_to_claude__",
+        content: CHAT_SENTINEL.FORWARDED_TO_CLAUDE,
         timestamp: new Date().toISOString(),
       };
       stream.setPendingUserMessage(forwardedMsg);
@@ -1300,13 +1356,12 @@ export function SymphonyChat({
   // Handle key press
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (mentionState?.isOpen) {
-      const consumed = handleMentionKeyDown(
+      const consumed = dispatchMentionKeyDown(
         e,
         mentionState,
         mentionFiles,
         setMentionState,
-        handleFileSelect,
-        closeMention
+        handleFileSelect
       );
       if (consumed) {
         return;
@@ -1385,8 +1440,7 @@ export function SymphonyChat({
       if (!msg) {
         return;
       }
-      const { contentWithoutActions } = parseSuggestedActions(msg.content);
-      const cleanText = stripContextBlocks(contentWithoutActions);
+      const cleanText = stripAssistantProtocol(msg.content);
       try {
         await navigator.clipboard.writeText(cleanText);
         toast.success("Copied to clipboard");
@@ -1419,6 +1473,7 @@ export function SymphonyChat({
       if (stream.isStreaming) {
         return;
       }
+      resetConferral();
       setIsForwarding(true);
       if (!codexData?.available) {
         toast.error("Codex is not available", {
@@ -1426,10 +1481,9 @@ export function SymphonyChat({
         });
         return;
       }
-      const { contentWithoutActions } = parseSuggestedActions(msg.content);
-      const cleanContent = stripContextBlocks(contentWithoutActions);
+      const cleanContent = stripAssistantProtocol(msg.content);
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nReview this critically. The goal is to converge on the best solution, not just provide a second opinion. Prefer simpler approaches where they work. If Claude's suggestion is overcomplicated, say so and propose a leaner alternative. If it's solid, confirm that and explain why. Be specific — cite code, name files, reference actual behavior.`;
-      await sendToCodex(codexPrompt, "__forwarded_to_codex__");
+      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX);
     },
     [messages, stream.isStreaming, codexData?.available, sendToCodex]
   );
@@ -1779,13 +1833,6 @@ export function SymphonyChat({
   );
 }
 
-type MentionState = {
-  isOpen: boolean;
-  query: string;
-  startIndex: number; // Position of @ in input
-  selectedIndex: number;
-};
-
 type PendingImage = {
   id: string;
   file: File;
@@ -1808,25 +1855,35 @@ const STATUS_INDICATORS: Record<
   string,
   { text: string; className: string; py: string }
 > = {
-  __forwarded_to_claude__: {
+  [CHAT_SENTINEL.FORWARDED_TO_CLAUDE]: {
     text: "Forwarded Codex response to Claude",
     className: "text-muted-foreground/60",
     py: "py-1",
   },
-  __forwarded_to_codex__: {
+  [CHAT_SENTINEL.FORWARDED_TO_CODEX]: {
     text: "Forwarded Claude response to Codex",
     className: "text-muted-foreground/60",
     py: "py-1",
   },
-  __debate_started__: {
+  [CHAT_SENTINEL.DEBATE_STARTED]: {
     text: "Debate mode started",
     className: "text-amber-600/70 dark:text-amber-400/70",
     py: "py-1.5",
   },
-  __debate_ended__: {
+  [CHAT_SENTINEL.DEBATE_ENDED]: {
     text: "Debate mode ended",
     className: "text-amber-600/70 dark:text-amber-400/70",
     py: "py-1.5",
+  },
+  [CHAT_SENTINEL.CLAUDE_CONFERRED_TO_CODEX]: {
+    text: "Claude asked Codex for input",
+    className: "text-blue-600/70 dark:text-blue-400/70",
+    py: "py-1",
+  },
+  [CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE]: {
+    text: "Codex asked Claude for input",
+    className: "text-blue-600/70 dark:text-blue-400/70",
+    py: "py-1",
   },
 };
 
@@ -2310,7 +2367,9 @@ const MessageBubble = memo(
       // Only return actions if this is the last assistant message
       return {
         actions: isLastAssistantMessage ? parsed.actions : [],
-        contentWithoutActions: parsed.contentWithoutActions,
+        contentWithoutActions: stripAssistantProtocol(
+          parsed.contentWithoutActions
+        ),
       };
     }, [isUser, isStreaming, isLastAssistantMessage, message.content]);
 
@@ -2415,7 +2474,7 @@ function renderDebateActionsBubble(
     canForward,
   } = props;
   const sender = debate.getEffectiveSender(msg);
-  const { contentWithoutActions } = parseSuggestedActions(msg.content);
+  const contentWithoutActions = stripAssistantProtocol(msg.content);
   return (
     <ChatBubble
       actions={debateActions}
@@ -2455,8 +2514,8 @@ function renderSenderLabeledBubble(
     handleForwardCodexMessage,
     canForward,
   } = props;
-  const { contentWithoutActions, actions: codexActions } =
-    parseSuggestedActions(msg.content);
+  const { actions: codexActions } = parseSuggestedActions(msg.content);
+  const contentWithoutActions = stripAssistantProtocol(msg.content);
   return (
     <ChatBubble
       actions={isLastAssistant && !isAnyStreaming ? codexActions : undefined}
@@ -2645,54 +2704,6 @@ function buildMessageContents(
   }
 
   return { messageToSend, displayContent };
-}
-
-/**
- * Handle keyboard events when the mention autocomplete is open.
- * Returns true if the event was consumed.
- */
-function handleMentionKeyDown(
-  e: React.KeyboardEvent,
-  mentionState: MentionState,
-  mentionFiles: string[],
-  setMentionState: React.Dispatch<React.SetStateAction<MentionState | null>>,
-  handleFileSelect: (file: string) => void,
-  closeMention: () => void
-): boolean {
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    setMentionState((prev) =>
-      prev ? { ...prev, selectedIndex: prev.selectedIndex + 1 } : null
-    );
-    return true;
-  }
-  if (e.key === "ArrowUp") {
-    e.preventDefault();
-    setMentionState((prev) =>
-      prev
-        ? { ...prev, selectedIndex: Math.max(0, prev.selectedIndex - 1) }
-        : null
-    );
-    return true;
-  }
-  if (e.key === "Tab" || e.key === "Enter") {
-    e.preventDefault();
-    const selectedFile = mentionFiles[mentionState.selectedIndex];
-    if (selectedFile) {
-      handleFileSelect(selectedFile);
-    }
-    return true;
-  }
-  if (e.key === "Escape") {
-    e.preventDefault();
-    closeMention();
-    return true;
-  }
-  if (e.key === " ") {
-    closeMention();
-    return true;
-  }
-  return false;
 }
 
 /**

@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ContentBlock } from "@/components/engineer/chat";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
-import { getWorktreePath, parseLearningsUsed } from "@/lib/engineer/chat-utils";
+import { useChatStream } from "@/hooks/engineer/use-chat-stream";
+import { CHAT_SENTINEL, getWorktreePath } from "@/lib/engineer/chat-utils";
 import {
   markCommentAddressed,
   markCommentResponded,
@@ -17,6 +18,8 @@ import {
   type ChatMessage,
   commentChatHistoryOptions,
 } from "@/lib/engineer/queries/symphony";
+
+const SENTINEL_VALUES: Set<string> = new Set(Object.values(CHAT_SENTINEL));
 
 export type UseCommentChatOptions = {
   commentId: string;
@@ -30,6 +33,8 @@ export type UseCommentChatOptions = {
   autoStart?: boolean;
   onResolved?: () => void;
   onChatCleared?: () => void;
+  /** Called with accumulated text when a Claude stream completes successfully. */
+  onStreamComplete?: (accumulatedText: string) => void;
 };
 
 export type UseCommentChatReturn = {
@@ -109,16 +114,9 @@ export function useCommentChat({
   autoStart = true,
   onResolved,
   onChatCleared,
+  onStreamComplete,
 }: UseCommentChatOptions): UseCommentChatReturn {
   const [input, setInput] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamStartedAt, setStreamStartedAt] = useState("");
-  const [contextPercent, setContextPercent] = useState<number | null>(null);
-  const [streamingContent, setStreamingContent] = useState("");
-  const [streamingBlocks, setStreamingBlocks] = useState<ContentBlock[]>([]);
-  const [pendingUserMessage, setPendingUserMessage] =
-    useState<ChatMessage | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [hasAcceptedChanges, setHasAcceptedChanges] = useState(false);
   const [isCommitting, setIsCommitting] = useState(false);
   const [hasResponded, setHasResponded] = useState(false);
@@ -136,11 +134,26 @@ export function useCommentChat({
   const hadChangesRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const onStreamCompleteRef = useRef(onStreamComplete);
+  onStreamCompleteRef.current = onStreamComplete;
   const learningsPollingRef = useRef<ReturnType<typeof setInterval> | null>(
     null
   );
   const queryClient = useQueryClient();
+
+  // Shared chat stream — manages streaming state, abort, and NDJSON parsing.
+  const {
+    streamingContent,
+    streamingBlocks,
+    isStreaming,
+    error,
+    pendingUserMessage,
+    setPendingUserMessage,
+    sendMessage: streamSendMessage,
+    stopStreaming,
+    streamStartedAt,
+    contextPercent,
+  } = useChatStream();
 
   // worktreePath starts as a client-side guess; updated by the server's
   // worktree_resolved event once the actual effective dir is known.
@@ -315,100 +328,7 @@ export function useCommentChat({
   // Cleanup polling on unmount
   useEffect(() => stopLearningsPolling, [stopLearningsPolling]);
 
-  // Process a single parsed stream event
-  const processStreamEvent = (
-    event: {
-      type: string;
-      content?: string;
-      error?: string;
-      name?: string;
-      id?: string;
-      input?: unknown;
-      contextPercent?: number;
-      effectiveDir?: string;
-    },
-    accumulated: string
-  ): string => {
-    if (event.type === "worktree_resolved" && event.effectiveDir) {
-      setWorktreePath(event.effectiveDir);
-      return accumulated;
-    }
-    if (event.type === "usage" && event.contextPercent != null) {
-      setContextPercent(event.contextPercent);
-      return accumulated;
-    }
-    if (event.type === "text" && event.content) {
-      const next = accumulated + event.content;
-      setStreamingContent(next);
-      return next;
-    }
-    if (event.type === "tool_use" && event.name && event.id) {
-      setStreamingBlocks((prev) => [
-        ...prev,
-        {
-          type: "tool_use",
-          id: event.id!,
-          name: event.name,
-          input: event.input,
-        },
-      ]);
-      return accumulated;
-    }
-    if (event.type === "thinking" && event.content) {
-      setStreamingBlocks((prev) => [
-        ...prev,
-        { type: "thinking", thinking: event.content },
-      ]);
-      return accumulated;
-    }
-    if (event.type === "error" && event.error) {
-      setError(event.error);
-      return accumulated;
-    }
-    if (event.type === "learnings") {
-      pollLearningsStatus();
-      return accumulated;
-    }
-    if (event.type === "result" || event.type === "done") {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.commentChatHistory(ticketId, comment.id, repoPath),
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.gitStatus(worktreePath),
-      });
-    }
-    return accumulated;
-  };
-
-  // Read a streaming response and dispatch events
-  const readStream = async (
-    reader: ReadableStreamDefaultReader<Uint8Array>
-  ): Promise<string> => {
-    const decoder = new TextDecoder();
-    let accumulated = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split("\n").filter((line) => line.trim());
-
-      for (const line of lines) {
-        try {
-          accumulated = processStreamEvent(JSON.parse(line), accumulated);
-        } catch {
-          // Not JSON - ignore
-        }
-      }
-    }
-
-    return accumulated;
-  };
-
-  // Send a message
+  // Send a message via the shared chat stream hook.
   const sendMessage = useCallback(
     async (messageText: string, overrideDisplayContent?: string) => {
       if (!messageText.trim() || isStreaming) {
@@ -421,7 +341,6 @@ export function useCommentChat({
       // so the client just sends the user's actual input.
       const isFirstMessage =
         !history?.messages || history.messages.length === 0;
-      const messageToSend = trimmedInput;
 
       // Build display content: wrap PR comment details in a <context> block for the first message
       let displayContent: string | undefined = overrideDisplayContent;
@@ -445,81 +364,61 @@ export function useCommentChat({
       };
       setPendingUserMessage(userMessage);
 
-      setStreamStartedAt(new Date().toISOString());
-      setIsStreaming(true);
-      setStreamingContent("");
-      setStreamingBlocks([]);
-      setError(null);
+      const url = `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`;
 
-      const abortController = new AbortController();
-      abortControllerRef.current = abortController;
-
-      try {
-        const response = await fetch(
-          `/api/engineer/symphony/comment-chat/${encodeURIComponent(comment.id)}?ticketId=${encodeURIComponent(ticketId)}&repo=${encodeURIComponent(repoPath)}${branchParams}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              message: messageToSend,
-              displayContent,
-              branchName,
-              prNumber,
-              commentContext: {
-                author: comment.author,
-                body: comment.body,
-                path: comment.path,
-                line: comment.line,
-                url: comment.url,
-                replies: replies?.map((r) => ({
-                  author: r.author,
-                  body: r.body,
-                })),
-              },
-            }),
-            signal: abortController.signal,
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to send message");
+      await streamSendMessage(
+        url,
+        {
+          message: trimmedInput,
+          displayContent,
+          branchName,
+          prNumber,
+          commentContext: {
+            author: comment.author,
+            body: comment.body,
+            path: comment.path,
+            line: comment.line,
+            url: comment.url,
+            replies: replies?.map((r) => ({
+              author: r.author,
+              body: r.body,
+            })),
+          },
+        },
+        {
+          onEvent: (event) => {
+            if (
+              event.type === "worktree_resolved" &&
+              typeof event.effectiveDir === "string"
+            ) {
+              setWorktreePath(event.effectiveDir);
+            }
+          },
+          onLearnings: () => pollLearningsStatus(),
+          onLearningsUsed: (learnings) => {
+            fetch("/api/engineer/symphony/record-learning-use", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ticketId, repoPath, learnings }),
+            }).catch((err) =>
+              console.error("Failed to record learning use:", err)
+            );
+          },
+          onComplete: (accumulatedText) => {
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.commentChatHistory(
+                ticketId,
+                comment.id,
+                repoPath
+              ),
+            });
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.gitStatus(worktreePathRef.current),
+            });
+            onStreamCompleteRef.current?.(accumulatedText);
+          },
         }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error("No response body");
-        }
-
-        const accumulated = await readStream(reader);
-
-        // Record any learnings cited by the LLM
-        const { learnings } = parseLearningsUsed(accumulated);
-        if (learnings.length > 0) {
-          fetch("/api/engineer/symphony/record-learning-use", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ticketId, repoPath, learnings }),
-          }).catch((err) =>
-            console.error("Failed to record learning use:", err)
-          );
-        }
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // User stopped the stream
-        } else {
-          console.error("Chat error:", err);
-          setError(
-            err instanceof Error ? err.message : "Failed to send message"
-          );
-        }
-      } finally {
-        setIsStreaming(false);
-        setStreamingContent("");
-        setStreamingBlocks([]);
-        setPendingUserMessage(null);
-        abortControllerRef.current = null;
-        setStreamStartedAt("");
-      }
+      );
     },
     [
       isStreaming,
@@ -531,9 +430,12 @@ export function useCommentChat({
       branchName,
       branchParams,
       prNumber,
-      readStream,
+      setPendingUserMessage,
+      streamSendMessage,
+      pollLearningsStatus,
+      queryClient,
     ]
-  ); // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   // Auto-start the propose fix process when enabled with no history
   useEffect(() => {
@@ -563,9 +465,7 @@ export function useCommentChat({
   ]);
 
   // Handle stopping the stream
-  const handleStop = () => {
-    abortControllerRef.current?.abort();
-  };
+  const handleStop = stopStreaming;
 
   // Handle sending from the input field
   const handleSend = () => {
@@ -853,14 +753,17 @@ export function useCommentChat({
     [historyMessages, pendingUserMessage, alreadyInHistory]
   );
 
-  // Server may still be generating a response if we navigated away mid-stream
+  // Server may still be generating a response if we navigated away mid-stream.
+  // Exclude ALL sentinel-only user messages — debate, forwarding, AND conferral
+  // markers are status indicators, not user requests that expect a response.
+  // Forwarding sentinels immediately trigger a stream (isStreaming=true during),
+  // and the assistant reply becomes the last message on completion.
   const lastHistoryMsg = historyMessages.at(-1);
-  // Exclude debate markers from triggering (forwarding markers should still trigger)
   const isWaitingForResponse =
     !isStreaming &&
     !!lastHistoryMsg &&
     lastHistoryMsg.role === "user" &&
-    !/^__debate_(started|ended)__$/.test(lastHistoryMsg.content);
+    !SENTINEL_VALUES.has(lastHistoryMsg.content);
 
   return {
     // State
