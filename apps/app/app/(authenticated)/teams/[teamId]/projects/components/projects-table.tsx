@@ -6,6 +6,7 @@ import {
 } from "@dnd-kit/sortable";
 import { Priority } from "@repo/api/src/types/common";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { HexagonProgress } from "@repo/design-system/components/ui/hexagon-progress";
 import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge";
@@ -196,6 +197,11 @@ export function ProjectsTable({
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <FolderIcon className="h-4 w-4 text-muted-foreground" />
+                    {isDisplayableSlug(project.slug) && (
+                      <span className="font-mono text-muted-foreground text-xs">
+                        {project.slug}
+                      </span>
+                    )}
                     <span className="font-medium">{project.name}</span>
                   </div>
                 </TableCell>

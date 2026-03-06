@@ -9,6 +9,7 @@ import type {
   ArtifactType,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
@@ -134,7 +135,7 @@ const ARTIFACT_SORT_CONFIGS: Record<
   updatedAt: { key: "updatedAt", columnType: "date" },
 };
 
-function ArtifactLinkCell({ route }: { route: string | null }) {
+function ArtifactLinkCell({ route }: Readonly<{ route: string | null }>) {
   if (!route) {
     return <span className="text-muted-foreground text-sm">n/a</span>;
   }
@@ -176,7 +177,7 @@ function ArtifactSection({
   selectedIds,
   onSelectChange,
   onSelectAllInSection,
-}: ArtifactSectionProps) {
+}: Readonly<ArtifactSectionProps>) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
     useState<ArtifactWithWorkstream | null>(null);
@@ -290,9 +291,14 @@ function ArtifactSection({
                     onSelectChange={onSelectChange}
                     selectedIds={selectedIds}
                   >
-                    <TableCell className="max-w-[300px]">
+                    <TableCell className="max-w-[320px]">
                       <div className="flex items-center gap-2">
                         <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        {isDisplayableSlug(artifact.slug) && (
+                          <span className="font-mono text-muted-foreground text-xs">
+                            {artifact.slug}
+                          </span>
+                        )}
                         <span
                           className="truncate font-medium"
                           title={artifact.title}
@@ -412,7 +418,7 @@ export function ArtifactsTable({
   filterText,
   onStatusChange,
   onDelete,
-}: ArtifactsTableProps) {
+}: Readonly<ArtifactsTableProps>) {
   const router = useRouter();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [mergeDialogOpen, setMergeDialogOpen] = useState(false);

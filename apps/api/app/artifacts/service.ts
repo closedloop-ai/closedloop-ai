@@ -50,6 +50,7 @@ import {
   mapLoopStatus,
   pickBestStatus,
 } from "@/lib/loop-status-utils";
+import { generateArtifactSlug } from "@/lib/slug-generator";
 import { entityLinksService } from "../entity-links/service";
 import { issuesService } from "../issues/service";
 import {
@@ -2751,7 +2752,7 @@ async function createArtifactRecord(
     await validateUserInOrg(input.approverId, organizationId);
   }
 
-  const slug = generateSlug();
+  const slug = await generateArtifactSlug(organizationId, input.type);
   const { sourceId, sourceType, sourceVersion, content, ...artifactInput } =
     input;
 

@@ -24,7 +24,7 @@ export const GET = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
         return notFoundResponse("Project");
       }
 
-      return successResponse(projectsService.toProjectWithDetails(project));
+      return successResponse(project);
     } catch (error) {
       return errorResponse("Failed to fetch project", error);
     }
@@ -69,9 +69,7 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
         );
       }
 
-      return successResponse(
-        projectsService.toProjectWithDetails(projectWithDetails)
-      );
+      return successResponse(projectWithDetails);
     } catch (error) {
       return errorResponse("Failed to update project", error);
     }

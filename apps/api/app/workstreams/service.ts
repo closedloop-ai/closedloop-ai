@@ -8,6 +8,7 @@ import type {
 import { withDb } from "@repo/database";
 import type { WorkstreamUpdateInput } from "@repo/database/generated/models";
 import { basicUserSelect } from "@/lib/db-utils";
+import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
 
 export type FindWorkstreamsOptions = {
   organizationId: string;
@@ -103,15 +104,21 @@ export const workstreamsService = {
   /**
    * Create a new workstream
    */
-  create(
+  async create(
     organizationId: string,
     createdById: string,
     input: CreateWorkstreamInput
   ): Promise<Workstream> {
+    const generatedSlug = await generateSlug(
+      organizationId,
+      SlugPrefix.Workstream
+    );
+
     return withDb((db) =>
       db.workstream.create({
         data: {
           ...input,
+          slug: generatedSlug,
           organizationId,
           createdById,
         },

@@ -48,9 +48,7 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
           )
         : await projectsService.findByOrganization(user.organizationId);
 
-      return successResponse(
-        projects.map((p) => projectsService.toProjectWithDetails(p))
-      );
+      return successResponse(projects);
     } catch (error) {
       return errorResponse("Failed to fetch projects", error);
     }
@@ -90,9 +88,7 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
         );
       }
 
-      return successResponse(
-        projectsService.toProjectWithDetails(projectWithDetails)
-      );
+      return successResponse(projectWithDetails);
     } catch (error) {
       return errorResponse("Failed to create project", error);
     }

@@ -6,7 +6,10 @@ import type {
 } from "@repo/api/src/types/issue";
 import type { BasicUser } from "@repo/api/src/types/user";
 import { type IssueStatus, type Priority, withDb } from "@repo/database";
-import { nanoid } from "nanoid";
+import {
+  generateSlug as generateTypedSlug,
+  SlugPrefix,
+} from "@/lib/slug-generator";
 import { issueIncludeWithContext } from "./issue-utils";
 
 export const issuesService = {
@@ -81,12 +84,14 @@ export const issuesService = {
     userId: string,
     input: CreateIssueInput
   ): Promise<IssueWithWorkstream> {
+    const slug = await generateTypedSlug(organizationId, SlugPrefix.Feature);
+
     const issue = await withDb((db) =>
       db.issue.create({
         data: {
           ...input,
           organizationId,
-          slug: nanoid(14),
+          slug,
           createdById: userId,
         },
         include: issueIncludeWithContext,

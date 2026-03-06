@@ -2,6 +2,7 @@
 
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { IssueStatus } from "@repo/api/src/types/issue";
+import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import {
   Collapsible,
   CollapsibleContent,
@@ -14,7 +15,13 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge";
-import { ChevronDown, EllipsisIcon, InboxIcon, TrashIcon } from "lucide-react";
+import {
+  BoxIcon,
+  ChevronDown,
+  EllipsisIcon,
+  InboxIcon,
+  TrashIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -29,7 +36,7 @@ type FeaturesListProps = {
   projectId: string;
 };
 
-export function FeaturesList({ projectId }: FeaturesListProps) {
+export function FeaturesList({ projectId }: Readonly<FeaturesListProps>) {
   const { data: features = [], isLoading } = useIssues({ projectId });
   const deleteIssueMutation = useDeleteIssue();
 
@@ -120,7 +127,7 @@ function FeatureStatusSection({
   status,
   items,
   onRequestDelete,
-}: FeatureStatusSectionProps) {
+}: Readonly<FeatureStatusSectionProps>) {
   const [isOpen, setIsOpen] = useState(true);
 
   return (
@@ -170,13 +177,19 @@ type FeatureRowProps = {
   onRequestDelete: (issue: IssueWithWorkstream) => void;
 };
 
-function FeatureRow({ issue, onRequestDelete }: FeatureRowProps) {
+function FeatureRow({ issue, onRequestDelete }: Readonly<FeatureRowProps>) {
   return (
     <div className="flex items-center gap-4 border-b bg-background p-1.5">
       <Link
-        className="flex min-w-0 flex-1 items-center gap-1 px-0 py-0"
+        className="flex min-w-0 flex-1 items-center gap-2.5 px-0 py-0"
         href={`/issues/${issue.slug}`}
       >
+        <BoxIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        {isDisplayableSlug(issue.slug) && (
+          <span className="font-mono text-muted-foreground text-xs">
+            {issue.slug}
+          </span>
+        )}
         <span className="truncate font-medium text-sm">{issue.title}</span>
       </Link>
       <div className="flex shrink-0 items-center gap-2.5">

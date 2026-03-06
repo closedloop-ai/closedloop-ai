@@ -795,6 +795,16 @@ model Issue {
   @@map("issues")
 }
 
+model SlugCounter {
+  id             String @id @default(uuid(7)) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  typePrefix     String @map("type_prefix")
+  currentValue   Int    @default(0) @map("current_value")
+
+  @@unique([organizationId, typePrefix])
+  @@map("slug_counters")
+}
+
 model ExternalLink {
   id             String           @id @default(uuid(7)) @db.Uuid
   organizationId String           @map("organization_id") @db.Uuid

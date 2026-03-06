@@ -7,57 +7,37 @@ import type {
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
 import { basicUserSelect } from "@/lib/db-utils";
+import { generateSlug, SlugPrefix } from "@/lib/slug-generator";
 
 /**
  * Projects service - handles database operations for project management
  */
 export const projectsService = {
   /**
-   * Transform a database project to API ProjectWithDetails format
-   */
-  toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
-    return {
-      ...project,
-      settings: project.settings as JsonObject,
-      assignee: project.assignee
-        ? {
-            id: project.assignee.id,
-            email: project.assignee.email,
-            firstName: project.assignee.firstName,
-            lastName: project.assignee.lastName,
-            avatarUrl: project.assignee.avatarUrl,
-          }
-        : undefined,
-      completionPercentage: projectsService.calculateStatus(project.artifacts),
-      teams: project.teams.map((pt) => ({
-        id: pt.team.id,
-        name: pt.team.name,
-      })),
-    };
-  },
-
-  /**
    * Find all projects for an organization
    */
-  findByOrganization(organizationId: string) {
-    return withDb((db) =>
+  async findByOrganization(
+    organizationId: string
+  ): Promise<ProjectWithDetails[]> {
+    const projects = await withDb((db) =>
       db.project.findMany({
         where: { organizationId },
         include: PROJECT_DETAIL_INCLUDE,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
       })
     );
+    return projects.map((p) => toProjectWithDetails(p));
   },
 
   /**
    * Find projects by team ID
    */
-  findByTeam(
+  async findByTeam(
     teamId: string,
     organizationId: string,
     options?: { limit?: number }
-  ) {
-    return withDb((db) =>
+  ): Promise<ProjectWithDetails[]> {
+    const projects = await withDb((db) =>
       db.project.findMany({
         where: {
           teams: {
@@ -70,31 +50,58 @@ export const projectsService = {
         ...(options?.limit && { take: options.limit }),
       })
     );
+    return projects.map((p) => toProjectWithDetails(p));
   },
 
   /**
    * Find a project by ID with all details
    */
-  findById(id: string, organizationId: string) {
-    return withDb((db) =>
+  async findById(
+    id: string,
+    organizationId: string
+  ): Promise<ProjectWithDetails | null> {
+    const project = await withDb((db) =>
       db.project.findUnique({
         where: { id, organizationId },
         include: PROJECT_DETAIL_INCLUDE,
       })
     );
+    return project ? toProjectWithDetails(project) : null;
+  },
+
+  /**
+   * Find a project by slug with all details
+   */
+  async findBySlug(
+    slug: string,
+    organizationId: string
+  ): Promise<ProjectWithDetails | null> {
+    const project = await withDb((db) =>
+      db.project.findFirst({
+        where: { organizationId, slug },
+        include: PROJECT_DETAIL_INCLUDE,
+      })
+    );
+    return project ? toProjectWithDetails(project) : null;
   },
 
   /**
    * Create a new project
    */
-  create(organizationId: string, userId: string, input: CreateProjectInput) {
+  async create(
+    organizationId: string,
+    userId: string,
+    input: CreateProjectInput
+  ) {
     const { teamIds, ...projectData } = input;
+    const slug = await generateSlug(organizationId, SlugPrefix.Project);
 
     return withDb.tx(async (tx) => {
       const project = await tx.project.create({
         data: {
           ...projectData,
           organizationId,
+          slug,
           createdById: userId,
         },
       });
@@ -261,9 +268,7 @@ export const projectsService = {
         },
       })
     );
-    return favorites.map((f) =>
-      projectsService.toProjectWithDetails(f.project)
-    );
+    return favorites.map((f) => toProjectWithDetails(f.project));
   },
 
   /**
@@ -306,3 +311,24 @@ const PROJECT_DETAIL_INCLUDE = {
 type ProjectFromDb = Prisma.ProjectGetPayload<{
   include: typeof PROJECT_DETAIL_INCLUDE;
 }>;
+
+function toProjectWithDetails(project: ProjectFromDb): ProjectWithDetails {
+  return {
+    ...project,
+    settings: project.settings as JsonObject,
+    assignee: project.assignee
+      ? {
+          id: project.assignee.id,
+          email: project.assignee.email,
+          firstName: project.assignee.firstName,
+          lastName: project.assignee.lastName,
+          avatarUrl: project.assignee.avatarUrl,
+        }
+      : undefined,
+    completionPercentage: projectsService.calculateStatus(project.artifacts),
+    teams: project.teams.map((pt) => ({
+      id: pt.team.id,
+      name: pt.team.name,
+    })),
+  };
+}

@@ -28,6 +28,7 @@ export const projectKeys = {
     [...projectKeys.detail(id), "activity", { page, pageSize }] as const,
   recent: (teamId: string) => [...projectKeys.all, "recent", teamId] as const,
   favorites: () => [...projectKeys.all, "favorites"] as const,
+  bySlug: (slug: string) => [...projectKeys.all, "by-slug", slug] as const,
 };
 
 // Queries
@@ -87,6 +88,21 @@ export function useProject(
     queryKey: projectKeys.detail(id),
     queryFn: () => apiClient.get<ProjectWithDetails>(`/projects/${id}`),
     enabled: !!id,
+    ...options,
+  });
+}
+
+export function useProjectBySlug(
+  slug: string,
+  options?: Omit<UseQueryOptions<ProjectWithDetails>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+
+  return useQuery({
+    queryKey: projectKeys.bySlug(slug),
+    queryFn: () =>
+      apiClient.get<ProjectWithDetails>(`/projects/by-slug/${slug}`),
+    enabled: !!slug,
     ...options,
   });
 }
@@ -154,6 +170,11 @@ export function useUpdateProject() {
       queryClient.invalidateQueries({
         queryKey: projectKeys.detail(result.id),
       });
+      if (result.slug) {
+        queryClient.invalidateQueries({
+          queryKey: projectKeys.bySlug(result.slug),
+        });
+      }
       if (result.teams.length) {
         queryClient.invalidateQueries({
           queryKey: projectKeys.recent(result.teams[0].id),
@@ -294,10 +315,15 @@ export function useUploadCodebaseSummary() {
         codebaseSummary: markdownContent,
         lastIndexedAt: new Date(),
       }),
-    onSuccess: (_, input) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({
-        queryKey: projectKeys.detail(input.projectId),
+        queryKey: projectKeys.detail(result.id),
       });
+      if (result.slug) {
+        queryClient.invalidateQueries({
+          queryKey: projectKeys.bySlug(result.slug),
+        });
+      }
     },
   });
 }
