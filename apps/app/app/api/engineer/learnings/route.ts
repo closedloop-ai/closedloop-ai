@@ -8,8 +8,8 @@ export async function GET() {
   try {
     const filePath = join(
       homedir(),
-      ".claude",
-      ".learnings",
+      ".closedloop-ai",
+      "learnings",
       "org-patterns.toon"
     );
     const content = await readFile(filePath, "utf-8");

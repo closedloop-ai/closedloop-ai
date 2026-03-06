@@ -129,6 +129,11 @@ export function EngineerDashboard() {
       return;
     }
 
+    // Batch processing status polling is handled by the dialog itself
+    if (processingLearnings.ticketId === "__batch__") {
+      return;
+    }
+
     const { ticketId, repoPath } = processingLearnings;
 
     const poll = async () => {
@@ -171,6 +176,26 @@ export function EngineerDashboard() {
       clearTimeout(timeout);
     };
   }, [processingLearnings]);
+
+  const handleProcessPending = useCallback(async () => {
+    try {
+      await fetch("/api/engineer/symphony/process-all-learnings", {
+        method: "POST",
+      });
+      setProcessingLearnings({ ticketId: "__batch__", repoPath: "" });
+      terminalBus.send("processing all learnings...", {
+        persistId: "learnings",
+      });
+    } catch {
+      // Ignore errors — dialog handles status
+    }
+  }, []);
+
+  const handleBatchProcessingComplete = useCallback(() => {
+    setProcessingLearnings(null);
+    terminalBus.clear("learnings");
+    terminalBus.send("learnings processed", { prefix: "ok" });
+  }, []);
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -320,7 +345,13 @@ export function EngineerDashboard() {
         </main>
       </div>
       <HealthCheckDialog />
-      <LearningsDialog onOpenChange={setLearningsOpen} open={learningsOpen} />
+      <LearningsDialog
+        isProcessingLearnings={!!processingLearnings}
+        onBatchProcessingComplete={handleBatchProcessingComplete}
+        onOpenChange={setLearningsOpen}
+        onProcessPending={handleProcessPending}
+        open={learningsOpen}
+      />
       <TerminalChatDialog
         onOpenChange={setTerminalChatOpen}
         open={terminalChatOpen}

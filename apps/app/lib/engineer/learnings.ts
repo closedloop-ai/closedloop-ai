@@ -13,8 +13,8 @@ export function getOrgPatternsContext(): string {
   try {
     const filePath = join(
       homedir(),
-      ".claude",
-      ".learnings",
+      ".closedloop-ai",
+      "learnings",
       "org-patterns.toon"
     );
     if (!existsSync(filePath)) {

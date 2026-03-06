@@ -14,7 +14,7 @@ import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
  * Global config directory: ~/.claude/closedloop/
  * Repos config is stored here so it persists across worktrees and checkouts.
  */
-const CONFIG_DIR = join(homedir(), ".claude", "closedloop");
+const CONFIG_DIR = join(homedir(), ".closedloop-ai");
 const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
 
 /**
@@ -340,6 +340,52 @@ export function getWorktreeParentDir(): string {
 }
 
 /**
+ * Compare two semver version strings numerically.
+ * Returns negative if a < b, 0 if equal, positive if a > b.
+ */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) {
+      return (pa[i] ?? 0) - (pb[i] ?? 0);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Find the latest semver version directory containing a given script
+ * within a plugin cache directory.
+ */
+function findLatestPluginScript(
+  pluginDir: string,
+  scriptRelPath: string
+): string | undefined {
+  if (!existsSync(pluginDir)) {
+    return undefined;
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(pluginDir);
+  } catch {
+    return undefined;
+  }
+
+  const versions = entries
+    .filter((name) => /^\d+\.\d+\.\d+/.test(name))
+    .filter((name) => existsSync(join(pluginDir, name, scriptRelPath)))
+    .sort(compareSemver);
+
+  if (versions.length === 0) {
+    return undefined;
+  }
+
+  return join(pluginDir, versions.at(-1)!, scriptRelPath);
+}
+
+/**
  * Auto-discover the Symphony run-loop.sh script path.
  * Scans $HOME/.claude/plugins/cache/closedloop-ai/code/ for the latest
  * semver version directory containing scripts/run-loop.sh.
@@ -354,41 +400,101 @@ export function getSymphonyScriptPath(): string | undefined {
     "closedloop-ai",
     "code"
   );
+  return findLatestPluginScript(pluginDir, join("scripts", "run-loop.sh"));
+}
 
-  if (!existsSync(pluginDir)) {
-    return undefined;
+/**
+ * Auto-discover the self-learning process-chat-learnings.sh script path.
+ * Scans $HOME/.claude/plugins/cache/closedloop-ai/self-learning/ for the latest
+ * semver version directory containing scripts/process-chat-learnings.sh.
+ * Returns undefined if not found.
+ */
+export function getSelfLearningScriptPath(): string | undefined {
+  const pluginDir = join(
+    homedir(),
+    ".claude",
+    "plugins",
+    "cache",
+    "closedloop-ai",
+    "self-learning"
+  );
+  return findLatestPluginScript(
+    pluginDir,
+    join("scripts", "process-chat-learnings.sh")
+  );
+}
+
+export type WorktreeWithPendingLearnings = {
+  worktreeDir: string;
+  claudeWorkDir: string;
+  pendingCount: number;
+};
+
+/**
+ * Scan all worktree directories for pending learning JSON files.
+ * Returns an array of worktrees that have at least one pending learning.
+ */
+export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings[] {
+  let worktreeParentDir: string;
+  try {
+    worktreeParentDir = getWorktreeParentDir();
+  } catch {
+    return [];
   }
+
+  if (!existsSync(worktreeParentDir)) {
+    return [];
+  }
+
+  const config = loadReposConfig();
+  const repoNames = new Set(
+    config.repos.map((r) => basename(expandHome(r.path)))
+  );
 
   let entries: string[];
   try {
-    entries = readdirSync(pluginDir);
+    entries = readdirSync(worktreeParentDir);
   } catch {
-    return undefined;
+    return [];
   }
 
-  // Filter to directories that look like semver versions and have run-loop.sh
-  const versions = entries
-    .filter((name) => /^\d+\.\d+\.\d+/.test(name))
-    .filter((name) =>
-      existsSync(join(pluginDir, name, "scripts", "run-loop.sh"))
-    )
-    .sort((a, b) => {
-      // Compare semver parts numerically
-      const pa = a.split(".").map(Number);
-      const pb = b.split(".").map(Number);
-      for (let i = 0; i < 3; i++) {
-        if ((pa[i] ?? 0) !== (pb[i] ?? 0)) {
-          return (pa[i] ?? 0) - (pb[i] ?? 0);
-        }
+  const results: WorktreeWithPendingLearnings[] = [];
+
+  for (const entry of entries) {
+    // Match worktree directories: {repoName}-{suffix}
+    const isWorktree = [...repoNames].some(
+      (name) => entry === name || entry.startsWith(`${name}-`)
+    );
+    if (!isWorktree) {
+      continue;
+    }
+
+    const worktreeDir = join(worktreeParentDir, entry);
+    const pendingDir = join(
+      worktreeDir,
+      ".claude",
+      "work",
+      ".learnings",
+      "pending"
+    );
+
+    if (!existsSync(pendingDir)) {
+      continue;
+    }
+
+    try {
+      const files = readdirSync(pendingDir).filter((f) => f.endsWith(".json"));
+      if (files.length > 0) {
+        results.push({
+          worktreeDir,
+          claudeWorkDir: join(worktreeDir, ".claude", "work"),
+          pendingCount: files.length,
+        });
       }
-      return 0;
-    });
-
-  if (versions.length === 0) {
-    return undefined;
+    } catch {
+      // Skip directories we can't read
+    }
   }
 
-  // Take the latest version
-  const latest = versions.at(-1)!;
-  return join(pluginDir, latest, "scripts", "run-loop.sh");
+  return results;
 }
