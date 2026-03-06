@@ -4,7 +4,7 @@ import {
   spawn,
   spawnSync,
 } from "node:child_process";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   mkdir,
@@ -783,43 +783,54 @@ export async function POST(
 
   // Model fallback: if the requested model is unavailable, re-spawn with the default.
   // Only applies to Codex reviews with a non-default model.
+  //
+  // Uses synchronous writes (writeFileSync) so the status endpoint immediately
+  // sees "running" with the new PID — prevents the poller from catching a gap
+  // between the original process exiting and the fallback state being written.
+  const { statePath: reviewStatePath } = getReviewPaths(worktreeDir, provider);
   const modelFallbackHandler =
     provider === "codex" && model !== DEFAULT_CODEX_MODEL
       ? () => {
           console.log(
             `[codex-review] Re-spawning review with fallback model ${DEFAULT_CODEX_MODEL}`
           );
+          const fallbackProcess = spawnCodexReview(
+            reviewCwd,
+            DEFAULT_CODEX_MODEL,
+            reasoningEffort,
+            effectiveReviewMode,
+            baseBranch,
+            instructions
+          );
+          const fallbackState: ReviewState = {
+            ...initialState,
+            pid: fallbackProcess.pid,
+            config: { ...initialState.config, model: DEFAULT_CODEX_MODEL },
+          };
+          // Synchronous writes to close the race window with the status poller
+          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
+          writeFileSync(
+            reviewStatePath,
+            JSON.stringify(fallbackState, null, 2)
+          );
+          if (fallbackProcess.pid) {
+            writeFileSync(pidPath, String(fallbackProcess.pid));
+          }
+          const fallbackSessionId: { value: string | null } = { value: null };
+          // No further model fallback — pass undefined to prevent infinite retry
+          setupProcessLifecycle(
+            fallbackProcess,
+            worktreeDir,
+            fallbackState,
+            pidPath,
+            fallbackSessionId
+          );
+          // Async log operations are fine — state is already consistent
           clearReviewLog(worktreeDir, provider).then(() => {
-            const fallbackProcess = spawnCodexReview(
-              reviewCwd,
-              DEFAULT_CODEX_MODEL,
-              reasoningEffort,
-              effectiveReviewMode,
-              baseBranch,
-              instructions
-            );
-            const fallbackState: ReviewState = {
-              ...initialState,
-              pid: fallbackProcess.pid,
-              config: { ...initialState.config, model: DEFAULT_CODEX_MODEL },
-            };
-            writeReviewState(worktreeDir, provider, fallbackState);
-            if (fallbackProcess.pid) {
-              writeFile(pidPath, String(fallbackProcess.pid));
-            }
-            const fallbackSessionId: { value: string | null } = { value: null };
-            // No further model fallback — pass undefined to prevent infinite retry
-            setupProcessLifecycle(
-              fallbackProcess,
-              worktreeDir,
-              fallbackState,
-              pidPath,
-              fallbackSessionId
-            );
             appendReviewLog(
               worktreeDir,
               provider,
-              `\n[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
+              `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
             );
           });
         }

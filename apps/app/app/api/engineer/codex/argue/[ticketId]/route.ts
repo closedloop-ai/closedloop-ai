@@ -252,6 +252,9 @@ export async function POST(
         }
       };
 
+      // Tracks whether we've already attempted a model fallback (prevents infinite retry)
+      let modelRetried = false;
+
       /**
        * Spawn a codex process and wire its output to the stream.
        * If `canRetry` is true and the process fails with a stale-session
@@ -315,7 +318,7 @@ export async function POST(
           // Detect model availability errors
           if (MODEL_ERROR_REGEX.test(text)) {
             modelError = true;
-            if (canRetry) {
+            if (!modelRetried) {
               return;
             }
           }
@@ -346,7 +349,7 @@ export async function POST(
           // Model unavailable: retry with default model
           if (
             modelError &&
-            canRetry &&
+            !modelRetried &&
             code !== 0 &&
             model !== DEFAULT_CODEX_MODEL
           ) {
@@ -381,6 +384,7 @@ export async function POST(
                 `model_reasoning_effort=${reasoningEffort}`
               );
             }
+            modelRetried = true;
             runCodex(fallbackArgs, false);
             return;
           }
