@@ -59,6 +59,7 @@ import {
   useUpdateProjectTargetDate,
 } from "@/hooks/queries/use-projects";
 import { useTeam } from "@/hooks/queries/use-teams";
+import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 import { useTabParam } from "@/hooks/use-tab-param";
 import { ActivityPanel } from "./components/activity-panel";
 import { ArtifactsTable } from "./components/artifacts-table";
@@ -96,7 +97,10 @@ export default function ProjectDetailPage() {
   const [viewMode, setViewMode] = useState<"type" | "threaded">("type");
   const [filterText, setFilterText] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [showPropertiesPanel, setShowPropertiesPanel] = useState(true);
+  const [showPropertiesPanel, setShowPropertiesPanel] = useLocalStorageState(
+    "panel:project-properties",
+    true
+  );
 
   const isFavorite = useIsFavorite(projectId);
   const toggleFavorite = useToggleFavorite();

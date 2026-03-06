@@ -1,6 +1,10 @@
 import { auth, currentUser } from "@repo/auth/server";
-import { SidebarProvider } from "@repo/design-system/components/ui/sidebar";
+import {
+  SIDEBAR_COOKIE_NAME,
+  SidebarProvider,
+} from "@repo/design-system/components/ui/sidebar";
 import { secure } from "@repo/security";
+import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { env } from "@/env";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
@@ -14,22 +18,28 @@ type AppLayoutProperties = {
 
 const AppLayout = async ({ children }: AppLayoutProperties) => {
   // Parallelize independent async operations to eliminate waterfalls
-  const [, { redirectToSignIn }, user] = await Promise.all([
+  const [, { redirectToSignIn }, user, cookieStore] = await Promise.all([
     // Security check runs in parallel (result unused but must complete)
     env.ARCJET_KEY ? secure(["CATEGORY:PREVIEW"]) : Promise.resolve(),
     auth(),
     currentUser(),
+    cookies(),
   ]);
 
   if (!user) {
     return redirectToSignIn();
   }
 
+  const sidebarCookie = cookieStore.get(SIDEBAR_COOKIE_NAME);
+  const sidebarDefaultOpen = sidebarCookie
+    ? sidebarCookie.value === "true"
+    : true;
+
   return (
     <CollaborationProviderWrapper>
       <DragHandlerWrapper>
         <NotificationsProvider userId={user.id}>
-          <SidebarProvider>
+          <SidebarProvider defaultOpen={sidebarDefaultOpen}>
             <GlobalSidebar>
               <div className="flex h-full max-h-full flex-col overflow-hidden">
                 {children}
