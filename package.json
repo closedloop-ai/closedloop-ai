@@ -34,15 +34,15 @@
     "@biomejs/biome": "2.3.13",
     "@playwright/test": "^1.58.2",
     "@repo/typescript-config": "workspace:*",
-    "@turbo/gen": "^2.8.3",
-    "@types/node": "^25.2.2",
+    "@turbo/gen": "^2.8.14",
+    "@types/node": "^25.3.5",
     "check-dependency-version-consistency": "^6.0.0",
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7",
+    "lint-staged": "^16.3.2",
     "next": "16.1.6",
     "playwright": "^1.58.2",
     "tsup": "^8.5.1",
-    "turbo": "^2.8.3",
+    "turbo": "^2.8.14",
     "typescript": "^5.9.3",
     "ultracite": "7.1.1",
     "vitest": "^4.0.18"
@@ -50,7 +50,7 @@
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "pnpm@10.28.2+sha512.41872f037ad22f7348e3b1debbaf7e867cfd448f2726d9cf74c08f19507c31d2c8e7a11525b983febc2df640b5438dee6023ebb1f84ed43cc2d654d2bc326264",
+  "packageManager": "pnpm@10.30.3+sha512.c961d1e0a2d8e354ecaa5166b822516668b7f44cb5bd95122d590dd81922f606f5473b6d23ec4a5be05e7fcd18e8488d47d978bbe981872f1145d06e9a740017",
   "dependencies": {
     "@clack/prompts": "^0.11.0",
     "commander": "^14.0.3"
