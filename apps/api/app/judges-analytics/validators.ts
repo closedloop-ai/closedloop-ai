@@ -1,6 +1,10 @@
 import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
 import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
-import { ARTIFACT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
+import {
+  ARTIFACT_COUNTS_GROUP_BY_OPTIONS,
+  PR_TIMELINE_GRANULARITY_OPTIONS,
+  type PrTimelineGranularity,
+} from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 
 const dateRangeQueryValidator = z
@@ -33,6 +37,27 @@ export const scoreComparisonQueryValidator = z.object({
     .transform(Number)
     .pipe(z.number().int().min(1).max(100)),
 });
+
+export const prHealthQueryValidator = dateRangeQueryValidator
+  .extend({
+    granularity: z
+      .enum(
+        Object.values(PR_TIMELINE_GRANULARITY_OPTIONS) as [
+          PrTimelineGranularity,
+          ...PrTimelineGranularity[],
+        ]
+      )
+      .default("week"),
+    reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+  })
+  .refine(
+    (data) => {
+      const start = new Date(data.startDate);
+      const end = new Date(data.endDate);
+      return (end.getTime() - start.getTime()) / 86_400_000 <= 365;
+    },
+    { message: "Date range must not exceed 365 days" }
+  );
 
 /** Parse YYYY-MM-DD strings to UTC start-of-day and end-of-day Date objects. */
 export function parseDateRange(startDate: string, endDate: string) {

@@ -7,6 +7,8 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
+import { PrActivitySection } from "./components/pr-activity-section";
+import { PrTimelineChart } from "./components/pr-timeline-chart";
 import { PromptSection } from "./components/prompt-section";
 import { ScoreComparisonSection } from "./components/score-comparison-section";
 
@@ -82,6 +84,16 @@ export default function JudgeDetailPage() {
       <PromptSection judge={judge} />
       <ScoreComparisonSection
         key={`${reportType}-${promptName}`}
+        promptName={promptName}
+        reportType={reportType}
+      />
+      <PrActivitySection
+        key={`pr-${reportType}-${promptName}`}
+        promptName={promptName}
+        reportType={reportType}
+      />
+      <PrTimelineChart
+        key={`pr-timeline-${reportType}-${promptName}`}
         promptName={promptName}
         reportType={reportType}
       />

@@ -6,8 +6,12 @@ import type {
   ArtifactCountsResponse,
   JudgeDetailResponse,
   JudgeStatsResponse,
+  PrHealthResponse,
+  PrTimelineGranularity,
 } from "@repo/api/src/types/judges-analytics";
+import { PR_TIMELINE_GRANULARITY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
+import { format, subDays } from "date-fns";
 import { useApiClient } from "@/hooks/use-api-client";
 import { JUDGES_ANALYTICS_QUERY_STALE_TIME_MS } from "@/lib/config/judges-analytics";
 
@@ -35,6 +39,22 @@ export const judgesAnalyticsKeys = {
     ] as const,
   detail: (promptName: string, reportType: EvaluationReportType) =>
     [...judgesAnalyticsKeys.all, "detail", promptName, reportType] as const,
+  prHealth: (
+    promptName: string,
+    reportType: string,
+    startDate: string,
+    endDate: string,
+    granularity: PrTimelineGranularity
+  ) =>
+    [
+      ...judgesAnalyticsKeys.all,
+      "pr-health",
+      promptName,
+      reportType,
+      startDate,
+      endDate,
+      granularity,
+    ] as const,
 };
 
 // Query hook
@@ -110,5 +130,38 @@ export function useJudgeDetail(
     enabled: Boolean(promptName) && Boolean(reportType),
     staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
     ...options,
+  });
+}
+
+export function usePrHealth(
+  promptName: string,
+  reportType: string,
+  rangeDays: number,
+  granularity: PrTimelineGranularity = PR_TIMELINE_GRANULARITY_OPTIONS.Week
+) {
+  const apiClient = useApiClient();
+  const endDate = format(new Date(), "yyyy-MM-dd");
+  const startDate = format(subDays(new Date(), rangeDays), "yyyy-MM-dd");
+
+  return useQuery({
+    queryKey: judgesAnalyticsKeys.prHealth(
+      promptName,
+      reportType,
+      startDate,
+      endDate,
+      granularity
+    ),
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("reportType", reportType);
+      params.set("startDate", startDate);
+      params.set("endDate", endDate);
+      params.set("granularity", granularity);
+      return apiClient.get<PrHealthResponse>(
+        `/judges-analytics/${encodeURIComponent(promptName)}/pr-health?${params.toString()}`
+      );
+    },
+    enabled: Boolean(promptName) && Boolean(reportType),
+    staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
   });
 }

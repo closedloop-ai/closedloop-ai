@@ -259,3 +259,39 @@ export type UserJudgeRating = {
 export type UserJudgeRatingsResponse = {
   ratings: UserJudgeRating[];
 };
+
+export const PR_TIMELINE_GRANULARITY_OPTIONS = {
+  Week: "week",
+  Month: "month",
+} as const;
+
+export type PrTimelineGranularity =
+  (typeof PR_TIMELINE_GRANULARITY_OPTIONS)[keyof typeof PR_TIMELINE_GRANULARITY_OPTIONS];
+
+/**
+ * A single data point in the PR timeline, bucketed by a date period.
+ * The `bucket` field is formatted as YYYY-MM-DD (start of the period).
+ */
+export type PrTimelineDataPoint = {
+  /** Start of the period, formatted as YYYY-MM-DD. */
+  bucket: string;
+  openedCount: number;
+};
+
+/**
+ * Aggregate PR health metrics for a project or team.
+ *
+ * Privacy invariant: this response contains only aggregate numeric data.
+ * It must never include body text, authorLogin, or authorAvatarUrl.
+ */
+export type PrHealthResponse = {
+  totalPrs: number;
+  openPrs: number;
+  avgCommentCount: number;
+  totalCommentCount: number;
+  /** Average hours from PR open to approval. Null when no approved PRs exist. */
+  avgApprovalHours: number | null;
+  approvalDistribution: Record<"lt1d" | "1to3d" | "3to7d" | "gt7d", number>;
+  timeline: PrTimelineDataPoint[];
+  confidenceNote: string;
+};
