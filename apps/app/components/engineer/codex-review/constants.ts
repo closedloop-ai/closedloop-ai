@@ -1,6 +1,6 @@
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 
-export const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
+export { DEFAULT_CODEX_MODEL } from "@/lib/engineer/codex-models";
 
 export const MODELS = [
   { value: "gpt-5.4", label: "GPT-5.4" },
@@ -9,8 +9,6 @@ export const MODELS = [
   { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
   { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
 ];
-
-export const VALID_CODEX_MODELS = new Set(MODELS.map((m) => m.value));
 
 export const REASONING_LEVELS = [
   { value: "low", label: "Low" },

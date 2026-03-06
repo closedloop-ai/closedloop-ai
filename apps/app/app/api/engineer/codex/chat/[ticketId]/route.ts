@@ -9,15 +9,15 @@ import {
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
+import {
+  DEFAULT_CODEX_MODEL,
+  MODEL_ERROR_REGEX,
+} from "@/lib/engineer/codex-models";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
-const MODEL_ERROR_REGEX =
-  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
 
 type ChatHistoryMessage = {
   role: string;

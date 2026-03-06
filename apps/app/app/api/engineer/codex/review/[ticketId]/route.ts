@@ -21,6 +21,10 @@ import {
   extractClaudeText,
 } from "@/lib/engineer/claude-stream-utils";
 import {
+  DEFAULT_CODEX_MODEL,
+  MODEL_ERROR_REGEX,
+} from "@/lib/engineer/codex-models";
+import {
   expandHome,
   getWorktreeParentDir,
   isRepoAllowed,
@@ -33,9 +37,6 @@ export const maxDuration = 300; // 5 minutes max for long reviews
 const PR_PREFIX_REGEX = /^pr-/;
 const SAFE_REF_REGEX = /^[a-zA-Z0-9/_.-]+$/;
 const CODEX_SESSION_ID_REGEX = /session id:\s*([0-9a-f-]{36})/i;
-const MODEL_ERROR_REGEX =
-  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 
 type ReviewRequest = {
   instructions?: string;
@@ -787,12 +788,22 @@ export async function POST(
   // Uses synchronous writes (writeFileSync) so the status endpoint immediately
   // sees "running" with the new PID — prevents the poller from catching a gap
   // between the original process exiting and the fallback state being written.
-  const { statePath: reviewStatePath } = getReviewPaths(worktreeDir, provider);
+  const { statePath: reviewStatePath, logPath: reviewLogPath } = getReviewPaths(
+    worktreeDir,
+    provider
+  );
   const modelFallbackHandler =
     provider === "codex" && model !== DEFAULT_CODEX_MODEL
       ? () => {
           console.log(
             `[codex-review] Re-spawning review with fallback model ${DEFAULT_CODEX_MODEL}`
+          );
+          // Synchronous writes to close the race window with the status poller
+          // and ensure the log is clean before the fallback process starts writing
+          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
+          writeFileSync(
+            reviewLogPath,
+            `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
           );
           const fallbackProcess = spawnCodexReview(
             reviewCwd,
@@ -807,8 +818,6 @@ export async function POST(
             pid: fallbackProcess.pid,
             config: { ...initialState.config, model: DEFAULT_CODEX_MODEL },
           };
-          // Synchronous writes to close the race window with the status poller
-          mkdirSync(join(worktreeDir, ".claude", "work"), { recursive: true });
           writeFileSync(
             reviewStatePath,
             JSON.stringify(fallbackState, null, 2)
@@ -825,14 +834,6 @@ export async function POST(
             pidPath,
             fallbackSessionId
           );
-          // Async log operations are fine — state is already consistent
-          clearReviewLog(worktreeDir, provider).then(() => {
-            appendReviewLog(
-              worktreeDir,
-              provider,
-              `[Model ${model} unavailable — fell back to ${DEFAULT_CODEX_MODEL}]\n\n`
-            );
-          });
         }
       : undefined;
 

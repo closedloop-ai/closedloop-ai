@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { parseDebateStatus } from "@/lib/engineer/chat-utils";
+import {
+  DEFAULT_CODEX_MODEL,
+  MODEL_ERROR_REGEX,
+} from "@/lib/engineer/codex-models";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 export const dynamic = "force-dynamic";
@@ -10,9 +14,6 @@ export const maxDuration = 300;
 
 const STALE_SESSION_REGEX =
   /state db missing|rollout.*missing|thread.*not found/i;
-const MODEL_ERROR_REGEX =
-  /model.*not.*(?:found|available|supported|exist)|unsupported.*model|invalid.*model|does not have access/i;
-const DEFAULT_CODEX_MODEL = "gpt-5.3-codex";
 
 type DebateRequest = {
   claudeArgument: string;
