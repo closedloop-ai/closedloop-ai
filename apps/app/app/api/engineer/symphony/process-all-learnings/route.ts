@@ -106,6 +106,23 @@ export function GET() {
 export function POST() {
   migrateLegacyLearningsDir();
 
+  // Concurrency guard: return early if a batch job is already running
+  if (existsSync(STATUS_PATH)) {
+    try {
+      const existing = JSON.parse(readFileSync(STATUS_PATH, "utf-8"));
+      if (existing.status === "processing") {
+        return Response.json({
+          status: "already_processing",
+          worktreeCount: existing.worktreeCount,
+          processedWorktrees: existing.processedWorktrees,
+          startedAt: existing.startedAt,
+        });
+      }
+    } catch {
+      // Corrupt status file — proceed with new batch
+    }
+  }
+
   const worktrees = getWorktreesWithPendingLearnings();
   if (worktrees.length === 0) {
     return Response.json({
