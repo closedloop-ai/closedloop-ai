@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -176,6 +177,7 @@ export function POST() {
     });
 
     child.unref();
+    closeSync(logFd);
 
     return Response.json({
       status: "processing",
@@ -183,6 +185,7 @@ export function POST() {
       pid: child.pid,
     });
   } catch (err) {
+    closeSync(logFd);
     const message = err instanceof Error ? err.message : "Unknown error";
     // Write error status
     writeFileSync(
