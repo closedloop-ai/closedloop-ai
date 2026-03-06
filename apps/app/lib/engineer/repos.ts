@@ -11,10 +11,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { ConfiguredRepo, RepoSettings, ReposConfig } from "@/types/repos";
 
 /**
- * Global config directory: ~/.claude/closedloop/
+ * Global config directory: ~/.closedloop-ai/
  * Repos config is stored here so it persists across worktrees and checkouts.
  */
-const CONFIG_DIR = join(homedir(), ".claude", "closedloop");
+const CONFIG_DIR = join(homedir(), ".closedloop-ai");
 const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
 
 /**
@@ -22,6 +22,17 @@ const REPOS_CONFIG_PATH = join(CONFIG_DIR, "repos.json");
  * Checked on every load for migration, then deleted.
  */
 const LEGACY_CONFIG_PATH = join(process.cwd(), ".cache", "repos.json");
+
+/**
+ * Previous global config location: ~/.claude/closedloop/repos.json
+ * Migrated to ~/.closedloop-ai/repos.json on first load.
+ */
+const LEGACY_CLAUDE_CONFIG_PATH = join(
+  homedir(),
+  ".claude",
+  "closedloop",
+  "repos.json"
+);
 
 const DEFAULT_REPOS: ConfiguredRepo[] = [];
 const DEFAULT_SETTINGS: RepoSettings = {};
@@ -125,7 +136,45 @@ function removeLegacyConfig(): void {
 }
 
 /**
- * Load repos configuration from ~/.claude/closedloop/repos.json.
+ * Migrate repos.json from the previous global location (~/.claude/closedloop/)
+ * into the new global config dir (~/.closedloop-ai/).
+ * Only runs when the new config doesn't exist yet and the old one does.
+ * Copies the file and cleans up the old directory if empty.
+ */
+function migrateLegacyClaudeConfig(global: ReposConfig): ReposConfig {
+  if (existsSync(REPOS_CONFIG_PATH) || !existsSync(LEGACY_CLAUDE_CONFIG_PATH)) {
+    return global;
+  }
+
+  try {
+    const content = readFileSync(LEGACY_CLAUDE_CONFIG_PATH, "utf-8");
+    const legacy = JSON.parse(content) as ReposConfig;
+
+    ensureConfigDir();
+    writeFileSync(REPOS_CONFIG_PATH, content);
+
+    // Clean up legacy file and directory
+    rmSync(LEGACY_CLAUDE_CONFIG_PATH, { force: true });
+    const legacyDir = dirname(LEGACY_CLAUDE_CONFIG_PATH);
+    if (existsSync(legacyDir) && readdirSync(legacyDir).length === 0) {
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+
+    console.log(
+      "[repos] Migrated config from ~/.claude/closedloop/ to ~/.closedloop-ai/"
+    );
+
+    return {
+      repos: [...(legacy.repos ?? DEFAULT_REPOS)],
+      settings: { ...(legacy.settings ?? DEFAULT_SETTINGS) },
+    };
+  } catch {
+    return global;
+  }
+}
+
+/**
+ * Load repos configuration from ~/.closedloop-ai/repos.json.
  * On every load, checks for a legacy .cache/repos.json in the cwd and
  * migrates any repos from it before deleting the old file.
  */
@@ -158,6 +207,9 @@ export function loadReposConfig(): ReposConfig {
     };
     needsSave = true; // Create file on first load
   }
+
+  // Migrate from ~/.claude/closedloop/repos.json (previous global location)
+  config = migrateLegacyClaudeConfig(config);
 
   // Check for legacy file before migration (migration deletes it)
   const hadLegacyConfig = existsSync(LEGACY_CONFIG_PATH);
@@ -340,6 +392,52 @@ export function getWorktreeParentDir(): string {
 }
 
 /**
+ * Compare two semver version strings numerically.
+ * Returns negative if a < b, 0 if equal, positive if a > b.
+ */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) {
+      return (pa[i] ?? 0) - (pb[i] ?? 0);
+    }
+  }
+  return 0;
+}
+
+/**
+ * Find the latest semver version directory containing a given script
+ * within a plugin cache directory.
+ */
+function findLatestPluginScript(
+  pluginDir: string,
+  scriptRelPath: string
+): string | undefined {
+  if (!existsSync(pluginDir)) {
+    return undefined;
+  }
+
+  let entries: string[];
+  try {
+    entries = readdirSync(pluginDir);
+  } catch {
+    return undefined;
+  }
+
+  const versions = entries
+    .filter((name) => /^\d+\.\d+\.\d+/.test(name))
+    .filter((name) => existsSync(join(pluginDir, name, scriptRelPath)))
+    .sort(compareSemver);
+
+  if (versions.length === 0) {
+    return undefined;
+  }
+
+  return join(pluginDir, versions.at(-1)!, scriptRelPath);
+}
+
+/**
  * Auto-discover the Symphony run-loop.sh script path.
  * Scans $HOME/.claude/plugins/cache/closedloop-ai/code/ for the latest
  * semver version directory containing scripts/run-loop.sh.
@@ -354,41 +452,112 @@ export function getSymphonyScriptPath(): string | undefined {
     "closedloop-ai",
     "code"
   );
+  return findLatestPluginScript(pluginDir, join("scripts", "run-loop.sh"));
+}
 
-  if (!existsSync(pluginDir)) {
-    return undefined;
+/**
+ * Auto-discover the self-learning process-chat-learnings.sh script path.
+ * Scans $HOME/.claude/plugins/cache/closedloop-ai/self-learning/ for the latest
+ * semver version directory containing scripts/process-chat-learnings.sh.
+ * Returns undefined if not found.
+ */
+export function getSelfLearningScriptPath(): string | undefined {
+  const pluginDir = join(
+    homedir(),
+    ".claude",
+    "plugins",
+    "cache",
+    "closedloop-ai",
+    "self-learning"
+  );
+  return findLatestPluginScript(
+    pluginDir,
+    join("scripts", "process-chat-learnings.sh")
+  );
+}
+
+export type WorktreeWithPendingLearnings = {
+  worktreeDir: string;
+  claudeWorkDir: string;
+  pendingCount: number;
+};
+
+/**
+ * Scan all worktree directories for pending learning JSON files.
+ * Returns an array of worktrees that have at least one pending learning.
+ */
+export function getWorktreesWithPendingLearnings(): WorktreeWithPendingLearnings[] {
+  let worktreeParentDir: string;
+  try {
+    worktreeParentDir = getWorktreeParentDir();
+  } catch {
+    return [];
   }
+
+  if (!existsSync(worktreeParentDir)) {
+    return [];
+  }
+
+  const config = loadReposConfig();
+  const repos = config.repos.map((r) => {
+    const expanded = expandHome(r.path);
+    return {
+      name: basename(expanded),
+      path: expanded,
+      parent: dirname(expanded),
+    };
+  });
 
   let entries: string[];
   try {
-    entries = readdirSync(pluginDir);
+    entries = readdirSync(worktreeParentDir);
   } catch {
-    return undefined;
+    return [];
   }
 
-  // Filter to directories that look like semver versions and have run-loop.sh
-  const versions = entries
-    .filter((name) => /^\d+\.\d+\.\d+/.test(name))
-    .filter((name) =>
-      existsSync(join(pluginDir, name, "scripts", "run-loop.sh"))
-    )
-    .sort((a, b) => {
-      // Compare semver parts numerically
-      const pa = a.split(".").map(Number);
-      const pb = b.split(".").map(Number);
-      for (let i = 0; i < 3; i++) {
-        if ((pa[i] ?? 0) !== (pb[i] ?? 0)) {
-          return (pa[i] ?? 0) - (pb[i] ?? 0);
-        }
+  const results: WorktreeWithPendingLearnings[] = [];
+
+  for (const entry of entries) {
+    // Match worktree directories by name prefix, then validate git linkage
+    const entryPath = join(worktreeParentDir, entry);
+    const matchedRepo = repos.some((repo) => {
+      if (entry === repo.name) {
+        return repo.parent === worktreeParentDir;
       }
-      return 0;
+      return (
+        entry.startsWith(`${repo.name}-`) && isWorktreeOf(entryPath, repo.path)
+      );
     });
+    if (!matchedRepo) {
+      continue;
+    }
 
-  if (versions.length === 0) {
-    return undefined;
+    const worktreeDir = entryPath;
+    const pendingDir = join(
+      worktreeDir,
+      ".claude",
+      "work",
+      ".learnings",
+      "pending"
+    );
+
+    if (!existsSync(pendingDir)) {
+      continue;
+    }
+
+    try {
+      const files = readdirSync(pendingDir).filter((f) => f.endsWith(".json"));
+      if (files.length > 0) {
+        results.push({
+          worktreeDir,
+          claudeWorkDir: join(worktreeDir, ".claude", "work"),
+          pendingCount: files.length,
+        });
+      }
+    } catch {
+      // Skip directories we can't read
+    }
   }
 
-  // Take the latest version
-  const latest = versions.at(-1)!;
-  return join(pluginDir, latest, "scripts", "run-loop.sh");
+  return results;
 }

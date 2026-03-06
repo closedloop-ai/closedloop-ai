@@ -11,12 +11,19 @@ import { parseToon } from "./toon-parser";
  */
 export function getOrgPatternsContext(): string {
   try {
-    const filePath = join(
+    const newPath = join(
+      homedir(),
+      ".closedloop-ai",
+      "learnings",
+      "org-patterns.toon"
+    );
+    const legacyPath = join(
       homedir(),
       ".claude",
       ".learnings",
       "org-patterns.toon"
     );
+    const filePath = existsSync(newPath) ? newPath : legacyPath;
     if (!existsSync(filePath)) {
       return "";
     }
