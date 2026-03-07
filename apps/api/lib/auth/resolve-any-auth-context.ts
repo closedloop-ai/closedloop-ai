@@ -1,5 +1,5 @@
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
-import { auth } from "@repo/auth/server";
+import { auth, getAuth, verifyToken } from "@repo/auth/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
@@ -16,7 +16,7 @@ type ResolvedAuthContext = {
  *
  * Returns `null` when authentication fails for any reason.
  */
-export function resolveAnyAuthContext(
+export async function resolveAnyAuthContext(
   request: Request,
   options?: { requiredScopes?: ApiKeyScope[] }
 ): Promise<ResolvedAuthContext | null> {
@@ -28,6 +28,18 @@ export function resolveAnyAuthContext(
       token,
       options?.requiredScopes ?? ["read"]
     );
+  }
+
+  const requestContext = await resolveClerkRequestContext(request);
+  if (requestContext) {
+    return requestContext;
+  }
+
+  if (token) {
+    const bearerContext = await resolveClerkBearerTokenContext(token);
+    if (bearerContext) {
+      return bearerContext;
+    }
   }
 
   return resolveClerkContext();
@@ -72,12 +84,58 @@ export async function resolveApiKeyTokenContext(
   };
 }
 
+function resolveClerkRequestContext(
+  request: Request
+): Promise<ResolvedAuthContext | null> {
+  try {
+    const requestAuth = getAuth(request as Parameters<typeof getAuth>[0], {
+      acceptsToken: "any",
+    });
+    if (!(requestAuth.userId && requestAuth.orgId)) {
+      return Promise.resolve(null);
+    }
+
+    return resolveClerkIdentityContext(requestAuth.userId, requestAuth.orgId);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
+async function resolveClerkBearerTokenContext(
+  token: string
+): Promise<ResolvedAuthContext | null> {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  if (!secretKey) {
+    return null;
+  }
+
+  try {
+    const claims = await verifyToken(token, { secretKey });
+    const clerkUserId = typeof claims.sub === "string" ? claims.sub : null;
+    const clerkOrgId = typeof claims.org_id === "string" ? claims.org_id : null;
+
+    if (!(clerkUserId && clerkOrgId)) {
+      return null;
+    }
+    return resolveClerkIdentityContext(clerkUserId, clerkOrgId);
+  } catch {
+    return null;
+  }
+}
+
 async function resolveClerkContext(): Promise<ResolvedAuthContext | null> {
   const { userId: clerkUserId, orgId: clerkOrgId } = await auth();
   if (!(clerkUserId && clerkOrgId)) {
     return null;
   }
 
+  return resolveClerkIdentityContext(clerkUserId, clerkOrgId);
+}
+
+async function resolveClerkIdentityContext(
+  clerkUserId: string,
+  clerkOrgId: string
+): Promise<ResolvedAuthContext | null> {
   const organization = await organizationsService.findByClerkId(clerkOrgId);
   if (!organization) {
     return null;

@@ -141,6 +141,8 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         }
 
         // Save session to ~/.symphony/sessions.json via API
+        // Local handler returns `workDir`, Electron relay returns `worktreePath`.
+        const resolvedWorktreePath = data.workDir ?? data.worktreePath;
         const contextRepoPaths = ticket?.contextRepoPaths;
         await fetch("/api/engineer/symphony/sessions", {
           method: "POST",
@@ -148,7 +150,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
           body: JSON.stringify({
             ticketId: ticketIdentifier,
             repoPath,
-            worktreePath: data.workDir,
+            worktreePath: resolvedWorktreePath,
             pid: data.pid,
             contextRepoPaths,
             baseBranch: data.baseBranch,
@@ -160,7 +162,7 @@ export function useSymphonyLaunch(): UseSymphonyLaunchResult {
         const newSession: ActiveSession = {
           ticketId: ticketIdentifier,
           repoPath,
-          worktreePath: data.workDir,
+          worktreePath: resolvedWorktreePath,
           pid: data.pid,
           contextRepoPaths,
           baseBranch: data.baseBranch,

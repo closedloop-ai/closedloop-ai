@@ -16,8 +16,13 @@ type InterceptorWindow = Window & {
 const ENGINEER_PREFIX = "/api/engineer/";
 const ENGINEER_RELAY_PREFIX = "/api/engineer-relay/";
 
+const RELAY_BYPASS_PATHS = new Set(["/api/engineer/mcp-auth"]);
+
 function isEngineerRequest(url: URL): boolean {
-  return url.pathname.startsWith(ENGINEER_PREFIX);
+  return (
+    url.pathname.startsWith(ENGINEER_PREFIX) &&
+    !RELAY_BYPASS_PATHS.has(url.pathname)
+  );
 }
 
 function stripAuthHeaders(headers: Headers): Headers {
@@ -100,14 +105,27 @@ function createFetchInterceptor(
         `${toRelayPath(requestUrl.pathname)}${requestUrl.search}`,
         globalThis.location.origin
       );
-      const rewrittenRequest = new Request(rewrittenUrl.toString(), request);
       const headers = withComputeTargetHeader(
-        rewrittenRequest.headers,
+        request.headers,
         routingSelection.computeTargetId
       );
 
-      const outgoing = new Request(rewrittenRequest, { headers });
-      return originalFetch(outgoing);
+      const init: RequestInit = {
+        method: request.method,
+        headers,
+        credentials: request.credentials,
+        cache: request.cache,
+        redirect: request.redirect,
+        referrer: request.referrer,
+        referrerPolicy: request.referrerPolicy,
+        signal: request.signal,
+      };
+
+      if (methodAllowsBody(request.method)) {
+        init.body = await request.arrayBuffer();
+      }
+
+      return originalFetch(new Request(rewrittenUrl.toString(), init));
     }
 
     if (routingSelection.mode !== EngineerRoutingMode.LocalElectron) {

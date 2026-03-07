@@ -4,8 +4,11 @@ import type {
   CreateDesktopCommandResponse,
   DesktopCommandEvent,
 } from "@repo/api/src/types/compute-target";
+import { log } from "@repo/observability/log";
 
 const RESULT_STREAM_TIMEOUT_MS = 120_000;
+const STREAM_INACTIVITY_TIMEOUT_MS = 300_000;
+const STREAM_POLL_INTERVAL_MS = 1000;
 
 export type RelayEncodedBody =
   | { kind: "none" }
@@ -48,12 +51,24 @@ function parseRelayResponseEnvelope(
   if (!isRecord(value)) {
     return null;
   }
-  if (typeof value.status !== "number" || !("body" in value)) {
+
+  // Electron gateway uses { statusCode, data }, relay envelope uses { status, body }.
+  const status =
+    typeof value.status === "number"
+      ? value.status
+      : typeof value.statusCode === "number"
+        ? value.statusCode
+        : undefined;
+  const body =
+    "body" in value ? value.body : "data" in value ? value.data : undefined;
+
+  if (status === undefined || body === undefined) {
     return null;
   }
+
   return {
-    status: value.status,
-    body: value.body,
+    status,
+    body,
     headers:
       isRecord(value.headers) &&
       Object.values(value.headers).every((entry) => typeof entry === "string")
@@ -154,6 +169,22 @@ async function parseStreamError(
   );
 }
 
+async function parsePollError(response: Response): Promise<RelayRequestError> {
+  const payload = (await response
+    .json()
+    .catch(() => null)) as ApiResult<unknown> | null;
+
+  if (payload && !payload.success) {
+    return new RelayRequestError(payload.error, response.status, payload);
+  }
+
+  return new RelayRequestError(
+    `Relay event poll failed (${response.status})`,
+    response.status,
+    payload
+  );
+}
+
 function isEventTerminal(event: DesktopCommandEvent): boolean {
   if (event.eventType === "done") {
     return true;
@@ -178,6 +209,36 @@ function extractTerminalError(event: DesktopCommandEvent): string {
     return event.data.error;
   }
   return "Relay command failed";
+}
+
+/** Parse "gateway returned 404: {...}" → 404, or null if not a gateway HTTP error. */
+function extractGatewayStatus(event: DesktopCommandEvent): number | null {
+  const msg =
+    isRecord(event.data) && typeof event.data.error === "string"
+      ? event.data.error
+      : "";
+  const match = /^gateway returned (\d{3})/.exec(msg);
+  if (!match) {
+    return null;
+  }
+  return Number(match[1]);
+}
+
+function extractGatewayBody(event: DesktopCommandEvent): unknown {
+  const msg =
+    isRecord(event.data) && typeof event.data.error === "string"
+      ? event.data.error
+      : "";
+  const colonIdx = msg.indexOf(": ");
+  if (colonIdx === -1) {
+    return { error: msg };
+  }
+  const jsonStr = msg.slice(colonIdx + 2);
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    return { error: jsonStr };
+  }
 }
 
 function makeCommandEventsStreamUrl(
@@ -229,6 +290,105 @@ function splitPathAndQuery(pathWithQuery: string): {
   };
 }
 
+function resolveOperationId(pathname: string): string | null {
+  if (!pathname.startsWith("/api/engineer/")) {
+    return null;
+  }
+  if (pathname === "/api/engineer/symphony/launch") {
+    return "symphony_launch";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/status/")) {
+    return "symphony_status";
+  }
+  if (pathname === "/api/engineer/symphony/kill") {
+    return "symphony_kill";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/chat/")) {
+    return "symphony_chat";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/comment-chat/")) {
+    return "symphony_comment_chat";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/commit-message/")) {
+    return "symphony_commit_message";
+  }
+  if (pathname === "/api/engineer/symphony/sessions") {
+    return "symphony_sessions";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/plan/")) {
+    return "symphony_plan";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/judges/")) {
+    return "symphony_judges";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/logs/")) {
+    return "symphony_logs";
+  }
+  if (pathname.startsWith("/api/engineer/symphony/chat-history/")) {
+    return "symphony_chat_history";
+  }
+  if (pathname === "/api/engineer/terminal-chat") {
+    return "terminal_chat";
+  }
+  if (pathname === "/api/engineer/ticket-chat") {
+    return "ticket_chat";
+  }
+  if (pathname === "/api/engineer/run-viewer-chat") {
+    return "run_viewer_chat";
+  }
+  if (pathname.startsWith("/api/engineer/codex/argue/")) {
+    return "codex_argue";
+  }
+  if (pathname.startsWith("/api/engineer/codex/")) {
+    return "codex_review";
+  }
+  if (
+    pathname.startsWith("/api/engineer/git/pr") ||
+    pathname === "/api/engineer/git/user"
+  ) {
+    return "git_pr";
+  }
+  if (pathname.startsWith("/api/engineer/git")) {
+    return "git_action";
+  }
+  if (pathname === "/api/engineer/health-check") {
+    return "health_check";
+  }
+  if (pathname === "/api/engineer/repos") {
+    return "repos_config";
+  }
+  if (pathname.startsWith("/api/engineer/deploy")) {
+    return "deploy";
+  }
+  if (
+    pathname === "/api/engineer/learnings" ||
+    pathname.includes("learnings")
+  ) {
+    return "learnings";
+  }
+  if (
+    pathname === "/api/engineer/directories" ||
+    pathname === "/api/engineer/files/search" ||
+    pathname.startsWith("/api/engineer/run-viewer-extract")
+  ) {
+    return "filesystem";
+  }
+  return null;
+}
+
+function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
+  switch (body.kind) {
+    case "none":
+      return undefined;
+    case "json":
+      return body.value as JsonValue;
+    case "text":
+      return body.value as unknown as JsonValue;
+    case "base64":
+      return body.value as unknown as JsonValue;
+  }
+}
+
 function toDesktopCommandInput(
   operationId: string,
   request: RelayHttpRequestPayload,
@@ -240,12 +400,12 @@ function toDesktopCommandInput(
   }
 
   return {
-    operationId,
+    operationId: resolveOperationId(path) ?? operationId,
     method: normalizeMethod(request.method),
     path,
     headers: request.headers,
     query,
-    body: request.body as unknown as JsonValue,
+    body: unwrapRelayBody(request.body),
     streaming,
   };
 }
@@ -296,10 +456,16 @@ export function isStreamingEngineerRequest(
 export class RelayClient {
   private readonly apiOrigin: string;
   private readonly authToken: string;
+  private readonly internalApiSecret?: string;
 
-  constructor(apiOrigin: string, authToken: string) {
+  constructor(
+    apiOrigin: string,
+    authToken: string,
+    internalApiSecret?: string
+  ) {
     this.apiOrigin = apiOrigin;
     this.authToken = authToken;
+    this.internalApiSecret = internalApiSecret;
   }
 
   private async createCommand(
@@ -354,10 +520,17 @@ export class RelayClient {
     const { commandId } = await this.createCommand(targetId, commandInput);
 
     const abortController = new AbortController();
-    const timeout = setTimeout(
+    let timeout = setTimeout(
       () => abortController.abort(),
       RESULT_STREAM_TIMEOUT_MS
     );
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(
+        () => abortController.abort(),
+        RESULT_STREAM_TIMEOUT_MS
+      );
+    };
 
     try {
       const response = await this.openCommandEventsStream(
@@ -367,8 +540,19 @@ export class RelayClient {
       );
 
       for await (const payload of readSseData(response)) {
+        resetTimeout();
         const event = JSON.parse(payload) as DesktopCommandEvent;
         if (isTerminalErrorEvent(event)) {
+          // Gateway HTTP errors (e.g. 404) should be forwarded as
+          // responses, not thrown as exceptions that become 502s.
+          const gatewayStatus = extractGatewayStatus(event);
+          if (gatewayStatus !== null) {
+            const errorBody = extractGatewayBody(event);
+            return {
+              envelope: { status: gatewayStatus, body: errorBody },
+              value: { statusCode: gatewayStatus, data: errorBody },
+            };
+          }
           throw new Error(extractTerminalError(event));
         }
 
@@ -396,6 +580,43 @@ export class RelayClient {
     throw new Error("Relay result stream ended without a terminal event");
   }
 
+  private async pollCommandEvents(
+    targetId: string,
+    commandId: string
+  ): Promise<DesktopCommandEvent[]> {
+    const useInternalRoute =
+      typeof this.internalApiSecret === "string" &&
+      this.internalApiSecret.length > 0;
+    const url = useInternalRoute
+      ? `${this.apiOrigin}/internal/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`
+      : `${this.apiOrigin}/compute-targets/${encodeURIComponent(targetId)}/commands/${encodeURIComponent(commandId)}/events`;
+    const response = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        ...(useInternalRoute
+          ? { "x-internal-secret": this.internalApiSecret }
+          : { Authorization: `Bearer ${this.authToken}` }),
+      },
+    });
+
+    if (!response.ok) {
+      throw await parsePollError(response);
+    }
+
+    const payload = (await response.json().catch(() => null)) as ApiResult<
+      DesktopCommandEvent[]
+    > | null;
+    if (!payload?.success) {
+      throw new RelayRequestError(
+        "Relay event poll returned an invalid response envelope",
+        502,
+        payload
+      );
+    }
+    return payload.data;
+  }
+
   async streamOperation(
     targetId: string,
     request: RelayHttpRequestPayload
@@ -404,52 +625,74 @@ export class RelayClient {
     const commandInput = toDesktopCommandInput(operationId, request, true);
     const { commandId } = await this.createCommand(targetId, commandInput);
 
-    const upstreamController = new AbortController();
-    const timeout = setTimeout(
-      () => upstreamController.abort(),
-      RESULT_STREAM_TIMEOUT_MS
-    );
-
-    let response: Response;
-    try {
-      response = await this.openCommandEventsStream(
-        targetId,
-        commandId,
-        upstreamController.signal
-      );
-    } catch (error) {
-      clearTimeout(timeout);
-      throw error;
-    }
-
     const encoder = new TextEncoder();
+    const self = this;
 
+    // Poll-based streaming — avoids SSE buffering issues in Next.js dev server.
+    // Events are polled from the DB every second and forwarded as NDJSON.
     return new ReadableStream({
       async start(controller) {
-        try {
-          for await (const payload of readSseData(response)) {
-            const event = JSON.parse(payload) as DesktopCommandEvent;
-            const output = mapCommandEventToNdjsonLine(event);
-            controller.enqueue(encoder.encode(`${JSON.stringify(output)}\n`));
+        let lastSequence = 0;
+        let consecutiveEmptyPolls = 0;
+        const maxEmptyPolls =
+          STREAM_INACTIVITY_TIMEOUT_MS / STREAM_POLL_INTERVAL_MS;
 
-            if (isEventTerminal(event)) {
-              controller.close();
-              return;
+        try {
+          while (consecutiveEmptyPolls < maxEmptyPolls) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, STREAM_POLL_INTERVAL_MS)
+            );
+
+            const events = await self.pollCommandEvents(targetId, commandId);
+            let foundNew = false;
+
+            for (const event of events) {
+              if (
+                typeof event.sequence === "number" &&
+                event.sequence > lastSequence
+              ) {
+                lastSequence = event.sequence;
+                foundNew = true;
+                const output = mapCommandEventToNdjsonLine(event);
+                controller.enqueue(
+                  encoder.encode(`${JSON.stringify(output)}\n`)
+                );
+
+                if (isEventTerminal(event)) {
+                  controller.close();
+                  return;
+                }
+              }
+            }
+
+            if (foundNew) {
+              consecutiveEmptyPolls = 0;
+            } else {
+              consecutiveEmptyPolls++;
             }
           }
+
+          // Inactivity timeout reached
           controller.close();
         } catch (error) {
-          controller.error(error);
-        } finally {
-          clearTimeout(timeout);
-          // controller.error() does NOT trigger the cancel() callback per
-          // the ReadableStream spec, so abort the upstream fetch explicitly.
-          upstreamController.abort();
+          log.error("Relay command event polling failed", {
+            targetId,
+            commandId,
+            error,
+          });
+          controller.enqueue(
+            encoder.encode(
+              `${JSON.stringify({
+                type: "error",
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Relay command event polling failed",
+              })}\n`
+            )
+          );
+          controller.close();
         }
-      },
-      cancel() {
-        clearTimeout(timeout);
-        upstreamController.abort();
       },
     });
   }

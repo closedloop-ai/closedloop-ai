@@ -85,6 +85,7 @@ type DispatchableCommand = {
   lockKey?: string;
   requiresApproval?: boolean;
   approvalReason?: string;
+  streaming?: boolean;
   createdAt: string;
 };
 
@@ -283,6 +284,7 @@ function toDispatchableCommand(command: StoredCommand): DispatchableCommand {
     lockKey: command.requestPayload.lockKey,
     requiresApproval: command.requestPayload.requiresApproval,
     approvalReason: command.requestPayload.approvalReason,
+    streaming: command.requestPayload.streaming,
     createdAt: command.createdAt.toISOString(),
   };
 }

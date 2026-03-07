@@ -59,7 +59,7 @@ function normalizeMachineName(value: string): string {
     .replaceAll(/[^a-z0-9]/g, "");
 }
 
-function isSameMachineTarget(
+function _isSameMachineTarget(
   target: ComputeTarget,
   localMachineName: string | null
 ): boolean {
@@ -96,11 +96,8 @@ function buildOptions(
     });
   }
 
-  const visibleTargets = detection.detected
-    ? targets.filter(
-        (target) => !isSameMachineTarget(target, detection.machineName)
-      )
-    : targets;
+  // TODO: restore same-machine filtering after relay testing
+  const visibleTargets = targets;
 
   const sortedTargets = [...visibleTargets].sort((a, b) => {
     if (a.isOnline !== b.isOnline) {

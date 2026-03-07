@@ -68,10 +68,15 @@ export async function GET(
 
     const stream = createSseStream(
       async ({ send, close }) => {
+        let lastSequence = 0;
+
         const unsubscribe = await desktopCommandStore.subscribeCommandEvents(
           target.id,
           commandId,
           (event) => {
+            if (typeof event.sequence === "number") {
+              lastSequence = Math.max(lastSequence, event.sequence);
+            }
             send(encodeSseData(event));
             if (isTerminalEvent(event)) {
               close();
@@ -80,7 +85,39 @@ export async function GET(
           { replay: true }
         );
 
-        return unsubscribe;
+        // Poll DB for events written by external processes (e.g., relay on ECS).
+        // The in-memory eventSubscribers only fire within this process, so
+        // cross-process events require periodic DB checks.
+        const pollInterval = setInterval(async () => {
+          try {
+            const events = await desktopCommandStore.getCommandEvents(
+              target.id,
+              commandId
+            );
+            if (!events) {
+              return;
+            }
+            for (const event of events) {
+              if (
+                typeof event.sequence === "number" &&
+                event.sequence > lastSequence
+              ) {
+                lastSequence = event.sequence;
+                send(encodeSseData(event));
+                if (isTerminalEvent(event)) {
+                  close();
+                }
+              }
+            }
+          } catch {
+            // Polling failure is non-fatal — next interval retries
+          }
+        }, 2000);
+
+        return () => {
+          clearInterval(pollInterval);
+          unsubscribe?.();
+        };
       },
       { logContext: { targetId, commandId } }
     );
