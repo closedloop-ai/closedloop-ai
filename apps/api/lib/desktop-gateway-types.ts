@@ -43,6 +43,7 @@ export type WireCommandPayload = {
   lockKey?: string;
   requiresApproval?: boolean;
   approvalReason?: string;
+  streaming?: boolean;
 };
 
 export type Envelope<T> = T & {

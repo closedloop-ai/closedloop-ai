@@ -123,6 +123,7 @@ export default async function middleware(
   }
 
   const origin = request.headers.get("origin");
+
   const response =
     (await authMiddleware(() => NextResponse.next())(request, event)) ??
     NextResponse.next();
@@ -131,7 +132,9 @@ export default async function middleware(
 
 export const config = {
   matcher: [
-    // Run middleware on all routes except Next.js internals
-    "/((?!_next).*)",
+    // Run middleware on all routes except Next.js internals.
+    // /internal/* routes are excluded because they use secret-based auth
+    // validated directly in route handlers (not via Clerk session middleware).
+    "/((?!_next|internal).*)",
   ],
 };

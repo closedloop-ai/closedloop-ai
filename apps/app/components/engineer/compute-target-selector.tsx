@@ -52,26 +52,6 @@ function isCloudOption(option: SelectorOption): option is CloudOption {
   return option.mode === EngineerRoutingMode.CloudRelay;
 }
 
-function normalizeMachineName(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]/g, "");
-}
-
-function isSameMachineTarget(
-  target: ComputeTarget,
-  localMachineName: string | null
-): boolean {
-  if (!localMachineName) {
-    return false;
-  }
-  return (
-    normalizeMachineName(target.machineName) ===
-    normalizeMachineName(localMachineName)
-  );
-}
-
 function buildOptions(
   detection: { detected: boolean; machineName: string | null },
   targets: ComputeTarget[]
@@ -96,13 +76,7 @@ function buildOptions(
     });
   }
 
-  const visibleTargets = detection.detected
-    ? targets.filter(
-        (target) => !isSameMachineTarget(target, detection.machineName)
-      )
-    : targets;
-
-  const sortedTargets = [...visibleTargets].sort((a, b) => {
+  const sortedTargets = [...targets].sort((a, b) => {
     if (a.isOnline !== b.isOnline) {
       return a.isOnline ? -1 : 1;
     }

@@ -3,6 +3,7 @@ import type { ApiResult } from "@repo/api/src/types/common";
 import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
+import { env } from "@/env";
 import { resolveApiOrigin } from "@/lib/api-origin";
 import {
   isStreamingEngineerRequest,
@@ -81,17 +82,33 @@ async function encodeBody(request: NextRequest): Promise<RelayEncodedBody> {
 }
 
 function toRelayHttpResponse(value: unknown): Response {
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    "status" in value &&
-    "body" in value &&
-    typeof (value as { status: unknown }).status === "number"
-  ) {
-    const status = (value as { status: number }).status;
-    const body = (value as { body: unknown }).body;
+  if (typeof value !== "object" || value === null) {
+    return NextResponse.json(value);
+  }
+
+  const record = value as Record<string, unknown>;
+
+  // Electron gateway wraps results as { statusCode, success, data }
+  // while the relay envelope uses { status, body }. Handle both.
+  let status: number | undefined;
+  if (typeof record.status === "number") {
+    status = record.status;
+  } else if (typeof record.statusCode === "number") {
+    status = record.statusCode;
+  }
+
+  let body: unknown;
+  if ("body" in record) {
+    body = record.body;
+  } else if ("data" in record) {
+    body = record.data;
+  }
+
+  if (status !== undefined && body !== undefined) {
     const headers = new Headers(
-      (value as { headers?: Record<string, string> }).headers
+      typeof record.headers === "object" && record.headers !== null
+        ? (record.headers as Record<string, string>)
+        : undefined
     );
 
     const contentType = headers.get("content-type") ?? "";
@@ -180,7 +197,11 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     body: await encodeBody(request),
   };
 
-  const relayClient = new RelayClient(apiOrigin, token);
+  const relayClient = new RelayClient(
+    apiOrigin,
+    token,
+    env.INTERNAL_API_SECRET
+  );
   const isStreaming = isStreamingEngineerRequest(
     request.method,
     path,

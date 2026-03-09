@@ -32,11 +32,13 @@ export const env = createEnv({
   ],
   server: {
     INTERNAL_API_SECRET: z.string().min(1),
+    RELAY_API_URL: z.url().optional(),
     SLACK_SIGNING_SECRET: z.string().optional(),
   },
   client: {},
   runtimeEnv: {
     INTERNAL_API_SECRET: process.env.INTERNAL_API_SECRET,
+    RELAY_API_URL: process.env.RELAY_API_URL,
     SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
   },
 });

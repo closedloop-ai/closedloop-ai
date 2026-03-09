@@ -194,6 +194,7 @@ export function toWireCommandFromStore(command: {
   lockKey?: string;
   requiresApproval?: boolean;
   approvalReason?: string;
+  streaming?: boolean;
   createdAt: string;
 }): WireCommandPayload {
   return {
@@ -209,12 +210,14 @@ export function toWireCommandFromStore(command: {
     lockKey: command.lockKey,
     requiresApproval: command.requiresApproval,
     approvalReason: command.approvalReason,
+    streaming: command.streaming === true ? true : undefined,
   };
 }
 
 export function toWireCommandFromRelayOperation(operation: {
   operationId: string;
   params: JsonValue;
+  streaming?: boolean;
 }): WireCommandPayload | null {
   const params = isRecord(operation.params) ? operation.params : {};
   const request = isRecord(params.request) ? params.request : {};
@@ -251,6 +254,7 @@ export function toWireCommandFromRelayOperation(operation: {
       typeof params.approvalReason === "string"
         ? params.approvalReason
         : undefined,
+    streaming: operation.streaming === true ? true : undefined,
   };
 }
 
