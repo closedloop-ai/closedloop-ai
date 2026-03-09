@@ -106,6 +106,9 @@ export function useReviewChat(
   const conferralDepthRef = useRef(0);
   const conferralInProgressRef = useRef(false);
   const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendChatToProviderRef = useRef<
+    (target: "claude" | "codex", message: string, display: string) => void
+  >(() => {});
 
   useEffect(() => {
     return () => {
@@ -287,7 +290,11 @@ export function useReviewChat(
                   ? CHAT_SENTINEL.CLAUDE_CONFERRED_TO_CODEX
                   : CHAT_SENTINEL.CODEX_CONFERRED_TO_CLAUDE;
               conferralTimerRef.current = setTimeout(() => {
-                sendChatToProvider(otherProvider, wrappedPrompt, sentinel);
+                sendChatToProviderRef.current(
+                  otherProvider,
+                  wrappedPrompt,
+                  sentinel
+                );
                 conferralInProgressRef.current = false;
               }, 0);
             }
@@ -314,6 +321,9 @@ export function useReviewChat(
       onLearningsUsed,
     ]
   );
+
+  // Keep ref in sync so conferral's async callback always calls the latest version
+  sendChatToProviderRef.current = sendChatToProvider;
 
   // Detect @claude/@codex prefix and determine target provider
   const resolveTargetProvider = useCallback(
