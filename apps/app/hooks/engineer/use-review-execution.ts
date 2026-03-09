@@ -412,8 +412,11 @@ export function useReviewExecution(
     }
   }
 
-  const handleTerminalPollStatus = (data: { status: string; log?: string }) => {
-    const finalOutput = data.log || "";
+  const handleTerminalPollStatus = (
+    data: { status: string; log?: string },
+    accumulatedOutput: string
+  ) => {
+    const finalOutput = data.log || accumulatedOutput;
     const split = finalizeReviewOutput(finalOutput);
     if (data.status === "completed") {
       toast.success("Code review completed");
@@ -426,6 +429,7 @@ export function useReviewExecution(
   const pollRunningReview = async (signal: AbortSignal) => {
     const statusUrl = `/api/engineer/codex/status/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(config.provider)}`;
     let pollCount = 0;
+    let lastKnownOutput = "";
     console.log("[poll] Starting poll for running review");
     while (!signal.aborted) {
       try {
@@ -438,6 +442,7 @@ export function useReviewExecution(
 
         if (data.log) {
           setReviewOutput(data.log);
+          lastKnownOutput = data.log;
         }
 
         if (data.sessionId && !sessionIdRef.current) {
@@ -448,7 +453,7 @@ export function useReviewExecution(
           console.log(
             `[poll] Terminal status: ${data.status}, log: ${data.log?.length ?? 0} chars`
           );
-          handleTerminalPollStatus(data);
+          handleTerminalPollStatus(data, lastKnownOutput);
           return;
         }
       } catch (err) {
