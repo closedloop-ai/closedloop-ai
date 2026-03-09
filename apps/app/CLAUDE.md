@@ -36,6 +36,7 @@ hooks/
 ### TanStack Query
 - **[pattern]**: New hooks: queryKey + queryFn + enabled + `...options` spread. Export `queryKeys` factory (.all, .detail(id)). Cache invalidation in mutations. Only `staleTime` acceptable as default.
 - **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAnyAuth() with orgId from JWT/API key, (2) services filter by organizationId, (3) frontend uses authenticated API client.
+- **[pattern]**: `AuthGate` in `layout.tsx` gates all authenticated content on Clerk `isLoaded`. If `useApiClient` is ever used above the gate boundary, add `enabled: isLoaded` in query options to prevent 401 race on first render.
 
 ### Tables & Sorting
 - **[pattern]**: Sort nested object fields via SortConfig accessor function. `sortItems()` handles nulls-last.

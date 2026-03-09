@@ -7,6 +7,7 @@ import { secure } from "@repo/security";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { env } from "@/env";
+import { AuthGate } from "./components/auth-gate";
 import { CollaborationProviderWrapper } from "./components/collaboration-provider-wrapper";
 import { DragHandlerWrapper } from "./components/drag-handler-wrapper";
 import { NotificationsProvider } from "./components/notifications-provider";
@@ -41,9 +42,11 @@ const AppLayout = async ({ children }: AppLayoutProperties) => {
         <NotificationsProvider userId={user.id}>
           <SidebarProvider defaultOpen={sidebarDefaultOpen}>
             <GlobalSidebar>
-              <div className="flex h-full max-h-full flex-col overflow-hidden">
-                {children}
-              </div>
+              <AuthGate>
+                <div className="flex h-full max-h-full flex-col overflow-hidden">
+                  {children}
+                </div>
+              </AuthGate>
             </GlobalSidebar>
           </SidebarProvider>
         </NotificationsProvider>
