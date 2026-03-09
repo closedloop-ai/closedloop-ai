@@ -443,6 +443,90 @@ function findLatestPluginScript(
  * semver version directory containing scripts/run-loop.sh.
  * Returns undefined if not found.
  */
+export const REQUIRED_SYMPHONY_PLUGINS = [
+  "code@closedloop-ai",
+  "self-learning@closedloop-ai",
+  "judges@closedloop-ai",
+  "code-review@closedloop-ai",
+  "platform@closedloop-ai",
+  "code-simplifier@claude-plugins-official",
+] as const;
+
+export type PluginCheckResult = {
+  allInstalled: boolean;
+  missing: string[];
+  installed: Record<string, string>;
+  reason: "ok" | "manifest_missing" | "manifest_malformed" | "plugins_missing";
+};
+
+/**
+ * Read ~/.claude/plugins/installed_plugins.json and check for required plugins.
+ * Returns which plugins are installed, which are missing, and why.
+ */
+export function checkRequiredPlugins(): PluginCheckResult {
+  const manifestPath = join(
+    homedir(),
+    ".claude",
+    "plugins",
+    "installed_plugins.json"
+  );
+
+  if (!existsSync(manifestPath)) {
+    return {
+      allInstalled: false,
+      missing: [...REQUIRED_SYMPHONY_PLUGINS],
+      installed: {},
+      reason: "manifest_missing",
+    };
+  }
+
+  let manifest: { plugins?: Record<string, { version?: string }[]> };
+  try {
+    const content = readFileSync(manifestPath, "utf-8");
+    manifest = JSON.parse(content);
+  } catch {
+    return {
+      allInstalled: false,
+      missing: [...REQUIRED_SYMPHONY_PLUGINS],
+      installed: {},
+      reason: "manifest_malformed",
+    };
+  }
+
+  if (!manifest.plugins || typeof manifest.plugins !== "object") {
+    return {
+      allInstalled: false,
+      missing: [...REQUIRED_SYMPHONY_PLUGINS],
+      installed: {},
+      reason: "manifest_malformed",
+    };
+  }
+
+  const installed: Record<string, string> = {};
+  const missing: string[] = [];
+
+  for (const pluginKey of REQUIRED_SYMPHONY_PLUGINS) {
+    const entries = manifest.plugins[pluginKey];
+    if (Array.isArray(entries) && entries.length > 0) {
+      const lastEntry = entries.at(-1)!;
+      installed[pluginKey] = lastEntry.version ?? "installed";
+    } else {
+      missing.push(pluginKey);
+    }
+  }
+
+  if (missing.length > 0) {
+    return {
+      allInstalled: false,
+      missing,
+      installed,
+      reason: "plugins_missing",
+    };
+  }
+
+  return { allInstalled: true, missing: [], installed, reason: "ok" };
+}
+
 export function getSymphonyScriptPath(): string | undefined {
   const pluginDir = join(
     homedir(),

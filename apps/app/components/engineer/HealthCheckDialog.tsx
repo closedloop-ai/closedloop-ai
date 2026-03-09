@@ -36,16 +36,9 @@ const SUCCESS_DISMISS_DELAY = 1200;
 /** Duration of the Radix dialog exit animation (matches duration-200 on DialogContent) */
 const EXIT_ANIMATION_MS = 250;
 
-const HEALTH_CHECK_SESSION_KEY = "engineer-health-check-passed";
-
 export function HealthCheckDialog() {
-  // Skip entirely if health check already passed this page load (sessionStorage)
-  const [alreadyPassed] = useState(
-    () =>
-      globalThis.window !== undefined &&
-      sessionStorage.getItem(HEALTH_CHECK_SESSION_KEY) === "true"
-  );
   const [mounted, setMounted] = useState(false);
+  const [failureDetected, setFailureDetected] = useState(false);
   const [closing, setClosing] = useState(false);
   const [removed, setRemoved] = useState(false);
   const [worktreePath, setWorktreePath] = useState("~/Source");
@@ -57,10 +50,8 @@ export function HealthCheckDialog() {
 
   // Client-only mount flag — avoids SSR/hydration mismatch
   useEffect(() => {
-    if (!alreadyPassed) {
-      setMounted(true);
-    }
-  }, [alreadyPassed]);
+    setMounted(true);
+  }, []);
 
   // When closing starts, let Radix play its exit animation, then remove from DOM
   useEffect(() => {
@@ -76,16 +67,32 @@ export function HealthCheckDialog() {
   }, [closing]);
 
   const alive = mounted && !removed;
-  const dialogOpen = alive && !closing;
+  const dialogOpen = alive && !closing && failureDetected;
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     ...healthCheckOptions(),
-    enabled: alive,
+    enabled: mounted,
+    refetchOnMount: "always" as const,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
-  // Staggered reveal: once data arrives, reveal checks one by one
+  // Auto-dismiss after all checks are revealed and all required pass
+  const allRevealed = data !== undefined && revealedCount >= data.checks.length;
+  const hasRequiredFailure =
+    data?.checks.some((c) => c.required && !c.passed) ?? false;
+  const allRequiredPassed = allRevealed && !hasRequiredFailure;
+
+  // Latch failureDetected — once a required failure is seen, open the dialog
   useEffect(() => {
-    if (!data) {
+    if (hasRequiredFailure) {
+      setFailureDetected(true);
+    }
+  }, [hasRequiredFailure]);
+
+  // Staggered reveal: only run when dialog is showing (failure detected)
+  useEffect(() => {
+    if (!(failureDetected && data)) {
       return;
     }
 
@@ -109,17 +116,11 @@ export function HealthCheckDialog() {
       revealTimers.current.forEach(clearTimeout);
       revealTimers.current = [];
     };
-  }, [data]);
-
-  // Auto-dismiss after all checks are revealed and all required pass
-  const allRevealed = data !== undefined && revealedCount >= data.checks.length;
-  const hasRequiredFailure =
-    data?.checks.some((c) => c.required && !c.passed) ?? false;
-  const allRequiredPassed = allRevealed && !hasRequiredFailure;
+  }, [failureDetected, data]);
 
   // Phase 1: after all revealed + all pass → show success screen
   useEffect(() => {
-    if (!allRequiredPassed || showSuccess) {
+    if (!(failureDetected && allRequiredPassed) || showSuccess) {
       return;
     }
 
@@ -128,22 +129,20 @@ export function HealthCheckDialog() {
     }, SUCCESS_SCREEN_DELAY);
 
     return () => clearTimeout(timer);
-  }, [allRequiredPassed, showSuccess]);
+  }, [failureDetected, allRequiredPassed, showSuccess]);
 
-  // Phase 2: after success screen is visible → persist pass & start fade-out
+  // Phase 2: after success screen is visible → start fade-out
   useEffect(() => {
-    if (!showSuccess) {
+    if (!(failureDetected && showSuccess)) {
       return;
     }
-
-    sessionStorage.setItem(HEALTH_CHECK_SESSION_KEY, "true");
 
     const timer = setTimeout(() => {
       setClosing(true);
     }, SUCCESS_DISMISS_DELAY);
 
     return () => clearTimeout(timer);
-  }, [showSuccess]);
+  }, [failureDetected, showSuccess]);
 
   const handleRecheck = useCallback(async () => {
     setRevealedCount(0);

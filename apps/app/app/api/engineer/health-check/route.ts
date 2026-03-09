@@ -1,7 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
-import { getSymphonyScriptPath, loadReposConfig } from "@/lib/engineer/repos";
+import {
+  checkRequiredPlugins,
+  getSymphonyScriptPath,
+  loadReposConfig,
+} from "@/lib/engineer/repos";
 
 const execFileAsync = promisify(execFile);
 
@@ -121,24 +125,68 @@ async function checkGhAuth(): Promise<CheckResult> {
   }
 }
 
-function checkSymphonyPlugin(): CheckResult {
-  const scriptPath = getSymphonyScriptPath();
-  if (scriptPath) {
+function checkSymphonyPlugins(): CheckResult {
+  const result = checkRequiredPlugins();
+
+  if (!result.allInstalled) {
+    let remediation: string;
+
+    if (result.reason === "manifest_missing") {
+      remediation =
+        "Run: claude plugin marketplace add closedloop-ai/claude-plugins && claude plugin install " +
+        result.missing.join(" ");
+    } else if (result.reason === "manifest_malformed") {
+      remediation =
+        "~/.claude/plugins/installed_plugins.json is corrupted. Try reinstalling plugins.";
+    } else {
+      // plugins_missing — split by publisher for remediation
+      const closedloopMissing = result.missing.filter((p) =>
+        p.endsWith("@closedloop-ai")
+      );
+      const officialMissing = result.missing.filter((p) =>
+        p.endsWith("@claude-plugins-official")
+      );
+      const parts: string[] = [];
+      if (closedloopMissing.length > 0) {
+        parts.push(`claude plugin install ${closedloopMissing.join(" ")}`);
+      }
+      if (officialMissing.length > 0) {
+        parts.push(`claude plugin install ${officialMissing.join(" ")}`);
+      }
+      remediation = `Run: ${parts.join(" && ")}`;
+    }
+
     return {
       id: "symphony-plugin",
-      label: "Symphony Plugin",
+      label: "Symphony Plugins",
       required: true,
-      passed: true,
+      passed: false,
+      error: `Missing: ${result.missing.join(", ")}`,
+      remediation,
     };
   }
+
+  // All plugins installed in manifest — verify the code plugin script is discoverable
+  const scriptPath = getSymphonyScriptPath();
+  if (!scriptPath) {
+    return {
+      id: "symphony-plugin",
+      label: "Symphony Plugins",
+      required: true,
+      passed: false,
+      error: "Plugin installed but script not found",
+      remediation:
+        "code@closedloop-ai is registered but run-loop.sh is missing from cache. Try: claude plugin install code@closedloop-ai",
+    };
+  }
+
+  const codeVersion = result.installed["code@closedloop-ai"];
   return {
     id: "symphony-plugin",
-    label: "Symphony Plugin",
+    label: "Symphony Plugins",
     required: true,
-    passed: false,
-    error: "Not found",
-    remediation:
-      "Install the closedloop-ai/claude-plugins plugin in Claude Code",
+    passed: true,
+    version: codeVersion,
   };
 }
 
@@ -210,22 +258,23 @@ async function checkPython3(): Promise<CheckResult> {
 }
 
 export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
-  const results = await Promise.allSettled([
+  // Run Claude CLI check first — plugin check depends on CLI being available
+  const claudeResult = await checkClaudeCli();
+
+  // Run remaining parallel checks (excluding plugin which depends on Claude CLI)
+  const parallelResults = await Promise.allSettled([
     checkGit(),
-    checkClaudeCli(),
     checkGhCli(),
     checkGhAuth(),
-    Promise.resolve(checkSymphonyPlugin()),
     Promise.resolve(checkWorktreeDir()),
     checkCodex(),
     checkPython3(),
   ]);
 
-  const checks = results.map((r) => {
+  const parallelChecks = parallelResults.map((r) => {
     if (r.status === "fulfilled") {
       return r.value;
     }
-    // Shouldn't happen since each checker catches its own errors, but just in case
     return {
       id: "unknown",
       label: "Unknown",
@@ -234,6 +283,37 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
       error: "Check failed unexpectedly",
     };
   });
+  const [
+    gitResult,
+    ghCliResult,
+    ghAuthResult,
+    worktreeResult,
+    codexResult,
+    python3Result,
+  ] = parallelChecks;
+
+  // Only run plugin check if Claude CLI is installed
+  const checks: CheckResult[] = [
+    gitResult,
+    claudeResult,
+    ghCliResult,
+    ghAuthResult,
+  ];
+
+  if (claudeResult.passed) {
+    checks.push(checkSymphonyPlugins());
+  } else {
+    checks.push({
+      id: "symphony-plugin",
+      label: "Symphony Plugins",
+      required: true,
+      passed: false,
+      error: "Requires Claude CLI",
+      remediation: "Install Claude CLI first, then check plugins",
+    });
+  }
+
+  checks.push(worktreeResult, codexResult, python3Result);
 
   const allRequiredPassed = checks
     .filter((c) => c.required)
