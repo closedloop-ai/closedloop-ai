@@ -50,6 +50,7 @@ async function dispatchToRelay(
         targetId,
         operation: envelopedCommand,
       }),
+      signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
       const result = await response.json().catch(() => ({ delivered: true }));
