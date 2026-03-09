@@ -1,7 +1,6 @@
 "use client";
 
 import { LoopStatus, type TokensByModel } from "@repo/api/src/types/loop";
-import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -38,6 +37,7 @@ import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
+import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 
 function formatModelName(model: string): string {
   return model

@@ -72,7 +72,9 @@ describe("LoopsTable — restart button visibility", () => {
 
   it("renders a restart button for a TIMED_OUT loop", () => {
     vi.mocked(useLoops).mockReturnValue({
-      data: [createMockLoopWithUser({ id: "loop-002", status: LoopStatus.TimedOut })],
+      data: [
+        createMockLoopWithUser({ id: "loop-002", status: LoopStatus.TimedOut }),
+      ],
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoops>);
@@ -153,7 +155,9 @@ describe("LoopsTable — restart button interaction", () => {
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useLoops).mockReturnValue({
-      data: [createMockLoopWithUser({ id: "loop-001", status: LoopStatus.Failed })],
+      data: [
+        createMockLoopWithUser({ id: "loop-001", status: LoopStatus.Failed }),
+      ],
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoops>);

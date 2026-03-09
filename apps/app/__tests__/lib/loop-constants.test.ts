@@ -1,6 +1,6 @@
 import { LoopStatus } from "@repo/api/src/types/loop";
-import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { describe, expect, it } from "vitest";
+import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 
 describe("RESTARTABLE_LOOP_STATUSES", () => {
   it("contains Failed", () => {

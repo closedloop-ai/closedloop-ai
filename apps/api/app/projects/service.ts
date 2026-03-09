@@ -1,3 +1,4 @@
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import type {
   CreateProjectInput,
@@ -274,13 +275,15 @@ export const projectsService = {
   /**
    * Calculate project status based on artifact completion
    */
-  calculateStatus(artifacts: Array<{ status: string }>): number {
+  calculateStatus(artifacts: Array<{ status: ArtifactStatus }>): number {
     if (artifacts.length === 0) {
       return 0;
     }
 
     const completedCount = artifacts.filter(
-      (a) => a.status === "APPROVED"
+      (a) =>
+        a.status === ArtifactStatus.Executed ||
+        a.status === ArtifactStatus.Obsolete
     ).length;
 
     return Math.round((completedCount / artifacts.length) * 100);

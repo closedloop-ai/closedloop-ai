@@ -3,6 +3,7 @@
  *
  * Tests the limit parameter functionality and multi-tenant security checks.
  */
+import { ArtifactStatus } from "@repo/api/src/types/artifact";
 import { type Mock, vi } from "vitest";
 
 // Mock modules before importing the service
@@ -143,5 +144,76 @@ describe("projectsService.findByTeam", () => {
         }),
       })
     );
+  });
+});
+
+describe("projectsService.calculateStatus", () => {
+  it("returns 0 for an empty array", () => {
+    expect(projectsService.calculateStatus([])).toBe(0);
+  });
+
+  it("returns 0 when all artifacts have non-terminal statuses", () => {
+    const artifacts = [
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.InReview },
+      { status: ArtifactStatus.Approved },
+      { status: ArtifactStatus.ReadyForReview },
+    ];
+    expect(projectsService.calculateStatus(artifacts)).toBe(0);
+  });
+
+  it("returns 100 when all artifacts are Executed", () => {
+    const artifacts = [
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Executed },
+    ];
+    expect(projectsService.calculateStatus(artifacts)).toBe(100);
+  });
+
+  it("returns 100 when all artifacts are Obsolete", () => {
+    const artifacts = [
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Obsolete },
+    ];
+    expect(projectsService.calculateStatus(artifacts)).toBe(100);
+  });
+
+  it("returns 50 for mixed Executed+Obsolete+Draft with 2-of-4 completed", () => {
+    const artifacts = [
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Obsolete },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+    ];
+    expect(projectsService.calculateStatus(artifacts)).toBe(50);
+  });
+
+  it("returns 25 for 1-of-4 Executed artifacts", () => {
+    const artifacts = [
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.InReview },
+      { status: ArtifactStatus.Approved },
+    ];
+    expect(projectsService.calculateStatus(artifacts)).toBe(25);
+  });
+
+  it("regression: 1-Approved-of-4 returns 0 while 1-Executed-of-4 returns 25, confirming Approved is not terminal", () => {
+    const approvedArtifacts = [
+      { status: ArtifactStatus.Approved },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+    ];
+    const executedArtifacts = [
+      { status: ArtifactStatus.Executed },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+      { status: ArtifactStatus.Draft },
+    ];
+    expect(projectsService.calculateStatus(approvedArtifacts)).toBe(0);
+    expect(projectsService.calculateStatus(executedArtifacts)).toBe(25);
   });
 });

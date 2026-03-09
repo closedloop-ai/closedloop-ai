@@ -2,7 +2,6 @@
 
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
-import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
@@ -25,6 +24,7 @@ import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
 import { useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
+import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatTokens(input: number, output: number): string {
