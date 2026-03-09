@@ -313,6 +313,7 @@ export function CommentChat({
             chatHistory: recentHistory,
             activeTab: "comments",
             isForward,
+            chatContextId: `comment-${commentId}`,
             commentContext: {
               author: comment.author,
               body: comment.body,

@@ -74,7 +74,7 @@ hooks/
 - **[pattern]**: Three-part architecture: (1) Frontend OAuth routes handle PKCE/state/redirect, (2) Callback validates state + calls API for token storage, (3) TanStack Query hooks for status/disconnect/mutations. Reference: Linear integration.
 
 ### Engineer Feature Debugging
-- **[insight]**: `codex review` outputs `session id:` in startup banner. Capture to `codex-chat.json` for `codex exec resume`.
+- **[insight]**: `codex review` outputs `session id:` in startup banner. Capture it in the context-scoped Codex chat state file so follow-up `codex exec resume` uses the correct surface/session.
 - **[pattern]**: Claude CLI stream handlers must: capture session_id for ALL results (including errors), check `is_error` before `subtype`, fire `onResultEvent` for all types, enqueue terminal event in every path. Else branch for unrecognized subtypes.
 - **[mistake]**: Codex review route: `sessionIdHolder.value` and regex must be assigned BEFORE any `await` — data handler reads on same event tick.
 - **[pattern]**: ReviewChatPane resolveFullPath returns `string | 'ambiguous' | null`. Keep no-file findings, exclude ambiguous. Cache result.

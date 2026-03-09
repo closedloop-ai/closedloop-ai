@@ -523,6 +523,7 @@ export function SymphonyChat({
             activeTab,
             contextRepoPaths,
             isForward,
+            chatContextId: "general",
             model: DEFAULT_CODEX_MODEL,
           }),
         });

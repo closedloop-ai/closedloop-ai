@@ -147,6 +147,7 @@ export function useReviewChat(
             chatHistory: recentHistory,
             repoPath,
             activeTab: "plan",
+            chatContextId: "review",
           },
         };
       }

@@ -7,6 +7,10 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  deleteSharedCodexChatState,
+  getCodexChatStatePath,
+} from "@/lib/engineer/codex-state";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 /**
@@ -66,8 +70,11 @@ export async function GET(
 
   // Compute once before any early return — Codex review may have completed
   // even before any chat messages exist (no chat-history.json yet).
-  const codexStatePath = join(historyPath, "..", "codex-chat.json");
-  const codexSessionExists = existsSync(codexStatePath);
+  // Only check the review-scoped session file (ReviewChatPane is the sole consumer).
+  const workDir = join(historyPath, "..");
+  const codexSessionExists = existsSync(
+    getCodexChatStatePath(workDir, "review")
+  );
 
   if (!existsSync(historyPath)) {
     return NextResponse.json({
@@ -200,8 +207,14 @@ export async function DELETE(
   }
 
   const historyPath = getChatHistoryPath(ticketId, repoPath);
+  const workDir = join(historyPath, "..");
 
   if (!existsSync(historyPath)) {
+    if (indexParam === null) {
+      // Even if no transcript exists yet, a review may have already seeded
+      // shared-surface Codex session files. Clear them on full reset.
+      deleteSharedCodexChatState(workDir);
+    }
     return NextResponse.json({
       success: true,
       message: "No history to delete",
@@ -213,12 +226,10 @@ export async function DELETE(
       // Clear entire chat - delete the file
       unlinkSync(historyPath);
 
-      // Also clear the Codex chat session state so the next @codex message
-      // starts a fresh session with full context instead of resuming a stale one
-      const codexStatePath = join(historyPath, "..", "codex-chat.json");
-      if (existsSync(codexStatePath)) {
-        unlinkSync(codexStatePath);
-      }
+      // Clear shared-surface Codex chat session files (legacy + general + review)
+      // so the next @codex message starts a fresh session with full context.
+      // Comment-specific files are NOT deleted — they're scoped to comment-chat.
+      deleteSharedCodexChatState(workDir);
 
       return NextResponse.json({
         success: true,

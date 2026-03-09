@@ -14,6 +14,7 @@ import {
   DEFAULT_CODEX_MODEL,
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
+import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 import { resolveWorktreeForPR } from "@/lib/engineer/worktree";
 
@@ -44,6 +45,7 @@ type ChatRequest = {
   commentContext?: CommentContext;
   model?: string;
   isForward?: boolean;
+  chatContextId?: string;
 };
 
 type CodexChatState = {
@@ -77,14 +79,14 @@ function getWorktreeDir(
   return existsSync(worktreeDir) ? worktreeDir : expandedRepoPath;
 }
 
-function getWorkPaths(worktreeDir: string) {
+function getWorkPaths(worktreeDir: string, chatContextId?: string) {
   const claudeWorkDir = join(worktreeDir, ".claude", "work");
   return {
     worktreeDir,
     claudeWorkDir,
     planPath: join(claudeWorkDir, "plan.json"),
     prdPath: join(claudeWorkDir, "prd.md"),
-    chatStatePath: join(claudeWorkDir, "codex-chat.json"),
+    chatStatePath: getCodexChatStatePath(claudeWorkDir, chatContextId),
   };
 }
 
@@ -496,6 +498,7 @@ export async function POST(
     commentContext,
     model: requestedModel,
     isForward,
+    chatContextId,
   } = body;
 
   const forwardModel = isForward
@@ -536,7 +539,7 @@ export async function POST(
     );
   }
 
-  const paths = getWorkPaths(worktreeDir);
+  const paths = getWorkPaths(worktreeDir, chatContextId);
   const chatState = loadChatState(paths.chatStatePath);
 
   // Pre-fetch changed files if on changes tab (shared across attempts)
