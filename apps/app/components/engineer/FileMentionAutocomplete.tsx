@@ -318,7 +318,7 @@ export function dispatchMentionKeyDown(
     setMentionState(null);
     return true;
   }
-  if (e.key === "Tab" || e.key === "Enter") {
+  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
     e.preventDefault();
     const selectedFile = mentionFiles[mentionState.selectedIndex];
     if (selectedFile) {
