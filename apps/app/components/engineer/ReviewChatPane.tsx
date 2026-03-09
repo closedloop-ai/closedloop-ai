@@ -637,7 +637,7 @@ function ReviewChatInput({
                 {chatInput.split(/\s/)[0]}
               </span>
               <span className="text-foreground">
-                {chatInput.slice(chatInput.indexOf(" "))}
+                {chatInput.slice(chatInput.search(/\s/))}
               </span>
             </div>
           )}
