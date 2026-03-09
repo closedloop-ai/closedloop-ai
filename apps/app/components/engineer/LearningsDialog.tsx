@@ -8,8 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@repo/design-system/components/ui/dialog";
-import { ChevronRight, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Brain, ChevronRight, Loader2, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Pattern = {
   id: string;
@@ -561,13 +561,21 @@ function LearningsStats({ patterns }: Readonly<{ patterns: Pattern[] }>) {
   );
 }
 
+type LearningsDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  isProcessingLearnings?: boolean;
+  onProcessPending?: () => void;
+  onBatchProcessingComplete?: () => void;
+};
+
 export function LearningsDialog({
   open,
   onOpenChange,
-}: Readonly<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}>) {
+  isProcessingLearnings,
+  onProcessPending,
+  onBatchProcessingComplete,
+}: Readonly<LearningsDialogProps>) {
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -577,6 +585,27 @@ export function LearningsDialog({
   const [activeTab, setActiveTab] = useState<"learnings" | "stats">(
     "learnings"
   );
+  const [pendingCount, setPendingCount] = useState(0);
+  const [isProcessingLocal, setIsProcessingLocal] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    processedWorktrees: number;
+    worktreeCount: number;
+    totalPending: number;
+  } | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const refreshPatterns = useCallback(() => {
+    fetch("/api/engineer/learnings")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.error) {
+          setPatterns(data.patterns ?? []);
+        }
+      })
+      .catch(() => {
+        // Ignore refresh errors
+      });
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -586,22 +615,98 @@ export function LearningsDialog({
     setLoading(true);
     setError(null);
 
-    fetch("/api/engineer/learnings")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.error) {
-          setError(data.error);
+    const fetchAll = async () => {
+      try {
+        const [learningsRes, pendingRes] = await Promise.all([
+          fetch("/api/engineer/learnings"),
+          fetch("/api/engineer/symphony/pending-learnings"),
+        ]);
+        const learningsData = await learningsRes.json();
+        const pendingData = await pendingRes.json();
+
+        if (learningsData.error) {
+          setError(learningsData.error);
         } else {
-          setPatterns(data.patterns ?? []);
+          setPatterns(learningsData.patterns ?? []);
         }
-      })
-      .catch((err) => {
+        setPendingCount(pendingData.totalCount ?? 0);
+
+        // Check if batch processing is already in progress
+        const batchRes = await fetch(
+          "/api/engineer/symphony/process-all-learnings"
+        );
+        const batchData = await batchRes.json();
+        if (batchData.status === "processing") {
+          setIsProcessingLocal(true);
+          setBatchProgress({
+            processedWorktrees: batchData.processedWorktrees ?? 0,
+            worktreeCount: batchData.worktreeCount ?? 0,
+            totalPending: batchData.totalPending ?? 0,
+          });
+        }
+      } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to load learnings"
         );
-      })
-      .finally(() => setLoading(false));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAll();
   }, [open]);
+
+  // Poll batch processing status while isProcessingLocal
+  useEffect(() => {
+    if (!isProcessingLocal) {
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/engineer/symphony/process-all-learnings");
+        const data = await res.json();
+        if (data.status === "completed" || data.status === "error") {
+          setIsProcessingLocal(false);
+          setBatchProgress(null);
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+          }
+          refreshPatterns();
+          onBatchProcessingComplete?.();
+        } else if (data.status === "processing") {
+          setBatchProgress({
+            processedWorktrees: data.processedWorktrees ?? 0,
+            worktreeCount: data.worktreeCount ?? 0,
+            totalPending: data.totalPending ?? 0,
+          });
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    };
+
+    pollingRef.current = setInterval(poll, 3000);
+
+    // 5-minute safety timeout
+    const timeout = setTimeout(() => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+      setIsProcessingLocal(false);
+      onBatchProcessingComplete?.();
+    }, 300_000);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+      clearTimeout(timeout);
+    };
+  }, [isProcessingLocal, refreshPatterns, onBatchProcessingComplete]);
 
   // Reset filters when dialog closes
   useEffect(() => {
@@ -610,6 +715,7 @@ export function LearningsDialog({
       setActiveCategory(null);
       setExpandedId(null);
       setActiveTab("learnings");
+      setBatchProgress(null);
     }
   }, [open]);
 
@@ -659,6 +765,60 @@ export function LearningsDialog({
               : "Patterns and insights captured across Closedloop.dev runs"}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Pending learnings banner */}
+        {pendingCount > 0 &&
+          !isProcessingLearnings &&
+          !isProcessingLocal &&
+          !loading && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2.5">
+              <Brain className="size-4 shrink-0 text-amber-500" />
+              <span className="flex-1 text-amber-700 text-sm dark:text-amber-400">
+                {pendingCount} pending learning{pendingCount !== 1 ? "s" : ""}{" "}
+                to process
+              </span>
+              <button
+                className="cursor-pointer rounded-md bg-amber-500/20 px-3 py-1 font-medium text-amber-700 text-xs transition-colors hover:bg-amber-500/30 dark:text-amber-400"
+                onClick={() => {
+                  setIsProcessingLocal(true);
+                  setPendingCount(0);
+                  onProcessPending?.();
+                }}
+                type="button"
+              >
+                Process now
+              </button>
+            </div>
+          )}
+
+        {/* Processing indicator */}
+        {(isProcessingLearnings || isProcessingLocal) && (
+          <div className="mb-3 space-y-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5">
+            <div className="flex items-center gap-3">
+              <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
+              <span className="flex-1 text-primary text-sm">
+                {batchProgress
+                  ? `Processing learnings... ${batchProgress.processedWorktrees}/${batchProgress.worktreeCount} worktrees`
+                  : "Processing learnings..."}
+              </span>
+              {batchProgress && batchProgress.worktreeCount > 0 && (
+                <span className="text-primary/60 text-xs tabular-nums">
+                  {batchProgress.totalPending} files
+                </span>
+              )}
+            </div>
+            {batchProgress && batchProgress.worktreeCount > 0 && (
+              <div className="h-1.5 overflow-hidden rounded-full bg-primary/20">
+                <div
+                  className="h-full rounded-full bg-primary/60 transition-all duration-500 ease-out"
+                  style={{
+                    width: `${(batchProgress.processedWorktrees / batchProgress.worktreeCount) * 100}%`,
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Tab bar */}
         {hasPatterns && !loading && (

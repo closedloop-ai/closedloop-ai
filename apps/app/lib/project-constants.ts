@@ -2,9 +2,11 @@ import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { IssueStatus } from "@repo/api/src/types/issue";
+import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import {
-  AlertCircleIcon,
-  ClipboardListIcon,
+  BoxIcon,
+  FileCode2Icon,
+  FileIcon,
   FileTextIcon,
   GitBranchIcon,
   PaintbrushIcon,
@@ -45,10 +47,20 @@ export const ARTIFACT_STATUS_COLORS: Record<ArtifactStatus, string> = {
   [ArtifactStatus.Executed]: "text-green-600 dark:text-green-400",
 };
 
+export const ARTIFACT_STATUS_TO_ICON: Record<ArtifactStatus, StatusIconStatus> =
+  {
+    [ArtifactStatus.Draft]: "todo",
+    [ArtifactStatus.InReview]: "in-review",
+    [ArtifactStatus.Approved]: "complete",
+    [ArtifactStatus.Obsolete]: "wont-do",
+    [ArtifactStatus.ReadyForReview]: "in-progress",
+    [ArtifactStatus.Executed]: "complete",
+  };
+
 // Artifact type icons
 export const ARTIFACT_TYPE_ICONS: Record<ArtifactType, React.ElementType> = {
-  [ArtifactType.Prd]: FileTextIcon,
-  [ArtifactType.ImplementationPlan]: ClipboardListIcon,
+  [ArtifactType.Prd]: FileIcon,
+  [ArtifactType.ImplementationPlan]: FileCode2Icon,
   [ArtifactType.Template]: FileTextIcon,
 };
 
@@ -102,6 +114,14 @@ export const ISSUE_STATUS_COLORS: Record<IssueStatus, string> = {
   [IssueStatus.Obsolete]: "text-muted-foreground",
 };
 
+export const ISSUE_STATUS_TO_ICON: Record<IssueStatus, StatusIconStatus> = {
+  [IssueStatus.NotStarted]: "todo",
+  [IssueStatus.InProgress]: "in-progress",
+  [IssueStatus.InReview]: "in-review",
+  [IssueStatus.Completed]: "complete",
+  [IssueStatus.Obsolete]: "wont-do",
+};
+
 // External link type icons
 export const EXTERNAL_LINK_TYPE_ICONS: Record<
   ExternalLinkType,
@@ -147,4 +167,4 @@ export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
   };
 
 // Issue icon
-export const ISSUE_ICON: React.ElementType = AlertCircleIcon;
+export const ISSUE_ICON: React.ElementType = BoxIcon;

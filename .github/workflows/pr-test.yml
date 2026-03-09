@@ -29,7 +29,9 @@ jobs:
           DATABASE_URL: postgresql://localhost:5432/placeholder
 
       - name: TypeScript type check
-        run: pnpm typecheck
+        run: pnpm typecheck --concurrency=2
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
 
       - name: Figma Code Connect type check
         run: pnpm --filter @repo/design-system figma:typecheck

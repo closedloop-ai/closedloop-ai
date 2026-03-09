@@ -9,7 +9,7 @@ on:
 
 # Cancel in-progress runs for the same PR to prevent duplicate reviews
 concurrency:
-  group: claude-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -102,11 +102,11 @@ jobs:
           # Allow bot actors like Dependabot to trigger Claude code review
           allowed_bots: "dependabot,closedloop-ai-stage,closedloop-ai"
 
-          prompt: "/code-review:github-review${{ github.event.pull_request.number && format(' {0}', github.event.pull_request.number) || '' }}"
+          prompt: "/code-review:start --github${{ github.event.pull_request.number && format(' {0}', github.event.pull_request.number) || '' }}"
 
           claude_args: |
             --mcp-config '{"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}'
-            --allowedTools "Read,Write,Task,TodoWrite,Skill,Grep,Glob,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh:*),Bash(gh api:*),Bash(gh api -X:*),Bash(gh api -F:*),Bash(gh api -f:*),Bash(gh pr:*),Bash(git:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(env:*),Bash(grep:*),Bash(ls:*),Bash(jq:*),Bash(cat:*),Bash(mkdir:*),Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(tsc:*),Bash(python:*),Bash(FIND_SCRIPT:*),Bash(RESULT:*)"
+            --allowedTools "Read,Write,Task,TodoWrite,Skill,Grep,Glob,mcp__context7__resolve-library-id,mcp__context7__query-docs,Bash(gh *),Bash(gh api *),Bash(gh api -X *),Bash(gh api -F *),Bash(gh api -f *),Bash(gh pr *),Bash(git *),Bash(git show *),Bash(git diff *),Bash(git log *),Bash(env *),Bash(grep *),Bash(ls *),Bash(jq *),Bash(cat *),Bash(mkdir *),Bash(echo *),Bash(pnpm *),Bash(npx *),Bash(node *),Bash(tsc *),Bash(python *),Bash(python3 *),Bash(FIND_SCRIPT *),Bash(RESULT *)"
 
           # Sticky comments disabled - was causing streaming mode errors
           use_sticky_comment: false

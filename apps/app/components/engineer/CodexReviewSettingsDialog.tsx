@@ -20,6 +20,7 @@ import { Search } from "lucide-react";
 import { useState } from "react";
 import {
   CLAUDE_MODELS,
+  DEFAULT_CODEX_MODEL,
   LOCAL_STORAGE_KEYS,
   MODELS,
   REASONING_LEVELS,
@@ -78,10 +79,10 @@ export function CodexReviewSettingsDialog({
 
   const handleProviderChange = (p: "claude" | "codex") => {
     setProvider(p);
-    // Reset model to first of the new provider's list
-    const defaultModel =
-      p === "claude" ? CLAUDE_MODELS[0].value : MODELS[0].value;
-    setModel(defaultModel);
+    // Reset model to stable default for the new provider
+    const newDefault =
+      p === "claude" ? CLAUDE_MODELS[0].value : DEFAULT_CODEX_MODEL;
+    setModel(newDefault);
   };
 
   const handleStart = () => {
@@ -202,8 +203,8 @@ export function CodexReviewSettingsDialog({
               </Select>
               {provider === "claude" && (
                 <p className="text-muted-foreground text-xs">
-                  With /code-review:review, this model runs the orchestrator
-                  only — review agents use their own routing.
+                  With /code-review:start, this model runs the orchestrator only
+                  — review agents use their own routing.
                 </p>
               )}
             </div>

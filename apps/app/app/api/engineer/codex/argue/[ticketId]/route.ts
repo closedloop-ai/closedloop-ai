@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { parseDebateStatus } from "@/lib/engineer/chat-utils";
+import {
+  DEFAULT_CODEX_MODEL,
+  MODEL_ERROR_REGEX,
+} from "@/lib/engineer/codex-models";
 import { expandHome, getWorktreeParentDir } from "@/lib/engineer/repos";
 
 export const dynamic = "force-dynamic";
@@ -249,6 +253,9 @@ export async function POST(
         }
       };
 
+      // Tracks whether we've already attempted a model fallback (prevents infinite retry)
+      let modelRetried = false;
+
       /**
        * Spawn a codex process and wire its output to the stream.
        * If `canRetry` is true and the process fails with a stale-session
@@ -275,6 +282,7 @@ export async function POST(
         let accumulated = "";
         let stdoutBuffer = "";
         let staleSession = false;
+        let modelError = false;
 
         codex.stdout?.on("data", (data: Buffer) => {
           stdoutBuffer += data.toString();
@@ -308,6 +316,13 @@ export async function POST(
               return;
             }
           }
+          // Detect model availability errors
+          if (MODEL_ERROR_REGEX.test(text)) {
+            modelError = true;
+            if (!modelRetried) {
+              return;
+            }
+          }
           enqueue(JSON.stringify({ type: "error", error: text }));
         });
 
@@ -329,6 +344,49 @@ export async function POST(
             debateState.rounds = 0;
             saveDebateState(worktreeDir, debateState);
             runCodex(freshArgs, false);
+            return;
+          }
+
+          // Model unavailable: retry with default model
+          if (
+            modelError &&
+            !modelRetried &&
+            code !== 0 &&
+            model !== DEFAULT_CODEX_MODEL
+          ) {
+            console.log(
+              `[codex-argue] Model ${model} unavailable, retrying with ${DEFAULT_CODEX_MODEL}`
+            );
+            enqueue(
+              JSON.stringify({
+                type: "status",
+                status: "model_fallback",
+                requestedModel: model,
+                fallbackModel: DEFAULT_CODEX_MODEL,
+              })
+            );
+            const fallbackPrompt = buildCodexPrompt(
+              findingSummary,
+              claudeArgument,
+              debateHistory || [],
+              DEFAULT_CODEX_MODEL
+            );
+            const fallbackArgs = [
+              "exec",
+              "--full-auto",
+              "--json",
+              "-m",
+              DEFAULT_CODEX_MODEL,
+              fallbackPrompt,
+            ];
+            if (reasoningEffort) {
+              fallbackArgs.push(
+                "-c",
+                `model_reasoning_effort=${reasoningEffort}`
+              );
+            }
+            modelRetried = true;
+            runCodex(fallbackArgs, false);
             return;
           }
 

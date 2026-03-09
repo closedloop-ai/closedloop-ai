@@ -292,22 +292,27 @@ function ArtifactSection({
                     selectedIds={selectedIds}
                   >
                     <TableCell className="max-w-[320px]">
-                      <div className="flex items-center gap-2">
-                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        {isDisplayableSlug(artifact.slug) && (
-                          <span className="font-mono text-muted-foreground text-xs">
-                            {artifact.slug}
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-2">
+                          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          {isDisplayableSlug(artifact.slug) && (
+                            <span className="font-mono text-muted-foreground text-xs">
+                              {artifact.slug}
+                            </span>
+                          )}
+                          <span
+                            className="truncate font-medium"
+                            title={artifact.title}
+                          >
+                            {artifact.title}
                           </span>
-                        )}
-                        <span
-                          className="truncate font-medium"
-                          title={artifact.title}
-                        >
-                          {artifact.title}
-                        </span>
-                        <GenerationStatusIndicator
-                          generationStatus={artifact.generationStatus}
-                        />
+                        </div>
+                        <div className="px-3">
+                          <GenerationStatusIndicator
+                            className="text-xs"
+                            generationStatus={artifact.generationStatus}
+                          />
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>

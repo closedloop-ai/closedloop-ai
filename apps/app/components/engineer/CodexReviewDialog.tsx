@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatModeView } from "@/components/engineer/codex-review/ChatModeView";
 import {
+  DEFAULT_CODEX_MODEL,
   LOCAL_STORAGE_KEYS,
   pendingNewReview,
 } from "@/components/engineer/codex-review/constants";
@@ -47,9 +48,11 @@ export function CodexReviewDialog({
   const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState(() => {
     if (globalThis.window === undefined) {
-      return "gpt-5.3-codex";
+      return DEFAULT_CODEX_MODEL;
     }
-    return localStorage.getItem(LOCAL_STORAGE_KEYS.model) || "gpt-5.3-codex";
+    return (
+      localStorage.getItem(LOCAL_STORAGE_KEYS.model) || DEFAULT_CODEX_MODEL
+    );
   });
   const [reasoningEffort, setReasoningEffort] = useState(() => {
     if (globalThis.window === undefined) {

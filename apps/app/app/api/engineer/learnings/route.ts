@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -6,12 +7,19 @@ import { parseToon } from "@/lib/engineer/toon-parser";
 
 export async function GET() {
   try {
-    const filePath = join(
+    const newPath = join(
+      homedir(),
+      ".closedloop-ai",
+      "learnings",
+      "org-patterns.toon"
+    );
+    const legacyPath = join(
       homedir(),
       ".claude",
       ".learnings",
       "org-patterns.toon"
     );
+    const filePath = existsSync(newPath) ? newPath : legacyPath;
     const content = await readFile(filePath, "utf-8");
     const patterns = parseToon(content);
 

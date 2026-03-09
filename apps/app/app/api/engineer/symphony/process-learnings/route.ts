@@ -11,7 +11,7 @@ import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import {
   expandHome,
-  getSymphonyScriptPath,
+  getSelfLearningScriptPath,
   getWorktreeParentDir,
 } from "@/lib/engineer/repos";
 
@@ -129,22 +129,13 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Find the process-chat-learnings.sh script (same plugin directory as run-loop.sh)
-  const runLoopPath = getSymphonyScriptPath();
-  if (!runLoopPath) {
+  // Find the process-chat-learnings.sh script in the self-learning plugin
+  const scriptPath = getSelfLearningScriptPath();
+  if (!scriptPath) {
     return new Response(
-      JSON.stringify({ error: "ClosedLoop scripts not found in plugin cache" }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
-  }
-
-  const scriptPath = join(runLoopPath, "..", "process-chat-learnings.sh");
-  if (!existsSync(scriptPath)) {
-    return new Response(
-      JSON.stringify({ error: "process-chat-learnings.sh not found" }),
+      JSON.stringify({
+        error: "process-chat-learnings.sh not found in self-learning plugin",
+      }),
       {
         status: 404,
         headers: { "Content-Type": "application/json" },
@@ -196,21 +187,12 @@ function spawnWaitingWrapper(
   claudeWorkDir: string,
   worktreeDir: string
 ): Response {
-  const runLoopPath = getSymphonyScriptPath();
-  if (!runLoopPath) {
+  const scriptPath = getSelfLearningScriptPath();
+  if (!scriptPath) {
     return new Response(
-      JSON.stringify({ error: "ClosedLoop scripts not found in plugin cache" }),
-      {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
-  }
-
-  const scriptPath = join(runLoopPath, "..", "process-chat-learnings.sh");
-  if (!existsSync(scriptPath)) {
-    return new Response(
-      JSON.stringify({ error: "process-chat-learnings.sh not found" }),
+      JSON.stringify({
+        error: "process-chat-learnings.sh not found in self-learning plugin",
+      }),
       {
         status: 404,
         headers: { "Content-Type": "application/json" },
