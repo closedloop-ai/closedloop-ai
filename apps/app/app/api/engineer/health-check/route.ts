@@ -283,13 +283,21 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
       error: "Check failed unexpectedly",
     };
   });
+  const [
+    gitResult,
+    ghCliResult,
+    ghAuthResult,
+    worktreeResult,
+    codexResult,
+    python3Result,
+  ] = parallelChecks;
 
   // Only run plugin check if Claude CLI is installed
   const checks: CheckResult[] = [
-    parallelChecks[0], // git
+    gitResult,
     claudeResult,
-    parallelChecks[1], // gh-cli
-    parallelChecks[2], // gh-auth
+    ghCliResult,
+    ghAuthResult,
   ];
 
   if (claudeResult.passed) {
@@ -305,11 +313,7 @@ export async function GET(): Promise<NextResponse<HealthCheckResponse>> {
     });
   }
 
-  checks.push(
-    parallelChecks[3], // worktree-dir
-    parallelChecks[4], // codex
-    parallelChecks[5] // python3
-  );
+  checks.push(worktreeResult, codexResult, python3Result);
 
   const allRequiredPassed = checks
     .filter((c) => c.required)
