@@ -1235,7 +1235,10 @@ export const judgesAnalyticsService = {
     }
     for (const pr of prs) {
       const key = bucketKey(pr.createdAt, granularity);
-      timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
+  if (pr.createdAt >= startDate && pr.createdAt <= endDate) {
+    const key = bucketKey(pr.createdAt, granularity);
+    timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
+  }
     }
 
     const timeline = [...timelineCounts.entries()]
