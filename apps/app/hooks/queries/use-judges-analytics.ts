@@ -137,7 +137,8 @@ export function usePrHealth(
   promptName: string,
   reportType: string,
   rangeDays: number,
-  granularity: PrTimelineGranularity = PR_TIMELINE_GRANULARITY_OPTIONS.Week
+  granularity: PrTimelineGranularity = PR_TIMELINE_GRANULARITY_OPTIONS.Week,
+  options?: Omit<UseQueryOptions<PrHealthResponse>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
   const endDate = format(new Date(), "yyyy-MM-dd");
@@ -163,5 +164,6 @@ export function usePrHealth(
     },
     enabled: Boolean(promptName) && Boolean(reportType),
     staleTime: JUDGES_ANALYTICS_QUERY_STALE_TIME_MS,
+    ...options,
   });
 }
