@@ -392,6 +392,8 @@ export const CHAT_SENTINEL = {
   CODEX_CONFERRED_TO_CLAUDE: "__codex_conferred_to_claude__",
 } as const;
 
+export type ChatSentinel = (typeof CHAT_SENTINEL)[keyof typeof CHAT_SENTINEL];
+
 /**
  * Detect an @codex or @claude conferral mention near the end of an LLM response.
  * Only detects the *other* LLM (Claude → @codex, Codex → @claude).
