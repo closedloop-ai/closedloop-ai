@@ -959,16 +959,14 @@ type DebateHandle = ReturnType<typeof useCodexDebate>;
  * Status note rendered for forwarded/debate-start/debate-end indicators.
  */
 
-function StatusNote({
-  id,
+export function StatusNote({
   idx,
   text,
   className = "text-muted-foreground/60",
-}: Readonly<{ id: string; idx: number; text: string; className?: string }>) {
+}: Readonly<{ idx: number; text: string; className?: string }>) {
   return (
     <div
       className="fade-in flex animate-in justify-center py-1 duration-300"
-      key={id}
       style={{ animationDelay: `${idx * 50}ms` }}
     >
       <span className={cn("font-mono text-[11px] italic", className)}>
@@ -1070,7 +1068,6 @@ function renderChatMessage(
     return (
       <StatusNote
         className={statusNote.className}
-        id={msg.id}
         idx={idx}
         key={msg.id}
         text={statusNote.text}

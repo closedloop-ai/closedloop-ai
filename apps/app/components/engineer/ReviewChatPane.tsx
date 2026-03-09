@@ -25,6 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
 import type { ReviewConfig } from "@/components/engineer/CodexReviewSettingsDialog";
+import { StatusNote } from "@/components/engineer/CommentChat";
 import {
   ChatBubble,
   MessageContent,
@@ -352,7 +353,7 @@ export function ReviewChatPane({
             const statusNote = REVIEW_STATUS_NOTES[msg.content];
             if (statusNote && msg.role === "user") {
               return (
-                <ReviewStatusNote
+                <StatusNote
                   className={statusNote.className}
                   idx={idx}
                   key={msg.id}
@@ -731,23 +732,6 @@ const REVIEW_STATUS_NOTES: Record<
     className: "text-blue-600/70 dark:text-blue-400/70",
   },
 };
-
-function ReviewStatusNote({
-  idx,
-  text,
-  className = "text-muted-foreground/60",
-}: Readonly<{ idx: number; text: string; className?: string }>) {
-  return (
-    <div
-      className="fade-in flex animate-in justify-center py-1 duration-300"
-      style={{ animationDelay: `${idx * 50}ms` }}
-    >
-      <span className={cn("font-mono text-[11px] italic", className)}>
-        {text}
-      </span>
-    </div>
-  );
-}
 
 // --- Finding card ---
 
