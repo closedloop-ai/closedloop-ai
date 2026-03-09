@@ -2,6 +2,7 @@ import { ArtifactStatus, ArtifactType } from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import { ExternalLinkType } from "@repo/api/src/types/external-link";
 import { IssueStatus } from "@repo/api/src/types/issue";
+import { ProjectStatus } from "@repo/api/src/types/project";
 import type { StatusIconStatus } from "@repo/design-system/components/ui/status-icon";
 import {
   BoxIcon,
@@ -168,3 +169,11 @@ export const EXTERNAL_LINK_TYPE_BADGE_LABELS: Record<ExternalLinkType, string> =
 
 // Issue icon
 export const ISSUE_ICON: React.ElementType = BoxIcon;
+
+// Project status labels
+export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  [ProjectStatus.NotStarted]: "Not Started",
+  [ProjectStatus.InProgress]: "In Progress",
+  [ProjectStatus.Completed]: "Completed",
+  [ProjectStatus.Archived]: "Archived",
+};
