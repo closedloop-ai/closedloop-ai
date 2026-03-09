@@ -2,6 +2,7 @@
 
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { useCallback, useState } from "react";
+import { useLocalStorageState } from "@/hooks/use-local-storage-state";
 
 type EditableArtifactType =
   | typeof ArtifactType.Prd
@@ -40,7 +41,10 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   const { artifactType } = config;
 
   // Common UI state
-  const [showMetadataPanel, setShowMetadataPanel] = useState(false);
+  const [showMetadataPanel, setShowMetadataPanel] = useLocalStorageState(
+    `panel:metadata:${artifactType}`,
+    false
+  );
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   // PRD-specific UI state
@@ -55,7 +59,7 @@ export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   // Toggle requires useCallback since it uses the previous state
   const toggleMetadataPanel = useCallback(() => {
     setShowMetadataPanel((prev) => !prev);
-  }, []);
+  }, [setShowMetadataPanel]);
 
   // Common return values for all artifact types
   const commonState = {

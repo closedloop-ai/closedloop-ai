@@ -9,31 +9,19 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { toast } from "@repo/design-system/components/ui/sonner";
-import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
-import {
-  FileCode2,
-  GitBranchIcon,
-  MoreHorizontalIcon,
-  TextIcon,
-  TrashIcon,
-  ViewIcon,
-} from "lucide-react";
+import { MoreHorizontalIcon, TrashIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
-import {
-  UnderlineTabsList,
-  UnderlineTabsTrigger,
-} from "@/components/underline-tabs";
 import { useDeleteIssue } from "@/hooks/queries/use-issues";
-import { ContextTable } from "./components/context-table";
+import { BranchesSection } from "./components/branches-section";
+import { ContextSection } from "./components/context-section";
 import { EditableIssueDescription } from "./components/editable-issue-description";
 import { EditableIssueTitle } from "./components/editable-issue-title";
-import { FeatureBuildTab } from "./components/feature-build-tab";
-import { FeaturePlanTab } from "./components/feature-plan-tab";
-import { FeaturePreviewTab } from "./components/feature-preview-tab";
 import { IssueMetadataPanel } from "./components/issue-metadata-panel";
+import { PlanSection } from "./components/plan-section";
+import { PreviewSection } from "./components/preview-section";
 
 type FeaturePageProps = {
   issue: IssueWithWorkstream;
@@ -43,7 +31,6 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
   const router = useRouter();
   const deleteIssue = useDeleteIssue();
 
-  const [activeTab, setActiveTab] = useState("description");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [displayTitle, setDisplayTitle] = useState(issue.title);
 
@@ -104,31 +91,9 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
       <main className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="flex min-h-full">
           {/* Main Content Area */}
-          <Tabs
-            className="min-w-0 flex-1"
-            onValueChange={setActiveTab}
-            value={activeTab}
-          >
-            <UnderlineTabsList>
-              <UnderlineTabsTrigger value="description">
-                <TextIcon className="h-4 w-4" />
-                Description
-              </UnderlineTabsTrigger>
-              <UnderlineTabsTrigger value="plan">
-                <FileCode2 className="h-4 w-4" />
-                Plan
-              </UnderlineTabsTrigger>
-              <UnderlineTabsTrigger value="build">
-                <GitBranchIcon className="h-4 w-4" />
-                Build
-              </UnderlineTabsTrigger>
-              <UnderlineTabsTrigger value="preview">
-                <ViewIcon className="h-4 w-4" />
-                Preview
-              </UnderlineTabsTrigger>
-            </UnderlineTabsList>
-            <TabsContent className="mt-0" value="description">
-              <div className="mx-auto flex max-w-[750px] flex-col gap-4 py-6">
+          <div className="min-w-0 flex-1 overflow-x-hidden">
+            <div className="mx-auto flex max-w-[750px] flex-col gap-8 py-8">
+              <div className="flex flex-col gap-1.5">
                 <EditableIssueTitle
                   initialTitle={issue.title}
                   issueId={issue.id}
@@ -138,19 +103,19 @@ export function FeaturePage({ issue }: Readonly<FeaturePageProps>) {
                   initialDescription={issue.description || ""}
                   issueId={issue.id}
                 />
-                <ContextTable issueId={issue.id} separator />
               </div>
-            </TabsContent>
-            <TabsContent className="mt-0" value="plan">
-              <FeaturePlanTab issue={issue} />
-            </TabsContent>
-            <TabsContent className="mt-0" value="build">
-              <FeatureBuildTab />
-            </TabsContent>
-            <TabsContent className="mt-0" value="preview">
-              <FeaturePreviewTab />
-            </TabsContent>
-          </Tabs>
+
+              <div className="flex flex-col gap-4">
+                <ContextSection
+                  issueId={issue.id}
+                  projectId={issue.projectId ?? undefined}
+                />
+                <PlanSection issue={issue} />
+                <BranchesSection issueId={issue.id} />
+                <PreviewSection />
+              </div>
+            </div>
+          </div>
 
           {/* Right Sidebar */}
           <IssueMetadataPanel issue={issue} />

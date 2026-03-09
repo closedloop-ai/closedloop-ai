@@ -9,7 +9,7 @@ on:
 
 # Cancel in-progress runs for the same PR to prevent duplicate reviews
 concurrency:
-  group: claude-review-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
