@@ -1,3 +1,4 @@
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import {
   PR_TIMELINE_RANGE_OPTIONS,
   type PrHealthResponse,
@@ -93,7 +94,7 @@ describe("PrActivitySection — loading state", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -119,7 +120,7 @@ describe("PrActivitySection — empty state", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -143,7 +144,7 @@ describe("PrActivitySection — summary card values", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -168,7 +169,7 @@ describe("PrActivitySection — summary card values", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -186,7 +187,7 @@ describe("PrActivitySection — summary card values", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -206,7 +207,7 @@ describe("PrActivitySection — tooltip content", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -229,7 +230,7 @@ describe("PrActivitySection — error state", () => {
       <PrActivitySection
         promptName="clarity"
         rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType="PLAN"
+        reportType={EvaluationReportType.Plan}
       />
     );
 

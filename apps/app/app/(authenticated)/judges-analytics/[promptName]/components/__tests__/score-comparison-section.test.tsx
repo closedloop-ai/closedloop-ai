@@ -1,3 +1,4 @@
+import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type { JudgeScoresResponse } from "@repo/api/src/types/judges-analytics";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -31,7 +32,12 @@ describe("ScoreComparisonSection", () => {
       data: makeResponse(makeRows(5, 0.8, 0.6)),
     });
 
-    render(<ScoreComparisonSection promptName="clarity" reportType="PLAN" />);
+    render(
+      <ScoreComparisonSection
+        promptName="clarity"
+        reportType={EvaluationReportType.Plan}
+      />
+    );
 
     expect(
       screen.getByText("Averages (visible): Judge 0.80 · Human 0.60")
@@ -45,7 +51,12 @@ describe("ScoreComparisonSection", () => {
       data: makeResponse(makeRows(25, 0.7, 0.5)),
     });
 
-    render(<ScoreComparisonSection promptName="clarity" reportType="PLAN" />);
+    render(
+      <ScoreComparisonSection
+        promptName="clarity"
+        reportType={EvaluationReportType.Plan}
+      />
+    );
 
     expect(screen.getByTestId("mock-score-table").textContent).toContain(
       "rows-count:20"
