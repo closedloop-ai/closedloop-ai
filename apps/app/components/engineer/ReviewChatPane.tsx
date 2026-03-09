@@ -505,7 +505,6 @@ function ChatMessageItem({
           ? (streamContextPercent ?? chatHistoryContextPercent ?? undefined)
           : undefined
       }
-      key={msg.id}
       messageRole={msg.role}
       onAction={(action) => onAction(action, effectiveSender)}
       onCopy={async () => {
