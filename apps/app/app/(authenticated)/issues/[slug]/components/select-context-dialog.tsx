@@ -2,48 +2,51 @@
 
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
-import { FileCode2 } from "lucide-react";
+import { FileTextIcon } from "lucide-react";
 import { useCreateEntityLink } from "@/hooks/queries/use-entity-links";
 import { SelectArtifactDialog } from "./select-artifact-dialog";
 
-type SelectPlanDialogProps = {
+type SelectContextDialogProps = {
   issueId: string;
   projectId: string | undefined;
+  excludeArtifactIds: Set<string>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
 
-export function SelectPlanDialog({
+export function SelectContextDialog({
   issueId,
   projectId,
+  excludeArtifactIds,
   open,
   onOpenChange,
-}: Readonly<SelectPlanDialogProps>) {
+}: Readonly<SelectContextDialogProps>) {
   const createEntityLink = useCreateEntityLink();
 
   return (
     <SelectArtifactDialog
-      artifactType={ArtifactType.ImplementationPlan}
-      description="Choose an implementation plan to link to this feature."
-      emptyText="No implementation plans found."
-      icon={FileCode2}
+      artifactType={ArtifactType.Prd}
+      description="Choose a PRD to link as context for this feature."
+      emptyText="No PRDs found."
+      excludeIds={excludeArtifactIds}
+      icon={FileTextIcon}
       onOpenChange={onOpenChange}
-      onSelect={(plan) => {
+      onSelect={(prd) => {
         createEntityLink.mutate(
           {
-            sourceId: issueId,
-            sourceType: EntityType.Issue,
-            targetId: plan.id,
-            targetType: EntityType.Artifact,
-            linkType: LinkType.Produces,
+            sourceId: prd.id,
+            sourceType: EntityType.Artifact,
+            targetId: issueId,
+            targetType: EntityType.Issue,
+            linkType: LinkType.RelatesTo,
           },
           { onSuccess: () => onOpenChange(false) }
         );
       }}
       open={open}
       projectId={projectId}
-      searchPlaceholder="Search plans..."
-      title="Select Existing Plan"
+      searchPlaceholder="Search PRDs..."
+      title="Add Context"
     />
   );
 }
