@@ -10,7 +10,7 @@ export function getCodexChatStatePath(
   if (!chatContextId) {
     return join(claudeWorkDir, "codex-chat.json");
   }
-  const sanitized = chatContextId.replaceAll(/[^a-zA-Z0-9-_]/g, "_");
+  const sanitized = chatContextId.replaceAll(/[^a-zA-Z0-9_-]/g, "_");
   return join(claudeWorkDir, `codex-chat-${sanitized}.json`);
 }
 
