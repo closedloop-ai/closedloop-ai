@@ -10,6 +10,10 @@ import { Server, type Socket } from "socket.io";
 const RELAY_PORT = Number(
   process.env.RELAY_PORT ?? process.env.MCP_PORT ?? "3020"
 );
+if (!Number.isInteger(RELAY_PORT) || RELAY_PORT < 1 || RELAY_PORT > 65_535) {
+  log.error("Invalid RELAY_PORT");
+  process.exit(1);
+}
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 const VERCEL_API_URL = process.env.CLOSEDLOOP_API_URL;
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -62,6 +66,7 @@ async function callVercel<T = Record<string, unknown>>(
       "x-internal-secret": INTERNAL_API_SECRET as string,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
   });
   const rawBody = await response.text();
   let data: T | null = null;
@@ -109,6 +114,11 @@ async function validateApiKeyViaApi(apiKey: string): Promise<{
     typeof (payload as Record<string, unknown>).organizationId !== "string" ||
     typeof (payload as Record<string, unknown>).userId !== "string"
   ) {
+    return { ok: false };
+  }
+
+  const scopes = (payload as Record<string, unknown>).scopes;
+  if (!(Array.isArray(scopes) && scopes.includes("write"))) {
     return { ok: false };
   }
 

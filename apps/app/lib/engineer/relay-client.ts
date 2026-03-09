@@ -562,6 +562,9 @@ export class RelayClient {
             );
 
             const events = await self.pollCommandEvents(targetId, commandId);
+            if (cancelled) {
+              break;
+            }
             let foundNew = false;
 
             for (const event of events) {
@@ -603,18 +606,20 @@ export class RelayClient {
             commandId,
             error,
           });
-          controller.enqueue(
-            encoder.encode(
-              `${JSON.stringify({
-                type: "error",
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : "Relay command event polling failed",
-              })}\n`
-            )
-          );
-          controller.close();
+          if (!cancelled) {
+            controller.enqueue(
+              encoder.encode(
+                `${JSON.stringify({
+                  type: "error",
+                  error:
+                    error instanceof Error
+                      ? error.message
+                      : "Relay command event polling failed",
+                })}\n`
+              )
+            );
+            controller.close();
+          }
         }
       },
     });

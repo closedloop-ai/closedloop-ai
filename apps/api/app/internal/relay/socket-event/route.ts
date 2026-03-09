@@ -2,9 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
-import { apiKeysService } from "@/app/api-keys/service";
 import { computeTargetsService } from "@/app/compute-targets/service";
-import { usersService } from "@/app/users/service";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import {
   PROTOCOL_VERSION,
@@ -50,42 +48,6 @@ function wireCommand(command: WireCommandPayload): EmitInstruction {
 // Event handlers — each returns what the relay should emit back to the worker
 // ---------------------------------------------------------------------------
 
-async function handleValidate(payload: unknown): Promise<SocketEventResponse> {
-  if (!isRecord(payload) || typeof payload.apiKey !== "string") {
-    return { emit: [], disconnect: true };
-  }
-
-  const apiKey = payload.apiKey as string;
-  if (!apiKey.startsWith("sk_live_")) {
-    return { emit: [], disconnect: true };
-  }
-
-  const keyContext = await apiKeysService.verifyKey(apiKey);
-  if (!keyContext?.scopes.includes("write")) {
-    return { emit: [], disconnect: true };
-  }
-
-  const user = await usersService.findById(
-    keyContext.userId,
-    keyContext.organizationId
-  );
-  if (!user?.active) {
-    return { emit: [], disconnect: true };
-  }
-
-  return {
-    emit: [
-      {
-        event: "_relay.auth",
-        payload: {
-          organizationId: keyContext.organizationId,
-          userId: keyContext.userId,
-        },
-      },
-    ],
-  };
-}
-
 async function handleHello(
   payload: unknown,
   auth: { organizationId: string; userId: string }
@@ -113,7 +75,9 @@ async function handleHello(
     socketProtocolVersion: PROTOCOL_VERSION,
     pluginVersion: (payload.pluginVersion as JsonValue) ?? null,
   };
-  const supportedOperations = payload.supportedOperations as string[];
+  const supportedOperations = Array.isArray(payload.supportedOperations)
+    ? (payload.supportedOperations as string[])
+    : [];
 
   let targetId = payload.computeTargetId as string | undefined;
   let targetCreated = false;
@@ -198,10 +162,17 @@ async function handleCommandEvent(
     return { emit: [] };
   }
 
-  const commandId = payload.commandId as string;
+  if (
+    typeof payload.commandId !== "string" ||
+    typeof payload.sequence !== "number"
+  ) {
+    return { emit: [] };
+  }
+
+  const commandId = payload.commandId;
   const rawEventType = payload.eventType;
   const data = payload.data as JsonValue;
-  const sequence = payload.sequence as number;
+  const sequence = payload.sequence;
 
   if (!isDesktopCommandEventType(rawEventType)) {
     return { emit: [] };
@@ -401,10 +372,6 @@ export async function POST(request: Request): Promise<Response> {
     let result: SocketEventResponse;
 
     switch (event) {
-      case "_relay.validate":
-        result = await handleValidate(payload);
-        break;
-
       case "desktop.hello":
         if (!auth) {
           return NextResponse.json(
