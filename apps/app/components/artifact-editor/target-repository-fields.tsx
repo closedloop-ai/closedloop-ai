@@ -15,6 +15,7 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { sortRepositoriesByActivity } from "@/lib/sort-utils";
 import { MetadataSection } from "./metadata-panel";
 
 type TargetRepositoryFieldsProps = {
@@ -72,22 +73,7 @@ export function TargetRepositoryFields({
     });
 
   const sortedRepositories = useMemo(
-    () =>
-      repositories
-        ? [...repositories].sort((a, b) => {
-            // Sort by lastPushedAt desc (nulls to bottom), then by name asc
-            if (a.lastPushedAt && b.lastPushedAt) {
-              return (
-                new Date(b.lastPushedAt).getTime() -
-                new Date(a.lastPushedAt).getTime()
-              );
-            }
-            if (a.lastPushedAt !== b.lastPushedAt) {
-              return a.lastPushedAt ? -1 : 1;
-            }
-            return a.name.localeCompare(b.name);
-          })
-        : [],
+    () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
   );
 

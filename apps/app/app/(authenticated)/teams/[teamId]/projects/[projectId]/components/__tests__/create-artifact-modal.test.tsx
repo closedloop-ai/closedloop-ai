@@ -21,6 +21,19 @@ const mockUseGitHubIntegrationStatus = vi.fn();
 const mockUseGitHubRepositories = vi.fn();
 const mockUseGitHubBranches = vi.fn();
 const mockUseOrgTemplateByType = vi.fn();
+const mockUseProject = vi.fn();
+
+vi.mock("@repo/api/src/types/project", async () => {
+  const actual = await vi.importActual("@repo/api/src/types/project");
+  return {
+    ...actual,
+    getProjectSettings: () => ({}),
+  };
+});
+
+vi.mock("@/hooks/queries/use-projects", () => ({
+  useProject: (...args: unknown[]) => mockUseProject(...args),
+}));
 
 vi.mock("@/hooks/queries/use-artifacts", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-artifacts");
@@ -126,6 +139,11 @@ describe("CreateArtifactModal", () => {
     });
 
     mockUseOrgTemplateByType.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
+
+    mockUseProject.mockReturnValue({
       data: null,
       isLoading: false,
     });

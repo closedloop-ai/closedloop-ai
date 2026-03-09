@@ -5,6 +5,7 @@ import type {
   ProjectStatus,
   ProjectWithDetails,
 } from "@repo/api/src/types/project";
+import { getProjectSettings } from "@repo/api/src/types/project";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Collapsible,
@@ -27,6 +28,7 @@ import {
   ChevronUpIcon,
   CircleDotIcon,
   FlagIcon,
+  GitBranchIcon,
   UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -36,6 +38,7 @@ import { ensureDate } from "@/lib/date-utils";
 import { PRIORITY_LABELS } from "@/lib/project-constants";
 import { getUserDisplayName } from "@/lib/user-utils";
 import { CodebaseSummaryUpload } from "./codebase-summary-upload";
+import { DefaultRepositoryPicker } from "./default-repository-picker";
 
 const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   NOT_STARTED: "Not Started",
@@ -70,6 +73,7 @@ export function PropertiesPanel({
     [project.teams]
   );
   const { members: teamMembers } = useTeamMembers({ teamIds });
+  const projectSettings = getProjectSettings(project.settings);
 
   return (
     <Collapsible onOpenChange={setIsOpen} open={isOpen}>
@@ -186,6 +190,19 @@ export function PropertiesPanel({
             onSelect={(date) => onUpdateTargetDate?.(date)}
             placeholder="Set target date"
             value={ensureDate(project.targetDate)}
+          />
+        </div>
+
+        {/* Default Repository */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+            <GitBranchIcon className="h-4 w-4" />
+            <span>Default Repository</span>
+          </div>
+          <DefaultRepositoryPicker
+            currentSettings={project.settings}
+            defaultRepository={projectSettings.defaultRepository}
+            projectId={project.id}
           />
         </div>
 

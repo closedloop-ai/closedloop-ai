@@ -6,6 +6,7 @@ import {
   ArtifactType,
   type ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -59,6 +60,7 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { useProject } from "@/hooks/queries/use-projects";
 import { useTeamMembers } from "@/hooks/queries/use-teams";
 import { useOrgTemplateByType } from "@/hooks/queries/use-templates";
 import { ARTIFACT_TYPE_LABELS } from "@/lib/project-constants";
@@ -281,6 +283,10 @@ export function CreateArtifactModal({
   // PRD selection for implementation plans
   const [selectedPrdId, setSelectedPrdId] = useState<string>("");
 
+  const { data: project } = useProject(projectId);
+  const projectSettings = getProjectSettings(project?.settings ?? {});
+  const defaultRepo = projectSettings.defaultRepository;
+
   const typeLabel = ARTIFACT_TYPE_LABELS[artifactType] ?? artifactType;
   const isImplementationPlan = artifactType === ArtifactType.ImplementationPlan;
   const isPrd = artifactType === ArtifactType.Prd;
@@ -349,6 +355,32 @@ export function CreateArtifactModal({
       }
     }
   }, [branchesData, targetBranch]);
+
+  // Pre-populate from project default repository when modal opens
+  const defaultRepoId = defaultRepo?.repoId;
+  const defaultRepoFullName = defaultRepo?.repoFullName;
+  const defaultRepoBranch = defaultRepo?.branch;
+  useEffect(() => {
+    if (
+      open &&
+      defaultRepoId &&
+      defaultRepoFullName &&
+      defaultRepoBranch &&
+      !targetRepo &&
+      !selectedRepoId
+    ) {
+      setSelectedRepoId(defaultRepoId);
+      setTargetRepo(defaultRepoFullName);
+      setTargetBranch(defaultRepoBranch);
+    }
+  }, [
+    open,
+    defaultRepoId,
+    defaultRepoFullName,
+    defaultRepoBranch,
+    targetRepo,
+    selectedRepoId,
+  ]);
 
   // Pre-populate fields from selected PRD for implementation plans
   useEffect(() => {
@@ -420,9 +452,9 @@ export function CreateArtifactModal({
     setContent("");
     setSelectedApprover(null);
     setStatus("DRAFT");
-    setTargetRepo("");
-    setTargetBranch("main");
-    setSelectedRepoId("");
+    setTargetRepo(defaultRepo?.repoFullName ?? "");
+    setTargetBranch(defaultRepo?.branch ?? "main");
+    setSelectedRepoId(defaultRepo?.repoId ?? "");
     setSelectedPrdId("");
     setReverseSynthesisLink("");
     setError(null);

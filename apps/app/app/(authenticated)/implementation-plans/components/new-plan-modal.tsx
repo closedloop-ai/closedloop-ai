@@ -1,6 +1,7 @@
 "use client";
 
 import { EntityType } from "@repo/api/src/types/entity-link";
+import { getProjectSettings } from "@repo/api/src/types/project";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -22,7 +23,7 @@ import {
   useCreateAndGenerateArtifact,
   useCreateArtifact,
 } from "@/hooks/queries/use-artifacts";
-import { useProjects } from "@/hooks/queries/use-projects";
+import { useProject, useProjects } from "@/hooks/queries/use-projects";
 import { PlanPreview, PrdSelector, ProjectSelector } from "./plan-form-fields";
 import { buildCreateInput, useModalOpenState } from "./plan-form-utils";
 import {
@@ -69,6 +70,11 @@ export function NewPlanModal({
   );
   const [selectedRepoId, setSelectedRepoId] = useState("");
 
+  // Fetch project details for default repository
+  const effectiveProjectId = source?.projectId ?? selectedProjectId;
+  const { data: projectData } = useProject(effectiveProjectId ?? "");
+  const projectSettings = getProjectSettings(projectData?.settings ?? {});
+
   // Fetch PRDs when modal opens (skip if we have a source)
   const { data: prds = [], isLoading: loadingPrds } = useArtifacts(
     { type: "PRD", projectId: selectedProjectId },
@@ -110,6 +116,16 @@ export function NewPlanModal({
       }
     }
   }, [selectedSource, source]);
+
+  // Pre-populate from project default repository when modal opens
+  useEffect(() => {
+    const defaultRepo = projectSettings.defaultRepository;
+    if (open && !(source?.targetRepo || targetRepo) && defaultRepo) {
+      setSelectedRepoId(defaultRepo.repoId);
+      setTargetRepo(defaultRepo.repoFullName);
+      setTargetBranch(defaultRepo.branch);
+    }
+  }, [open, projectSettings.defaultRepository, source?.targetRepo, targetRepo]);
 
   const handleTitleChange = (value: string): void => {
     setTitle(value);

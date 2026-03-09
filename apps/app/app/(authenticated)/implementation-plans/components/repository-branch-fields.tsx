@@ -13,6 +13,7 @@ import {
   useGitHubIntegrationStatus,
   useGitHubRepositories,
 } from "@/hooks/queries/use-github-integration";
+import { sortRepositoriesByActivity } from "@/lib/sort-utils";
 
 type RepositoryBranchFieldsProps = {
   targetBranch: string;
@@ -39,21 +40,7 @@ export function RepositoryBranchFields({
     });
 
   const sortedRepositories = useMemo(
-    () =>
-      repositories
-        ? [...repositories].sort((a, b) => {
-            if (a.lastPushedAt && b.lastPushedAt) {
-              return (
-                new Date(b.lastPushedAt).getTime() -
-                new Date(a.lastPushedAt).getTime()
-              );
-            }
-            if (a.lastPushedAt !== b.lastPushedAt) {
-              return a.lastPushedAt ? -1 : 1;
-            }
-            return a.name.localeCompare(b.name);
-          })
-        : [],
+    () => (repositories ? sortRepositoriesByActivity(repositories) : []),
     [repositories]
   );
 

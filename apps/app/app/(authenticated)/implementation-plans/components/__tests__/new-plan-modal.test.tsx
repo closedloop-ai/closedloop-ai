@@ -18,6 +18,7 @@ const mockUseArtifacts = vi.fn();
 const mockUseCreateArtifact = vi.fn();
 const mockUseCreateAndGenerateArtifact = vi.fn();
 const mockUseProjects = vi.fn();
+const mockUseProject = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mockUseRouter(),
@@ -33,10 +34,19 @@ vi.mock("@/hooks/queries/use-artifacts", async () => {
   };
 });
 
+vi.mock("@repo/api/src/types/project", async () => {
+  const actual = await vi.importActual("@repo/api/src/types/project");
+  return {
+    ...actual,
+    getProjectSettings: () => ({}),
+  };
+});
+
 vi.mock("@/hooks/queries/use-projects", async () => {
   const actual = await vi.importActual("@/hooks/queries/use-projects");
   return {
     ...actual,
+    useProject: (...args: unknown[]) => mockUseProject(...args),
     useProjects: () => mockUseProjects(),
   };
 });
@@ -98,6 +108,10 @@ describe("NewPlanModal", () => {
       data: [],
       isLoading: false,
       error: null,
+    });
+    mockUseProject.mockReturnValue({
+      data: null,
+      isLoading: false,
     });
   });
 

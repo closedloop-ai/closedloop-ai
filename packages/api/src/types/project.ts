@@ -95,3 +95,34 @@ export type CreateRepositoryInput = {
   defaultBranch?: string;
   isPrimary?: boolean;
 };
+
+// Project settings (stored in the `settings` JSON field)
+export type DefaultRepository = {
+  repoId: string;
+  repoFullName: string;
+  branch: string;
+};
+
+export type ProjectSettings = {
+  defaultRepository?: DefaultRepository;
+};
+
+export function getProjectSettings(settings: JsonObject): ProjectSettings {
+  const raw = settings as Record<string, unknown>;
+  const defaultRepository = raw.defaultRepository;
+  if (
+    defaultRepository &&
+    typeof defaultRepository === "object" &&
+    defaultRepository !== null &&
+    "repoId" in defaultRepository &&
+    "repoFullName" in defaultRepository &&
+    "branch" in defaultRepository &&
+    typeof (defaultRepository as Record<string, unknown>).repoId === "string" &&
+    typeof (defaultRepository as Record<string, unknown>).repoFullName ===
+      "string" &&
+    typeof (defaultRepository as Record<string, unknown>).branch === "string"
+  ) {
+    return { defaultRepository: defaultRepository as DefaultRepository };
+  }
+  return {};
+}
