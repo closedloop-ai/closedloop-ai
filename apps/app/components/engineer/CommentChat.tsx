@@ -397,6 +397,7 @@ export function CommentChat({
   // Reset conferral state on fresh user interactions
   const resetConferral = useCallback(() => {
     conferralDepthRef.current = 0;
+    conferralInProgressRef.current = false;
     if (conferralTimerRef.current) {
       clearTimeout(conferralTimerRef.current);
       conferralTimerRef.current = null;
