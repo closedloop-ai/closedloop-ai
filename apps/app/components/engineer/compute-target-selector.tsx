@@ -76,10 +76,7 @@ function buildOptions(
     });
   }
 
-  // TODO: restore same-machine filtering after relay testing
-  const visibleTargets = targets;
-
-  const sortedTargets = [...visibleTargets].sort((a, b) => {
+  const sortedTargets = [...targets].sort((a, b) => {
     if (a.isOnline !== b.isOnline) {
       return a.isOnline ? -1 : 1;
     }
