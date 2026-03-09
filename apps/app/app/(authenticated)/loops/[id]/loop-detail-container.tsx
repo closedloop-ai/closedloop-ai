@@ -1,6 +1,7 @@
 "use client";
 
 import { LoopStatus, type TokensByModel } from "@repo/api/src/types/loop";
+import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -9,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@repo/design-system/components/ui/card";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   Tabs,
   TabsContent,
@@ -24,14 +26,16 @@ import {
   GitBranchIcon,
   GitPullRequestIcon,
   Loader2Icon,
+  RotateCcwIcon,
   TerminalIcon,
   UserIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { LoopAuditLog } from "@/components/loops/loop-audit-log";
 import { LoopProgressPanel } from "@/components/loops/loop-progress-panel";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useLoop } from "@/hooks/queries/use-loops";
+import { useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 
@@ -69,6 +73,112 @@ function ModelTokenBreakdown({
   );
 }
 
+type MetadataCardsProps = {
+  loop: Awaited<ReturnType<typeof useLoop>["data"]>;
+  totalTokens: number;
+};
+
+function MetadataCards({ loop, totalTokens }: MetadataCardsProps) {
+  if (!loop) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {/* Status Card */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="font-medium text-sm">Status</CardTitle>
+          <ClockIcon className="h-4 w-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <LoopStatusBadge status={loop.status} />
+          {loop.startedAt && (
+            <p className="mt-2 text-muted-foreground text-xs">
+              Duration: {formatDuration(loop.startedAt, loop.completedAt)}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Command Card */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="font-medium text-sm">Command</CardTitle>
+          <TerminalIcon className="h-4 w-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <LoopCommandBadge command={loop.command} />
+          {loop.prompt && (
+            <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">
+              {loop.prompt}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Tokens Card */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="font-medium text-sm">Tokens</CardTitle>
+          <CoinsIcon className="h-4 w-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          <div className="font-bold text-2xl">
+            {totalTokens > 0 ? formatTokenCount(totalTokens) : "-"}
+          </div>
+          {totalTokens > 0 && (
+            <p className="text-muted-foreground text-xs">
+              {formatTokenCount(loop.tokensInput)} in /{" "}
+              {formatTokenCount(loop.tokensOutput)} out
+            </p>
+          )}
+          {loop.estimatedCost != null && loop.estimatedCost > 0 && (
+            <p className="mt-1 text-muted-foreground text-xs">
+              ~${loop.estimatedCost.toFixed(4)}
+            </p>
+          )}
+          {loop.tokensByModel && (
+            <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Repository Card */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="font-medium text-sm">Repository</CardTitle>
+          <GitBranchIcon className="h-4 w-4 text-muted-foreground" />
+        </CardHeader>
+        <CardContent>
+          {loop.repo ? (
+            <>
+              <p className="font-medium text-sm">{loop.repo.fullName}</p>
+              <p className="text-muted-foreground text-xs">
+                {loop.branchName || loop.repo.branch}
+              </p>
+              {loop.prUrl && (
+                <a
+                  className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+                  href={loop.prUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  <GitPullRequestIcon className="h-3.5 w-3.5" />
+                  PR #{loop.prNumber}
+                  <ExternalLinkIcon className="h-3 w-3" />
+                </a>
+              )}
+            </>
+          ) : (
+            <p className="text-muted-foreground text-sm">-</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 const ACTIVE_STATUSES: Set<string> = new Set([
   LoopStatus.Pending,
   LoopStatus.Claimed,
@@ -81,6 +191,8 @@ type LoopDetailContainerProps = {
 
 export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const { data: loop, isLoading, error } = useLoop(id);
+  const resumeLoop = useResumeLoop();
+  const router = useRouter();
 
   if (isLoading) {
     return (
@@ -111,107 +223,46 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   const totalTokens = loop.tokensInput + loop.tokensOutput;
   const defaultTab = isActive ? "live" : "audit-log";
 
+  const handleRestart = async () => {
+    try {
+      const result = await resumeLoop.mutateAsync({ id: loop.id });
+      toast.success("Loop restarted");
+      router.push(`/loops/${result.loopId}`);
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Back navigation */}
-      <div>
+      <div className="flex items-center gap-2">
         <Button asChild size="sm" variant="ghost">
           <Link href="/loops">
             <ArrowLeftIcon className="mr-1 h-4 w-4" />
             Back to Loops
           </Link>
         </Button>
-      </div>
-
-      {/* Metadata cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="font-medium text-sm">Status</CardTitle>
-            <ClockIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <LoopStatusBadge status={loop.status} />
-            {loop.startedAt && (
-              <p className="mt-2 text-muted-foreground text-xs">
-                Duration: {formatDuration(loop.startedAt, loop.completedAt)}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="font-medium text-sm">Command</CardTitle>
-            <TerminalIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <LoopCommandBadge command={loop.command} />
-            {loop.prompt && (
-              <p className="mt-2 line-clamp-2 text-muted-foreground text-xs">
-                {loop.prompt}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="font-medium text-sm">Tokens</CardTitle>
-            <CoinsIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="font-bold text-2xl">
-              {totalTokens > 0 ? formatTokenCount(totalTokens) : "-"}
-            </div>
-            {totalTokens > 0 && (
-              <p className="text-muted-foreground text-xs">
-                {formatTokenCount(loop.tokensInput)} in /{" "}
-                {formatTokenCount(loop.tokensOutput)} out
-              </p>
-            )}
-            {loop.estimatedCost != null && loop.estimatedCost > 0 && (
-              <p className="mt-1 text-muted-foreground text-xs">
-                ~${loop.estimatedCost.toFixed(4)}
-              </p>
-            )}
-            {loop.tokensByModel && (
-              <ModelTokenBreakdown tokensByModel={loop.tokensByModel} />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="font-medium text-sm">Repository</CardTitle>
-            <GitBranchIcon className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {loop.repo ? (
-              <>
-                <p className="font-medium text-sm">{loop.repo.fullName}</p>
-                <p className="text-muted-foreground text-xs">
-                  {loop.branchName || loop.repo.branch}
-                </p>
-                {loop.prUrl && (
-                  <a
-                    className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
-                    href={loop.prUrl}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  >
-                    <GitPullRequestIcon className="h-3.5 w-3.5" />
-                    PR #{loop.prNumber}
-                    <ExternalLinkIcon className="h-3 w-3" />
-                  </a>
-                )}
-              </>
+        {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
+          <Button
+            disabled={resumeLoop.isPending}
+            onClick={async () => {
+              await handleRestart();
+            }}
+            size="sm"
+            variant="outline"
+          >
+            {resumeLoop.isPending ? (
+              <Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
             ) : (
-              <p className="text-muted-foreground text-sm">-</p>
+              <RotateCcwIcon className="mr-2 h-4 w-4" />
             )}
-          </CardContent>
-        </Card>
+            Restart
+          </Button>
+        )}
       </div>
+
+      <MetadataCards loop={loop} totalTokens={totalTokens} />
 
       {/* Detail row */}
       <div className="flex flex-wrap items-center gap-4 text-muted-foreground text-sm">

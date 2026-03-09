@@ -2,6 +2,8 @@
 
 import type { LoopWithUser } from "@repo/api/src/types/loop";
 import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
+import { Button } from "@repo/design-system/components/ui/button";
 import {
   type Column,
   DataTable,
@@ -15,11 +17,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@repo/design-system/components/ui/select";
-import { Loader2Icon } from "lucide-react";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import { Loader2Icon, RotateCcwIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { LoopCommandBadge, LoopStatusBadge } from "@/components/status-badge";
-import { useLoops } from "@/hooks/queries/use-loops";
+import { useLoops, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatRelativeTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import { getUserDisplayName } from "@/lib/user-utils";
@@ -108,6 +111,8 @@ const sortOptions: SortOption[] = [
 export function LoopsTable() {
   const router = useRouter();
   const [commandFilter, setCommandFilter] = useState<string>("all");
+  const resumeLoop = useResumeLoop();
+  const [pendingLoopId, setPendingLoopId] = useState<string | null>(null);
 
   const filters: Record<string, string | undefined> = {};
   if (commandFilter !== "all") {
@@ -118,6 +123,19 @@ export function LoopsTable() {
 
   const handleRowClick = (loop: LoopWithUser) => {
     router.push(`/loops/${loop.id}`);
+  };
+
+  const handleRestart = async (loopId: string) => {
+    setPendingLoopId(loopId);
+    try {
+      const result = await resumeLoop.mutateAsync({ id: loopId });
+      toast.success("Loop restarted");
+      router.push(`/loops/${result.loopId}`);
+    } catch {
+      // Global QueryClient onError handler toasts the error
+    } finally {
+      setPendingLoopId(null);
+    }
   };
 
   if (isLoading) {
@@ -163,6 +181,28 @@ export function LoopsTable() {
         filterKey="status"
         filterOptions={statusFilterOptions}
         onRowClick={handleRowClick}
+        renderRowActions={(loop) => {
+          if (!RESTARTABLE_LOOP_STATUSES.has(loop.status)) {
+            return null;
+          }
+          return (
+            <Button
+              aria-label="Restart loop"
+              disabled={pendingLoopId === loop.id}
+              onClick={async () => {
+                await handleRestart(loop.id);
+              }}
+              size="sm"
+              variant="ghost"
+            >
+              {pendingLoopId === loop.id ? (
+                <Loader2Icon className="h-4 w-4 animate-spin" />
+              ) : (
+                <RotateCcwIcon className="h-4 w-4" />
+              )}
+            </Button>
+          );
+        }}
         sortOptions={sortOptions}
       />
     </div>
