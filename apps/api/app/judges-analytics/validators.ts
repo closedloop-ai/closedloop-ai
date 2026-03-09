@@ -47,7 +47,7 @@ export const prHealthQueryValidator = dateRangeQueryValidator
           ...PrTimelineGranularity[],
         ]
       )
-      .default("week"),
+      .default(PR_TIMELINE_GRANULARITY_OPTIONS.Week),
     reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
   })
   .refine(

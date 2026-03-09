@@ -1,15 +1,15 @@
 "use client";
 
 import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import type {
-  ArtifactCountsGroupBy as ArtifactCountsGroupByType,
-  ArtifactCountsResponse,
-  JudgeDetailResponse,
-  JudgeStatsResponse,
-  PrHealthResponse,
-  PrTimelineGranularity,
+import {
+  type ArtifactCountsGroupBy as ArtifactCountsGroupByType,
+  type ArtifactCountsResponse,
+  type JudgeDetailResponse,
+  type JudgeStatsResponse,
+  PR_TIMELINE_GRANULARITY_OPTIONS,
+  type PrHealthResponse,
+  type PrTimelineGranularity,
 } from "@repo/api/src/types/judges-analytics";
-import { PR_TIMELINE_GRANULARITY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
 import { format, subDays } from "date-fns";
 import { useApiClient } from "@/hooks/use-api-client";

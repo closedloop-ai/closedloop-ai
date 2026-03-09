@@ -66,6 +66,102 @@ function bucketKey(
   }
 }
 
+type PrRow = {
+  id: string;
+  state: string;
+  createdAt: Date;
+  mergedAt: Date | null;
+  reviewCommentCount: number;
+};
+
+type JudgeScoreWithPrs = {
+  evaluation: {
+    artifact: {
+      pullRequests: Array<{
+        id: string;
+        state: string;
+        createdAt: Date;
+        mergedAt: Date | null;
+        reviewComments: Array<{ id: string }>;
+      }>;
+    };
+  };
+};
+
+function flattenJudgeScoresToPrs(judgeScores: JudgeScoreWithPrs[]): PrRow[] {
+  const prMap = new Map<string, PrRow>();
+  for (const js of judgeScores) {
+    for (const pr of js.evaluation.artifact.pullRequests) {
+      if (!prMap.has(pr.id)) {
+        prMap.set(pr.id, {
+          id: pr.id,
+          state: pr.state,
+          createdAt: pr.createdAt,
+          mergedAt: pr.mergedAt,
+          reviewCommentCount: pr.reviewComments.length,
+        });
+      }
+    }
+  }
+  return Array.from(prMap.values());
+}
+
+const MS_PER_HOUR = 3_600_000;
+
+function computeAvgApprovalHours(
+  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
+): number | null {
+  if (mergedPrs.length === 0) {
+    return null;
+  }
+  const approvalHours = mergedPrs.map(
+    (pr) => (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR
+  );
+  return computeMean(approvalHours);
+}
+
+function computeApprovalDistribution(
+  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
+): Record<"lt1d" | "1to3d" | "3to7d" | "gt7d", number> {
+  const dist = { lt1d: 0, "1to3d": 0, "3to7d": 0, gt7d: 0 };
+  for (const pr of mergedPrs) {
+    const hours =
+      (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR;
+    if (hours < 24) {
+      dist.lt1d++;
+    } else if (hours < 72) {
+      dist["1to3d"]++;
+    } else if (hours < 168) {
+      dist["3to7d"]++;
+    } else {
+      dist.gt7d++;
+    }
+  }
+  return dist;
+}
+
+function buildPrTimeline(
+  prs: PrRow[],
+  startDate: Date,
+  endDate: Date,
+  granularity: PrTimelineGranularity
+): Array<{ bucket: string; openedCount: number }> {
+  const allBucketKeys = generateBucketRange(startDate, endDate, granularity);
+  const timelineCounts = new Map<string, number>();
+  for (const key of allBucketKeys) {
+    timelineCounts.set(key, 0);
+  }
+  for (const pr of prs) {
+    if (pr.createdAt >= startDate && pr.createdAt <= endDate) {
+      const key = bucketKey(pr.createdAt, granularity);
+      timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...timelineCounts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, openedCount]) => ({ bucket, openedCount }));
+}
+
 /** Generates all bucket keys between startDate and endDate for the given granularity. */
 function generateBucketRange(
   startDate: Date,
@@ -1121,14 +1217,10 @@ export const judgesAnalyticsService = {
       return null;
     }
 
-    const { promptIds } = resolved;
-
-    // Query judgeScores with nested pullRequests on each evaluation's artifact.
-    // reviewComments: select only id — never body, authorLogin, or authorAvatarUrl.
     const judgeScores = await withDb((db) =>
       db.judgeScore.findMany({
         where: {
-          promptId: { in: promptIds },
+          promptId: { in: resolved.promptIds },
           evaluation: {
             reportType,
             artifact: { organizationId },
@@ -1146,9 +1238,7 @@ export const judgesAnalyticsService = {
                       state: true,
                       createdAt: true,
                       mergedAt: true,
-                      reviewComments: {
-                        select: { id: true },
-                      },
+                      reviewComments: { select: { id: true } },
                     },
                   },
                 },
@@ -1159,30 +1249,7 @@ export const judgesAnalyticsService = {
       })
     );
 
-    // Flatten and deduplicate PRs by id using Map<string, PrRow>
-    type PrRow = {
-      id: string;
-      state: string;
-      createdAt: Date;
-      mergedAt: Date | null;
-      reviewCommentCount: number;
-    };
-    const prMap = new Map<string, PrRow>();
-    for (const js of judgeScores) {
-      for (const pr of js.evaluation.artifact.pullRequests) {
-        if (!prMap.has(pr.id)) {
-          prMap.set(pr.id, {
-            id: pr.id,
-            state: pr.state,
-            createdAt: pr.createdAt,
-            mergedAt: pr.mergedAt,
-            reviewCommentCount: pr.reviewComments.length,
-          });
-        }
-      }
-    }
-
-    const prs = Array.from(prMap.values());
+    const prs = flattenJudgeScoresToPrs(judgeScores);
     const totalPrs = prs.length;
     const openPrs = prs.filter((pr) => pr.state === GitHubPRState.OPEN).length;
     const totalCommentCount = prs.reduce(
@@ -1192,61 +1259,12 @@ export const judgesAnalyticsService = {
     const avgCommentCount =
       totalPrs > 0 ? computeMean(prs.map((pr) => pr.reviewCommentCount)) : 0;
 
-    // Compute avgApprovalHours from merged PRs only
-    const MS_PER_HOUR = 3_600_000;
-    const mergedPrs = prs.filter((pr) => pr.mergedAt != null);
-    let avgApprovalHours: number | null = null;
-    if (mergedPrs.length > 0) {
-      const approvalHours = mergedPrs.map(
-        (pr) => (pr.mergedAt!.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR
-      );
-      avgApprovalHours = computeMean(approvalHours);
-    }
-
-    // Approval distribution buckets (based on merged PRs cycle time in hours)
-    const approvalDistribution: Record<
-      "lt1d" | "1to3d" | "3to7d" | "gt7d",
-      number
-    > = {
-      lt1d: 0,
-      "1to3d": 0,
-      "3to7d": 0,
-      gt7d: 0,
-    };
-    for (const pr of mergedPrs) {
-      const hours =
-        (pr.mergedAt!.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR;
-      if (hours < 24) {
-        approvalDistribution.lt1d++;
-      } else if (hours < 72) {
-        approvalDistribution["1to3d"]++;
-      } else if (hours < 168) {
-        approvalDistribution["3to7d"]++;
-      } else {
-        approvalDistribution.gt7d++;
-      }
-    }
-
-    // Zero-fill timeline: initialize all bucket keys to 0, then increment per PR.createdAt
-    const allBucketKeys = generateBucketRange(startDate, endDate, granularity);
-    const timelineCounts = new Map<string, number>();
-    for (const key of allBucketKeys) {
-      timelineCounts.set(key, 0);
-    }
-    for (const pr of prs) {
-      const key = bucketKey(pr.createdAt, granularity);
-  if (pr.createdAt >= startDate && pr.createdAt <= endDate) {
-    const key = bucketKey(pr.createdAt, granularity);
-    timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
-  }
-    }
-
-    const timeline = [...timelineCounts.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([bucket, openedCount]) => ({
-        bucket,
-        openedCount,
-      }));
+    const mergedPrs = prs.filter(
+      (pr): pr is PrRow & { mergedAt: Date } => pr.mergedAt != null
+    );
+    const avgApprovalHours = computeAvgApprovalHours(mergedPrs);
+    const approvalDistribution = computeApprovalDistribution(mergedPrs);
+    const timeline = buildPrTimeline(prs, startDate, endDate, granularity);
 
     return {
       totalPrs,

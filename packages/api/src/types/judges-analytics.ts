@@ -268,6 +268,15 @@ export const PR_TIMELINE_GRANULARITY_OPTIONS = {
 export type PrTimelineGranularity =
   (typeof PR_TIMELINE_GRANULARITY_OPTIONS)[keyof typeof PR_TIMELINE_GRANULARITY_OPTIONS];
 
+export const PR_TIMELINE_RANGE_OPTIONS = {
+  Days30: 30,
+  Days90: 90,
+  Days180: 180,
+} as const;
+
+export type PrTimelineRangeOption =
+  (typeof PR_TIMELINE_RANGE_OPTIONS)[keyof typeof PR_TIMELINE_RANGE_OPTIONS];
+
 /**
  * A single data point in the PR timeline, bucketed by a date period.
  * The `bucket` field is formatted as YYYY-MM-DD (start of the period).

@@ -4,7 +4,9 @@ import { analytics } from "@repo/analytics";
 import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import {
   PR_TIMELINE_GRANULARITY_OPTIONS,
+  PR_TIMELINE_RANGE_OPTIONS,
   type PrTimelineGranularity,
+  type PrTimelineRangeOption,
 } from "@repo/api/src/types/judges-analytics";
 import { useAuth } from "@repo/auth/client";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -32,14 +34,14 @@ const chartConfig: ChartConfig = {
   },
 };
 
-const RANGE_OPTIONS = [30, 90, 180] as const;
-
 export function PrTimelineChart({
   promptName,
   reportType,
 }: PrTimelineChartProps) {
   const { orgId, userId } = useAuth();
-  const [rangeDays, setRangeDays] = useState(90);
+  const [rangeDays, setRangeDays] = useState<PrTimelineRangeOption>(
+    PR_TIMELINE_RANGE_OPTIONS.Days90
+  );
   const [granularity, setGranularity] = useState<PrTimelineGranularity>(
     PR_TIMELINE_GRANULARITY_OPTIONS.Week
   );
@@ -51,7 +53,7 @@ export function PrTimelineChart({
     granularity
   );
 
-  function handleRangeChange(days: number) {
+  function handleRangeChange(days: PrTimelineRangeOption) {
     setRangeDays(days);
     analytics.capture("PR Timeline Date Range Changed", {
       organization_id: orgId,
@@ -110,7 +112,9 @@ export function PrTimelineChart({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1">
-          {RANGE_OPTIONS.map((days) => (
+          {(
+            Object.values(PR_TIMELINE_RANGE_OPTIONS) as PrTimelineRangeOption[]
+          ).map((days) => (
             <Button
               className={days === rangeDays ? "bg-accent" : ""}
               key={days}
