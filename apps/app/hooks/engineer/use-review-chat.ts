@@ -104,7 +104,6 @@ export function useReviewChat(
 
   // Conferral infrastructure
   const conferralDepthRef = useRef(0);
-  const conferralInProgressRef = useRef(false);
   const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendChatToProviderRef = useRef<
     (target: "claude" | "codex", message: string, display: string) => void
@@ -198,7 +197,6 @@ export function useReviewChat(
   // Reset conferral state on fresh user interactions
   const resetConferral = useCallback(() => {
     conferralDepthRef.current = 0;
-    conferralInProgressRef.current = false;
     if (conferralTimerRef.current) {
       clearTimeout(conferralTimerRef.current);
       conferralTimerRef.current = null;
@@ -269,19 +267,16 @@ export function useReviewChat(
             queryKey: queryKeys.symphonyChatHistory(ticketId, repoPath),
           });
 
-          // Conferral detection
+          // Conferral detection — no in-progress lock needed:
+          // MAX_CONFERRAL_DEPTH caps ping-pong, and useChatStream.sendMessage
+          // serializes streams via its internal isStreamingRef guard.
           if (accumulatedText) {
             const mention = parseConferralMention(
               accumulatedText,
               targetProvider
             );
-            if (
-              mention &&
-              conferralDepthRef.current < MAX_CONFERRAL_DEPTH &&
-              !conferralInProgressRef.current
-            ) {
+            if (mention && conferralDepthRef.current < MAX_CONFERRAL_DEPTH) {
               conferralDepthRef.current++;
-              conferralInProgressRef.current = true;
               const otherProvider =
                 targetProvider === "claude" ? "codex" : "claude";
               const cleanedForContext = stripAssistantProtocol(accumulatedText);
@@ -296,7 +291,6 @@ export function useReviewChat(
                   wrappedPrompt,
                   sentinel
                 );
-                conferralInProgressRef.current = false;
               }, 0);
             }
           }
