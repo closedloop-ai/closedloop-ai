@@ -305,7 +305,6 @@ export function useReviewExecution(
 
       if (existing.kind === "completed" || existing.kind === "terminal") {
         finalizeReviewOutput(existing.log);
-        setIsReviewing(false);
         return;
       }
 
