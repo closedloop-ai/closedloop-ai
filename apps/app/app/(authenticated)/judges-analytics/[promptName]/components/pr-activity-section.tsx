@@ -2,6 +2,7 @@
 
 import { analytics } from "@repo/analytics";
 import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import type { PrTimelineRangeOption } from "@repo/api/src/types/judges-analytics";
 import { useAuth } from "@repo/auth/client";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
@@ -17,15 +18,21 @@ import { ApprovalDistributionChart } from "./approval-distribution-chart";
 
 type PrActivitySectionProps = {
   promptName: string;
+  rangeDays: PrTimelineRangeOption;
   reportType: EvaluationReportType;
 };
 
 export function PrActivitySection({
   promptName,
+  rangeDays,
   reportType,
 }: PrActivitySectionProps) {
   const { orgId, userId } = useAuth();
-  const { data, isLoading, isError } = usePrHealth(promptName, reportType, 90);
+  const { data, isLoading, isError } = usePrHealth(
+    promptName,
+    reportType,
+    rangeDays
+  );
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
   useEffect(() => {

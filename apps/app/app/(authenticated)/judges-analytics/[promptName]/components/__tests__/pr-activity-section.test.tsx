@@ -1,4 +1,7 @@
-import type { PrHealthResponse } from "@repo/api/src/types/judges-analytics";
+import {
+  PR_TIMELINE_RANGE_OPTIONS,
+  type PrHealthResponse,
+} from "@repo/api/src/types/judges-analytics";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -86,7 +89,13 @@ describe("PrActivitySection — loading state", () => {
       data: undefined,
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     const skeletons = screen.getAllByTestId("skeleton");
     expect(skeletons.length).toBeGreaterThanOrEqual(2);
@@ -106,7 +115,13 @@ describe("PrActivitySection — empty state", () => {
       }),
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     expect(
       screen.getByText(
@@ -124,7 +139,13 @@ describe("PrActivitySection — summary card values", () => {
       data: makePrHealthResponse(),
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     // totalPrs: 10
     expect(screen.getByText("10")).toBeTruthy();
@@ -143,7 +164,13 @@ describe("PrActivitySection — summary card values", () => {
       data: makePrHealthResponse({ avgApprovalHours: null }),
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     expect(screen.getByText("—")).toBeTruthy();
   });
@@ -155,7 +182,13 @@ describe("PrActivitySection — summary card values", () => {
       data: makePrHealthResponse(),
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     expect(screen.getByText("Based on 10 PRs")).toBeTruthy();
   });
@@ -169,7 +202,13 @@ describe("PrActivitySection — tooltip content", () => {
       data: makePrHealthResponse(),
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     const tooltipContent = screen.getByTestId("tooltip-content");
     expect(tooltipContent.textContent).toContain(
@@ -186,7 +225,13 @@ describe("PrActivitySection — error state", () => {
       data: undefined,
     });
 
-    render(<PrActivitySection promptName="clarity" reportType="PLAN" />);
+    render(
+      <PrActivitySection
+        promptName="clarity"
+        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
+        reportType="PLAN"
+      />
+    );
 
     expect(screen.getByText("Unable to load PR activity data.")).toBeTruthy();
   });

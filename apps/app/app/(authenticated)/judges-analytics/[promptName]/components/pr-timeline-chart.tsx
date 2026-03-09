@@ -24,7 +24,9 @@ import { usePrHealth } from "@/hooks/queries/use-judges-analytics";
 
 type PrTimelineChartProps = {
   promptName: string;
+  rangeDays: PrTimelineRangeOption;
   reportType: EvaluationReportType;
+  onRangeChange: (days: PrTimelineRangeOption) => void;
 };
 
 const chartConfig: ChartConfig = {
@@ -36,12 +38,11 @@ const chartConfig: ChartConfig = {
 
 export function PrTimelineChart({
   promptName,
+  rangeDays,
   reportType,
+  onRangeChange,
 }: PrTimelineChartProps) {
   const { orgId, userId } = useAuth();
-  const [rangeDays, setRangeDays] = useState<PrTimelineRangeOption>(
-    PR_TIMELINE_RANGE_OPTIONS.Days90
-  );
   const [granularity, setGranularity] = useState<PrTimelineGranularity>(
     PR_TIMELINE_GRANULARITY_OPTIONS.Week
   );
@@ -54,7 +55,7 @@ export function PrTimelineChart({
   );
 
   function handleRangeChange(days: PrTimelineRangeOption) {
-    setRangeDays(days);
+    onRangeChange(days);
     analytics.capture("PR Timeline Date Range Changed", {
       organization_id: orgId,
       user_id: userId,

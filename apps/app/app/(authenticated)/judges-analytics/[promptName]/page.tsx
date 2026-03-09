@@ -1,10 +1,15 @@
 "use client";
 
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
+import {
+  PR_TIMELINE_RANGE_OPTIONS,
+  type PrTimelineRangeOption,
+} from "@repo/api/src/types/judges-analytics";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
+import { useState } from "react";
 import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
 import { PrActivitySection } from "./components/pr-activity-section";
@@ -21,6 +26,9 @@ export default function JudgeDetailPage() {
     reportTypeParam === EvaluationReportType.Code
       ? EvaluationReportType.Code
       : EvaluationReportType.Plan;
+  const [rangeDays, setRangeDays] = useState<PrTimelineRangeOption>(
+    PR_TIMELINE_RANGE_OPTIONS.Days90
+  );
   const { data, isLoading, isError, error } = useJudgeDetail(
     promptName,
     reportType
@@ -90,11 +98,14 @@ export default function JudgeDetailPage() {
       <PrActivitySection
         key={`pr-${reportType}-${promptName}`}
         promptName={promptName}
+        rangeDays={rangeDays}
         reportType={reportType}
       />
       <PrTimelineChart
         key={`pr-timeline-${reportType}-${promptName}`}
+        onRangeChange={setRangeDays}
         promptName={promptName}
+        rangeDays={rangeDays}
         reportType={reportType}
       />
     </div>
