@@ -11,6 +11,8 @@ const mockMutateAsync = vi.fn();
 const mockPush = vi.fn();
 
 const RESTART_BUTTON_NAME = /restart/i;
+const USER_FULL_NAME = /Alice Smith/;
+const USER_ID = /user-1/;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -47,7 +49,7 @@ vi.mock("@/components/loops/loop-audit-log", () => ({
 import { LoopDetailContainer } from "@/app/(authenticated)/loops/[id]/loop-detail-container";
 // Import after mocks
 import { useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
-import { createMockLoop } from "../fixtures/loops";
+import { createMockLoopWithUser } from "../fixtures/loops";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -68,7 +70,7 @@ describe("LoopDetailContainer — restart button visibility", () => {
 
   it("renders the restart button for a FAILED loop", () => {
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ status: LoopStatus.Failed }),
+      data: createMockLoopWithUser({ status: LoopStatus.Failed }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);
@@ -82,7 +84,7 @@ describe("LoopDetailContainer — restart button visibility", () => {
 
   it("renders the restart button for a TIMED_OUT loop", () => {
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ status: LoopStatus.TimedOut }),
+      data: createMockLoopWithUser({ status: LoopStatus.TimedOut }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);
@@ -96,7 +98,7 @@ describe("LoopDetailContainer — restart button visibility", () => {
 
   it("does not render the restart button for a COMPLETED loop", () => {
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ status: LoopStatus.Completed }),
+      data: createMockLoopWithUser({ status: LoopStatus.Completed }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);
@@ -110,7 +112,7 @@ describe("LoopDetailContainer — restart button visibility", () => {
 
   it("does not render the restart button for a RUNNING loop", () => {
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ status: LoopStatus.Running }),
+      data: createMockLoopWithUser({ status: LoopStatus.Running }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);
@@ -124,7 +126,7 @@ describe("LoopDetailContainer — restart button visibility", () => {
 
   it("does not render the restart button for a PENDING loop", () => {
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ status: LoopStatus.Pending }),
+      data: createMockLoopWithUser({ status: LoopStatus.Pending }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);
@@ -134,6 +136,28 @@ describe("LoopDetailContainer — restart button visibility", () => {
     expect(
       screen.queryByRole("button", { name: RESTART_BUTTON_NAME })
     ).not.toBeInTheDocument();
+  });
+
+  it("displays user name instead of user ID", () => {
+    vi.mocked(useLoop).mockReturnValue({
+      data: createMockLoopWithUser({
+        status: LoopStatus.Failed,
+        user: {
+          id: "user-1",
+          firstName: "Alice",
+          lastName: "Smith",
+          avatarUrl: null,
+          email: "alice@example.com",
+        },
+      }),
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useLoop>);
+
+    render(<LoopDetailContainer id="loop-006" />);
+
+    expect(screen.getByText(USER_FULL_NAME)).toBeInTheDocument();
+    expect(screen.queryByText(USER_ID)).not.toBeInTheDocument();
   });
 });
 
@@ -149,7 +173,10 @@ describe("LoopDetailContainer — restart button interaction", () => {
       isPending: false,
     } as unknown as ReturnType<typeof useResumeLoop>);
     vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoop({ id: "loop-001", status: LoopStatus.Failed }),
+      data: createMockLoopWithUser({
+        id: "loop-001",
+        status: LoopStatus.Failed,
+      }),
       isLoading: false,
       error: null,
     } as ReturnType<typeof useLoop>);

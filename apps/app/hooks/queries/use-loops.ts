@@ -55,13 +55,13 @@ export function useLoops(
 
 export function useLoop(
   id: string,
-  options?: Omit<UseQueryOptions<Loop>, "queryKey" | "queryFn">
+  options?: Omit<UseQueryOptions<LoopWithUser>, "queryKey" | "queryFn">
 ) {
   const apiClient = useApiClient();
 
   return useQuery({
     queryKey: loopKeys.detail(id),
-    queryFn: () => apiClient.get<Loop>(`/loops/${id}`),
+    queryFn: () => apiClient.get<LoopWithUser>(`/loops/${id}`),
     enabled: !!id,
     ...options,
   });

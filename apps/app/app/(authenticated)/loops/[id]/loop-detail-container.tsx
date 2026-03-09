@@ -38,6 +38,7 @@ import { useLoop, useResumeLoop } from "@/hooks/queries/use-loops";
 import { formatDateTime } from "@/lib/date-utils";
 import { formatDuration, formatTokenCount } from "@/lib/format-utils";
 import { RESTARTABLE_LOOP_STATUSES } from "@/lib/loop-constants";
+import { getUserDisplayName } from "@/lib/user-utils";
 
 function formatModelName(model: string): string {
   return model
@@ -268,7 +269,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       <div className="flex flex-wrap items-center gap-4 text-muted-foreground text-sm">
         <div className="flex items-center gap-1.5">
           <UserIcon className="h-3.5 w-3.5" />
-          <span>User: {loop.userId}</span>
+          <span>User: {getUserDisplayName(loop.user)}</span>
         </div>
         <div className="flex items-center gap-1.5">
           <ClockIcon className="h-3.5 w-3.5" />

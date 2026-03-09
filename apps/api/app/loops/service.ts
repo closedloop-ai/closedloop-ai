@@ -226,11 +226,18 @@ export const loopsService = {
 
   /**
    * Get a single Loop by ID (org-scoped).
+   * Includes associated user info for detail views.
    */
-  async findById(id: string, organizationId: string): Promise<Loop | null> {
+  async findById(
+    id: string,
+    organizationId: string
+  ): Promise<LoopWithUser | null> {
     const loop = await withDb((db) =>
       db.loop.findUnique({
         where: { id, organizationId },
+        include: {
+          user: basicUserSelect,
+        },
       })
     );
 
@@ -238,7 +245,7 @@ export const loopsService = {
       return null;
     }
 
-    return toLoop(loop);
+    return toLoopWithUser(loop as PrismaLoop & { user: LoopWithUser["user"] });
   },
 
   /**
