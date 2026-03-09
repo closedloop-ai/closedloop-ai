@@ -1006,12 +1006,20 @@ export function PRBrowserDialog({
           splitReviewOutput(entry.initialOutput, entry.config.provider)
             .findings;
 
-        // Fetch persisted findings to know which are already commented
-        const alreadyCommented = await fetchCommentedIndices(
-          ticketId,
-          selectedRepo.path,
-          entry.config.provider
-        );
+        // Fetch persisted findings to know which are already commented (best-effort)
+        let alreadyCommented: Set<number>;
+        try {
+          alreadyCommented = await fetchCommentedIndices(
+            ticketId,
+            selectedRepo.path,
+            entry.config.provider
+          );
+        } catch {
+          console.warn(
+            "[review] Failed to load commented indices, skipping dedup"
+          );
+          alreadyCommented = new Set();
+        }
 
         // Filter out duplicates AND already-commented findings
         const findings = allFindings.filter(
