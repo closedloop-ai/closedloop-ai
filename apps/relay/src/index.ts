@@ -289,6 +289,11 @@ async function handleDispatch(
 
   // Forward the command to the connected worker socket.
   // The operation is already in wire-envelope format from the Vercel API.
+  log.info("Dispatch: emitting desktop.command to worker", {
+    targetId,
+    socketId: worker.socket.id,
+    socketConnected: worker.socket.connected,
+  });
   worker.socket.emit("desktop.command", operation);
   jsonResponse(res, 200, { delivered: true });
 }
@@ -462,6 +467,13 @@ namespace.on("connection", (socket) => {
         registerWorker(socket, result.targetId, auth);
       }
 
+      log.info("Hello result", {
+        socketId: socket.id,
+        targetId: result.targetId,
+        emitCount: result.emit.length,
+        events: result.emit.map((e) => e.event),
+      });
+
       // Emit all response events to the worker
       for (const { event, payload: eventPayload } of result.emit) {
         socket.emit(event, eventPayload);
@@ -480,8 +492,20 @@ namespace.on("connection", (socket) => {
   socket.on("desktop.command.event", (payload: unknown) => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
+      log.warn("Received command.event but no targetId for socket", {
+        socketId: socket.id,
+      });
       return;
     }
+
+    log.info("Forwarding desktop.command.event", {
+      socketId: socket.id,
+      targetId,
+      commandId:
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>).commandId
+          : undefined,
+    });
 
     enqueueForSocket(socket.id, async () => {
       try {
@@ -508,8 +532,20 @@ namespace.on("connection", (socket) => {
   socket.on("desktop.command.ack", async (payload: unknown) => {
     const targetId = socketToTarget.get(socket.id);
     if (!targetId) {
+      log.warn("Received command.ack but no targetId for socket", {
+        socketId: socket.id,
+      });
       return;
     }
+
+    log.info("Forwarding desktop.command.ack", {
+      socketId: socket.id,
+      targetId,
+      commandId:
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>).commandId
+          : undefined,
+    });
 
     try {
       await forwardSocketEvent("desktop.command.ack", payload, auth, targetId);
