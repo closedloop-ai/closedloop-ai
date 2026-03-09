@@ -72,6 +72,9 @@ export function HealthCheckDialog() {
   const { data, isLoading, refetch, isFetching } = useQuery({
     ...healthCheckOptions(),
     enabled: mounted,
+    refetchOnMount: "always" as const,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // Auto-dismiss after all checks are revealed and all required pass

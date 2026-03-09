@@ -24,8 +24,5 @@ export function healthCheckOptions() {
       return res.json();
     },
     staleTime: 0,
-    refetchOnMount: "always" as const,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
   });
 }
