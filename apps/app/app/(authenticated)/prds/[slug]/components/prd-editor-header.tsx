@@ -1,6 +1,9 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
+import {
+  ArtifactType,
+  type ArtifactWithWorkstream,
+} from "@repo/api/src/types/artifact";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -13,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import {
+  BoxIcon,
   ChevronDownIcon,
   DownloadIcon,
   FolderIcon,
@@ -27,11 +31,13 @@ import {
   type BreadcrumbEntry,
   Header,
 } from "@/app/(authenticated)/components/header";
+import { ARTIFACT_TYPE_ICONS } from "@/lib/project-constants";
 
 type PRDEditorHeaderProps = {
   prd: ArtifactWithWorkstream;
   showMetadataPanel: boolean;
   onToggleMetadataPanel: () => void;
+  onDecomposeFeatures: () => void;
   onGeneratePlan: () => void;
   onQuickGenerate: () => void;
   onDeepGenerate: () => void;
@@ -49,6 +55,7 @@ export function PRDEditorHeader({
   prd,
   showMetadataPanel,
   onToggleMetadataPanel,
+  onDecomposeFeatures,
   onGeneratePlan,
   onQuickGenerate,
   onDeepGenerate,
@@ -116,6 +123,9 @@ export function PRDEditorHeader({
     </DropdownMenu>
   );
 
+  const PrdIcon = ARTIFACT_TYPE_ICONS[ArtifactType.Prd];
+  const PlanIcon = ARTIFACT_TYPE_ICONS[ArtifactType.ImplementationPlan];
+
   return (
     <Header breadcrumbs={breadcrumbs}>
       <DropdownMenu>
@@ -134,7 +144,7 @@ export function PRDEditorHeader({
           ) : (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
-                <SparklesIcon className="mr-2 h-4 w-4" />
+                <PrdIcon className="mr-2 h-4 w-4" />
                 Generate PRD
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
@@ -147,8 +157,12 @@ export function PRDEditorHeader({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           )}
+          <DropdownMenuItem onClick={onDecomposeFeatures}>
+            <BoxIcon className="mr-2 h-4 w-4" />
+            Decompose into Features
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={onGeneratePlan}>
-            <SparklesIcon className="mr-2 h-4 w-4" />
+            <PlanIcon className="mr-2 h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
         </DropdownMenuContent>

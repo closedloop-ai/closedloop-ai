@@ -75,6 +75,7 @@ vi.mock("@/lib/loops/loop-state", () => ({
 // Mock the command handlers with spy methods
 const mockPlanDownloadAndIngest = vi.fn().mockResolvedValue(undefined);
 const mockExecuteDownloadAndIngest = vi.fn().mockResolvedValue(undefined);
+const mockDecomposeDownloadAndIngest = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/loops/loop-commands", () => {
   const planHandler = {
@@ -98,11 +99,19 @@ vi.mock("@/lib/loops/loop-commands", () => {
     downloadAndIngest: (...args: unknown[]) =>
       mockExecuteDownloadAndIngest(...args),
   };
+  const decomposeHandler = {
+    requiresRepo: false,
+    requiresParent: false,
+    includePrimaryArtifact: false,
+    downloadAndIngest: (...args: unknown[]) =>
+      mockDecomposeDownloadAndIngest(...args),
+  };
 
   const handlers: Record<string, unknown> = {
     PLAN: planHandler,
     REQUEST_CHANGES: requestChangesHandler,
     EXECUTE: executeHandler,
+    DECOMPOSE: decomposeHandler,
   };
 
   return {
@@ -180,6 +189,16 @@ describe("handleLoopCompleted command dispatch", () => {
     expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
   });
 
+  it("DECOMPOSE command: calls decompose handler", async () => {
+    setupLoopForCompleted("DECOMPOSE");
+
+    await handleLoopEvent("loop-1", "org-1", completedEvent);
+
+    expect(mockDecomposeDownloadAndIngest).toHaveBeenCalledTimes(1);
+    expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
+    expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
+  });
+
   it("unknown command: calls neither handler", async () => {
     setupLoopForCompleted("CHAT");
 
@@ -187,6 +206,7 @@ describe("handleLoopCompleted command dispatch", () => {
 
     expect(mockPlanDownloadAndIngest).not.toHaveBeenCalled();
     expect(mockExecuteDownloadAndIngest).not.toHaveBeenCalled();
+    expect(mockDecomposeDownloadAndIngest).not.toHaveBeenCalled();
   });
 
   it("loop without s3StateKey: skips artifact ingestion entirely", async () => {

@@ -47,6 +47,8 @@ export function mapLoopCommand(command: string): GenerationStatus["command"] {
       return "explore";
     case "REQUEST_CHANGES":
       return "request_changes";
+    case "DECOMPOSE":
+      return "decompose";
     default:
       return null;
   }

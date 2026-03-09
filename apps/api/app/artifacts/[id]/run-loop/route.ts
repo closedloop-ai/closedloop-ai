@@ -10,6 +10,7 @@ import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
+import { getDefaultPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
   conflictResponse,
@@ -27,6 +28,7 @@ const COMMAND_MAP = {
   plan: "PLAN",
   execute: "EXECUTE",
   request_changes: "REQUEST_CHANGES",
+  decompose: "DECOMPOSE",
 } as const;
 
 export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
@@ -120,16 +122,22 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         parentLoopId = parentLoop?.id;
       }
 
+      // For DECOMPOSE, use the system-provided instructions as the prompt.
+      // The harness writes this to .claude/context/prompt.md and passes it
+      // as the positional argument to the claude CLI.
+      const command = COMMAND_MAP[body.command];
+      const prompt = body.prompt || getDefaultPrompt(command);
+
       // Create the Loop
       const loopResponse = await loopsService.create(
         user.organizationId,
         user.id,
         {
-          command: COMMAND_MAP[body.command],
+          command,
           artifactId,
           workstreamId: workstream?.id,
           parentLoopId,
-          prompt: body.prompt,
+          prompt,
           repo: targetRepo
             ? { fullName: targetRepo, branch: targetBranch }
             : undefined,

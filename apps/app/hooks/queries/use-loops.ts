@@ -203,7 +203,7 @@ export function useRunLoop() {
       prompt,
     }: {
       artifactId: string;
-      command: "plan" | "execute" | "request_changes";
+      command: "plan" | "execute" | "request_changes" | "decompose";
       prompt?: string;
     }) =>
       apiClient.post<CreateLoopResponse>(`/artifacts/${artifactId}/run-loop`, {

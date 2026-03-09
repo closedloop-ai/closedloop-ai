@@ -29,6 +29,7 @@ import {
   useInlineGeneratePRD,
   useRegenerateArtifact,
 } from "@/hooks/queries/use-artifacts";
+import { useRunLoop } from "@/hooks/queries/use-loops";
 import type { PlanSource } from "../../implementation-plans/components/plan-source";
 import { PRDEditorHeader } from "./components/prd-editor-header";
 import { PRDMetadataPanel } from "./components/prd-metadata-panel";
@@ -45,7 +46,7 @@ export function PRDEditor({
   currentVersion,
   latestVersion,
   onVersionChange,
-}: PRDEditorProps) {
+}: Readonly<PRDEditorProps>) {
   // Move dialog state
   const [showMoveDialog, setShowMoveDialog] = useState(false);
 
@@ -99,14 +100,12 @@ export function PRDEditor({
     showGeneratePlanModal,
     setShowGeneratePlanModal,
     openGeneratePlanModal,
-  } = uiState as Extract<
-    ReturnType<typeof useArtifactUIState>,
-    { showGeneratePlanModal: boolean }
-  >;
+  } = uiState;
 
   // PRD generation mutations
   const inlineGenerate = useInlineGeneratePRD();
   const deepGenerate = useRegenerateArtifact();
+  const runLoop = useRunLoop();
 
   const handleQuickGenerate = () => {
     inlineGenerate.mutate(
@@ -131,6 +130,17 @@ export function PRDEditor({
         },
         onError: (error) => {
           toast.error(`Failed to start PRD generation: ${error.message}`);
+        },
+      }
+    );
+  };
+
+  const handleDecomposeFeatures = () => {
+    runLoop.mutate(
+      { artifactId: prd.id, command: "decompose" },
+      {
+        onSuccess: () => {
+          toast.success("Feature decomposition started");
         },
       }
     );
@@ -169,6 +179,7 @@ export function PRDEditor({
       <PRDEditorHeader
         isGenerating={inlineGenerate.isPending || deepGenerate.isPending}
         isPending={isPending}
+        onDecomposeFeatures={handleDecomposeFeatures}
         onDeepGenerate={handleDeepGenerate}
         onDelete={uiState.openDeleteDialog}
         onExport={actions.handleDownload}

@@ -23,6 +23,7 @@ export const LoopCommand = {
   Chat: "CHAT",
   Explore: "EXPLORE",
   RequestChanges: "REQUEST_CHANGES",
+  Decompose: "DECOMPOSE",
 } as const;
 export type LoopCommand = (typeof LoopCommand)[keyof typeof LoopCommand];
 
@@ -229,4 +230,16 @@ export type LoopUsageSummary = {
   totalTokensOutput: number;
   totalEstimatedCost: number;
   byCommand: LoopUsageByCommand[];
+};
+
+// Feature decomposition types (output of DECOMPOSE command)
+export type DecomposeFeature = {
+  title: string;
+  description: string;
+  priority?: "HIGH" | "MEDIUM" | "LOW";
+  acceptanceCriteria?: string[];
+};
+
+export type DecomposeResult = {
+  features: DecomposeFeature[];
 };

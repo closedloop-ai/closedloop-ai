@@ -196,7 +196,14 @@ export type PullRequestInfo = {
 // Generation status for artifacts being processed by GitHub Actions or Loops
 export type GenerationStatus = {
   status: "NONE" | "PENDING" | "QUEUED" | "RUNNING" | "SUCCESS" | "FAILURE";
-  command: "plan" | "execute" | "chat" | "request_changes" | "explore" | null;
+  command:
+    | "plan"
+    | "execute"
+    | "chat"
+    | "request_changes"
+    | "explore"
+    | "decompose"
+    | null;
   htmlUrl: string | null;
   startedAt: Date | null;
   completedAt: Date | null;

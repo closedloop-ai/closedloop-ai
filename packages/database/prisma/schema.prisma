@@ -220,6 +220,7 @@ enum LoopCommand {
   CHAT
   EXPLORE
   REQUEST_CHANGES
+  DECOMPOSE
 }
 
 // =============================================================================

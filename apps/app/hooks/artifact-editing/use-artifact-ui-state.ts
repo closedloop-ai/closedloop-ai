@@ -8,8 +8,46 @@ type EditableArtifactType =
   | typeof ArtifactType.Prd
   | typeof ArtifactType.ImplementationPlan;
 
-type UseArtifactUIStateConfig = {
-  artifactType: EditableArtifactType;
+type UseArtifactUIStateConfig<
+  T extends EditableArtifactType = EditableArtifactType,
+> = {
+  artifactType: T;
+};
+
+type CommonState = {
+  showMetadataPanel: boolean;
+  setShowMetadataPanel: (value: boolean | ((prev: boolean) => boolean)) => void;
+  toggleMetadataPanel: () => void;
+  showDeleteDialog: boolean;
+  setShowDeleteDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  openDeleteDialog: () => void;
+  closeDeleteDialog: () => void;
+};
+
+type PrdState = CommonState & {
+  showRenameDialog: boolean;
+  setShowRenameDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  openRenameDialog: () => void;
+  closeRenameDialog: () => void;
+  showGeneratePlanModal: boolean;
+  setShowGeneratePlanModal: React.Dispatch<React.SetStateAction<boolean>>;
+  openGeneratePlanModal: () => void;
+  closeGeneratePlanModal: () => void;
+};
+
+type PlanState = CommonState & {
+  showRequestChangesModal: boolean;
+  setShowRequestChangesModal: React.Dispatch<React.SetStateAction<boolean>>;
+  openRequestChangesModal: () => void;
+  closeRequestChangesModal: () => void;
+  showLinearExportDialog: boolean;
+  setShowLinearExportDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  openLinearExportDialog: () => void;
+  closeLinearExportDialog: () => void;
+  showExecuteModal: boolean;
+  setShowExecuteModal: React.Dispatch<React.SetStateAction<boolean>>;
+  openExecuteModal: () => void;
+  closeExecuteModal: () => void;
 };
 
 /**
@@ -37,6 +75,12 @@ type UseArtifactUIStateConfig = {
  *
  * **Important:** Return type is determined by `artifactType` - PRD returns PRD-specific state, Plan returns Plan-specific state.
  */
+export function useArtifactUIState(
+  config: UseArtifactUIStateConfig<typeof ArtifactType.Prd>
+): PrdState;
+export function useArtifactUIState(
+  config: UseArtifactUIStateConfig<typeof ArtifactType.ImplementationPlan>
+): PlanState;
 export function useArtifactUIState(config: UseArtifactUIStateConfig) {
   const { artifactType } = config;
 

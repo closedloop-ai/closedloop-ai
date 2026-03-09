@@ -1806,6 +1806,7 @@ async function uploadState(workDir, output, runDir) {
     "code-judges.json",
     "perf.jsonl",
     "state.json",
+    "features.json",
   ];
   const artifactDir = runDir || workDir;
   for (const fileName of KEY_ARTIFACT_FILES) {
@@ -1965,7 +1966,8 @@ function buildClaudeDirectArgs(workDir, symphonyWD) {
       break;
     }
     case "CHAT":
-    case "EXPLORE": {
+    case "EXPLORE":
+    case "DECOMPOSE": {
       const contextDir = path.join(workDir, ".claude", "context");
       const promptFile = path.join(contextDir, "prompt.md");
       let prompt = "";
