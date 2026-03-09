@@ -71,6 +71,7 @@ RUN git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/"
     claude plugin install self-learning@closedloop-ai && \
     claude plugin install code-review@closedloop-ai && \
     claude plugin install platform@closedloop-ai && \
+    claude plugin install code-simplifier@claude-plugins-official && \
     (git config --global --unset-all url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf 2>/dev/null || true)
 
 # Enable weaker nested sandbox for Docker — the container IS the sandbox.
