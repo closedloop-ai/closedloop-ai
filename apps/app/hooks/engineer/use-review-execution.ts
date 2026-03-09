@@ -503,7 +503,7 @@ export function useReviewExecution(
     startReview(controller.signal);
     // NOTE: no cleanup abort — the stream continues across StrictMode re-mounts.
     // The Stop button calls handleStopReview which aborts via abortRef.
-  }, [initialOutput, startReview]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialOutput]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmitComment = useCallback(
     async (index: number, finding: ReviewFinding) => {
