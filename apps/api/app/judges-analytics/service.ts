@@ -4,22 +4,25 @@ import {
   type EvaluationReportType,
   EvaluationReportType as EvaluationReportTypeValues,
 } from "@repo/api/src/types/evaluation";
-import type {
-  ArtifactCountBucket,
-  ArtifactCountsGroupBy,
-  ArtifactCountsResponse,
-  ArtifactTypeGroup,
-  CharacteristicLabel,
-  JudgeAggregateStats,
-  JudgeDetailResponse,
-  JudgePromptVersion,
-  JudgeScoreRow,
-  JudgeScoresResponse,
-  JudgeStatsResponse,
-  RadarAxes,
+import {
+  type ArtifactCountBucket,
+  type ArtifactCountsGroupBy,
+  type ArtifactCountsResponse,
+  type ArtifactTypeGroup,
+  type CharacteristicLabel,
+  type JudgeAggregateStats,
+  type JudgeDetailResponse,
+  type JudgePromptVersion,
+  type JudgeScoreRow,
+  type JudgeScoresResponse,
+  type JudgeStatsResponse,
+  PR_TIMELINE_GRANULARITY_OPTIONS,
+  type PrHealthResponse,
+  type PrTimelineGranularity,
+  type RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
 import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
-import { PromptType, withDb } from "@repo/database";
+import { GitHubPRState, PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
 
@@ -34,6 +37,168 @@ type HumanCountsByType = {
 
 function formatDateKey(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function bucketKey(
+  d: Date,
+  groupBy: ArtifactCountsGroupBy | PrTimelineGranularity
+): string {
+  const date = new Date(d);
+  const y = date.getUTCFullYear();
+  const m = date.getUTCMonth();
+  const day = date.getUTCDate();
+
+  switch (groupBy) {
+    case "day":
+      return formatDateKey(y, m, day);
+    case "month":
+      return formatDateKey(y, m, 1);
+    case "week": {
+      const monday = getISOWeekStartDate(date);
+      return formatDateKey(
+        monday.getUTCFullYear(),
+        monday.getUTCMonth(),
+        monday.getUTCDate()
+      );
+    }
+    default:
+      throw new Error(`Unknown groupBy value: ${groupBy}`);
+  }
+}
+
+type PrRow = {
+  id: string;
+  state: string;
+  createdAt: Date;
+  mergedAt: Date | null;
+  reviewCommentCount: number;
+};
+
+type JudgeScoreWithPrs = {
+  evaluation: {
+    artifact: {
+      pullRequests: Array<{
+        id: string;
+        state: string;
+        createdAt: Date;
+        mergedAt: Date | null;
+        reviewComments: Array<{ id: string }>;
+      }>;
+    };
+  };
+};
+
+function flattenJudgeScoresToPrs(judgeScores: JudgeScoreWithPrs[]): PrRow[] {
+  const prMap = new Map<string, PrRow>();
+  for (const js of judgeScores) {
+    for (const pr of js.evaluation.artifact.pullRequests) {
+      if (!prMap.has(pr.id)) {
+        prMap.set(pr.id, {
+          id: pr.id,
+          state: pr.state,
+          createdAt: pr.createdAt,
+          mergedAt: pr.mergedAt,
+          reviewCommentCount: pr.reviewComments.length,
+        });
+      }
+    }
+  }
+  return Array.from(prMap.values());
+}
+
+const MS_PER_HOUR = 3_600_000;
+
+function computeAvgApprovalHours(
+  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
+): number | null {
+  if (mergedPrs.length === 0) {
+    return null;
+  }
+  const approvalHours = mergedPrs.map(
+    (pr) => (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR
+  );
+  return computeMean(approvalHours);
+}
+
+function computeApprovalDistribution(
+  mergedPrs: Array<{ mergedAt: Date; createdAt: Date }>
+): Record<"lt1d" | "1to3d" | "3to7d" | "gt7d", number> {
+  const dist = { lt1d: 0, "1to3d": 0, "3to7d": 0, gt7d: 0 };
+  for (const pr of mergedPrs) {
+    const hours =
+      (pr.mergedAt.getTime() - pr.createdAt.getTime()) / MS_PER_HOUR;
+    if (hours < 24) {
+      dist.lt1d++;
+    } else if (hours < 72) {
+      dist["1to3d"]++;
+    } else if (hours < 168) {
+      dist["3to7d"]++;
+    } else {
+      dist.gt7d++;
+    }
+  }
+  return dist;
+}
+
+function buildPrTimeline(
+  prs: PrRow[],
+  startDate: Date,
+  endDate: Date,
+  granularity: PrTimelineGranularity
+): Array<{ bucket: string; openedCount: number }> {
+  const allBucketKeys = generateBucketRange(startDate, endDate, granularity);
+  const timelineCounts = new Map<string, number>();
+  for (const key of allBucketKeys) {
+    timelineCounts.set(key, 0);
+  }
+  for (const pr of prs) {
+    if (pr.createdAt >= startDate && pr.createdAt <= endDate) {
+      const key = bucketKey(pr.createdAt, granularity);
+      timelineCounts.set(key, (timelineCounts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...timelineCounts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, openedCount]) => ({ bucket, openedCount }));
+}
+
+/** Generates all bucket keys between startDate and endDate for the given granularity. */
+function generateBucketRange(
+  startDate: Date,
+  endDate: Date,
+  granularity: PrTimelineGranularity
+): string[] {
+  const keys: string[] = [];
+  const current = new Date(startDate);
+
+  if (granularity === PR_TIMELINE_GRANULARITY_OPTIONS.Week) {
+    // Align to week start
+    const weekStart = getISOWeekStartDate(current);
+    current.setUTCFullYear(weekStart.getUTCFullYear());
+    current.setUTCMonth(weekStart.getUTCMonth());
+    current.setUTCDate(weekStart.getUTCDate());
+    while (current <= endDate) {
+      keys.push(
+        formatDateKey(
+          current.getUTCFullYear(),
+          current.getUTCMonth(),
+          current.getUTCDate()
+        )
+      );
+      current.setUTCDate(current.getUTCDate() + 7);
+    }
+  } else {
+    // Month granularity — align to start of month
+    current.setUTCDate(1);
+    while (current <= endDate) {
+      keys.push(
+        formatDateKey(current.getUTCFullYear(), current.getUTCMonth(), 1)
+      );
+      current.setUTCMonth(current.getUTCMonth() + 1);
+    }
+  }
+
+  return keys;
 }
 
 function getISOWeekStartDate(date: Date): Date {
@@ -757,33 +922,9 @@ export const judgesAnalyticsService = {
       })
     );
 
-    const bucketKey = (d: Date): string => {
-      const date = new Date(d);
-      const y = date.getUTCFullYear();
-      const m = date.getUTCMonth();
-      const day = date.getUTCDate();
-
-      switch (groupBy) {
-        case "day":
-          return formatDateKey(y, m, day);
-        case "month":
-          return formatDateKey(y, m, 1);
-        case "week": {
-          const monday = getISOWeekStartDate(date);
-          return formatDateKey(
-            monday.getUTCFullYear(),
-            monday.getUTCMonth(),
-            monday.getUTCDate()
-          );
-        }
-        default:
-          throw new Error(`Unknown groupBy value: ${groupBy}`);
-      }
-    };
-
     const bucketTypeCounts = new Map<string, Map<string, number>>();
     for (const { createdAt, type } of artifacts) {
-      const key = bucketKey(createdAt);
+      const key = bucketKey(createdAt, groupBy);
       if (!bucketTypeCounts.has(key)) {
         bucketTypeCounts.set(key, new Map());
       }
@@ -1046,6 +1187,97 @@ export const judgesAnalyticsService = {
       ratedArtifacts,
       coveragePct,
       pagination: { page, pageSize, totalRows, totalPages },
+    };
+  },
+
+  /**
+   * Get aggregate PR health metrics for a judge (prompt), filtered by report type and date range.
+   *
+   * Privacy invariant: response contains only aggregate numeric data — never body, authorLogin,
+   * or authorAvatarUrl fields from GitHubPRReviewComment.
+   *
+   * @param organizationId - Organization ID to scope the query
+   * @param promptName - URL-safe normalized judge name
+   * @param reportType - Evaluation report type filter
+   * @param startDate - Start date (inclusive)
+   * @param endDate - End date (inclusive)
+   * @param granularity - Timeline bucket: "week" or "month"
+   * @returns PrHealthResponse with aggregate metrics or null when no matching judge found
+   */
+  async getPrHealthMetrics(
+    organizationId: string,
+    promptName: string,
+    reportType: EvaluationReportType,
+    startDate: Date,
+    endDate: Date,
+    granularity: PrTimelineGranularity
+  ): Promise<PrHealthResponse | null> {
+    const resolved = await resolveJudgePromptIds(organizationId, promptName);
+    if (resolved === null) {
+      return null;
+    }
+
+    const judgeScores = await withDb((db) =>
+      db.judgeScore.findMany({
+        where: {
+          promptId: { in: resolved.promptIds },
+          evaluation: {
+            reportType,
+            artifact: { organizationId },
+            createdAt: { gte: startDate, lte: endDate },
+          },
+        },
+        select: {
+          evaluation: {
+            select: {
+              artifact: {
+                select: {
+                  pullRequests: {
+                    select: {
+                      id: true,
+                      state: true,
+                      createdAt: true,
+                      mergedAt: true,
+                      reviewComments: { select: { id: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      })
+    );
+
+    const prs = flattenJudgeScoresToPrs(judgeScores).filter(
+      (pr) => pr.createdAt >= startDate && pr.createdAt <= endDate
+    );
+    const totalPrs = prs.length;
+    const openPrs = prs.filter((pr) => pr.state === GitHubPRState.OPEN).length;
+    const totalCommentCount = prs.reduce(
+      (acc, pr) => acc + pr.reviewCommentCount,
+      0
+    );
+    const avgCommentCount =
+      totalPrs > 0 ? computeMean(prs.map((pr) => pr.reviewCommentCount)) : 0;
+
+    const mergedPrs = prs.filter(
+      (pr): pr is PrRow & { mergedAt: Date } =>
+        pr.mergedAt != null && pr.state === GitHubPRState.MERGED
+    );
+    const avgApprovalHours = computeAvgApprovalHours(mergedPrs);
+    const approvalDistribution = computeApprovalDistribution(mergedPrs);
+    const timeline = buildPrTimeline(prs, startDate, endDate, granularity);
+
+    return {
+      totalPrs,
+      openPrs,
+      avgCommentCount,
+      totalCommentCount,
+      avgApprovalHours,
+      approvalDistribution,
+      timeline,
+      confidenceNote: `Based on ${totalPrs} PRs`,
     };
   },
 };

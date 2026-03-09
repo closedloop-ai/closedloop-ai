@@ -42,6 +42,15 @@ export default defineConfig({
         import.meta.dirname,
         "./vitest-mocks/server-only.ts"
       ),
+      // Mock @clerk/nextjs — not resolvable in jsdom test environment
+      "@clerk/nextjs/server": path.resolve(
+        import.meta.dirname,
+        "./vitest-mocks/clerk-nextjs-server.ts"
+      ),
+      "@clerk/nextjs": path.resolve(
+        import.meta.dirname,
+        "./vitest-mocks/clerk-nextjs.ts"
+      ),
     },
   },
 });
