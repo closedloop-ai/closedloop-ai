@@ -94,8 +94,15 @@ async function handleHello(
     return { emit: [], disconnect: true };
   }
 
-  const machineName = payload.machineName as string;
-  const platform = payload.platform as string;
+  if (
+    typeof payload.machineName !== "string" ||
+    typeof payload.platform !== "string"
+  ) {
+    return { emit: [], disconnect: true };
+  }
+
+  const machineName = payload.machineName;
+  const platform = payload.platform;
   const capabilities: JsonObject = {
     ...(isRecord(payload.capabilities)
       ? (payload.capabilities as JsonObject)
@@ -260,9 +267,16 @@ async function handleCommandAck(
     return { emit: [] };
   }
 
+  if (
+    typeof payload.commandId !== "string" ||
+    typeof payload.accepted !== "boolean"
+  ) {
+    return { emit: [] };
+  }
+
   await desktopCommandStore.acknowledgeCommand(
-    payload.commandId as string,
-    payload.accepted as boolean,
+    payload.commandId,
+    payload.accepted,
     typeof payload.reason === "string" ? payload.reason : undefined,
     targetId
   );

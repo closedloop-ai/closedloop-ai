@@ -9,8 +9,6 @@ on:
     branches: [main]
     paths:
       - "apps/relay/**"
-      - "packages/api/**"
-      - "packages/database/**"
       - "packages/observability/**"
       - "pnpm-lock.yaml"
   workflow_dispatch: {}

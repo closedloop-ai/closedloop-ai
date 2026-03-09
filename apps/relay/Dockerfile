@@ -11,12 +11,13 @@
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS builder
 
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+RUN corepack enable
 
 WORKDIR /app
 
-# Copy workspace root files needed for pnpm install
+# Copy workspace root files needed for pnpm install (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack prepare --activate
 COPY tsconfig.json ./
 
 # Copy only the packages the relay server depends on (no database!)
@@ -38,12 +39,13 @@ RUN pnpm --filter relay build
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS runtime
 
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+RUN corepack enable
 
 WORKDIR /app
 
-# Copy workspace root files
+# Copy workspace root files (corepack reads packageManager from package.json)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack prepare --activate
 COPY tsconfig.json ./
 
 # Copy package manifests for production install

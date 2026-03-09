@@ -290,92 +290,6 @@ function splitPathAndQuery(pathWithQuery: string): {
   };
 }
 
-function resolveOperationId(pathname: string): string | null {
-  if (!pathname.startsWith("/api/engineer/")) {
-    return null;
-  }
-  if (pathname === "/api/engineer/symphony/launch") {
-    return "symphony_launch";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/status/")) {
-    return "symphony_status";
-  }
-  if (pathname === "/api/engineer/symphony/kill") {
-    return "symphony_kill";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/chat/")) {
-    return "symphony_chat";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/comment-chat/")) {
-    return "symphony_comment_chat";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/commit-message/")) {
-    return "symphony_commit_message";
-  }
-  if (pathname === "/api/engineer/symphony/sessions") {
-    return "symphony_sessions";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/plan/")) {
-    return "symphony_plan";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/judges/")) {
-    return "symphony_judges";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/logs/")) {
-    return "symphony_logs";
-  }
-  if (pathname.startsWith("/api/engineer/symphony/chat-history/")) {
-    return "symphony_chat_history";
-  }
-  if (pathname === "/api/engineer/terminal-chat") {
-    return "terminal_chat";
-  }
-  if (pathname === "/api/engineer/ticket-chat") {
-    return "ticket_chat";
-  }
-  if (pathname === "/api/engineer/run-viewer-chat") {
-    return "run_viewer_chat";
-  }
-  if (pathname.startsWith("/api/engineer/codex/argue/")) {
-    return "codex_argue";
-  }
-  if (pathname.startsWith("/api/engineer/codex/")) {
-    return "codex_review";
-  }
-  if (
-    pathname.startsWith("/api/engineer/git/pr") ||
-    pathname === "/api/engineer/git/user"
-  ) {
-    return "git_pr";
-  }
-  if (pathname.startsWith("/api/engineer/git")) {
-    return "git_action";
-  }
-  if (pathname === "/api/engineer/health-check") {
-    return "health_check";
-  }
-  if (pathname === "/api/engineer/repos") {
-    return "repos_config";
-  }
-  if (pathname.startsWith("/api/engineer/deploy")) {
-    return "deploy";
-  }
-  if (
-    pathname === "/api/engineer/learnings" ||
-    pathname.includes("learnings")
-  ) {
-    return "learnings";
-  }
-  if (
-    pathname === "/api/engineer/directories" ||
-    pathname === "/api/engineer/files/search" ||
-    pathname.startsWith("/api/engineer/run-viewer-extract")
-  ) {
-    return "filesystem";
-  }
-  return null;
-}
-
 function unwrapRelayBody(body: RelayEncodedBody): JsonValue | undefined {
   switch (body.kind) {
     case "none":
@@ -400,7 +314,7 @@ function toDesktopCommandInput(
   }
 
   return {
-    operationId: resolveOperationId(path) ?? operationId,
+    operationId,
     method: normalizeMethod(request.method),
     path,
     headers: request.headers,
@@ -630,7 +544,11 @@ export class RelayClient {
 
     // Poll-based streaming — avoids SSE buffering issues in Next.js dev server.
     // Events are polled from the DB every second and forwarded as NDJSON.
+    let cancelled = false;
     return new ReadableStream({
+      cancel() {
+        cancelled = true;
+      },
       async start(controller) {
         let lastSequence = 0;
         let consecutiveEmptyPolls = 0;
@@ -638,7 +556,7 @@ export class RelayClient {
           STREAM_INACTIVITY_TIMEOUT_MS / STREAM_POLL_INTERVAL_MS;
 
         try {
-          while (consecutiveEmptyPolls < maxEmptyPolls) {
+          while (!cancelled && consecutiveEmptyPolls < maxEmptyPolls) {
             await new Promise((resolve) =>
               setTimeout(resolve, STREAM_POLL_INTERVAL_MS)
             );
@@ -673,6 +591,11 @@ export class RelayClient {
           }
 
           // Inactivity timeout reached
+          controller.enqueue(
+            encoder.encode(
+              `${JSON.stringify({ type: "error", error: "Stream timed out due to inactivity" })}\n`
+            )
+          );
           controller.close();
         } catch (error) {
           log.error("Relay command event polling failed", {

@@ -13,6 +13,7 @@ const RELAY_PORT = Number(
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
 const VERCEL_API_URL = process.env.CLOSEDLOOP_API_URL;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const MAX_BODY_SIZE = 1_048_576; // 1 MB
 
 if (!INTERNAL_API_SECRET) {
   log.error("INTERNAL_API_SECRET is required");
@@ -43,13 +44,13 @@ const socketToTarget = new Map<string, string>();
 // Vercel API client
 // ---------------------------------------------------------------------------
 
-async function callVercel(
+async function callVercel<T = Record<string, unknown>>(
   path: string,
   body: unknown
 ): Promise<{
   ok: boolean;
   status: number;
-  data: Record<string, unknown> | null;
+  data: T | null;
   responseUrl: string;
   contentType: string | null;
   rawBody: string;
@@ -63,10 +64,10 @@ async function callVercel(
     body: JSON.stringify(body),
   });
   const rawBody = await response.text();
-  let data: Record<string, unknown> | null = null;
+  let data: T | null = null;
 
   try {
-    data = JSON.parse(rawBody) as Record<string, unknown>;
+    data = JSON.parse(rawBody) as T;
   } catch {
     data = null;
   }
@@ -175,7 +176,15 @@ async function forwardSocketEvent(
     });
     return { emit: [] };
   }
-  return data as {
+  const result = data as Record<string, unknown>;
+  if (!Array.isArray(result.emit)) {
+    log.error("forwardSocketEvent: expected data.emit to be an array", {
+      event,
+      emit: result.emit,
+    });
+    return { emit: [] };
+  }
+  return result as {
     targetId?: string;
     emit: Array<{ event: string; payload: unknown }>;
     disconnect?: boolean;
@@ -189,7 +198,16 @@ async function forwardSocketEvent(
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        req.destroy();
+        reject(new Error("Request body exceeds 1 MB limit"));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
   });
@@ -299,6 +317,8 @@ const server = createServer(async (req, res) => {
 
 const io = new Server(server, {
   transports: ["websocket"],
+  // CORS is irrelevant — only desktop workers connect via websocket with
+  // API key auth, not browser clients. No browser origins will reach this server.
   cors: { origin: true, credentials: true },
 });
 
@@ -365,6 +385,7 @@ function registerWorker(
   const existingWorker = workersByTargetId.get(targetId);
   if (existingWorker && existingWorker.socket.id !== socket.id) {
     clearInterval(existingWorker.heartbeatTimer);
+    socketToTarget.delete(existingWorker.socket.id);
   }
 
   const heartbeatTimer = setInterval(() => {

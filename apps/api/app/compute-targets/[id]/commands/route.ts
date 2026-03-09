@@ -90,6 +90,17 @@ export const POST = withAnyAuth<
                   status: response.status,
                   body,
                 });
+                return;
+              }
+              const result = await response
+                .json()
+                .catch(() => ({ delivered: true }));
+              if (result.delivered === false) {
+                log.warn("Relay dispatch not delivered", {
+                  targetId: target.id,
+                  commandId: createResult.command.commandId,
+                  reason: result.reason ?? "unknown",
+                });
               }
             })
             .catch((dispatchError) => {
@@ -100,6 +111,11 @@ export const POST = withAnyAuth<
               });
             })
         );
+      } else {
+        log.error("Failed to convert relay operation to wire command", {
+          targetId: target.id,
+          commandId: createResult.command.commandId,
+        });
       }
     } else {
       relayEventBus.publishOperation(target.id, relayOperation);
