@@ -6,7 +6,7 @@ import type { ReviewFinding, ReviewFindings } from "./codex-review-parser";
  * visible message is just the analysis instruction.
  */
 export function formatReviewContextForChat(
-  findings: ReviewFindings,
+  findings: Pick<ReviewFindings, "findings">,
   rawOutput: string,
   modelName: string
 ): string {
@@ -133,5 +133,32 @@ export function formatFindingContextForChat(
     "</suggested-actions>"
   );
 
+  return parts.join("\n");
+}
+
+/**
+ * Format review context for Codex (cross-provider bootstrap).
+ * Same data as formatReviewContextForChat but without <context> tags
+ * (those are Claude-specific UI hiding markers). Plain text with markdown.
+ */
+export function formatReviewContextForCodex(
+  findings: Pick<ReviewFindings, "findings">,
+  rawOutput: string,
+  modelName: string
+): string {
+  const parts: string[] = [
+    `## Code Review Context (performed by ${modelName})`,
+    `### Review Output\n\`\`\`\n${rawOutput.slice(-8000)}\n\`\`\``,
+  ];
+  if (findings.findings.length > 0) {
+    parts.push("### Parsed Findings");
+    for (const f of findings.findings) {
+      const loc = f.file ? (f.line ? `${f.file}:${f.line}` : f.file) : "";
+      parts.push(
+        `- **[${f.severity.toUpperCase()}]** ${loc ? `(${loc}) ` : ""}${f.message}`
+      );
+    }
+  }
+  parts.push("Use this review context to answer the following question.");
   return parts.join("\n");
 }

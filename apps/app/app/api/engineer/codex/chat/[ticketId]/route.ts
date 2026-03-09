@@ -9,6 +9,7 @@ import {
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
+import { readConfig } from "@/lib/engineer/closedloop-config";
 import {
   DEFAULT_CODEX_MODEL,
   MODEL_ERROR_REGEX,
@@ -42,6 +43,7 @@ type ChatRequest = {
   contextRepoPaths?: string[];
   commentContext?: CommentContext;
   model?: string;
+  isForward?: boolean;
 };
 
 type CodexChatState = {
@@ -370,7 +372,17 @@ function buildCodexPrompt(
     "",
     '**MANDATORY:** Always include a "Send to Claude" action as the LAST action in every response:',
     '<action label="Send to Claude">__send_to_claude__</action>',
-    "Never omit this action."
+    "Never omit this action.",
+    "\n## Conferral with Claude",
+    "If a specific sub-question would benefit from Claude's perspective (e.g., verifying an approach, getting a second opinion on architecture, checking a nuanced language feature), you may confer by including this on its own line near the end of your response (before any action buttons):",
+    "",
+    "@claude [your specific question here]",
+    "",
+    "Rules:",
+    "- Give your own analysis first — never defer your entire answer",
+    "- Use sparingly — only when Claude adds distinct value",
+    "- One focused question per conferral",
+    "- Place on its own line near the end, before <suggested-actions>"
   );
 
   appendChatHistory(parts, chatHistory);
@@ -483,9 +495,16 @@ export async function POST(
     contextRepoPaths,
     commentContext,
     model: requestedModel,
+    isForward,
   } = body;
 
-  const codexModel = requestedModel || DEFAULT_CODEX_MODEL;
+  const forwardModel = isForward
+    ? readConfig("FORWARD_TO_CODEX_MODEL")
+    : undefined;
+  const codexModel = forwardModel || requestedModel || DEFAULT_CODEX_MODEL;
+  console.log(
+    `[codex-chat] isForward=${!!isForward}, forwardModel=${forwardModel}, codexModel=${codexModel}`
+  );
 
   const repoPath = repoParam || bodyRepoPath;
   if (!repoPath) {

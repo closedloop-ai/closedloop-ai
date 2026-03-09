@@ -164,6 +164,7 @@ const REVIEW_SYSTEM_PROMPT = [
   '"title": "one-line summary", "description": "detailed explanation",',
   '"suggestion": "suggested fix or null"}.',
   'Use FULL repository-relative file paths (e.g. "src/components/Button.tsx"), not abbreviated names.',
+  "If you initially suspect an issue but upon further analysis determine it is not actually a problem, omit it from the findings entirely. Only include confirmed issues.",
 ].join(" ");
 
 function spawnClaudeReview(cwd: string, model: string): ChildProcess {

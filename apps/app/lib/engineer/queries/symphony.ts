@@ -49,6 +49,8 @@ export type ChatHistory = {
   ticketId: string;
   repoPath: string;
   contextPercent?: number | null;
+  sessionId?: string;
+  codexSessionExists?: boolean;
 };
 
 export type CommentChatHistory = {

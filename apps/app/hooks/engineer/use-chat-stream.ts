@@ -14,6 +14,9 @@ export type UseChatStreamCallbacks = {
   onPid?: (pid: number) => void;
   onLearnings?: () => void;
   onLearningsUsed?: (learnings: LearningUsed[]) => void;
+  /** Called for every raw parsed JSON event before dispatch. Exposes fields
+   *  like `effectiveDir` that aren't part of the typed StreamEvent. */
+  onEvent?: (event: Record<string, unknown>) => void;
 };
 
 type UseChatStreamReturn = {
@@ -160,6 +163,7 @@ export function useChatStream(): UseChatStreamReturn {
           onPid: (pid) => callbacks?.onPid?.(pid),
           onLearnings: () => callbacks?.onLearnings?.(),
           onUsage: (pct) => setContextPercent(pct),
+          onEvent: (event) => callbacks?.onEvent?.(event),
         });
 
         // Await consumer cleanup (e.g. query invalidation) BEFORE finally

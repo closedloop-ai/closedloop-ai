@@ -359,6 +359,11 @@ model DesktopCommand {
   computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
   events       DesktopCommandEvent[]
 
+  // NOTE: A partial unique index on (compute_target_id, idempotency_key) WHERE
+  // idempotency_key IS NOT NULL is maintained via raw migrations. Prisma cannot
+  // express partial indexes. Prisma 7.4+ falsely flags this as drift — we pin
+  // to 7.3.0 until resolved. Do NOT drop it.
+  // See: https://github.com/prisma/prisma/issues/29289
   @@index([computeTargetId, status, createdAt])
   @@index([operationId])
   @@map("desktop_commands")

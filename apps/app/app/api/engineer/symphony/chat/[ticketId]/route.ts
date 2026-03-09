@@ -298,7 +298,17 @@ function buildContextPrompt(
       `When you encounter a questionable claim, uncertain finding, or debatable technical decision, you can initiate a structured debate with Codex (OpenAI's code AI). The purpose is for two LLMs to examine the issue from different angles and converge on the correct answer — not to win an argument.`,
       "Include this action:",
       `<action label="Debate Codex">argue_codex:[brief description of the claim to examine]</action>`,
-      "Use this when you want a second opinion or believe something deserves deeper scrutiny from a different perspective."
+      "Use this when you want a second opinion or believe something deserves deeper scrutiny from a different perspective.",
+      "\n## Conferral with Codex",
+      "If a specific sub-question would benefit from Codex's perspective (e.g., verifying types, checking build tool behavior, getting a second opinion on an algorithm), you may confer by including this on its own line near the end of your response (before any action buttons):",
+      "",
+      "@codex [your specific question here]",
+      "",
+      "Rules:",
+      "- Give your own analysis first — never defer your entire answer",
+      "- Use sparingly — only when Codex adds distinct value",
+      "- One focused question per conferral",
+      "- Place on its own line near the end, before <suggested-actions>"
     );
   }
 

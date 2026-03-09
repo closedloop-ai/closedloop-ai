@@ -324,7 +324,18 @@ Good catch on the concurrency concern! This is actually safe — the \`mutex.acq
 - **Stay scoped.** Fix only what the reviewer asked about — no surrounding refactors, no unrelated improvements, no drive-by cleanups.
 - **Simplest correct fix wins.** Don't over-engineer. If a one-line change addresses the concern, prefer it over a refactor.
 - **When the reviewer is wrong, say so respectfully.** Back it up with evidence from the code. Don't make unnecessary changes just to appease.
-- **When the comment is ambiguous, investigate first.** Read the code to determine the most likely intent before asking for clarification. If you still can't tell after investigation, state your best interpretation and ask the human to confirm.`;
+- **When the comment is ambiguous, investigate first.** Read the code to determine the most likely intent before asking for clarification. If you still can't tell after investigation, state your best interpretation and ask the human to confirm.
+
+## Conferral with Codex
+If a specific sub-question would benefit from Codex's perspective (e.g., verifying types, checking build tool behavior, getting a second opinion on an algorithm), you may confer by including this on its own line near the end of your response (before any action buttons):
+
+@codex [your specific question here]
+
+Rules:
+- Give your own analysis first — never defer your entire answer
+- Use sparingly — only when Codex adds distinct value
+- One focused question per conferral
+- Place on its own line near the end, before <suggested-actions>`;
 
 /**
  * Append plan and PRD context to the prompt if available in the work directory.

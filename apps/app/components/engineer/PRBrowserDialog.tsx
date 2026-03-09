@@ -46,12 +46,7 @@ import { ExpandableDialogContent } from "@/components/engineer/ExpandableDialogC
 import { PathAutocomplete } from "@/components/engineer/PathAutocomplete";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { PRCommentsViewer } from "@/components/engineer/PRCommentsViewer";
-import {
-  ReviewChatPane,
-  resolveFullPath,
-  splitReviewOutput,
-  stripWorktreePath,
-} from "@/components/engineer/ReviewChatPane";
+import { ReviewChatPane } from "@/components/engineer/ReviewChatPane";
 import { useGitHubUser } from "@/hooks/engineer/use-github-user";
 import { useLearnings } from "@/hooks/engineer/use-learnings";
 import type { LearningUsed } from "@/lib/engineer/chat-utils";
@@ -63,6 +58,16 @@ import {
 import { type PRListItem, prListOptions } from "@/lib/engineer/queries/git";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 import { addRepo, reposOptions } from "@/lib/engineer/queries/repos";
+import {
+  fetchCommentedIndices,
+  fetchProviderFindings,
+  saveReviewFindings,
+} from "@/lib/engineer/review-findings-api";
+import {
+  resolveFullPath,
+  stripWorktreePath,
+} from "@/lib/engineer/review-path-utils";
+import { splitReviewOutput } from "@/lib/engineer/review-split";
 import type { ConfiguredRepo } from "@/types/repos";
 
 const SELECTION_STORAGE_KEY = "pr-browser-selection";
@@ -795,11 +800,11 @@ export function PRBrowserDialog({
 
       // Fetch the other provider's findings from disk (already persisted)
       try {
-        const res = await fetch(
-          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${otherProvider}`
+        const otherFindings = await fetchProviderFindings(
+          ticketId,
+          selectedRepo.path,
+          otherProvider
         );
-        const data = await res.json();
-        const otherFindings: ReviewFinding[] = data.findings ?? [];
         if (otherFindings.length === 0 || completingFindings.length === 0) {
           return;
         }
@@ -1001,12 +1006,20 @@ export function PRBrowserDialog({
           splitReviewOutput(entry.initialOutput, entry.config.provider)
             .findings;
 
-        // Fetch persisted findings to know which are already commented
-        const alreadyCommented = await fetchCommentedIndices(
-          ticketId,
-          selectedRepo.path,
-          entry.config.provider
-        );
+        // Fetch persisted findings to know which are already commented (best-effort)
+        let alreadyCommented: Set<number>;
+        try {
+          alreadyCommented = await fetchCommentedIndices(
+            ticketId,
+            selectedRepo.path,
+            entry.config.provider
+          );
+        } catch {
+          console.warn(
+            "[review] Failed to load commented indices, skipping dedup"
+          );
+          alreadyCommented = new Set();
+        }
 
         // Filter out duplicates AND already-commented findings
         const findings = allFindings.filter(
@@ -1048,19 +1061,12 @@ export function PRBrowserDialog({
           ...f,
           commented: true,
         }));
-        fetch(
-          `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(selectedRepo.path)}&provider=${encodeURIComponent(entry.config.provider)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              provider: entry.config.provider,
-              model: entry.config.model,
-              findings: findingsWithCommented,
-            }),
-          }
-        ).catch((err) =>
-          console.warn("[pr-browser] Failed to persist commented status:", err)
+        saveReviewFindings(
+          ticketId,
+          selectedRepo.path,
+          entry.config.provider,
+          entry.config.model,
+          findingsWithCommented
         );
         // Invalidate so ReviewChatPane picks up the change
         queryClient.invalidateQueries({
@@ -1969,28 +1975,6 @@ function postButtonStyle(isCommented: boolean, isSubmitting: boolean): string {
     return "bg-muted text-muted-foreground cursor-wait";
   }
   return "bg-foreground/[0.05] text-muted-foreground hover:bg-foreground/[0.1] hover:text-foreground cursor-pointer";
-}
-
-async function fetchCommentedIndices(
-  ticketId: string,
-  repoPath: string,
-  provider: string
-): Promise<Set<number>> {
-  try {
-    const res = await fetch(
-      `/api/engineer/codex/review-findings/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}&provider=${encodeURIComponent(provider)}`
-    );
-    const data = await res.json();
-    const indices = new Set<number>();
-    (data.findings ?? []).forEach((f: { commented?: boolean }, i: number) => {
-      if (f.commented) {
-        indices.add(i);
-      }
-    });
-    return indices;
-  } catch {
-    return new Set();
-  }
 }
 
 async function batchedSettled<T>(

@@ -9,12 +9,16 @@ import type {
 } from "@/components/engineer/chat/types";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import {
+  CHAT_SENTINEL,
   type DebateStatus,
   parseDebateStatus,
-  parseSuggestedActions,
   type SuggestedAction,
-  stripContextBlocks,
+  stripAssistantProtocol,
 } from "@/lib/engineer/chat-utils";
+import {
+  createCodexStreamState,
+  readCodexStream,
+} from "@/lib/engineer/codex-stream";
 import { queryKeys } from "@/lib/engineer/queries/keys";
 
 type UseCodexDebateOptions = {
@@ -184,7 +188,6 @@ export function useCodexDebate({
       history: { sender: string; content: string }[]
     ) => {
       const url = `/api/engineer/codex/argue/${encodeURIComponent(ticketId)}?repo=${encodeURIComponent(repoPath)}`;
-      const startedAt = new Date().toISOString();
 
       const abortController = new AbortController();
       codexAbortRef.current = abortController;
@@ -229,135 +232,99 @@ export function useCodexDebate({
         return;
       }
 
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let receivedAnyText = false;
-      const reasoningBlocks: ContentBlock[] = [];
+      const state = createCodexStreamState();
 
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
-          }
-          const chunk = decoder.decode(value);
-          const lines = chunk.split("\n").filter((l) => l.trim());
-
-          for (const line of lines) {
-            let event: Record<string, unknown>;
+        await readCodexStream(reader, state, {
+          setPending: codexStream.setPendingUserMessage,
+          saveFinalMessage: async (msg) => {
+            const { cleanContent } = parseDebateStatus(msg.content);
+            // Set sender BEFORE saving — saveDebateMessage triggers query
+            // invalidation which re-renders the UI; lastDebateSender must
+            // already be "codex" so the correct action buttons appear.
+            setLastDebateSender("codex");
+            setDebateHistory((prev) => [
+              ...prev,
+              { sender: "codex", content: cleanContent },
+            ]);
             try {
-              event = JSON.parse(line);
-            } catch {
-              // Not valid JSON — skip
-              continue;
+              await saveDebateMessage(
+                cleanContent,
+                "codex",
+                state.reasoningBlocks.length > 0
+                  ? state.reasoningBlocks
+                  : undefined
+              );
+            } catch (err) {
+              console.error("[codex-debate] Failed to save message:", err);
+            }
+          },
+          onError: (error) => {
+            console.error("[codex-debate] Server error:", error);
+            toast.error("Codex error", { description: error });
+          },
+          onEmptyResponse: (exitCode) => {
+            toast.error("Codex returned no response", {
+              description: `Exit code: ${exitCode ?? "unknown"}`,
+            });
+          },
+          onDoneEvent: (event) => {
+            // Skip debate advancement when Codex produced no content
+            // (empty responses are handled by onEmptyResponse above).
+            const finalText = (
+              (event.content as string) || state.accumulated
+            ).trim();
+            if (!finalText) {
+              return;
             }
 
-            if (event.type === "reasoning" && event.content) {
-              reasoningBlocks.push({
-                type: "thinking",
-                id: `reasoning-${Date.now()}-${reasoningBlocks.length}`,
-                thinking: event.content as string,
-              });
-              codexStream.setPendingUserMessage({
-                id: "codex-streaming",
-                role: "assistant",
-                content: accumulated,
-                timestamp: startedAt,
-                sender: "codex",
-                blocks: [...reasoningBlocks],
-              });
-            } else if (event.type === "text" && event.content) {
-              receivedAnyText = true;
-              accumulated += event.content;
-              codexStream.setPendingUserMessage({
-                id: "codex-streaming",
-                role: "assistant",
-                content: accumulated,
-                timestamp: startedAt,
-                sender: "codex",
-                blocks:
-                  reasoningBlocks.length > 0 ? [...reasoningBlocks] : undefined,
-              });
-            } else if (event.type === "error") {
-              console.error("[codex-debate] Server error:", event.error);
-              toast.error("Codex error", {
-                description: String(event.error).slice(0, 200),
-              });
-            } else if (event.type === "done") {
-              const finalContent = (event.content as string) || accumulated;
-              codexStream.setPendingUserMessage(null);
-              if (finalContent.trim()) {
-                // Strip debate-status from displayed content
-                const { cleanContent } = parseDebateStatus(finalContent.trim());
-                // Set sender BEFORE saving — saveDebateMessage triggers query
-                // invalidation which re-renders the UI; lastDebateSender must
-                // already be "codex" so the correct action buttons appear.
-                setLastDebateSender("codex");
-                setDebateHistory((prev) => [
-                  ...prev,
-                  { sender: "codex", content: cleanContent },
-                ]);
-                try {
-                  await saveDebateMessage(
-                    cleanContent,
-                    "codex",
-                    reasoningBlocks.length > 0 ? reasoningBlocks : undefined
-                  );
-                } catch (err) {
-                  console.error("[codex-debate] Failed to save message:", err);
-                }
+            // Parse debate status from Codex response (prefer server-parsed, fallback to client)
+            const debateStatus: DebateStatus | null =
+              (event.debateStatus as DebateStatus | null) ??
+              parseDebateStatus(finalText).status;
+            setLastDebateStatus(debateStatus);
+            const newRound = currentRoundRef.current + 1;
+            setCurrentRound(newRound);
+            currentRoundRef.current = newRound;
 
-                // Parse debate status from Codex response (prefer server-parsed, fallback to client)
-                const debateStatus: DebateStatus | null =
-                  (event.debateStatus as DebateStatus | null) ??
-                  parseDebateStatus(finalContent.trim()).status;
-                setLastDebateStatus(debateStatus);
-                const newRound = currentRoundRef.current + 1;
-                setCurrentRound(newRound);
-                currentRoundRef.current = newRound;
-
-                // Auto-advance if enabled
-                if (autoDebateRef.current) {
+            // Auto-advance if enabled
+            if (autoDebateRef.current) {
+              console.log(
+                "[codex-debate] Auto-advance: Codex done, forwarding to Claude (round %d)",
+                newRound
+              );
+              const consensusReached =
+                debateStatus?.pendingIssues?.length === 0;
+              if (consensusReached && debateStatus) {
+                handleConsensusReachedRef.current?.(
+                  debateStatus.resolvedIssues
+                );
+              } else if (currentRoundRef.current < MAX_ROUNDS) {
+                setTimeout(() => {
                   console.log(
-                    "[codex-debate] Auto-advance: Codex done, forwarding to Claude (round %d)",
-                    newRound
+                    "[codex-debate] Auto-advance: triggering handleLetClaudeRespond"
                   );
-                  const consensusReached =
-                    debateStatus?.pendingIssues?.length === 0;
-                  if (consensusReached && debateStatus) {
-                    handleConsensusReachedRef.current?.(
-                      debateStatus.resolvedIssues
-                    );
-                  } else if (currentRoundRef.current < MAX_ROUNDS) {
-                    setTimeout(() => {
-                      console.log(
-                        "[codex-debate] Auto-advance: triggering handleLetClaudeRespond"
+                  handleLetClaudeRespondRef
+                    .current?.()
+                    ?.catch((err: unknown) => {
+                      console.error(
+                        "[codex-debate] Auto-advance to Claude failed:",
+                        err
                       );
-                      handleLetClaudeRespondRef
-                        .current?.()
-                        ?.catch((err: unknown) => {
-                          console.error(
-                            "[codex-debate] Auto-advance to Claude failed:",
-                            err
-                          );
-                        });
-                    }, 500);
-                  }
-                }
-              } else if (!receivedAnyText) {
-                toast.error("Codex returned no response", {
-                  description: `Exit code: ${event.exitCode ?? "unknown"}`,
-                });
+                    });
+                }, 500);
               }
             }
-          }
-        }
+          },
+        });
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           // User stopped — save partial content if any
           codexStream.setPendingUserMessage(null);
-          if (accumulated.trim()) {
-            const { cleanContent } = parseDebateStatus(accumulated.trim());
+          if (state.accumulated.trim()) {
+            const { cleanContent } = parseDebateStatus(
+              state.accumulated.trim()
+            );
             setLastDebateSender("codex");
             setDebateHistory((prev) => [
               ...prev,
@@ -369,7 +336,9 @@ export function useCodexDebate({
             await saveDebateMessage(
               `${cleanContent}\n\n_(stopped by user)_`,
               "codex",
-              reasoningBlocks.length > 0 ? reasoningBlocks : undefined
+              state.reasoningBlocks.length > 0
+                ? state.reasoningBlocks
+                : undefined
             ).catch(() => {});
           }
         } else {
@@ -406,9 +375,7 @@ export function useCodexDebate({
         .reverse()
         .find((m) => m.role === "assistant");
       const claudeAnalysis = lastAssistant
-        ? stripContextBlocks(
-            parseSuggestedActions(lastAssistant.content).contentWithoutActions
-          )
+        ? stripAssistantProtocol(lastAssistant.content)
         : finding;
 
       const openingArgument = `Hey Codex, this is Claude from Anthropic. I want to debate your finding about "${finding}" — the goal is for us to figure out the right answer together. Here's my analysis:\n\n${claudeAnalysis}`;
@@ -478,9 +445,7 @@ export function useCodexDebate({
               // Strip debate-status and suggested-actions from content
               const parsed = parseDebateStatus(lastMsg.content);
               debateStatus = parsed.status;
-              cleanContent = stripContextBlocks(
-                parseSuggestedActions(parsed.cleanContent).contentWithoutActions
-              );
+              cleanContent = stripAssistantProtocol(parsed.cleanContent);
               setDebateHistory((prev) => [
                 ...prev,
                 { sender: "claude", content: cleanContent },
@@ -644,10 +609,10 @@ export function useCodexDebate({
     let lastEndIdx = -1;
     for (let i = messages.length - 1; i >= 0; i--) {
       const c = messages[i].content;
-      if (c === "__debate_started__" && lastStartIdx === -1) {
+      if (c === CHAT_SENTINEL.DEBATE_STARTED && lastStartIdx === -1) {
         lastStartIdx = i;
       }
-      if (c === "__debate_ended__" && lastEndIdx === -1) {
+      if (c === CHAT_SENTINEL.DEBATE_ENDED && lastEndIdx === -1) {
         lastEndIdx = i;
       }
       if (lastStartIdx !== -1 && lastEndIdx !== -1) {
@@ -670,9 +635,7 @@ export function useCodexDebate({
     for (const msg of debateMessages) {
       if (msg.sender === "claude" || msg.sender === "codex") {
         const { cleanContent } = parseDebateStatus(msg.content);
-        const stripped = stripContextBlocks(
-          parseSuggestedActions(cleanContent).contentWithoutActions
-        );
+        const stripped = stripAssistantProtocol(cleanContent);
         restored.push({ sender: msg.sender, content: stripped });
         sender = msg.sender;
       }
@@ -759,9 +722,7 @@ export function useCodexDebate({
         sender: "codex",
       });
 
-      const claudeAnalysis = stripContextBlocks(
-        parseSuggestedActions(lastAssistant.content).contentWithoutActions
-      );
+      const claudeAnalysis = stripAssistantProtocol(lastAssistant.content);
       const openingArgument =
         "Hey Codex, this is Claude from Anthropic. I want to debate this — " +
         "the goal is for us to figure out the right answer together. " +
