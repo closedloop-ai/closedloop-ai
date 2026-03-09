@@ -23,6 +23,9 @@ export function healthCheckOptions() {
       const res = await fetch("/api/engineer/health-check");
       return res.json();
     },
-    staleTime: Number.POSITIVE_INFINITY,
+    staleTime: 0,
+    refetchOnMount: "always" as const,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }

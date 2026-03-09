@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type NextRequest, NextResponse } from "next/server";
 import {
+  checkRequiredPlugins,
   expandHome,
   getSymphonyScriptPath,
   getWorktreeParentDir,
@@ -437,6 +438,23 @@ function launchSymphony(
   baseBranch?: string,
   parentTicketId?: string | null
 ) {
+  // Check that all required plugins are installed before launching
+  const pluginCheck = checkRequiredPlugins();
+  if (!pluginCheck.allInstalled) {
+    let errorMsg: string;
+    if (pluginCheck.reason === "manifest_missing") {
+      errorMsg =
+        `Missing required plugins: ${pluginCheck.missing.join(", ")}. ` +
+        `Run: claude plugin marketplace add closedloop-ai/claude-plugins && claude plugin install ${pluginCheck.missing.join(" ")}`;
+    } else if (pluginCheck.reason === "manifest_malformed") {
+      errorMsg =
+        "~/.claude/plugins/installed_plugins.json is corrupted. Try reinstalling plugins.";
+    } else {
+      errorMsg = `Missing required plugins: ${pluginCheck.missing.join(", ")}. Run: claude plugin install ${pluginCheck.missing.join(" ")}`;
+    }
+    return NextResponse.json({ error: errorMsg }, { status: 412 });
+  }
+
   const scriptPath = getSymphonyScriptPath();
 
   if (!scriptPath) {

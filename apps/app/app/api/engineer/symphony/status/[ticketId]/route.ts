@@ -309,11 +309,30 @@ export async function GET(
 
     // Check if state.json exists
     if (!existsSync(statePath)) {
+      const pid = await readProcessPid(worktreeDir);
+      const processRunning = pid !== null && isProcessRunning(pid);
+
+      // Process died before writing state.json — report STOPPED instead of STARTING forever
+      if (pid !== null && !processRunning) {
+        return NextResponse.json({
+          exists: true,
+          stateExists: false,
+          phase: "Process failed to start",
+          status: "STOPPED",
+          pid,
+          processRunning: false,
+          message:
+            "Process exited before initializing. Check closedloop-launch.log.",
+        });
+      }
+
       return NextResponse.json({
         exists: true,
         stateExists: false,
         phase: "Initializing",
         status: "STARTING",
+        pid,
+        processRunning: pid !== null,
         message: "ClosedLoop is starting up...",
       });
     }
