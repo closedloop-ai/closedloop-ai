@@ -51,7 +51,6 @@ import {
   MoreHorizontalIcon,
   TrashIcon,
 } from "lucide-react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -139,17 +138,6 @@ const ARTIFACT_SORT_CONFIGS: Record<
   },
   updatedAt: { key: "updatedAt", columnType: "date" },
 };
-
-function ArtifactLinkCell({ route }: Readonly<{ route: string | null }>) {
-  if (!route) {
-    return <span className="text-muted-foreground text-sm">n/a</span>;
-  }
-  return (
-    <Link className="text-primary text-sm hover:underline" href={route}>
-      View
-    </Link>
-  );
-}
 
 type ArtifactSectionProps = {
   title: string;
@@ -272,7 +260,6 @@ function ArtifactSection({
                 sortBy={sortBy}
                 sortDir={sortDir}
               />
-              <TableHead>Link</TableHead>
               {visibleCustomFieldColumns.map((field) => (
                 <TableHead key={field.customFieldId}>{field.name}</TableHead>
               ))}
@@ -287,7 +274,6 @@ function ArtifactSection({
             <TableBody>
               {sortedArtifacts.map((artifact) => {
                 const Icon = ARTIFACT_TYPE_ICONS[artifact.type] || FileTextIcon;
-                const route = getArtifactRoute(artifact);
                 const isClickable = isNavigableArtifact(artifact);
 
                 return (
@@ -372,9 +358,6 @@ function ArtifactSection({
                       <span className="text-muted-foreground text-sm">
                         {formatRelativeTime(artifact.updatedAt)}
                       </span>
-                    </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <ArtifactLinkCell route={route} />
                     </TableCell>
                     {visibleCustomFieldColumns.map((colDef) => {
                       const fieldValue = artifact.customFields?.find(

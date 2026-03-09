@@ -6,7 +6,7 @@ import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { TableRow } from "@repo/design-system/components/ui/table";
 import { GripVertical } from "lucide-react";
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
 type SortableArtifactRowProps = {
   artifact: ArtifactWithWorkstream;
@@ -46,8 +46,15 @@ export function SortableArtifactRow({
       className={`group ${className} data-[state=dragging]:opacity-50`}
       data-state={isDragging ? "dragging" : undefined}
       onClick={onClick}
+      onKeyDown={(e: KeyboardEvent<HTMLTableRowElement>) => {
+        if ((e.key === "Enter" || e.key === " ") && onClick) {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       ref={setNodeRef}
       style={style}
+      tabIndex={onClick ? 0 : undefined}
     >
       <td className="w-10 px-2">
         <div className="flex items-center gap-1">
