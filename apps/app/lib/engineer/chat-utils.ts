@@ -430,14 +430,12 @@ export function parseConferralMention(
 }
 
 /**
- * Strip all protocol metadata from assistant content.
- * Removes suggested actions, context blocks, learnings, and conferral mentions.
+ * Strip protocol metadata (context blocks, learnings, conferral) but NOT suggested actions.
+ * Use when you've already called parseSuggestedActions separately.
  */
-export function stripAssistantProtocol(content: string): string {
-  let cleaned = parseSuggestedActions(content).contentWithoutActions;
-  cleaned = stripContextBlocks(cleaned);
+export function stripProtocolMetadata(content: string): string {
+  let cleaned = stripContextBlocks(content);
   cleaned = stripLearningsUsed(cleaned);
-  // Reuse parseConferralMention detection for both directions
   for (const sender of ["claude", "codex"] as const) {
     const mention = parseConferralMention(cleaned, sender);
     if (mention) {
@@ -445,6 +443,15 @@ export function stripAssistantProtocol(content: string): string {
     }
   }
   return cleaned.trim();
+}
+
+/**
+ * Strip all protocol metadata from assistant content.
+ * Removes suggested actions, context blocks, learnings, and conferral mentions.
+ */
+export function stripAssistantProtocol(content: string): string {
+  const { contentWithoutActions } = parseSuggestedActions(content);
+  return stripProtocolMetadata(contentWithoutActions);
 }
 
 const SENTINEL_VALUES: Set<string> = new Set(Object.values(CHAT_SENTINEL));

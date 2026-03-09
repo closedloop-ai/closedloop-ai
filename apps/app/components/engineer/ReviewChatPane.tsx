@@ -46,7 +46,7 @@ import {
   type LearningUsed,
   parseSuggestedActions,
   type SuggestedAction,
-  stripAssistantProtocol,
+  stripProtocolMetadata,
 } from "@/lib/engineer/chat-utils";
 import type { ReviewFinding } from "@/lib/engineer/codex-review-parser";
 import { symphonyChatHistoryOptions } from "@/lib/engineer/queries/symphony";
@@ -477,14 +477,17 @@ function ChatMessageItem({
   chatHistoryContextPercent,
   onAction,
 }: Readonly<ChatMessageItemProps>) {
-  const displayContent =
-    msg.role === "assistant"
-      ? stripAssistantProtocol(msg.content)
-      : msg.content;
-  const { actions } =
+  const { actions, contentWithoutActions } =
     msg.role === "assistant"
       ? parseSuggestedActions(msg.content)
-      : { actions: [] as SuggestedAction[] };
+      : {
+          actions: [] as SuggestedAction[],
+          contentWithoutActions: msg.content,
+        };
+  const displayContent =
+    msg.role === "assistant"
+      ? stripProtocolMetadata(contentWithoutActions)
+      : msg.content;
   const effectiveActions = isLastAssistant ? actions : [];
   const effectiveSender: "claude" | "codex" =
     msg.sender === "codex" ? "codex" : "claude";
