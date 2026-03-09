@@ -97,63 +97,65 @@ export function PrTimelineChart({
     );
   }
 
-  if (chartData.length === 0) {
-    return (
-      <p className="text-muted-foreground text-sm">
-        No PR timeline data available for the selected range.
-      </p>
-    );
-  }
+  const rangeGranularityButtons = (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex gap-1">
+        {(
+          Object.values(PR_TIMELINE_RANGE_OPTIONS) as PrTimelineRangeOption[]
+        ).map((days) => (
+          <Button
+            className={days === rangeDays ? "bg-accent" : ""}
+            key={days}
+            onClick={() => handleRangeChange(days)}
+            size="sm"
+            variant="outline"
+          >
+            {days}d
+          </Button>
+        ))}
+      </div>
+      <div className="flex gap-1">
+        {(
+          [
+            PR_TIMELINE_GRANULARITY_OPTIONS.Week,
+            PR_TIMELINE_GRANULARITY_OPTIONS.Month,
+          ] as PrTimelineGranularity[]
+        ).map((g) => (
+          <Button
+            className={g === granularity ? "bg-accent" : ""}
+            key={g}
+            onClick={() => handleGranularityChange(g)}
+            size="sm"
+            variant="outline"
+          >
+            {g === PR_TIMELINE_GRANULARITY_OPTIONS.Week ? "Week" : "Month"}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-1">
-          {(
-            Object.values(PR_TIMELINE_RANGE_OPTIONS) as PrTimelineRangeOption[]
-          ).map((days) => (
-            <Button
-              className={days === rangeDays ? "bg-accent" : ""}
-              key={days}
-              onClick={() => handleRangeChange(days)}
-              size="sm"
-              variant="outline"
-            >
-              {days}d
-            </Button>
-          ))}
-        </div>
-        <div className="flex gap-1">
-          {(
-            [
-              PR_TIMELINE_GRANULARITY_OPTIONS.Week,
-              PR_TIMELINE_GRANULARITY_OPTIONS.Month,
-            ] as PrTimelineGranularity[]
-          ).map((g) => (
-            <Button
-              className={g === granularity ? "bg-accent" : ""}
-              key={g}
-              onClick={() => handleGranularityChange(g)}
-              size="sm"
-              variant="outline"
-            >
-              {g === PR_TIMELINE_GRANULARITY_OPTIONS.Week ? "Week" : "Month"}
-            </Button>
-          ))}
-        </div>
-      </div>
-      <ChartContainer className="h-48 w-full" config={chartConfig}>
-        <BarChart data={chartData}>
-          <XAxis dataKey="label" />
-          <YAxis allowDecimals={false} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          <Bar
-            dataKey="count"
-            fill="var(--color-count)"
-            radius={[4, 4, 0, 0]}
-          />
-        </BarChart>
-      </ChartContainer>
+      {rangeGranularityButtons}
+      {chartData.length === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          No PR timeline data available for the selected range.
+        </p>
+      ) : (
+        <ChartContainer className="h-48 w-full" config={chartConfig}>
+          <BarChart data={chartData}>
+            <XAxis dataKey="label" />
+            <YAxis allowDecimals={false} />
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Bar
+              dataKey="count"
+              fill="var(--color-count)"
+              radius={[4, 4, 0, 0]}
+            />
+          </BarChart>
+        </ChartContainer>
+      )}
     </div>
   );
 }
