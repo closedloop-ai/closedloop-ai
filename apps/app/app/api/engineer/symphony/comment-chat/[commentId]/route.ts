@@ -1,8 +1,15 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import { ENGINEER_CHAT_TOOLS } from "@/lib/engineer/allowed-tools";
+import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import {
   getLearningAttributionInstruction,
   getLearningCaptureInstruction,
@@ -817,6 +824,19 @@ export async function DELETE(
     history.messages = [];
     history.sessionId = undefined;
     saveCommentChatHistory(paths.historyPath, history);
+
+    // Also delete this comment's Codex session file (scoped cleanup)
+    const codexPath = getCodexChatStatePath(
+      paths.claudeWorkDir,
+      `comment-${commentId}`
+    );
+    if (existsSync(codexPath)) {
+      try {
+        unlinkSync(codexPath);
+      } catch {
+        /* best-effort */
+      }
+    }
   } else {
     // Delete specific message by index
     const index = Number.parseInt(indexStr, 10);

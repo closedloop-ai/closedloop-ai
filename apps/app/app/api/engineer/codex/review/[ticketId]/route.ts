@@ -24,6 +24,7 @@ import {
   DEFAULT_CODEX_MODEL,
   MODEL_ERROR_REGEX,
 } from "@/lib/engineer/codex-models";
+import { getCodexChatStatePath } from "@/lib/engineer/codex-state";
 import {
   expandHome,
   getWorktreeParentDir,
@@ -289,15 +290,11 @@ function setupProcessLifecycle(
       await unlink(pidPath).catch(() => {});
     }
 
-    // Persist Codex session ID to codex-chat.json so the chat route can resume it
+    // Persist Codex session ID to codex-chat-review.json so the chat route can resume it
     if (provider === "codex" && sessionIdHolder.value) {
-      const chatStatePath = join(
-        worktreeDir,
-        ".claude",
-        "work",
-        "codex-chat.json"
-      );
-      await mkdir(join(worktreeDir, ".claude", "work"), { recursive: true });
+      const workDir = join(worktreeDir, ".claude", "work");
+      const chatStatePath = getCodexChatStatePath(workDir, "review");
+      await mkdir(workDir, { recursive: true });
       await writeFile(
         chatStatePath,
         JSON.stringify(
@@ -307,7 +304,7 @@ function setupProcessLifecycle(
         )
       );
       console.log(
-        `[codex-review] Wrote codex-chat.json with session ${sessionIdHolder.value}`
+        `[codex-review] Wrote ${chatStatePath} with session ${sessionIdHolder.value}`
       );
     }
   });
