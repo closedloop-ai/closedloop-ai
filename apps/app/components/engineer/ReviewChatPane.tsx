@@ -40,6 +40,7 @@ import {
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
 import { useReviewChat } from "@/hooks/engineer/use-review-chat";
 import { useReviewExecution } from "@/hooks/engineer/use-review-execution";
+import type { useSlashCommands } from "@/hooks/engineer/use-slash-commands";
 import { chatMarkdownComponents } from "@/lib/engineer/chat-markdown";
 import {
   CHAT_SENTINEL,
@@ -554,9 +555,7 @@ function WaitingDots({ provider }: Readonly<{ provider: "claude" | "codex" }>) {
 type ReviewChatInputProps = {
   chatInput: string;
   mentionState: MentionState | null;
-  slash: ReturnType<
-    typeof import("@/hooks/engineer/use-slash-commands").useSlashCommands
-  >;
+  slash: ReturnType<typeof useSlashCommands>;
   isStreaming: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   repoPath: string;

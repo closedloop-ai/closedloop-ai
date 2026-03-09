@@ -502,6 +502,9 @@ export async function POST(
     ? readConfig("FORWARD_TO_CODEX_MODEL")
     : undefined;
   const codexModel = forwardModel || requestedModel || DEFAULT_CODEX_MODEL;
+  console.log(
+    `[codex-chat] isForward=${!!isForward}, forwardModel=${forwardModel}, codexModel=${codexModel}`
+  );
 
   const repoPath = repoParam || bodyRepoPath;
   if (!repoPath) {
