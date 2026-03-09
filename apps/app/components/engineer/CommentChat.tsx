@@ -46,6 +46,7 @@ import {
 import { useCommentChat } from "@/hooks/engineer/useCommentChat";
 import {
   CHAT_SENTINEL,
+  MAX_CONFERRAL_DEPTH,
   parseConferralMention,
   parseLearningsUsed,
   parseSuggestedActions,
@@ -156,7 +157,6 @@ export function CommentChat({
   const hasCodexAutoStartedRef = useRef(false);
 
   // --- Conferral infrastructure ---
-  const MAX_CONFERRAL_DEPTH = 3;
   const conferralDepthRef = useRef(0);
   const conferralInProgressRef = useRef(false);
   const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

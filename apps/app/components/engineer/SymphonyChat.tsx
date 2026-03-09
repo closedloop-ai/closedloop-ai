@@ -67,6 +67,7 @@ import {
   formatTime,
   getWorktreePath,
   type LearningUsed,
+  MAX_CONFERRAL_DEPTH,
   parseConferralMention,
   parseDebateStatus,
   parseLearningsUsed,
@@ -317,7 +318,6 @@ export function SymphonyChat({
   }, [isOpen, activeTab, currentDiffFile]);
 
   // --- Conferral infrastructure ---
-  const MAX_CONFERRAL_DEPTH = 3;
   const conferralDepthRef = useRef(0);
   const conferralInProgressRef = useRef(false);
   const conferralTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

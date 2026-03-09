@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import type { ContentBlock } from "@/components/engineer/chat";
 import type { PRComment } from "@/components/engineer/PRCommentCard";
 import { useChatStream } from "@/hooks/engineer/use-chat-stream";
-import { CHAT_SENTINEL, getWorktreePath } from "@/lib/engineer/chat-utils";
+import { getWorktreePath, SENTINEL_VALUES } from "@/lib/engineer/chat-utils";
 import {
   markCommentAddressed,
   markCommentResponded,
@@ -18,8 +18,6 @@ import {
   type ChatMessage,
   commentChatHistoryOptions,
 } from "@/lib/engineer/queries/symphony";
-
-const SENTINEL_VALUES: Set<string> = new Set(Object.values(CHAT_SENTINEL));
 
 export type UseCommentChatOptions = {
   commentId: string;

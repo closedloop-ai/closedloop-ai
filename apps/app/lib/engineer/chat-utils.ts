@@ -377,6 +377,8 @@ export function formatToolResultContent(content: unknown): string {
   return JSON.stringify(content, null, 2);
 }
 
+export const MAX_CONFERRAL_DEPTH = 3;
+
 /**
  * Sentinel strings used as user message content to mark status transitions.
  * These are never displayed as chat text — they render as StatusNote indicators.
@@ -454,7 +456,9 @@ export function stripAssistantProtocol(content: string): string {
   return stripProtocolMetadata(contentWithoutActions);
 }
 
-const SENTINEL_VALUES: Set<string> = new Set(Object.values(CHAT_SENTINEL));
+export const SENTINEL_VALUES: Set<string> = new Set(
+  Object.values(CHAT_SENTINEL)
+);
 
 /**
  * Sanitize persisted message arrays before sending as context to Claude/Codex.

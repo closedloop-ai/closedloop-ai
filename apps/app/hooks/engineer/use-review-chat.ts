@@ -13,6 +13,7 @@ import {
 import {
   CHAT_SENTINEL,
   type LearningUsed,
+  MAX_CONFERRAL_DEPTH,
   parseConferralMention,
   type SuggestedAction,
   sanitizeHistoryForModel,
@@ -37,8 +38,6 @@ const REVIEW_SLASH_COMMANDS: SlashCommand[] = [
     description: "Extract learnings from this conversation",
   },
 ];
-
-const MAX_CONFERRAL_DEPTH = 3;
 
 type UseReviewChatParams = {
   ticketId: string;
