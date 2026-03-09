@@ -3,6 +3,10 @@ export function formatDuration(hours: number): string {
   const days = Math.floor(totalMinutes / 1440);
   const remainingHours = Math.floor((totalMinutes % 1440) / 60);
 
+  if (days === 0 && remainingHours === 0) {
+    return totalMinutes > 0 ? `${totalMinutes}m` : "< 1m";
+  }
+
   if (days === 0) {
     return `${remainingHours}h`;
   }

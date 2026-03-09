@@ -1249,7 +1249,9 @@ export const judgesAnalyticsService = {
       })
     );
 
-    const prs = flattenJudgeScoresToPrs(judgeScores);
+    const prs = flattenJudgeScoresToPrs(judgeScores).filter(
+      (pr) => pr.createdAt >= startDate && pr.createdAt <= endDate
+    );
     const totalPrs = prs.length;
     const openPrs = prs.filter((pr) => pr.state === GitHubPRState.OPEN).length;
     const totalCommentCount = prs.reduce(
