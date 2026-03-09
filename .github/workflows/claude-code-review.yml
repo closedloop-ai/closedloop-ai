@@ -2,9 +2,9 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened]
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened]
   workflow_dispatch:
 
 # Cancel in-progress runs for the same PR to prevent duplicate reviews
