@@ -3,7 +3,6 @@ import type {
   CreateDesktopCommandResponse,
 } from "@repo/api/src/types/compute-target";
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { env } from "@/env";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -22,6 +21,63 @@ import {
 import { toRelayOperation } from "../../relay-command-helpers";
 import { computeTargetsService } from "../../service";
 import { createDesktopCommandValidator } from "../../validators";
+
+async function dispatchToRelay(
+  relayApiUrl: string,
+  internalSecret: string,
+  targetId: string,
+  commandId: string,
+  relayOperation: ReturnType<typeof toRelayOperation>
+): Promise<void> {
+  const wireCommand = toWireCommandFromRelayOperation(relayOperation);
+  if (!wireCommand) {
+    log.error("Failed to convert relay operation to wire command", {
+      targetId,
+      commandId,
+    });
+    return;
+  }
+
+  const envelopedCommand = toEnvelope(wireCommand);
+  try {
+    const response = await fetch(`${relayApiUrl}/dispatch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": internalSecret,
+      },
+      body: JSON.stringify({
+        targetId,
+        operation: envelopedCommand,
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      const result = await response.json().catch(() => ({ delivered: true }));
+      if (result.delivered === false) {
+        log.warn("Relay dispatch not delivered", {
+          targetId,
+          commandId,
+          reason: result.reason ?? "unknown",
+        });
+      }
+    } else {
+      const body = await response.text().catch(() => "");
+      log.error("Relay dispatch failed", {
+        targetId,
+        commandId,
+        status: response.status,
+        body,
+      });
+    }
+  } catch (dispatchError) {
+    log.error("Failed to dispatch command to relay", {
+      targetId,
+      commandId,
+      error: dispatchError,
+    });
+  }
+}
 
 /**
  * POST /compute-targets/:id/commands
@@ -65,58 +121,13 @@ export const POST = withAnyAuth<
     const relayApiUrl = env.RELAY_API_URL;
     const internalSecret = env.INTERNAL_API_SECRET;
     if (relayApiUrl && internalSecret) {
-      // Convert to wire-envelope format — the relay is a dumb forwarder
-      const wireCommand = toWireCommandFromRelayOperation(relayOperation);
-      if (wireCommand) {
-        const envelopedCommand = toEnvelope(wireCommand);
-        waitUntil(
-          fetch(`${relayApiUrl}/dispatch`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-internal-secret": internalSecret,
-            },
-            body: JSON.stringify({
-              targetId: target.id,
-              operation: envelopedCommand,
-            }),
-          })
-            .then(async (response) => {
-              if (!response.ok) {
-                const body = await response.text().catch(() => "");
-                log.error("Relay dispatch failed", {
-                  targetId: target.id,
-                  commandId: createResult.command.commandId,
-                  status: response.status,
-                  body,
-                });
-                return;
-              }
-              const result = await response
-                .json()
-                .catch(() => ({ delivered: true }));
-              if (result.delivered === false) {
-                log.warn("Relay dispatch not delivered", {
-                  targetId: target.id,
-                  commandId: createResult.command.commandId,
-                  reason: result.reason ?? "unknown",
-                });
-              }
-            })
-            .catch((dispatchError) => {
-              log.error("Failed to dispatch command to relay", {
-                targetId: target.id,
-                commandId: createResult.command.commandId,
-                error: dispatchError,
-              });
-            })
-        );
-      } else {
-        log.error("Failed to convert relay operation to wire command", {
-          targetId: target.id,
-          commandId: createResult.command.commandId,
-        });
-      }
+      await dispatchToRelay(
+        relayApiUrl,
+        internalSecret,
+        target.id,
+        createResult.command.commandId,
+        relayOperation
+      );
     } else {
       relayEventBus.publishOperation(target.id, relayOperation);
     }
