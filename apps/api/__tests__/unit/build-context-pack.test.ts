@@ -1,16 +1,6 @@
 import { vi } from "vitest";
 
 // Mock all external dependencies before imports
-vi.mock("@aws-sdk/client-ecs", () => ({
-  ECSClient: vi.fn(),
-  RunTaskCommand: vi.fn(),
-  StopTaskCommand: vi.fn(),
-}));
-
-vi.mock("@repo/github", () => ({
-  getInstallationAccessToken: vi.fn(),
-}));
-
 vi.mock("@repo/observability/log", () => ({
   log: {
     info: vi.fn(),
@@ -36,12 +26,6 @@ vi.mock("@/app/artifacts/service", () => ({
   getCommitterInfo: vi.fn(),
 }));
 
-vi.mock("@/app/integrations/github/service", () => ({
-  githubService: {
-    findInstallationRepoByFullName: vi.fn(),
-  },
-}));
-
 vi.mock("@/app/issues/service", () => ({
   issuesService: {
     findById: vi.fn().mockResolvedValue(null),
@@ -56,12 +40,12 @@ vi.mock("@/app/loops/service", () => ({
   isInvalidStatusTransitionError: vi.fn(),
 }));
 
-vi.mock("@/lib/loop-state", () => ({
+vi.mock("@/lib/loops/loop-state", () => ({
   uploadContextPack: vi.fn().mockResolvedValue("s3://mock-key"),
   downloadMetadata: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("@/lib/loop-event-bus", () => ({
+vi.mock("@/lib/loops/loop-event-bus", () => ({
   loopEventBus: { publish: vi.fn() },
 }));
 
@@ -71,8 +55,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
 import { issuesService } from "@/app/issues/service";
-import { buildContextPack } from "@/lib/loop-orchestrator";
-import { uploadContextPack } from "@/lib/loop-state";
+import { buildContextPack } from "@/lib/loops/loop-context-pack";
+import { uploadContextPack } from "@/lib/loops/loop-state";
 
 const mockIssuesService = issuesService as unknown as {
   findById: ReturnType<typeof vi.fn>;

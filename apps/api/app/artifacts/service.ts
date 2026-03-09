@@ -49,7 +49,7 @@ import {
   mapLoopCommand,
   mapLoopStatus,
   pickBestStatus,
-} from "@/lib/loop-status-utils";
+} from "@/lib/loops/loop-status-utils";
 import { generateArtifactSlug } from "@/lib/slug-generator";
 import { entityLinksService } from "../entity-links/service";
 import { issuesService } from "../issues/service";

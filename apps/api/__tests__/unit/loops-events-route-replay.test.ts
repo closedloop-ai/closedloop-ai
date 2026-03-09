@@ -10,11 +10,11 @@ vi.mock("@/lib/auth/loop-runner-jwt", async () => {
   };
 });
 
-vi.mock("@/lib/loop-orchestrator", () => ({
+vi.mock("@/lib/loops/loop-orchestrator", () => ({
   handleLoopEvent: vi.fn(),
 }));
 
-vi.mock("@/lib/loop-event-bus", () => ({
+vi.mock("@/lib/loops/loop-event-bus", () => ({
   loopEventBus: { publish: vi.fn() },
 }));
 
@@ -34,7 +34,7 @@ vi.mock("@/app/loops/service", async () => {
 import { POST } from "@/app/loops/[id]/events/route";
 import { loopsService, ReplayDetectedError } from "@/app/loops/service";
 import { verifyLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
-import { handleLoopEvent } from "@/lib/loop-orchestrator";
+import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 
 describe("POST /api/loops/[id]/events replay handling", () => {
   beforeEach(() => {

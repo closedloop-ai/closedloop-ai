@@ -1,9 +1,8 @@
 import type { Loop, LoopEvent } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-
-import { loopEventBus } from "@/lib/loop-event-bus";
-import { stopLoopTask } from "@/lib/loop-orchestrator";
+import { stopLoopTask } from "@/lib/loops/loop-ecs";
+import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import {
   errorResponse,
   notFoundResponse,

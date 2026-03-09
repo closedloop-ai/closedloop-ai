@@ -3,7 +3,10 @@ import {
   extractBearerToken,
   verifyLoopRunnerToken,
 } from "@/lib/auth/loop-runner-jwt";
-import { generateUploadUrl, validateKeyBelongsToLoop } from "@/lib/loop-state";
+import {
+  generateUploadUrl,
+  validateKeyBelongsToLoop,
+} from "@/lib/loops/loop-state";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 

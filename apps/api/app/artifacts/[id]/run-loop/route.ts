@@ -8,7 +8,8 @@ import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { loopsService } from "@/app/loops/service";
 import { withAuth } from "@/lib/auth/with-auth";
-import { launchLoop } from "@/lib/loop-orchestrator";
+import { getCommandHandler } from "@/lib/loops/loop-commands";
+import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import {
   badRequestResponse,
   conflictResponse,
@@ -52,12 +53,14 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         return notFoundResponse("Artifact");
       }
 
+      const handler = getCommandHandler(COMMAND_MAP[body.command]);
+
       // Guard: prevent launching a loop for artifacts originally planned via
       // GH Actions. State cannot migrate between backends, so the earliest
       // execution determines the canonical backend.
-      // "plan" is exempt: re-planning generates fresh state, so switching
-      // backends at plan time is safe.
-      if (body.command !== "plan") {
+      // Commands that build on prior state (requiresParent) are locked to
+      // the original backend. Fresh-start commands (like PLAN) are exempt.
+      if (handler?.requiresParent) {
         const rejection = await artifactsService.assertLoopBackendAllowed(
           artifactId,
           user.organizationId,
@@ -84,7 +87,7 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
       const targetRepo =
         body.repo?.fullName ?? source?.targetRepo ?? artifact.targetRepo;
 
-      if (!targetRepo) {
+      if (handler?.requiresRepo && !targetRepo) {
         return badRequestResponse(
           "No repository configured. Link a repository to the project or set a target repo on the artifact."
         );
@@ -107,11 +110,9 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
         });
       }
 
-      // Find parent loop for non-PLAN commands
-      // REQUEST_CHANGES needs parent's plan.json state
-      // EXECUTE needs parent's plan.json + branch name for code changes
+      // Find parent loop when the command builds on prior state
       let parentLoopId: string | undefined;
-      if (body.command !== "plan") {
+      if (handler?.requiresParent) {
         const parentLoop = await loopsService.findLatestCompletedForArtifact(
           artifactId,
           user.organizationId
@@ -129,7 +130,9 @@ export const POST = withAuth<CreateLoopResponse, "/artifacts/[id]/run-loop">(
           workstreamId: workstream?.id,
           parentLoopId,
           prompt: body.prompt,
-          repo: { fullName: targetRepo, branch: targetBranch },
+          repo: targetRepo
+            ? { fullName: targetRepo, branch: targetBranch }
+            : undefined,
           contextRefs: contextRefs.length > 0 ? contextRefs : undefined,
         }
       );

@@ -1,16 +1,3 @@
-/**
- * Loop artifact ingestion — downloads artifacts from S3 and writes them to the DB.
- *
- * NOTE: The plan ingestion (ingestPlanArtifacts) and execution ingestion
- * (ingestExecutionArtifacts) intentionally duplicate DB logic from the GitHub
- * Actions webhook path (workflow-completion-handler.ts). This is deliberate —
- * the webhook path has its own test coverage and transaction semantics, and
- * coupling them introduced brittleness. A follow-up PR will extract shared
- * helpers once both paths are stable and well-tested independently.
- * See: workflow-completion-handler.ts handleWorkflowSuccess / handleExecutionSuccess
- */
-
-import type { PlanJson } from "@repo/api/src/types/artifact";
 import type { JudgesReport } from "@repo/api/src/types/evaluation";
 import {
   ExternalLinkType,
@@ -24,81 +11,50 @@ import {
 } from "@repo/database";
 import { parsePromptsSnapshotFromMarkdownEntries } from "@repo/github/prompt-snapshot-parser";
 import { log } from "@repo/observability/log";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { updateArtifactRoomVersion } from "@/app/artifacts/room-utils";
+import type { ExecutionResult } from "@/app/webhooks/github/types";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import { upsertFromSnapshot } from "@/lib/prompts-service";
-import type { ExecutionResult } from "../app/webhooks/github/types";
+import { parseJsonArtifact } from "@/lib/loops/loop-artifact-ingestion";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
-} from "./loop-state";
+} from "@/lib/loops/loop-state";
+import { upsertFromSnapshot } from "@/lib/prompts-service";
+import { defineHandler } from "./loop-command-handler";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Parsed artifacts downloaded from a loop's S3 state. */
-export type LoopArtifacts = {
-  planContent: string | null;
-  questionsContent: string | null;
+/** Parsed artifacts relevant to the EXECUTE command. */
+export type ExecutionArtifacts = {
   executionResult: ExecutionResult | null;
-  judgesReport: JudgesReport | null;
   codeJudgesReport: JudgesReport | null;
   promptsSnapshot: PromptsSnapshot | null;
-  // NOTE: perf.jsonl is uploaded to S3 but not ingested here.
-  // GitHubActionRunPerformance requires a non-nullable actionRunId
-  // (loops don't have action runs). Needs a schema change to support
-  // loop-based perf data — deferred to follow-up.
 };
 
 // ---------------------------------------------------------------------------
-// Download helpers
+// Download
 // ---------------------------------------------------------------------------
 
 /**
- * Download and parse key artifact files from a loop's S3 state.
+ * Download and parse artifacts relevant to execute commands from S3.
+ * Only fetches execution-result.json, code-judges.json, and prompt snapshots.
  */
-export async function downloadLoopArtifacts(
+async function downloadExecutionArtifacts(
   stateKeyPrefix: string
-): Promise<LoopArtifacts> {
-  const [
-    planJsonBuf,
-    questionsBuf,
-    executionResultBuf,
-    codeJudgesReportBuf,
-    judgesReportBuf,
-    promptMarkdownEntries,
-  ] = await Promise.all([
-    downloadArtifactFile(stateKeyPrefix, "plan.json"),
-    downloadArtifactFile(stateKeyPrefix, "open-questions.md"),
-    downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
-    downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
-    downloadArtifactFile(stateKeyPrefix, "judges.json"),
-    downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
-  ]);
-
-  const planContent = parseJsonArtifact<PlanJson>(
-    planJsonBuf,
-    "plan.json",
-    (p) => p.content
-  ) as string | null;
-
-  // Fall back to open-questions.md if plan.json has no content
-  // (mirrors zip-parser.ts questionsContent fallback)
-  const questionsContent = questionsBuf ? questionsBuf.toString("utf-8") : null;
+): Promise<ExecutionArtifacts> {
+  const [executionResultBuf, codeJudgesReportBuf, promptMarkdownEntries] =
+    await Promise.all([
+      downloadArtifactFile(stateKeyPrefix, "execution-result.json"),
+      downloadArtifactFile(stateKeyPrefix, "code-judges.json"),
+      downloadPromptSnapshotMarkdownEntries(stateKeyPrefix),
+    ]);
 
   const executionResult = parseJsonArtifact<ExecutionResult>(
     executionResultBuf,
     "execution-result.json",
     (p) => p
   ) as ExecutionResult | null;
-
-  const judgesReport = parseJsonArtifact<JudgesReport>(
-    judgesReportBuf,
-    "judges.json",
-    (p) => p
-  ) as JudgesReport | null;
 
   const codeJudgesReport = parseJsonArtifact<JudgesReport>(
     codeJudgesReportBuf,
@@ -112,147 +68,11 @@ export async function downloadLoopArtifacts(
       "[loop-artifact-ingestion]"
     );
 
-  return {
-    planContent,
-    questionsContent,
-    executionResult,
-    judgesReport,
-    codeJudgesReport,
-    promptsSnapshot,
-  };
+  return { executionResult, codeJudgesReport, promptsSnapshot };
 }
 
 // ---------------------------------------------------------------------------
-// Plan ingestion (PLAN / REQUEST_CHANGES commands)
-// ---------------------------------------------------------------------------
-
-/**
- * Ingest plan artifacts into the platform.
- * Creates a new artifact version with the plan content and updates status to DRAFT.
- * Falls back to questionsContent if no plan content (mirrors handleWorkflowSuccess).
- * Also persists judges report and creates a workstream completion event.
- */
-export async function ingestPlanArtifacts(
-  loop: Loop,
-  organizationId: string,
-  artifacts: LoopArtifacts
-): Promise<void> {
-  const artifactId = loop.artifactId;
-  if (!artifactId) {
-    return;
-  }
-
-  // Fall back to questions content if no plan (same as webhook path)
-  const finalContent = artifacts.planContent ?? artifacts.questionsContent;
-  if (!finalContent) {
-    log.info(
-      "[loop-artifact-ingestion] No plan or questions content to ingest",
-      {
-        artifactId,
-      }
-    );
-    return;
-  }
-
-  await artifactVersionService.createVersion(artifactId, null, finalContent);
-
-  const updatedArtifact = await withDb((db) =>
-    db.artifact.update({
-      where: { id: artifactId, organizationId },
-      data: { status: "DRAFT" },
-      select: { slug: true, latestVersion: true },
-    })
-  );
-
-  // Update the Liveblocks room metadata with the new version number.
-  // The frontend seeding logic compares the editor content with the API
-  // content and re-seeds when they differ, so the room is preserved
-  // (keeping comments) while stale Yjs content gets replaced.
-  if (updatedArtifact.slug) {
-    await updateArtifactRoomVersion(
-      organizationId,
-      updatedArtifact.slug,
-      updatedArtifact.latestVersion
-    );
-  }
-
-  // Persist prompt registry entries from snapshot (idempotent upsert)
-  await upsertFromSnapshot(organizationId, artifacts.promptsSnapshot);
-
-  // Persist judges report if available (upsert for idempotency)
-  if (artifacts.judgesReport) {
-    await withDb.tx(async (tx) => {
-      const evaluation = await tx.artifactEvaluation.upsert({
-        where: {
-          artifactId_reportId: {
-            artifactId,
-            reportId: artifacts.judgesReport!.report_id,
-          },
-        },
-        create: {
-          artifactId,
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.PLAN,
-          reportId: artifacts.judgesReport!.report_id,
-          reportData: artifacts.judgesReport!,
-        },
-        update: {
-          loopId: loop.id,
-          reportType: PrismaEvaluationReportType.PLAN,
-          reportData: artifacts.judgesReport!,
-        },
-      });
-
-      await fanOutJudgeScores({
-        evaluationId: evaluation.id,
-        organizationId,
-        report: artifacts.judgesReport!,
-        tx,
-      });
-    });
-
-    log.info("[loop-artifact-ingestion] Persisted judges report", {
-      artifactId,
-      reportId: artifacts.judgesReport.report_id,
-    });
-  }
-
-  // Create workstream completion event (idempotent — skip if already exists)
-  if (loop.workstreamId) {
-    await withDb(async (db) => {
-      const existing = await db.workstreamEvent.findFirst({
-        where: {
-          workstreamId: loop.workstreamId!,
-          type: "LOOP_COMPLETED",
-          data: { path: ["loopId"], equals: loop.id },
-        },
-      });
-      if (!existing) {
-        await db.workstreamEvent.create({
-          data: {
-            workstreamId: loop.workstreamId!,
-            type: "LOOP_COMPLETED",
-            actorType: "system",
-            data: {
-              loopId: loop.id,
-              artifactId,
-              command: loop.command,
-              conclusion: "success",
-            },
-          },
-        });
-      }
-    });
-  }
-
-  log.info("[loop-artifact-ingestion] Plan content ingested", {
-    artifactId,
-    contentLength: finalContent.length,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Execution ingestion (EXECUTE command)
+// Ingestion
 // ---------------------------------------------------------------------------
 
 /**
@@ -262,7 +82,7 @@ export async function ingestPlanArtifacts(
  */
 export async function ingestExecutionArtifacts(
   loop: Loop,
-  artifacts: LoopArtifacts
+  artifacts: ExecutionArtifacts
 ): Promise<void> {
   const executionResult = artifacts.executionResult;
 
@@ -283,7 +103,9 @@ export async function ingestExecutionArtifacts(
   if (!(loop.workstreamId && loop.artifactId)) {
     log.warn(
       "[loop-artifact-ingestion] Loop missing workstreamId or artifactId",
-      { loopId: loop.id }
+      {
+        loopId: loop.id,
+      }
     );
     return;
   }
@@ -297,7 +119,6 @@ export async function ingestExecutionArtifacts(
   }
 
   // Look up via GitHubInstallationRepository (the canonical repo table).
-  // The old Repository table is deprecated and being removed.
   const installationRepo = await withDb((db) =>
     db.gitHubInstallationRepository.findFirst({
       where: {
@@ -349,7 +170,10 @@ export async function ingestExecutionArtifacts(
     if (!artifact) {
       log.warn(
         "[loop-artifact-ingestion] Artifact not found for PR record creation",
-        { artifactId: loop.artifactId, loopId: loop.id }
+        {
+          artifactId: loop.artifactId,
+          loopId: loop.id,
+        }
       );
       return;
     }
@@ -520,21 +344,24 @@ export async function ingestExecutionArtifacts(
   });
 }
 
-function parseJsonArtifact<T>(
-  buf: Buffer | null,
-  artifactName: string,
-  extract: (parsed: T) => unknown
-): unknown {
-  if (!buf) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(buf.toString("utf-8")) as T;
-    return extract(parsed);
-  } catch (err) {
-    log.warn(`[loop-artifact-ingestion] Failed to parse ${artifactName}`, {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export const executeHandler = defineHandler<ExecutionArtifacts>({
+  requiresRepo: true,
+  requiresParent: true,
+  includePrimaryArtifact: true,
+
+  downloadArtifacts(stateKeyPrefix: string) {
+    return downloadExecutionArtifacts(stateKeyPrefix);
+  },
+
+  async ingest(
+    loop: Loop,
+    _organizationId: string,
+    artifacts: ExecutionArtifacts
+  ) {
+    await ingestExecutionArtifacts(loop, artifacts);
+  },
+});

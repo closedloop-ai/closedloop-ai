@@ -2,8 +2,8 @@ import { timingSafeEqual } from "node:crypto";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { loopsService } from "@/app/loops/service";
-import { stopLoopTask } from "@/lib/loop-orchestrator";
-import { scrubContextPackSecrets } from "@/lib/loop-state";
+import { stopLoopTask } from "@/lib/loops/loop-ecs";
+import { scrubContextPackSecrets } from "@/lib/loops/loop-state";
 
 type StuckLoop = {
   id: string;

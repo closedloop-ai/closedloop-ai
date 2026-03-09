@@ -1,9 +1,3 @@
-import {
-  ECSClient,
-  RunTaskCommand,
-  StopTaskCommand,
-} from "@aws-sdk/client-ecs";
-import { EntityType } from "@repo/api/src/types/entity-link";
 import type {
   LoopEvent,
   LoopEventCompleted,
@@ -12,90 +6,28 @@ import type {
 import { MODEL_PRICING } from "@repo/api/src/types/loop";
 import { getInstallationAccessToken } from "@repo/github";
 import { log } from "@repo/observability/log";
-import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
-import { artifactsService, getCommitterInfo } from "@/app/artifacts/service";
+import { getCommitterInfo } from "@/app/artifacts/service";
 import { githubService } from "@/app/integrations/github/service";
-import { issuesService } from "@/app/issues/service";
 import {
   isInvalidStatusTransitionError,
   loopsService,
 } from "@/app/loops/service";
 import { apiKeyService } from "@/app/settings/api-key-service";
 import { issueLoopRunnerToken } from "@/lib/auth/loop-runner-jwt";
-import { getAwsCredentials } from "@/lib/aws-credentials";
+import { getCommandHandler } from "./loop-commands";
+import { buildContextPack } from "./loop-context-pack";
+import { runEcsTask, stopLoopTask } from "./loop-ecs";
 import {
-  downloadLoopArtifacts,
-  ingestExecutionArtifacts,
-  ingestPlanArtifacts,
-} from "./loop-artifact-ingestion";
-import {
-  type ContextPack,
   downloadMetadata,
   generateDownloadUrl,
   getStateKeyPrefix,
   scrubContextPackSecrets,
-  uploadContextPack,
 } from "./loop-state";
 
 type RunnerReplayContext = {
   tokenJti: string;
   nonce: string;
 };
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-function getEcsConfig() {
-  const cluster = process.env.ECS_CLUSTER_NAME;
-  const taskDefinition = process.env.ECS_TASK_DEFINITION;
-  const subnets = process.env.ECS_SUBNETS; // comma-separated
-  const securityGroupId = process.env.ECS_SECURITY_GROUP_ID;
-  const capacityProvider = process.env.ECS_CAPACITY_PROVIDER;
-  const apiBaseUrl = process.env.API_BASE_URL ?? process.env.LOOP_CALLBACK_URL;
-
-  if (
-    !(
-      cluster &&
-      taskDefinition &&
-      subnets &&
-      securityGroupId &&
-      capacityProvider
-    )
-  ) {
-    throw new Error(
-      "Missing ECS configuration. Required env vars: ECS_CLUSTER_NAME, ECS_TASK_DEFINITION, ECS_SUBNETS, ECS_SECURITY_GROUP_ID, ECS_CAPACITY_PROVIDER"
-    );
-  }
-
-  if (!apiBaseUrl) {
-    throw new Error(
-      "API_BASE_URL (or LOOP_CALLBACK_URL) is not configured. " +
-        "The container will not be able to report events back."
-    );
-  }
-
-  return {
-    cluster,
-    taskDefinition,
-    subnets: subnets.split(",").map((s) => s.trim()),
-    securityGroupId,
-    capacityProvider,
-    apiBaseUrl,
-  };
-}
-
-// Lazy-init ECS client
-let _ecsClient: ECSClient | null = null;
-function getEcsClient(): ECSClient {
-  if (!_ecsClient) {
-    _ecsClient = new ECSClient({
-      region: process.env.AWS_REGION ?? "us-east-1",
-      credentials: getAwsCredentials(),
-    });
-  }
-  return _ecsClient;
-}
 
 // ---------------------------------------------------------------------------
 // Key resolution helpers
@@ -171,215 +103,8 @@ async function resolveParentLoopInfo(
 }
 
 // ---------------------------------------------------------------------------
-// Context pack assembly
+// Cost calculation
 // ---------------------------------------------------------------------------
-
-/**
- * Build and upload a ContextPack for the given loop.
- *
- * Assembles:
- * - The loop's command and prompt
- * - Primary artifact content (if artifactId is set)
- * - Prior loop summary (if parentLoopId is set)
- * - Repository info from the loop record
- *
- * Returns the S3 key where the context pack was stored.
- */
-type LoopForContextPack = {
-  id: string;
-  command: string;
-  prompt: string | null;
-  artifactId: string | null;
-  parentLoopId: string | null;
-  repo: { fullName: string; branch: string } | null;
-  contextRefs: Array<{
-    sourceId: string;
-    sourceType?: EntityType;
-    include: "full" | "summary";
-  }> | null;
-};
-
-async function fetchPrimaryArtifact(
-  loop: LoopForContextPack,
-  organizationId: string
-): Promise<ContextPack["artifacts"]> {
-  if (!loop.artifactId) {
-    return [];
-  }
-
-  // PLAN starts fresh from the PRD — the plan is either empty (new) or being
-  // fully regenerated. Including it would add noise. The PRD comes via contextRefs.
-  // REQUEST_CHANGES needs the existing plan so it knows what to amend.
-  if (loop.command === "PLAN") {
-    return [];
-  }
-
-  const artifact = await artifactsService.findByIdSimple(
-    loop.artifactId,
-    organizationId
-  );
-  if (!artifact) {
-    log.warn("[loop-orchestrator] Primary artifact not found", {
-      loopId: loop.id,
-      artifactId: loop.artifactId,
-    });
-    return [];
-  }
-
-  const latestVersion = await artifactVersionService.getLatest(artifact.id);
-
-  return [
-    {
-      id: artifact.id,
-      type: String(artifact.type),
-      title: artifact.title,
-      content: latestVersion?.content ?? "",
-    },
-  ];
-}
-
-async function fetchContextRefArtifacts(
-  loop: LoopForContextPack,
-  organizationId: string
-): Promise<ContextPack["artifacts"]> {
-  if (!loop.contextRefs || loop.contextRefs.length === 0) {
-    return [];
-  }
-
-  // Exclude the primary artifact from context refs to avoid duplication
-  const refs = loop.contextRefs.filter(
-    (ref) =>
-      ref.sourceId !== loop.artifactId || ref.sourceType === EntityType.Issue
-  );
-
-  const results = await Promise.all(
-    refs.map((ref) => {
-      if (ref.sourceType === EntityType.Issue) {
-        return fetchIssueRef(ref, organizationId, loop.id);
-      }
-      return fetchArtifactRef(ref, organizationId, loop.id);
-    })
-  );
-
-  return results.filter((item): item is NonNullable<typeof item> =>
-    Boolean(item)
-  );
-}
-
-async function fetchIssueRef(
-  ref: { sourceId: string; include: "full" | "summary" },
-  organizationId: string,
-  loopId: string
-): Promise<ContextPack["artifacts"][number] | null> {
-  const issue = await issuesService.findById(ref.sourceId, organizationId);
-  if (!issue) {
-    log.warn("[loop-orchestrator] Issue not found for context ref", {
-      loopId,
-      issueId: ref.sourceId,
-    });
-    return null;
-  }
-
-  const content = issue.description ?? "";
-
-  return {
-    id: issue.id,
-    type: "FEATURE",
-    title: issue.title,
-    content: ref.include === "summary" ? truncateForSummary(content) : content,
-  };
-}
-
-async function fetchArtifactRef(
-  ref: { sourceId: string; include: "full" | "summary" },
-  organizationId: string,
-  loopId: string
-): Promise<ContextPack["artifacts"][number] | null> {
-  const artifact = await artifactsService.findByIdSimple(
-    ref.sourceId,
-    organizationId
-  );
-  if (!artifact) {
-    log.warn("[loop-orchestrator] Artifact not found for context ref", {
-      loopId,
-      artifactId: ref.sourceId,
-    });
-    return null;
-  }
-
-  const latestVersion = await artifactVersionService.getLatest(artifact.id);
-  const content = latestVersion?.content ?? "";
-
-  return {
-    id: artifact.id,
-    type: String(artifact.type),
-    title: artifact.title,
-    content: ref.include === "summary" ? truncateForSummary(content) : content,
-  };
-}
-
-async function fetchParentLoopSummary(
-  loop: LoopForContextPack,
-  organizationId: string
-): Promise<NonNullable<ContextPack["priorLoopSummaries"]>> {
-  if (!loop.parentLoopId) {
-    return [];
-  }
-
-  const parentLoop = await loopsService.findById(
-    loop.parentLoopId,
-    organizationId
-  );
-  if (!parentLoop) {
-    return [];
-  }
-
-  const metadata = parentLoop.s3StateKey
-    ? await downloadMetadata(parentLoop.s3StateKey)
-    : null;
-  return [
-    {
-      loopId: parentLoop.id,
-      command: parentLoop.command,
-      summary: metadata
-        ? `Completed with ${metadata.tokensInput + metadata.tokensOutput} tokens. ` +
-          `Files written: ${metadata.filesWritten.join(", ") || "none"}.`
-        : `Parent loop (${parentLoop.status}).`,
-    },
-  ];
-}
-
-export async function buildContextPack(
-  loop: LoopForContextPack,
-  organizationId: string,
-  stateKeyPrefix: string,
-  secrets?: { anthropicApiKey: string; githubToken?: string },
-  committer?: { name: string; email: string }
-): Promise<string> {
-  const [primaryArtifacts, refArtifacts, priorLoopSummaries] =
-    await Promise.all([
-      fetchPrimaryArtifact(loop, organizationId),
-      fetchContextRefArtifacts(loop, organizationId),
-      fetchParentLoopSummary(loop, organizationId),
-    ]);
-
-  // Context ref artifacts first (Issue/PRD), then primary artifact
-  const artifacts = [...refArtifacts, ...primaryArtifacts];
-
-  const contextPack: ContextPack = {
-    command: loop.command,
-    prompt: loop.prompt ?? undefined,
-    artifacts,
-    repoInfo: loop.repo ?? undefined,
-    priorLoopSummaries:
-      priorLoopSummaries.length > 0 ? priorLoopSummaries : undefined,
-    committer,
-    secrets,
-  };
-
-  const s3Key = await uploadContextPack(stateKeyPrefix, contextPack);
-  return s3Key;
-}
 
 /**
  * Calculate estimated cost from per-model token breakdown.
@@ -427,16 +152,9 @@ function calculateCost(
   return totalCost;
 }
 
-/**
- * Truncate content to a reasonable summary length.
- * Used when contextRefs specify include: "summary".
- */
-function truncateForSummary(content: string, maxLength = 2000): string {
-  if (content.length <= maxLength) {
-    return content;
-  }
-  return `${content.slice(0, maxLength)}\n\n[... truncated for summary ...]`;
-}
+// ---------------------------------------------------------------------------
+// Launch lifecycle helpers
+// ---------------------------------------------------------------------------
 
 async function getPendingLoopOrThrow(
   loopId: string,
@@ -469,7 +187,7 @@ async function claimOrPersistRunning(
   } catch (claimError) {
     if (isInvalidStatusTransitionError(claimError)) {
       const currentLoop = await loopsService.findById(loopId, organizationId);
-      if (currentLoop && currentLoop.status === "RUNNING") {
+      if (currentLoop?.status === "RUNNING") {
         await loopsService.persistLaunchInfo(loopId, organizationId, {
           containerId: taskArn,
           s3StateKey,
@@ -720,149 +438,6 @@ export async function launchLoop(
   }
 }
 
-/**
- * Stop a running ECS task for a loop (best-effort).
- */
-export async function stopLoopTask(
-  taskArn: string,
-  reason = "Loop cancelled"
-): Promise<void> {
-  const ecs = getEcsClient();
-  const config = getEcsConfig();
-
-  await ecs.send(
-    new StopTaskCommand({
-      cluster: config.cluster,
-      task: taskArn,
-      reason,
-    })
-  );
-}
-
-/**
- * Run an ECS task via capacity provider with the given configuration.
- * Returns the task ARN.
- */
-async function runEcsTask(opts: {
-  loopId: string;
-  organizationId: string;
-  command: string;
-  s3StateKey: string;
-  s3ContextKey: string;
-  s3ContextUrl: string;
-  repo?: { fullName: string; branch: string };
-  closedLoopAuthToken: string;
-  artifactId?: string;
-  parentS3StateKey?: string;
-  parentSessionId?: string;
-  parentBranchName?: string;
-}): Promise<string> {
-  const ecs = getEcsClient();
-  const config = getEcsConfig();
-
-  // Build environment variable overrides for the container.
-  // Auth tokens (CLOSEDLOOP_AUTH_TOKEN) are passed here as env vars because the
-  // harness process reads them directly while the sandboxed child process (Claude)
-  // cannot access parent env vars. This is more secure than the context pack,
-  // which the child process can read via S3. API keys and GitHub tokens still
-  // travel via the context pack since the child process needs them directly.
-  const environment = [
-    { name: "LOOP_ID", value: opts.loopId },
-    { name: "ORGANIZATION_ID", value: opts.organizationId },
-    { name: "COMMAND", value: opts.command },
-    { name: "S3_STATE_KEY", value: opts.s3StateKey },
-    { name: "S3_CONTEXT_KEY", value: opts.s3ContextKey },
-    { name: "S3_CONTEXT_URL", value: opts.s3ContextUrl },
-    { name: "CLOSEDLOOP_AUTH_TOKEN", value: opts.closedLoopAuthToken },
-    { name: "CORRELATION_ID", value: opts.loopId },
-  ];
-
-  if (opts.artifactId) {
-    environment.push({ name: "ARTIFACT_ID", value: opts.artifactId });
-  }
-
-  if (opts.repo) {
-    environment.push({ name: "TARGET_REPO", value: opts.repo.fullName });
-    environment.push({ name: "TARGET_BRANCH", value: opts.repo.branch });
-  }
-
-  // Parent state for resume: lets the container download prior run state
-  if (opts.parentS3StateKey) {
-    environment.push({
-      name: "S3_PARENT_STATE_KEY",
-      value: opts.parentS3StateKey,
-    });
-  }
-  if (opts.parentSessionId) {
-    environment.push({
-      name: "PARENT_SESSION_ID",
-      value: opts.parentSessionId,
-    });
-  }
-  if (opts.parentBranchName) {
-    environment.push({
-      name: "PARENT_BRANCH_NAME",
-      value: opts.parentBranchName,
-    });
-  }
-
-  // Add callback URL so the harness can report events back.
-  // Validated early in getEcsConfig() to fail fast before side effects.
-  environment.push({ name: "API_BASE_URL", value: config.apiBaseUrl });
-
-  const command = new RunTaskCommand({
-    cluster: config.cluster,
-    taskDefinition: config.taskDefinition,
-    // Use EC2 capacity provider (not Fargate) — matches IaC warm pool config
-    capacityProviderStrategy: [
-      {
-        capacityProvider: config.capacityProvider,
-        weight: 1,
-      },
-    ],
-    count: 1,
-    networkConfiguration: {
-      awsvpcConfiguration: {
-        subnets: config.subnets,
-        securityGroups: [config.securityGroupId],
-        // DISABLED: tasks run in private subnets with NAT gateway for outbound
-        assignPublicIp: "DISABLED",
-      },
-    },
-    overrides: {
-      containerOverrides: [
-        {
-          // Must match the container name in the ECS task definition
-          name: "claude-runner",
-          environment,
-        },
-      ],
-    },
-    tags: [
-      { key: "loop-id", value: opts.loopId },
-      { key: "organization-id", value: opts.organizationId },
-      { key: "command", value: opts.command },
-    ],
-  });
-
-  const result = await ecs.send(command);
-
-  const task = result.tasks?.[0];
-  if (!task?.taskArn) {
-    const failureReason =
-      result.failures?.[0]?.reason ?? "No task returned from RunTask";
-    throw new Error(`ECS RunTask failed: ${failureReason}`);
-  }
-
-  log.info("[loop-orchestrator] ECS task started", {
-    loopId: opts.loopId,
-    taskArn: task.taskArn,
-    lastStatus: task.lastStatus,
-  });
-
-  return task.taskArn;
-}
-
 // ---------------------------------------------------------------------------
 // Event handling (called by harness callback endpoint)
 // ---------------------------------------------------------------------------
@@ -1064,14 +639,9 @@ async function handleLoopCompleted(
   // so the completed event can be replayed. Once a loop is COMPLETED the
   // status transition is irreversible, leaving no recovery path for the artifact.
   if (loop?.s3StateKey && loop.artifactId) {
-    const loopArtifacts = await downloadLoopArtifacts(loop.s3StateKey);
-
-    if (loop.command === "PLAN" || loop.command === "REQUEST_CHANGES") {
-      await ingestPlanArtifacts(loop, organizationId, loopArtifacts);
-    }
-
-    if (loop.command === "EXECUTE") {
-      await ingestExecutionArtifacts(loop, loopArtifacts);
+    const handler = getCommandHandler(loop.command);
+    if (handler) {
+      await handler.downloadAndIngest(loop.s3StateKey, loop, organizationId);
     }
   }
 
@@ -1132,19 +702,19 @@ function extractPrSessionInfo(event: Record<string, unknown>): {
   // Helper avoids nested ternaries that Biome flags.
   function pickString(field: string): string | undefined {
     if (typeof result[field] === "string") {
-      return result[field] as string;
+      return result[field];
     }
     if (typeof event[field] === "string") {
-      return event[field] as string;
+      return event[field];
     }
     return undefined;
   }
   function pickNumber(field: string): number | undefined {
     if (typeof result[field] === "number") {
-      return result[field] as number;
+      return result[field];
     }
     if (typeof event[field] === "number") {
-      return event[field] as number;
+      return event[field];
     }
     return undefined;
   }

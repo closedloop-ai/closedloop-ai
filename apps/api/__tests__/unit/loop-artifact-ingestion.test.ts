@@ -1,5 +1,5 @@
 /**
- * Unit tests for loop-artifact-ingestion functions.
+ * Unit tests for loop artifact ingestion functions.
  *
  * Tests:
  * - ingestPlanArtifacts: fanOutJudgeScores is called when judgesReport is present
@@ -45,12 +45,19 @@ vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/prompts-service", () => ({
+  upsertFromSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/loops/loop-artifact-ingestion", () => ({
+  parseJsonArtifact: vi.fn(),
+}));
+
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
-import type { LoopArtifacts } from "@/lib/loop-artifact-ingestion";
-import {
-  ingestExecutionArtifacts,
-  ingestPlanArtifacts,
-} from "@/lib/loop-artifact-ingestion";
+import type { ExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
+import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
+import type { PlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
+import { ingestPlanArtifacts } from "@/lib/loops/loop-commands/plan-handler";
 // Imports after mocks
 import { buildLoop } from "../fixtures/loop";
 
@@ -102,25 +109,21 @@ const CODE_JUDGES_REPORT: JudgesReport = {
 };
 
 function buildPlanArtifacts(
-  overrides: Partial<LoopArtifacts> = {}
-): LoopArtifacts {
+  overrides: Partial<PlanArtifacts> = {}
+): PlanArtifacts {
   return {
     planContent: "# Plan content",
     questionsContent: null,
-    executionResult: null,
     judgesReport: null,
-    codeJudgesReport: null,
     promptsSnapshot: null,
     ...overrides,
   };
 }
 
 function buildExecutionArtifacts(
-  overrides: Partial<LoopArtifacts> = {}
-): LoopArtifacts {
+  overrides: Partial<ExecutionArtifacts> = {}
+): ExecutionArtifacts {
   return {
-    planContent: null,
-    questionsContent: null,
     executionResult: {
       has_changes: true,
       pr_url: "https://github.com/org/repo/pull/42",
@@ -132,7 +135,6 @@ function buildExecutionArtifacts(
       github_id: 999,
       commit_sha: "abc123",
     },
-    judgesReport: null,
     codeJudgesReport: null,
     promptsSnapshot: null,
     ...overrides,

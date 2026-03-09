@@ -7,8 +7,8 @@ import {
   verifyLoopRunnerToken,
 } from "@/lib/auth/loop-runner-jwt";
 import { withAuth } from "@/lib/auth/with-auth";
-import { loopEventBus } from "@/lib/loop-event-bus";
-import { handleLoopEvent } from "@/lib/loop-orchestrator";
+import { loopEventBus } from "@/lib/loops/loop-event-bus";
+import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import {
   type InvalidStatusTransitionError,

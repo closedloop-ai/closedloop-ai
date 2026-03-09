@@ -3,7 +3,7 @@ import { auth } from "@repo/auth/server";
 import { log } from "@repo/observability/log";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
-import { loopEventBus } from "@/lib/loop-event-bus";
+import { loopEventBus } from "@/lib/loops/loop-event-bus";
 import { loopsService } from "../../service";
 
 const KEEPALIVE_INTERVAL_MS = 15_000;

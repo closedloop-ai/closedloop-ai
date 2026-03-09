@@ -2,7 +2,7 @@ import {
   extractBearerToken,
   verifyLoopRunnerToken,
 } from "@/lib/auth/loop-runner-jwt";
-import { resolveGitHubToken } from "@/lib/loop-orchestrator";
+import { resolveGitHubToken } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 

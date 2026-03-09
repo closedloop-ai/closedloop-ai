@@ -1,10 +1,10 @@
 /**
- * Unit tests for prompts integration in loop-artifact-ingestion.ts.
+ * Unit tests for prompts integration in loop command handlers.
  *
  * Tests cover:
- * - downloadLoopArtifacts(): markdown entries under agents-snapshot/ are parsed as primary source
- * - downloadLoopArtifacts(): returns promptsSnapshot: null when markdown entries are absent
- * - downloadLoopArtifacts(): null inputs return promptsSnapshot: null without failing
+ * - downloadPlanArtifacts(): markdown entries under agents-snapshot/ are parsed as primary source
+ * - downloadPlanArtifacts(): returns promptsSnapshot: null when markdown entries are absent
+ * - downloadPlanArtifacts(): null inputs return promptsSnapshot: null without failing
  * - ingestPlanArtifacts(): upsertFromSnapshot called before judgesReport writes
  * - ingestExecutionArtifacts(): upsertFromSnapshot called before code judges report writes
  * - null snapshot: upsertFromSnapshot is called with null and does not throw
@@ -56,7 +56,7 @@ vi.mock("@/lib/judge-score-fanout", () => ({
   fanOutJudgeScores: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/loop-state", () => ({
+vi.mock("@/lib/loops/loop-state", () => ({
   downloadArtifactFile: vi.fn(),
   downloadPromptSnapshotMarkdownEntries: vi.fn(),
 }));
@@ -66,15 +66,15 @@ vi.mock("@/lib/loop-state", () => ({
 import { withDb } from "@repo/database";
 import type { Mock } from "vitest";
 import { fanOutJudgeScores } from "@/lib/judge-score-fanout";
+import { ingestExecutionArtifacts } from "@/lib/loops/loop-commands/execute-handler";
 import {
-  downloadLoopArtifacts,
-  ingestExecutionArtifacts,
+  downloadPlanArtifacts,
   ingestPlanArtifacts,
-} from "@/lib/loop-artifact-ingestion";
+} from "@/lib/loops/loop-commands/plan-handler";
 import {
   downloadArtifactFile,
   downloadPromptSnapshotMarkdownEntries,
-} from "@/lib/loop-state";
+} from "@/lib/loops/loop-state";
 import { upsertFromSnapshot } from "@/lib/prompts-service";
 import { buildLoop } from "../fixtures/loop";
 
@@ -131,10 +131,10 @@ function makeJudgesReport(reportId = "report-1"): JudgesReport {
 }
 
 // ---------------------------------------------------------------------------
-// downloadLoopArtifacts — prompt snapshot parsing
+// downloadPlanArtifacts — prompt snapshot parsing
 // ---------------------------------------------------------------------------
 
-describe("downloadLoopArtifacts — prompt snapshots", () => {
+describe("downloadPlanArtifacts — prompt snapshots", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
@@ -158,7 +158,7 @@ You are a helpful agent.
       },
     ]);
 
-    const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
+    const artifacts = await downloadPlanArtifacts(STATE_KEY_PREFIX);
 
     expect(artifacts.promptsSnapshot).not.toBeNull();
     expect(artifacts.promptsSnapshot?.prompts).toHaveLength(1);
@@ -176,7 +176,7 @@ You are a helpful agent.
     mockDownloadArtifactFile.mockResolvedValue(null);
     mockDownloadPromptSnapshotMarkdownEntries.mockResolvedValue([]);
 
-    const artifacts = await downloadLoopArtifacts(STATE_KEY_PREFIX);
+    const artifacts = await downloadPlanArtifacts(STATE_KEY_PREFIX);
 
     expect(artifacts.promptsSnapshot).toBeNull();
     expect(artifacts.planContent).toBeNull();
@@ -241,9 +241,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
     const artifacts = {
       planContent: "# Plan content",
       questionsContent: null,
-      executionResult: null,
       judgesReport,
-      codeJudgesReport: null,
       promptsSnapshot: {
         prompts: [
           {
@@ -291,9 +289,7 @@ describe("ingestPlanArtifacts — upsertFromSnapshot ordering", () => {
     const artifacts = {
       planContent: "# Plan content",
       questionsContent: null,
-      executionResult: null,
       judgesReport: null,
-      codeJudgesReport: null,
       promptsSnapshot: null,
     };
 
@@ -378,8 +374,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      planContent: null,
-      questionsContent: null,
       executionResult: {
         has_changes: true,
         pr_url: "https://github.com/org/repo/pull/10",
@@ -391,7 +385,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
         github_id: 999,
         commit_sha: "abc123",
       },
-      judgesReport: null,
       codeJudgesReport,
       promptsSnapshot: {
         prompts: [
@@ -463,8 +456,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
       });
 
     const artifacts = {
-      planContent: null,
-      questionsContent: null,
       executionResult: {
         has_changes: true,
         pr_url: "https://github.com/org/repo/pull/11",
@@ -476,7 +467,6 @@ describe("ingestExecutionArtifacts — upsertFromSnapshot ordering", () => {
         github_id: 1000,
         commit_sha: "def456",
       },
-      judgesReport: null,
       codeJudgesReport: null,
       promptsSnapshot: null,
     };

@@ -2,7 +2,7 @@ import type { CreateLoopResponse } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { withAuth } from "@/lib/auth/with-auth";
-import { launchLoop } from "@/lib/loop-orchestrator";
+import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 import { resumeLoopValidator } from "../../validators";

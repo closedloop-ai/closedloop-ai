@@ -6,7 +6,7 @@ import {
 import {
   listAndGenerateDownloadUrls,
   validateKeyBelongsToLoop,
-} from "@/lib/loop-state";
+} from "@/lib/loops/loop-state";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { loopsService } from "../../service";
 
