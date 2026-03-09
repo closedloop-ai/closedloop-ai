@@ -16,6 +16,7 @@ vi.mock("@repo/database", () => ({
   GitHubPRState: { OPEN: "OPEN", MERGED: "MERGED", CLOSED: "CLOSED" },
 }));
 
+import { GitHubPRState } from "@repo/database";
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ describe("judgesAnalyticsService.getPrHealthMetrics", () => {
     // merged in < 24h → lt1d bucket
     const mergedFast = makePr(
       "pr-merged-fast",
-      "MERGED",
+      GitHubPRState.MERGED,
       new Date("2026-01-05T00:00:00Z"),
       new Date("2026-01-05T12:00:00Z"),
       3
@@ -147,21 +148,21 @@ describe("judgesAnalyticsService.getPrHealthMetrics", () => {
     // merged in ~48h → 1to3d bucket
     const mergedSlow = makePr(
       "pr-merged-slow",
-      "MERGED",
+      GitHubPRState.MERGED,
       new Date("2026-01-08T00:00:00Z"),
       new Date("2026-01-10T00:00:00Z"),
       1
     );
     const openPr = makePr(
       "pr-open",
-      "OPEN",
+      GitHubPRState.OPEN,
       new Date("2026-01-15T00:00:00Z"),
       null,
       0
     );
     const closedAbandoned = makePr(
       "pr-closed",
-      "CLOSED",
+      GitHubPRState.CLOSED,
       new Date("2026-01-20T00:00:00Z"),
       null,
       2

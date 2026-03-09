@@ -1,10 +1,10 @@
 "use client";
 
 import { analytics } from "@repo/analytics";
-import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import {
   PR_TIMELINE_GRANULARITY_OPTIONS,
   PR_TIMELINE_RANGE_OPTIONS,
+  type PrHealthResponse,
   type PrTimelineGranularity,
   type PrTimelineRangeOption,
 } from "@repo/api/src/types/judges-analytics";
@@ -18,15 +18,17 @@ import {
 } from "@repo/design-system/components/ui/chart";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { format, parse } from "date-fns";
-import { useState } from "react";
 import { Bar, BarChart, XAxis, YAxis } from "recharts";
-import { usePrHealth } from "@/hooks/queries/use-judges-analytics";
 
 type PrTimelineChartProps = {
+  data: PrHealthResponse | undefined;
+  granularity: PrTimelineGranularity;
+  isError: boolean;
+  isLoading: boolean;
+  onGranularityChange: (g: PrTimelineGranularity) => void;
+  onRangeChange: (days: PrTimelineRangeOption) => void;
   promptName: string;
   rangeDays: PrTimelineRangeOption;
-  reportType: EvaluationReportType;
-  onRangeChange: (days: PrTimelineRangeOption) => void;
 };
 
 const chartConfig: ChartConfig = {
@@ -37,22 +39,16 @@ const chartConfig: ChartConfig = {
 };
 
 export function PrTimelineChart({
+  data,
+  granularity,
+  isError,
+  isLoading,
+  onGranularityChange,
+  onRangeChange,
   promptName,
   rangeDays,
-  reportType,
-  onRangeChange,
 }: PrTimelineChartProps) {
   const { orgId, userId } = useAuth();
-  const [granularity, setGranularity] = useState<PrTimelineGranularity>(
-    PR_TIMELINE_GRANULARITY_OPTIONS.Week
-  );
-
-  const { data, isLoading, isError } = usePrHealth(
-    promptName,
-    reportType,
-    rangeDays,
-    granularity
-  );
 
   function handleRangeChange(days: PrTimelineRangeOption) {
     onRangeChange(days);
@@ -65,7 +61,7 @@ export function PrTimelineChart({
   }
 
   function handleGranularityChange(g: PrTimelineGranularity) {
-    setGranularity(g);
+    onGranularityChange(g);
     analytics.capture("PR Timeline Granularity Changed", {
       organization_id: orgId,
       user_id: userId,

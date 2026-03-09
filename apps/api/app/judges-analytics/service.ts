@@ -1262,7 +1262,8 @@ export const judgesAnalyticsService = {
       totalPrs > 0 ? computeMean(prs.map((pr) => pr.reviewCommentCount)) : 0;
 
     const mergedPrs = prs.filter(
-      (pr): pr is PrRow & { mergedAt: Date } => pr.mergedAt != null
+      (pr): pr is PrRow & { mergedAt: Date } =>
+        pr.mergedAt != null && pr.state === GitHubPRState.MERGED
     );
     const avgApprovalHours = computeAvgApprovalHours(mergedPrs);
     const approvalDistribution = computeApprovalDistribution(mergedPrs);

@@ -1,8 +1,7 @@
 "use client";
 
 import { analytics } from "@repo/analytics";
-import type { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import type { PrTimelineRangeOption } from "@repo/api/src/types/judges-analytics";
+import type { PrHealthResponse } from "@repo/api/src/types/judges-analytics";
 import { useAuth } from "@repo/auth/client";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
@@ -12,27 +11,23 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import { InfoIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { usePrHealth } from "@/hooks/queries/use-judges-analytics";
 import { formatDuration } from "@/lib/format-duration";
 import { ApprovalDistributionChart } from "./approval-distribution-chart";
 
 type PrActivitySectionProps = {
+  data: PrHealthResponse | undefined;
+  isError: boolean;
+  isLoading: boolean;
   promptName: string;
-  rangeDays: PrTimelineRangeOption;
-  reportType: EvaluationReportType;
 };
 
 export function PrActivitySection({
+  data,
+  isError,
+  isLoading,
   promptName,
-  rangeDays,
-  reportType,
 }: PrActivitySectionProps) {
   const { orgId, userId } = useAuth();
-  const { data, isLoading, isError } = usePrHealth(
-    promptName,
-    reportType,
-    rangeDays
-  );
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
   useEffect(() => {

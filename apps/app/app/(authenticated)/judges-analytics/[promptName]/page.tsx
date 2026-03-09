@@ -2,7 +2,9 @@
 
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import {
+  PR_TIMELINE_GRANULARITY_OPTIONS,
   PR_TIMELINE_RANGE_OPTIONS,
+  type PrTimelineGranularity,
   type PrTimelineRangeOption,
 } from "@repo/api/src/types/judges-analytics";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
@@ -10,7 +12,10 @@ import { ArrowLeftIcon } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { useJudgeDetail } from "@/hooks/queries/use-judges-analytics";
+import {
+  useJudgeDetail,
+  usePrHealth,
+} from "@/hooks/queries/use-judges-analytics";
 import { CharacteristicsPanel } from "./components/characteristics-panel";
 import { PrActivitySection } from "./components/pr-activity-section";
 import { PrTimelineChart } from "./components/pr-timeline-chart";
@@ -29,10 +34,18 @@ export default function JudgeDetailPage() {
   const [rangeDays, setRangeDays] = useState<PrTimelineRangeOption>(
     PR_TIMELINE_RANGE_OPTIONS.Days90
   );
+  const [granularity, setGranularity] = useState<PrTimelineGranularity>(
+    PR_TIMELINE_GRANULARITY_OPTIONS.Week
+  );
   const { data, isLoading, isError, error } = useJudgeDetail(
     promptName,
     reportType
   );
+  const {
+    data: prHealthData,
+    isLoading: prHealthLoading,
+    isError: prHealthError,
+  } = usePrHealth(promptName, reportType, rangeDays, granularity);
 
   if (isLoading) {
     return (
@@ -96,17 +109,22 @@ export default function JudgeDetailPage() {
         reportType={reportType}
       />
       <PrActivitySection
+        data={prHealthData}
+        isError={prHealthError}
+        isLoading={prHealthLoading}
         key={`pr-${reportType}-${promptName}`}
         promptName={promptName}
-        rangeDays={rangeDays}
-        reportType={reportType}
       />
       <PrTimelineChart
+        data={prHealthData}
+        granularity={granularity}
+        isError={prHealthError}
+        isLoading={prHealthLoading}
         key={`pr-timeline-${reportType}-${promptName}`}
+        onGranularityChange={setGranularity}
         onRangeChange={setRangeDays}
         promptName={promptName}
         rangeDays={rangeDays}
-        reportType={reportType}
       />
     </div>
   );

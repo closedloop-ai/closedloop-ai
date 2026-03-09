@@ -1,22 +1,12 @@
-import { EvaluationReportType } from "@repo/api/src/types/evaluation";
-import {
-  PR_TIMELINE_RANGE_OPTIONS,
-  type PrHealthResponse,
-} from "@repo/api/src/types/judges-analytics";
+import type { PrHealthResponse } from "@repo/api/src/types/judges-analytics";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { PrActivitySection } from "../pr-activity-section";
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
-
-const mockUsePrHealth = vi.fn();
-
-vi.mock("@/hooks/queries/use-judges-analytics", () => ({
-  usePrHealth: (..._args: unknown[]) => mockUsePrHealth(),
-}));
 
 vi.mock("@repo/analytics", () => ({
   analytics: { capture: vi.fn() },
@@ -70,10 +60,6 @@ function makePrHealthResponse(
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
 afterEach(() => {
   cleanup();
 });
@@ -84,17 +70,12 @@ afterEach(() => {
 
 describe("PrActivitySection — loading state", () => {
   test("renders Skeleton elements when isLoading is true", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: true,
-      isError: false,
-      data: undefined,
-    });
-
     render(
       <PrActivitySection
+        data={undefined}
+        isError={false}
+        isLoading={true}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -105,22 +86,17 @@ describe("PrActivitySection — loading state", () => {
 
 describe("PrActivitySection — empty state", () => {
   test("renders empty message when totalPrs is 0", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: makePrHealthResponse({
-        totalPrs: 0,
-        openPrs: 0,
-        avgCommentCount: 0,
-        avgApprovalHours: null,
-      }),
-    });
-
     render(
       <PrActivitySection
+        data={makePrHealthResponse({
+          totalPrs: 0,
+          openPrs: 0,
+          avgCommentCount: 0,
+          avgApprovalHours: null,
+        })}
+        isError={false}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -134,17 +110,12 @@ describe("PrActivitySection — empty state", () => {
 
 describe("PrActivitySection — summary card values", () => {
   test("renders totalPrs, avgCommentCount, formatted avgApprovalHours, and openPrs", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: makePrHealthResponse(),
-    });
-
     render(
       <PrActivitySection
+        data={makePrHealthResponse()}
+        isError={false}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -159,17 +130,12 @@ describe("PrActivitySection — summary card values", () => {
   });
 
   test("renders em dash for avgApprovalHours when null", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: makePrHealthResponse({ avgApprovalHours: null }),
-    });
-
     render(
       <PrActivitySection
+        data={makePrHealthResponse({ avgApprovalHours: null })}
+        isError={false}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -177,17 +143,12 @@ describe("PrActivitySection — summary card values", () => {
   });
 
   test("renders confidenceNote text", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: makePrHealthResponse(),
-    });
-
     render(
       <PrActivitySection
+        data={makePrHealthResponse()}
+        isError={false}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -197,17 +158,12 @@ describe("PrActivitySection — summary card values", () => {
 
 describe("PrActivitySection — tooltip content", () => {
   test("tooltip content describes comment metric scope", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: makePrHealthResponse(),
-    });
-
     render(
       <PrActivitySection
+        data={makePrHealthResponse()}
+        isError={false}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
@@ -220,17 +176,12 @@ describe("PrActivitySection — tooltip content", () => {
 
 describe("PrActivitySection — error state", () => {
   test("renders error message when isError is true", () => {
-    mockUsePrHealth.mockReturnValue({
-      isLoading: false,
-      isError: true,
-      data: undefined,
-    });
-
     render(
       <PrActivitySection
+        data={undefined}
+        isError={true}
+        isLoading={false}
         promptName="clarity"
-        rangeDays={PR_TIMELINE_RANGE_OPTIONS.Days90}
-        reportType={EvaluationReportType.Plan}
       />
     );
 
