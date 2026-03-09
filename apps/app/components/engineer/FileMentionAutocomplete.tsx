@@ -329,7 +329,15 @@ export function dispatchMentionKeyDown(
   if (e.key === "ArrowDown") {
     e.preventDefault();
     setMentionState((prev) =>
-      prev ? { ...prev, selectedIndex: prev.selectedIndex + 1 } : null
+      prev
+        ? {
+            ...prev,
+            selectedIndex: Math.min(
+              prev.selectedIndex + 1,
+              mentionFiles.length - 1
+            ),
+          }
+        : null
     );
     return true;
   }
