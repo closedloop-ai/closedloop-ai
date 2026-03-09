@@ -267,7 +267,7 @@ export function CommentChat({
 
   // Send a message directly to Codex (@codex freeform chat)
   const sendToCodex = useCallback(
-    async (codexPrompt: string, displayContent: string) => {
+    async (codexPrompt: string, displayContent: string, isForward = false) => {
       const userMsg: ChatMessage = {
         id: `user-${Date.now()}`,
         role: "user",
@@ -312,6 +312,7 @@ export function CommentChat({
             prNumber,
             chatHistory: recentHistory,
             activeTab: "comments",
+            isForward,
             commentContext: {
               author: comment.author,
               body: comment.body,
@@ -530,7 +531,7 @@ export function CommentChat({
         );
       // Fire once the PATCH + invalidation lands (before stream completes)
       setTimeout(scrollAfterRender, 300);
-      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX);
+      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX, true);
     },
     [
       chat.messages,

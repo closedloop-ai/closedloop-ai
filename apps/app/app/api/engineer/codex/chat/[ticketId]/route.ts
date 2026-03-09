@@ -498,10 +498,10 @@ export async function POST(
     isForward,
   } = body;
 
-  const codexModel =
-    requestedModel ||
-    (isForward && readConfig("FORWARD_TO_CODEX_MODEL")) ||
-    DEFAULT_CODEX_MODEL;
+  const forwardModel = isForward
+    ? readConfig("FORWARD_TO_CODEX_MODEL")
+    : undefined;
+  const codexModel = forwardModel || requestedModel || DEFAULT_CODEX_MODEL;
 
   const repoPath = repoParam || bodyRepoPath;
   if (!repoPath) {

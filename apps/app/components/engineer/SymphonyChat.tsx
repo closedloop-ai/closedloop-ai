@@ -473,7 +473,7 @@ export function SymphonyChat({
 
   // Send a message to Codex via the freeform chat endpoint
   const sendToCodex = useCallback(
-    async (codexPrompt: string, displayContent: string) => {
+    async (codexPrompt: string, displayContent: string, isForward = false) => {
       const userMsg = {
         id: `user-${Date.now()}`,
         role: "user" as const,
@@ -522,6 +522,7 @@ export function SymphonyChat({
             chatHistory: recentHistory,
             activeTab,
             contextRepoPaths,
+            isForward,
             model: DEFAULT_CODEX_MODEL,
           }),
         });
@@ -1483,7 +1484,7 @@ export function SymphonyChat({
       }
       const cleanContent = stripAssistantProtocol(msg.content);
       const codexPrompt = `Claude (Anthropic) provided the following response:\n\n${cleanContent}\n\nReview this critically. The goal is to converge on the best solution, not just provide a second opinion. Prefer simpler approaches where they work. If Claude's suggestion is overcomplicated, say so and propose a leaner alternative. If it's solid, confirm that and explain why. Be specific — cite code, name files, reference actual behavior.`;
-      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX);
+      await sendToCodex(codexPrompt, CHAT_SENTINEL.FORWARDED_TO_CODEX, true);
     },
     [messages, stream.isStreaming, codexData?.available, sendToCodex]
   );
