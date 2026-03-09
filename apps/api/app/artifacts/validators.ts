@@ -43,6 +43,17 @@ export const updateArtifactValidator = z.object({
   projectId: z.uuidv7().optional(),
   assigneeId: z.uuidv7().nullable().optional(),
   sortOrder: z.number().nullable().optional(),
+  customFields: z
+    .record(
+      z.string().uuid(),
+      z.union([
+        z.string().max(10_000),
+        z.number(),
+        z.array(z.string().uuid()).max(100),
+        z.null(),
+      ])
+    )
+    .optional(),
 });
 
 export const newVersionValidator = z.object({

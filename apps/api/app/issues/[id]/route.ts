@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 
@@ -8,6 +9,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import {
+  applyCustomFieldsFromBody,
+  mergeCustomFieldsIntoResponse,
+} from "../../custom-fields/route-helpers";
 import { issuesService } from "../service";
 import { updateIssueValidator } from "../validators";
 
@@ -22,7 +27,13 @@ export const GET = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
         return notFoundResponse("Issue");
       }
 
-      return successResponse(issue);
+      const response = await mergeCustomFieldsIntoResponse(
+        issue,
+        CustomFieldEntityType.Issue,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch issue", error);
     }
@@ -41,7 +52,22 @@ export const PUT = withAnyAuth<IssueWithWorkstream, "/issues/[id]">(
         return parseError;
       }
 
-      const issue = await issuesService.update(id, user.organizationId, body);
+      const { customFields, ...issueInput } = body;
+
+      const issue = await issuesService.update(
+        id,
+        user.organizationId,
+        issueInput
+      );
+
+      if (customFields) {
+        await applyCustomFieldsFromBody(
+          customFields,
+          id,
+          CustomFieldEntityType.Issue,
+          user.organizationId
+        );
+      }
 
       return successResponse(issue);
     } catch (error) {

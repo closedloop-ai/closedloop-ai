@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -5,6 +6,7 @@ import {
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
+import { mergeCustomFieldsIntoResponse } from "../../../custom-fields/route-helpers";
 import { projectsService } from "../../service";
 
 /**
@@ -23,7 +25,13 @@ export const GET = withAnyAuth<ProjectWithDetails, "/projects/by-slug/[slug]">(
         return notFoundResponse("Project");
       }
 
-      return successResponse(project);
+      const response = await mergeCustomFieldsIntoResponse(
+        project,
+        CustomFieldEntityType.Project,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch project", error);
     }

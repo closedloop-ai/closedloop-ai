@@ -15,6 +15,13 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 
+vi.mock("@/app/custom-fields/route-helpers", () => ({
+  mergeCustomFieldsIntoResponse: vi.fn(async (entity: any) => ({
+    ...entity,
+    customFields: [],
+  })),
+}));
+
 vi.mock("@/app/projects/service", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("@/app/projects/service")>();
@@ -57,7 +64,7 @@ describe("GET /api/projects/by-slug/:slug", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(mockProjectWithDetails);
+    expect(json.data).toEqual({ ...mockProjectWithDetails, customFields: [] });
   });
 
   it("calls findBySlug with slug and organizationId from auth context", async () => {

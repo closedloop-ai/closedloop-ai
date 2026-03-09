@@ -27,3 +27,13 @@ export function createWrapper() {
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
 }
+
+/**
+ * Wrapper component that provides a caller-supplied QueryClient.
+ * Use this when you need to spy on or inspect the QueryClient after mutations.
+ */
+export function createWrapperWithClient(queryClient: QueryClient) {
+  return ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}

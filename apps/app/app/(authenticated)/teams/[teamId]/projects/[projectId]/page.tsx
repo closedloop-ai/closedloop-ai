@@ -6,6 +6,7 @@ import {
   isActiveGenerationStatus,
 } from "@repo/api/src/types/artifact";
 import type { Priority } from "@repo/api/src/types/common";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { WorkstreamState } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -36,6 +37,7 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import { Header } from "@/app/(authenticated)/components/header";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EditableProjectDescription } from "@/components/editable-project-description";
 import { EditableProjectTitle } from "@/components/editable-project-title";
@@ -423,6 +425,11 @@ export default function ProjectDetailPage() {
                 onUpdatePriority={handleUpdatePriority}
                 onUpdateTargetDate={handleUpdateTargetDate}
                 project={project}
+              />
+              <Separator />
+              <CustomFieldsSection
+                entityId={project.id}
+                entityType={CustomFieldEntityType.Project}
               />
               <Separator />
               <ActivityPanel activities={activities} />

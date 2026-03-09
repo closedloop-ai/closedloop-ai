@@ -22,6 +22,17 @@ export const updateIssueValidator = z.object({
   priority: priorityEnum.optional(),
   assigneeId: z.uuidv7().nullable().optional(),
   projectId: z.uuidv7().optional(),
+  customFields: z
+    .record(
+      z.string().uuid(),
+      z.union([
+        z.string().max(10_000),
+        z.number(),
+        z.array(z.string().uuid()).max(100),
+        z.null(),
+      ])
+    )
+    .optional(),
 });
 
 export const findIssuesQueryValidator = z.object({

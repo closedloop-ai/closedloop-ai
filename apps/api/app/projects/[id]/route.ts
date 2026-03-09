@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 
@@ -8,6 +9,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import {
+  applyCustomFieldsFromBody,
+  mergeCustomFieldsIntoResponse,
+} from "../../custom-fields/route-helpers";
 import { projectsService } from "../service";
 import { updateProjectValidator } from "../validators";
 
@@ -24,7 +29,13 @@ export const GET = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
         return notFoundResponse("Project");
       }
 
-      return successResponse(project);
+      const response = await mergeCustomFieldsIntoResponse(
+        project,
+        CustomFieldEntityType.Project,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch project", error);
     }
@@ -46,14 +57,25 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
         return parseError;
       }
 
+      const { customFields, ...projectInput } = body;
+
       const updated = await projectsService.update(
         id,
         user.organizationId,
-        body
+        projectInput
       );
 
       if (!updated) {
         return notFoundResponse("Project");
+      }
+
+      if (customFields) {
+        await applyCustomFieldsFromBody(
+          customFields,
+          id,
+          CustomFieldEntityType.Project,
+          user.organizationId
+        );
       }
 
       // Fetch updated project with details

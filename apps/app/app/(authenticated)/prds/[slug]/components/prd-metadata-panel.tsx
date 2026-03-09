@@ -4,6 +4,7 @@ import type {
   ArtifactDetail,
   ArtifactStatus,
 } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { useMemo, useState } from "react";
 import { ArtifactVersionInfo } from "@/components/artifact-editor/artifact-version-info";
@@ -13,6 +14,7 @@ import { CommentsSection } from "@/components/artifact-editor/comments-section";
 import { MetadataPanel } from "@/components/artifact-editor/metadata-panel";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
 import { TargetRepositoryFields } from "@/components/artifact-editor/target-repository-fields";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
@@ -167,6 +169,11 @@ export function PRDMetadataPanel({
           <CommentsSection artifactId={prd.id} />
 
           <AttachmentsSection artifactId={prd.id} />
+
+          <CustomFieldsSection
+            entityId={prd.id}
+            entityType={CustomFieldEntityType.Artifact}
+          />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog

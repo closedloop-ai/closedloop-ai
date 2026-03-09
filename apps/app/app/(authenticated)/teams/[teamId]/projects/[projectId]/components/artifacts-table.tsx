@@ -9,6 +9,7 @@ import type {
   ArtifactType,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
@@ -55,12 +56,15 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { ColumnVisibilityPopover } from "@/components/custom-fields/column-visibility-popover";
+import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { GenerationStatusIndicator } from "@/components/generation-status-indicator";
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
+import { useCustomFieldColumnVisibility } from "@/hooks/use-custom-field-column-visibility";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
@@ -68,6 +72,7 @@ import {
   getArtifactRoute,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
+import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 import { formatRelativeTime } from "@/lib/date-utils";
 import {
   ARTIFACT_STATUS_COLORS,
@@ -162,6 +167,7 @@ type ArtifactSectionProps = {
     sectionArtifactIds: string[],
     checked: boolean
   ) => void;
+  visibleCustomFieldColumns: CustomFieldValueDetail[];
 };
 
 function ArtifactSection({
@@ -177,6 +183,7 @@ function ArtifactSection({
   selectedIds,
   onSelectChange,
   onSelectAllInSection,
+  visibleCustomFieldColumns,
 }: Readonly<ArtifactSectionProps>) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
@@ -266,6 +273,9 @@ function ArtifactSection({
                 sortDir={sortDir}
               />
               <TableHead>Link</TableHead>
+              {visibleCustomFieldColumns.map((field) => (
+                <TableHead key={field.customFieldId}>{field.name}</TableHead>
+              ))}
               <TableHead className="w-[50px]" />
             </TableRow>
           </TableHeader>
@@ -366,6 +376,25 @@ function ArtifactSection({
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <ArtifactLinkCell route={route} />
                     </TableCell>
+                    {visibleCustomFieldColumns.map((colDef) => {
+                      const fieldValue = artifact.customFields?.find(
+                        (f) => f.customFieldId === colDef.customFieldId
+                      );
+                      return (
+                        <TableCell
+                          key={colDef.customFieldId}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {fieldValue ? (
+                            <CustomFieldCell value={fieldValue} />
+                          ) : (
+                            <span className="text-muted-foreground text-sm">
+                              —
+                            </span>
+                          )}
+                        </TableCell>
+                      );
+                    })}
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -435,6 +464,18 @@ export function ArtifactsTable({
     defaultDirection: "desc",
     validColumns: ARTIFACT_SORT_COLUMNS,
   });
+
+  // Custom field columns derived from artifacts' customFields data
+  const customFieldColumns = useMemo(
+    () => deriveCustomFieldColumns(artifacts),
+    [artifacts]
+  );
+
+  const {
+    handleToggleColumn,
+    visibleColumnsRecord,
+    visibleCustomFieldColumns,
+  } = useCustomFieldColumnVisibility(customFieldColumns);
 
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
@@ -555,6 +596,18 @@ export function ArtifactsTable({
 
   return (
     <div className="space-y-6">
+      {customFieldColumns.length > 0 && (
+        <div className="flex justify-end">
+          <ColumnVisibilityPopover
+            fields={customFieldColumns.map((f) => ({
+              customFieldId: f.customFieldId,
+              name: f.name,
+            }))}
+            onToggle={handleToggleColumn}
+            visibleColumns={visibleColumnsRecord}
+          />
+        </div>
+      )}
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-3 rounded-md border bg-muted/50 px-4 py-2">
           <span className="font-medium text-sm">
@@ -605,6 +658,7 @@ export function ArtifactsTable({
           sortBy={sortBy}
           sortDir={sortDir}
           title={section.title}
+          visibleCustomFieldColumns={visibleCustomFieldColumns}
         />
       ))}
 

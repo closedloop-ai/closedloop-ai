@@ -117,6 +117,20 @@ vi.mock("@/components/artifact-editor/attachments-section", () => ({
   ),
 }));
 
+// Mock custom fields hooks to avoid Clerk auth dependencies
+vi.mock("@/hooks/queries/use-custom-fields", () => ({
+  useCustomFieldSettings: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+  useCustomFieldsForEntityType: () => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }),
+}));
+
 // Mock pull request rating hooks to avoid Clerk auth dependencies
 vi.mock("@/hooks/queries/use-pull-request-rating", () => ({
   usePullRequestRating: () => ({

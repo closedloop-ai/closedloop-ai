@@ -25,6 +25,11 @@ vi.mock("@/lib/auth/with-auth", () => ({
 }));
 vi.mock("@/app/artifacts/service");
 vi.mock("@/app/projects/service");
+vi.mock("@/app/custom-fields/values-service", () => ({
+  customFieldValuesService: {
+    getValuesForEntity: vi.fn().mockResolvedValue([]),
+  },
+}));
 
 describe("GET /api/artifacts", () => {
   beforeEach(() => {
@@ -63,7 +68,9 @@ describe("GET /api/artifacts", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.success).toBe(true);
-    expect(json.data).toEqual(mockArtifacts);
+    expect(json.data).toEqual(
+      mockArtifacts.map((a) => ({ ...a, customFields: [] }))
+    );
   });
 
   it("filters by type query param", async () => {

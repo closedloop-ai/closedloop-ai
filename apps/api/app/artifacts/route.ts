@@ -2,6 +2,7 @@ import type {
   Artifact,
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   badRequestResponse,
@@ -9,6 +10,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { customFieldValuesService } from "../custom-fields/values-service";
 import { artifactsService } from "./service";
 import {
   createArtifactValidator,
@@ -41,7 +43,33 @@ export const GET = withAnyAuth<ArtifactWithWorkstream[], "/artifacts">(
         ...parseResult.data,
       });
 
-      return successResponse(artifacts);
+      // Batch-load custom field values for all artifacts in a single query
+      const artifactIds = artifacts.map((a) => a.id);
+      const allValues =
+        artifactIds.length > 0
+          ? await customFieldValuesService.getValuesForEntity(
+              CustomFieldEntityType.Artifact,
+              artifactIds,
+              user.organizationId
+            )
+          : [];
+
+      const valuesByEntityId = new Map(
+        artifacts.map((a) => [a.id, [] as typeof allValues])
+      );
+      for (const value of allValues) {
+        const list = valuesByEntityId.get(value.entityId);
+        if (list) {
+          list.push(value);
+        }
+      }
+
+      const artifactsWithFields = artifacts.map((a) => ({
+        ...a,
+        customFields: valuesByEntityId.get(a.id) ?? [],
+      }));
+
+      return successResponse(artifactsWithFields);
     } catch (error) {
       return errorResponse("Failed to fetch artifacts", error);
     }

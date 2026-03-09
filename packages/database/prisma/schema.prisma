@@ -223,6 +223,34 @@ enum LoopCommand {
   DECOMPOSE
 }
 
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  ENUM
+  MULTI_ENUM
+  DATE
+  PEOPLE
+}
+
+enum CustomFieldEntityType {
+  PROJECT
+  WORKSTREAM
+  ISSUE
+  ARTIFACT
+}
+
+enum NumberFormat {
+  NONE
+  CURRENCY
+  PERCENTAGE
+  CUSTOM
+}
+
+enum LabelPosition {
+  PREFIX
+  SUFFIX
+}
+
 // =============================================================================
 // CORE ENTITIES
 // =============================================================================
@@ -266,6 +294,7 @@ model Organization {
   prompts            Prompt[]
   computeTargets     ComputeTarget[]
   judgeHumanScores   JudgeHumanScore[]
+  customFields       CustomField[]
 
   @@map("organizations")
 }
@@ -308,6 +337,8 @@ model User {
   loops               Loop[]
   computeTargets      ComputeTarget[]
   judgeHumanScores    JudgeHumanScore[]
+  createdCustomFields CustomField[]
+  updatedCustomFieldValues CustomFieldValue[]
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -1326,6 +1357,119 @@ model OAuthRefreshToken {
   @@index([expiresAt])
   @@index([familyId, revokedAt])
   @@map("oauth_refresh_tokens")
+}
+
+// =============================================================================
+// CUSTOM FIELDS
+// =============================================================================
+
+model CustomField {
+  id                  String          @id @default(uuid(7)) @db.Uuid
+  organizationId      String          @map("organization_id") @db.Uuid
+  name                String
+  description         String?
+  fieldType           CustomFieldType @map("field_type")
+  createdById         String?         @map("created_by_id") @db.Uuid
+
+  // Number-specific configuration
+  precision           Int?
+  numberFormat        NumberFormat?   @map("number_format")
+  currencyCode        String?         @map("currency_code")
+  customLabel         String?         @map("custom_label")
+  customLabelPosition LabelPosition?  @map("custom_label_position")
+
+  // Behavior
+  isGlobalToOrg Boolean  @default(true) @map("is_global_to_org")
+
+  // Entity type applicability — which entity types this field applies to
+  entityTypes CustomFieldEntityType[] @default([]) @map("entity_types")
+
+  // Display configuration
+  showInTable  Boolean @default(false) @map("show_in_table")
+  isSearchable Boolean @default(false) @map("is_searchable")
+  isSortable   Boolean @default(false) @map("is_sortable")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization            @relation(fields: [organizationId], references: [id])
+  createdBy    User?                   @relation(fields: [createdById], references: [id])
+  enumOptions  CustomFieldEnumOption[]
+  settings     CustomFieldSetting[]
+  values       CustomFieldValue[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("custom_fields")
+}
+
+model CustomFieldEnumOption {
+  id            String  @id @default(uuid(7)) @db.Uuid
+  customFieldId String  @map("custom_field_id") @db.Uuid
+  name          String
+  color         String  @default("none")
+  enabled       Boolean @default(true)
+  sortOrder     Int     @default(0) @map("sort_order")
+
+  // Relations
+  customField CustomField        @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+  values      CustomFieldValue[]
+
+  @@unique([customFieldId, name])
+  @@index([customFieldId, sortOrder])
+  @@map("custom_field_enum_options")
+}
+
+model CustomFieldSetting {
+  id             String               @id @default(uuid(7)) @db.Uuid
+  customFieldId  String               @map("custom_field_id") @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  entityType     CustomFieldEntityType @map("entity_type")
+  entityId       String               @map("entity_id") @db.Uuid
+  isImportant    Boolean              @default(false) @map("is_important")
+  isRequired     Boolean              @default(false) @map("is_required")
+  sortOrder      Int                  @default(0) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  customField CustomField @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+
+  @@unique([customFieldId, entityType, entityId])
+  @@index([organizationId, entityType, entityId])
+  @@map("custom_field_settings")
+}
+
+model CustomFieldValue {
+  id             String               @id @default(uuid(7)) @db.Uuid
+  customFieldId  String               @map("custom_field_id") @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  entityType     CustomFieldEntityType @map("entity_type")
+  entityId       String               @map("entity_id") @db.Uuid
+
+  // Type-specific value columns (only one populated per row)
+  textValue         String?    @map("text_value")
+  numberValue       Float?     @map("number_value")
+  dateValue         DateTime?  @map("date_value")
+  enumValueId       String?    @map("enum_value_id") @db.Uuid
+  multiEnumValueIds String[]   @map("multi_enum_value_ids")
+  peopleValueIds    String[]   @map("people_value_ids")
+
+  // Cached display string (updated on write)
+  displayValue String? @map("display_value")
+
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedById String?  @map("updated_by_id") @db.Uuid
+
+  // Relations
+  customField CustomField            @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+  enumValue   CustomFieldEnumOption? @relation(fields: [enumValueId], references: [id], onDelete: SetNull)
+  updatedBy   User?                  @relation(fields: [updatedById], references: [id])
+
+  @@unique([customFieldId, entityType, entityId])
+  @@index([organizationId, entityType, entityId])
+  @@map("custom_field_values")
 }
 
 // =============================================================================

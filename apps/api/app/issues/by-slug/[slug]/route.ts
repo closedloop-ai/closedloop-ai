@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
@@ -5,6 +6,7 @@ import {
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
+import { mergeCustomFieldsIntoResponse } from "../../../custom-fields/route-helpers";
 import { issuesService } from "../../service";
 
 export const GET = withAuth<IssueWithWorkstream, "/issues/by-slug/[slug]">(
@@ -18,7 +20,13 @@ export const GET = withAuth<IssueWithWorkstream, "/issues/by-slug/[slug]">(
         return notFoundResponse("Issue");
       }
 
-      return successResponse(issue);
+      const response = await mergeCustomFieldsIntoResponse(
+        issue,
+        CustomFieldEntityType.Issue,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch issue", error);
     }

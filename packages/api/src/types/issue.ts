@@ -1,4 +1,5 @@
 import type { Priority } from "./common";
+import type { CustomFieldValueDetail } from "./custom-field";
 import type { BasicUser } from "./user";
 
 export const IssueStatus = {
@@ -40,6 +41,8 @@ export type IssueWithWorkstream = Issue & {
     name: string;
     teams?: { id: string; name: string }[];
   } | null;
+  /** Custom field values attached to this issue. Omitted when not requested. */
+  customFields?: CustomFieldValueDetail[];
 };
 
 export type FindIssuesOptions = {

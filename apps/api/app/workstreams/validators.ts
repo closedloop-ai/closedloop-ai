@@ -29,4 +29,15 @@ export const updateWorkstreamValidator = z.object({
   priority: priorityEnum.optional(),
   slug: z.string().nullable().optional(),
   hasUIChanges: z.boolean().optional(),
+  customFields: z
+    .record(
+      z.string().uuid(),
+      z.union([
+        z.string().max(10_000),
+        z.number(),
+        z.array(z.string().uuid()).max(100),
+        z.null(),
+      ])
+    )
+    .optional(),
 });

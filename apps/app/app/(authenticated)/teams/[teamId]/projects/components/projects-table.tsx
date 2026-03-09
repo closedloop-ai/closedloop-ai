@@ -31,12 +31,16 @@ import { FolderIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { ColumnVisibilityPopover } from "@/components/custom-fields/column-visibility-popover";
+import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
+import { useCustomFieldColumnVisibility } from "@/hooks/use-custom-field-column-visibility";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
+import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 import {
   ensureDate,
   formatDateCompact,
@@ -70,6 +74,18 @@ export function ProjectsTable({
     defaultDirection: "asc",
     validColumns: PROJECT_SORT_COLUMNS,
   });
+
+  // Custom field columns derived from projects' customFields data
+  const customFieldColumns = useMemo(
+    () => deriveCustomFieldColumns(projects),
+    [projects]
+  );
+
+  const {
+    handleToggleColumn,
+    visibleColumnsRecord,
+    visibleCustomFieldColumns,
+  } = useCustomFieldColumnVisibility(customFieldColumns);
 
   const sortedProjects = useMemo(
     () => sortTableData(projects, sortBy, PROJECT_SORT_CONFIGS, sortDir),
@@ -131,172 +147,213 @@ export function ProjectsTable({
   }
 
   return (
-    <div className="rounded-md border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-8" />
-            <SortableColumnHeader
-              column="name"
-              label="Project Name"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <SortableColumnHeader
-              column="priority"
-              label="Priority"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <SortableColumnHeader
-              column="assignee"
-              label="Assignee"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <SortableColumnHeader
-              column="targetDate"
-              label="Target Date"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <SortableColumnHeader
-              column="status"
-              label="Status"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <SortableColumnHeader
-              column="updatedAt"
-              label="Updated"
-              onSort={setSort}
-              sortBy={sortBy}
-              sortDir={sortDir}
-            />
-            <TableHead className="w-[50px]" />
-          </TableRow>
-        </TableHeader>
-        <SortableContext
-          id="projects-list"
-          items={projectIds}
-          strategy={verticalListSortingStrategy}
-        >
-          <TableBody>
-            {sortedProjects.map((project) => (
-              <SortableProjectRow
-                className="cursor-pointer"
-                key={project.id}
-                onClick={() => handleRowClick(project)}
-                project={project}
-              >
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <FolderIcon className="h-4 w-4 text-muted-foreground" />
-                    {isDisplayableSlug(project.slug) && (
-                      <span className="font-mono text-muted-foreground text-xs">
-                        {project.slug}
-                      </span>
-                    )}
-                    <span className="font-medium">{project.name}</span>
-                  </div>
-                </TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <PriorityBadge priority={project.priority} />
-                </TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <UserSelectPopover
-                    onSelect={(user) => handleAssigneeChange(project.id, user)}
-                    trigger={
-                      <button
-                        className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
-                        type="button"
-                      >
-                        <AssigneeAvatar assignee={project.assignee} />
-                      </button>
-                    }
-                    users={orgUsers}
-                    value={
-                      project.assignee
-                        ? {
-                            id: project.assignee.id,
-                            name: getUserDisplayName(project.assignee),
-                            avatarUrl: project.assignee.avatarUrl ?? undefined,
-                            initials: getUserInitials(
-                              project.assignee.firstName,
-                              project.assignee.lastName
-                            ),
-                          }
-                        : null
-                    }
-                  />
-                </TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  {project.targetDate ? (
-                    <DatePickerPopover
-                      fromDate={new Date()}
-                      onSelect={(date) => handleDateChange(project.id, date)}
+    <div className="space-y-2">
+      {customFieldColumns.length > 0 && (
+        <div className="flex justify-end">
+          <ColumnVisibilityPopover
+            fields={customFieldColumns.map((f) => ({
+              customFieldId: f.customFieldId,
+              name: f.name,
+            }))}
+            onToggle={handleToggleColumn}
+            visibleColumns={visibleColumnsRecord}
+          />
+        </div>
+      )}
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-8" />
+              <SortableColumnHeader
+                column="name"
+                label="Project Name"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="priority"
+                label="Priority"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="assignee"
+                label="Assignee"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="targetDate"
+                label="Target Date"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="status"
+                label="Status"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              <SortableColumnHeader
+                column="updatedAt"
+                label="Updated"
+                onSort={setSort}
+                sortBy={sortBy}
+                sortDir={sortDir}
+              />
+              {visibleCustomFieldColumns.map((field) => (
+                <TableHead key={field.customFieldId}>{field.name}</TableHead>
+              ))}
+              <TableHead className="w-[50px]" />
+            </TableRow>
+          </TableHeader>
+          <SortableContext
+            id="projects-list"
+            items={projectIds}
+            strategy={verticalListSortingStrategy}
+          >
+            <TableBody>
+              {sortedProjects.map((project) => (
+                <SortableProjectRow
+                  className="cursor-pointer"
+                  key={project.id}
+                  onClick={() => handleRowClick(project)}
+                  project={project}
+                >
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <FolderIcon className="h-4 w-4 text-muted-foreground" />
+                      {isDisplayableSlug(project.slug) && (
+                        <span className="font-mono text-muted-foreground text-xs">
+                          {project.slug}
+                        </span>
+                      )}
+                      <span className="font-medium">{project.name}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <PriorityBadge priority={project.priority} />
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <UserSelectPopover
+                      onSelect={(user) =>
+                        handleAssigneeChange(project.id, user)
+                      }
                       trigger={
                         <button
-                          className="text-sm hover:underline"
+                          className="-mx-1 flex items-center gap-2 rounded px-1 hover:bg-muted/50"
                           type="button"
                         >
-                          {formatDateCompact(project.targetDate)}
+                          <AssigneeAvatar assignee={project.assignee} />
                         </button>
                       }
-                      value={ensureDate(project.targetDate)}
+                      users={orgUsers}
+                      value={
+                        project.assignee
+                          ? {
+                              id: project.assignee.id,
+                              name: getUserDisplayName(project.assignee),
+                              avatarUrl:
+                                project.assignee.avatarUrl ?? undefined,
+                              initials: getUserInitials(
+                                project.assignee.firstName,
+                                project.assignee.lastName
+                              ),
+                            }
+                          : null
+                      }
                     />
-                  ) : (
-                    <DatePickerPopover
-                      fromDate={new Date()}
-                      iconOnly
-                      onSelect={(date) => handleDateChange(project.id, date)}
-                      placeholder="Set target date"
-                      value={null}
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    {project.targetDate ? (
+                      <DatePickerPopover
+                        fromDate={new Date()}
+                        onSelect={(date) => handleDateChange(project.id, date)}
+                        trigger={
+                          <button
+                            className="text-sm hover:underline"
+                            type="button"
+                          >
+                            {formatDateCompact(project.targetDate)}
+                          </button>
+                        }
+                        value={ensureDate(project.targetDate)}
+                      />
+                    ) : (
+                      <DatePickerPopover
+                        fromDate={new Date()}
+                        iconOnly
+                        onSelect={(date) => handleDateChange(project.id, date)}
+                        placeholder="Set target date"
+                        value={null}
+                      />
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex">
+                          <HexagonProgress
+                            value={project.completionPercentage}
+                          />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        % of artifacts in &quot;Complete&quot; status
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <span className="text-muted-foreground text-sm">
+                      {formatRelativeTime(project.updatedAt)}
+                    </span>
+                  </TableCell>
+                  {visibleCustomFieldColumns.map((colDef) => {
+                    const fieldValue = project.customFields?.find(
+                      (f) => f.customFieldId === colDef.customFieldId
+                    );
+                    return (
+                      <TableCell
+                        key={colDef.customFieldId}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {fieldValue ? (
+                          <CustomFieldCell value={fieldValue} />
+                        ) : (
+                          <span className="text-muted-foreground text-sm">
+                            —
+                          </span>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <ProjectRowActions
+                      onDelete={() => deleteConfirmation.requestDelete(project)}
+                      projectId={project.id}
                     />
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-flex">
-                        <HexagonProgress value={project.completionPercentage} />
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      % of artifacts in &quot;Complete&quot; status
-                    </TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <span className="text-muted-foreground text-sm">
-                    {formatRelativeTime(project.updatedAt)}
-                  </span>
-                </TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <ProjectRowActions
-                    onDelete={() => deleteConfirmation.requestDelete(project)}
-                    projectId={project.id}
-                  />
-                </TableCell>
-              </SortableProjectRow>
-            ))}
-          </TableBody>
-        </SortableContext>
-      </Table>
+                  </TableCell>
+                </SortableProjectRow>
+              ))}
+            </TableBody>
+          </SortableContext>
+        </Table>
 
-      <DeleteConfirmationDialog
-        isPending={deleteConfirmation.isPending}
-        itemName={deleteConfirmation.itemToDelete?.name ?? ""}
-        onConfirm={deleteConfirmation.confirmDelete}
-        onOpenChange={deleteConfirmation.setOpen}
-        open={deleteConfirmation.isOpen}
-        title="Project"
-      />
+        <DeleteConfirmationDialog
+          isPending={deleteConfirmation.isPending}
+          itemName={deleteConfirmation.itemToDelete?.name ?? ""}
+          onConfirm={deleteConfirmation.confirmDelete}
+          onOpenChange={deleteConfirmation.setOpen}
+          open={deleteConfirmation.isOpen}
+          title="Project"
+        />
+      </div>
     </div>
   );
 }

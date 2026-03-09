@@ -4,6 +4,7 @@ import {
   Priority,
   type Priority as PriorityType,
 } from "@repo/api/src/types/common";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import {
   ISSUE_STATUS_OPTIONS,
   type IssueStatus,
@@ -29,6 +30,7 @@ import {
   MetadataPanel,
   MetadataSection,
 } from "@/components/artifact-editor/metadata-panel";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import {
   issuePriorityLabels,
   issueStatusLabels,
@@ -164,6 +166,11 @@ export function IssueMetadataPanel({
             </div>
           </MetadataSection>
         </CollapsibleSection>
+
+        <CustomFieldsSection
+          entityId={issue.id}
+          entityType={CustomFieldEntityType.Issue}
+        />
       </div>
     </MetadataPanel>
   );

@@ -1,5 +1,6 @@
 "use client";
 
+import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { IssueStatus } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
@@ -26,11 +27,13 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
+import { CustomFieldCell } from "@/components/custom-fields/custom-field-cell";
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { IssueStatusBadge, issueStatusLabels } from "@/components/status-badge";
 import { useDeleteIssue, useIssues } from "@/hooks/queries/use-issues";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
+import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 
 type FeaturesListProps = {
   projectId: string;
@@ -39,6 +42,11 @@ type FeaturesListProps = {
 export function FeaturesList({ projectId }: Readonly<FeaturesListProps>) {
   const { data: features = [], isLoading } = useIssues({ projectId });
   const deleteIssueMutation = useDeleteIssue();
+
+  const customFieldColumns = useMemo(
+    () => deriveCustomFieldColumns(features),
+    [features]
+  );
 
   const handleDelete = (id: string) => {
     return deleteIssueMutation.mutateAsync(id).then((result) => {
@@ -97,6 +105,7 @@ export function FeaturesList({ projectId }: Readonly<FeaturesListProps>) {
         }
         return (
           <FeatureStatusSection
+            customFieldColumns={customFieldColumns}
             items={items}
             key={status}
             onRequestDelete={requestDelete}
@@ -121,12 +130,14 @@ type FeatureStatusSectionProps = {
   status: IssueStatus;
   items: IssueWithWorkstream[];
   onRequestDelete: (issue: IssueWithWorkstream) => void;
+  customFieldColumns: CustomFieldValueDetail[];
 };
 
 function FeatureStatusSection({
   status,
   items,
   onRequestDelete,
+  customFieldColumns,
 }: Readonly<FeatureStatusSectionProps>) {
   const [isOpen, setIsOpen] = useState(true);
 
@@ -153,6 +164,7 @@ function FeatureStatusSection({
         <div className="flex flex-col">
           {items.map((issue) => (
             <FeatureRow
+              customFieldColumns={customFieldColumns}
               issue={issue}
               key={issue.id}
               onRequestDelete={onRequestDelete}
@@ -175,9 +187,14 @@ const STATUS_ORDER: IssueStatus[] = [
 type FeatureRowProps = {
   issue: IssueWithWorkstream;
   onRequestDelete: (issue: IssueWithWorkstream) => void;
+  customFieldColumns: CustomFieldValueDetail[];
 };
 
-function FeatureRow({ issue, onRequestDelete }: Readonly<FeatureRowProps>) {
+function FeatureRow({
+  issue,
+  onRequestDelete,
+  customFieldColumns,
+}: Readonly<FeatureRowProps>) {
   return (
     <div className="flex items-center gap-4 border-b bg-background p-1.5">
       <Link
@@ -193,6 +210,19 @@ function FeatureRow({ issue, onRequestDelete }: Readonly<FeatureRowProps>) {
         <span className="truncate font-medium text-sm">{issue.title}</span>
       </Link>
       <div className="flex shrink-0 items-center gap-2.5">
+        {customFieldColumns.map((colDef) => {
+          const fieldValue = issue.customFields?.find(
+            (f) => f.customFieldId === colDef.customFieldId
+          );
+          if (!fieldValue) {
+            return null;
+          }
+          return (
+            <div key={colDef.customFieldId}>
+              <CustomFieldCell value={fieldValue} />
+            </div>
+          );
+        })}
         <PriorityBadge priority={issue.priority} />
         <AssigneeAvatar assignee={issue.assignee} />
         <IssueStatusBadge status={issue.status} />

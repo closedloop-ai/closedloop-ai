@@ -1,6 +1,7 @@
 "use client";
 
 import type { Artifact } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { Workstream } from "@repo/api/src/types/workstream";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -12,6 +13,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { ArrowLeftIcon, FileTextIcon } from "lucide-react";
 import Link from "next/link";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import {
   WorkstreamStateBadge,
   WorkstreamTypeBadge,
@@ -63,6 +65,16 @@ export function WorkstreamDetail({
           </CardContent>
         </Card>
       ) : null}
+
+      {/* Custom Fields */}
+      <Card>
+        <CardContent className="pt-6">
+          <CustomFieldsSection
+            entityId={workstream.id}
+            entityType={CustomFieldEntityType.Workstream}
+          />
+        </CardContent>
+      </Card>
 
       {/* Artifacts */}
       <Card>

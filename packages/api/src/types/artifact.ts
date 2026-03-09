@@ -2,6 +2,7 @@
 // These are explicitly defined to keep packages/api independent of database
 
 import type { ArtifactVersion } from "./artifact-version";
+import type { CustomFieldValueDetail } from "./custom-field";
 import type { EntityType } from "./entity-link";
 import type { BasicUser } from "./user";
 import type { WorkstreamState } from "./workstream";
@@ -110,6 +111,8 @@ export type ArtifactWithWorkstream = Artifact & {
   pullRequest?: PullRequestInfo | null;
   /** Plain-text snippet extracted from the latest version content. Omitted when no content exists. */
   snippet?: string | null;
+  /** Custom field values attached to this artifact. Omitted when not requested. */
+  customFields?: CustomFieldValueDetail[];
 };
 
 /** Detail response from GET /artifacts/:id and GET /artifacts/by-slug/:slug. Always includes version content. */

@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -7,6 +8,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { customFieldValuesService } from "../custom-fields/values-service";
 import { projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
@@ -48,7 +50,33 @@ export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
           )
         : await projectsService.findByOrganization(user.organizationId);
 
-      return successResponse(projects);
+      // Batch-load custom field values for all projects in a single query
+      const projectIds = projects.map((p) => p.id);
+      const allValues =
+        projectIds.length > 0
+          ? await customFieldValuesService.getValuesForEntity(
+              CustomFieldEntityType.Project,
+              projectIds,
+              user.organizationId
+            )
+          : [];
+
+      const valuesByEntityId = new Map(
+        projects.map((p) => [p.id, [] as typeof allValues])
+      );
+      for (const value of allValues) {
+        const list = valuesByEntityId.get(value.entityId);
+        if (list) {
+          list.push(value);
+        }
+      }
+
+      const projectsWithFields = projects.map((p) => ({
+        ...p,
+        customFields: valuesByEntityId.get(p.id) ?? [],
+      }));
+
+      return successResponse(projectsWithFields);
     } catch (error) {
       return errorResponse("Failed to fetch projects", error);
     }

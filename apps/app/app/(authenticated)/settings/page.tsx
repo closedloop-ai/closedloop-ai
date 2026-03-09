@@ -24,6 +24,7 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import { useSearchParams } from "next/navigation";
 import { useEffect } from "react";
+import { CustomFieldsSettingsTab } from "@/components/custom-fields/custom-fields-settings-tab";
 import { isAdminRole } from "@/lib/role-utils";
 import { AnthropicApiKeyCard } from "./components/anthropic-api-key-card";
 import { ApiKeysSettingsPanel } from "./components/api-keys-settings-panel";
@@ -134,6 +135,14 @@ export default function SettingsPage() {
               Admin
             </TabsTrigger>
           ) : null}
+          {isAdmin ? (
+            <TabsTrigger
+              className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
+              value="custom-fields"
+            >
+              Custom Fields
+            </TabsTrigger>
+          ) : null}
           <TabsTrigger
             className="rounded-none border-transparent border-b-2 bg-transparent px-4 py-2 data-[state=active]:border-foreground data-[state=active]:bg-transparent"
             value="integrations"
@@ -195,6 +204,29 @@ export default function SettingsPage() {
             </Card>
 
             <PublicDashboardCard />
+          </Protect>
+        </TabsContent>
+
+        <TabsContent className="mt-6 space-y-6" value="custom-fields">
+          <Protect
+            condition={(
+              has: (
+                params: { role: string } | { permission: string }
+              ) => boolean
+            ) => has({ role: "org:admin" }) || has({ role: "org:owner" })}
+            fallback={
+              <Card>
+                <CardHeader>
+                  <CardTitle>Access Denied</CardTitle>
+                  <CardDescription>
+                    You must be an organization admin or owner to view this
+                    section.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            }
+          >
+            <CustomFieldsSettingsTab />
           </Protect>
         </TabsContent>
 

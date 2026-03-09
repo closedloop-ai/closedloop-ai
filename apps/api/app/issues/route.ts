@@ -1,3 +1,4 @@
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -6,6 +7,7 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import { customFieldValuesService } from "../custom-fields/values-service";
 import { issuesService } from "./service";
 import { createIssueValidator, findIssuesQueryValidator } from "./validators";
 
@@ -31,7 +33,33 @@ export const GET = withAnyAuth<IssueWithWorkstream[], "/issues">(
         ...parseResult.data,
       });
 
-      return successResponse(issues);
+      // Batch-load custom field values for all issues in a single query
+      const issueIds = issues.map((i) => i.id);
+      const allValues =
+        issueIds.length > 0
+          ? await customFieldValuesService.getValuesForEntity(
+              CustomFieldEntityType.Issue,
+              issueIds,
+              user.organizationId
+            )
+          : [];
+
+      const valuesByEntityId = new Map(
+        issues.map((i) => [i.id, [] as typeof allValues])
+      );
+      for (const value of allValues) {
+        const list = valuesByEntityId.get(value.entityId);
+        if (list) {
+          list.push(value);
+        }
+      }
+
+      const issuesWithFields = issues.map((i) => ({
+        ...i,
+        customFields: valuesByEntityId.get(i.id) ?? [],
+      }));
+
+      return successResponse(issuesWithFields);
     } catch (error) {
       return errorResponse("Failed to fetch issues", error);
     }

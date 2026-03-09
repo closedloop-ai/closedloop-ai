@@ -1,4 +1,5 @@
 import type { Artifact, ArtifactDetail } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 
 import {
@@ -8,6 +9,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
+import {
+  applyCustomFieldsFromBody,
+  mergeCustomFieldsIntoResponse,
+} from "../../custom-fields/route-helpers";
 import { artifactVersionService } from "../artifact-version-service";
 import { artifactsService } from "../service";
 import { updateArtifactValidator } from "../validators";
@@ -49,7 +54,13 @@ export const GET = withAnyAuth<ArtifactDetail, "/artifacts/[id]">(
         );
       }
 
-      return successResponse({ ...artifact, version });
+      const response = await mergeCustomFieldsIntoResponse(
+        { ...artifact, version },
+        CustomFieldEntityType.Artifact,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch artifact", error);
     }
@@ -68,11 +79,22 @@ export const PUT = withAnyAuth<Artifact, "/artifacts/[id]">(
         return parseError;
       }
 
+      const { customFields, ...artifactInput } = body;
+
       const artifact = await artifactsService.update(
         id,
         user.organizationId,
-        body
+        artifactInput
       );
+
+      if (customFields) {
+        await applyCustomFieldsFromBody(
+          customFields,
+          id,
+          CustomFieldEntityType.Artifact,
+          user.organizationId
+        );
+      }
 
       return successResponse(artifact);
     } catch (error) {

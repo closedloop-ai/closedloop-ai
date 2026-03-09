@@ -1,10 +1,12 @@
 import type { ArtifactDetail } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   errorResponse,
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
+import { mergeCustomFieldsIntoResponse } from "../../../custom-fields/route-helpers";
 import { artifactVersionService } from "../../artifact-version-service";
 import { artifactsService } from "../../service";
 
@@ -47,7 +49,13 @@ export const GET = withAuth<ArtifactDetail, "/artifacts/by-slug/[slug]">(
         );
       }
 
-      return successResponse({ ...artifact, version });
+      const response = await mergeCustomFieldsIntoResponse(
+        { ...artifact, version },
+        CustomFieldEntityType.Artifact,
+        user.organizationId
+      );
+
+      return successResponse(response);
     } catch (error) {
       return errorResponse("Failed to fetch artifact", error);
     }

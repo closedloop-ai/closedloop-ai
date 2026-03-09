@@ -1,4 +1,5 @@
 import type { JsonObject, Priority } from "./common";
+import type { CustomFieldValueDetail } from "./custom-field";
 import type { BasicUser } from "./user";
 
 export const ProjectStatus = {
@@ -40,6 +41,8 @@ export type ProjectWithDetails = Project & {
   assignee?: BasicUser;
   completionPercentage: number; // 0-100 percentage from calculateStatus()
   teams: Array<{ id: string; name: string }>;
+  /** Custom field values attached to this project. Omitted when not requested. */
+  customFields?: CustomFieldValueDetail[];
 };
 
 export type CreateProjectInput = {

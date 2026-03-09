@@ -46,4 +46,15 @@ export const updateProjectValidator = z.object({
     .nullable()
     .optional()
     .transform(transformIsoDateTime),
+  customFields: z
+    .record(
+      z.string().uuid(),
+      z.union([
+        z.string().max(10_000),
+        z.number(),
+        z.array(z.string().uuid()).max(100),
+        z.null(),
+      ])
+    )
+    .optional(),
 });

@@ -1,4 +1,5 @@
 import type { Priority } from "./common";
+import type { CustomFieldValueDetail } from "./custom-field";
 import type { Project } from "./project";
 import type { BasicUser } from "./user";
 
@@ -83,6 +84,8 @@ export type Workstream = {
 
 export type WorkstreamWithProject = Workstream & {
   project: Pick<Project, "name">;
+  /** Custom field values attached to this workstream. Omitted when not requested. */
+  customFields?: CustomFieldValueDetail[];
 };
 
 export type CreateWorkstreamInput = {

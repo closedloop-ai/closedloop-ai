@@ -6,6 +6,7 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/artifact";
+import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { PreviewDeploymentInfo } from "@repo/api/src/types/external-link-utils";
 import { Label } from "@repo/design-system/components/ui/label";
@@ -24,6 +25,7 @@ import {
 } from "@/components/artifact-editor/metadata-panel";
 import { RatingSection } from "@/components/artifact-editor/rating-section";
 import { StatusMetadataSection } from "@/components/artifact-editor/status-metadata-section";
+import { CustomFieldsSection } from "@/components/custom-fields/custom-fields-section";
 import { ExecutionLogDialog } from "@/components/execution-log/execution-log-dialog";
 import { ExecutionLogSummary } from "@/components/execution-log/execution-log-summary";
 import { useOrganizationUsers } from "@/hooks/queries/use-users";
@@ -194,6 +196,11 @@ export function PlanMetadataPanel({
           <CommentsSection artifactId={plan.id} />
 
           <AttachmentsSection artifactId={plan.id} />
+
+          <CustomFieldsSection
+            entityId={plan.id}
+            entityType={CustomFieldEntityType.Artifact}
+          />
         </div>
       </MetadataPanel>
       <ExecutionLogDialog
