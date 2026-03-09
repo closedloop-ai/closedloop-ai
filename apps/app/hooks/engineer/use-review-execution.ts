@@ -658,9 +658,9 @@ export function useReviewExecution(
     setIsSubmittingDecline(true);
     try {
       await markReviewDeclined(ticketId, repoPath, config.provider, reason);
+      await postDeclineComment(repoPath, prNumber, reason);
       setDeclined(true);
       setFindingsRevealed(false);
-      await postDeclineComment(repoPath, prNumber, reason);
       toast.success("Decline comment posted to PR");
     } catch {
       toast.error("Failed to post decline comment");
