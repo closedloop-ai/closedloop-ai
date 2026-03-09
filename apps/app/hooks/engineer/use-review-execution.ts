@@ -440,6 +440,10 @@ export function useReviewExecution(
           setReviewOutput(data.log);
         }
 
+        if (data.sessionId && !sessionIdRef.current) {
+          sessionIdRef.current = data.sessionId;
+        }
+
         if (TERMINAL_STATUSES.has(data.status)) {
           console.log(
             `[poll] Terminal status: ${data.status}, log: ${data.log?.length ?? 0} chars`

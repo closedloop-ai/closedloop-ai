@@ -9,6 +9,7 @@ import {
 import { basename, join } from "node:path";
 import type { NextRequest } from "next/server";
 import simpleGit from "simple-git";
+import { readConfig } from "@/lib/engineer/closedloop-config";
 import {
   DEFAULT_CODEX_MODEL,
   MODEL_ERROR_REGEX,
@@ -42,6 +43,7 @@ type ChatRequest = {
   contextRepoPaths?: string[];
   commentContext?: CommentContext;
   model?: string;
+  isForward?: boolean;
 };
 
 type CodexChatState = {
@@ -493,9 +495,13 @@ export async function POST(
     contextRepoPaths,
     commentContext,
     model: requestedModel,
+    isForward,
   } = body;
 
-  const codexModel = requestedModel || DEFAULT_CODEX_MODEL;
+  const codexModel =
+    requestedModel ||
+    (isForward && readConfig("FORWARD_TO_CODEX_MODEL")) ||
+    DEFAULT_CODEX_MODEL;
 
   const repoPath = repoParam || bodyRepoPath;
   if (!repoPath) {

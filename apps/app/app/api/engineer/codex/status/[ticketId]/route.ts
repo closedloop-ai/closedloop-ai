@@ -17,6 +17,7 @@ type ReviewState = {
   completedAt?: string;
   exitCode?: number;
   provider?: "claude" | "codex";
+  sessionId?: string;
   config: {
     model: string;
     reasoningEffort: string;
@@ -157,6 +158,7 @@ export async function GET(
       processRunning,
       pid: state.pid,
       provider: state.provider,
+      sessionId: state.sessionId,
       startedAt: state.startedAt,
       completedAt: state.completedAt,
       exitCode: state.exitCode,
