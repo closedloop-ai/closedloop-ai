@@ -6,6 +6,7 @@ import {
   sanitizeHistoryForModel,
   stripAssistantProtocol,
 } from "../chat-utils";
+import { createReader } from "./test-helpers";
 
 describe("CHAT_SENTINEL", () => {
   it("contains all expected sentinel values", () => {
@@ -208,22 +209,6 @@ describe("sanitizeHistoryForModel", () => {
     expect(result[0].sender).toBe("codex");
   });
 });
-
-// Helper: create a ReadableStreamDefaultReader from raw string chunks
-function createReader(
-  chunks: string[]
-): ReadableStreamDefaultReader<Uint8Array> {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk));
-      }
-      controller.close();
-    },
-  });
-  return stream.getReader();
-}
 
 describe("readChatStream", () => {
   it("forwards every raw event to onEvent before dispatch", async () => {

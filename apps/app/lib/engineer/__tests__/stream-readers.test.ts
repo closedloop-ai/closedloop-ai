@@ -1,21 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readChatStream } from "../chat-utils";
 import { readTerminalStream } from "../terminal-stream";
-
-function createReader(
-  chunks: string[]
-): ReadableStreamDefaultReader<Uint8Array> {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk));
-      }
-      controller.close();
-    },
-  });
-  return stream.getReader();
-}
+import { createReader } from "./test-helpers";
 
 describe("stream readers", () => {
   it("parses terminal events when JSON lines are split across chunks", async () => {

@@ -1,20 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCodexStreamState, readCodexStream } from "../codex-stream";
-
-function createReader(
-  chunks: string[]
-): ReadableStreamDefaultReader<Uint8Array> {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk));
-      }
-      controller.close();
-    },
-  });
-  return stream.getReader();
-}
+import { createReader } from "./test-helpers";
 
 describe("readCodexStream", () => {
   it("parses text events and calls setPending", async () => {
