@@ -245,12 +245,42 @@ async function handleCommandAck(
     return { emit: [] };
   }
 
+  const commandId = payload.commandId;
+  const accepted = payload.accepted;
+  const reason =
+    typeof payload.reason === "string" ? payload.reason : undefined;
+
   await desktopCommandStore.acknowledgeCommand(
-    payload.commandId,
-    payload.accepted,
-    typeof payload.reason === "string" ? payload.reason : undefined,
+    commandId,
+    accepted,
+    reason,
     targetId
   );
+
+  // When Electron rejects a command (accepted=false), synthesize a terminal
+  // error event so SSE subscribers (Chrome) stop waiting and see the failure.
+  if (!accepted) {
+    log.warn("Command rejected by desktop", { commandId, reason, targetId });
+    const errorData: JsonValue = {
+      terminal: true,
+      error: reason || "Command rejected by desktop",
+      code: "rejected",
+    } as unknown as JsonValue;
+    const result = await desktopCommandStore.ingestCommandEvent({
+      commandId,
+      eventType: "error",
+      data: errorData,
+      computeTargetId: targetId,
+    });
+    if (result.accepted && !result.duplicate) {
+      await publishLegacyRelayEvent(commandId, {
+        commandId,
+        eventType: "error",
+        data: errorData,
+        sequence: result.sequence,
+      });
+    }
+  }
 
   return { emit: [] };
 }
