@@ -12,6 +12,7 @@ import { ChevronDown, Loader2Icon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMyJudgeRatings } from "@/hooks/queries/use-my-judge-ratings";
 import { useSubmitJudgeRating } from "@/hooks/queries/use-submit-judge-rating";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type JudgeResultCardProps = {
   item: JudgeFeedbackItem;
@@ -124,7 +125,7 @@ export function JudgeResultCard({ item, artifactId }: JudgeResultCardProps) {
           <div className="flex min-w-0 flex-col gap-0.5">
             <span className="truncate font-medium text-sm">{displayName}</span>
             <span className={`font-semibold text-xs ${config.text}`}>
-              Score: {effectiveScore} ({config.label})
+              Score: {formatScorePercent(effectiveScore)} ({config.label})
             </span>
           </div>
         </CollapsibleTrigger>

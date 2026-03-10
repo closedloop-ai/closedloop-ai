@@ -18,6 +18,7 @@ import {
 } from "@repo/api/src/types/artifact";
 import { EntityType } from "@repo/api/src/types/entity-link";
 import type {
+  BatchJudgeScoresResponse,
   EvalStatus,
   JudgeFeedbackItem,
   JudgesFeedbackResponse,
@@ -1667,6 +1668,55 @@ Please try again or contact support if the issue persists.`
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  },
+
+  /**
+   * Batch-fetch the latest PLAN judge scores for all artifacts in a project.
+   * Returns a map of artifactId → JudgeFeedbackItem[].
+   * Only includes artifacts that have at least one evaluation.
+   */
+  async getBatchJudgeScores(
+    projectId: string,
+    organizationId: string
+  ): Promise<BatchJudgeScoresResponse> {
+    const evaluations = await withDb((db) =>
+      db.artifactEvaluation.findMany({
+        where: {
+          reportType: PrismaEvaluationReportType.PLAN,
+          artifact: { projectId, organizationId },
+        },
+        include: {
+          judgeScores: { include: { prompt: { select: { name: true } } } },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+    );
+
+    // Group by artifactId, keep only the latest evaluation per artifact
+    const latestByArtifact = new Map<
+      string,
+      (typeof evaluations)[number]
+    >();
+    for (const evaluation of evaluations) {
+      if (!latestByArtifact.has(evaluation.artifactId)) {
+        latestByArtifact.set(evaluation.artifactId, evaluation);
+      }
+    }
+
+    const result: BatchJudgeScoresResponse = {};
+    for (const [artifactId, evaluation] of latestByArtifact) {
+      result[artifactId] = evaluation.judgeScores.map((js) => ({
+        judgeScoreId: js.id,
+        caseId: js.caseId,
+        score: js.score,
+        threshold: js.threshold,
+        justification: js.justification,
+        finalStatus: js.finalStatus as EvalStatus,
+        promptName: js.prompt?.name ?? null,
+      }));
+    }
+
+    return result;
   },
 
   /**

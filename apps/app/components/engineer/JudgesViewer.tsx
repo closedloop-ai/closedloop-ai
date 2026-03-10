@@ -15,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useState } from "react";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   type CaseScore,
   EvalStatus,
@@ -352,7 +353,7 @@ function CaseScoreRow({
           </span>
         </div>
         <span className="text-muted-foreground text-xs">
-          {getScore(score)?.toFixed(2) ?? "N/A"}
+          {getScore(score) !== null ? formatScorePercent(getScore(score)!) : "N/A"}
         </span>
       </button>
       {isExpanded && (
@@ -382,12 +383,12 @@ function CaseScoreRow({
                       {metric.metric_name}
                     </span>
                     <span className="text-sm">
-                      Score: {metric.score?.toFixed(2) ?? "N/A"}
+                      Score: {metric.score != null ? formatScorePercent(metric.score) : "N/A"}
                     </span>
                   </div>
                   {metric.threshold !== null && (
                     <div className="text-muted-foreground text-xs">
-                      Threshold: {metric.threshold}
+                      Threshold: {formatScorePercent(metric.threshold)}
                     </div>
                   )}
                   {metric.justification ? (

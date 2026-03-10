@@ -20,6 +20,7 @@ import {
   JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT,
   JUDGES_ANALYTICS_LATEST_RADAR_COLOR,
 } from "@/lib/config/judges-analytics";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import { TooltipRow, TooltipShell } from "../../components/chart-tooltip";
 
 type JudgeRadarChartProps = {
@@ -79,7 +80,7 @@ function RadarAxisTooltip({
 
   return (
     <TooltipShell title={datum.axis}>
-      <TooltipRow label="Latest" value={datum.latest.toFixed(2)} />
+      <TooltipRow label="Latest" value={formatScorePercent(datum.latest)} />
       {selectedVersions.map((version) => {
         const dataKey = `v${version.version}`;
         const value = datum[dataKey];
@@ -91,7 +92,7 @@ function RadarAxisTooltip({
           <TooltipRow
             key={dataKey}
             label={`v${version.version}`}
-            value={value.toFixed(2)}
+            value={formatScorePercent(value)}
           />
         );
       })}

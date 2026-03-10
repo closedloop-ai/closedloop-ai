@@ -15,6 +15,7 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type PromptSectionProps = {
   judge: JudgeDetail;
@@ -53,10 +54,10 @@ export function PromptSection({ judge }: PromptSectionProps) {
                 <TableRow key={version.promptId}>
                   <TableCell>v{version.version}</TableCell>
                   <TableCell>{version.scoreCount}</TableCell>
-                  <TableCell>{version.mean.toFixed(2)}</TableCell>
-                  <TableCell>{version.stdDev.toFixed(2)}</TableCell>
-                  <TableCell>{version.min.toFixed(2)}</TableCell>
-                  <TableCell>{version.max.toFixed(2)}</TableCell>
+                  <TableCell>{formatScorePercent(version.mean)}</TableCell>
+                  <TableCell>{formatScorePercent(version.stdDev)}</TableCell>
+                  <TableCell>{formatScorePercent(version.min)}</TableCell>
+                  <TableCell>{formatScorePercent(version.max)}</TableCell>
                 </TableRow>
               ))}
               {judge.unknownVersionScoreCount > 0 && (

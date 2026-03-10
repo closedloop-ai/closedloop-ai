@@ -8,6 +8,7 @@ import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 import { useJudgeScores } from "@/hooks/queries/use-judge-scores";
 import { JUDGES_ANALYTICS_SCORE_PAGE_SIZE } from "@/lib/config/judges-analytics";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import { ScoreComparisonTable } from "./score-comparison-table";
 
 type ScoreComparisonSectionProps = {
@@ -59,8 +60,8 @@ export function ScoreComparisonSection({
         coverage).
       </p>
       <p className="text-sm" data-testid="score-comparison-aggregates">
-        Averages (visible): Judge {avgJudgeScore.toFixed(2)} &middot; Human{" "}
-        {avgHumanScore.toFixed(2)}
+        Averages (visible): Judge {formatScorePercent(avgJudgeScore)} &middot;
+        Human {formatScorePercent(avgHumanScore)}
       </p>
       <ScoreComparisonTable rows={visibleRows} />
       {pagination.totalPages > 1 && (

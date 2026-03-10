@@ -10,6 +10,7 @@ import type {
   ArtifactWithWorkstream,
 } from "@repo/api/src/types/artifact";
 import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
+import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
@@ -63,10 +64,12 @@ import { GenerationStatusIndicator } from "@/components/generation-status-indica
 import { MoveArtifactDialog } from "@/components/move-artifact-dialog";
 import { SortableColumnHeader } from "@/components/sortable-column-header";
 import { useMergeArtifacts } from "@/hooks/queries/use-artifacts";
+import { useProjectJudgeScores } from "@/hooks/queries/use-judges";
 import { useCustomFieldColumnVisibility } from "@/hooks/use-custom-field-column-visibility";
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   getArtifactRoute,
   isNavigableArtifact,
@@ -100,6 +103,7 @@ type ArtifactsTableProps = {
 const ARTIFACT_SECTIONS: {
   title: string;
   types: Set<ArtifactType>;
+  showJudgeScores?: boolean;
 }[] = [
   {
     title: "Documents",
@@ -108,6 +112,7 @@ const ARTIFACT_SECTIONS: {
   {
     title: "Implementation Plans",
     types: new Set<ArtifactType>(["IMPLEMENTATION_PLAN"]),
+    showJudgeScores: true,
   },
 ];
 
@@ -156,6 +161,7 @@ type ArtifactSectionProps = {
     checked: boolean
   ) => void;
   visibleCustomFieldColumns: CustomFieldValueDetail[];
+  judgeScoresMap?: Record<string, JudgeFeedbackItem[]>;
 };
 
 function ArtifactSection({
@@ -172,6 +178,7 @@ function ArtifactSection({
   onSelectChange,
   onSelectAllInSection,
   visibleCustomFieldColumns,
+  judgeScoresMap,
 }: Readonly<ArtifactSectionProps>) {
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] =
@@ -260,6 +267,7 @@ function ArtifactSection({
                 sortBy={sortBy}
                 sortDir={sortDir}
               />
+              {judgeScoresMap && <TableHead>Judges</TableHead>}
               {visibleCustomFieldColumns.map((field) => (
                 <TableHead key={field.customFieldId}>{field.name}</TableHead>
               ))}
@@ -359,6 +367,13 @@ function ArtifactSection({
                         {formatRelativeTime(artifact.updatedAt)}
                       </span>
                     </TableCell>
+                    {judgeScoresMap && (
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <JudgeScoreCell
+                          judges={judgeScoresMap[artifact.id]}
+                        />
+                      </TableCell>
+                    )}
                     {visibleCustomFieldColumns.map((colDef) => {
                       const fieldValue = artifact.customFields?.find(
                         (f) => f.customFieldId === colDef.customFieldId
@@ -442,6 +457,7 @@ export function ArtifactsTable({
   const [mergeError, setMergeError] = useState<string | null>(null);
   const { mutateAsync: mergeArtifacts, isPending: isMergePending } =
     useMergeArtifacts();
+  const { data: judgeScoresMap } = useProjectJudgeScores(projectId);
   const { sortBy, sortDir, setSort } = useSortParams<ArtifactSortColumn>({
     defaultColumn: null,
     defaultDirection: "desc",
@@ -475,6 +491,7 @@ export function ArtifactsTable({
       ARTIFACT_SECTIONS.map((section) => ({
         title: section.title,
         artifacts: filteredArtifacts.filter((a) => section.types.has(a.type)),
+        showJudgeScores: section.showJudgeScores,
       })).filter((section) => section.artifacts.length > 0),
     [filteredArtifacts]
   );
@@ -629,6 +646,9 @@ export function ArtifactsTable({
       {sections.map((section) => (
         <ArtifactSection
           artifacts={section.artifacts}
+          judgeScoresMap={
+            section.showJudgeScores ? judgeScoresMap : undefined
+          }
           key={section.title}
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
@@ -669,5 +689,50 @@ export function ArtifactsTable({
         />
       )}
     </div>
+  );
+}
+
+function JudgeScoreCell({
+  judges,
+}: Readonly<{ judges: JudgeFeedbackItem[] | undefined }>) {
+  if (!judges || judges.length === 0) {
+    return <span className="text-muted-foreground text-sm">-</span>;
+  }
+
+  const mean = judges.reduce((sum, j) => sum + j.score, 0) / judges.length;
+  const allPassing = judges.every((j) => j.score >= j.threshold);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={`cursor-default font-medium text-sm ${allPassing ? "text-success-foreground" : "text-destructive-foreground"}`}
+        >
+          {formatScorePercent(mean)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs" side="top">
+        <div className="space-y-1.5 py-1">
+          {judges.map((j) => {
+            const passing = j.score >= j.threshold;
+            return (
+              <div
+                className="flex items-center justify-between gap-4 text-xs"
+                key={j.judgeScoreId}
+              >
+                <span className="truncate">
+                  {j.promptName ?? j.caseId}
+                </span>
+                <span
+                  className={`shrink-0 font-medium ${passing ? "text-success-foreground" : "text-destructive-foreground"}`}
+                >
+                  {formatScorePercent(j.score)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }

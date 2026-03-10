@@ -24,6 +24,7 @@ import {
   JUDGES_ANALYTICS_DELTA_WARNING_THRESHOLD,
   JUDGES_ANALYTICS_SCORE_TABLE_MAX_HEIGHT_CLASS,
 } from "@/lib/config/judges-analytics";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type ScoreComparisonTableProps = {
   rows: JudgeScoreRow[];
@@ -41,9 +42,9 @@ function getDeltaClassName(delta: number): string {
 
 function formatAvgUserRating(row: JudgeScoreRow): string {
   if (row.userRatingCount > 0) {
-    return `${row.avgUserRating.toFixed(2)} (${row.userRatingCount})`;
+    return `${formatScorePercent(row.avgUserRating)} (${row.userRatingCount})`;
   }
-  return row.avgUserRating.toFixed(2);
+  return formatScorePercent(row.avgUserRating);
 }
 
 function getArtifactHref(row: JudgeScoreRow): string {
@@ -107,7 +108,7 @@ export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
                 </Link>
               </TableCell>
               <TableCell className="text-right">
-                {row.judgeScore.toFixed(2)}
+                {formatScorePercent(row.judgeScore)}
               </TableCell>
               <TableCell className="text-right">
                 {formatAvgUserRating(row)}
@@ -115,7 +116,7 @@ export function ScoreComparisonTable({ rows }: ScoreComparisonTableProps) {
               <TableCell
                 className={cn("text-right", getDeltaClassName(row.delta))}
               >
-                {row.delta === 0 ? "—" : row.delta.toFixed(2)}
+                {row.delta === 0 ? "—" : formatScorePercent(row.delta)}
               </TableCell>
             </TableRow>
           ))}

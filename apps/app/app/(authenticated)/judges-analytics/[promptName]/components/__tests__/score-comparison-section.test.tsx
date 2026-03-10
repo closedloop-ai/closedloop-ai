@@ -40,7 +40,7 @@ describe("ScoreComparisonSection", () => {
     );
 
     expect(
-      screen.getByText("Averages (visible): Judge 0.80 · Human 0.60")
+      screen.getByText("Averages (visible): Judge 80% · Human 60%")
     ).toBeTruthy();
   });
 

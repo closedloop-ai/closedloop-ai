@@ -111,3 +111,9 @@ export type JudgesFeedbackResponse =
   | { status: "success"; data: JudgeFeedbackItem[] }
   | { status: "not_found"; data: null }
   | { status: "error"; error: string };
+
+/**
+ * Batch response mapping artifact IDs to their latest PLAN judge feedback items.
+ * Used by the artifacts table to show inline judge scores.
+ */
+export type BatchJudgeScoresResponse = Record<string, JudgeFeedbackItem[]>;

@@ -18,6 +18,7 @@ import {
 } from "@repo/design-system/components/ui/tooltip";
 import Link from "next/link";
 import { useMemo } from "react";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import { useSortParams } from "@/hooks/use-sort-params";
 import type { SortConfig } from "@/lib/table-utils";
 import { sortTableData } from "@/lib/table-utils";
@@ -28,7 +29,7 @@ type JudgeAnalyticsTableProps = {
 };
 
 function formatOrDash(value: number | null): string {
-  return value !== null ? value.toFixed(2) : "\u2014";
+  return value !== null ? formatScorePercent(value) : "\u2014";
 }
 
 const JUDGE_SORT_COLUMNS = [
@@ -124,10 +125,10 @@ export function JudgeAnalyticsTable({
               })()}
             </TableCell>
             <TableCell>{judge.artifactsEvaluated}</TableCell>
-            <TableCell>{judge.min.toFixed(2)}</TableCell>
-            <TableCell>{judge.max.toFixed(2)}</TableCell>
-            <TableCell>{judge.mean.toFixed(2)}</TableCell>
-            <TableCell>{judge.stdDev.toFixed(2)}</TableCell>
+            <TableCell>{formatScorePercent(judge.min)}</TableCell>
+            <TableCell>{formatScorePercent(judge.max)}</TableCell>
+            <TableCell>{formatScorePercent(judge.mean)}</TableCell>
+            <TableCell>{formatScorePercent(judge.stdDev)}</TableCell>
             <TableCell>{formatOrDash(judge.humanMin)}</TableCell>
             <TableCell>{formatOrDash(judge.humanMax)}</TableCell>
             <TableCell>{formatOrDash(judge.humanMean)}</TableCell>

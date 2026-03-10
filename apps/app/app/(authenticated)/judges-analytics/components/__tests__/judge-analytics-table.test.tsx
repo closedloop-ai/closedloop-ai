@@ -28,10 +28,10 @@ function makeJudge(
     promptName: "gpt-4o",
     description: null,
     artifactsEvaluated: 10,
-    min: 1.5,
-    mean: 3.5,
-    max: 5.0,
-    stdDev: 0.8,
+    min: 0.15,
+    mean: 0.65,
+    max: 0.95,
+    stdDev: 0.2,
     humanMin: null,
     humanMax: null,
     humanMean: null,
@@ -82,10 +82,10 @@ describe("JudgeAnalyticsTable - eval stats columns", () => {
         data={[
           makeJudge({
             judgeName: "claude-opus",
-            min: 2.0,
-            max: 5.0,
-            mean: 4.2,
-            stdDev: 0.5,
+            min: 0.2,
+            max: 0.95,
+            mean: 0.78,
+            stdDev: 0.15,
             artifactsEvaluated: 20,
           }),
         ]}
@@ -95,10 +95,10 @@ describe("JudgeAnalyticsTable - eval stats columns", () => {
 
     expect(screen.getByText("claude-opus")).toBeInTheDocument();
     expect(screen.getByText("20")).toBeInTheDocument();
-    expect(screen.getByText("2.00")).toBeInTheDocument();
-    expect(screen.getByText("4.20")).toBeInTheDocument();
-    expect(screen.getByText("5.00")).toBeInTheDocument();
-    expect(screen.getByText("0.50")).toBeInTheDocument();
+    expect(screen.getByText("20%")).toBeInTheDocument();
+    expect(screen.getByText("78%")).toBeInTheDocument();
+    expect(screen.getByText("95%")).toBeInTheDocument();
+    expect(screen.getByText("15%")).toBeInTheDocument();
   });
 });
 
@@ -115,10 +115,10 @@ describe("JudgeAnalyticsTable - human stats columns", () => {
     // Row 0 = group header, Row 1 = sub-header, Row 2 = judge
     const judgeCells = rows[2].querySelectorAll("td");
     // Human columns are indices 6-9 (after Judge Name, Artifacts, Eval Min/Max/Mean/StdDev)
-    expect(judgeCells[6].textContent).toBe("\u2014");
-    expect(judgeCells[7].textContent).toBe("\u2014");
-    expect(judgeCells[8].textContent).toBe("\u2014");
-    expect(judgeCells[9].textContent).toBe("\u2014");
+    expect(judgeCells[6]?.textContent).toBe("\u2014");
+    expect(judgeCells[7]?.textContent).toBe("\u2014");
+    expect(judgeCells[8]?.textContent).toBe("\u2014");
+    expect(judgeCells[9]?.textContent).toBe("\u2014");
   });
 
   test("shows formatted human stats when available", () => {
@@ -138,10 +138,10 @@ describe("JudgeAnalyticsTable - human stats columns", () => {
 
     const rows = screen.getAllByRole("row");
     const judgeCells = rows[2].querySelectorAll("td");
-    expect(judgeCells[6].textContent).toBe("0.40");
-    expect(judgeCells[7].textContent).toBe("1.00");
-    expect(judgeCells[8].textContent).toBe("0.70");
-    expect(judgeCells[9].textContent).toBe("0.15");
+    expect(judgeCells[6]?.textContent).toBe("40%");
+    expect(judgeCells[7]?.textContent).toBe("100%");
+    expect(judgeCells[8]?.textContent).toBe("70%");
+    expect(judgeCells[9]?.textContent).toBe("15%");
   });
 });
 

@@ -11,6 +11,7 @@ import {
   JUDGES_ANALYTICS_EVAL_COLOR,
   JUDGES_ANALYTICS_HUMAN_COLOR,
 } from "@/lib/config/judges-analytics";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import { TooltipRow, TooltipShell } from "./chart-tooltip";
 
 type JudgeAnalyticsChartProps = {
@@ -236,11 +237,11 @@ const BoxPlotTooltip: React.FC<{
       >
         Eval
       </p>
-      <TooltipRow label="Max:" value={data.upperWhisker.toFixed(2)} />
-      <TooltipRow label="Mean + 1σ:" value={data.upperBox.toFixed(2)} />
-      <TooltipRow label="Mean:" value={data.median.toFixed(2)} />
-      <TooltipRow label="Mean - 1σ:" value={data.lowerBox.toFixed(2)} />
-      <TooltipRow label="Min:" value={data.lowerWhisker.toFixed(2)} />
+      <TooltipRow label="Max:" value={formatScorePercent(data.upperWhisker)} />
+      <TooltipRow label="Mean + 1σ:" value={formatScorePercent(data.upperBox)} />
+      <TooltipRow label="Mean:" value={formatScorePercent(data.median)} />
+      <TooltipRow label="Mean - 1σ:" value={formatScorePercent(data.lowerBox)} />
+      <TooltipRow label="Min:" value={formatScorePercent(data.lowerWhisker)} />
       {data.humanMedian !== null && (
         <>
           <p
@@ -249,17 +250,17 @@ const BoxPlotTooltip: React.FC<{
           >
             Human
           </p>
-          <TooltipRow label="Max:" value={data.humanUpperWhisker!.toFixed(2)} />
+          <TooltipRow label="Max:" value={formatScorePercent(data.humanUpperWhisker!)} />
           <TooltipRow
             label="Mean + 1σ:"
-            value={data.humanUpperBox!.toFixed(2)}
+            value={formatScorePercent(data.humanUpperBox!)}
           />
-          <TooltipRow label="Mean:" value={data.humanMedian.toFixed(2)} />
+          <TooltipRow label="Mean:" value={formatScorePercent(data.humanMedian)} />
           <TooltipRow
             label="Mean - 1σ:"
-            value={data.humanLowerBox!.toFixed(2)}
+            value={formatScorePercent(data.humanLowerBox!)}
           />
-          <TooltipRow label="Min:" value={data.humanLowerWhisker!.toFixed(2)} />
+          <TooltipRow label="Min:" value={formatScorePercent(data.humanLowerWhisker!)} />
         </>
       )}
       <div className="mt-1 flex justify-between gap-4 border-border/50 border-t pt-1">
@@ -381,7 +382,7 @@ export function JudgeAnalyticsChart({
         <YAxis
           domain={yDomain}
           label={{ value: "Score", angle: -90, position: "insideLeft" }}
-          tickFormatter={(v: number) => v.toFixed(1)}
+          tickFormatter={(v: number) => formatScorePercent(v)}
         />
         <ChartTooltip content={<BoxPlotTooltip />} />
         <Bar

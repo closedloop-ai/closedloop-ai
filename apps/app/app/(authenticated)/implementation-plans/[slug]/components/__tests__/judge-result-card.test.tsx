@@ -54,7 +54,7 @@ describe("JudgeResultCard", () => {
       />
     );
 
-    expect(screen.getByText("Score: 0.3 (Failing)")).toBeDefined();
+    expect(screen.getByText("Score: 30% (Failing)")).toBeDefined();
   });
 
   test("renders static score without editable input when artifactId is missing", () => {
@@ -68,7 +68,7 @@ describe("JudgeResultCard", () => {
     );
 
     expect(screen.queryByRole("spinbutton")).toBeNull();
-    expect(screen.getByText("Score: 0.8 (Passing)")).toBeDefined();
+    expect(screen.getByText("Score: 80% (Passing)")).toBeDefined();
   });
 
   test("pre-populates editable input from existing user rating", () => {

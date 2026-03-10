@@ -10,6 +10,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { Brain, ChevronRight, Loader2, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 
 type Pattern = {
   id: string;
@@ -75,7 +76,7 @@ function ExpandedDetail({ pattern }: Readonly<{ pattern: Pattern }>) {
         <span className="text-border">·</span>
         <span>Seen {pattern.seen_count}x</span>
         <span className="text-border">·</span>
-        <span>{(pattern.success_rate * 100).toFixed(0)}% success</span>
+        <span>{formatScorePercent(pattern.success_rate)} success</span>
       </div>
 
       {/* Flags */}
@@ -340,7 +341,7 @@ function LearningsStats({ patterns }: Readonly<{ patterns: Pattern[] }>) {
           <div className="font-semibold text-foreground text-xl tabular-nums">
             {stats.highConf}
             <span className="ml-1 font-normal text-muted-foreground text-xs">
-              ({(stats.highConfPct * 100).toFixed(0)}%)
+              ({formatScorePercent(stats.highConfPct)})
             </span>
           </div>
           <div className="mt-0.5 text-[10px] text-muted-foreground">

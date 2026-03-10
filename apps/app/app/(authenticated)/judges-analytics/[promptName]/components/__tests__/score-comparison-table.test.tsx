@@ -124,8 +124,8 @@ describe("ScoreComparisonTable — Avg. User Rating column", () => {
       />
     );
 
-    // Should show "0.75" without parenthesized count
-    expect(screen.getAllByText("0.75")).toBeTruthy();
+    // Should show "75%" without parenthesized count
+    expect(screen.getAllByText("75%")).toBeTruthy();
     expect(screen.queryByText(PARENTHESIZED_COUNT_REGEX)).toBeNull();
   });
 
@@ -136,7 +136,7 @@ describe("ScoreComparisonTable — Avg. User Rating column", () => {
       />
     );
 
-    expect(screen.getByText("0.65 (3)")).toBeTruthy();
+    expect(screen.getByText("65% (3)")).toBeTruthy();
   });
 
   test("Avg. User Rating cell contains no input element (read-only)", () => {
@@ -151,7 +151,7 @@ describe("ScoreComparisonTable — Judge Score column", () => {
   test("displays judge score formatted to two decimal places", () => {
     render(<ScoreComparisonTable rows={[makeRow({ judgeScore: 0.9 })]} />);
 
-    expect(screen.getByText("0.90")).toBeTruthy();
+    expect(screen.getByText("90%")).toBeTruthy();
   });
 });
 
@@ -169,7 +169,7 @@ describe("ScoreComparisonTable — Delta column", () => {
       />
     );
 
-    expect(screen.getByText("0.35")).toBeTruthy();
+    expect(screen.getByText("35%")).toBeTruthy();
   });
 
   test("delta > 0.6 row has critical (red) style", () => {
@@ -181,7 +181,7 @@ describe("ScoreComparisonTable — Delta column", () => {
 
     // Find the delta cell by its text content
     const deltaCell = Array.from(container.querySelectorAll("td")).find((td) =>
-      td.textContent?.includes("0.65")
+      td.textContent?.includes("65%")
     );
     expect(deltaCell?.className).toContain("text-red-600");
   });
@@ -194,7 +194,7 @@ describe("ScoreComparisonTable — Delta column", () => {
     );
 
     const deltaCell = Array.from(container.querySelectorAll("td")).find((td) =>
-      td.textContent?.includes("0.40")
+      td.textContent?.includes("40%")
     );
     expect(deltaCell?.className).toContain("text-amber-600");
   });
