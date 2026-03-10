@@ -135,7 +135,7 @@ async function ingestDecomposeArtifacts(
 export const decomposeHandler = defineHandler<DecomposeArtifacts>({
   requiresRepo: false,
   requiresParent: false,
-  includePrimaryArtifact: false,
+  includePrimaryArtifact: true,
 
   downloadArtifacts(stateKeyPrefix: string) {
     return downloadDecomposeArtifacts(stateKeyPrefix);

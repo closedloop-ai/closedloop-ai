@@ -1796,7 +1796,8 @@ async function uploadState(workDir, output, runDir) {
   // We upload specific files to artifacts/ at flat paths so the backend
   // ingestion pipeline can read them by name (e.g., artifacts/plan.json).
   // The full run directory is already captured in claude-state/ (step 2).
-  const KEY_ARTIFACT_FILES = [
+  const pluginArtifactDir = runDir ?? workDir;
+  const CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES = [
     "plan.json",
     "plan.md",
     "implementation-plan.md",
@@ -1806,21 +1807,28 @@ async function uploadState(workDir, output, runDir) {
     "code-judges.json",
     "perf.jsonl",
     "state.json",
-    "features.json",
   ];
-  const artifactDir = runDir || workDir;
-  for (const fileName of KEY_ARTIFACT_FILES) {
-    const absPath = path.join(artifactDir, fileName);
-    if (fs.existsSync(absPath)) {
+  const NON_PLUGIN_ARTIFACT_FILE_NAMES = ["features.json"];
+  const artifactFiles = CLAUDE_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
+    name: fileName,
+    path: path.join(pluginArtifactDir, fileName),
+  })).concat(
+    NON_PLUGIN_ARTIFACT_FILE_NAMES.map((fileName) => ({
+      name: fileName,
+      path: path.join(workDir, fileName),
+    }))
+  );
+  for (const file of artifactFiles) {
+    if (fs.existsSync(file.path)) {
       try {
-        const content = fs.readFileSync(absPath);
+        const content = fs.readFileSync(file.path);
         await uploadFile(
-          `${statePrefix}/artifacts/${fileName}`,
+          `${statePrefix}/artifacts/${file.name}`,
           content,
           "application/octet-stream"
         );
       } catch (err) {
-        log("error", `Failed to upload artifact ${fileName}: ${err.message}`);
+        log("error", `Failed to upload artifact ${file.name}: ${err.message}`);
       }
     }
   }
@@ -1828,7 +1836,7 @@ async function uploadState(workDir, output, runDir) {
   // 4. Upload agent/judge prompt snapshots as markdown files.
   // Keep this directory structure under artifacts/ so API ingestion can
   // discover prompts from artifacts/agents-snapshot/*.md.
-  const agentsSnapshotDir = path.join(artifactDir, "agents-snapshot");
+  const agentsSnapshotDir = path.join(pluginArtifactDir, "agents-snapshot");
   if (fs.existsSync(agentsSnapshotDir)) {
     try {
       await uploadDirectory(
