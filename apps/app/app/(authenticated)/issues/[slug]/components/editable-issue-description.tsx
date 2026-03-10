@@ -12,7 +12,7 @@ type EditableIssueDescriptionProps = {
 export function EditableIssueDescription({
   issueId,
   initialDescription,
-}: EditableIssueDescriptionProps) {
+}: Readonly<EditableIssueDescriptionProps>) {
   const updateIssue = useUpdateIssue();
 
   const [markdown, setMarkdown] = useState(initialDescription);

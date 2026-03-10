@@ -8,6 +8,7 @@ import { Table } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
+import { Placeholder } from "@tiptap/extensions";
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -20,6 +21,7 @@ import type { RichTextEditorProps } from "./types";
 
 export function TiptapEditorCore({
   value,
+  placeholder,
   onChange,
   onEditorReady,
   readOnly = false,
@@ -57,6 +59,9 @@ export function TiptapEditorCore({
           // Claude Code uses GitHub Flavored Markdown
           gfm: true,
         },
+      }),
+      Placeholder.configure({
+        placeholder,
       }),
       MermaidExtension,
       Table.configure({

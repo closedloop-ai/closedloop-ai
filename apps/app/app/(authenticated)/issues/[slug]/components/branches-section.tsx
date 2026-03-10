@@ -10,7 +10,7 @@ import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { cn } from "@repo/design-system/lib/utils";
-import { GitBranchIcon, PlusIcon } from "lucide-react";
+import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
 import {
   useDeleteEntityLink,
   useLinkedEntities,
@@ -24,12 +24,16 @@ import { SectionHeader } from "./section-header";
 
 type BranchesSectionProps = {
   issueId: string;
+  hasPlan: boolean;
   onAdd?: () => void;
+  onStartBuild?: () => void;
 };
 
 export function BranchesSection({
   issueId,
+  hasPlan,
   onAdd,
+  onStartBuild,
 }: Readonly<BranchesSectionProps>) {
   const { data: linkedEntities = [] } = useLinkedEntities(
     issueId,
@@ -51,17 +55,16 @@ export function BranchesSection({
     (linked) => linked.resolvedEntity?.type === EntityType.ExternalLink
   );
 
+  const hasBranches = branchLinks.length > 0;
+
   return (
-    <div className="overflow-hidden rounded-lg border bg-background">
-      <SectionHeader title="Branches">
-        {onAdd ? (
-          <Button onClick={onAdd} size="sm" variant="outline">
-            Add Branch
-            <PlusIcon className="ml-1 h-4 w-4" />
-          </Button>
-        ) : null}
+    <div className="bg-background">
+      <SectionHeader title="Build">
+        <Button onClick={onAdd} size="icon-sm" variant="ghost">
+          <PlusIcon className="h-4 w-4" />
+        </Button>
       </SectionHeader>
-      {branchLinks.length > 0 ? (
+      {hasBranches ? (
         <div className="flex flex-col">
           {branchLinks.map((linked) => (
             <BranchRow
@@ -71,7 +74,30 @@ export function BranchesSection({
             />
           ))}
         </div>
-      ) : null}
+      ) : (
+        <div className="flex items-center py-3">
+          <div className="flex flex-1 flex-col gap-4">
+            <p className="text-base text-muted-foreground">
+              No PR exists for this feature
+            </p>
+            <div className="flex gap-4">
+              {hasPlan ? (
+                <Button onClick={onStartBuild} size="sm" variant="default">
+                  Start Building
+                  <PlayIcon className="ml-1 h-4 w-4" />
+                </Button>
+              ) : (
+                <Button disabled size="sm" variant="secondary">
+                  Need approved plan to build
+                </Button>
+              )}
+              <Button onClick={onAdd} size="sm" variant="outline">
+                Select Existing PR
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

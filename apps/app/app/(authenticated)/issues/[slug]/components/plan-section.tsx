@@ -1,7 +1,6 @@
 "use client";
 
 import type { Artifact } from "@repo/api/src/types/artifact";
-import { EntityType, LinkType } from "@repo/api/src/types/entity-link";
 import type { IssueWithWorkstream } from "@repo/api/src/types/issue";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -9,43 +8,42 @@ import { toast } from "@repo/design-system/components/ui/sonner";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { PlusIcon, SparklesIcon } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { NewPlanModal } from "@/app/(authenticated)/implementation-plans/components/new-plan-modal";
-import type { PlanSource } from "@/app/(authenticated)/implementation-plans/components/plan-source";
 import { AssigneeAvatar } from "@/components/assignee-avatar";
 import { useArtifact } from "@/hooks/queries/use-artifacts";
-import {
-  useDeleteEntityLink,
-  useTargetLinks,
-} from "@/hooks/queries/use-entity-links";
+import { useDeleteEntityLink } from "@/hooks/queries/use-entity-links";
 import { getArtifactRoute } from "@/lib/artifact-navigation";
 import {
   ARTIFACT_STATUS_TO_ICON,
   ARTIFACT_TYPE_BADGE_LABELS,
   ARTIFACT_TYPE_ICONS,
 } from "@/lib/project-constants";
+import { useFeatureState } from "../use-feature-state";
 import { OverflowMenu } from "./overflow-menu";
 import { SectionHeader } from "./section-header";
 import { SelectPlanDialog } from "./select-plan-dialog";
 
 type PlanSectionProps = {
   issue: IssueWithWorkstream;
+  showGenerateModal: boolean;
+  onGenerateModalChange: (open: boolean) => void;
 };
 
-export function PlanSection({ issue }: Readonly<PlanSectionProps>) {
-  const [showGenerateModal, setShowGenerateModal] = useState(false);
+export function PlanSection({
+  issue,
+  showGenerateModal,
+  onGenerateModalChange,
+}: Readonly<PlanSectionProps>) {
   const [showSelectModal, setShowSelectModal] = useState(false);
 
-  const { data: targetLinks = [] } = useTargetLinks(
-    issue.id,
-    EntityType.Issue,
-    LinkType.Produces
-  );
-
-  const linkedPlanLink = targetLinks.find(
-    (link) => link.targetType === EntityType.Artifact
-  );
-  const linkedPlanId = linkedPlanLink?.targetId ?? "";
+  const {
+    linkedPlanLink,
+    linkedPlanId,
+    hasPlan: hasLink,
+    isReady,
+    newPlanSource,
+  } = useFeatureState(issue);
 
   const { data: plan, isLoading: isLoadingPlan } = useArtifact(
     linkedPlanId,
@@ -65,38 +63,20 @@ export function PlanSection({ issue }: Readonly<PlanSectionProps>) {
     });
   }
 
-  const newPlanSource: PlanSource = useMemo(() => {
-    return {
-      ...issue,
-      sourceType: EntityType.Issue,
-    };
-  }, [issue]);
-
-  const hasPlan = !!linkedPlanId && !!plan;
+  const hasPlan = hasLink && !!plan;
 
   return (
     <>
-      <div className="overflow-hidden rounded-lg border bg-background">
+      <div className="bg-background">
         <SectionHeader title="Plan">
-          {isLoadingPlan || hasPlan ? null : (
-            <>
-              <Button
-                onClick={() => setShowGenerateModal(true)}
-                size="sm"
-                variant="default"
-              >
-                Generate
-                <SparklesIcon className="ml-1 h-4 w-4" />
-              </Button>
-              <Button
-                onClick={() => setShowSelectModal(true)}
-                size="sm"
-                variant="outline"
-              >
-                Add Plan
-                <PlusIcon className="ml-1 h-4 w-4" />
-              </Button>
-            </>
+          {hasPlan || isLoadingPlan ? null : (
+            <Button
+              onClick={() => setShowSelectModal(true)}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <PlusIcon className="h-4 w-4" />
+            </Button>
           )}
         </SectionHeader>
         {hasPlan ? (
@@ -106,10 +86,39 @@ export function PlanSection({ issue }: Readonly<PlanSectionProps>) {
             plan={plan}
           />
         ) : null}
+        {!(hasPlan || isLoadingPlan) && (
+          <div className="flex items-center py-3">
+            <div className="flex flex-1 flex-col gap-4">
+              <p className="text-base text-muted-foreground">
+                {isReady
+                  ? "A plan has not yet been generated for this feature"
+                  : "Need description to generate a plan"}
+              </p>
+              <div className="flex gap-3">
+                <Button
+                  disabled={!isReady}
+                  onClick={() => onGenerateModalChange(true)}
+                  size="sm"
+                  variant="default"
+                >
+                  Generate Plan
+                  <SparklesIcon className="ml-1 h-4 w-4" />
+                </Button>
+                <Button
+                  onClick={() => setShowSelectModal(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Select Existing Plan
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <NewPlanModal
-        onOpenChange={setShowGenerateModal}
+        onOpenChange={onGenerateModalChange}
         open={showGenerateModal}
         source={newPlanSource}
       />

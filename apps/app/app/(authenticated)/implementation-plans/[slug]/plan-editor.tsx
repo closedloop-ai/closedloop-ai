@@ -81,7 +81,7 @@ export function PlanEditor({
   });
 
   const planActions = usePlanActions({
-    artifact: plan,
+    artifactId: plan.id,
   });
 
   const uiState = useArtifactUIState({

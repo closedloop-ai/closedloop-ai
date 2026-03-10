@@ -1,6 +1,5 @@
 "use client";
 
-import type { ArtifactWithWorkstream } from "@repo/api/src/types/artifact";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { useCallback } from "react";
 import { useIsLoopsEnabledForArtifact } from "@/hooks/queries/use-artifact-execution-backend";
@@ -13,7 +12,7 @@ import {
 import { useRunLoop } from "@/hooks/queries/use-loops";
 
 type UsePlanActionsConfig = {
-  artifact: ArtifactWithWorkstream;
+  artifactId: string;
 };
 
 /**
@@ -34,7 +33,7 @@ type UsePlanActionsConfig = {
  * **Example usage:**
  * ```tsx
  * const { handleApprove, handleExecute, handleRequestChanges, isExecuting } =
- *   usePlanActions({ artifact });
+ *   usePlanActions({ artifactId });
  *
  * <Button onClick={handleApprove}>Approve Plan</Button>
  * <Button onClick={handleExecute} disabled={isExecuting}>Execute Plan</Button>
@@ -44,9 +43,9 @@ type UsePlanActionsConfig = {
  * **Important:** Execute operation requires plan to be APPROVED. Request changes returns a Promise<boolean> for modal handling.
  */
 export function usePlanActions(config: UsePlanActionsConfig) {
-  const { artifact } = config;
+  const { artifactId } = config;
   const { isLoopsEnabled: useLoops, isLoading: isComputeModeLoading } =
-    useIsLoopsEnabledForArtifact(artifact.id);
+    useIsLoopsEnabledForArtifact(artifactId);
 
   // TanStack Query mutations - GitHub Actions path
   const updateArtifact = useUpdateArtifact();
@@ -76,12 +75,12 @@ export function usePlanActions(config: UsePlanActionsConfig) {
    */
   const handleApprove = useCallback(() => {
     updateArtifact.mutate(
-      { id: artifact.id, status: "APPROVED" },
+      { id: artifactId, status: "APPROVED" },
       {
         onSuccess: () => toast.success("Plan approved"),
       }
     );
-  }, [artifact.id, updateArtifact]);
+  }, [artifactId, updateArtifact]);
 
   /**
    * Regenerate the implementation plan.
@@ -91,20 +90,20 @@ export function usePlanActions(config: UsePlanActionsConfig) {
   const handleRegenerate = useCallback(() => {
     if (useLoops) {
       runLoop.mutate(
-        { artifactId: artifact.id, command: "plan" },
+        { artifactId, command: "plan" },
         {
           onSuccess: () => toast.success("Plan regeneration started via Loop"),
         }
       );
     } else {
       regenerateArtifact.mutate(
-        { id: artifact.id },
+        { id: artifactId },
         {
           onSuccess: () => toast.success("Plan regeneration started"),
         }
       );
     }
-  }, [artifact.id, useLoops, runLoop, regenerateArtifact]);
+  }, [artifactId, useLoops, runLoop, regenerateArtifact]);
 
   /**
    * Request changes to the implementation plan.
@@ -118,7 +117,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
         try {
           await runLoop.mutateAsync(
             {
-              artifactId: artifact.id,
+              artifactId,
               command: "request_changes",
               prompt: changes,
             },
@@ -137,7 +136,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       }
 
       const result = await requestPlanChanges.mutateAsync(
-        { artifactId: artifact.id, changes },
+        { artifactId, changes },
         {
           onSuccess: () => {
             toast.success(
@@ -148,7 +147,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       );
       return result.success ?? false;
     },
-    [artifact.id, useLoops, runLoop, requestPlanChanges]
+    [artifactId, useLoops, runLoop, requestPlanChanges]
   );
 
   /**
@@ -160,7 +159,7 @@ export function usePlanActions(config: UsePlanActionsConfig) {
     if (useLoops) {
       try {
         await runLoop.mutateAsync(
-          { artifactId: artifact.id, command: "execute" },
+          { artifactId, command: "execute" },
           {
             onSuccess: () => {
               toast.success(
@@ -175,13 +174,13 @@ export function usePlanActions(config: UsePlanActionsConfig) {
       }
     }
 
-    const result = await executeImplementationPlan.mutateAsync(artifact.id, {
+    const result = await executeImplementationPlan.mutateAsync(artifactId, {
       onSuccess: () => {
         toast.success("Plan execution started - a PR will be created shortly");
       },
     });
     return result.success ?? false;
-  }, [artifact.id, useLoops, runLoop, executeImplementationPlan]);
+  }, [artifactId, useLoops, runLoop, executeImplementationPlan]);
 
   return {
     // Action handlers

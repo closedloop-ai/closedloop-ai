@@ -69,13 +69,13 @@ import { useCustomFieldColumnVisibility } from "@/hooks/use-custom-field-column-
 import { useDeleteConfirmation } from "@/hooks/use-delete-confirmation";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { matchesFilter } from "@/lib/artifact-filter";
-import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   getArtifactRoute,
   isNavigableArtifact,
 } from "@/lib/artifact-navigation";
 import { deriveCustomFieldColumns } from "@/lib/custom-field-utils";
 import { formatRelativeTime } from "@/lib/date-utils";
+import { formatScorePercent } from "@/lib/evaluation-utils";
 import {
   ARTIFACT_STATUS_COLORS,
   ARTIFACT_STATUS_LABELS,
@@ -297,7 +297,7 @@ function ArtifactSection({
                   >
                     <TableCell className="max-w-[320px]">
                       <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
                           <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
                           {isDisplayableSlug(artifact.slug) && (
                             <span className="font-mono text-muted-foreground text-xs">
@@ -369,9 +369,7 @@ function ArtifactSection({
                     </TableCell>
                     {judgeScoresMap && (
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <JudgeScoreCell
-                          judges={judgeScoresMap[artifact.id]}
-                        />
+                        <JudgeScoreCell judges={judgeScoresMap[artifact.id]} />
                       </TableCell>
                     )}
                     {visibleCustomFieldColumns.map((colDef) => {
@@ -646,9 +644,7 @@ export function ArtifactsTable({
       {sections.map((section) => (
         <ArtifactSection
           artifacts={section.artifacts}
-          judgeScoresMap={
-            section.showJudgeScores ? judgeScoresMap : undefined
-          }
+          judgeScoresMap={section.showJudgeScores ? judgeScoresMap : undefined}
           key={section.title}
           onRequestDelete={deleteConfirmation.requestDelete}
           onRowClick={handleRowClick}
@@ -720,9 +716,7 @@ function JudgeScoreCell({
                 className="flex items-center justify-between gap-4 text-xs"
                 key={j.judgeScoreId}
               >
-                <span className="truncate">
-                  {j.promptName ?? j.caseId}
-                </span>
+                <span className="truncate">{j.promptName ?? j.caseId}</span>
                 <span
                   className={`shrink-0 font-medium ${passing ? "text-success-foreground" : "text-destructive-foreground"}`}
                 >

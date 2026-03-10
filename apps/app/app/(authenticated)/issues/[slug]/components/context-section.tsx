@@ -75,15 +75,14 @@ export function ContextSection({
 
   return (
     <>
-      <div className="overflow-hidden rounded-lg border bg-background">
+      <div className="bg-background">
         <SectionHeader title="Context">
           <Button
             onClick={() => setShowAddDialog(true)}
-            size="sm"
-            variant="outline"
+            size="icon-sm"
+            variant="ghost"
           >
-            Add
-            <PlusIcon className="ml-1 h-4 w-4" />
+            <PlusIcon className="h-4 w-4" />
           </Button>
         </SectionHeader>
         {contextLinks.length > 0 ? (
@@ -96,7 +95,25 @@ export function ContextSection({
               />
             ))}
           </div>
-        ) : null}
+        ) : (
+          <div className="flex items-center py-3">
+            <div className="flex flex-1 flex-col gap-4">
+              <p className="text-base text-muted-foreground">
+                No context documents have been added to this feature
+              </p>
+              <div className="flex gap-4">
+                <Button
+                  onClick={() => setShowAddDialog(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Add Documents
+                  <PlusIcon className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <SelectContextDialog
