@@ -4,6 +4,7 @@ import { IssueStatus } from "@repo/api/src/types/issue";
 import type {
   DecomposeFeature,
   DecomposeResult,
+  DecomposeUserStory,
   Loop,
 } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
@@ -37,14 +38,29 @@ const PRIORITY_MAP: Record<string, Priority> = {
 // Description assembly
 // ---------------------------------------------------------------------------
 
-/** Merge acceptance criteria into the description markdown. */
+/** Format a single user story with its acceptance criteria as markdown. */
+function formatUserStory(story: DecomposeUserStory): string {
+  const lines = [`### ${story.id}: ${story.story}`];
+
+  const acs = story.acceptanceCriteria ?? [];
+  if (acs.length) {
+    lines.push("");
+    for (const ac of acs) {
+      lines.push(`- **${ac.id}:** ${ac.criterion}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/** Merge user stories into the description markdown. */
 function buildFullDescription(feature: DecomposeFeature): string {
-  const { description, acceptanceCriteria } = feature;
-  if (!acceptanceCriteria?.length) {
+  const { description, userStories } = feature;
+  if (!userStories?.length) {
     return description;
   }
-  const acList = acceptanceCriteria.map((ac) => `- ${ac}`).join("\n");
-  return `${description}\n\n## Acceptance Criteria\n\n${acList}`;
+  const storiesMd = userStories.map(formatUserStory).join("\n\n");
+  return `${description}\n\n## User Stories\n\n${storiesMd}`;
 }
 
 // ---------------------------------------------------------------------------

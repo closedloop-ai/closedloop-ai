@@ -233,11 +233,20 @@ export type LoopUsageSummary = {
 };
 
 // Feature decomposition types (output of DECOMPOSE command)
+export type DecomposeUserStory = {
+  id: string;
+  story: string;
+  acceptanceCriteria: Array<{
+    id: string;
+    criterion: string;
+  }>;
+};
+
 export type DecomposeFeature = {
   title: string;
   description: string;
   priority?: "HIGH" | "MEDIUM" | "LOW";
-  acceptanceCriteria?: string[];
+  userStories?: DecomposeUserStory[];
 };
 
 export type DecomposeResult = {

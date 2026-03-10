@@ -106,13 +106,37 @@ describe("decomposeHandler ingestion", () => {
           title: "User Registration Flow",
           description: "Users can register with email and password.",
           priority: "HIGH",
-          acceptanceCriteria: ["User can register with valid email"],
+          userStories: [
+            {
+              id: "US-001",
+              story:
+                "As a user, I want to register with my email so that I can access the platform",
+              acceptanceCriteria: [
+                {
+                  id: "AC-001.1",
+                  criterion: "User can register with valid email",
+                },
+              ],
+            },
+          ],
         },
         {
           title: "Dashboard View",
           description: "Managers can view team metrics.",
           priority: "LOW",
-          acceptanceCriteria: ["Dashboard loads within 2 seconds"],
+          userStories: [
+            {
+              id: "US-002",
+              story:
+                "As a manager, I want to view team metrics so that I can track performance",
+              acceptanceCriteria: [
+                {
+                  id: "AC-002.1",
+                  criterion: "Dashboard loads within 2 seconds",
+                },
+              ],
+            },
+          ],
         },
       ],
     };
@@ -135,7 +159,7 @@ describe("decomposeHandler ingestion", () => {
       projectId: "project-1",
       title: "User Registration Flow",
       description:
-        "Users can register with email and password.\n\n## Acceptance Criteria\n\n- User can register with valid email",
+        "Users can register with email and password.\n\n## User Stories\n\n### US-001: As a user, I want to register with my email so that I can access the platform\n\n- **AC-001.1:** User can register with valid email",
       priority: Priority.High,
       status: IssueStatus.NotStarted,
     });
