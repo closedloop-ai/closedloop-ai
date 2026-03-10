@@ -14,7 +14,7 @@ Get the Symphony /engineer feature running on your machine via the Electron desk
 ### 1. Clone the Electron repo
 
 ```bash
-git clone https://github.com/closedloop-tech/closedloop-electron.git
+git clone git@github.com:closedloop-ai/closedloop-electron.git
 cd closedloop-electron
 pnpm install
 ```
