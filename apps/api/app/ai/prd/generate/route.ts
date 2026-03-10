@@ -1,11 +1,17 @@
+import { keys } from "@repo/ai/keys";
 import { generateText, models } from "@repo/ai/server";
 import { ArtifactType as PrismaArtifactType } from "@repo/database";
-import { NextResponse } from "next/server";
 import { z } from "zod";
 import { artifactVersionService } from "@/app/artifacts/artifact-version-service";
 import { artifactsService } from "@/app/artifacts/service";
-import { withAuth } from "@/lib/auth/with-auth";
-import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
+import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import {
+  badRequestResponse,
+  errorResponse,
+  notFoundResponse,
+  parseBody,
+  successResponse,
+} from "@/lib/route-utils";
 
 const PRD_INLINE_INSTRUCTIONS = `You are an expert product manager that creates comprehensive Product Requirements Documents (PRDs).
 
@@ -33,69 +39,76 @@ const bodySchema = z.object({
   reverseSynthesisLink: z.string().url().optional(),
 });
 
-export const POST = withAuth<
+export const POST = withAnyAuth<
   { artifactId: string; content: string },
   "/ai/prd/generate"
 >(async ({ user }, request) => {
+  const { body, errorResponse: parseError } = await parseBody(
+    request,
+    bodySchema
+  );
+  if (parseError) {
+    return parseError;
+  }
+
+  const { artifactId, reverseSynthesisLink } = body;
+
+  // Pre-flight guard: ensure AI service is configured
+  if (!keys().ANTHROPIC_API_KEY) {
+    return errorResponse(
+      "AI service not configured",
+      new Error("ANTHROPIC_API_KEY is not set")
+    );
+  }
+
+  // Verify artifact exists and belongs to org
+  const artifact = await artifactsService.findByIdSimple(
+    artifactId,
+    user.organizationId
+  );
+  if (!artifact) {
+    return notFoundResponse("Artifact");
+  }
+
+  // Only PRDs can be generated with this endpoint
+  if (artifact.type !== PrismaArtifactType.PRD) {
+    return badRequestResponse("Only PRD artifacts can use this endpoint");
+  }
+
+  // Get latest version content as input context
+  const latestVersion = await artifactVersionService.getLatest(artifactId);
+  const sourceContent = latestVersion?.content ?? "";
+
+  // Build prompt context (reuses existing PRD context builder)
+  const prompt = artifactsService.buildPRDContext(
+    sourceContent,
+    null,
+    reverseSynthesisLink ?? null
+  );
+
+  // Generate PRD content inline using Sonnet
+  let result: Awaited<ReturnType<typeof generateText>>;
   try {
-    const { body, errorResponse: parseError } = await parseBody(
-      request,
-      bodySchema
-    );
-    if (parseError) {
-      return parseError;
-    }
-
-    const { artifactId, reverseSynthesisLink } = body;
-
-    // Verify artifact exists and belongs to org
-    const artifact = await artifactsService.findByIdSimple(
-      artifactId,
-      user.organizationId
-    );
-    if (!artifact) {
-      return notFoundResponse("Artifact");
-    }
-
-    // Only PRDs can be generated with this endpoint
-    if (artifact.type !== PrismaArtifactType.PRD) {
-      return NextResponse.json(
-        { success: false, error: "Only PRD artifacts can use this endpoint" },
-        { status: 400 }
-      );
-    }
-
-    // Get latest version content as input context
-    const latestVersion = await artifactVersionService.getLatest(artifactId);
-    const sourceContent = latestVersion?.content ?? "";
-
-    // Build prompt context (reuses existing PRD context builder)
-    const prompt = artifactsService.buildPRDContext(
-      sourceContent,
-      null,
-      reverseSynthesisLink ?? null
-    );
-
-    // Generate PRD content inline using Sonnet
-    const result = await generateText({
+    result = await generateText({
       model: models.sonnet,
       system: PRD_INLINE_INSTRUCTIONS,
       prompt,
     });
+  } catch (error) {
+    return errorResponse("AI generation failed", error);
+  }
 
-    // Save generated content as a new version
+  // Save generated content as a new version
+  try {
     await artifactsService.createNewVersion(
       artifactId,
       user.organizationId,
       user.id,
       result.text
     );
-
-    return NextResponse.json({
-      success: true,
-      data: { artifactId, content: result.text },
-    });
   } catch (error) {
-    return errorResponse("Failed to generate PRD", error);
+    return errorResponse("Failed to persist generated content", error);
   }
+
+  return successResponse({ artifactId, content: result.text });
 });

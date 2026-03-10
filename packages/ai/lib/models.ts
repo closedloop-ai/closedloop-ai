@@ -17,6 +17,6 @@ export const models = {
     return getAnthropic()("claude-opus-4-5");
   },
   get sonnet() {
-    return getAnthropic()("claude-sonnet-4-5-20250929");
+    return getAnthropic()("claude-sonnet-4-6");
   },
 } as const;
