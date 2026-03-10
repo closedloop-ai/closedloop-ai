@@ -281,6 +281,9 @@ export function useCreateEnumOption(fieldId: string) {
       queryClient.invalidateQueries({
         queryKey: customFieldKeys.detail(fieldId),
       });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.lists(),
+      });
     },
   });
 }
@@ -302,6 +305,9 @@ export function useUpdateEnumOption(fieldId: string) {
       queryClient.invalidateQueries({
         queryKey: customFieldKeys.detail(fieldId),
       });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.lists(),
+      });
     },
   });
 }
@@ -321,6 +327,9 @@ export function useReorderEnumOptions(fieldId: string) {
       });
       queryClient.invalidateQueries({
         queryKey: customFieldKeys.enumOptions(fieldId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: customFieldKeys.lists(),
       });
     },
   });

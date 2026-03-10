@@ -767,6 +767,7 @@ function toValueDetail(
     fieldType: row.customField
       .fieldType as (typeof CustomFieldType)[keyof typeof CustomFieldType],
     displayValue: row.displayValue ?? null,
+    showInTable: row.customField.showInTable,
     textValue: row.textValue ?? null,
     numberValue: row.numberValue ?? null,
     dateValue: row.dateValue ?? null,

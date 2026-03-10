@@ -170,6 +170,7 @@ export function IssueMetadataPanel({
         <CustomFieldsSection
           entityId={issue.id}
           entityType={CustomFieldEntityType.Issue}
+          values={issue.customFields}
         />
       </div>
     </MetadataPanel>

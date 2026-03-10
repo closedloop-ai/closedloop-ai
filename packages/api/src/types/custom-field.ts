@@ -219,6 +219,8 @@ export type CustomFieldValueDetail = {
    * Populated for all field types. Empty string when no value is set.
    */
   displayValue: string | null;
+  /** Whether this field should appear as a column in table views (from field definition). */
+  showInTable: boolean;
   // Type-specific value fields — only one is populated per instance
   textValue: string | null;
   numberValue: number | null;

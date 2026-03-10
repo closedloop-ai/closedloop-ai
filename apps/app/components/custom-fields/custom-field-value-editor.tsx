@@ -30,7 +30,7 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { XIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useUpdateCustomFieldValue } from "@/hooks/queries/use-custom-fields";
 import { getUserDisplayName } from "@/lib/user-utils";
 
@@ -59,9 +59,18 @@ function TextFieldEditor({
   initialValue,
 }: Readonly<TextFieldEditorProps>) {
   const [text, setText] = useState(initialValue ?? "");
+  const focusedRef = useRef(false);
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
 
+  // Sync from server when value changes, but only when not actively editing
+  useEffect(() => {
+    if (!focusedRef.current) {
+      setText(initialValue ?? "");
+    }
+  }, [initialValue]);
+
   const handleBlur = () => {
+    focusedRef.current = false;
     const value = text.trim() === "" ? null : text.trim();
     mutation.mutate({ fieldId, value });
   };
@@ -70,6 +79,9 @@ function TextFieldEditor({
     <Input
       onBlur={handleBlur}
       onChange={(e) => setText(e.target.value)}
+      onFocus={() => {
+        focusedRef.current = true;
+      }}
       placeholder="Enter text..."
       value={text}
     />
@@ -130,6 +142,13 @@ function NumberFieldEditor({
     initialValue !== null ? String(initialValue) : ""
   );
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
+
+  // Sync from server when value changes, but only when not actively editing
+  useEffect(() => {
+    if (!focused) {
+      setRaw(initialValue !== null ? String(initialValue) : "");
+    }
+  }, [initialValue, focused]);
 
   let prefix: string | null = null;
   if (numberFormat === NumberFormat.Currency) {
@@ -218,25 +237,43 @@ function EnumFieldEditor({
   initialEnumValue,
   options,
 }: Readonly<EnumFieldEditorProps>) {
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialEnumValue?.id ?? null
+  );
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
   const activeOptions = options.filter((o) => o.enabled);
 
+  // Sync from server when value changes
+  useEffect(() => {
+    setSelectedId(initialEnumValue?.id ?? null);
+  }, [initialEnumValue?.id]);
+
+  const selectedOption = selectedId
+    ? (options.find((o) => o.id === selectedId) ?? null)
+    : null;
+
   const handleChange = (optionId: string) => {
     const value = optionId === "__none__" ? null : optionId;
-    mutation.mutate({ fieldId, value });
+    const previousId = selectedId;
+    setSelectedId(value);
+    mutation.mutate(
+      { fieldId, value },
+      {
+        onError: () => {
+          setSelectedId(previousId);
+        },
+      }
+    );
   };
 
   return (
-    <Select
-      onValueChange={handleChange}
-      value={initialEnumValue?.id ?? "__none__"}
-    >
+    <Select onValueChange={handleChange} value={selectedId ?? "__none__"}>
       <SelectTrigger className="w-full">
         <SelectValue placeholder="Select option...">
-          {initialEnumValue ? (
+          {selectedOption ? (
             <div className="flex items-center gap-2">
-              <ColorDot color={initialEnumValue.color} />
-              <span>{initialEnumValue.name}</span>
+              <ColorDot color={selectedOption.color} />
+              <span>{selectedOption.name}</span>
             </div>
           ) : (
             <span className="text-muted-foreground">Select option...</span>
@@ -261,7 +298,7 @@ function EnumFieldEditor({
 }
 
 // ---------------------------------------------------------------------------
-// MultiEnumFieldEditor — Popover checkbox list + Badge pills with × to remove
+// MultiEnumFieldEditor — Popover checkbox list + Badge pills with x to remove
 // ---------------------------------------------------------------------------
 
 type MultiEnumFieldEditorProps = BaseEditorProps & {
@@ -282,6 +319,14 @@ function MultiEnumFieldEditor({
   const [open, setOpen] = useState(false);
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
   const activeOptions = options.filter((o) => o.enabled);
+  const initialIdKey = initialValues.map((v) => v.id).join(",");
+
+  // Sync from server when values change (use stable string key to avoid infinite re-renders)
+  useEffect(() => {
+    if (!open) {
+      setSelected(initialIdKey ? initialIdKey.split(",") : []);
+    }
+  }, [initialIdKey, open]);
 
   const toggleOption = (optionId: string, checked: boolean) => {
     const next = checked
@@ -382,10 +427,18 @@ function DateFieldEditor({
   entityId,
   initialValue,
 }: Readonly<DateFieldEditorProps>) {
+  const [date, setDate] = useState<Date | null>(initialValue);
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
+  const dateKey = initialValue?.getTime() ?? null;
 
-  const handleSelect = (date: Date | null) => {
-    const value = date ? date.toISOString() : null;
+  // Sync from server when value changes (use stable primitive dep to avoid re-firing on every render)
+  useEffect(() => {
+    setDate(dateKey !== null ? new Date(dateKey) : null);
+  }, [dateKey]);
+
+  const handleSelect = (selected: Date | null) => {
+    setDate(selected);
+    const value = selected ? selected.toISOString() : null;
     mutation.mutate({ fieldId, value });
   };
 
@@ -394,7 +447,7 @@ function DateFieldEditor({
       className="w-full"
       onSelect={handleSelect}
       placeholder="Select date..."
-      value={initialValue}
+      value={date}
     />
   );
 }
@@ -415,6 +468,13 @@ function PeopleFieldEditor({
 }: Readonly<PeopleFieldEditorProps>) {
   const [selected, setSelected] = useState<BasicUser[]>(initialPeople);
   const mutation = useUpdateCustomFieldValue(entityType, entityId);
+  const initialPeopleKey = initialPeople.map((u) => u.id).join(",");
+
+  // Sync from server when people change (use stable string key to avoid infinite re-renders)
+  useEffect(() => {
+    // biome-ignore lint/correctness/useExhaustiveDependencies: initialPeople array ref changes each render; use stable key instead
+    setSelected(initialPeople);
+  }, [initialPeopleKey]);
 
   const removeUser = (userId: string) => {
     const next = selected.filter((u) => u.id !== userId);
@@ -470,7 +530,8 @@ export function CustomFieldValueEditor({
   value,
 }: Readonly<CustomFieldValueEditorProps>) {
   const { customField } = setting;
-  const { id: fieldId, fieldType, enumOptions } = customField;
+  const { id: fieldId, fieldType } = customField;
+  const enumOptions = customField.enumOptions ?? [];
 
   return (
     <div className="flex flex-col gap-1">

@@ -11,6 +11,7 @@ import {
   successResponse,
 } from "@/lib/route-utils";
 import { customFieldsService, DuplicateNameError } from "../service";
+import { ReservedNameError } from "../utils";
 import { updateCustomFieldValidator } from "../validators";
 
 /**
@@ -68,6 +69,9 @@ export const PUT = withAnyAuth<CustomFieldWithOptions, "/custom-fields/[id]">(
     } catch (error) {
       if (error instanceof DuplicateNameError) {
         return conflictResponse("Custom field with this name already exists");
+      }
+      if (error instanceof ReservedNameError) {
+        return conflictResponse(error.message);
       }
       return errorResponse("Failed to update custom field", error);
     }

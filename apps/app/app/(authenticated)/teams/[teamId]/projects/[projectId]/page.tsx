@@ -430,6 +430,7 @@ export default function ProjectDetailPage() {
               <CustomFieldsSection
                 entityId={project.id}
                 entityType={CustomFieldEntityType.Project}
+                values={project.customFields}
               />
               <Separator />
               <ActivityPanel activities={activities} />

@@ -1,5 +1,6 @@
 "use client";
 
+import type { CustomFieldValueDetail } from "@repo/api/src/types/custom-field";
 // biome-ignore lint/style/useImportType: runtime value used by callers and child components
 import { CustomFieldEntityType } from "@repo/api/src/types/custom-field";
 import { useState } from "react";
@@ -10,11 +11,14 @@ import { CustomFieldValueEditor } from "./custom-field-value-editor";
 type CustomFieldsSectionProps = {
   entityType: CustomFieldEntityType;
   entityId: string;
+  /** Resolved custom field values from the entity detail query. */
+  values?: CustomFieldValueDetail[];
 };
 
 export function CustomFieldsSection({
   entityType,
   entityId,
+  values,
 }: Readonly<CustomFieldsSectionProps>) {
   const [open, setOpen] = useState(false);
   const { data: fields } = useCustomFieldsForEntityType(entityType);
@@ -22,6 +26,8 @@ export function CustomFieldsSection({
   if (fields.length === 0) {
     return null;
   }
+
+  const valueMap = new Map((values ?? []).map((v) => [v.customFieldId, v]));
 
   return (
     <CollapsibleSection
@@ -45,6 +51,7 @@ export function CustomFieldsSection({
             createdAt: field.createdAt,
             customField: field,
           }}
+          value={valueMap.get(field.id)}
         />
       ))}
     </CollapsibleSection>

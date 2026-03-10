@@ -5,7 +5,10 @@ import type {
 } from "@repo/api/src/types/custom-field";
 import type { Prisma } from "@repo/database";
 import { withDb } from "@repo/database";
-import { MAX_CUSTOM_FIELDS_PER_ORG } from "./utils";
+import {
+  MAX_CUSTOM_FIELDS_PER_ORG,
+  validateFieldNameNotReserved,
+} from "./utils";
 
 /**
  * Thrown when a custom field with the same name already exists in the organization.
@@ -37,6 +40,11 @@ export const customFieldsService = {
     input: CreateCustomFieldInput
   ): Promise<CustomFieldWithOptions> {
     const { enumOptions, ...fieldData } = input;
+
+    // Validate name doesn't conflict with built-in entity properties
+    if (input.entityTypes && input.entityTypes.length > 0) {
+      validateFieldNameNotReserved(input.name, input.entityTypes);
+    }
 
     try {
       const field = await withDb.tx(async (tx) => {
@@ -125,8 +133,22 @@ export const customFieldsService = {
     input: Omit<UpdateCustomFieldInput, "id">
   ): Promise<CustomFieldWithOptions> {
     try {
-      const field = await withDb((db) =>
-        db.customField.update({
+      const field = await withDb.tx(async (tx) => {
+        // Validate name doesn't conflict with built-in entity properties.
+        // Read + validate + update inside a single transaction to prevent TOCTOU race.
+        if (input.name || input.entityTypes) {
+          const existing = await tx.customField.findFirst({
+            where: { id, organizationId },
+            select: { name: true, entityTypes: true },
+          });
+          if (existing) {
+            const nameToCheck = input.name ?? existing.name;
+            const typesToCheck = input.entityTypes ?? existing.entityTypes;
+            validateFieldNameNotReserved(nameToCheck, typesToCheck);
+          }
+        }
+
+        return tx.customField.update({
           where: { id, organizationId },
           data: {
             name: input.name,
@@ -142,8 +164,8 @@ export const customFieldsService = {
             isSortable: input.isSortable,
           },
           include: CUSTOM_FIELD_WITH_OPTIONS_INCLUDE,
-        })
-      );
+        });
+      });
       return toCustomField(field);
     } catch (error) {
       if ((error as { code?: string }).code === "P2002") {

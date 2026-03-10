@@ -14,6 +14,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 import {
+  CustomFieldEntityType,
   CustomFieldType,
   NumberFormat,
 } from "@repo/api/src/types/custom-field";
@@ -24,6 +25,8 @@ import {
   computeDisplayValue,
   MAX_CUSTOM_FIELDS_PER_ORG,
   MAX_ENUM_OPTIONS_PER_FIELD,
+  ReservedNameError,
+  validateFieldNameNotReserved,
 } from "../utils";
 
 const mockWithDb = withDb as unknown as Mock;
@@ -258,5 +261,67 @@ describe("computeDisplayValue", () => {
 
     // Assert
     expect(result).toBe("Alpha, Beta");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateFieldNameNotReserved
+// ---------------------------------------------------------------------------
+
+describe("validateFieldNameNotReserved", () => {
+  it("throws ReservedNameError for 'Priority' on PROJECT entity type", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Priority", [CustomFieldEntityType.Project])
+    ).toThrow(ReservedNameError);
+  });
+
+  it("is case-insensitive", () => {
+    expect(() =>
+      validateFieldNameNotReserved("priority", [CustomFieldEntityType.Project])
+    ).toThrow(ReservedNameError);
+
+    expect(() =>
+      validateFieldNameNotReserved("PRIORITY", [CustomFieldEntityType.Project])
+    ).toThrow(ReservedNameError);
+  });
+
+  it("throws for 'Status' on ISSUE entity type", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Status", [CustomFieldEntityType.Issue])
+    ).toThrow(ReservedNameError);
+  });
+
+  it("throws for 'Assignee' on ARTIFACT entity type", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Assignee", [CustomFieldEntityType.Artifact])
+    ).toThrow(ReservedNameError);
+  });
+
+  it("does not throw for a non-reserved name", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Sprint Points", [
+        CustomFieldEntityType.Project,
+        CustomFieldEntityType.Issue,
+      ])
+    ).not.toThrow();
+  });
+
+  it("does not throw when entityTypes is empty", () => {
+    expect(() => validateFieldNameNotReserved("Priority", [])).not.toThrow();
+  });
+
+  it("throws when name is reserved on any one of multiple entity types", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Approver", [
+        CustomFieldEntityType.Issue,
+        CustomFieldEntityType.Artifact,
+      ])
+    ).toThrow(ReservedNameError);
+  });
+
+  it("includes friendly entity type label in error message", () => {
+    expect(() =>
+      validateFieldNameNotReserved("Priority", [CustomFieldEntityType.Project])
+    ).toThrow("Project");
   });
 });

@@ -1,11 +1,12 @@
-import type {
-  CustomFieldEnumOption,
-  CustomFieldWithOptions,
-} from "@repo/api/src/types/custom-field";
 import {
+  CustomFieldEntityType,
   CustomFieldType,
   LabelPosition,
   NumberFormat,
+} from "@repo/api/src/types/custom-field";
+import type {
+  CustomFieldEnumOption,
+  CustomFieldWithOptions,
 } from "@repo/api/src/types/custom-field";
 import { withDb } from "@repo/database";
 
@@ -333,5 +334,106 @@ function validateDateValue(value: string | number | string[]): void {
     throw new Error(
       `Invalid value for DATE field: "${value}" is not a valid date string.`
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reserved field name validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Built-in property names per entity type that cannot be used as custom field names.
+ * Case-insensitive comparison is used to prevent naming conflicts with existing
+ * entity properties shown in the UI.
+ */
+const RESERVED_NAMES_BY_ENTITY_TYPE: Record<
+  CustomFieldEntityType,
+  ReadonlySet<string>
+> = {
+  [CustomFieldEntityType.Project]: new Set([
+    "name",
+    "description",
+    "status",
+    "priority",
+    "assignee",
+    "team",
+    "target date",
+    "codebase summary",
+    "slug",
+  ]),
+  [CustomFieldEntityType.Workstream]: new Set([
+    "title",
+    "description",
+    "type",
+    "state",
+    "status",
+    "priority",
+    "assignee",
+    "slug",
+  ]),
+  [CustomFieldEntityType.Issue]: new Set([
+    "title",
+    "description",
+    "status",
+    "priority",
+    "assignee",
+    "workstream",
+    "slug",
+  ]),
+  [CustomFieldEntityType.Artifact]: new Set([
+    "title",
+    "description",
+    "type",
+    "status",
+    "assignee",
+    "approver",
+    "target repository",
+    "target branch",
+    "version",
+    "slug",
+  ]),
+};
+
+/** Friendly display labels for entity types shown in error messages. */
+const ENTITY_TYPE_DISPLAY_NAMES: Record<CustomFieldEntityType, string> = {
+  [CustomFieldEntityType.Project]: "Project",
+  [CustomFieldEntityType.Workstream]: "Feature",
+  [CustomFieldEntityType.Issue]: "Issue",
+  [CustomFieldEntityType.Artifact]: "Artifact",
+};
+
+/**
+ * Thrown when a custom field name conflicts with a built-in property name
+ * on one of its target entity types.
+ */
+export class ReservedNameError extends Error {
+  constructor(name: string, entityType: CustomFieldEntityType) {
+    const label = ENTITY_TYPE_DISPLAY_NAMES[entityType] ?? entityType;
+    super(
+      `"${name}" is a built-in property of ${label} and cannot be used as a custom field name.`
+    );
+    this.name = "ReservedNameError";
+  }
+}
+
+/**
+ * Validates that a custom field name does not conflict with built-in entity property names.
+ *
+ * Checks the name (case-insensitive) against reserved names for each target entity type.
+ * Throws ReservedNameError if a conflict is found.
+ *
+ * @param fieldName - The custom field name to validate.
+ * @param entityTypes - The entity types this field targets.
+ */
+export function validateFieldNameNotReserved(
+  fieldName: string,
+  entityTypes: CustomFieldEntityType[]
+): void {
+  const normalizedName = fieldName.trim().toLowerCase();
+  for (const entityType of entityTypes) {
+    const reserved = RESERVED_NAMES_BY_ENTITY_TYPE[entityType];
+    if (reserved?.has(normalizedName)) {
+      throw new ReservedNameError(fieldName, entityType);
+    }
   }
 }

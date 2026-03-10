@@ -200,6 +200,7 @@ export function PlanMetadataPanel({
           <CustomFieldsSection
             entityId={plan.id}
             entityType={CustomFieldEntityType.Artifact}
+            values={plan.customFields}
           />
         </div>
       </MetadataPanel>

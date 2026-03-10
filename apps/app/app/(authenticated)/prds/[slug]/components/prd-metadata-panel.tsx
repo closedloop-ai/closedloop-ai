@@ -173,6 +173,7 @@ export function PRDMetadataPanel({
           <CustomFieldsSection
             entityId={prd.id}
             entityType={CustomFieldEntityType.Artifact}
+            values={prd.customFields}
           />
         </div>
       </MetadataPanel>
