@@ -54,13 +54,12 @@ async function dispatchToRelay(
     });
     if (response.ok) {
       const result = await response.json().catch(() => ({ delivered: true }));
-      if (result.delivered === false) {
-        log.warn("Relay dispatch not delivered", {
-          targetId,
-          commandId,
-          reason: result.reason ?? "unknown",
-        });
-      }
+      log.info("Relay dispatch result", {
+        targetId,
+        commandId,
+        delivered: result.delivered,
+        reason: result.reason,
+      });
     } else {
       const body = await response.text().catch(() => "");
       log.error("Relay dispatch failed", {
@@ -121,6 +120,12 @@ export const POST = withAnyAuth<
     const relayApiUrl = env.RELAY_API_URL;
     const internalSecret = env.INTERNAL_API_SECRET;
     if (relayApiUrl && internalSecret) {
+      log.info("Dispatching command to relay", {
+        relayApiUrl,
+        targetId: target.id,
+        commandId: createResult.command.commandId,
+        deduped: createResult.deduped,
+      });
       await dispatchToRelay(
         relayApiUrl,
         internalSecret,
@@ -129,6 +134,10 @@ export const POST = withAnyAuth<
         relayOperation
       );
     } else {
+      log.info("Using in-process relay bus (no RELAY_API_URL)", {
+        targetId: target.id,
+        commandId: createResult.command.commandId,
+      });
       relayEventBus.publishOperation(target.id, relayOperation);
     }
 
